@@ -943,6 +943,15 @@
               },
               "description": "Additional allowed headers for CORS and WebSocket"
             },
+            "usageEstimationTokenizers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["anthropic", "deepseek", "llama2", "llama3", "all"]
+              },
+              "uniqueItems": true,
+              "description": "Embedded tokenizer vocabularies used to estimate the usage of a cancelled or timed-out stream whose provider never reported it. Empty counts every model with o200k_base or cl100k_base. Each listed family preloads in the background at startup and keeps 4-18 MB in memory; \"all\" enables every family."
+            },
             "mcpAgentDepth": {
               "type": "integer",
               "minimum": 1,
@@ -1012,6 +1021,11 @@
               "description": "Enterprise only. When true, removing a user's last access profile never deletes their virtual keys; they are kept as ordinary keys. Deleting the user still deletes their keys. Maps to client.skip_access_profile_user_virtual_key_deletion.",
               "default": false
             },
+            "entityAccessProfileMode": {
+              "type": "string",
+              "enum": ["union", "intersect"],
+              "description": "Enterprise only. How team, business unit and customer access profiles combine with a user's own access, using the same values as a project's access rule. 'union' (default) lets each of them add to it; 'intersect' makes each level holding an active profile cap it instead, and ignores the x-bf-customer-id / x-bf-customer-name scope headers. Maps to client.entity_access_profile_mode."
+            },
             "mcpDisableAutoToolInject": {
               "type": "boolean",
               "description": "DEPRECATED: When true, MCP tools are not automatically injected into requests. Use bifrost.mcp.toolManagerConfig.disableAutoToolInject.",
@@ -1077,6 +1091,52 @@
                 }
               ],
               "description": "Full HTTPS URL where you host Bifrost's Client ID Metadata Document, for upstream MCP servers that cannot reach Bifrost. Publish the document Bifrost serves at /api/oauth/client-metadata.json there unchanged. Unset, the document is served under mcpExternalClientUrl. Supports env var and vault references. Maps to client.mcp_client_metadata_url."
+            },
+            "bifrostUrl": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "ref": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "plain_text",
+                        "env",
+                        "vault"
+                      ]
+                    },
+                    "env_var": {
+                      "type": "string"
+                    },
+                    "from_env": {
+                      "type": "boolean"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              ],
+              "description": "The gateway's public base URL (scheme, host and any base path) as clients reach it through your proxy. Required for /v1/mcp: tool calls take their host and scheme from it, never from the client's Host header. Unset, /v1/mcp answers 503. Must include server.basePath when set. Supports env var and vault references. Maps to client.bifrost_url."
+            },
+            "bifrostMcpAllowWrites": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether /v1/mcp serves the non-GET /api operations (gateway configuration changes) as tools. Inference, batch and file routes are served either way, and every call is authorized by the caller's own credential. Maps to client.bifrost_mcp_allow_writes."
+            },
+            "mcpOpenapiMaxSpecMb": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 256,
+              "default": 0,
+              "description": "Size limit, in MiB, on the spec of an openapi MCP client (inline, specFile or fetched from specUrl). 0 uses the built-in default of 32 MiB. Parsing holds several times the spec's size in memory. Maps to client.mcp_openapi_max_spec_mb."
             },
             "skillsExternalClientUrl": {
               "anyOf": [
@@ -1160,11 +1220,21 @@
             },
             "oauth2ServerConfig": {
               "type": "object",
-              "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcpServerAuthMode is 'both' or 'oauth'. Maps to client.oauth2_server_config.",
+              "description": "OAuth2 authorization server settings for /mcp (when mcpServerAuthMode is 'both' or 'oauth') and for client gateways (gateways.<client>.enabled). Maps to client.oauth2_server_config.",
               "properties": {
                 "issuerUrl": {
                   "type": "string",
-                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth': the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
+                  "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth', or any client gateway is enabled: the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
+                },
+                "additionalIssuerUrls": {
+                  "type": "array",
+                  "maxItems": 10,
+                  "items": { "type": "string" },
+                  "description": "Further issuers, each on its own hostname, for MCP clients that cannot reach issuerUrl (for example a hosted client through a private tunnel). Requests arriving on one of these hostnames see that issuer; any other request gets issuerUrl. Tokens from every configured issuer are accepted on every hostname. Requires issuerUrl. Supports env var syntax: \"env.MY_VAR\". Maps to client.oauth2_server_config.additional_issuer_urls."
+                },
+                "browserBaseUrl": {
+                  "type": "string",
+                  "description": "Base URL users' browsers reach Bifrost on, when MCP clients reach it on a hostname browsers cannot resolve. The authorization endpoint, consent page redirect and device sign-in pages use it; the issuer, server-to-server endpoints and token claims stay on issuerUrl. Unset, browsers use issuerUrl. Must include server.base_path when set. Supports env var syntax: \"env.MY_VAR\". Maps to client.oauth2_server_config.browser_base_url."
                 },
                 "authCodeTtl": {
                   "type": "integer",
@@ -1199,6 +1269,82 @@
                     ]
                   },
                   "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. A bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Maps to client.oauth2_server_config.allowed_redirect_uris."
+                },
+                "gateways": {
+                  "type": "object",
+                  "description": "Client gateways, one block per coding client, each served at <issuerUrl>/gateway/<client>. Independent of mcpServerAuthMode. Maps to client.oauth2_server_config.gateways.",
+                  "properties": {
+                    "claudeCode": {
+                      "type": "object",
+                      "description": "Claude Code gateway at <issuerUrl>/gateway/claude-code: Claude Code's /login (Cloud gateway) sign-in. Requires issuerUrl (the chart fails to render without it). Maps to client.oauth2_server_config.gateways.claude_code.",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "description": "Serve the Claude Code gateway protocol under /gateway/claude-code.",
+                          "default": false
+                        },
+                        "managedSettings": {
+                          "type": "object",
+                          "description": "Claude Code managed-settings.json document served to every signed-in client. Omit for no managed policy."
+                        },
+                        "telemetry": {
+                          "type": "object",
+                          "description": "Forward Claude Code's OTLP telemetry (metrics, logs, traces), stamped with the Bifrost identity, to OTLP/HTTP collectors instead of discarding it. Maps to client.oauth2_server_config.gateways.claude_code.telemetry.",
+                          "properties": {
+                            "enabled": {
+                              "type": "boolean",
+                              "default": false,
+                              "description": "Forward telemetry. Off: exports are acknowledged and discarded."
+                            },
+                            "destinations": {
+                              "type": "array",
+                              "description": "OTLP/HTTP collectors; each signal is posted to <endpoint>/v1/{metrics|logs|traces}. At least one is required when enabled.",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "endpoint": {
+                                    "type": "string",
+                                    "description": "Collector base URL (http or https). Supports env.VAR_NAME."
+                                  },
+                                  "headers": {
+                                    "type": "object",
+                                    "additionalProperties": {
+                                      "type": "string",
+                                      "pattern": "\\S"
+                                    },
+                                    "description": "Headers sent with every export. Values can be plain or env./vault. references, like provider keys, and must not be empty."
+                                  }
+                                },
+                                "required": [
+                                  "endpoint"
+                                ],
+                                "additionalProperties": false
+                              }
+                            },
+                            "dropAttributes": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "description": "Attribute keys removed at every level before forwarding, e.g. prompt."
+                            }
+                          },
+                          "if": {
+                            "properties": { "enabled": { "const": true } },
+                            "required": ["enabled"]
+                          },
+                          "then": {
+                            "required": ["destinations"],
+                            "properties": { "destinations": { "minItems": 1 } }
+                          },
+                          "additionalProperties": false
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -1286,6 +1432,11 @@
                   "description": "How often each provider's list-models response is re-fetched in the background, in seconds. Set to 0 to disable background refresh. Default is 3600 (1 hour); minimum when enabled is 60 seconds.",
                   "default": 3600,
                   "anyOf": [{ "const": 0 }, { "minimum": 60 }]
+                },
+                "openapiUrl": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "description": "OpenAPI spec /v1/mcp builds its tools from: an http(s) URL, or a path relative to the app directory for air-gapped installs. Supports env var syntax (env.MY_VAR). Empty reads the published spec. Maps to framework.pricing.openapi_url."
                 }
               },
               "additionalProperties": false
@@ -1654,7 +1805,9 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "byteplus",
+                        "baseten"
                       ]
                     },
                     "embedding_model": {
@@ -3235,7 +3388,7 @@
                 },
                 "llm": {
                   "type": "object",
-                  "description": "Chat-completion (LLM) fallback classifier settings. Inert unless semantic.fallback selects 'llm'; the classifier runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
+                  "description": "Chat-completion (LLM) classifier settings. Used as the primary classifier when classifier is 'llm', and as the fallback when semantic.fallback selects 'llm', where it runs only after semantic classification produces no tier. Tier names and the response format are fixed and always appended by the gateway.",
                   "properties": {
                     "provider": {
                       "type": "string",
@@ -3245,7 +3398,7 @@
                     "model": {
                       "type": "string",
                       "minLength": 1,
-                      "description": "Chat model asked to name the tier. Every fallback classification waits on one completion from this model, so pick a small, fast one."
+                      "description": "Chat model asked to name the tier. Every classification it makes waits on one completion from this model, so pick a small, fast one."
                     },
                     "timeout": {
                       "description": "Per-request classification timeout (duration string like '2s', or milliseconds as a number; default: 4s). On timeout no tier is published for that request.",
@@ -4593,12 +4746,24 @@
                     "default": "enforce",
                     "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
                   },
+                  "input_timing": {
+                    "type": "string",
+                    "enum": ["pre_call", "parallel"],
+                    "default": "pre_call",
+                    "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+                  },
+                  "profile_execution_mode": {
+                    "type": "string",
+                    "enum": ["independent", "chained"],
+                    "default": "independent",
+                    "description": "How the rule's profiles see the payload. 'independent' (default) gives every profile the original payload. 'chained' runs profiles in provider_config_ids order and gives each one the payload as earlier profiles redacted or transformed it. A rule with one profile never chains."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
                       "type": "integer"
                     },
-                    "description": "IDs of provider configurations to use with this rule"
+                    "description": "IDs of provider configurations to use with this rule, in execution order"
                   }
                 },
                 "required": ["id", "name", "enabled", "cel_expression", "apply_to"],
@@ -5494,9 +5659,16 @@
         },
         "modelRouters": {
           "type": "array",
-          "description": "Named model routers, each a complexity classifier with the settings of governance.complexityAnalyzerConfig, the model each tier gets, and the routing that decides which requests it takes after the routing rules. Rendered as top-level model_routers in config.json when non-empty. Routers are separate from governance.complexityAnalyzerConfig, which routing rules read complexity_tier from.",
+          "description": "Named model routers, each a complexity classifier with the settings of governance.complexityAnalyzerConfig, the model each tier gets, and the routing that decides which requests it takes after the routing rules. Rendered as top-level model_routers in config.json whenever declared. With config.json as the source of truth, an explicit list (including []) removes stored routers it does not name; omit the key to leave them alone. Routers are separate from governance.complexityAnalyzerConfig, which routing rules read complexity_tier from.",
           "items": {
             "$ref": "#/$defs/modelRouter"
+          }
+        },
+        "datasheetOverrides": {
+          "type": "array",
+          "description": "Edits to the synced model datasheet (pricing and model parameters) that survive every datasheet sync. Rendered directly as top-level datasheet_overrides in config.json and matched by (provider, model, mode) with hash-based change detection: a file entry is applied when it changes, so UI edits stand until the entry itself changes. With config.json as the source of truth, an explicit list (including []) removes stored overrides it does not name; omit the key to leave them alone.",
+          "items": {
+            "$ref": "#/$defs/datasheetOverride"
           }
         },
         "agents": {
@@ -6997,11 +7169,99 @@
                 "affinity": {
                   "type": "object",
                   "description": "Affinity rules for the Redis pod assignment"
+                },
+                "extraEnv": {
+                  "type": "array",
+                  "description": "Extra Kubernetes EnvVar entries for the Redis container, appended after REDIS_PASSWORD / REDISCLI_AUTH (e.g. REDIS_ARGS, REDISEARCH_ARGS for redis-stack-server). With auth enabled, setting extraEnv or envFrom starts Redis through sh -c so REDIS_ARGS is appended after --requirepass.",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"]
+                  }
+                },
+                "envFrom": {
+                  "type": "array",
+                  "description": "Kubernetes EnvFromSource entries (secretRef / configMapRef) for the Redis container",
+                  "items": {
+                    "type": "object"
+                  }
                 }
               }
             },
             "metrics": {
-              "type": "object"
+              "type": "object",
+              "description": "Prometheus metrics for the bundled Redis via an oliver006/redis_exporter sidecar",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Run the redis_exporter sidecar, add a metrics port to the Redis Service and prometheus.io/* scrape annotations to the pod"
+                },
+                "image": {
+                  "type": "object",
+                  "properties": {
+                    "repository": { "type": "string" },
+                    "tag": { "type": "string" },
+                    "pullPolicy": {
+                      "type": "string",
+                      "enum": ["Always", "IfNotPresent", "Never"]
+                    }
+                  }
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "Port the exporter serves /metrics on (default: 9121)"
+                },
+                "resources": {
+                  "type": "object",
+                  "description": "Resource requests and limits for the exporter container"
+                },
+                "extraEnv": {
+                  "type": "array",
+                  "description": "Extra Kubernetes EnvVar entries for the exporter container (e.g. REDIS_EXPORTER_CHECK_KEYS)",
+                  "items": {
+                    "type": "object",
+                    "required": ["name"]
+                  }
+                },
+                "serviceMonitor": {
+                  "type": "object",
+                  "description": "Prometheus Operator ServiceMonitor for the exporter (requires the monitoring.coreos.com/v1 CRDs)",
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "namespace": {
+                      "type": "string",
+                      "description": "Namespace for the ServiceMonitor (default: release namespace)"
+                    },
+                    "interval": {
+                      "type": "string",
+                      "description": "Scrape interval, e.g. 30s (default: Prometheus global)"
+                    },
+                    "scrapeTimeout": {
+                      "type": "string",
+                      "description": "Scrape timeout, e.g. 10s"
+                    },
+                    "labels": {
+                      "type": "object",
+                      "description": "Extra labels on the ServiceMonitor, e.g. the release label your Prometheus selects on",
+                      "additionalProperties": { "type": "string" }
+                    },
+                    "basicAuth": {
+                      "type": "object",
+                      "description": "Credentials Prometheus sends when the exporter has basic auth (REDIS_EXPORTER_BASIC_AUTH_USERNAME / _PASSWORD in metrics.extraEnv). The Secret must be in the ServiceMonitor's namespace.",
+                      "properties": {
+                        "enabled": { "type": "boolean", "description": "Send HTTP basic auth credentials with each scrape" },
+                        "existingSecret": { "type": "string", "minLength": 1, "description": "Secret holding the exporter username and password" },
+                        "usernameKey": { "type": "string", "description": "Key holding the username (default: username)" },
+                        "passwordKey": { "type": "string", "description": "Key holding the password (default: password)" }
+                      },
+                      "additionalProperties": false,
+                      "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
+                      "then": { "required": ["existingSecret"] }
+                    }
+                  }
+                }
+              }
             }
           }
         },
@@ -7357,6 +7617,54 @@
       ],
       "additionalProperties": false
     },
+    "datasheetOverride": {
+      "type": "object",
+      "description": "One datasheet entry edit. Both patches are RFC 7386 JSON merge patches: a key sets the value, null clears it, and an omitted key keeps the upstream value.",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Provider of the datasheet entry, e.g. openai"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Model name as it appears in the datasheet"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Datasheet mode (chat, responses, embedding, ...). Omit to apply the pricing patch to every mode of the model. Required when is_custom is true."
+        },
+        "is_custom": {
+          "type": "boolean",
+          "default": false,
+          "description": "Adds an entry the upstream datasheet does not list, e.g. a fine-tuned or self-hosted model"
+        },
+        "pricing_patch": {
+          "type": "object",
+          "description": "Merge patch over the pricing entry: context_length, max_input_tokens, max_output_tokens, is_deprecated, base_model, architecture and any cost field such as input_cost_per_token",
+          "additionalProperties": true
+        },
+        "params_patch": {
+          "type": "object",
+          "description": "Merge patch over the model-parameters entry: supports_* capability flags, reasoning_effort_levels, max_output_tokens, supported_endpoints and other model parameters. provider cannot be patched.",
+          "not": { "required": ["provider"] },
+          "additionalProperties": true
+        }
+      },
+      "required": ["provider", "model"],
+      "if": {
+        "properties": { "is_custom": { "const": true } },
+        "required": ["is_custom"]
+      },
+      "then": {
+        "required": ["mode"],
+        "properties": { "mode": { "pattern": "\\S" } }
+      },
+      "additionalProperties": false
+    },
     "relay": {
       "type": "object",
       "description": "A Relay: a raw HTTP relay to a non-LLM API served at /relay/{name}/{path}. Bifrost injects the relay's single credential, prices each counted call with the usage mapping (cost_per_request + cost_path + billed units x cost_per_unit, overridable per route) and charges the result to the caller's overall budgets. Virtual keys reach it through relay_grants.",
@@ -7466,7 +7774,7 @@
           "items": {
             "$ref": "#/$defs/relay_route_config"
           },
-          "description": "Upstream operations, first match wins; only listed routes are relayed unless skip_route_check is set"
+          "description": "Upstream operations, the most specific match wins; only listed routes are relayed unless skip_route_check is set"
         },
         "skip_route_check": {
           "type": "boolean",
@@ -7475,6 +7783,10 @@
         "ignore_upstream_cost": {
           "type": "boolean",
           "description": "Ignore cost_path values; the operator's fee and unit pricing still apply"
+        },
+        "body_overrides": {
+          "$ref": "#/$defs/relay_body_overrides",
+          "description": "Request body fields forced on every call through this relay; a route's body_overrides replace the value for the same path"
         }
       },
       "required": [
@@ -7546,7 +7858,7 @@
         },
         "path": {
           "type": "string",
-          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below"
+          "description": "Rooted segment glob (* within a segment); a trailing /** matches the prefix and everything below; one middle /**/ matches 1 to 80 segments; neither takes a . or .. segment, with or without ;params"
         },
         "enabled": {
           "type": "boolean",
@@ -7569,11 +7881,120 @@
         },
         "usage": {
           "$ref": "#/$defs/relay_usage_config"
+        },
+        "body_overrides": {
+          "$ref": "#/$defs/relay_body_overrides",
+          "description": "Request body fields this route forces, over the relay's body_overrides for the same path"
+        },
+        "inherit_body_overrides": {
+          "type": "boolean",
+          "description": "false stops the relay's body_overrides being applied on this route; only the route's own body_overrides are sent. Defaults to true"
+        },
+        "job": {
+          "$ref": "#/$defs/relay_job_config"
         }
       },
       "required": [
         "method",
         "path"
+      ],
+      "additionalProperties": false
+    },
+    "relay_job_config": {
+      "type": "object",
+      "description": "The matched call starts an upstream job that is billed once, when it finishes, instead of on every status check. The job id is read from the start reply, Bifrost polls the upstream with the relay's credential until the status is terminal, prices the terminal reply with the job's usage mapping and charges the start call's budgets. The start call is counted as usual and carries the route's fee. A route that starts a job is buffered and billable, and a caller's own status check for a job Bifrost started (a call matching the poll request) is relayed free, with no route of its own.",
+      "properties": {
+        "id_path": {
+          "type": "string",
+          "description": "Path of the job id in the start reply, for example JobId"
+        },
+        "poll": {
+          "type": "object",
+          "description": "The request Bifrost sends to check a job. {{job.id}} in the path, a header value or the body is replaced with the job id.",
+          "properties": {
+            "method": {
+              "type": "string",
+              "enum": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "HEAD"
+              ],
+              "description": "Default POST"
+            },
+            "path": {
+              "type": "string",
+              "description": "Rooted path below the base URL, may contain {{job.id}} and a query"
+            },
+            "headers": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Literal headers, values may contain {{job.id}}. Credential headers are refused: the relay adds its own"
+            },
+            "body": {
+              "type": "string",
+              "description": "Literal body, may contain {{job.id}} (JSON-escaped in a JSON body)"
+            },
+            "content_type": {
+              "type": "string",
+              "description": "Content type of the body, default application/json"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "status_path": {
+          "type": "string",
+          "description": "Path of the status in the poll reply, for example JobStatus"
+        },
+        "succeeded": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "description": "Statuses that end the job and bill it (case-insensitive)"
+        },
+        "failed": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "Statuses that end the job at no charge"
+        },
+        "interval_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Seconds between polls, default 30"
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 604800,
+          "description": "Stop polling after this long, default 3600, at most 7 days. The job is checked once more at the deadline; one still running then is not charged"
+        },
+        "reused_id_is_new_job": {
+          "type": "boolean",
+          "description": "true when the upstream can return an id it already used for new work (a caller-chosen job id), so a start that returns the id of a job already charged starts a new billable job. By default a start that returns an already charged id is a retry of that job and is not charged again"
+        },
+        "usage": {
+          "description": "Usage mapping for the terminal poll reply, over the route's and the relay's. Only a cost_per_request set here is charged at settlement; the route's fee was charged on the start call",
+          "$ref": "#/$defs/relay_usage_config"
+        }
+      },
+      "required": [
+        "id_path",
+        "poll",
+        "status_path",
+        "succeeded"
       ],
       "additionalProperties": false
     },
@@ -7673,6 +8094,18 @@
         }
       },
       "additionalProperties": false
+    },
+    "relay_body_overrides": {
+      "type": "object",
+      "description": "Request body fields forced on every call: a dotted path of object keys (include_usage, options.depth) to the JSON value the upstream receives, whatever the caller sent. A missing field is added, a different value replaced, and an empty POST, PUT or PATCH body becomes a JSON object; a body that is not a JSON object, or names a forced field twice or under different letter case, or has a non-object where a forced path goes deeper (options as a string when options.depth is forced), is refused with 400. A relay-level field applies to every route, so every request through the relay must then be JSON. Compressed bodies are decompressed before the fields are set. Values are stored and returned in plain text, so do not put secrets here",
+      "propertyNames": {
+        "allOf": [
+          { "pattern": "^[A-Za-z0-9_-]*[A-Za-z_-][A-Za-z0-9_-]*(\\.[A-Za-z0-9_-]*[A-Za-z_-][A-Za-z0-9_-]*)*$" },
+          { "pattern": "^[A-Za-z0-9_-]{1,128}(\\.[A-Za-z0-9_-]{1,128})*$" },
+          { "not": { "pattern": "^(?:.*\\.)?-1(?:\\..*)?$" } }
+        ]
+      },
+      "additionalProperties": true
     },
     "relay_usage_config": {
       "type": "object",
@@ -8022,7 +8455,12 @@
           "description": "When true, input/output message content is dropped from the root span only; the underlying generation (llm.call) span retains the full content. This removes the duplicate input/output stored at the trace level (e.g. the Langfuse trace Input/Output goes empty) to reduce downstream storage.",
           "default": false
         },
-"excluded_attributes": {
+        "apply_trace_dimensions_to_child_spans": {
+          "type": "boolean",
+          "description": "When true, x-bf-dim-* request dimensions stored on the trace are merged onto child spans as well as the root. Span attributes win on conflict. The suffixes path and method, and keys in reserved attribute namespaces (gen_ai., llm., bifrost., http., url., session., service., k8s., langfuse., openinference., otel.), are skipped. Default false.",
+          "default": false
+        },
+        "excluded_attributes": {
           "type": "array",
           "items": { "type": "string" },
           "description": "Span attribute names to drop before export, matched exactly (e.g. \"gen_ai.request.tools\"). Unknown names are ignored.",
@@ -8033,7 +8471,7 @@
           "description": "Attach the raw provider request and response bodies to exported spans. Requires raw request/response storage on the provider and is ignored when content logging is disabled.",
           "default": false
         },
-                "request_headers": {
+        "request_headers": {
           "type": "array",
           "items": {
             "type": "string"
@@ -8200,6 +8638,19 @@
         "disable_root_span_content": {
           "type": "boolean",
           "description": "Deprecated in the profiles wrapper; configure disable_root_span_content per profile instead."
+        },
+        "apply_trace_dimensions_to_child_spans": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure apply_trace_dimensions_to_child_spans per profile instead."
+        },
+        "excluded_attributes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Deprecated in the profiles wrapper; configure excluded_attributes per profile instead."
+        },
+        "export_raw_payloads": {
+          "type": "boolean",
+          "description": "Deprecated in the profiles wrapper; configure export_raw_payloads per profile instead."
         },
         "request_headers": {
           "type": "array",
@@ -8451,6 +8902,11 @@
         },
         "use_for_batch_api": {
           "type": "boolean"
+        },
+        "service_tier": {
+          "type": "string",
+          "enum": ["auto", "default", "flex", "priority", "fast", "ultrafast"],
+          "description": "Service tier sent on chat completions and responses requests served by this key, in place of any service_tier the request sets; the request's own tier applies only when neither the key nor the alias sets one. An alias's service_tier overrides the key's. Allowed values by provider: openai auto, default, flex, priority, fast, ultrafast; azure auto, default, flex, priority; anthropic auto, default; vertex and gemini default, flex, priority. Other providers reject it. A provider still drops a tier the requested model does not support."
         },
         "use_anthropic_endpoints": {
           "type": "boolean",
@@ -9105,6 +9561,10 @@
                     "type": "boolean",
                     "description": "Replicate: use the deployments endpoint instead of the predictions endpoint for this alias."
                   },
+                  "deployment_url": {
+                    "type": "string",
+                    "description": "Baseten: OpenAI-compatible base URL of a dedicated deployment. Requests for this alias go there instead of Model APIs, and model_id is the served model name (Engine-Builder and BEI deployments ignore it). Must be https (can use env. prefix)."
+                  },
                   "use_anthropic_endpoints": {
                     "type": "boolean",
                     "description": "Routes chat completions and responses requests through Anthropic-compatible endpoints."
@@ -9112,6 +9572,11 @@
                   "use_openai_endpoints": {
                     "type": "boolean",
                     "description": "Per-alias override of use_openai_endpoints."
+                  },
+                  "service_tier": {
+                    "type": "string",
+                    "enum": ["auto", "default", "flex", "priority", "fast", "ultrafast"],
+                    "description": "Per-alias override of the key's service_tier, with the same allowed values per provider."
                   }
                 },
                 "required": ["model_id"],
@@ -9498,9 +9963,11 @@
             "oauth",
             "per_user_oauth",
             "per_user_headers",
-            "token_exchange"
+            "token_exchange",
+            "client_credentials",
+            "aws_sigv4"
           ],
-          "description": "Authentication type for MCP connection. 'token_exchange' is only honored on Enterprise builds."
+          "description": "Authentication type for MCP connection. 'token_exchange' is only honored on Enterprise builds. 'client_credentials' needs clientCredentials; 'aws_sigv4' needs awsSigV4."
         },
         "oauthConfig": {
           "type": "object",
@@ -9688,6 +10155,129 @@
               }
             }
           ],
+          "additionalProperties": false
+        },
+        "clientCredentials": {
+          "type": "object",
+          "description": "OAuth client_credentials grant for authType 'client_credentials': Bifrost obtains one access token for this server with credentials registered at its authorization server, shared by every caller. No user signs in. Renders into client_credentials.",
+          "properties": {
+            "tokenUrl": {
+              "type": "string",
+              "description": "Token endpoint (https). Empty: discovered from the MCP server's OAuth metadata at load; the authorization server must then advertise the client_credentials grant. Renders into token_url."
+            },
+            "clientId": {
+              "type": "string",
+              "description": "Client ID registered for Bifrost. Required. Can use env./vault. prefix. Renders into client_id."
+            },
+            "clientSecret": {
+              "type": "string",
+              "description": "Client secret. Cannot be combined with privateKey. Can use env./vault. prefix. Renders into client_secret."
+            },
+            "authMethod": {
+              "type": "string",
+              "enum": ["", "client_secret_basic", "client_secret_post"],
+              "description": "How clientSecret is sent. Empty (default): HTTP Basic unless the discovered metadata admits only client_secret_post. Requires clientSecret. Renders into auth_method."
+            },
+            "privateKey": {
+              "type": "string",
+              "description": "PEM RSA or EC private key for private_key_jwt instead of a client secret. Cannot be combined with clientSecret. Can use env./vault. prefix. Renders into private_key."
+            },
+            "keyId": {
+              "type": "string",
+              "description": "kid header of the client assertion. Requires privateKey. Renders into key_id."
+            },
+            "signingAlgorithm": {
+              "type": "string",
+              "enum": ["", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512"],
+              "description": "Client assertion signing algorithm. Empty (default): chosen from the key. Requires privateKey. Renders into signing_algorithm."
+            },
+            "assertionAudience": {
+              "type": "string",
+              "description": "aud of the client assertion. Empty (default): the token endpoint. Requires privateKey. Renders into assertion_audience."
+            },
+            "scopes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Scopes to request. Renders into scopes."
+            },
+            "resource": {
+              "type": "string",
+              "description": "Resource indicator (RFC 8707) sent on the token request. Omitted: the MCP server URL. Empty string: not sent, for authorization servers that reject it. Renders into resource."
+            }
+          },
+          "required": ["clientId"],
+          "allOf": [
+            {
+              "$comment": "A client secret or a private key, not both, mirroring client_credentials in config.schema.json. A blank value is not rendered, so it counts as unset.",
+              "not": {
+                "properties": {
+                  "clientSecret": { "pattern": "\\S" },
+                  "privateKey": { "pattern": "\\S" }
+                },
+                "required": ["clientSecret", "privateKey"]
+              }
+            },
+            {
+              "anyOf": [
+                { "properties": { "clientSecret": { "pattern": "\\S" } }, "required": ["clientSecret"] },
+                { "properties": { "privateKey": { "pattern": "\\S" } }, "required": ["privateKey"] }
+              ]
+            },
+            {
+              "$comment": "keyId, signingAlgorithm and assertionAudience apply to privateKey, mirroring client_credentials in config.schema.json.",
+              "if": {
+                "anyOf": [
+                  { "required": ["keyId"], "properties": { "keyId": { "minLength": 1 } } },
+                  { "required": ["signingAlgorithm"], "properties": { "signingAlgorithm": { "minLength": 1 } } },
+                  { "required": ["assertionAudience"], "properties": { "assertionAudience": { "minLength": 1 } } }
+                ]
+              },
+              "then": { "required": ["privateKey"], "properties": { "privateKey": { "pattern": "\\S" } } }
+            },
+            {
+              "$comment": "authMethod applies to clientSecret, mirroring client_credentials in config.schema.json.",
+              "if": { "required": ["authMethod"], "properties": { "authMethod": { "minLength": 1 } } },
+              "then": { "required": ["clientSecret"], "properties": { "clientSecret": { "pattern": "\\S" } } }
+            }
+          ],
+          "additionalProperties": false
+        },
+        "awsSigV4": {
+          "type": "object",
+          "description": "AWS SigV4 signing for authType 'aws_sigv4': Bifrost signs every request to the MCP server (or, for connectionType 'openapi', to the upstream API) with its own AWS identity from the default credential chain (environment, EKS Pod Identity, IRSA, instance profile), optionally assuming roleArn first. Renders into aws_sigv4.",
+          "properties": {
+            "region": {
+              "type": "string",
+              "pattern": "^([a-z]{2}(-[a-z]+)+-[0-9]+|env\\..+|vault\\..+)$",
+              "description": "AWS region requests are signed for, such as us-east-1 or us-gov-west-1. Required. Can use env./vault. prefix. Renders into region."
+            },
+            "service": {
+              "type": "string",
+              "enum": ["", "bedrock-agentcore", "aws-mcp", "lambda", "execute-api"],
+              "description": "SigV4 signing name. Empty (default): bedrock-agentcore (AgentCore Gateway). aws-mcp for the AWS MCP Server, lambda for Lambda function URLs, execute-api for API Gateway. Renders into service."
+            },
+            "roleArn": {
+              "type": "string",
+              "pattern": "^(arn:aws[a-z-]*:iam::[0-9]{12}:role/[\\w+=,.@/-]+|env\\..+|vault\\..+)$",
+              "description": "IAM role to assume before signing, for example in another account. Omitted: sign with Bifrost's own identity. Can use env./vault. prefix. Renders into role_arn."
+            },
+            "externalId": {
+              "type": "string",
+              "description": "External ID for the AssumeRole call, when the role's trust policy requires one. Requires roleArn. Can use env./vault. prefix. Renders into external_id."
+            },
+            "sessionName": {
+              "type": "string",
+              "pattern": "^(|[\\w+=,.@-]{2,64}|env\\..+|vault\\..+)$",
+              "description": "Role session name. Empty (default): bifrost-session. Requires roleArn. Can use env./vault. prefix. Renders into session_name."
+            }
+          },
+          "required": ["region"],
+          "dependentRequired": {
+            "externalId": ["roleArn"],
+            "sessionName": ["roleArn"]
+          },
           "additionalProperties": false
         },
         "oauthConfigId": {
@@ -9923,7 +10513,7 @@
             "required": ["openapiConfig"],
             "properties": {
               "authType": {
-                "enum": ["none", "headers", "per_user_headers"]
+                "enum": ["none", "headers", "per_user_headers", "aws_sigv4"]
               }
             }
           },
@@ -9952,11 +10542,29 @@
           }
         },
         {
-          "$comment": "Per-user auth types open a connection per call, which SSE and STDIO cannot serve. websocket renders as sse.",
+          "$comment": "Per-user auth types open a connection per call, which SSE cannot serve. websocket renders as sse.",
           "if": {
             "properties": {
               "connectionType": {
-                "enum": ["sse", "stdio", "websocket"]
+                "enum": ["sse", "websocket"]
+              }
+            },
+            "required": ["connectionType"]
+          },
+          "then": {
+            "properties": {
+              "authType": {
+                "enum": ["none", "headers", "oauth", "client_credentials", "aws_sigv4"]
+              }
+            }
+          }
+        },
+        {
+          "$comment": "A STDIO subprocess is one connection for every caller with no HTTP request to authenticate.",
+          "if": {
+            "properties": {
+              "connectionType": {
+                "const": "stdio"
               }
             },
             "required": ["connectionType"]
@@ -9966,6 +10574,44 @@
               "authType": {
                 "enum": ["none", "headers", "oauth"]
               }
+            }
+          }
+        },
+        {
+          "$comment": "client_credentials requires its credentials block, and the block only applies to that auth type, mirroring config.schema.json.",
+          "if": {
+            "properties": {
+              "authType": {
+                "const": "client_credentials"
+              }
+            },
+            "required": ["authType"]
+          },
+          "then": {
+            "required": ["clientCredentials"]
+          },
+          "else": {
+            "not": {
+              "required": ["clientCredentials"]
+            }
+          }
+        },
+        {
+          "$comment": "aws_sigv4 requires its signing block, and the block only applies to that auth type, mirroring config.schema.json.",
+          "if": {
+            "properties": {
+              "authType": {
+                "const": "aws_sigv4"
+              }
+            },
+            "required": ["authType"]
+          },
+          "then": {
+            "required": ["awsSigV4"]
+          },
+          "else": {
+            "not": {
+              "required": ["awsSigV4"]
             }
           }
         },

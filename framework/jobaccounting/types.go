@@ -221,6 +221,37 @@ type Settler interface {
 	RepriceFromLog(entry *logstore.Log, pricing PricingManager) (*RepricedCost, error)
 }
 
+// PollScheduler is an optional Settler hook for a kind that sets its own poll schedule. Its jobs get
+// no jitter and no MaxPollAttempts cap, so the kind must end them itself, and it counts the polls it
+// sends itself, so a reschedule does not add one.
+type PollScheduler interface {
+	NextPollAt(job *cstables.TableProviderJob, now time.Time) time.Time
+}
+
+// LogsRecorder is where a kind's settled job is logged and billed.
+type LogsRecorder interface {
+	// Ready reports whether the recorder has what it needs to settle jobs.
+	Ready() bool
+	// SourceLog loads the row of the request that created the job, or nil.
+	SourceLog(ctx context.Context, job *cstables.TableProviderJob, baseLog *logstore.Log) *logstore.Log
+	// MirrorSettled copies an already-written price onto a caller that lost the claim.
+	MirrorSettled(ctx context.Context, settler Settler, out *Outcome)
+	// Entry builds the log row for one settlement.
+	Entry(req JobRequest, settlement *Settlement, out *Outcome, now time.Time, userAgent string) LogsRecord
+}
+
+// LogsRecord is one settled job's log row: it writes the row, emits it and charges its cost.
+type LogsRecord interface {
+	// ClearCost records the cost as unknown rather than zero.
+	ClearCost()
+	// Write stores the record idempotently.
+	Write(ctx context.Context) error
+	Emit(ctx context.Context)
+	// CanReport is false when nothing bills this record, which leaves the job's reported marker unset.
+	CanReport() bool
+	Report(ctx context.Context) error
+}
+
 // ErrPricingInputsUnavailable marks a row that could not be priced because no rate
 // exists for it yet, as opposed to a row that failed. The recalculation pass counts
 // these separately so an operator can tell "waiting on the datasheet" from "broken",

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"strings"
@@ -42,6 +43,7 @@ type AccessTokenSpec struct {
 	// ExtraClaims are added to the token as is. They must not reuse a
 	// registered or bf_ claim name the server sets itself.
 	ExtraClaims map[string]any
+	issuer      string // iss, set by this package from the grant; empty means the request's issuer
 }
 
 // OAuth2TokenIssuer is the authorization server as an extension grant sees it:
@@ -93,7 +95,7 @@ func (h *OAuth2IssuanceHandler) signAccessToken(ctx *fasthttp.RequestCtx, spec A
 	}
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"iss":     oauth2IssuerURL(ctx, h.store),
+		"iss":     cmp.Or(spec.issuer, oauth2IssuerURL(ctx, h.store)),
 		"aud":     jwt.ClaimStrings(spec.Audience),
 		"sub":     spec.Subject,
 		"bf_mode": spec.Mode,

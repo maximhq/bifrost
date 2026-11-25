@@ -349,6 +349,7 @@
 			"outputCost": "Coût de sortie",
 			"additionalCost": "Coût supplémentaire",
 			"guardrailCost": "Coût des garde-fous",
+			"externalGuardrailCostNote": "Inclut {{cost}} de coût estimé des garde-fous externes, non compté dans le coût total ni dans les budgets.",
 			"semanticCacheCost": "Coût du cache sémantique",
 			"routingCost": "Coût de routage",
 			"inputTextTokens": "Tokens de texte d'entrée",
@@ -382,6 +383,9 @@
 			"judgeProvider": "Fournisseur du juge",
 			"judgeModel": "Modèle du juge",
 			"promptTokens": "Jetons de prompt",
+			"usageUnits": "Unités d'utilisation",
+			"estimatedCost": "Coût estimé",
+			"estimatedCostTooltip": "Estimé au prix catalogue du fournisseur de garde-fous. Non compté dans le coût total ni dans les budgets.",
 			"reason": "Raison",
 			"routingClassificationDetails": "Détails de la classification du routage",
 			"mechanism": "Mécanisme",
@@ -769,6 +773,7 @@
 			"toastExported_other": "{{count}} journaux exportés",
 			"toastFailed": "Échec de l’exportation : {{error}}",
 			"summary": {
+				"jobId": "ID de tâche : {{value}}",
 				"search": "recherche « {{value}} »",
 				"request": "requête « {{value}} »",
 				"providers": "fournisseurs ({{total}})",
@@ -819,6 +824,20 @@
 		"batchMixedModel": "mixte"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "La ligne de règlement a été supprimée avant la facturation",
+			"relay_job_no_usage": "La réponse finale ne contenait aucun usage à facturer",
+			"relay_job_rejected": "L’upstream a refusé l’ID de la tâche",
+			"relay_job_access_denied": "L’upstream a refusé l’accès à la tâche",
+			"relay_job_gone": "L’upstream ne connaît plus la tâche",
+			"relay_job_timeout": "Non terminée avant le délai",
+			"relay_job_params": "Paramètres de la tâche illisibles"
+		},
+		"jobOutcome": {
+			"unpriced": "Sans prix",
+			"failed": "Échoué",
+			"succeeded": "Réussi"
+		},
 		"fields": {
 			"relay": "Relais",
 			"kind": "Type",
@@ -837,7 +856,10 @@
 			"no": "Non"
 		},
 		"columns": {
-			"jobBadge": "TÂCHE",
+			"startsJob": "Démarre la tâche {{id}}",
+			"jobUnpriced": "Sans prix : {{reason}}",
+			"jobFailed": "Échoué : {{status}}",
+			"jobBadge": "Tâche",
 			"noRoute": "Aucune route",
 			"route": "Route {{route}}",
 			"settled": "Réglée : {{status}}",
@@ -877,6 +899,13 @@
 			"perRequest": "{{value}}/req"
 		},
 		"detail": {
+			"jobStatusStat": "Statut de la tâche",
+			"jobNotSettled": "Pas encore réglé",
+			"jobSettlementFailed": "Impossible de vérifier le règlement.",
+			"jobSettlement": "Règlement de la tâche",
+			"costUnpriced": "sans prix",
+			"unpricedBody": "Bifrost n’a pas pu fixer le prix de cette tâche : son coût est inconnu et la tâche elle-même n’a pas été facturée. L’appel de démarrage garde sa propre facturation.",
+			"unpricedTitle": "Tâche sans prix",
 			"loadingDetails": "Chargement des détails du journal de relais",
 			"notFound": "Journal de relais introuvable",
 			"loadFailed": "Ce journal de relais n’a pas pu être chargé.",
@@ -907,6 +936,12 @@
 			"tokensNotPricedValue": "{{input}} en entrée / {{output}} en sortie",
 			"matchedRoute": "Route correspondante",
 			"parentLog": "Journal parent",
+			"jobPolls": "Tentatives de vérification d’état",
+			"jobLastStatus": "Dernier statut de la tâche",
+			"jobLastHttpStatus": "Statut HTTP de la dernière interrogation",
+			"jobSettledAt": "Réglé le",
+			"jobSettledBy": "Réglé par la vérification d’état",
+			"jobLastError": "Pourquoi elle s’est terminée sans prix",
 			"responseBodyPreview": "Corps de la réponse (aperçu)",
 			"filterByValue": "Afficher les appels relay avec cette valeur",
 			"queryParameters": "Paramètres de requête",
@@ -916,6 +951,7 @@
 			"contentHidden": "La journalisation du contenu a été désactivée pour cette requête."
 		},
 		"filters": {
+			"unpriced": "Tâches sans prix",
 			"reset": "Réinitialiser",
 			"searchRelays": "Rechercher des relais",
 			"searchMethods": "Rechercher des méthodes",
@@ -1121,6 +1157,8 @@
 			"groupTracesBySessionHelp": "Lorsque cette option est activée, les requêtes partageant le même en-tête x-bf-session-id sont regroupées au sein d’une seule trace, chaque requête apparaissant sous la forme d’un span frère de premier niveau. Une requête comportant un traceparent W3C entrant reste sur sa propre trace distribuée et n’est pas affectée.",
 			"disableRootSpanContent": "Désactiver le contenu du span racine",
 			"disableRootSpanContentHelp": "Lorsque cette option est activée, le contenu des messages d’entrée/sortie est exclu du span racine uniquement ; le span de génération sous-jacent (llm.call) conserve l’intégralité du contenu.",
+			"applyTraceDimensionsToChildSpans": "Appliquer les dimensions aux spans enfants",
+			"applyTraceDimensionsToChildSpansHelp": "Lorsque cette option est activée, les dimensions de la requête (en-têtes x-bf-dim-*) sont fusionnées dans chaque span exporté, et pas seulement dans le span racine, afin de pouvoir filtrer ou regrouper les spans enfants par dimension. path, method et les espaces de noms réservés comme gen_ai.* sont ignorés. Chaque dimension est ajoutée à chaque span : les valeurs à forte cardinalité augmentent donc le coût d'ingestion du collecteur.",
 			"enableMetricsExport": "Activer l’export des métriques",
 			"enableMetricsExportHelp": "Envoyer les métriques à un collecteur OTEL pour une agrégation appropriée dans les déploiements en cluster",
 			"overheadBreakdown": "Décomposition de la surcharge",

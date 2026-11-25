@@ -114,7 +114,7 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 		"scopes_supported":                      []string{},
 	}
 	if mcpOAuth {
-		doc["authorization_endpoint"] = base + "/oauth2/authorize"
+		doc["authorization_endpoint"] = oauth2BrowserBaseURL(ctx, h.store) + "/oauth2/authorize"
 		doc["registration_endpoint"] = base + "/oauth2/register"
 		doc["response_types_supported"] = []string{"code"}
 		doc["grant_types_supported"] = []string{"authorization_code", "refresh_token"}
@@ -123,8 +123,10 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 		doc["scopes_supported"] = []string{"mcp"}
 		// RFC 9207: we include iss in authorization responses.
 		doc["authorization_response_iss_parameter_supported"] = true
-		// MCP 2025-11-25+: CIMD URLs are accepted as client_id.
-		doc["client_id_metadata_document_supported"] = true
+		// MCP 2025-11-25+: CIMD URLs are accepted as client_id, unless /mcp is capped below that.
+		if clientMetadataDocumentsAllowed(h.store) {
+			doc["client_id_metadata_document_supported"] = true
+		}
 	}
 	if extension {
 		h.extensions.ExtendASMetadata(ctx, doc)

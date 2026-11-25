@@ -22,8 +22,12 @@ import {
 	SecretVar,
 } from "@/lib/types/mcp";
 import {
+	awsSigV4Issues,
+	awsSigV4ReservedHeader,
+	clientCredentialsIssues,
 	hasPrivateKeySettingsWithoutKey,
 	hasSendMethodWithoutSecret,
+	idjagUpstreamAuth,
 	isHTTPSOrLoopbackURL,
 	isSecretVarSet,
 	mcpOpenAPIConfigSchema,
@@ -59,6 +63,8 @@ import { CodeModeServerLabel, ServerTypeOnSlugLabel } from "./codeModeFields";
 import { SectionHeader } from "./sectionHeader";
 import { ServerTypeOnSlugSelect } from "./serverTypeOnSlugSelect";
 import { TLSConfigFields } from "./tlsConfigFields";
+import { AWSSigV4Fields, awsSigV4Payload } from "./awsSigV4Fields";
+import { ClientCredentialsFields, clientCredentialsPayload } from "./clientCredentialsFields";
 import { exchangesAsSSOApplication, TokenExchangeFields, tokenExchangeProfilePayload } from "./tokenExchangeFields";
 
 /**
@@ -71,7 +77,7 @@ import { exchangesAsSSOApplication, TokenExchangeFields, tokenExchangeProfilePay
 
 const emptySecretVar: SecretVar = { value: "", ref: "" };
 
-export type MCPAuthKind = "none" | "headers" | "oauth" | "token_exchange";
+export type MCPAuthKind = "none" | "headers" | "oauth" | "token_exchange" | "client_credentials" | "aws_sigv4";
 export type MCPAuthScope = "shared" | "per_user";
 
 /** Resolve the wire `auth_type` back into the two dropdowns the UI splits it into. */
@@ -85,9 +91,18 @@ export function authKindOf(authType: MCPAuthType | undefined): MCPAuthKind {
 			return "headers";
 		case "token_exchange":
 			return "token_exchange";
+		case "client_credentials":
+			return "client_credentials";
+		case "aws_sigv4":
+			return "aws_sigv4";
 		default:
 			return "none";
 	}
+}
+
+/** authKindHasScope reports whether a kind has both a shared and a per-user variant to pick from. */
+export function authKindHasScope(kind: MCPAuthKind): boolean {
+	return kind === "oauth" || kind === "headers";
 }
 
 export function authScopeOf(authType: MCPAuthType | undefined): MCPAuthScope {
@@ -402,11 +417,11 @@ export function validateMCPClientForm({
 				});
 				hasErrors = true;
 			}
-			if (hasPrivateKeySettingsWithoutKey(data.token_exchange)) {
+			if (hasPrivateKeySettingsWithoutKey(idjagUpstreamAuth(data.token_exchange))) {
 				setError("token_exchange.resource_private_key", { message: privateKeyRequiredMessage() });
 				hasErrors = true;
 			}
-			if (hasSendMethodWithoutSecret(data.token_exchange)) {
+			if (hasSendMethodWithoutSecret(idjagUpstreamAuth(data.token_exchange))) {
 				setError("token_exchange.resource_client_secret", { message: secretRequiredForMethodMessage() });
 				hasErrors = true;
 			}
@@ -424,6 +439,28 @@ export function validateMCPClientForm({
 				});
 				hasErrors = true;
 			}
+		}
+	}
+
+	if (authType === "client_credentials") {
+		for (const { path, message } of clientCredentialsIssues(data.client_credentials)) {
+			setError(`client_credentials.${path}`, { message });
+			hasErrors = true;
+		}
+	}
+
+	if (authType === "aws_sigv4") {
+		for (const { path, message } of awsSigV4Issues(data.aws_sigv4)) {
+			setError(`aws_sigv4.${path}`, { message });
+			hasErrors = true;
+		}
+		const reserved = awsSigV4ReservedHeader(data.headers, parseArrayFromText(satellites.allowedExtraHeadersText));
+		if (reserved) {
+			onToast(
+				i18n.t("registry.awsSigV4.reservedHeaderTitle", { ns: "mcp" }),
+				i18n.t("registry.awsSigV4.reservedHeaderDesc", { ns: "mcp", name: reserved }),
+			);
+			hasErrors = true;
 		}
 	}
 
@@ -572,6 +609,8 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 						...tokenExchangeProfilePayload(data.token_exchange),
 					}
 				: undefined,
+		client_credentials: authType === "client_credentials" ? clientCredentialsPayload(data.client_credentials) : undefined,
+		aws_sigv4: authType === "aws_sigv4" ? awsSigV4Payload(data.aws_sigv4) : undefined,
 		// Network transports expose every tool the server reports; an openapi
 		// server exposes the operations ticked in the preview.
 		tools_to_execute: isOpenAPI
@@ -666,7 +705,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 	const applyAuthKind = (kind: MCPAuthKind) => {
 		clearErrors();
 		clearStickinessIfHidden(kind, authScope);
-		if (kind === "none" || kind === "token_exchange") {
+		if (kind === "none" || kind === "token_exchange" || kind === "client_credentials" || kind === "aws_sigv4") {
 			setValue("auth_type", kind);
 			return;
 		}
@@ -726,9 +765,10 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 			setValue("connection_string", undefined);
 			setValue("oauth_config", undefined);
 			setValue("token_exchange", undefined);
+			setValue("client_credentials", undefined);
 			setValue("openapi_config", { spec: "", spec_url: "", base_url: "", security_credentials: {} });
 			setValue("tools_to_execute", []);
-			if (authKind === "oauth" || authKind === "token_exchange") {
+			if (authKind === "oauth" || authKind === "token_exchange" || authKind === "client_credentials") {
 				setValue("auth_type", "none");
 			}
 		} else if (connectionType === "openapi") {
@@ -980,6 +1020,15 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 												{t("registry.form.oauth20")}
 											</SelectItem>
 										)}
+										{!isOpenAPI && (
+											<SelectItem value="client_credentials" data-testid="auth-type-client-credentials">
+												{t("registry.clientCredentials.authType")}
+											</SelectItem>
+										)}
+										{/* Signs the MCP endpoint or, for openapi, the API's own requests. */}
+										<SelectItem value="aws_sigv4" data-testid="auth-type-aws-sigv4">
+											{t("registry.awsSigV4.authType")}
+										</SelectItem>
 										{/* Also rendered when it is already the selected value, so the
 										    trigger shows the real auth type rather than a placeholder. */}
 										{!isOpenAPI &&
@@ -1004,7 +1053,7 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 
 							{/* Auth Scope — only meaningful when there's an auth flow with a
 							    shared variant; token exchange is inherently per-caller */}
-							{authKind !== "none" && authKind !== "token_exchange" && (
+							{authKindHasScope(authKind) && (
 								<FormItem className="w-full">
 									<FormLabel>{t("registry.columns.authScope")}</FormLabel>
 									<Select value={authScope} onValueChange={(value: MCPAuthScope) => applyAuthScope(value)}>
@@ -1204,6 +1253,38 @@ export function MCPClientFormFields({ form, satellites, headersValidationError, 
 											testId: "token-exchange-scopes-textarea",
 										}}
 									/>
+								</div>
+							</div>
+						</>
+					)}
+
+					{authType === "client_credentials" && (
+						<>
+							<DottedSeparator />
+							<div className="space-y-4" data-testid="client-credentials-fields">
+								<SectionHeader
+									title={t("registry.clientCredentials.sectionTitle")}
+									description={t("registry.clientCredentials.sectionDesc")}
+									testId="client-credentials-heading"
+								/>
+								<div className="space-y-4 rounded-md border p-4">
+									<ClientCredentialsFields control={control} />
+								</div>
+							</div>
+						</>
+					)}
+
+					{authType === "aws_sigv4" && (
+						<>
+							<DottedSeparator />
+							<div className="space-y-4" data-testid="aws-sigv4-fields">
+								<SectionHeader
+									title={t("registry.awsSigV4.sectionTitle")}
+									description={t("registry.awsSigV4.sectionDesc")}
+									testId="aws-sigv4-heading"
+								/>
+								<div className="space-y-4 rounded-md border p-4">
+									<AWSSigV4Fields control={control} />
 								</div>
 							</div>
 						</>

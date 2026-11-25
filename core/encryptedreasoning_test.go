@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2819,6 +2820,71 @@ func TestExecuteRequestWithRetries_HealsThinkingSignatureOnRawAnthropicChat(t *t
 	}
 }
 
+// TestExecuteRequestWithRetries_HealsRedactedThinkingOnRawAnthropicResponses pins the Claude
+// Code passthrough route: /anthropic/v1/messages is typed as a Responses request but its raw
+// body is an Anthropic messages array, which the Responses `input` stripper never finds.
+func TestExecuteRequestWithRetries_HealsRedactedThinkingOnRawAnthropicResponses(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := &schemas.BifrostRequest{
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-sonnet-5-5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("continue")},
+			}},
+		},
+	}
+	req.ResponsesRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5-5","messages":[` +
+		`{"role":"user","content":"run the tests"},` +
+		`{"role":"assistant","content":[` +
+		`{"type":"redacted_thinking","data":"brid_rs_abc|gAAAAABforeign"},` +
+		`{"type":"text","text":"On it."}` +
+		`]},` +
+		`{"role":"user","content":"continue"}` +
+		`],"max_tokens":1024,"stream":true}`)
+
+	status := 400
+	callCount := 0
+	var secondAttemptBody string
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", &schemas.BifrostError{
+				StatusCode: &status,
+				Error:      &schemas.ErrorField{Message: "messages.1.content.0: Invalid `data` in `redacted_thinking` block"},
+			}
+		}
+		secondAttemptBody = string(req.ResponsesRequest.RawRequestBody)
+		return "success", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "claude-sonnet-5-5", req, logger)
+
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %v", err)
+	}
+	if result != "success" {
+		t.Fatalf("expected 'success', got %q", result)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 attempts (original + stripped retry), got %d", callCount)
+	}
+	if strings.Contains(secondAttemptBody, "redacted_thinking") || strings.Contains(secondAttemptBody, "gAAAAABforeign") {
+		t.Errorf("the retry still carried the refused redacted_thinking block: %s", secondAttemptBody)
+	}
+	if !strings.Contains(secondAttemptBody, `"On it."`) || !strings.Contains(secondAttemptBody, `"stream":true`) {
+		t.Errorf("expected the rest of the body to survive into the retry, got %s", secondAttemptBody)
+	}
+}
+
 // TestExecuteRequestWithRetries_HealsThinkingSignatureOnChatShape is the consequence
 // test: the predicate answering correctly only matters if the retry it gates actually
 // reaches the upstream with the signature removed.
@@ -3383,5 +3449,49 @@ func TestStripUnverifiableReasoning_ChatShape_GeminiToolCallIDSignature(t *testi
 	// A second call finds nothing left and must not buy another upstream attempt.
 	if stripUnverifiableReasoning(nil, req) {
 		t.Error("expected no change once the ids are bare")
+	}
+}
+
+// TestStripResponsesEncryptedContentKeepsToolSearchItems pins that the fail-soft strip takes the signature
+// off a Google tool search item and keeps the item: the search and the definitions it loaded are history
+// the next turn needs, not reasoning.
+func TestStripResponsesEncryptedContentKeepsToolSearchItems(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	for _, itemJSON := range []string{
+		`{"type":"message","role":"user","content":"convert"}`,
+		`{"type":"tool_search_call","call_id":"ts_1","execution":"server","status":"completed","arguments":{"function_names":["f"]},"encrypted_content":"c2ln"}`,
+		`{"type":"tool_search_output","call_id":"ts_1","execution":"server","status":"completed","tools":[{"type":"function","name":"f"}],"encrypted_content":"c2ln"}`,
+		`{"type":"reasoning","summary":[],"encrypted_content":"c2ln"}`,
+		`{"type":"function_call","call_id":"fc_1","name":"f","arguments":"{}"}`,
+	} {
+		var item schemas.ResponsesMessage
+		if err := schemas.Unmarshal([]byte(itemJSON), &item); err != nil {
+			t.Fatal(err)
+		}
+		input = append(input, item)
+	}
+	req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-6-sol", Input: input}}
+	if !stripResponsesEncryptedContent(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req) {
+		t.Fatal("nothing was stripped")
+	}
+	var types []string
+	for _, m := range req.ResponsesRequest.Input {
+		types = append(types, string(*m.Type))
+		raw, err := schemas.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "c2ln") {
+			t.Errorf("a signature survived: %s", raw)
+		}
+		if m.IsVerbatimItem() {
+			t.Errorf("%s is still held as the caller's bytes, so no converter can rebuild it", *m.Type)
+		}
+	}
+	if want := []string{"message", "tool_search_call", "tool_search_output", "function_call"}; !slices.Equal(types, want) {
+		t.Errorf("items = %v, want %v", types, want)
+	}
+	if tools := string(req.ResponsesRequest.Input[2].ToolSearchOutputTools); !strings.Contains(tools, `"f"`) {
+		t.Errorf("the loaded definitions are kept, got %s", tools)
 	}
 }

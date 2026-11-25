@@ -373,6 +373,7 @@
 			"outputCost": "Output Cost",
 			"additionalCost": "Additional Cost",
 			"guardrailCost": "Guardrail Cost",
+			"externalGuardrailCostNote": "Includes {{cost}} estimated external guardrail cost, not counted in total cost or budgets.",
 			"semanticCacheCost": "Semantic Cache Cost",
 			"routingCost": "Routing Cost",
 			"inputTextTokens": "Input Text Tokens",
@@ -406,6 +407,9 @@
 			"judgeProvider": "Judge Provider",
 			"judgeModel": "Judge Model",
 			"promptTokens": "Prompt Tokens",
+			"usageUnits": "Usage Units",
+			"estimatedCost": "Estimated Cost",
+			"estimatedCostTooltip": "Estimated at the guardrail vendor's list price. Not counted in total cost or budgets.",
 			"reason": "Reason",
 			"routingClassificationDetails": "Routing Classification Details",
 			"mechanism": "Mechanism",
@@ -793,6 +797,7 @@
 			"toastExported_other": "Exported {{count}} logs",
 			"toastFailed": "Export failed: {{error}}",
 			"summary": {
+				"jobId": "Job ID: {{value}}",
 				"search": "search \"{{value}}\"",
 				"request": "request \"{{value}}\"",
 				"providers": "providers ({{total}})",
@@ -819,6 +824,20 @@
 		"batchMixedModel": "mixed"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "The settlement row was deleted before it was charged",
+			"relay_job_no_usage": "The final reply had no usage to price",
+			"relay_job_rejected": "The upstream refused the job id",
+			"relay_job_access_denied": "The upstream denied access to the job",
+			"relay_job_gone": "The upstream no longer knows the job",
+			"relay_job_timeout": "Did not finish before its timeout",
+			"relay_job_params": "Job settings could not be read"
+		},
+		"jobOutcome": {
+			"unpriced": "Unpriced",
+			"failed": "Failed",
+			"succeeded": "Succeeded"
+		},
 		"fields": {
 			"relay": "Relay",
 			"kind": "Kind",
@@ -837,7 +856,10 @@
 			"no": "No"
 		},
 		"columns": {
-			"jobBadge": "JOB",
+			"startsJob": "Starts job {{id}}",
+			"jobUnpriced": "Unpriced: {{reason}}",
+			"jobFailed": "Failed: {{status}}",
+			"jobBadge": "Job",
 			"noRoute": "No route",
 			"route": "Route {{route}}",
 			"settled": "Settled: {{status}}",
@@ -877,6 +899,13 @@
 			"perRequest": "{{value}}/req"
 		},
 		"detail": {
+			"jobStatusStat": "Job status",
+			"jobNotSettled": "Not settled yet",
+			"jobSettlementFailed": "Could not check the settlement.",
+			"jobSettlement": "Job settlement",
+			"costUnpriced": "unpriced",
+			"unpricedBody": "Bifrost could not price this job, so its cost is unknown and the job itself was not charged. The start call kept its own charge.",
+			"unpricedTitle": "Unpriced job",
 			"loadingDetails": "Loading relay log details",
 			"notFound": "Relay log not found",
 			"loadFailed": "This relay log could not be loaded.",
@@ -907,6 +936,12 @@
 			"tokensNotPricedValue": "{{input}} in / {{output}} out",
 			"matchedRoute": "Matched route",
 			"parentLog": "Parent log",
+			"jobPolls": "Status check attempts",
+			"jobLastStatus": "Last job status",
+			"jobLastHttpStatus": "Last poll HTTP status",
+			"jobSettledAt": "Settled at",
+			"jobSettledBy": "Settled by status check",
+			"jobLastError": "Why it ended unpriced",
 			"responseBodyPreview": "Response Body (Preview)",
 			"filterByValue": "Show relay calls with this value",
 			"queryParameters": "Query Parameters",
@@ -916,6 +951,7 @@
 			"contentHidden": "Content logging has been disabled for this request."
 		},
 		"filters": {
+			"unpriced": "Unpriced jobs",
 			"reset": "Reset",
 			"searchRelays": "Search relays",
 			"searchMethods": "Search methods",
@@ -1121,6 +1157,8 @@
 			"groupTracesBySessionHelp": "When enabled, requests sharing the same x-bf-session-id header are grouped into a single trace, each request appearing as a top-level sibling span. A request carrying an inbound W3C traceparent stays on its own distributed trace and is unaffected.",
 			"disableRootSpanContent": "Disable Root Span Content",
 			"disableRootSpanContentHelp": "When enabled, input/output message content is dropped from the root span only; the underlying generation (llm.call) span keeps the full content.",
+			"applyTraceDimensionsToChildSpans": "Apply Dimensions to Child Spans",
+			"applyTraceDimensionsToChildSpansHelp": "When enabled, request dimensions (x-bf-dim-* headers) are merged onto every exported span, not only the root span, so child spans can be filtered or grouped by dimension. path, method and reserved namespaces such as gen_ai.* are skipped. Each dimension is added to every span, so high-cardinality values raise collector ingestion cost.",
 			"enableMetricsExport": "Enable Metrics Export",
 			"enableMetricsExportHelp": "Push metrics to an OTEL Collector for proper aggregation in cluster deployments",
 			"overheadBreakdown": "Overhead breakdown",

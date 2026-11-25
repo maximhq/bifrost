@@ -3,10 +3,8 @@ package bedrock
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,15 +19,12 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/providers/utils/awsauth"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -44,15 +39,11 @@ type BedrockProvider struct {
 	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
 	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
 	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
+	runtimeHost           string                        // bedrock-runtime host from network_config.base_url; empty means the public regional host
 	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
 	sendBackRawRequest    bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
 }
-
-// assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
-// unique combination of role parameters so that STS AssumeRole is not called
-// on every request.
-var assumeRoleCredsCache sync.Map
 
 // bedrockChatResponsePool provides a pool for Bedrock response objects.
 var bedrockChatResponsePool = sync.Pool{
@@ -151,6 +142,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		mantleClient:          mantleFasthttpClient,
 		mantleStreamingClient: mantleStreamingFasthttpClient,
 		networkConfig:         config.NetworkConfig,
+		runtimeHost:           schemas.NormalizeEndpointHost(&schemas.SecretVar{Val: config.NetworkConfig.BaseURL}),
 		customProviderConfig:  config.CustomProviderConfig,
 		sendBackRawRequest:    config.SendBackRawRequest,
 		sendBackRawResponse:   config.SendBackRawResponse,
@@ -209,6 +201,10 @@ func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Re
 		}
 		transport.TLSClientConfig = tlsConfig
 	}
+
+	// Dial-time address policy, shared with the fasthttp Mantle clients (ConfigureDialer). It must
+	// be installed before the https-proxy hop dialer below, which dials proxies through it.
+	providerUtils.ConfigureNetHTTPDialer(transport, config.NetworkConfig.AllowPrivateNetwork)
 
 	// An https:// proxy from proxy_config is dialed with its own TLS config (proxy CA,
 	// skip_tls_verify), separate from the target's, which net/http would otherwise share
@@ -379,7 +375,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	region := resolveBedrockRegion(ctx, key, model)
 
 	// Create the request with the JSON body
-	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", provider.serviceHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
@@ -411,7 +407,31 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	}
 
 	body, latency, providerResponseHeaders, bErr := provider.executeBedrockRequest(req)
+	if bErr != nil {
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+	}
 	return body, latency, providerResponseHeaders, bErr
+}
+
+// nativeSchemaRejections are the Converse 400s for a native structured-output schema Claude will
+// not compile (shape or grammar size); the same request succeeds on the synthetic tool.
+var nativeSchemaRejections = []string{"output_config.format.schema:", "compiled grammar is too large", "grammar compilation timed out", "schema is too complex"}
+
+// markNativeSchemaRejection flags a natively sent structured-output request whose schema was
+// rejected, so core re-sends it once with the synthetic tool.
+func markNativeSchemaRejection(ctx *schemas.BifrostContext, jsonData []byte, bErr *schemas.BifrostError) {
+	if ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputForceTool ||
+		bErr.StatusCode == nil || *bErr.StatusCode != http.StatusBadRequest || bErr.Error == nil ||
+		!providerUtils.JSONFieldExists(jsonData, "outputConfig") {
+		return
+	}
+	message := strings.ToLower(bErr.Error.Message)
+	for _, limit := range nativeSchemaRejections {
+		if strings.Contains(message, limit) {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+			return
+		}
+	}
 }
 
 // newRequestError classifies a failed net/http request the way the shared fasthttp
@@ -550,7 +570,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
 
 	// Create HTTP request for streaming
-	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", provider.serviceHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
 	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
 	if reqErr != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", reqErr)
@@ -595,61 +615,12 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
+		bErr := parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+		return nil, providerUtils.SetErrorLatency(bErr, latency)
 	}
 
 	return resp, nil
-}
-
-// Returns a BifrostError if signing fails.
-// unsignableHeaders must not be covered by the SigV4 signature: hop-by-hop and
-// proxy-managed headers that an intermediary may rewrite in transit, which invalidates the
-// signature. AWS's signing guide requires only host and x-amz-* to be signed and warns
-// against "volatile transport headers that are mutated by proxies, load balancers, and the
-// nodes in a distributed system". The AWS SDK itself skips only authorization, user-agent,
-// x-amzn-trace-id, expect and transfer-encoding, so the rest is on us. These are removed for
-// signing and restored afterwards, so what goes on the wire is unchanged.
-var unsignableHeaders = map[string]struct{}{
-	"connection":          {},
-	"keep-alive":          {},
-	"te":                  {},
-	"trailer":             {},
-	"upgrade":             {},
-	"proxy-authorization": {},
-	"proxy-authenticate":  {},
-	"x-real-ip":           {},
-	"x-request-id":        {},
-}
-
-// internalHeaderPrefix marks Bifrost's own headers. They carry the caller's virtual key, so
-// they are dropped outright rather than restored — they must never reach a provider.
-const internalHeaderPrefix = "x-bf-"
-
-// restoredHeader is a header lifted off the request for signing, to be put back after.
-type restoredHeader struct {
-	name   string
-	values []string
-}
-
-// stripHeadersForSigning removes headers that must not be signed and returns the ones to put
-// back after signing. Bifrost-internal headers are dropped and never returned. A request with
-// no volatile headers — the common case — allocates nothing and leaves the request untouched.
-func stripHeadersForSigning(header http.Header) []restoredHeader {
-	var restore []restoredHeader
-	for name, values := range header {
-		lower := strings.ToLower(name)
-		internal := strings.HasPrefix(lower, internalHeaderPrefix)
-		_, volatile := unsignableHeaders[lower]
-		if !internal && !volatile && !strings.HasPrefix(lower, "x-forwarded-") {
-			continue
-		}
-		if !internal {
-			restore = append(restore, restoredHeader{name: name, values: values})
-		}
-		// The name came straight off the map, so skip Del's redundant canonicalization.
-		delete(header, name)
-	}
-	return restore
 }
 
 // SignAWSRequest SigV4-signs req for service in region with the key's AWS credentials (static,
@@ -702,35 +673,9 @@ func signAWSRequestWithDefaults(
 		}
 	}
 
-	// Calculate SHA256 hash of the request body
-	var bodyHash string
-	if req.Body != nil && req.GetBody != nil {
-		// A body that can be re-read (every request built from a byte slice) is hashed as a stream
-		// and then rewound, so signing a large upload never holds a second copy of it.
-		h := sha256.New()
-		if _, err := io.Copy(h, req.Body); err != nil {
-			return providerUtils.NewBifrostOperationError("error reading request body", err)
-		}
-		body, err := req.GetBody()
-		if err != nil {
-			return providerUtils.NewBifrostOperationError("error rewinding request body", err)
-		}
-		req.Body = body
-		bodyHash = hex.EncodeToString(h.Sum(nil))
-	} else if req.Body != nil {
-		bodyBytes, err := io.ReadAll(req.Body)
-		if err != nil {
-			return providerUtils.NewBifrostOperationError("error reading request body", err)
-		}
-		// Restore the body for subsequent reads
-		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		hash := sha256.Sum256(bodyBytes)
-		bodyHash = hex.EncodeToString(hash[:])
-	} else {
-		// For empty body, use the hash of an empty string
-		hash := sha256.Sum256([]byte{})
-		bodyHash = hex.EncodeToString(hash[:])
+	bodyHash, err := awsauth.HashBody(req)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error reading request body", err)
 	}
 
 	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
@@ -744,117 +689,21 @@ func signAWSRequestWithDefaults(
 	return signWithCredentials(ctx, req, creds, bodyHash, service, region)
 }
 
-// signWithCredentials signs req with SigV4 using already resolved credentials. The SDK signs
-// every header still on the request, so the volatile ones are lifted out while it signs.
+// signWithCredentials signs req with SigV4 using already resolved credentials.
 func signWithCredentials(ctx context.Context, req *http.Request, creds aws.Credentials, payloadHash, service, region string) *schemas.BifrostError {
-	restoreHeaders := stripHeadersForSigning(req.Header)
-	// S3 rejects a path escaped a second time (an object key holding %20 would be signed as
-	// %2520), so the SDK's own S3 client turns the extra escaping off; a relay signing for s3 does
-	// the same, and every other service keeps the default.
-	signer := v4.NewSigner(func(o *v4.SignerOptions) {
-		o.DisableURIPathEscaping = service == "s3"
-	})
-	err := signer.SignHTTP(ctx, creds, req, payloadHash, service, region, time.Now())
-	for _, h := range restoreHeaders {
-		req.Header[h.name] = h.values
-	}
-	if err != nil {
+	if err := awsauth.Sign(ctx, req, creds, payloadHash, service, region); err != nil {
 		return providerUtils.NewBifrostOperationError("failed to sign request", err)
 	}
 	return nil
 }
 
 // ResolveAWSCredentials resolves the AWS credentials for keyCfg: explicit keys, else the default
-// chain, with an optional STS AssumeRole on top (cached per role and source identity).
+// chain, with an optional STS AssumeRole on top. Providers are cached per source and role, so a
+// warm call fetches nothing.
 func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockKeyConfig, region string) (aws.Credentials, *schemas.BifrostError) {
-	var accessKey, secretKey schemas.SecretVar
-	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
-
-	if keyCfg != nil {
-		accessKey = keyCfg.AccessKey
-		secretKey = keyCfg.SecretKey
-		sessionToken = keyCfg.SessionToken
-		roleARN = keyCfg.RoleARN
-		externalID = keyCfg.ExternalID
-		sessionName = keyCfg.RoleSessionName
-	}
-
-	var cfg aws.Config
-	var err error
-
-	// If both accessKey and secretKey are empty, use the default credential provider chain
-	// This will automatically use IAM roles, environment variables, shared credentials, etc.
-	if accessKey.GetValue() == "" && secretKey.GetValue() == "" {
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-		)
-	} else {
-		// Use explicit credentials when provided
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-				creds := aws.Credentials{
-					AccessKeyID:     accessKey.GetValue(),
-					SecretAccessKey: secretKey.GetValue(),
-				}
-				if sessionToken != nil && sessionToken.GetValue() != "" {
-					creds.SessionToken = sessionToken.GetValue()
-				}
-				return creds, nil
-			})),
-		)
-	}
+	provider, err := awsauth.CredentialsProvider(ctx, awsAuthConfig(keyCfg), region)
 	if err != nil {
 		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to load aws config", err)
-	}
-
-	if roleARN != nil && roleARN.GetValue() != "" {
-		extID := ""
-		if externalID != nil {
-			extID = externalID.GetValue()
-		}
-		sessName := "bifrost-session"
-		if sessionName != nil && sessionName.GetValue() != "" {
-			sessName = sessionName.GetValue()
-		}
-		sourceIdentity := "default_chain"
-		if accessKey.GetValue() != "" || secretKey.GetValue() != "" {
-			sourceIdentity = accessKey.GetValue()
-			if sessionToken != nil && sessionToken.GetValue() != "" {
-				tokenHash := sha256.Sum256([]byte(sessionToken.GetValue()))
-				sourceIdentity = sourceIdentity + "|" + hex.EncodeToString(tokenHash[:8])
-			}
-		}
-		cacheKey := strings.Join([]string{
-			region,
-			roleARN.GetValue(),
-			extID,
-			sessName,
-			sourceIdentity,
-		}, "|")
-
-		if cached, ok := assumeRoleCredsCache.Load(cacheKey); ok {
-			cfg.Credentials = cached.(*aws.CredentialsCache)
-		} else {
-			stsClient := sts.NewFromConfig(cfg)
-
-			opts := func(o *stscreds.AssumeRoleOptions) {
-				if extID != "" {
-					o.ExternalID = aws.String(extID)
-				}
-				o.RoleSessionName = sessName
-			}
-
-			credsCache := aws.NewCredentialsCache(
-				stscreds.NewAssumeRoleProvider(
-					stsClient,
-					roleARN.GetValue(),
-					opts,
-				),
-			)
-			actual, _ := assumeRoleCredsCache.LoadOrStore(cacheKey, credsCache)
-			cfg.Credentials = actual.(*aws.CredentialsCache)
-		}
 	}
 
 	// Get credentials. Nested "credentials-fetch" span: on a cache miss this triggers a
@@ -862,7 +711,7 @@ func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockK
 	// chain's IMDS/env/STS lookup), which is the dominant cost on an idle box whose
 	// credential cache has expired between sparse requests.
 	credT, credH := providerUtils.StartPhaseSpan(ctx, "credentials-fetch")
-	creds, err := cfg.Credentials.Retrieve(ctx)
+	creds, err := provider.Retrieve(ctx)
 	if credT != nil {
 		if err != nil {
 			credT.EndSpan(credH, schemas.SpanStatusError, "credential retrieval failed")
@@ -874,6 +723,27 @@ func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockK
 		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
 	}
 	return creds, nil
+}
+
+// awsAuthConfig maps a Bedrock key's AWS credential fields onto awsauth.Config.
+func awsAuthConfig(keyCfg *schemas.BedrockKeyConfig) awsauth.Config {
+	if keyCfg == nil {
+		return awsauth.Config{}
+	}
+	value := func(v *schemas.SecretVar) string {
+		if v == nil {
+			return ""
+		}
+		return v.GetValue()
+	}
+	return awsauth.Config{
+		AccessKey:    keyCfg.AccessKey.GetValue(),
+		SecretKey:    keyCfg.SecretKey.GetValue(),
+		SessionToken: value(keyCfg.SessionToken),
+		RoleARN:      value(keyCfg.RoleARN),
+		ExternalID:   value(keyCfg.ExternalID),
+		SessionName:  value(keyCfg.RoleSessionName),
+	}
 }
 
 // listModelsByKey performs a list models request to Bedrock's API for a single key.
@@ -1608,8 +1478,10 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
-		var isAccumulatingStructuredOutput, sawCallerToolUse bool
+		var isAccumulatingStructuredOutput, sawCallerToolUse, usedStructuredOutputTool bool
 		var structuredOutputBuilder strings.Builder
+		var heldSO []heldConverseEvent      // events held from the first text until the turn shows whether bf_so_* answered
+		var heldTextBlocks map[int]struct{} // content block indices of held text
 		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 		var held heldStreamRaw
 
@@ -1782,6 +1654,14 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						if streamEvent.Start.ToolUse.Name == structuredOutputToolName {
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
+							usedStructuredOutputTool = true
+							// The held text was prose beside the answer; what followed it still goes out, in order.
+							for _, h := range heldSO {
+								if !h.text && !sendEvent(h.event, h.payload) {
+									return
+								}
+							}
+							heldSO = nil
 							continue
 						}
 						// A caller tool block ends the synthetic one; its deltas stay a tool call.
@@ -1827,13 +1707,33 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						continue
 					}
 
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output (mirrors ResponsesStreamRequest).
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+					// Text is held, not dropped: see the matching block in ResponsesStream.
+					if streamEvent.Delta != nil && streamEvent.Delta.ReasoningContent != nil {
 						continue
 					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
+					if isTextBlockEvent(&streamEvent, heldTextBlocks) {
+						if !usedStructuredOutputTool {
+							if heldTextBlocks == nil {
+								heldTextBlocks = make(map[int]struct{}, 1)
+							}
+							if streamEvent.ContentBlockIndex != nil {
+								heldTextBlocks[*streamEvent.ContentBlockIndex] = struct{}{}
+							}
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, true))
+						}
+						continue
+					}
+					if len(heldSO) > 0 && !usedStructuredOutputTool {
+						if streamEvent.StopReason == nil {
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, false))
+							continue
+						}
+						for _, h := range heldSO {
+							if !sendEvent(h.event, h.payload) {
+								return
+							}
+						}
+						heldSO = nil
 					}
 				}
 
@@ -2068,6 +1968,8 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			structuredOutputToolName = toolName
 		}
 		var isAccumulatingStructuredOutput bool
+		var heldSO []heldConverseEvent      // events held from the first text until the turn shows whether bf_so_* answered
+		var heldTextBlocks map[int]struct{} // content block indices of heldText
 
 		// Process AWS Event Stream format using proper decoder
 		lastChunkTime := startTime
@@ -2234,47 +2136,52 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
 							streamState.UsedStructuredOutputTool = true
+							// The held text was prose beside the answer; what followed it still goes out, in order.
+							for _, h := range heldSO {
+								if !h.text && !sendEvent(h.event, h.payload) {
+									return
+								}
+							}
+							heldSO = nil
 							continue
 						}
 						// A caller tool block ends the synthetic one; its deltas stay a tool call.
 						isAccumulatingStructuredOutput = false
 					}
 
-					// Check for tool use delta event
+					// The synthetic tool's input is the answer: send it as a text delta on the same
+					// content block so the converter opens and closes a regular text item around it.
 					if streamEvent.Delta != nil && streamEvent.Delta.ToolUse != nil && isAccumulatingStructuredOutput {
-						// Convert tool use delta to text delta
-						content := streamEvent.Delta.ToolUse.Input
-						response := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: chunkIndex,
-							Delta:          &content,
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								ChunkIndex: chunkIndex,
-								Latency:    time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
-							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
-						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+						text := streamEvent.Delta.ToolUse.Input
+						streamEvent.Delta = &BedrockContentBlockDelta{Text: &text}
+					} else if streamEvent.Delta != nil && streamEvent.Delta.ReasoningContent != nil {
 						continue
-					}
-
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output. Bedrock Claude can emit prose
-					// alongside the forced tool call (markdown, preambles, reasoning
-					// blocks); forwarding those as text deltas corrupts the JSON
-					// the client assembles from the structured-output stream.
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+					} else if isTextBlockEvent(&streamEvent, heldTextBlocks) {
+						// Prose beside the synthetic tool would corrupt the JSON, but an unpinned
+						// tool (thinking, Fable 5.1+) can be answered in plain text instead: hold
+						// it until the turn shows which one happened.
+						if !streamState.UsedStructuredOutputTool {
+							if heldTextBlocks == nil {
+								heldTextBlocks = make(map[int]struct{}, 1)
+							}
+							if streamEvent.ContentBlockIndex != nil {
+								heldTextBlocks[*streamEvent.ContentBlockIndex] = struct{}{}
+							}
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, true))
+						}
 						continue
-					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
+					} else if len(heldSO) > 0 && !streamState.UsedStructuredOutputTool {
+						if streamEvent.StopReason == nil {
+							// Anything after held text waits behind it, so blocks reach the client in order.
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, false))
+							continue
+						}
+						for _, h := range heldSO {
+							if !sendEvent(h.event, h.payload) {
+								return
+							}
+						}
+						heldSO = nil
 					}
 				}
 
@@ -4607,7 +4514,7 @@ func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *sche
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
 	}
-	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input)
+	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input) || inputHasToolChanges(request.Input)
 }
 
 func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model string, params *schemas.ResponsesParameters) bool {
@@ -4650,6 +4557,29 @@ func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
 	return false
 }
 
+// inputHasToolChanges reports tool_addition / tool_removal blocks (system or developer
+// messages) or a compaction item's tool_changes, which Converse has no block for.
+func inputHasToolChanges(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		if input[i].Content == nil || len(input[i].Content.ContentBlocks) == 0 {
+			continue
+		}
+		blocks := input[i].Content.ContentBlocks
+		if cmp := blocks[0].ResponsesOutputMessageContentCompaction; cmp != nil && len(cmp.ToolChanges) > 0 {
+			return true
+		}
+		if role := input[i].Role; role == nil || (*role != schemas.ResponsesInputMessageRoleSystem && *role != schemas.ResponsesInputMessageRoleDeveloper) {
+			continue
+		}
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolAddition || blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolRemoval {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // invokeIngressThinkingNeedsInvokePath reports whether a request from the
 // InvokeModel-shaped ingress (BedrockContextKeyAnthropicInvokeIngress) has
 // thinking on. Converse TokenUsage has no thinking-token breakdown, while
@@ -4675,7 +4605,7 @@ func invokeIngressThinkingNeedsInvokePath(ctx *schemas.BifrostContext, reasoning
 // the same region and model-path resolution as the Converse path.
 func (provider *BedrockProvider) invokeURL(ctx *schemas.BifrostContext, key schemas.Key, model, action string) (requestURL, region string) {
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
-	host := resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
+	host := provider.serviceHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
 	return fmt.Sprintf("https://%s/model/%s", host, path), region
 }
 
@@ -4934,4 +4864,38 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 		// payloadBuf and is safe to hand to the caller before the next Decode.
 		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
 	}
+}
+
+// isTextBlockEvent reports whether ev starts, extends, or ends a text content block: a text delta, a
+// non-tool block start, or the stop of a block already in textBlocks.
+func isTextBlockEvent(ev *BedrockStreamEvent, textBlocks map[int]struct{}) bool {
+	if ev.Delta != nil {
+		return ev.Delta.Text != nil
+	}
+	if ev.Start != nil {
+		return ev.Start.ToolUse == nil
+	}
+	if ev.ContentBlockIndex != nil && ev.StopReason == nil && ev.Usage == nil {
+		_, ok := textBlocks[*ev.ContentBlockIndex]
+		return ok
+	}
+	return false
+}
+
+// heldConverseEvent is a Converse stream event held back on the synthetic structured-output path.
+type heldConverseEvent struct {
+	event   *BedrockStreamEvent
+	payload []byte // upstream payload, copied off the reused decoder buffer; nil when raw responses are off
+	text    bool   // part of a text block, dropped if bf_so_* turns out to carry the answer
+}
+
+// holdConverseEvent copies ev, and its payload when raw responses are on, so both outlive the
+// decoder's buffer reuse.
+func holdConverseEvent(ev *BedrockStreamEvent, payload []byte, sendRaw, text bool) heldConverseEvent {
+	h := heldConverseEvent{event: new(BedrockStreamEvent), text: text}
+	*h.event = *ev
+	if sendRaw && len(payload) > 0 {
+		h.payload = append([]byte(nil), payload...)
+	}
+	return h
 }

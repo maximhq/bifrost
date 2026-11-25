@@ -221,11 +221,41 @@ func (s *Server) writeHandled(w http.ResponseWriter, res handleResult, f Faults,
 		return
 	}
 
+	// A 2026-07-28 rejection carries its own status and comes before any work, so it reports no progress.
+	rejected := modern && res.Response.Error != nil && modernErrorStatus(res.Response.Error.Code) != http.StatusOK
+	if len(res.Notifications) > 0 && !rejected {
+		if writeStream(w, res.Notifications, res.Response) {
+			s.counters.progressCall(res.ProgressTool)
+		}
+		return
+	}
 	if modern {
 		writeModern(w, res.Response)
 		return
 	}
 	writeJSON(w, http.StatusOK, res.Response)
+}
+
+// writeStream answers as an SSE stream: the notifications in order, then resp. It reports whether
+// any notification was written.
+func writeStream(w http.ResponseWriter, notifications [][]byte, resp *response) (sentProgress bool) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		return false
+	}
+	for i, msg := range append(notifications, payload) {
+		if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", msg); err != nil {
+			return sentProgress
+		}
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		sentProgress = sentProgress || i < len(notifications)
+	}
+	return sentProgress
 }
 
 // serveDelete ends the named session. Clients use this to shut down cleanly,

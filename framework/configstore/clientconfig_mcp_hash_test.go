@@ -69,6 +69,43 @@ func TestGenerateMCPClientHash_EndpointSlug(t *testing.T) {
 	assert.Equal(t, hash("my-slug"), hash("My Slug"), "spellings of the same slug must hash the same")
 }
 
+// TestGenerateMCPClientHash_ClientCredentials: a declared or edited
+// client_credentials block drifts the hash, so a config.json edit reconciles.
+func TestGenerateMCPClientHash_ClientCredentials(t *testing.T) {
+	hash := func(cc *schemas.MCPClientCredentialsConfig) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "client_credentials", ClientCredentials: cc})
+		require.NoError(t, err)
+		return h
+	}
+	cc := func(secret string) *schemas.MCPClientCredentialsConfig {
+		return &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar(secret)}
+	}
+	assert.NotEqual(t, hash(nil), hash(cc("a")), "declaring the block must drift the hash")
+	assert.NotEqual(t, hash(cc("a")), hash(cc("b")), "a rotated secret must drift the hash")
+	assert.Equal(t, hash(cc("a")), hash(cc("a")))
+}
+
+// TestGenerateMCPClientHash_AWSSigV4: a declared or edited aws_sigv4 block drifts
+// the hash, so a config.json edit reconciles.
+func TestGenerateMCPClientHash_AWSSigV4(t *testing.T) {
+	hash := func(cfg *schemas.MCPAWSSigV4Config) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "aws_sigv4", AWSSigV4: cfg})
+		require.NoError(t, err)
+		return h
+	}
+	sigv4 := func(region, role string) *schemas.MCPAWSSigV4Config {
+		cfg := &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar(region)}
+		if role != "" {
+			cfg.RoleARN = schemas.NewSecretVar(role)
+		}
+		return cfg
+	}
+	assert.NotEqual(t, hash(nil), hash(sigv4("us-east-1", "")), "declaring the block must drift the hash")
+	assert.NotEqual(t, hash(sigv4("us-east-1", "")), hash(sigv4("us-west-2", "")), "a new region must drift the hash")
+	assert.NotEqual(t, hash(sigv4("us-east-1", "")), hash(sigv4("us-east-1", "arn:aws:iam::123456789012:role/r")), "a new role must drift the hash")
+	assert.Equal(t, hash(sigv4("us-east-1", "")), hash(sigv4("us-east-1", "")))
+}
+
 // TestGenerateKeyHash_OAuthKeyConfigIsOrderIndependent pins that an unchanged OAuth key hashes
 // the same on every call. extra_params is a map; an encoder that walks it in iteration order
 // makes the hash differ between restarts, and reconcileProviderKeys then treats the stored key

@@ -369,6 +369,7 @@
 			"outputCost": "輸出費用",
 			"additionalCost": "額外費用",
 			"guardrailCost": "護欄費用",
+			"externalGuardrailCostNote": "包含 {{cost}} 外部護欄預估費用，不計入總費用或預算。",
 			"semanticCacheCost": "語義快取費用",
 			"routingCost": "路由費用",
 			"inputTextTokens": "輸入文字 token",
@@ -402,6 +403,9 @@
 			"judgeProvider": "評判供應商",
 			"judgeModel": "評判模型",
 			"promptTokens": "提示詞 token",
+			"usageUnits": "用量單位",
+			"estimatedCost": "預估費用",
+			"estimatedCostTooltip": "依護欄供應商的定價估算。不計入總費用或預算。",
 			"reason": "原因",
 			"routingClassificationDetails": "路由分類詳情",
 			"mechanism": "機制",
@@ -788,6 +792,7 @@
 			"toastExported_other": "已匯出 {{count}} 筆日誌",
 			"toastFailed": "匯出失敗：{{error}}",
 			"summary": {
+				"jobId": "作業 ID：{{value}}",
 				"search": "搜尋「{{value}}」",
 				"request": "請求「{{value}}」",
 				"providers": "供應商（{{total}}）",
@@ -814,6 +819,20 @@
 		"batchMixedModel": "混合"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "結算列在扣款前已被刪除",
+			"relay_job_no_usage": "最終回覆中沒有可計價的用量",
+			"relay_job_rejected": "上游拒絕了作業 ID",
+			"relay_job_access_denied": "上游拒絕存取該作業",
+			"relay_job_gone": "上游已找不到該作業",
+			"relay_job_timeout": "未在逾時前完成",
+			"relay_job_params": "無法讀取作業設定"
+		},
+		"jobOutcome": {
+			"unpriced": "未計價",
+			"failed": "失敗",
+			"succeeded": "成功"
+		},
 		"fields": {
 			"relay": "轉送",
 			"kind": "類型",
@@ -832,6 +851,9 @@
 			"no": "否"
 		},
 		"columns": {
+			"startsJob": "啟動作業 {{id}}",
+			"jobUnpriced": "未計價：{{reason}}",
+			"jobFailed": "失敗：{{status}}",
 			"jobBadge": "作業",
 			"noRoute": "無路由",
 			"route": "路由 {{route}}",
@@ -872,6 +894,13 @@
 			"perRequest": "{{value}}/請求"
 		},
 		"detail": {
+			"jobStatusStat": "作業狀態",
+			"jobNotSettled": "尚未結算",
+			"jobSettlementFailed": "無法檢查結算。",
+			"jobSettlement": "作業結算",
+			"costUnpriced": "未計價",
+			"unpricedBody": "Bifrost 無法為此作業計價，因此其費用未知，作業本身未扣款。啟動呼叫保留其自身的扣款。",
+			"unpricedTitle": "未計價的作業",
 			"loadingDetails": "正在載入轉送日誌詳細資料",
 			"notFound": "找不到轉送日誌",
 			"loadFailed": "無法載入此轉送日誌。",
@@ -902,6 +931,12 @@
 			"tokensNotPricedValue": "輸入 {{input}} / 輸出 {{output}}",
 			"matchedRoute": "符合的路由",
 			"parentLog": "父日誌",
+			"jobPolls": "狀態查詢嘗試次數",
+			"jobLastStatus": "最後的作業狀態",
+			"jobLastHttpStatus": "最後一次輪詢的 HTTP 狀態",
+			"jobSettledAt": "結算時間",
+			"jobSettledBy": "由狀態查詢結算",
+			"jobLastError": "未計價結束的原因",
 			"responseBodyPreview": "回應內文（預覽）",
 			"filterByValue": "顯示具有此值的轉送呼叫",
 			"queryParameters": "查詢參數",
@@ -911,6 +946,7 @@
 			"contentHidden": "此請求已停用內容記錄。"
 		},
 		"filters": {
+			"unpriced": "未計價的作業",
 			"reset": "重設",
 			"searchRelays": "搜尋轉送",
 			"searchMethods": "搜尋方法",
@@ -1116,6 +1152,8 @@
 			"groupTracesBySessionHelp": "啟用後，共享同一 x-bf-session-id 請求頭的請求會合入同一條 trace，每個請求作為頂級兄弟 span。攜帶入站 W3C traceparent 的請求仍留在自己的分散式 trace 上，不受影響。",
 			"disableRootSpanContent": "停用根 Span 內容",
 			"disableRootSpanContentHelp": "啟用後，僅從根 span 丟棄輸入/輸出訊息內容；底層 generation（llm.call）span 仍保留完整內容。",
+			"applyTraceDimensionsToChildSpans": "將維度套用至子 span",
+			"applyTraceDimensionsToChildSpansHelp": "啟用後，請求維度（x-bf-dim-* 標頭）會合併到每個匯出的 span 上，而不只是根 span，因此可以依維度篩選或分組子 span。path、method 以及 gen_ai.* 等保留命名空間會被略過。每個維度都會加到每個 span 上，因此高基數的值會增加收集器的擷取成本。",
 			"enableMetricsExport": "啟用 Metrics 匯出",
 			"enableMetricsExportHelp": "將指標推送到 OTEL Collector，以便在叢集部署中正確聚合",
 			"overheadBreakdown": "開銷分解",

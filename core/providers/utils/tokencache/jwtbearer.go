@@ -86,7 +86,7 @@ func JWTBearerMinter(cfg JWTBearerConfig, hc *http.Client) Minter[string] {
 		if bErr != nil {
 			return nil, bErr
 		}
-		return entryFor(token, expiry, margin), nil
+		return EntryFor(token, expiry, margin), nil
 	}
 }
 

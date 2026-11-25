@@ -7,6 +7,9 @@ const T = { ns: "config" } as const;
 // (/api/relay-logs). They mirror core/schemas/relay.go and
 // framework/logstore/relaylogs.go.
 
+/** Where a poll request puts the job id (schemas.JobIDPlaceholder in Go). */
+export const JOB_ID_PLACEHOLDER = "{{job.id}}";
+
 export type RelayAuthType = "bearer" | "header" | "query" | "basic" | "aws_sigv4" | "none";
 export type RelayModelSource = "body" | "query";
 export type RelayUnitsSource = "response" | "request";
@@ -112,6 +115,8 @@ export interface RelayJobConfig {
 	interval_seconds?: number;
 	timeout_seconds?: number;
 	usage?: RelayUsageConfig;
+	/** true: an id returned again after its job was charged is new work (APIs where the caller picks the id). */
+	reused_id_is_new_job?: boolean;
 }
 
 export interface RelayRouteConfig {
@@ -123,6 +128,10 @@ export interface RelayRouteConfig {
 	stream?: boolean;
 	usage?: RelayUsageConfig;
 	job?: RelayJobConfig;
+	/** Request body fields forced on every call: dotted path to JSON value, over the relay's. */
+	body_overrides?: Record<string, unknown>;
+	/** false: the relay's enforced fields are not written on this route; unset applies them. */
+	inherit_body_overrides?: boolean;
 }
 
 export interface RelayNetworkConfig {
@@ -155,8 +164,12 @@ export interface Relay {
 	routes?: RelayRouteConfig[];
 	skip_route_check?: boolean;
 	ignore_upstream_cost?: boolean;
+	/** Request body fields forced on every call through the relay: dotted path to JSON value. */
+	body_overrides?: Record<string, unknown>;
 	/** Read-only: the path callers use, /relay/{name}. */
 	url?: string;
+	/** Route indices in the order the gateway tries them, reported by the API. */
+	match_order?: number[];
 }
 
 export interface GetRelaysParams {
@@ -224,6 +237,17 @@ export interface UsagePreview {
 
 export type RelayLogStatus = "success" | "error" | "cancelled" | "processing";
 
+/** How a job row's job was polled (job_debug); poll replies are never stored. */
+export interface RelayJobDebug {
+	outcome?: "succeeded" | "failed" | "unpriced";
+	polls: number;
+	last_status?: string;
+	last_http_status?: number;
+	last_error?: string;
+	settled_by_request_id?: string;
+	settled_at: string;
+}
+
 export interface RelayLog {
 	id: string;
 	timestamp: string;
@@ -255,6 +279,7 @@ export interface RelayLog {
 	total_tokens?: number;
 	job_id?: string;
 	job_status?: string;
+	job_debug?: RelayJobDebug;
 	parent_log_id?: string;
 	user_id?: string;
 	user_name?: string;
@@ -309,6 +334,8 @@ export interface RelayLogFilters {
 	session_id?: string;
 	/** Exact job id: a job route's start call and the settlement rows it produced. */
 	job_id?: string;
+	/** Job rows that ended without a price. */
+	unpriced?: boolean;
 	parent_request_id?: string;
 	agent_correlation_id?: string;
 	search?: string;

@@ -42,6 +42,8 @@ type State struct {
 	StdioEnv map[string]string `json:"stdio_env,omitempty"`
 	// OAuth is the authorization server's state, present while OAuth is on.
 	OAuth *OAuthState `json:"oauth,omitempty"`
+	// SigV4 is the SigV4 verifier's counters and log, present while SigV4 is on.
+	SigV4 *SigV4State `json:"sigv4,omitempty"`
 	// REST is the REST surface's routes and call log, present once used.
 	REST *RESTState `json:"rest,omitempty"`
 	// LLM is the LLM surface's models and scenarios, present once used.
@@ -69,9 +71,15 @@ type State struct {
 
 // State captures a server's current state.
 func (s *Server) State() State {
+	// One read, so the auth settings returned and the states included agree.
+	auth := s.auth.get()
 	var oauth *OAuthState
-	if s.auth.get().OAuth != nil {
+	if auth.OAuth != nil {
 		oauth = s.oauth.snapshot()
+	}
+	var sigv4 *SigV4State
+	if auth.SigV4 != nil {
+		sigv4 = s.sigv4.snapshot()
 	}
 	prompts, resources, templates, reads := s.prompts.snapshot()
 	promptViews, resourceViews, templateViews := s.prompts.views()
@@ -84,7 +92,7 @@ func (s *Server) State() State {
 		Tools:             s.tools.List(""),
 		Revision:          s.tools.Revision(),
 		Faults:            s.faults.peek(),
-		Auth:              s.auth.get(),
+		Auth:              auth,
 		Counters:          s.counters.Snapshot(),
 		Sessions:          s.sessions.count(),
 		Streams:           s.streams.count(),
@@ -93,6 +101,7 @@ func (s *Server) State() State {
 		StdioPID:          s.StdioPID(),
 		StdioEnv:          s.StdioEnv(),
 		OAuth:             oauth,
+		SigV4:             sigv4,
 		REST:              s.rest.snapshot(),
 		LLM:               s.llm.snapshot(),
 
@@ -126,18 +135,32 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 			body["tls_url"] = tlsURL
 			body["tls_cert_pem"] = certPEM
 		}
+		if proxy := f.proxyState(); proxy != nil {
+			body["proxy"] = proxy
+		}
 		writeJSON(w, http.StatusOK, body)
 	case http.MethodPost:
 		var body struct {
 			Add    string `json:"add"`
 			Remove string `json:"remove"`
 			Reset  string `json:"reset"`
+			// Proxy sets the forward proxy's mode; clear_log also empties its log.
+			Proxy *struct {
+				ProxyMode
+				ClearLog bool `json:"clear_log"`
+			} `json:"proxy"`
 		}
 		if err := decodeBody(r, &body); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		switch {
+		case body.Proxy != nil:
+			if err := f.setProxy(body.Proxy.ProxyMode, body.Proxy.ClearLog); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"proxy": f.proxyState()})
 		case body.Add != "":
 			s := f.Add(body.Add)
 			writeJSON(w, http.StatusOK, map[string]any{
@@ -155,7 +178,7 @@ func (f *Fleet) routeFleetControl(w http.ResponseWriter, r *http.Request) {
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"reset": body.Reset, "state": s.State()})
 		default:
-			http.Error(w, "specify add, remove or reset", http.StatusBadRequest)
+			http.Error(w, "specify add, remove, reset or proxy", http.StatusBadRequest)
 		}
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -404,6 +427,7 @@ func (s *Server) applyControl(verb string, r *http.Request) error {
 		s.prompts.clearReads()
 		s.counters.Reset()
 		s.oauth.resetCounters()
+		s.sigv4.reset()
 		s.rest.clearLog()
 		s.llm.clearLog()
 	case "routes/set":

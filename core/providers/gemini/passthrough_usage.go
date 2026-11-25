@@ -287,6 +287,30 @@ type geminiInteractionsUsage struct {
 	OutputTokens  int `json:"total_output_tokens"`
 	ThoughtTokens int `json:"total_thought_tokens"`
 	CachedTokens  int `json:"total_cached_tokens"`
+	ToolUseTokens int `json:"total_tool_use_tokens"`
+
+	InputTokensByModality  []GeminiModalityTokens `json:"input_tokens_by_modality"`
+	OutputTokensByModality []GeminiModalityTokens `json:"output_tokens_by_modality"`
+
+	GroundingToolCount []GeminiInteractionsGroundingToolCount `json:"grounding_tool_count"`
+}
+
+// geminiModalityCounts is a usage breakdown's counts for the modalities Bifrost prices.
+type geminiModalityCounts struct{ text, audio, image int }
+
+func geminiInteractionsModalities(breakdown []GeminiModalityTokens) geminiModalityCounts {
+	var out geminiModalityCounts
+	for _, entry := range breakdown {
+		switch strings.ToLower(entry.Modality) {
+		case "text":
+			out.text += entry.Tokens
+		case "audio":
+			out.audio += entry.Tokens
+		case "image":
+			out.image += entry.Tokens
+		}
+	}
+	return out
 }
 
 type geminiInteractionsRun struct {
@@ -312,6 +336,8 @@ type InteractionsPassthroughInfo struct {
 	Model  string // the agent that ran, else the model
 	Status string
 	Usage  *schemas.BifrostPassthroughUsage
+
+	searchQueries int // searches the run made, when nothing named its model
 }
 
 // terminal reports whether the run has stopped. A run still in progress (or waiting on a
@@ -319,7 +345,7 @@ type InteractionsPassthroughInfo struct {
 // status cannot say, so it is left for a poll to settle.
 func (i InteractionsPassthroughInfo) terminal() bool {
 	switch i.Status {
-	case "", "in_progress", "requires_continuation":
+	case "", "in_progress", "queued", "requires_continuation":
 		return false
 	}
 	return true
@@ -328,6 +354,13 @@ func (i InteractionsPassthroughInfo) terminal() bool {
 // ParseInteractionsPassthrough decodes an Interactions response body or SSE event once, for its
 // run id, agent or model, status and usage.
 func ParseInteractionsPassthrough(body []byte) InteractionsPassthroughInfo {
+	return parseInteractionsPassthrough(body, "")
+}
+
+// parseInteractionsPassthrough is ParseInteractionsPassthrough with the model to price usage by
+// when the body names none, as a stream's completed frame may leave out the model its created
+// frame reported.
+func parseInteractionsPassthrough(body []byte, fallbackModel string) InteractionsPassthroughInfo {
 	var info InteractionsPassthroughInfo
 	if len(body) == 0 {
 		return info
@@ -352,12 +385,19 @@ func ParseInteractionsPassthrough(body []byte) InteractionsPassthroughInfo {
 	if info.Status == "" {
 		info.Status = w.Status
 	}
-	// Streaming takes priority: nested under "interaction" with a non-zero total.
+	// Streaming takes priority: nested under "interaction" with any tokens.
 	u, tier := w.Usage, w.ServiceTier
-	if w.Interaction != nil && w.Interaction.Usage != nil && w.Interaction.Usage.TotalTokens > 0 {
+	if w.Interaction != nil && w.Interaction.Usage.total() > 0 {
 		u, tier = w.Interaction.Usage, w.Interaction.ServiceTier
 	}
-	info.Usage = interactionsUsage(u, tier)
+	pricingModel := info.Model
+	if pricingModel == "" {
+		pricingModel = fallbackModel
+	}
+	info.Usage = interactionsUsage(u, tier, pricingModel)
+	if pricingModel == "" && u != nil {
+		info.searchQueries = geminiInteractionsSearchQueries(u.GroundingToolCount)
+	}
 	return info
 }
 
@@ -365,25 +405,59 @@ func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsag
 	return ParseInteractionsPassthrough(body).Usage
 }
 
-func interactionsUsage(u *geminiInteractionsUsage, tier *string) *schemas.BifrostPassthroughUsage {
-	if u == nil || u.TotalTokens == 0 {
+// total is the reported total, or the sum of the parts when Google leaves it out.
+func (u *geminiInteractionsUsage) total() int {
+	if u == nil {
+		return 0
+	}
+	if u.TotalTokens != 0 {
+		return u.TotalTokens
+	}
+	return u.InputTokens + u.ToolUseTokens + u.OutputTokens + u.ThoughtTokens
+}
+
+// interactionsUsage maps a run's usage for billing. Tool use prompt tokens are input (Google
+// bills them at the input rate and counts them in total_tokens), and Google Search runs are the
+// per-query search fee; model decides the search unit (see geminiInteractionsSearchUnits).
+func interactionsUsage(u *geminiInteractionsUsage, tier *string, model string) *schemas.BifrostPassthroughUsage {
+	if u == nil {
+		return nil
+	}
+	total := u.total()
+	if total == 0 {
 		return nil
 	}
 
 	usage := &schemas.BifrostLLMUsage{
-		PromptTokens:     u.InputTokens,
+		PromptTokens:     u.InputTokens + u.ToolUseTokens,
 		CompletionTokens: u.OutputTokens + u.ThoughtTokens,
-		TotalTokens:      u.TotalTokens,
+		TotalTokens:      total,
 	}
-	if u.CachedTokens > 0 {
+	input, output := geminiInteractionsModalities(u.InputTokensByModality), geminiInteractionsModalities(u.OutputTokensByModality)
+	if u.CachedTokens > 0 || input != (geminiModalityCounts{}) {
 		usage.PromptTokensDetails = &schemas.ChatPromptTokensDetails{
+			TextTokens:       input.text,
+			AudioTokens:      input.audio,
+			ImageTokens:      input.image,
 			CachedReadTokens: u.CachedTokens,
 		}
 	}
-	if u.ThoughtTokens > 0 {
+	if u.ThoughtTokens > 0 || output != (geminiModalityCounts{}) {
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{
+			TextTokens:      output.text,
+			AudioTokens:     output.audio,
 			ReasoningTokens: u.ThoughtTokens,
 		}
+		if output.image > 0 {
+			usage.CompletionTokensDetails.ImageTokens = schemas.Ptr(output.image)
+		}
+	}
+	if n := geminiInteractionsSearchUnits(u.GroundingToolCount, model); n > 0 {
+		if usage.CompletionTokensDetails == nil {
+			usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
+		}
+		usage.CompletionTokensDetails.NumSearchQueries = schemas.Ptr(n)
+		usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: n}}
 	}
 
 	result := &schemas.BifrostPassthroughUsage{LLMUsage: usage}
@@ -432,6 +506,8 @@ func (r interactionsRequest) job(info InteractionsPassthroughInfo) *schemas.Bifr
 		PollPath:   pollPath,
 		APIVersion: r.apiVersion,
 		Usage:      info.Usage,
+
+		SearchQueries: info.searchQueries,
 	}
 }
 
@@ -484,7 +560,7 @@ func NewInteractionsStreamObserver(req *schemas.BifrostPassthroughRequest) *Inte
 
 // Observe records one event and returns its usage, if any.
 func (o *InteractionsStreamObserver) Observe(event []byte) *schemas.BifrostPassthroughUsage {
-	info := ParseInteractionsPassthrough(event)
+	info := parseInteractionsPassthrough(event, o.last.Model)
 	if info.ID != "" {
 		o.last.ID = info.ID
 	}
@@ -495,9 +571,31 @@ func (o *InteractionsStreamObserver) Observe(event []byte) *schemas.BifrostPasst
 		o.last.Status = info.Status
 	}
 	if info.Usage != nil {
-		o.last.Usage = info.Usage
+		o.last.Usage, o.last.searchQueries = info.Usage, info.searchQueries
+	}
+	if o.last.searchQueries > 0 && o.last.Model != "" && o.last.Usage != nil {
+		// The model came after the usage it decides the search units of.
+		o.last.Usage = withSearchUnits(o.last.Usage, schemas.GeminiSearchUnits(o.last.searchQueries, o.last.Model))
+		o.last.searchQueries = 0
 	}
 	return info.Usage
+}
+
+// withSearchUnits is usage with its search count set to units. usage is not modified.
+func withSearchUnits(usage *schemas.BifrostPassthroughUsage, units int) *schemas.BifrostPassthroughUsage {
+	if usage.LLMUsage == nil {
+		return usage
+	}
+	out, llm := *usage, *usage.LLMUsage
+	details := schemas.ChatCompletionTokensDetails{}
+	if llm.CompletionTokensDetails != nil {
+		details = *llm.CompletionTokensDetails
+	}
+	details.NumSearchQueries = &units
+	llm.CompletionTokensDetails = &details
+	llm.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: units}}
+	out.LLMUsage = &llm
+	return &out
 }
 
 // Finalize names the model the stream reported running and moves the observed usage onto the run

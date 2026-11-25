@@ -28,20 +28,7 @@ var defaultGeminiImageURLSchemes = []string{"http", "https"}
 // isGemini3Plus returns true if the model is Gemini 3.0 or higher.
 // Uses simple string operations for hot path performance.
 func isGemini3Plus(model string) bool {
-	model = strings.ToLower(model)
-	idx := strings.Index(model, "gemini-")
-	if idx == -1 {
-		return false
-	}
-	afterPrefix := model[idx+7:] // len("gemini-") = 7
-	if len(afterPrefix) == 0 {
-		return false
-	}
-	firstChar := afterPrefix[0]
-	if firstChar < '0' || firstChar > '9' {
-		return false
-	}
-	return firstChar >= '3'
+	return schemas.IsGemini3PlusModel(model)
 }
 
 // isGemini4Plus reports whether model is Gemini 4.0 or newer.
@@ -103,6 +90,42 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 	// clamps onto it, so "medium" on a low/high model lands on "high" without a
 	// second mechanism saying the same thing.
 	return &schemas.EffortControl{Levels: supportedThinkingLevels(model)}
+}
+
+// setRawServiceTier writes the attempt's service tier into a raw generateContent body, so a key
+// or alias tier also reaches client bytes sent as-is. flex and priority set service_tier; default
+// removes it, since Google documents an omitted tier as Standard. A camelCase serviceTier is
+// replaced so the body carries one value. The typed path, a request with no tier, and a body
+// already in that state are returned unchanged.
+func setRawServiceTier(ctx *schemas.BifrostContext, body []byte, tier *schemas.BifrostServiceTier) []byte {
+	if tier == nil || len(body) == 0 {
+		return body
+	}
+	if raw, ok := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !ok || !raw {
+		return body
+	}
+	out := body
+	if providerUtils.JSONFieldExists(out, "serviceTier") {
+		if updated, err := providerUtils.DeleteJSONField(out, "serviceTier"); err == nil {
+			out = updated
+		}
+	}
+	want := mapBifrostServiceTierToGemini(*tier)
+	if want != ServiceTierFlex && want != ServiceTierPriority {
+		if providerUtils.JSONFieldExists(out, "service_tier") {
+			if updated, err := providerUtils.DeleteJSONField(out, "service_tier"); err == nil {
+				out = updated
+			}
+		}
+		return out
+	}
+	if providerUtils.GetJSONField(out, "service_tier").String() == string(want) {
+		return out
+	}
+	if updated, err := providerUtils.SetJSONField(out, "service_tier", string(want)); err == nil {
+		out = updated
+	}
+	return out
 }
 
 // NormalizeRawGenerateContentRequestForCompatibility applies the same

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -33,9 +34,13 @@ type endpoint struct {
 	usage              resolvedUsage // endpoint-level usage mapping
 	routes             []compiledRoute
 	streamGlobs        []routeGlob
+	bodyOverrides      []bodyOverride            // endpoint-level forced body fields, for a request matching no route
 	awsKey             *schemas.BedrockKeyConfig // aws_sigv4 credential in the shape the signer reads
 	awsRegion          string
-	streamIdle         int // seconds
+	streamIdle         int   // seconds
+	hasJobs            bool  // a route starts an async job, so replies are checked for status checks
+	jobOrder           []int // the job routes, most specific poll template first, ranked once here
+	hasDisabled        bool  // a route is disabled, so a rewrite (even adding or removing a header) can reach it
 }
 
 // newEndpoint validates cfg and compiles it. proxy is the effective proxy (the endpoint's own, or
@@ -69,11 +74,25 @@ func newEndpoint(cfg *schemas.RelayConfig, proxy *schemas.ProxyConfig) (*endpoin
 		usage:              usage,
 		routes:             routes,
 		streamGlobs:        compileStreamGlobs(cfg),
+		bodyOverrides:      compileBodyOverrides(cfg.BodyOverrides),
 		streamIdle:         schemas.DefaultEndpointStreamIdleTimeoutSeconds,
 	}
 	if cfg.Network != nil && cfg.Network.StreamIdleTimeoutInSeconds > 0 {
 		e.streamIdle = cfg.Network.StreamIdleTimeoutInSeconds
 	}
+	for i := range e.routes {
+		if e.routes[i].job != nil {
+			e.hasJobs = true
+			e.jobOrder = append(e.jobOrder, i)
+		}
+		if e.routes[i].disabled {
+			e.hasDisabled = true
+		}
+	}
+	// Ranked once when the relay is built, so a status check only walks the order.
+	slices.SortStableFunc(e.jobOrder, func(a, b int) int {
+		return pollFixedText(e.routes[b].job.Poll) - pollFixedText(e.routes[a].job.Poll)
+	})
 	if cfg.Auth.Type == schemas.RelayAuthAWSSigV4 && cfg.Credential != nil && cfg.Credential.AWS != nil {
 		e.awsKey = bedrockKeyConfig(cfg.Credential.AWS)
 		e.awsRegion = cfg.Credential.AWS.Region.GetValue()
@@ -89,6 +108,12 @@ type plan struct {
 	usage   resolvedUsage
 	billing bool
 	stream  streamMode
+	body    []bodyOverride // the request body fields forced on this call
+	// statusJobID is the job a caller's status check names, "" for any other call. Such a call is
+	// relayed free on any route but a disabled one, since the job is charged once, when it settles.
+	statusJobID   string
+	statusMatches []schemas.RelayJobMatch // the started jobs' routes whose templates the status check matched
+	statusKey     string                  // the candidate set the job lookup ran on
 }
 
 // readsReplyBody reports whether a billable call reads something from its reply's body: a priced
@@ -108,19 +133,32 @@ const (
 	streamOff                    // buffered: a route that sets stream: false, or one that starts a job
 )
 
-func (e *endpoint) plan(method, path string, headers map[string]string) plan {
+// selectRoute is the route a call takes, shared by plan and the usage preview. Many upstreams read
+// /a/b/ and /a//b as /a/b, so a disabled route that takes the tidied path refuses the call too; only
+// a path with a trailing or doubled slash pays for the second match.
+func (e *endpoint) selectRoute(method, path string, headers map[string]string) *compiledRoute {
 	route := e.matchRoute(method, path, headers)
+	if tidy := tidyPath(path); tidy != path && (route == nil || !route.disabled) {
+		if alt := e.matchRoute(method, tidy, headers); alt != nil && alt.disabled {
+			return alt
+		}
+	}
+	return route
+}
+
+func (e *endpoint) plan(method, path string, headers map[string]string) plan {
+	route := e.selectRoute(method, path, headers)
 	// A disabled route still matches, so its requests are refused instead of reaching a broader route
 	// (or the relay-any-path fallback) priced differently.
-	p := plan{allowed: (e.cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled), route: route, index: -1, usage: e.usage, billing: billableByDefault(method, nil)}
+	p := plan{allowed: (e.cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled), route: route, index: -1, usage: e.usage, billing: billableByDefault(method, nil), body: e.bodyOverrides}
+	// A path with a dot segment (also ..;x) matches no ** route, so it must not slip past a disabled
+	// one to the relay-any-path fallback; an upstream could resolve it to another path.
+	if route == nil && p.allowed && hasDotSegment(path) {
+		p.allowed = false
+	}
 	if route != nil {
-		p.usage, p.billing = route.usage, route.billable
-		for i := range e.routes {
-			if &e.routes[i] == route {
-				p.index = i
-				break
-			}
-		}
+		p.usage, p.billing, p.body = route.usage, route.billable, route.bodyOverrides
+		p.index = route.configIndex
 	}
 	p.stream = e.streamMode(route, path)
 	return p

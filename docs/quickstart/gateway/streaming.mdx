@@ -121,6 +121,58 @@ data: [DONE]
 
 **To save the stream:** Add `> audio_stream.txt` to redirect output to a file.
 
+## Incremental Text-to-Speech: Streaming Text In and Audio Out
+
+When the text is still being written, for example by an LLM, open a WebSocket at `GET /v1/audio/speech/stream` and send the text as it arrives. Audio comes back while the sentence is still being generated. Providers: ElevenLabs (`eleven_v4_turbo`) and Soniox (`tts-rt-v2`).
+
+Authentication, virtual keys, budgets and rate limits work as for the other inference endpoints. They are checked once, when the session opens. A session is one logged request, billed by the characters you sent.
+
+The first event must be `speech.config`. It takes the fields of `POST /v1/audio/speech` except `input`, and `model` is `provider/model`. Other fields pass to the provider as they do there.
+
+| Client event | Meaning |
+|---|---|
+| `speech.config` | Opens the session. `{"type":"speech.config","model":"elevenlabs/eleven_v4_turbo","voice":"<voice id>","response_format":"pcm"}` |
+| `speech.text` | Text to speak, `{"type":"speech.text","text":"Hello there, "}`. Send it in pieces. |
+| `speech.flush` | Speak what the provider holds and close the current segment. |
+| `speech.end` | Flush, then finish. The session closes after `speech.audio.done`. |
+| `speech.cancel` | Drop pending text and audio. The session stays open. |
+
+| Server event | Meaning |
+|---|---|
+| `speech.session.created` | The session is open. Carries `session.id`, `model`, `response_format` and, for raw formats, `sample_rate`. |
+| `speech.audio.delta` | Base64 `audio`, the `segment` it belongs to, and `alignment` when `with_timestamps` is true. |
+| `speech.segment.done` | The audio of `segment` is complete. |
+| `speech.cancelled` | The cancel took effect. Nothing of `segment`, or an earlier segment, follows. |
+| `speech.audio.done` | The session is finished. `usage.input_chars` is the characters you sent. |
+| `error` | The session could not open, or the provider ended it. |
+
+Segments are numbered from 1. Each flush ends a segment, and a cancel ends every segment still pending. Text sent after a cancel starts a new segment.
+
+Providers hold short text until they have enough to speak it, so send `speech.flush` after a sentence you want spoken now. `speech.end` flushes too. The gateway closes a session that sends nothing for 5 minutes, and a message can be at most 1 MiB. There is no fallback to another provider.
+
+```python
+import asyncio, base64, json, websockets
+
+async def speak():
+    headers = {"Authorization": "Bearer sk-bf-..."}
+    async with websockets.connect("ws://localhost:8080/v1/audio/speech/stream", additional_headers=headers) as ws:
+        await ws.send(json.dumps({"type": "speech.config", "model": "elevenlabs/eleven_v4_turbo", "voice": "21m00Tcm4TlvDq8ikWAM", "response_format": "pcm"}))
+        await ws.send(json.dumps({"type": "speech.text", "text": "Hello there, this is incremental speech."}))
+        await ws.send(json.dumps({"type": "speech.end"}))
+        async for message in ws:
+            event = json.loads(message)
+            if event["type"] == "speech.audio.delta":
+                audio = base64.b64decode(event["audio"])  # play or save it
+            elif event["type"] == "speech.audio.done":
+                print("characters billed:", event["usage"]["input_chars"])
+
+asyncio.run(speak())
+```
+
+**ElevenLabs:** the session uses the text-to-dialogue socket, which takes one voice. It has no cancel, so a cancel closes the provider connection and the next text opens a new one.
+
+**Soniox:** `language_code` is required. Soniox has no flush, so each segment is a Soniox stream: a flush ends the stream and the next text opens another. A stream that gets no text for 3 seconds is ended the same way, which makes the pause a segment boundary. Raw `pcm` is 24 kHz unless `sample_rate` is set.
+
 ## Speech-to-Text Streaming: Real-time Audio Transcription
 
 Stream audio transcription results as they're processed. Get immediate text output for real-time applications or long audio files.

@@ -115,15 +115,24 @@ A path is compared one segment (the part between two `/`) at a time.
 | `/results/*` | `/results/abc`, `/results/123` | `/results`, `/results/abc/pages` |
 | `/v1/*/predict` | `/v1/vision/predict` | `/v1/a/b/predict` |
 | `/v1/**` | `/v1`, `/v1/x`, `/v1/x/y/z` | `/v2/x` |
+| `/jobs/**/status` | `/jobs/1/status`, `/jobs/a/b/status` | `/jobs/status`, `/jobs/metrics` |
 | `/` | `/` only | anything else |
 
 - `*` matches anything inside one segment. `?` and `[abc]` work as they do in a shell.
-- `**` matches everything below a path. It can only be the last segment.
+- A trailing `**` matches everything below a path, including the path itself.
+- A `**` in the middle matches one or more segments, up to 80, and never an empty, `.` or `..` segment, even with `;params` after it. A trailing `**` also refuses `.` and `..` segments. A path can have only one `**`.
 - The path is matched after URL decoding, so `/files/a%2Fb` is treated as `/files/a/b`.
 
 ### Route order
 
-Routes are checked from top to bottom, and the first match wins. Put a specific path above a wildcard that also covers it: `GET /results/latest` before `GET /results/*`.
+A request can match several routes, and Bifrost uses the most specific one, whatever order the routes are listed in:
+
+1. Exact paths, such as `/results/latest`.
+2. Paths with `*`, `?` or `[abc]`, such as `/results/*`.
+3. Paths with `**` in the middle, such as `/jobs/**/status`.
+4. Paths ending in `/**`, deepest first, so `/**` is tried last.
+
+On the same method and path, a route goes first when it is provably narrower than another, and an exact header value goes before a wildcard that can also match it, so a route with no header matchers comes last. Routes that neither rule separates keep the order they are listed in. A disabled route still takes the requests it matches and answers `404`, so a disabled `/**` only blocks paths that no narrower route matches.
 
 ---
 

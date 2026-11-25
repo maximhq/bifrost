@@ -357,6 +357,8 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"agent_logs_add_caller_correlation_id_column"}, run: migrationAddCallerCorrelationIDColumnToAgentLogs},
 	{IDs: []string{"logs_add_model_routing_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
 	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
+	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
+	{IDs: []string{"relay_logs_add_job_debug_widen_job_status"}, run: migrationRelayLogJobColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -6229,6 +6231,36 @@ func migrationAddRelayLogSessionID(ctx context.Context, db *gorm.DB, logger sche
 	return m.Migrate()
 }
 
+// migrationRelayLogJobColumns adds job_debug (how a job row's job was polled) and widens job_status
+// to text (a job's status is any string the upstream reports; one past 64 characters failed the job
+// row's insert, so the job was polled again forever). Both are metadata-only on Postgres: a nullable
+// column with no default or index, and varchar to text with no rewrite. One migration, so
+// relay_logs is locked once. SQLite does not enforce the length, so only the column is added there.
+func migrationRelayLogJobColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "relay_logs_add_job_debug_widen_job_status",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &RelayLog{}, "JobDebug"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			return tx.Exec("ALTER TABLE relay_logs ALTER COLUMN job_status TYPE TEXT").Error
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("relay_logs_add_job_debug_widen_job_status is non-rollbackable: dropping job_debug or narrowing job_status would lose recorded job details")
+		},
+	}})
+	return m.Migrate()
+}
+
 // migrationAddRelayLogCorrelationColumns adds parent_request_id and agent_correlation_id, so a
 // relay call carries the same caller correlation an LLM row records: the baggage session-id that
 // names its parent, and x-bf-agent-correlation-id. As relay_logs_add_session_id does, Postgres
@@ -6502,4 +6534,84 @@ func rollbackComplexitySuggestionTables(tx *gorm.DB) error {
 		}
 	}
 	return tx.Migrator().DropTable(&ComplexityVectorDelete{}, &ComplexitySuggestionRun{}, &ComplexitySuggestion{})
+}
+
+// retentionAutovacuumTables are the tables the retention cleaner deletes from on
+// a schedule (the keys of retentionAdvisoryLockKeys), in a fixed order.
+var retentionAutovacuumTables = []string{"logs", "mcp_tool_logs", "relay_logs", "warp_topic_assignments", "warp_topic_unmatched"}
+
+// retentionAutovacuumOptions are the storage parameters set on each retention
+// table, written as Postgres reports them in pg_class.reloptions.
+var retentionAutovacuumOptions = []string{"autovacuum_vacuum_scale_factor=0.01", "autovacuum_vacuum_threshold=10000"}
+
+// retentionAutovacuumOptionNames returns the parameter names of
+// retentionAutovacuumOptions, so rollback resets exactly what migrate set.
+func retentionAutovacuumOptionNames() []string {
+	names := make([]string, 0, len(retentionAutovacuumOptions))
+	for _, opt := range retentionAutovacuumOptions {
+		name, _, _ := strings.Cut(opt, "=")
+		names = append(names, name)
+	}
+	return names
+}
+
+// migrationTuneRetentionAutovacuum makes autovacuum keep up with retention on
+// Postgres. Retention deletes expired rows every hour, and a DELETE only leaves
+// dead tuples; autovacuum turns them into reusable space, but by default it
+// waits for 20% of a table to be dead. On a 50M-row logs table that is 10M dead
+// rows, so the table and its indexes keep growing between vacuums even though
+// the live row count is steady. Vacuuming after 1% (plus 10000 rows, so small
+// tables are not vacuumed constantly) bounds that bloat. This does not hand
+// space back to the filesystem; only VACUUM FULL or pg_repack do, and VACUUM
+// FULL locks the table for its whole rewrite, so it is never run automatically.
+func migrationTuneRetentionAutovacuum(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	if db.Dialector.Name() != "postgres" {
+		return nil
+	}
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	return migrator.New(db, &opts, []*migrator.Migration{retentionAutovacuumMigration(ctx, logger)}).Migrate()
+}
+
+// retentionAutovacuumMigration sets or resets the autovacuum parameters on every
+// retention table that exists. ALTER TABLE ... SET/RESET takes SHARE UPDATE
+// EXCLUSIVE, which does not block reads or writes; boundDDLLockWait caps the wait
+// behind a running vacuum so the migration retries instead of queueing.
+func retentionAutovacuumMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	eachTable := func(tx *gorm.DB, stmt func(table string) string) error {
+		tx = tx.WithContext(ctx)
+		if tx.Dialector.Name() != "postgres" {
+			return nil
+		}
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+		for _, table := range retentionAutovacuumTables {
+			var exists bool
+			if err := tx.Raw("SELECT to_regclass(?) IS NOT NULL", table).Scan(&exists).Error; err != nil {
+				return err
+			}
+			if !exists {
+				logger.Debug("[logstore] %s does not exist; skipping autovacuum settings", table)
+				continue
+			}
+			if err := tx.Exec(stmt(table)).Error; err != nil {
+				return fmt.Errorf("could not set autovacuum parameters on %s: %w", table, err)
+			}
+		}
+		return nil
+	}
+	return &migrator.Migration{
+		ID: "logs_tune_retention_autovacuum",
+		Migrate: func(tx *gorm.DB) error {
+			return eachTable(tx, func(table string) string {
+				return "ALTER TABLE " + table + " SET (" + strings.Join(retentionAutovacuumOptions, ", ") + ")"
+			})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return eachTable(tx, func(table string) string {
+				return "ALTER TABLE " + table + " RESET (" + strings.Join(retentionAutovacuumOptionNames(), ", ") + ")"
+			})
+		},
+	}
 }

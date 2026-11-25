@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/mcpvouch"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -214,6 +217,70 @@ func TestConvertMCPToolToBifrostSchema_PreservesDefs(t *testing.T) {
 	assert.Contains(t, s, `"$defs"`, "marshalled schema must carry $defs")
 	assert.Contains(t, s, "Preferences", "definition name must be present")
 	assert.Contains(t, s, `"$ref"`, "the property $ref must still be present (resolution happens per-provider)")
+}
+
+// fetchReportBranches is a tagged union a schema generator emits for one tool's arguments.
+const fetchReportBranches = `[
+	{"type": "object", "properties": {"kind": {"type": "string", "const": "sales"}, "region": {"type": "string"}}, "required": ["kind"]},
+	{"type": "object", "properties": {"kind": {"type": "string", "const": "inventory"}, "warehouse": {"type": "string"}}, "required": ["kind"]}
+]`
+
+// A root-level oneOf/anyOf/allOf (allowed by the 2026-07-28 spec) must survive discovery, or the
+// tool is left with no parameters at all.
+func TestConvertMCPToolToBifrostSchema_PreservesRootComposition(t *testing.T) {
+	var want []any
+	require.NoError(t, json.Unmarshal([]byte(fetchReportBranches), &want))
+
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		t.Run(keyword, func(t *testing.T) {
+			var mcpTool mcp.Tool
+			require.NoError(t, json.Unmarshal([]byte(`{"name": "fetch_report", "description": "Fetch a report.",
+				"inputSchema": {"type": "object", "`+keyword+`": `+fetchReportBranches+`}}`), &mcpTool))
+
+			params := convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters
+			require.NotNil(t, params)
+
+			data, err := json.Marshal(params)
+			require.NoError(t, err)
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, want, got[keyword], "the %s branches must reach consumers unchanged", keyword)
+			assert.Equal(t, "object", got["type"])
+		})
+	}
+
+	t.Run("boolean members keep their meaning", func(t *testing.T) {
+		var mcpTool mcp.Tool
+		require.NoError(t, json.Unmarshal([]byte(`{"name": "rec", "inputSchema": {"type": "object",
+			"allOf": [true, {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}],
+			"oneOf": [false, {"type": "object"}]}}`), &mcpTool))
+		data, err := json.Marshal(convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters)
+		require.NoError(t, err)
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(data, &got))
+		require.Len(t, got["allOf"], 2, "a true member must not drop the allOf: %s", data)
+		assert.Equal(t, map[string]any{}, got["allOf"].([]any)[0], "true is kept as {}")
+		assert.Equal(t, []any{"id"}, got["allOf"].([]any)[1].(map[string]any)["required"])
+		require.Len(t, got["oneOf"], 2, "a false member must not drop the oneOf: %s", data)
+		assert.Equal(t, map[string]any{"not": map[string]any{}}, got["oneOf"].([]any)[0], "false is kept as {\"not\": {}}")
+	})
+
+	t.Run("arrays inside a branch's own composition get items", func(t *testing.T) {
+		var mcpTool mcp.Tool
+		require.NoError(t, json.Unmarshal([]byte(`{"name": "tagged", "inputSchema": {"type": "object", "oneOf": [
+			{"allOf": [{"type": "object", "properties": {"tags": {"type": "array"}}}]}]}}`), &mcpTool))
+		data, err := json.Marshal(convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"tags":{"items":{},"type":"array"}`)
+	})
+
+	t.Run("a malformed composition is skipped", func(t *testing.T) {
+		var mcpTool mcp.Tool
+		require.NoError(t, json.Unmarshal([]byte(`{"name": "odd", "inputSchema": {"type": "object", "oneOf": "not-a-list"}}`), &mcpTool))
+		params := convertMCPToolToBifrostSchema(&mcpTool, defaultLogger).Function.Parameters
+		require.NotNil(t, params)
+		assert.Empty(t, params.OneOf)
+	})
 }
 
 // TestCanAutoExecuteTool covers the allow-list check that is now the sole enforcement
@@ -655,6 +722,10 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 			c.AuthType = schemas.MCPAuthTypeTokenExchange
 			c.TokenExchange = &schemas.MCPTokenExchangeConfig{Audience: "aud", UseIdPCredentials: true}
 		}), wantErr: "not supported for openapi"},
+		{name: "client credentials refused", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.AuthType = schemas.MCPAuthTypeClientCredentials
+			c.ClientCredentials = &schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("id"), ClientSecret: schemas.NewSecretVar("s")}
+		}), wantErr: "not supported for openapi"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := validateMCPClientConfig(tc.cfg)
@@ -663,6 +734,85 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 				return
 			}
 			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+// TestClientCapabilitiesFor: a client_credentials client declares everything
+// every client does plus the OAuth Client Credentials extension, and the shared
+// base is left unchanged.
+func TestClientCapabilitiesFor(t *testing.T) {
+	cc := clientCapabilitiesFor(&schemas.MCPClientConfig{AuthType: schemas.MCPAuthTypeClientCredentials})
+	for name, settings := range bifrostClientCapabilities.Extensions {
+		require.Equal(t, settings, cc.Extensions[name], "extension %s", name)
+	}
+	require.Contains(t, cc.Extensions, schemas.MCPOAuthClientCredentialsExtension)
+	require.Len(t, cc.Extensions, len(bifrostClientCapabilities.Extensions)+1)
+	require.NotContains(t, bifrostClientCapabilities.Extensions, schemas.MCPOAuthClientCredentialsExtension)
+	require.Equal(t, bifrostClientCapabilities, clientCapabilitiesFor(&schemas.MCPClientConfig{AuthType: schemas.MCPAuthTypeOauth}))
+}
+
+// TestValidateMCPClientConfig_ClientCredentials: the block is required and checked, and STDIO is refused.
+func TestValidateMCPClientConfig_ClientCredentials(t *testing.T) {
+	config := func(cc *schemas.MCPClientCredentialsConfig) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID: "cc", Name: "cc_client", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://mcp.example.com/mcp"),
+			AuthType:         schemas.MCPAuthTypeClientCredentials, ClientCredentials: cc,
+		}
+	}
+	require.NoError(t, validateMCPClientConfig(config(&schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("id"), ClientSecret: schemas.NewSecretVar("s")})))
+	require.ErrorContains(t, validateMCPClientConfig(config(nil)), "client_credentials is required")
+	require.ErrorContains(t, validateMCPClientConfig(config(&schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("id")})), "set client_secret or private_key")
+
+	stdio := config(&schemas.MCPClientCredentialsConfig{ClientID: schemas.NewSecretVar("id"), ClientSecret: schemas.NewSecretVar("s")})
+	stdio.ConnectionType, stdio.ConnectionString, stdio.StdioConfig = schemas.MCPConnectionTypeSTDIO, nil, &schemas.MCPStdioConfig{Command: "server"}
+	require.ErrorContains(t, validateMCPClientConfig(stdio), "not supported for STDIO")
+}
+
+// TestValidateMCPClientConfig_AWSSigV4: the block is required and checked, the
+// server must be reachable over HTTP, and no header the signer owns may be
+// configured or forwarded.
+func TestValidateMCPClientConfig_AWSSigV4(t *testing.T) {
+	config := func(mutate func(*schemas.MCPClientConfig)) *schemas.MCPClientConfig {
+		c := &schemas.MCPClientConfig{
+			ID: "sigv4", Name: "sigv4_client", ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp"),
+			AuthType:         schemas.MCPAuthTypeAWSSigV4, AWSSigV4: &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-east-1")},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	require.NoError(t, validateMCPClientConfig(config(nil)))
+	require.NoError(t, validateMCPClientConfig(config(func(c *schemas.MCPClientConfig) { c.ConnectionType = schemas.MCPConnectionTypeSSE })))
+	require.NoError(t, validateMCPClientConfig(config(func(c *schemas.MCPClientConfig) {
+		c.Headers = map[string]schemas.SecretVar{"X-Api-Version": *schemas.NewSecretVar("2")}
+		c.AllowedExtraHeaders = schemas.WhiteList{"x-tenant-id"}
+	})))
+
+	for name, tc := range map[string]struct {
+		mutate func(*schemas.MCPClientConfig)
+		want   string
+	}{
+		"missing block": {func(c *schemas.MCPClientConfig) { c.AWSSigV4 = nil }, "aws_sigv4 is required for aws_sigv4 auth type in client 'sigv4_client'"},
+		"invalid block": {func(c *schemas.MCPClientConfig) { c.AWSSigV4.Service = "s3" }, "aws_sigv4.service must be one of"},
+		"stdio": {func(c *schemas.MCPClientConfig) {
+			c.ConnectionType, c.ConnectionString, c.StdioConfig = schemas.MCPConnectionTypeSTDIO, nil, &schemas.MCPStdioConfig{Command: "server"}
+		}, "aws_sigv4 auth type needs connection_type http, sse or openapi"},
+		"oauth config id": {func(c *schemas.MCPClientConfig) { c.OauthConfigID = schemas.Ptr("oauth-1") }, "oauth_config_id must not be set for aws_sigv4 auth type"},
+		"authorization header": {func(c *schemas.MCPClientConfig) {
+			c.Headers = map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer x")}
+		}, `header "Authorization" is set by the SigV4 signer and cannot be configured in client 'sigv4_client'`},
+		"x-amz header": {func(c *schemas.MCPClientConfig) {
+			c.Headers = map[string]schemas.SecretVar{"X-Amz-Target": *schemas.NewSecretVar("t")}
+		}, `header "X-Amz-Target" is set by the SigV4 signer`},
+		"forwarded x-amz header":  {func(c *schemas.MCPClientConfig) { c.AllowedExtraHeaders = schemas.WhiteList{"x-amz-security-token"} }, `allowed_extra_headers cannot include "x-amz-security-token": it is set by the SigV4 signer in client 'sigv4_client'`},
+		"forwarded authorization": {func(c *schemas.MCPClientConfig) { c.AllowedExtraHeaders = schemas.WhiteList{"authorization"} }, `allowed_extra_headers cannot include "authorization"`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.ErrorContains(t, validateMCPClientConfig(config(tc.mutate)), tc.want)
 		})
 	}
 }
@@ -1010,4 +1160,162 @@ func TestRoundTripState(t *testing.T) {
 	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
 	assert.Equal(t, RoundTripID("req-2"), CallRoundTripID(ctx), "a first round's id comes from its request")
 	assert.Equal(t, id, CallRoundTripID(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)), "a retry keeps the id it carried")
+}
+
+// A call asks the upstream for progress only when ctx carries a reporter, under a fresh token whose
+// progress reaches that reporter until the call ends, keeping any other _meta the call had.
+func TestWithProgressToken(t *testing.T) {
+	call := mcp.CallToolRequest{}
+	call.Params.Meta = &mcp.Meta{AdditionalFields: map[string]any{"trace": "t1"}}
+
+	unchanged, stop := withProgressToken(context.Background(), call)
+	stop()
+	assert.Same(t, call.Params.Meta, unchanged.Params.Meta)
+
+	type step struct {
+		progress float64
+		total    *float64
+		message  string
+	}
+	var reported []step
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPProgressReporter,
+		ProgressReporter(func(_ context.Context, progress float64, total *float64, message string) {
+			reported = append(reported, step{progress, total, message})
+		}))
+	sent, stop := withProgressToken(ctx, call)
+	token, ok := sent.Params.Meta.ProgressToken.(string)
+	require.True(t, ok)
+	assert.NotEmpty(t, token)
+	assert.Equal(t, "t1", sent.Params.Meta.AdditionalFields["trace"])
+	assert.Nil(t, call.Params.Meta.ProgressToken, "the caller's request is not modified")
+
+	total := float64(2)
+	deliverProgress(map[string]any{"progressToken": token, "progress": float64(1), "total": total, "message": "half"})
+	deliverProgress(map[string]any{"progressToken": token, "progress": float64(2)})
+	deliverProgress(map[string]any{"progressToken": "another-call", "progress": float64(1)})
+	deliverProgress(map[string]any{"progressToken": token, "progress": "1"})
+	// An in-process server hands its notification over without a JSON round trip, so numbers keep their Go type.
+	four := float64(4)
+	deliverProgress(map[string]any{"progressToken": token, "progress": 3, "total": int64(4)})
+	deliverProgress(map[string]any{"progressToken": token, "progress": json.Number("4")})
+	assert.Equal(t, []step{{1, &total, "half"}, {2, nil, ""}, {3, &four, ""}, {4, nil, ""}}, reported, "only this call's well-formed progress is reported")
+
+	stop()
+	deliverProgress(map[string]any{"progressToken": token, "progress": float64(5)})
+	assert.Len(t, reported, 4, "nothing is reported once the call has ended")
+	_, ok = progressRoutes.Load(token)
+	assert.False(t, ok)
+}
+
+// A reporter stuck on a caller that stopped reading does not hold up the end of the call: stopping
+// cancels the delivery in flight and waits only for it to return.
+func TestWithProgressToken_StopUnblocksDelivery(t *testing.T) {
+	entered := make(chan struct{})
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPProgressReporter,
+		ProgressReporter(func(ctx context.Context, _ float64, _ *float64, _ string) {
+			close(entered)
+			<-ctx.Done()
+		}))
+	sent, stop := withProgressToken(ctx, mcp.CallToolRequest{})
+	token := sent.Params.Meta.ProgressToken.(string)
+	delivered := make(chan struct{})
+	go func() {
+		defer close(delivered)
+		deliverProgress(map[string]any{"progressToken": token, "progress": float64(1)})
+	}()
+	<-entered
+
+	stopped := make(chan struct{})
+	go func() {
+		stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop waited on a delivery that cannot finish")
+	}
+	<-delivered
+}
+
+// An in-process upstream's progress reaches the caller: its notifications skip JSON, so progress and
+// total arrive as Go ints rather than float64s.
+func TestInProcessUpstreamProgressIsRelayed(t *testing.T) {
+	upstream := server.NewMCPServer("inproc", "1.0.0", server.WithToolCapabilities(true))
+	upstream.AddTool(mcp.NewTool("work"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if req.Params.Meta == nil || req.Params.Meta.ProgressToken == nil {
+			return mcp.NewToolResultText("no token"), nil
+		}
+		params := map[string]any{"progressToken": req.Params.Meta.ProgressToken, "progress": 1, "total": 2}
+		if err := server.ServerFromContext(ctx).SendNotificationToClient(ctx, string(mcp.MethodNotificationProgress), params); err != nil {
+			return nil, err
+		}
+		// The in-process transport forwards notifications on their own goroutine, so a result sent at once
+		// can overtake them; the work after the step leaves it time to go out first.
+		time.Sleep(50 * time.Millisecond)
+		return mcp.NewToolResultText("done"), nil
+	})
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(t, m.AddClient(context.Background(), &schemas.MCPClientConfig{
+		ID: "inproc", Name: "inproc", ConnectionType: schemas.MCPConnectionTypeInProcess, InProcessServer: upstream, ToolsToExecute: []string{"*"},
+	}))
+
+	type step struct {
+		progress, total float64
+	}
+	var mu sync.Mutex
+	var reported []step
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPProgressReporter,
+		ProgressReporter(func(_ context.Context, progress float64, total *float64, _ string) {
+			mu.Lock()
+			defer mu.Unlock()
+			reported = append(reported, step{progress, *total})
+		}))
+	name, callType, id := "inproc-work", "function", "call-1"
+	result, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+		ID: &id, Type: &callType, Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.Nil(t, bErr)
+	require.NotNil(t, result)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []step{{1, 2}}, reported)
+}
+
+// progressNumber reads every Go number an in-process server may send, named types included, as both
+// progress and total, and nothing that is not a number.
+func TestProgressNumber(t *testing.T) {
+	type percent uint8
+	numbers := map[string]any{
+		"float64": float64(3), "float32": float32(3), "int": 3, "int8": int8(3), "int16": int16(3), "int32": int32(3),
+		"int64": int64(3), "uint": uint(3), "uint8": uint8(3), "uint16": uint16(3), "uint32": uint32(3), "uint64": uint64(3),
+		"uintptr": uintptr(3), "named": percent(3), "json.Number": json.Number("3"),
+	}
+	type step struct{ progress, total float64 }
+	var reported []step
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPProgressReporter,
+		ProgressReporter(func(_ context.Context, progress float64, total *float64, _ string) {
+			require.NotNil(t, total, "total was dropped")
+			reported = append(reported, step{progress, *total})
+		}))
+	sent, stop := withProgressToken(ctx, mcp.CallToolRequest{})
+	t.Cleanup(stop)
+	token := sent.Params.Meta.ProgressToken.(string)
+	for name, v := range numbers {
+		t.Run(name, func(t *testing.T) {
+			got, ok := progressNumber(v)
+			assert.True(t, ok)
+			assert.Equal(t, float64(3), got)
+			reported = nil
+			deliverProgress(map[string]any{"progressToken": token, "progress": v, "total": v})
+			assert.Equal(t, []step{{3, 3}}, reported, "as progress and as total")
+		})
+	}
+	for name, v := range map[string]any{"string": "3", "nil": nil, "bool": true, "malformed json.Number": json.Number("x")} {
+		t.Run("not a number: "+name, func(t *testing.T) {
+			_, ok := progressNumber(v)
+			assert.False(t, ok)
+		})
+	}
 }

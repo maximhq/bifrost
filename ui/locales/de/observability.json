@@ -371,6 +371,7 @@
 			"outputCost": "Output-Kosten",
 			"additionalCost": "Zusätzliche Kosten",
 			"guardrailCost": "Guardrail-Kosten",
+			"externalGuardrailCostNote": "Enthält {{cost}} geschätzte Kosten für externe Guardrails, die nicht in die Gesamtkosten oder Budgets einfließen.",
 			"semanticCacheCost": "Semantische Cache-Kosten",
 			"routingCost": "Routing-Kosten",
 			"inputTextTokens": "Input-Text-Tokens",
@@ -404,6 +405,9 @@
 			"judgeProvider": "Judge-Anbieter",
 			"judgeModel": "Judge-Modell",
 			"promptTokens": "Prompt-Tokens",
+			"usageUnits": "Nutzungseinheiten",
+			"estimatedCost": "Geschätzte Kosten",
+			"estimatedCostTooltip": "Geschätzt zum Listenpreis des Guardrail-Anbieters. Fließt nicht in die Gesamtkosten oder Budgets ein.",
 			"reason": "Grund",
 			"routingClassificationDetails": "Routing-Klassifizierungsdetails",
 			"mechanism": "Mechanismus",
@@ -793,6 +797,7 @@
 			"toastExported_other": "{{count}} Protokolle exportiert",
 			"toastFailed": "Export fehlgeschlagen: {{error}}",
 			"summary": {
+				"jobId": "Job-ID: {{value}}",
 				"search": "Suche „{{value}}“",
 				"request": "Anfrage „{{value}}“",
 				"providers": "Anbieter ({{total}})",
@@ -819,6 +824,20 @@
 		"batchMixedModel": "gemischt"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "Die Abrechnungszeile wurde vor der Belastung gelöscht",
+			"relay_job_no_usage": "Die letzte Antwort enthielt keine Nutzung",
+			"relay_job_rejected": "Der Upstream hat die Job-ID abgelehnt",
+			"relay_job_access_denied": "Der Upstream hat den Zugriff verweigert",
+			"relay_job_gone": "Der Upstream kennt den Job nicht mehr",
+			"relay_job_timeout": "Vor dem Timeout nicht fertig",
+			"relay_job_params": "Job-Einstellungen nicht lesbar"
+		},
+		"jobOutcome": {
+			"unpriced": "Ohne Preis",
+			"failed": "Fehlgeschlagen",
+			"succeeded": "Erfolgreich"
+		},
 		"fields": {
 			"relay": "Relay",
 			"kind": "Art",
@@ -837,7 +856,10 @@
 			"no": "Nein"
 		},
 		"columns": {
-			"jobBadge": "JOB",
+			"startsJob": "Startet Job {{id}}",
+			"jobUnpriced": "Ohne Preis: {{reason}}",
+			"jobFailed": "Fehlgeschlagen: {{status}}",
+			"jobBadge": "Job",
 			"noRoute": "Keine Route",
 			"route": "Route {{route}}",
 			"settled": "Abgerechnet: {{status}}",
@@ -877,6 +899,13 @@
 			"perRequest": "{{value}}/Anfrage"
 		},
 		"detail": {
+			"jobStatusStat": "Job-Status",
+			"jobNotSettled": "Noch nicht abgerechnet",
+			"jobSettlementFailed": "Die Abrechnung konnte nicht geprüft werden.",
+			"jobSettlement": "Job-Abrechnung",
+			"costUnpriced": "ohne Preis",
+			"unpricedBody": "Bifrost konnte diesen Job nicht bepreisen. Seine Kosten sind unbekannt, und der Job selbst wurde nicht belastet. Der Startaufruf behielt seine eigene Belastung.",
+			"unpricedTitle": "Job ohne Preis",
 			"loadingDetails": "Relay-Protokolldetails werden geladen",
 			"notFound": "Relay-Protokoll nicht gefunden",
 			"loadFailed": "Dieses Relay-Protokoll konnte nicht geladen werden.",
@@ -907,6 +936,12 @@
 			"tokensNotPricedValue": "{{input}} ein / {{output}} aus",
 			"matchedRoute": "Zugeordnete Route",
 			"parentLog": "Übergeordnetes Protokoll",
+			"jobPolls": "Versuche der Statusabfrage",
+			"jobLastStatus": "Letzter Job-Status",
+			"jobLastHttpStatus": "HTTP-Status der letzten Abfrage",
+			"jobSettledAt": "Abgerechnet am",
+			"jobSettledBy": "Abgerechnet durch Statusabfrage",
+			"jobLastError": "Warum ohne Preis beendet",
 			"responseBodyPreview": "Antwortinhalt (Vorschau)",
 			"filterByValue": "Relay-Aufrufe mit diesem Wert anzeigen",
 			"queryParameters": "Query-Parameter",
@@ -916,6 +951,7 @@
 			"contentHidden": "Die Inhaltsprotokollierung wurde für diese Anfrage deaktiviert."
 		},
 		"filters": {
+			"unpriced": "Jobs ohne Preis",
 			"reset": "Zurücksetzen",
 			"searchRelays": "Relays suchen",
 			"searchMethods": "Methoden suchen",
@@ -1121,6 +1157,8 @@
 			"groupTracesBySessionHelp": "Wenn aktiviert, werden Anfragen mit demselben x-bf-session-id-Header in einem einzigen Trace gruppiert, wobei jede Anfrage als Top-Level-Sibling-Span erscheint. Eine Anfrage mit einem eingehenden W3C-traceparent verbleibt in ihrem eigenen verteilten Trace und ist davon nicht betroffen.",
 			"disableRootSpanContent": "Root-Span-Inhalt deaktivieren",
 			"disableRootSpanContentHelp": "Wenn aktiviert, wird der Input-/Output-Nachrichteninhalt nur aus dem Root-Span verworfen; der zugrunde liegende Generation-Span (llm.call) behält den vollständigen Inhalt.",
+			"applyTraceDimensionsToChildSpans": "Dimensionen auf untergeordnete Spans anwenden",
+			"applyTraceDimensionsToChildSpansHelp": "Wenn aktiviert, werden Anfragedimensionen (x-bf-dim-*-Header) in jeden exportierten Span übernommen, nicht nur in den Root-Span, sodass untergeordnete Spans nach Dimension gefiltert oder gruppiert werden können. path, method und reservierte Namensräume wie gen_ai.* werden übersprungen. Jede Dimension wird jedem Span hinzugefügt, daher erhöhen Werte mit hoher Kardinalität die Ingestion-Kosten des Collectors.",
 			"enableMetricsExport": "Metrik-Export aktivieren",
 			"enableMetricsExportHelp": "Metriken an einen OTEL Collector senden, um sie in Cluster-Bereitstellungen ordnungsgemäß zu aggregieren",
 			"overheadBreakdown": "Overhead-Aufschlüsselung",

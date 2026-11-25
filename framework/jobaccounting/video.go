@@ -57,6 +57,7 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Runware:   {},
 	schemas.MiniMax:   {},
 	schemas.BytePlus:  {},
+	schemas.MachGen:   {},
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
@@ -95,14 +96,19 @@ func (s *VideoSettler) SupportsProvider(provider schemas.ModelProvider) bool {
 // to five minutes, so the batch ladder would leave a finished job unsettled — and
 // its assets unreadable — for a quarter of an hour after it was ready.
 func (s *VideoSettler) Backoff(attempts int, interval time.Duration) time.Duration {
-	delay := interval
+	return slowAfterManyPolls(attempts, interval)
+}
+
+// slowAfterManyPolls spaces a long-running job's polls out: 2 minutes apart after 20 polls, 5 after
+// 40. Video and relay jobs share it.
+func slowAfterManyPolls(attempts int, interval time.Duration) time.Duration {
 	switch {
 	case attempts >= 40:
-		delay = maxDuration(delay, 5*time.Minute)
+		return maxDuration(interval, 5*time.Minute)
 	case attempts >= 20:
-		delay = maxDuration(delay, 2*time.Minute)
+		return maxDuration(interval, 2*time.Minute)
 	}
-	return delay
+	return interval
 }
 
 func (s *VideoSettler) Poll(ctx context.Context, job *cstables.TableProviderJob) (*PollResult, error) {
@@ -158,6 +164,12 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 	settlement := &Settlement{
 		Model:  dims.Model,
 		Object: videoObjectFor(dims.RequestType),
+	}
+	// A token-metered provider (Seedance's completion_tokens) reports what it billed.
+	// The settlement row is the only row that bills the job, so its token columns and
+	// the count governance is told come from here; polls never carry them.
+	if dims.OutputTokens > 0 {
+		settlement.Usage = schemas.BifrostLLMUsage{CompletionTokens: dims.OutputTokens, TotalTokens: dims.OutputTokens}
 	}
 
 	// Attached on every path below, including the unpriceable ones: a row with no

@@ -9,6 +9,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -62,6 +63,10 @@ type OAuthConfig struct {
 	// RotateRefresh issues a new refresh token on every refresh and retires
 	// the one presented.
 	RotateRefresh bool `json:"rotate_refresh,omitempty"`
+	// RevokeOnReuse, with RotateRefresh, revokes the whole grant when a
+	// refresh token it rotated away is presented again, as Notion's MCP
+	// server does.
+	RevokeOnReuse bool `json:"revoke_on_reuse,omitempty"`
 	// MetadataDocuments takes a client_id that is an https URL as a Client ID
 	// Metadata Document: the server fetches it at authorization, checks it and
 	// knows the client as a public one from then on. "advertised" also
@@ -74,12 +79,22 @@ type OAuthConfig struct {
 	// under an address nothing resolves can then be served by a local process.
 	// Empty fetches the document URL itself.
 	MetadataDocumentsVia string `json:"metadata_documents_via,omitempty"`
+	// MetadataDocumentsViaHosts overrides MetadataDocumentsVia per document host, so one host can be
+	// unreachable (a closed port) while another, a hosted copy, is served.
+	MetadataDocumentsViaHosts map[string]string `json:"metadata_documents_via_hosts,omitempty"`
+	// ClientCredentials accepts the client_credentials grant and advertises it,
+	// with private_key_jwt client authentication and the ES256 and RS256
+	// algorithms it verifies.
+	ClientCredentials bool `json:"client_credentials,omitempty"`
 }
 
 // validate rejects a configuration the server would otherwise misread.
 func (c *OAuthConfig) validate() error {
 	if c.Challenge != "" && c.Challenge != "bare" {
 		return fmt.Errorf(`oauth challenge must be "bare" or empty, got %q`, c.Challenge)
+	}
+	if c.RevokeOnReuse && !c.RotateRefresh {
+		return fmt.Errorf("oauth revoke_on_reuse needs rotate_refresh")
 	}
 	if c.MetadataDocuments != "" && c.MetadataDocuments != "advertised" && c.MetadataDocuments != "accepted" {
 		return fmt.Errorf(`oauth metadata_documents must be "advertised", "accepted" or empty, got %q`, c.MetadataDocuments)
@@ -88,6 +103,12 @@ func (c *OAuthConfig) validate() error {
 		via, err := url.Parse(c.MetadataDocumentsVia)
 		if err != nil || (via.Scheme != "http" && via.Scheme != "https") || via.Host == "" {
 			return fmt.Errorf("oauth metadata_documents_via must be an http or https URL, got %q", c.MetadataDocumentsVia)
+		}
+	}
+	for host, base := range c.MetadataDocumentsViaHosts {
+		via, err := url.Parse(base)
+		if err != nil || (via.Scheme != "http" && via.Scheme != "https") || via.Host == "" {
+			return fmt.Errorf("oauth metadata_documents_via_hosts[%q] must be an http or https URL, got %q", host, base)
 		}
 	}
 	for _, client := range c.Clients {
@@ -107,6 +128,8 @@ type OAuthClient struct {
 	AuthMethod string `json:"token_endpoint_auth_method,omitempty"`
 	Scope      string `json:"scope,omitempty"`
 	Dynamic    bool   `json:"dynamic,omitempty"`
+	// PublicKeyPEM verifies the client's private_key_jwt assertions (PKIX "PUBLIC KEY", EC P-256 or RSA).
+	PublicKeyPEM string `json:"public_key_pem,omitempty"`
 }
 
 // allows reports whether redirectURI may be used with this client.
@@ -144,8 +167,12 @@ type OAuthCounters struct {
 	Authorize    int64 `json:"authorize"`
 	TokenCode    int64 `json:"token_code"`
 	TokenRefresh int64 `json:"token_refresh"`
-	TokenErrors  int64 `json:"token_errors"`
-	Rejected     int64 `json:"rejected"`
+	// TokenClientCredentials counts client_credentials token requests.
+	TokenClientCredentials int64 `json:"token_client_credentials"`
+	TokenErrors            int64 `json:"token_errors"`
+	Rejected               int64 `json:"rejected"`
+	// ReuseRevocations counts grants revoked by RevokeOnReuse.
+	ReuseRevocations int64 `json:"reuse_revocations"`
 	// MetadataDocumentFetches counts Client ID Metadata Documents fetched,
 	// whether or not they were accepted.
 	MetadataDocumentFetches int64 `json:"metadata_document_fetches"`
@@ -167,7 +194,8 @@ type OAuthLogEntry struct {
 	State              string `json:"state,omitempty"`
 	LoginHint          string `json:"login_hint,omitempty"`
 	Identity           string `json:"identity,omitempty"`
-	PKCE               string `json:"pkce,omitempty"` // ok, missing or mismatch
+	PKCE               string `json:"pkce,omitempty"`        // ok, missing or mismatch
+	ClientAuth         string `json:"client_auth,omitempty"` // client_secret_basic, client_secret_post or private_key_jwt
 	RefreshToken       string `json:"refresh_token,omitempty"`
 	IssuedAccessToken  string `json:"issued_access_token,omitempty"`
 	IssuedRefreshToken string `json:"issued_refresh_token,omitempty"`
@@ -215,6 +243,7 @@ type oauthState struct {
 	grants   []*oauthGrant
 	access   map[string]*oauthAccess
 	refresh  map[string]*oauthGrant // live refresh tokens
+	retired  map[string]*oauthGrant // refresh tokens rotated away
 	fails    []OAuthFail
 	counters OAuthCounters
 	log      []OAuthLogEntry
@@ -251,6 +280,7 @@ func newOAuthState() *oauthState {
 		codes:   map[string]*oauthCode{},
 		access:  map[string]*oauthAccess{},
 		refresh: map[string]*oauthGrant{},
+		retired: map[string]*oauthGrant{},
 	}
 }
 
@@ -447,6 +477,7 @@ func (o *oauthState) issueAccess(g *oauthGrant, ttl time.Duration) string {
 func (o *oauthState) issueRefresh(g *oauthGrant) string {
 	if g.refreshToken != "" {
 		delete(o.refresh, g.refreshToken)
+		o.retired[g.refreshToken] = g
 	}
 	token := "rt_" + randomID()
 	o.refresh[token] = g
@@ -490,7 +521,8 @@ func (o *oauthState) snapshot() *OAuthState {
 // the server publishes is built from it, so a client that dialled 127.0.0.1 is
 // sent back to 127.0.0.1 rather than to a name its network policy may refuse.
 func baseURL(r *http.Request) string {
-	if r.TLS != nil {
+	// X-Forwarded-Proto comes from the mock's own TLS-inspecting proxy, which relays decrypted https as http.
+	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
 		return "https://" + r.Host
 	}
 	return "http://" + r.Host
@@ -509,6 +541,16 @@ func (s *Server) issuer(r *http.Request) string {
 // error status may read it as a JSON-RPC response and never see the status.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (string, bool) {
 	a := s.auth.get()
+	if a.SigV4 != nil {
+		// routeServer verified the signature before dispatching here, unless SigV4
+		// was turned on after it routed the request.
+		identity, verified := r.Context().Value(sigv4IdentityKey{}).(string)
+		if !verified {
+			http.Error(w, "unverified SigV4 request", http.StatusUnauthorized)
+			return "", false
+		}
+		return identity, true
+	}
 	if a.OAuth == nil {
 		res := s.auth.check(r.Header)
 		if !res.OK {
@@ -634,6 +676,11 @@ func (s *Server) ServeAuthorizationServerMetadata(w http.ResponseWriter, r *http
 	}
 	if cfg.MetadataDocuments == "advertised" {
 		meta["client_id_metadata_document_supported"] = true
+	}
+	if cfg.ClientCredentials {
+		meta["grant_types_supported"] = []string{"authorization_code", "refresh_token", "client_credentials"}
+		meta["token_endpoint_auth_methods_supported"] = []string{"none", "client_secret_post", "client_secret_basic", "private_key_jwt"}
+		meta["token_endpoint_auth_signing_alg_values_supported"] = []string{"ES256", "RS256"}
 	}
 	writeJSON(w, http.StatusOK, meta)
 }
@@ -837,7 +884,7 @@ func (s *Server) resolveMetadataDocument(cfg *OAuthConfig, clientID string) {
 	if known {
 		return
 	}
-	client, err := fetchMetadataDocument(cfg.MetadataDocumentsVia, clientID)
+	client, err := fetchMetadataDocument(cfg.documentsVia(clientID), clientID)
 
 	s.oauth.mu.Lock()
 	defer s.oauth.mu.Unlock()
@@ -849,6 +896,16 @@ func (s *Server) resolveMetadataDocument(cfg *OAuthConfig, clientID string) {
 		s.oauth.putClient(client)
 	}
 	s.oauth.record(entry)
+}
+
+// documentsVia is the base a document is fetched through: its host's override, else MetadataDocumentsVia.
+func (c *OAuthConfig) documentsVia(clientID string) string {
+	if u, err := url.Parse(clientID); err == nil {
+		if via, ok := c.MetadataDocumentsViaHosts[u.Hostname()]; ok {
+			return via
+		}
+	}
+	return c.MetadataDocumentsVia
 }
 
 // fetchMetadataDocument fetches the document at clientID, through via when it
@@ -946,8 +1003,15 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 		Resource:     form.Get("resource"),
 		RefreshToken: form.Get("refresh_token"),
 	}
-	if id, secret, ok := r.BasicAuth(); ok {
+	switch id, secret, basic := r.BasicAuth(); {
+	case form.Get("client_assertion_type") == clientAssertionTypeJWTBearer:
+		entry.ClientAuth = "private_key_jwt"
+		entry.ClientID = assertionSubject(form.Get("client_assertion"))
+	case basic:
+		entry.ClientAuth = "client_secret_basic"
 		entry.ClientID, entry.ClientSecret = id, secret
+	case entry.ClientSecret != "":
+		entry.ClientAuth = "client_secret_post"
 	}
 
 	s.oauth.mu.Lock()
@@ -956,6 +1020,8 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 		s.oauth.counters.TokenCode++
 	case "refresh_token":
 		s.oauth.counters.TokenRefresh++
+	case "client_credentials":
+		s.oauth.counters.TokenClientCredentials++
 	}
 	s.oauth.mu.Unlock()
 
@@ -980,7 +1046,16 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 	}
 
 	client, known := s.oauth.clients[entry.ClientID]
-	if !known || (client.ClientSecret != "" && entry.ClientSecret != client.ClientSecret) {
+	if entry.ClientAuth == "private_key_jwt" {
+		if !known || client.PublicKeyPEM == "" {
+			fail(http.StatusUnauthorized, "invalid_client", "unknown client or no key registered for it")
+			return
+		}
+		if err := verifyClientAssertion(form.Get("client_assertion"), *client, s.issuer(r)+"/token"); err != nil {
+			fail(http.StatusUnauthorized, "invalid_client", err.Error())
+			return
+		}
+	} else if !known || (client.ClientSecret != "" && entry.ClientSecret != client.ClientSecret) {
 		fail(http.StatusUnauthorized, "invalid_client", "unknown client or wrong client_secret")
 		return
 	}
@@ -1041,6 +1116,19 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 		g, ok = s.oauth.refresh[entry.RefreshToken]
 		switch {
 		case !ok:
+			retired := s.oauth.retired[entry.RefreshToken]
+			if retired != nil && retired.clientID != client.ClientID {
+				fail(http.StatusBadRequest, "invalid_grant", "refresh token was issued to another client")
+				return
+			}
+			if retired != nil && cfg.RevokeOnReuse {
+				if !retired.revoked {
+					retired.revoked = true
+					s.oauth.counters.ReuseRevocations++
+				}
+				fail(http.StatusBadRequest, "invalid_grant", "retired refresh token reused; grant revoked")
+				return
+			}
 			fail(http.StatusBadRequest, "invalid_grant", "unknown or retired refresh token")
 			return
 		case g.revoked:
@@ -1051,6 +1139,20 @@ func (s *Server) serveToken(w http.ResponseWriter, r *http.Request, cfg *OAuthCo
 			return
 		}
 		issueRefresh = cfg.RotateRefresh
+	case "client_credentials":
+		if !cfg.ClientCredentials {
+			fail(http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
+			return
+		}
+		// Confidential clients only (RFC 6749 §4.4): a secret or an assertion must have been checked above.
+		if entry.ClientAuth != "private_key_jwt" && client.ClientSecret == "" {
+			fail(http.StatusUnauthorized, "invalid_client", "client_credentials requires client authentication")
+			return
+		}
+		// The client acts as itself: its identity is its client_id, and no refresh token is issued.
+		g = &oauthGrant{identity: client.ClientID, clientID: client.ClientID, scope: form.Get("scope"), resource: entry.Resource}
+		s.oauth.grants = append(s.oauth.grants, g)
+		issueRefresh = false
 	default:
 		fail(http.StatusBadRequest, "unsupported_grant_type", "grant_type must be authorization_code or refresh_token")
 		return

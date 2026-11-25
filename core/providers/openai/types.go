@@ -1790,6 +1790,37 @@ func (r *OpenAIImageEditRequest) SetExtraParams(params map[string]interface{}) {
 	r.ImageEditParameters.ExtraParams = params
 }
 
+// OpenAIImageReference is one image or mask in the application/json form of /v1/images/edits.
+type OpenAIImageReference struct {
+	ImageURL string `json:"image_url,omitempty"` // http(s) URL or base64 data URL
+	FileID   string `json:"file_id,omitempty"`
+}
+
+// OpenAIImageEditJSONRequest is the application/json body of /v1/images/edits, the only form that takes image URLs.
+type OpenAIImageEditJSONRequest struct {
+	Model             string                 `json:"model"`
+	Prompt            string                 `json:"prompt"`
+	Images            []OpenAIImageReference `json:"images"`
+	Mask              *OpenAIImageReference  `json:"mask,omitempty"`
+	Stream            *bool                  `json:"stream,omitempty"`
+	N                 *int                   `json:"n,omitempty"`
+	Size              *string                `json:"size,omitempty"`
+	ResponseFormat    *string                `json:"response_format,omitempty"`
+	Quality           *string                `json:"quality,omitempty"`
+	Background        *string                `json:"background,omitempty"`
+	InputFidelity     *string                `json:"input_fidelity,omitempty"`
+	PartialImages     *int                   `json:"partial_images,omitempty"`
+	OutputFormat      *string                `json:"output_format,omitempty"`
+	OutputCompression *int                   `json:"output_compression,omitempty"`
+	User              *string                `json:"user,omitempty"`
+	Fallbacks         []string               `json:"fallbacks,omitempty"`
+	ExtraParams       map[string]interface{} `json:"-"`
+}
+
+func (r *OpenAIImageEditJSONRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
 // OpenAIImageVariationRequest is the struct for Image Variation requests in OpenAI format.
 type OpenAIImageVariationRequest struct {
 	Model string                       `json:"model"`

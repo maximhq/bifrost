@@ -1,6 +1,10 @@
 package schemas
 
 import (
+	"encoding/json"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -27,7 +31,8 @@ func TestRelayConfigValidate(t *testing.T) {
 		{"route method", &RelayConfig{Routes: []RelayRouteConfig{{Method: "FETCH", Path: "/x"}}}, "routes[0]: unsupported method"},
 		{"route path must be rooted", &RelayConfig{Routes: []RelayRouteConfig{{Method: "GET", Path: "x"}}}, "must start with /"},
 		{"route glob syntax", &RelayConfig{Routes: []RelayRouteConfig{{Method: "GET", Path: "/[x"}}}, "routes[0]"},
-		{"double star only last", &RelayConfig{Routes: []RelayRouteConfig{{Method: "GET", Path: "/**/x"}}}, "only allowed as the last segment"},
+		{"double star in the middle ok", &RelayConfig{Routes: []RelayRouteConfig{{Method: "GET", Path: "/jobs/**/status"}}}, ""},
+		{"double star only once", &RelayConfig{Routes: []RelayRouteConfig{{Method: "GET", Path: "/**/x/**"}}}, "only allowed once"},
 		{"header route ok", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}}}}, ""},
 		{"header name must be a token", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X Amz": "x"}}}}, "not a valid header name"},
 		{"header value required", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": " "}}}}, "a value glob is required"},
@@ -49,15 +54,15 @@ func TestRelayConfigValidate(t *testing.T) {
 		{"unknown model source", &RelayConfig{Usage: &RelayUsageConfig{ModelSource: "header"}}, "model_source: unsupported value"},
 		{"rounding ok", &RelayConfig{Usage: &RelayUsageConfig{UnitsPath: "Text", UnitsSource: RelayUnitsFromRequest, UnitsMeasure: RelayUnitsChars, UnitsBlockSize: Ptr(100.0), UnitsMinimum: Ptr(1.0), CostPerUnit: Ptr(0.01)}}, ""},
 		{"job ok", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "JobId", Poll: RelayJobPoll{Path: "/", Body: `{"JobId":"{{job.id}}"}`}, StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Usage: &RelayUsageConfig{UnitsPath: "DocumentMetadata.Pages", CostPerUnit: Ptr(0.0015)}}}}}, ""},
-		{"job needs id path", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "routes[0].job.id_path"},
-		{"job needs a succeeded status", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s"}}}}, "succeeded"},
-		{"job poll path rooted", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "jobs"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "poll.path"},
-		{"job measure needing a path under an inherited rate", &RelayConfig{Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsBodyBytes, CostPerUnit: Ptr(0.01)}, Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsChars}}}}}, "routes[0].job.usage.units_path is required"},
-		{"job cannot bill request units", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Usage: &RelayUsageConfig{UnitsPath: "Text", UnitsSource: RelayUnitsFromRequest, UnitsMeasure: RelayUnitsChars, CostPerUnit: Ptr(0.001)}, Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "request-side units are not billed at settlement"},
-		{"job route cannot stream", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Stream: Ptr(true), Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "served buffered"},
-		{"job route must be billable", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Billable: Ptr(false), Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must be billable"},
-		{"job on a PUT needs billable true", &RelayConfig{Routes: []RelayRouteConfig{{Method: "PUT", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must set billable: true"},
-		{"job usage validated", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &RelayUsageConfig{CostPerUnit: Ptr(1.0)}}}}}, "routes[0].job.usage.units_path"},
+		{"job needs id path", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "routes[0].job.id_path"},
+		{"job needs a succeeded status", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s"}}}}, "succeeded"},
+		{"job poll path rooted", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "jobs/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "poll.path"},
+		{"job measure needing a path under an inherited rate", &RelayConfig{Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsBodyBytes, CostPerUnit: Ptr(0.01)}, Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &RelayUsageConfig{UnitsMeasure: RelayUnitsChars}}}}}, "routes[0].job.usage.units_path is required"},
+		{"job cannot bill request units", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Usage: &RelayUsageConfig{UnitsPath: "Text", UnitsSource: RelayUnitsFromRequest, UnitsMeasure: RelayUnitsChars, CostPerUnit: Ptr(0.001)}, Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "request-side units are not billed at settlement"},
+		{"job route cannot stream", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Stream: Ptr(true), Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "served buffered"},
+		{"job route must be billable", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Billable: Ptr(false), Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must be billable"},
+		{"job on a PUT needs billable true", &RelayConfig{Routes: []RelayRouteConfig{{Method: "PUT", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}}}}}, "must set billable: true"},
+		{"job usage validated", &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "id", Poll: RelayJobPoll{Path: "/{{job.id}}"}, StatusPath: "s", Succeeded: []string{"x"}, Usage: &RelayUsageConfig{CostPerUnit: Ptr(1.0)}}}}}, "routes[0].job.usage.units_path"},
 		{"route fee", &RelayConfig{Routes: []RelayRouteConfig{{Method: "GET", Path: "/x", Usage: &RelayUsageConfig{CostPerRequest: Ptr(-0.1)}}}}, "routes[0].usage.cost_per_request"},
 		{"streaming glob", &RelayConfig{Streaming: &RelayStreamingConfig{Paths: []string{"v1/*"}}}, "streaming.paths[0]"},
 		{"full valid", &RelayConfig{
@@ -78,6 +83,87 @@ func TestRelayConfigValidate(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+func TestRelayBodyOverridesValidate(t *testing.T) {
+	raw := func(v string) json.RawMessage { return json.RawMessage(v) }
+	cases := []struct {
+		name     string
+		endpoint map[string]json.RawMessage
+		route    map[string]json.RawMessage
+		wantErr  string
+	}{
+		{"top-level boolean", map[string]json.RawMessage{"include_usage": raw("true")}, nil, ""},
+		{"nested path and any JSON value", nil, map[string]json.RawMessage{"options.depth": raw(`"advanced"`), "limits": raw(`{"max":3}`), "tags": raw(`[1,2]`), "x": raw("null")}, ""},
+		{"value must be JSON", map[string]json.RawMessage{"depth": raw("advanced")}, nil, "body_overrides[depth]: the value must be JSON"},
+		{"a number past a double's range", map[string]json.RawMessage{"limits": raw(`{"max":1e400}`)}, nil, "too large or too small"},
+		{"a number too small for a double", nil, map[string]json.RawMessage{"eps": raw("1e-400")}, "too large or too small"},
+		{"an exact whole number past 2^53", map[string]json.RawMessage{"seed": raw("12345678901234567891")}, nil, ""},
+		{"empty value", nil, map[string]json.RawMessage{"depth": raw("  ")}, "routes[0].body_overrides[depth]"},
+		{"empty segment", map[string]json.RawMessage{"a..b": raw("1")}, nil, "not a path of object keys"},
+		{"path syntax refused", map[string]json.RawMessage{"items.#.id": raw("1")}, nil, "not a path of object keys"},
+		{"escape refused", map[string]json.RawMessage{`a\.b`: raw("1")}, nil, "not a path of object keys"},
+		{"array index refused", map[string]json.RawMessage{"items.0": raw("1")}, nil, "read as an array index"},
+		{"array append refused", map[string]json.RawMessage{"options.-1": raw("true")}, nil, "read as an array index"},
+		{"a key with a dash is fine", map[string]json.RawMessage{"options.-x": raw("true"), "options.-12a": raw("1")}, nil, ""},
+		{"one parent under two spellings", map[string]json.RawMessage{"options.depth": raw("1"), "Options.mode": raw("2")}, nil, "one parent field under different letter case"},
+		{"one parent under two spellings across endpoint and route", map[string]json.RawMessage{"options.depth": raw("1")}, map[string]json.RawMessage{"OPTIONS.mode": raw("2")}, "(with the endpoint's)"},
+		{"siblings under one spelling", map[string]json.RawMessage{"options.depth": raw("1"), "options.mode": raw("2")}, nil, ""},
+		{"case variants in one map", map[string]json.RawMessage{"include_usage": raw("true"), "Include_Usage": raw("true")}, nil, "different letter case"},
+		{"field inside a set field", nil, map[string]json.RawMessage{"options": raw("{}"), "options.depth": raw("1")}, "sets a field inside"},
+		{"route replaces the endpoint value", map[string]json.RawMessage{"include_usage": raw("true")}, map[string]json.RawMessage{"include_usage": raw("false")}, ""},
+		{"route case variant of an endpoint field", map[string]json.RawMessage{"include_usage": raw("true")}, map[string]json.RawMessage{"INCLUDE_USAGE": raw("true")}, "(with the endpoint's)"},
+		{"route field inside an endpoint field", map[string]json.RawMessage{"options": raw("{}")}, map[string]json.RawMessage{"Options.depth": raw("1")}, "sets a field inside"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &RelayConfig{BodyOverrides: tc.endpoint, Routes: []RelayRouteConfig{{Method: "POST", Path: "/search", BodyOverrides: tc.route}}}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// A route that turns the relay's fields off keeps only its own, and is not checked against the relay's.
+func TestRelayRouteInheritBodyOverrides(t *testing.T) {
+	relayFields := map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+	own := map[string]json.RawMessage{"INCLUDE_USAGE": json.RawMessage("false")}
+	off := RelayRouteConfig{Method: "POST", Path: "/x", InheritBodyOverrides: Ptr(false), BodyOverrides: own}
+	assert.Equal(t, own, off.EffectiveBodyOverrides(relayFields))
+	assert.Nil(t, RelayRouteConfig{InheritBodyOverrides: Ptr(false)}.EffectiveBodyOverrides(relayFields), "off with no fields of its own sends nothing")
+	assert.Equal(t, relayFields, RelayRouteConfig{}.EffectiveBodyOverrides(relayFields), "unset inherits")
+
+	cfg := &RelayConfig{BodyOverrides: relayFields, Routes: []RelayRouteConfig{off}}
+	require.NoError(t, cfg.Validate(), "a case variant of a field the route does not inherit is not a conflict")
+	dst := cfg.Clone()
+	*dst.Routes[0].InheritBodyOverrides = true
+	assert.False(t, *cfg.Routes[0].InheritBodyOverrides, "a clone shares no pointer")
+
+	var parsed RelayRouteConfig
+	require.NoError(t, Unmarshal([]byte(`{"method":"POST","path":"/x","inherit_body_overrides":false}`), &parsed))
+	require.NotNil(t, parsed.InheritBodyOverrides)
+	assert.False(t, *parsed.InheritBodyOverrides)
+}
+
+func TestRelayBodyOverridesMergeAndClone(t *testing.T) {
+	endpoint := map[string]json.RawMessage{"include_usage": json.RawMessage("true"), "depth": json.RawMessage(`"basic"`)}
+	route := map[string]json.RawMessage{"depth": json.RawMessage(`"advanced"`)}
+	merged := MergeRelayBodyOverrides(endpoint, route)
+	assert.Equal(t, map[string]json.RawMessage{"include_usage": json.RawMessage("true"), "depth": json.RawMessage(`"advanced"`)}, merged)
+	assert.Equal(t, json.RawMessage(`"basic"`), endpoint["depth"], "the endpoint map is not modified")
+
+	src := &RelayConfig{BodyOverrides: endpoint, Routes: []RelayRouteConfig{{Method: "POST", Path: "/x", BodyOverrides: route}}}
+	dst := src.Clone()
+	require.Equal(t, src, dst)
+	dst.BodyOverrides["include_usage"][0] = 'f'
+	dst.Routes[0].BodyOverrides["depth"] = json.RawMessage("1")
+	assert.Equal(t, json.RawMessage("true"), src.BodyOverrides["include_usage"], "a clone shares no value bytes")
+	assert.Equal(t, json.RawMessage(`"advanced"`), src.Routes[0].BodyOverrides["depth"])
 }
 
 func TestRelayConfigClone(t *testing.T) {
@@ -263,14 +349,77 @@ func TestRelayCloneDoesNotShareSecrets(t *testing.T) {
 	assert.Equal(t, "acme", tenant.GetValue())
 }
 
-func TestRelayRouteJobIsNotConfigurable(t *testing.T) {
+func TestRelayRouteJobRoundTrips(t *testing.T) {
 	var cfg RelayConfig
-	require.NoError(t, Unmarshal([]byte(`{"name":"docs","base_url":"https://docs.example.com","routes":[{"method":"POST","path":"/","job":{"id_path":"JobId","poll":{"path":"/"},"status_path":"s","succeeded":["x"]}}]}`), &cfg))
+	require.NoError(t, Unmarshal([]byte(`{"name":"docs","base_url":"https://docs.example.com","routes":[{"method":"POST","path":"/","job":{"id_path":"JobId","poll":{"path":"/jobs/{{job.id}}","method":"GET"},"status_path":"s","succeeded":["x"],"interval_seconds":10}}]}`), &cfg))
 	require.Len(t, cfg.Routes, 1)
-	assert.Nil(t, cfg.Routes[0].Job, "a job in config.json or an API body is ignored until async jobs are exposed")
-	out, err := Marshal(RelayRouteConfig{Method: "POST", Path: "/", Job: &RelayJobConfig{IDPath: "JobId"}})
+	require.NotNil(t, cfg.Routes[0].Job, "a job in config.json or an API body is read")
+	assert.Equal(t, "/jobs/{{job.id}}", cfg.Routes[0].Job.Poll.Path)
+	assert.Equal(t, 10, cfg.Routes[0].Job.IntervalSeconds)
+	out, err := Marshal(cfg.Routes[0])
 	require.NoError(t, err)
-	assert.NotContains(t, string(out), "job")
+	assert.Contains(t, string(out), `"job":{"id_path":"JobId"`)
+}
+
+func TestRelayJobValidate(t *testing.T) {
+	base := func() *RelayJobConfig {
+		return &RelayJobConfig{IDPath: "JobId", StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Failed: []string{"FAILED"},
+			Poll: RelayJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}, Body: `{"JobId":"{{job.id}}"}`}}
+	}
+	for name, tc := range map[string]struct {
+		edit    func(j *RelayJobConfig)
+		wantErr string
+	}{
+		"valid":                             {func(j *RelayJobConfig) {}, ""},
+		"timeout of a week":                 {func(j *RelayJobConfig) { j.TimeoutSeconds = 7 * 24 * 3600 }, ""},
+		"timeout over a week":               {func(j *RelayJobConfig) { j.TimeoutSeconds = 7*24*3600 + 1 }, "timeout_seconds"},
+		"interval over the timeout":         {func(j *RelayJobConfig) { j.IntervalSeconds, j.TimeoutSeconds = 600, 300 }, "interval_seconds"},
+		"credential header in the poll":     {func(j *RelayJobConfig) { j.Poll.Headers["Authorization"] = "Bearer x" }, "poll.headers"},
+		"functions key header in the poll":  {func(j *RelayJobConfig) { j.Poll.Headers["X-Functions-Key"] = "k" }, "poll.headers"},
+		"api key header in the poll":        {func(j *RelayJobConfig) { j.Poll.Headers["X-Api-Key"] = "k" }, "poll.headers"},
+		"status both succeeded and failed":  {func(j *RelayJobConfig) { j.Failed = append(j.Failed, "succeeded") }, "both succeeded and failed"},
+		"interval over the default timeout": {func(j *RelayJobConfig) { j.IntervalSeconds = 7200 }, "interval_seconds"},
+		"default interval past the timeout": {func(j *RelayJobConfig) { j.IntervalSeconds, j.TimeoutSeconds = 0, 10 }, "30s, the default"},
+		"interval equal to the timeout":     {func(j *RelayJobConfig) { j.IntervalSeconds, j.TimeoutSeconds = 30, 30 }, "must be shorter"},
+		"interval just under the timeout":   {func(j *RelayJobConfig) { j.IntervalSeconds, j.TimeoutSeconds = 29, 30 }, ""},
+		"both left to the defaults":         {func(j *RelayJobConfig) { j.IntervalSeconds, j.TimeoutSeconds = 0, 0 }, ""},
+		"blank succeeded status":            {func(j *RelayJobConfig) { j.Succeeded = []string{""} }, "non-empty"},
+		"padded failed status":              {func(j *RelayJobConfig) { j.Failed = []string{" FAILED "} }, "non-empty"},
+		"poll that names no job":            {func(j *RelayJobConfig) { j.Poll.Body = `{"MaxResults":1}` }, "{{job.id}}"},
+		"id only in a content type the body replaces": {func(j *RelayJobConfig) {
+			j.Poll.Body = `{}`
+			j.Poll.Headers["Content-Type"] = "application/x-job-{{job.id}}"
+		}, "{{job.id}}"},
+		"header set under two spellings": {func(j *RelayJobConfig) {
+			j.Poll.Headers["x-amz-target"] = "Textract.Other"
+		}, "same header"},
+		"host header in the poll": {func(j *RelayJobConfig) {
+			j.Poll.Body = ""
+			j.Poll.Path = "/jobs"
+			j.Poll.Headers["Host"] = "{{job.id}}"
+		}, "never sent"},
+		"id in the content type of a bodyless poll": {func(j *RelayJobConfig) {
+			j.Poll.Body = ""
+			j.Poll.Headers["Content-Type"] = "application/x-job-{{job.id}}"
+		}, ""},
+		"job id in a header":           {func(j *RelayJobConfig) { j.Poll.Body = ""; j.Poll.Headers["X-Job"] = "{{job.id}}" }, ""},
+		"credential in the poll query": {func(j *RelayJobConfig) { j.Poll.Path = "/jobs/{{job.id}}?api_key=k" }, "poll.path"},
+		"plain query in the poll":      {func(j *RelayJobConfig) { j.Poll.Path = "/jobs?id={{job.id}}&verbose=1" }, ""},
+		"azure key header in the poll": {func(j *RelayJobConfig) { j.Poll.Headers["Ocp-Apim-Subscription-Key"] = "k" }, "poll.headers"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			job := base()
+			tc.edit(job)
+			cfg := &RelayConfig{Routes: []RelayRouteConfig{{Method: "POST", Path: "/", Job: job}}}
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
 }
 
 func TestRelayMergeRedactedKeepsReferenceChanges(t *testing.T) {
@@ -305,4 +454,185 @@ func TestRelayRedactedMasksLiteralCredentialHeaders(t *testing.T) {
 	assert.NotEqual(t, "literal-upstream-key-123", key.GetValue(), "a literal credential header is redacted")
 	tenant := out.ExtraHeaders["X-Tenant"]
 	assert.Equal(t, "acme", tenant.GetValue(), "a plain header stays readable")
+}
+
+// The config and Helm schemas must refuse what RelayBodyOverridePath refuses, or a key passes one and fails the other.
+func TestRelayBodyOverrideSchemasMatchValidator(t *testing.T) {
+	cases := map[string]bool{
+		strings.Repeat("a", 128) + ".depth": true,
+		strings.Repeat("a", 129) + ".depth": false,
+		"options.-1":                        false,
+		"-1.options":                        false,
+		"options.-1.depth":                  false,
+		"options.-2":                        true,
+		"options.a-1":                       true,
+	}
+	for key, want := range cases {
+		_, err := RelayBodyOverridePath(key)
+		assert.Equal(t, want, err == nil, key)
+	}
+
+	for _, file := range []string{"../../transports/config.schema.json", "../../helm-charts/bifrost/values.schema.json"} {
+		raw, err := os.ReadFile(file)
+		require.NoError(t, err)
+		var doc any
+		require.NoError(t, json.Unmarshal(raw, &doc))
+		rules := bodyOverrideNameRules(doc)
+		require.NotEmpty(t, rules, file)
+		for _, rule := range rules {
+			for key, want := range cases {
+				assert.Equal(t, want, rule.accepts(key), "%s: %s", file, key)
+			}
+		}
+	}
+}
+
+// bodyOverrideNameRule is one propertyNames allOf: patterns a key must match, and patterns it must not.
+type bodyOverrideNameRule struct {
+	match, not []*regexp.Regexp
+}
+
+func (r bodyOverrideNameRule) accepts(key string) bool {
+	for _, p := range r.match {
+		if !p.MatchString(key) {
+			return false
+		}
+	}
+	for _, p := range r.not {
+		if p.MatchString(key) {
+			return false
+		}
+	}
+	return true
+}
+
+// bodyOverrideNameRules returns each propertyNames allOf that carries the 128-character limit.
+func bodyOverrideNameRules(node any) []bodyOverrideNameRule {
+	var found []bodyOverrideNameRule
+	switch v := node.(type) {
+	case []any:
+		for _, item := range v {
+			found = append(found, bodyOverrideNameRules(item)...)
+		}
+	case map[string]any:
+		if names, ok := v["propertyNames"].(map[string]any); ok {
+			if all, ok := names["allOf"].([]any); ok {
+				var rule bodyOverrideNameRule
+				limited := false
+				for _, item := range all {
+					entry, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					if p, ok := entry["pattern"].(string); ok {
+						rule.match = append(rule.match, regexp.MustCompile(p))
+						limited = limited || strings.Contains(p, "{1,128}")
+					}
+					if not, ok := entry["not"].(map[string]any); ok {
+						if p, ok := not["pattern"].(string); ok {
+							rule.not = append(rule.not, regexp.MustCompile(p))
+						}
+					}
+				}
+				if limited {
+					found = append(found, rule)
+				}
+			}
+		}
+		for _, item := range v {
+			found = append(found, bodyOverrideNameRules(item)...)
+		}
+	}
+	return found
+}
+
+// A poll header needs a value: a blank one would make the job's status route match every call.
+func TestRelayJobRefusesABlankPollHeader(t *testing.T) {
+	job := &RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+		Poll: RelayJobPoll{Path: "/jobs/{{job.id}}", Headers: map[string]string{"X-Op": " "}}}
+	require.ErrorContains(t, job.validate("job", RelayRouteConfig{Method: "POST", Path: "/jobs"}, nil, RelayAuthConfig{Type: RelayAuthBearer}), `"X-Op" has no value`)
+}
+
+// A poll query refuses credential names, but not generic words like code that status APIs use.
+func TestRelayJobPollQueryCredentials(t *testing.T) {
+	route := RelayRouteConfig{Method: "POST", Path: "/jobs"}
+	poll := func(query string) *RelayJobConfig {
+		return &RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+			Poll: RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}?" + query}}
+	}
+	for _, q := range []string{"api_key=x", "refresh_token=x", "pwd=x", "X-Amz-Signature=x"} {
+		require.ErrorContains(t, poll(q).validate("job", route, nil, RelayAuthConfig{Type: RelayAuthBearer}), "carries a credential", q)
+	}
+	for _, q := range []string{"code=pending", "auth=none", "view=full"} {
+		require.NoError(t, poll(q).validate("job", route, nil, RelayAuthConfig{Type: RelayAuthBearer}), q)
+	}
+}
+
+// A relay can name its own key header, which no built-in credential list knows.
+func TestRelayJobRefusesTheRelaysOwnHeaderCredential(t *testing.T) {
+	job := &RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+		Poll: RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}", Headers: map[string]string{"x-tenant-code": "live-key"}}}
+	route := RelayRouteConfig{Method: "POST", Path: "/jobs"}
+	require.ErrorContains(t, job.validate("job", route, nil, RelayAuthConfig{Type: RelayAuthHeader, HeaderName: "X-Tenant-Code"}), "carries a credential")
+	require.NoError(t, job.validate("job", route, nil, RelayAuthConfig{Type: RelayAuthBearer}), "only the relay's own header name is refused")
+}
+
+// A relay can name its own key parameter, which no built-in credential list knows.
+func TestRelayJobRefusesTheRelaysOwnQueryCredential(t *testing.T) {
+	job := &RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+		Poll: RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}?TenantCode=live-key"}}
+	route := RelayRouteConfig{Method: "POST", Path: "/jobs"}
+
+	err := job.validate("job", route, nil, RelayAuthConfig{Type: RelayAuthQuery, QueryParam: "tenantCode"})
+	require.ErrorContains(t, err, "carries a credential")
+
+	require.NoError(t, job.validate("job", route, nil, RelayAuthConfig{Type: RelayAuthBearer}), "the name is only a credential on a query-auth relay")
+}
+
+// A SigV4 poll keeps its own x-amz-* headers; only the ones the signer sets itself are refused.
+func TestRelayJobSigV4PollHeaders(t *testing.T) {
+	route := RelayRouteConfig{Method: "POST", Path: "/"}
+	sigv4 := RelayAuthConfig{Type: RelayAuthAWSSigV4}
+	poll := func(name string) *RelayJobConfig {
+		return &RelayJobConfig{IDPath: "JobId", StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"},
+			Poll: RelayJobPoll{Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis", name: "v"}, Body: `{"JobId":"{{job.id}}"}`}}
+	}
+	require.NoError(t, poll("X-Amz-User-Agent").validate("job", route, nil, sigv4), "the poll sends it")
+	require.ErrorContains(t, poll("X-Amz-Date").validate("job", route, nil, sigv4), "never sent")
+	require.ErrorContains(t, poll("X-Amz-Security-Token").validate("job", route, nil, sigv4), "carries a credential")
+	require.NoError(t, poll("X-Amz-Date").validate("job", route, nil, RelayAuthConfig{Type: RelayAuthBearer}), "only SigV4 owns it")
+}
+
+// The poll fills {{job.id}} into a JSON key too, which a status check could never match, so a save
+// refuses it; in a value it is fine.
+func TestRelayJobPollPlaceholderInAJSONKey(t *testing.T) {
+	route := RelayRouteConfig{Method: "POST", Path: "/"}
+	job := func(body string) *RelayJobConfig {
+		return &RelayJobConfig{IDPath: "JobId", StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"}, Poll: RelayJobPoll{Path: "/", Body: body}}
+	}
+	require.ErrorContains(t, job(`{"Id":"{{job.id}}","job_{{job.id}}":true}`).validate("job", route, nil, RelayAuthConfig{}), "cannot be part of a JSON key")
+	require.ErrorContains(t, job(`{"Jobs":[{"{{job.id}}":1}]}`).validate("job", route, nil, RelayAuthConfig{}), "cannot be part of a JSON key")
+	require.NoError(t, job(`{"Id":"{{job.id}}","Label":"job {{job.id}}"}`).validate("job", route, nil, RelayAuthConfig{}))
+}
+
+// A route repeating an earlier one's method, path and headers could never match, so a save refuses it.
+func TestRelayConfigRepeatedRoute(t *testing.T) {
+	cfg := &RelayConfig{Routes: []RelayRouteConfig{
+		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Start*"}},
+		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}},
+		{Method: "GET", Path: "/"},
+	}}
+	require.NoError(t, cfg.RepeatedRoute(), "different headers or methods are different routes")
+	cfg.Routes = append(cfg.Routes, RelayRouteConfig{Method: "post", Path: "/", Headers: map[string]string{"x-amz-target": "Textract.Get*"}})
+	require.ErrorContains(t, cfg.RepeatedRoute(), "routes[3] repeats routes[1]")
+	glued := &RelayConfig{Routes: []RelayRouteConfig{
+		{Method: "GET", Path: "/", Headers: map[string]string{"X": "a y: b"}},
+		{Method: "GET", Path: "/", Headers: map[string]string{"X": "a", "Y": "b"}},
+	}}
+	require.NoError(t, glued.RepeatedRoute(), "headers that only read the same when glued together are different")
+	spaced := &RelayConfig{Routes: []RelayRouteConfig{
+		{Method: "GET", Path: "/", Headers: map[string]string{"X-Mode": "alpha"}},
+		{Method: "GET", Path: "/", Headers: map[string]string{"X-Mode": "alpha\u00a0"}},
+	}}
+	require.NoError(t, spaced.RepeatedRoute(), "values are compared as written, as the gateway matches them")
 }

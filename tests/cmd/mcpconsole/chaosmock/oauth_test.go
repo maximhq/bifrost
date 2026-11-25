@@ -2,7 +2,14 @@ package chaosmock_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -392,6 +399,147 @@ func TestRefreshRotationExpiryAndRevocation(t *testing.T) {
 	}
 }
 
+// TestRevokeOnReuseEndsTheGrant: with revoke_on_reuse, presenting a rotated-away
+// refresh token revokes the whole grant, so the current refresh token and access
+// token stop working too.
+func TestRevokeOnReuseEndsTheGrant(t *testing.T) {
+	fleet, srv := oauthFleet(t, map[string]any{
+		"rotate_refresh":  true,
+		"revoke_on_reuse": true,
+		"clients": []any{
+			map[string]any{"client_id": "c1", "client_secret": "s1"},
+			map[string]any{"client_id": "c2", "client_secret": "s2"},
+		},
+	})
+	code, verifier := codeFor(t, fleet, "dana")
+	first := exchange(t, fleet, code, verifier)
+	refresh := func(rt string) (int, map[string]any) {
+		return token(t, fleet, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {rt},
+			"client_id": {"c1"}, "client_secret": {"s1"}})
+	}
+	status, second := refresh(first["refresh_token"].(string))
+	if status != http.StatusOK {
+		t.Fatalf("expected the first refresh to rotate, got %d %v", status, second)
+	}
+
+	// Another client presenting the retired token is refused without touching the grant.
+	status, out := token(t, fleet, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {first["refresh_token"].(string)},
+		"client_id": {"c2"}, "client_secret": {"s2"}})
+	if status != http.StatusBadRequest || out["error_description"] != "refresh token was issued to another client" {
+		t.Fatalf("expected another client's retired token to be refused, got %d %v", status, out)
+	}
+	if status, _ := mcpStatus(t, fleet, second["access_token"].(string)); status != http.StatusOK {
+		t.Fatalf("another client's reuse must leave the grant working, got %d", status)
+	}
+
+	status, out = refresh(first["refresh_token"].(string))
+	if status != http.StatusBadRequest || out["error_description"] != "retired refresh token reused; grant revoked" {
+		t.Fatalf("expected the reused refresh token to revoke the grant, got %d %v", status, out)
+	}
+	// Presenting it again is refused the same way but revokes no further grant.
+	if status, out := refresh(first["refresh_token"].(string)); status != http.StatusBadRequest || out["error_description"] != "retired refresh token reused; grant revoked" {
+		t.Errorf("expected a repeated reuse to be refused, got %d %v", status, out)
+	}
+	if status, out := refresh(second["refresh_token"].(string)); status != http.StatusBadRequest || out["error_description"] != "refresh token revoked" {
+		t.Errorf("the current refresh token must die with the grant, got %d %v", status, out)
+	}
+	if status, _ := mcpStatus(t, fleet, second["access_token"].(string)); status != http.StatusUnauthorized {
+		t.Errorf("the current access token must die with the grant, got %d", status)
+	}
+
+	// A retired token of a grant revoked by other means is refused without counting a reuse revocation.
+	code, verifier = codeFor(t, fleet, "erin")
+	erinFirst := exchange(t, fleet, code, verifier)
+	if status, out := refresh(erinFirst["refresh_token"].(string)); status != http.StatusOK {
+		t.Fatalf("expected erin's refresh to rotate, got %d %v", status, out)
+	}
+	post(t, fleet.URL()+"/control/alpha/oauth/revoke", map[string]any{"identity": "erin"})
+	if status, out := refresh(erinFirst["refresh_token"].(string)); status != http.StatusBadRequest || out["error_description"] != "retired refresh token reused; grant revoked" {
+		t.Errorf("expected a reuse on a revoked grant to be refused, got %d %v", status, out)
+	}
+
+	state := srv.State().OAuth
+	if state.Counters.ReuseRevocations != 1 || len(state.Grants) != 2 || !state.Grants[0].Revoked || !state.Grants[1].Revoked {
+		t.Errorf("expected one grant revoked by reuse and erin's revoked by hand, got counters %+v grants %+v", state.Counters, state.Grants)
+	}
+
+	// Without rotation there is nothing to reuse, so the setting is refused.
+	resp, _ := post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": map[string]any{"revoke_on_reuse": true}}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("expected revoke_on_reuse without rotate_refresh to be refused, got %d", resp.StatusCode)
+	}
+}
+
+// TestRevokeOnReuseConcurrentRedemption: two refreshes that present the same live
+// token at once are answered one after the other, so exactly one rotates it and
+// the other is a reuse that revokes the grant. Cross-replica refresh tests rely on
+// this.
+func TestRevokeOnReuseConcurrentRedemption(t *testing.T) {
+	fleet, srv := oauthFleet(t, map[string]any{
+		"rotate_refresh":  true,
+		"revoke_on_reuse": true,
+		"clients":         []any{map[string]any{"client_id": "c1", "client_secret": "s1"}},
+	})
+	code, verifier := codeFor(t, fleet, "dana")
+	live := exchange(t, fleet, code, verifier)["refresh_token"].(string)
+
+	post(t, fleet.URL()+"/control/alpha/gates/set", map[string]any{"gate": map[string]any{"name": "token", "endpoint": chaosmock.GateEndpointToken}})
+	form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {live}, "client_id": {"c1"}, "client_secret": {"s1"}}
+	type answer struct {
+		status int
+		body   map[string]any
+		err    error
+	}
+	answers := make(chan answer, 2)
+	for range 2 {
+		go func() {
+			resp, err := http.PostForm(fleet.URL()+"/s/alpha/as/token", form)
+			if err != nil {
+				answers <- answer{err: err}
+				return
+			}
+			defer resp.Body.Close()
+			var body map[string]any
+			err = json.NewDecoder(resp.Body).Decode(&body)
+			answers <- answer{status: resp.StatusCode, body: body, err: err}
+		}()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		gates := srv.State().Gates
+		if len(gates) == 1 && gates[0].Waiting == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected both refreshes held at the gate, got %+v", gates)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	post(t, fleet.URL()+"/control/alpha/gates/open", map[string]any{"name": "token"})
+
+	var rotated, reused int
+	for range 2 {
+		a := <-answers
+		switch {
+		case a.err != nil:
+			t.Fatalf("refresh failed: %v", a.err)
+		case a.status == http.StatusOK:
+			rotated++
+		case a.status == http.StatusBadRequest && a.body["error_description"] == "retired refresh token reused; grant revoked":
+			reused++
+		default:
+			t.Errorf("unexpected answer %d %v", a.status, a.body)
+		}
+	}
+	if rotated != 1 || reused != 1 {
+		t.Errorf("expected one rotation and one reuse, got %d and %d", rotated, reused)
+	}
+	state := srv.State().OAuth
+	if state.Counters.ReuseRevocations != 1 || len(state.Grants) != 1 || !state.Grants[0].Revoked {
+		t.Errorf("expected the grant revoked once by reuse, got counters %+v grants %+v", state.Counters, state.Grants)
+	}
+}
+
 // TestForgetDropsDynamicClientsAndTheirGrants: oauth/forget stands in for an
 // authorization server that stops recognising the clients it registered. The
 // forgotten client is unknown at authorize and its grants end; a client
@@ -631,9 +779,89 @@ func TestAuthorizationServerTakesClientMetadataDocuments(t *testing.T) {
 		t.Errorf("with documents off nothing is fetched: %d fetches, want 4", got)
 	}
 
-	for _, bad := range []map[string]any{{"metadata_documents": "sometimes"}, {"metadata_documents": "advertised", "metadata_documents_via": "ftp://docs"}} {
+	// A per-host override: docs.example.test is served, every other host goes through a closed port.
+	post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": map[string]any{
+		"metadata_documents": "advertised", "metadata_documents_via": "http://127.0.0.1:9",
+		"metadata_documents_via_hosts": map[string]string{"docs.example.test": docs.URL},
+	}}})
+	refused("a document behind a closed port", "https://private.example.test/client.json", testRedirect)
+	authorize(t, authURL("https://docs.example.test/fifth.json", testRedirect))
+
+	for _, bad := range []map[string]any{{"metadata_documents": "sometimes"}, {"metadata_documents": "advertised", "metadata_documents_via": "ftp://docs"}, {"metadata_documents_via_hosts": map[string]string{"x": "ftp://docs"}}} {
 		if resp, _ := post(t, fleet.URL()+"/control/alpha/auth", map[string]any{"auth": map[string]any{"oauth": bad}}); resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%v: status %d, want 400", bad, resp.StatusCode)
 		}
+	}
+}
+
+// signES256 signs claims as an ES256 JWT with key.
+func signES256(t *testing.T, key *ecdsa.PrivateKey, claims map[string]any) string {
+	t.Helper()
+	enc := func(v any) string {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	signingInput := enc(map[string]string{"alg": "ES256", "typ": "JWT"}) + "." + enc(claims)
+	digest := sha256.Sum256([]byte(signingInput))
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := make([]byte, 64)
+	r.FillBytes(sig[:32])
+	s.FillBytes(sig[32:])
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+// TestAuthorizationServerIssuesClientCredentialsTokens: with client_credentials
+// on, a pre-registered client gets a token that the MCP endpoint accepts, with a
+// secret or with a private_key_jwt assertion; a wrong audience, a keyed client
+// with no assertion or a disabled grant is refused.
+func TestAuthorizationServerIssuesClientCredentialsTokens(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	fleet, _ := oauthFleet(t, map[string]any{"client_credentials": true, "clients": []map[string]any{
+		{"client_id": "svc", "client_secret": "S1"},
+		{"client_id": "keyed", "public_key_pem": publicPEM},
+	}})
+	tokenURL := fleet.URL() + "/s/alpha/as/token"
+
+	status, out := token(t, fleet, url.Values{"grant_type": {"client_credentials"}, "client_id": {"svc"}, "client_secret": {"S1"}, "scope": {"read"}})
+	if status != http.StatusOK || out["refresh_token"] != nil {
+		t.Fatalf("secret: expected a token without a refresh token, got %d %v", status, out)
+	}
+	if code, body := mcpStatus(t, fleet, out["access_token"].(string)); code != http.StatusOK {
+		t.Fatalf("the issued token must open the MCP endpoint, got %d: %s", code, body)
+	}
+
+	assertion := func(aud string) string {
+		return signES256(t, key, map[string]any{"iss": "keyed", "sub": "keyed", "aud": aud, "exp": time.Now().Add(time.Minute).Unix(), "jti": "j1"})
+	}
+	form := func(a string) url.Values {
+		return url.Values{"grant_type": {"client_credentials"}, "client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"}, "client_assertion": {a}}
+	}
+	if status, out := token(t, fleet, form(assertion(tokenURL))); status != http.StatusOK {
+		t.Fatalf("private_key_jwt: expected a token, got %d %v", status, out)
+	}
+	if status, out := token(t, fleet, form(assertion("https://elsewhere.example/token"))); status != http.StatusUnauthorized || out["error"] != "invalid_client" {
+		t.Fatalf("wrong aud: expected invalid_client, got %d %v", status, out)
+	}
+	if status, out := token(t, fleet, url.Values{"grant_type": {"client_credentials"}, "client_id": {"keyed"}}); status != http.StatusUnauthorized || out["error"] != "invalid_client" {
+		t.Fatalf("keyed client without an assertion: expected invalid_client, got %d %v", status, out)
+	}
+
+	plain, _ := oauthFleet(t, map[string]any{"clients": []map[string]any{{"client_id": "svc", "client_secret": "S1"}}})
+	if status, out := token(t, plain, url.Values{"grant_type": {"client_credentials"}, "client_id": {"svc"}, "client_secret": {"S1"}}); status != http.StatusBadRequest || out["error"] != "unsupported_grant_type" {
+		t.Fatalf("grant off: expected unsupported_grant_type, got %d %v", status, out)
 	}
 }

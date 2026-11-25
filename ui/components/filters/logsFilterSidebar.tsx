@@ -976,12 +976,12 @@ function RoutingRulesFilter({ filters, onFiltersChange, defaultOpen }: FilterCom
 function ModelRouterFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const { t } = useTranslation("observability");
 	const { t: tc } = useTranslation("common");
-	const canView = useRbac(RbacResource.Governance, RbacOperation.View);
+	const canView = useRbac(RbacResource.Routers, RbacOperation.View);
 	const selected = filters.model_router_ids || [];
 	const [opened, setOpened] = useState(defaultOpen || selected.length > 0);
 	const searchInputRef = useAutoFocusOnOpen(opened);
 	const query = useGetModelRoutersQuery(undefined, { skip: !canView || (!opened && selected.length === 0) });
-	// Without Governance access the list cannot be read, but a filter a log
+	// Without Routers access the list cannot be read, but a filter a log
 	// link applied must still be visible and removable.
 	if (!canView && selected.length === 0) return null;
 	const testIdPrefix = "model-routers-filter";

@@ -20,7 +20,7 @@ export interface OpenAPISpecFile {
 /**
  * Authentication types for HTTP/SSE connections
  */
-export type MCPAuthType = 'none' | 'headers' | 'oauth' | 'per_user_oauth'
+export type MCPAuthType = 'none' | 'headers' | 'oauth' | 'per_user_oauth' | 'client_credentials' | 'aws_sigv4'
 
 /** Header value shape used by API (value / env_var / from_env) */
 export type EnvVarLike = { value: string; env_var?: string; from_env?: boolean }

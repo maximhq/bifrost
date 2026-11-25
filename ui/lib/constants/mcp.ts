@@ -13,3 +13,6 @@ export function mcpMaxProtocolVersionLabel(value?: string): string {
 	const version = value || "auto";
 	return version === "auto" ? i18n.t("registry.form.maxProtocolAuto", { ns: "mcp" }) : version;
 }
+
+// Signing names an aws_sigv4 server may use, default first. Mirrors the server's allowlist.
+export const MCP_AWS_SIGV4_SERVICES = ["bedrock-agentcore", "aws-mcp", "lambda", "execute-api"] as const;

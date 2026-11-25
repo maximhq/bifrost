@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/openai"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -83,7 +85,10 @@ func TestPrepareResponsesAdditionalTools(test *testing.T) {
 				},
 			},
 		}}
-		providerUtils.RestoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, response)
+		passthrough := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			return r, e
+		}
+		providerUtils.WrapResponsesToolRestorePostHookRunner(passthrough, prepared)(nil, response, nil)
 		assert.Equal(test, "read", *response.ResponsesStreamResponse.Item.Name)
 		assert.Equal(test, "mcp__local", *response.ResponsesStreamResponse.Item.Namespace)
 		assert.Equal(test, "call_local", *response.ResponsesStreamResponse.Item.CallID)
@@ -220,6 +225,233 @@ func TestPrepareResponsesCodexClientToolSearchForcedLoadedTool(test *testing.T) 
 	assert.JSONEq(test, `{"type":"tool","name":"mcp__linear__create_issue"}`, providerUtils.GetJSONField(body, "tool_choice").Raw, string(body))
 }
 
+// TestPrepareResponsesClientToolSearchForGeminiGenerateContent pins a client tool search on
+// Gemini's generateContent, which has no tool search: the tools the search loaded, a namespace
+// here, are declared before namespaces are flattened, so the model can call them under the same
+// flat names the rest of the request uses and the call is restored to its namespace. A Gemini
+// turn on the Interactions API is left alone, since Google loads the tools from the result.
+func TestPrepareResponsesClientToolSearchForGeminiGenerateContent(test *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var incoming openai.OpenAIResponsesRequest
+	require.NoError(test, schemas.Unmarshal([]byte(fmt.Sprintf(codexClientToolSearchRequest, "gemini-2.5-flash")), &incoming))
+	request := incoming.ToBifrostResponsesRequest(ctx)
+	request.Provider = schemas.Gemini
+	request.Model = "gemini-2.5-flash"
+	before, err := schemas.Marshal(request)
+	require.NoError(test, err)
+
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, request)
+	require.Nil(test, bifrostErr)
+	native, err := gemini.ToGeminiResponsesRequest(ctx, prepared)
+	require.NoError(test, err)
+	body, err := schemas.Marshal(native)
+	require.NoError(test, err)
+	wire := string(body)
+	declared := providerUtils.GetJSONField(body, "tools.#.functionDeclarations|@flatten|#.name").Raw
+	assert.Contains(test, declared, `"tool_search"`, wire)
+	assert.Contains(test, declared, `"mcp__linear__create_issue"`, "the namespace member the search loaded is declared under its flat name: %s", wire)
+	assert.Contains(test, providerUtils.GetJSONField(body, `contents.#.parts|@flatten|#.functionCall.name`).Raw, `"mcp__linear__create_issue"`,
+		"the later call uses the same flat name: %s", wire)
+	require.NotNil(test, prepared.NamespaceToolAliases)
+	assert.Equal(test, "mcp__linear", prepared.NamespaceToolAliases["mcp__linear__create_issue"].Namespace)
+
+	after, err := schemas.Marshal(request)
+	require.NoError(test, err)
+	assert.JSONEq(test, string(before), string(after), "the shared request was mutated")
+
+	interactions := *request
+	params := *request.Params
+	params.PreviousResponseID = schemas.Ptr("v1_prev")
+	interactions.Params = &params
+	hoisted, bifrostErr := hoistClientToolSearchOutputTools(ctx, &interactions)
+	require.Nil(test, bifrostErr)
+	assert.Same(test, &interactions, hoisted, "an Interactions turn keeps Google's own loading")
+}
+
+// TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded pins a namespace a client search loaded on the
+// Interactions API, where Google loads the tools from the search's result: the result lists flat functions, history
+// calls use the same names, and the aliases restore what the model calls. A search that loaded none is untouched.
+func TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded(t *testing.T) {
+	request := func(tools string) *schemas.BifrostResponsesRequest {
+		var req schemas.BifrostResponsesRequest
+		require.NoError(t, schemas.Unmarshal([]byte(`{"model":"gemini-3.8-flash","provider":"gemini","input":[
+			{"type":"tool_search_call","call_id":"c","execution":"client","arguments":{"query":"fx"},"status":"completed"},
+			{"type":"tool_search_output","call_id":"c","execution":"client","status":"completed","tools":`+tools+`},
+			{"type":"function_call","call_id":"d","namespace":"fx","name":"convert_currency","arguments":"{}"},
+			{"type":"function_call_output","call_id":"d","output":"1"}]}`), &req))
+		req.Provider = schemas.Gemini
+		req.Params = &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_p"), Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr(schemas.ToolSearchExecutionClient)}}}}
+		return &req
+	}
+	prepare := func(req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+		before, err := schemas.Marshal(req)
+		require.NoError(t, err)
+		out, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		require.Nil(t, bifrostErr)
+		after, err := schemas.Marshal(req)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(before), string(after), "the shared request was mutated")
+		return out
+	}
+	const fx = `{"type":"namespace","name":"fx","description":"Money.","tools":[{"type":"function","name":"convert_currency","description":"Convert.","parameters":{"type":"object","properties":{"b":{"type":"string"},"a":{"type":"string"}}}}]}`
+	out := prepare(request(`[` + fx + `,{"type":"namespace","name":"functions","tools":[{"type":"function","name":"wait"}]},{"type":"function","name":"plain"}]`))
+	native, err := gemini.ToGeminiInteractionsRequest(out)
+	require.NoError(t, err)
+	body, err := schemas.Marshal(native)
+	require.NoError(t, err)
+	result := providerUtils.GetJSONField(body, `input.#(type=="function_result").result`)
+	assert.Equal(t, `["fx__convert_currency","wait","plain"]`, result.Get("#.name").Raw, string(body))
+	assert.Equal(t, `["function","function","function"]`, result.Get("#.type").Raw)
+	assert.Equal(t, "Money.\n\nConvert.", result.Get("0.description").String())
+	assert.Contains(t, result.Raw, `"properties":{"b":{"type":"string"},"a":{"type":"string"}}`, "schema order is kept")
+	assert.Contains(t, providerUtils.GetJSONField(body, `input.#(type=="function_call")#.name`).Raw, "fx__convert_currency")
+	assert.Equal(t, schemas.NamespaceToolAlias{Namespace: "fx", Name: "convert_currency"}, out.NamespaceToolAliases["fx__convert_currency"])
+
+	plain := request(`[{"type":"function","name":"plain"}]`)
+	assert.Nil(t, prepare(plain).NamespaceToolAliases)
+
+	// A choice names a loaded function as the caller knows it, and follows its flat name.
+	const other = `{"type":"namespace","name":"bank","tools":[{"type":"function","name":"convert_currency"}]}`
+	for name, tc := range map[string]struct {
+		loaded, choice, want string
+		refused              bool
+	}{
+		"forced":                      {`[` + fx + `]`, `{"type":"function","name":"convert_currency"}`, "fx__convert_currency", false},
+		"allowed":                     {`[` + fx + `]`, `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"convert_currency"}]}`, "fx__convert_currency", false},
+		"already flat":                {`[` + fx + `]`, `{"type":"function","name":"fx__convert_currency"}`, "fx__convert_currency", false},
+		"unknown":                     {`[` + fx + `]`, `{"type":"function","name":"other"}`, "other", false},
+		"a loaded top-level function": {`[` + fx + `,{"type":"function","name":"convert_currency"}]`, `{"type":"function","name":"convert_currency"}`, "convert_currency", false},
+		"a default namespace member":  {`[` + fx + `,{"type":"namespace","name":"functions","tools":[{"type":"function","name":"convert_currency"}]}]`, `{"type":"function","name":"convert_currency"}`, "convert_currency", false},
+		"the same tool loaded twice":  {`[` + fx + `,` + fx + `]`, `{"type":"function","name":"convert_currency"}`, "fx__convert_currency", false},
+		"in two namespaces":           {`[` + fx + `,` + other + `]`, `{"type":"function","name":"convert_currency"}`, "", true},
+	} {
+		req := request(tc.loaded)
+		var choice schemas.ResponsesToolChoice
+		require.NoError(t, schemas.Unmarshal([]byte(tc.choice), &choice), name)
+		req.Params.ToolChoice = &choice
+		out, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		if tc.refused {
+			require.NotNil(t, bifrostErr, name)
+			assert.Contains(t, bifrostErr.Error.Message, "ambiguous", name)
+			continue
+		}
+		require.Nil(t, bifrostErr, name)
+		got, err := schemas.Marshal(out.Params.ToolChoice)
+		require.NoError(t, err)
+		assert.Contains(t, string(got), `"name":"`+tc.want+`"`, name)
+		kept, err := schemas.Marshal(req.Params.ToolChoice)
+		require.NoError(t, err)
+		assert.JSONEq(t, tc.choice, string(kept), name+": the caller's choice is not modified")
+	}
+
+	// A flat name that already stands for another tool is refused: the model's call could not be told apart.
+	named := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: &name, ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
+	}
+	for name, tc := range map[string]struct {
+		loaded   string
+		declared []schemas.ResponsesTool
+		refused  bool
+	}{
+		"a declared function":             {`[` + fx + `]`, []schemas.ResponsesTool{named("fx__convert_currency")}, true},
+		"a loaded function":               {`[` + fx + `,{"type":"function","name":"fx__convert_currency"}]`, nil, true},
+		"a member of another namespace":   {`[{"type":"namespace","name":"a","tools":[{"type":"function","name":"b__c"}]},{"type":"namespace","name":"a__b","tools":[{"type":"function","name":"c"}]}]`, nil, true},
+		"the same tool loaded twice":      {`[` + fx + `,` + fx + `]`, nil, false},
+		"the same namespace, declared":    {`[` + fx + `]`, []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeNamespace, Name: schemas.Ptr("fx"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{named("convert_currency")}}}}, false},
+		"a declared function, not loaded": {`[{"type":"function","name":"plain"}]`, []schemas.ResponsesTool{named("plain")}, false},
+	} {
+		req := request(tc.loaded)
+		req.Params.Tools = append(req.Params.Tools, tc.declared...)
+		_, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		if !tc.refused {
+			assert.Nil(t, bifrostErr, name)
+			continue
+		}
+		require.NotNil(t, bifrostErr, name)
+		assert.Equal(t, 400, *bifrostErr.StatusCode, name)
+		assert.Contains(t, bifrostErr.Error.Message, "not unique", name)
+	}
+}
+
+// TestPrepareResponsesRequest_DeclaresLoadedToolsOnInteractions pins which functions a client search loaded are also
+// declared in tools. Google refuses a tool_choice that names a function tools does not list, so on Gemini the ones it
+// names are declared, and no others, as Google loads those from the result. Vertex loads none, so every one is.
+func TestPrepareResponsesRequest_DeclaresLoadedToolsOnInteractions(t *testing.T) {
+	const fn = `{"type":"function","name":"%s","description":"D.","parameters":{"type":"object","properties":{"a":{"type":"string"}}}}`
+	convert, log := fmt.Sprintf(fn, "convert_currency"), fmt.Sprintf(fn, "log_request")
+	fx := `{"type":"namespace","name":"fx","description":"Money.","tools":[` + convert + `,` + log + `]}`
+	forced := `{"type":"function","name":"log_request"}`
+	for name, tc := range map[string]struct {
+		provider                 schemas.ModelProvider
+		status                   string
+		loaded, choice, declared string
+		want                     []string
+	}{
+		"gemini, no choice":            {schemas.Gemini, "completed", fx, "", "", nil},
+		"gemini, a choice of mode":     {schemas.Gemini, "completed", fx, `"required"`, "", nil},
+		"gemini, forced":               {schemas.Gemini, "completed", fx, forced, "", []string{"fx__log_request"}},
+		"gemini, forced by flat name":  {schemas.Gemini, "completed", fx, `{"type":"function","name":"fx__log_request"}`, "", []string{"fx__log_request"}},
+		"gemini, allowed":              {schemas.Gemini, "completed", fx, `{"type":"allowed_tools","mode":"auto","tools":[{"type":"function","name":"log_request"},{"type":"function","name":"convert_currency"}]}`, "", []string{"fx__convert_currency", "fx__log_request"}},
+		"gemini, forced top-level":     {schemas.Gemini, "completed", convert + `,` + log, forced, "", []string{"log_request"}},
+		"gemini, loaded twice":         {schemas.Gemini, "completed", log + `,` + log, forced, "", []string{"log_request"}},
+		"gemini, already declared":     {schemas.Gemini, "completed", log, forced, log, []string{"log_request"}},
+		"gemini, not loaded":           {schemas.Gemini, "completed", convert, forced, "", nil},
+		"gemini, a search that failed": {schemas.Gemini, "incomplete", log, forced, "", nil},
+		"vertex, no choice":            {schemas.Vertex, "completed", fx, "", "", []string{"fx__convert_currency", "fx__log_request"}},
+		"vertex, forced":               {schemas.Vertex, "completed", fx, forced, "", []string{"fx__convert_currency", "fx__log_request"}},
+		"vertex, top-level":            {schemas.Vertex, "completed", convert + `,` + log, "", "", []string{"convert_currency", "log_request"}},
+		"vertex, already declared":     {schemas.Vertex, "completed", log, "", log, []string{"log_request"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			choice := ""
+			if tc.choice != "" {
+				choice = `"tool_choice":` + tc.choice + `,`
+			}
+			declared := ""
+			if tc.declared != "" {
+				declared = "," + tc.declared
+			}
+			var incoming openai.OpenAIResponsesRequest
+			require.NoError(t, schemas.Unmarshal([]byte(`{"model":"gemini-3.8-flash","previous_response_id":"v1_p",`+choice+`"tools":[{"type":"tool_search","execution":"client","name":"find","description":"Find.","parameters":{"type":"object","properties":{}}}`+declared+`],"input":[
+				{"type":"tool_search_output","call_id":"c","execution":"client","status":"`+tc.status+`","tools":[`+tc.loaded+`]}]}`), &incoming))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := incoming.ToBifrostResponsesRequest(ctx)
+			req.Provider, req.Model = tc.provider, "gemini-3.8-flash"
+			before, err := schemas.Marshal(req)
+			require.NoError(t, err)
+
+			out, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			require.Nil(t, bifrostErr)
+			native, err := gemini.ToGeminiInteractionsRequest(out)
+			require.NoError(t, err)
+			body, err := schemas.Marshal(native)
+			require.NoError(t, err)
+			var got []string
+			for _, tool := range providerUtils.GetJSONField(body, "tools").Array() {
+				if tool.Get("type").String() != "function" {
+					continue
+				}
+				got = append(got, tool.Get("name").String())
+				assert.False(t, tool.Get("defer_loading").Exists(), "Google refuses a deferred tool beside a client search: %s", body)
+				assert.Equal(t, "object", tool.Get("parameters.type").String(), "the declaration is whole: %s", body)
+			}
+			slices.Sort(got)
+			assert.Equal(t, tc.want, got, string(body))
+			if strings.Contains(tc.choice, "log_request") && len(tc.want) > 0 {
+				chosen := providerUtils.GetJSONField(body, "generation_config.tool_choice.allowed_tools.tools").Array()
+				require.NotEmpty(t, chosen, string(body))
+				for _, name := range chosen {
+					assert.Contains(t, got, name.String(), "a chosen tool is declared")
+				}
+			}
+
+			after, err := schemas.Marshal(req)
+			require.NoError(t, err)
+			assert.JSONEq(t, string(before), string(after), "the shared request was mutated")
+		})
+	}
+}
+
 // TestHoistClientToolSearchOutputTools covers the declaration of tools a client-run
 // tool search loaded: deferred, declared once however many searches found them, merged
 // into a namespace the request already declares, and left alone off Claude or without
@@ -254,6 +486,17 @@ func TestHoistClientToolSearchOutputTools(test *testing.T) {
 		assert.Len(test, request.Params.Tools, 1, "the shared request was mutated")
 	})
 
+	test.Run("loaded custom tools are declared once, deferred", func(test *testing.T) {
+		applyPatch := `{"type":"custom","name":"apply_patch","format":{"type":"text"}}`
+		request := build(test, "claude-sonnet-4-6", search, output("call_1", `[`+applyPatch+`]`), output("call_2", `[`+applyPatch+`]`))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.Nil(test, bifrostErr)
+		require.Len(test, prepared.Params.Tools, 2)
+		assert.Equal(test, schemas.ResponsesToolTypeCustom, prepared.Params.Tools[1].Type)
+		assert.Equal(test, "apply_patch", *prepared.Params.Tools[1].Name)
+		assert.True(test, *prepared.Params.Tools[1].DeferLoading)
+	})
+
 	test.Run("members merge into a declared namespace", func(test *testing.T) {
 		declared := `{"type":"namespace","name":"mcp__linear","tools":[{"type":"function","name":"list_issues","parameters":{"type":"object","properties":{}}}]}`
 		request := build(test, "claude-sonnet-4-6", search+","+declared, output("call_1", `[`+linear+`]`))
@@ -272,7 +515,7 @@ func TestHoistClientToolSearchOutputTools(test *testing.T) {
 	for _, testCase := range []struct {
 		name, model, tools string
 	}{
-		{name: "non-Claude model", model: "gemini-2.5-flash", tools: search},
+		{name: "a model that loads searched tools itself", model: "gpt-5.4", tools: search},
 		{name: "server-run tool_search", model: "claude-sonnet-4-6", tools: `{"type":"tool_search"}`},
 	} {
 		test.Run(testCase.name+" is left alone", func(test *testing.T) {
@@ -296,6 +539,48 @@ func TestHoistClientToolSearchOutputTools(test *testing.T) {
 		assert.Equal(test, "mcp__linear", *prepared.Params.Tools[0].Name)
 		assert.True(test, *prepared.Params.Tools[0].ResponsesToolNamespace.Tools[0].DeferLoading)
 		assert.Nil(test, request.Params, "the shared request was mutated")
+	})
+
+	// A tool loaded both as a member of the functions namespace and at top level is one tool.
+	ns := `{"type":"namespace","name":"functions","tools":[{"type":"function","name":"apply_patch","parameters":{"type":"object","properties":{"patch":{"type":"string"}}}}]}`
+	topCustom := `{"type":"custom","name":"apply_patch"}`
+	topFunction := `{"type":"function","name":"apply_patch","parameters":{"type":"object","properties":{}}}`
+	for _, testCase := range []struct {
+		name, tools string
+		items       []string
+		want        int
+	}{
+		{name: "search loads ns then top-level custom", tools: search, items: []string{output("call_1", `[`+ns+`]`), output("call_2", `[`+topCustom+`]`)}, want: 1},
+		{name: "search loads top-level custom then ns", tools: search, items: []string{output("call_1", `[`+topCustom+`]`), output("call_2", `[`+ns+`]`)}, want: 1},
+		{name: "search loads ns then top-level function", tools: search, items: []string{output("call_1", `[`+ns+`]`), output("call_2", `[`+topFunction+`]`)}, want: 1},
+		{name: "ns declared, search loads top-level custom", tools: search + "," + ns, items: []string{output("call_1", `[`+topCustom+`]`)}, want: 1},
+		{name: "top-level function declared, search loads ns", tools: search + "," + topFunction, items: []string{output("call_1", `[`+ns+`]`)}, want: 1},
+	} {
+		test.Run(testCase.name+" declares apply_patch once", func(test *testing.T) {
+			request := build(test, "claude-sonnet-4-6", testCase.tools, testCase.items...)
+			prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+			require.Nil(test, bifrostErr)
+			unwrapped, bifrostErr := providerUtils.UnwrapDefaultNamespaceTools(prepared)
+			require.Nil(test, bifrostErr)
+			count := 0
+			for _, tool := range unwrapped.Params.Tools {
+				if tool.Name != nil && *tool.Name == "apply_patch" {
+					count++
+				}
+			}
+			assert.Equal(test, testCase.want, count)
+		})
+	}
+
+	test.Run("a member of another namespace and a top-level tool stay separate", func(test *testing.T) {
+		other := `{"type":"namespace","name":"mcp__a","tools":[{"type":"function","name":"search","parameters":{"type":"object","properties":{}}}]}`
+		topSearch := `{"type":"function","name":"search","parameters":{"type":"object","properties":{}}}`
+		request := build(test, "claude-sonnet-4-6", search+","+other, output("call_1", `[`+topSearch+`]`))
+		prepared, bifrostErr := hoistClientToolSearchOutputTools(ctx, request)
+		require.Nil(test, bifrostErr)
+		require.Len(test, prepared.Params.Tools, 3)
+		assert.Equal(test, "search", *prepared.Params.Tools[2].Name)
+		assert.Equal(test, "search", *prepared.Params.Tools[1].ResponsesToolNamespace.Tools[0].Name)
 	})
 
 	test.Run("malformed tools are a 400", func(test *testing.T) {
@@ -322,6 +607,35 @@ func BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch(b *testing.B) {
 	for b.Loop() {
 		_, _ = prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, provider, schemas.Key{}, request)
 	}
+}
+
+// BenchmarkPrepareCountTokensRequest measures the preparation count tokens now shares with
+// dispatch: the common case (plain tools) and a request whose custom tool is rewritten.
+func BenchmarkPrepareCountTokensRequest(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var provider schemas.Provider = stubProvider{key: schemas.Anthropic}
+	plain := responsesReqWithText("hello")
+	plain.Model = "claude-sonnet-4-6"
+	plain.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		{Type: schemas.ResponsesToolTypeWebSearch},
+	}}
+	custom := applyPatchResponsesRequest(schemas.Anthropic, "claude-sonnet-4-6")
+	prepare := func(r *schemas.BifrostResponsesRequest) {
+		_, _ = prepareResponsesRequest(ctx, nil, provider, schemas.Key{}, r)
+	}
+	b.Run("plain_tools", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			prepare(plain)
+		}
+	})
+	b.Run("custom_tool", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			prepare(custom)
+		}
+	})
 }
 
 // TestPrepareResponsesClaudeLocalMCP verifies that Claude's local function declarations survive conversion to OpenAI.
@@ -824,6 +1138,77 @@ func TestPromptCacheChatRequest_CachePointGatedOnModel(t *testing.T) {
 	assert.Len(t, out.Input[0].Content.ContentBlocks, 1, "a datasheet row saying no must win too")
 }
 
+// TestPromptCacheDispatch_InjectsForAliasWithOpaqueModelID covers #10026: a Bedrock
+// application inference profile alias sends an opaque profile ID as the wire model,
+// so the capability gate has to judge the alias's canonical model_name instead.
+func TestPromptCacheDispatch_InjectsForAliasWithOpaqueModelID(t *testing.T) {
+	const profileID = "abc123xyz456"
+	aliasCtx := func(modelName *string) *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+			Key: "claude-sonnet",
+			Config: &schemas.AliasConfig{
+				ModelID:     profileID,
+				ModelName:   modelName,
+				ModelFamily: schemas.Ptr(schemas.ModelFamilyAnthropic),
+			},
+		})
+		return ctx
+	}
+	claude := schemas.Ptr("anthropic.claude-sonnet-4-20250514-v1:0")
+
+	t.Run("chat", func(t *testing.T) {
+		req := chatReqWithText("stable prefix")
+		req.Provider, req.Model = schemas.Bedrock, profileID
+
+		out := promptCacheChatRequest(aliasCtx(claude), promptCacheOn(), schemas.Bedrock, req)
+
+		require.NotSame(t, req, out, "the alias's canonical model is Claude, so a marker should be injected")
+		assert.True(t, chatMessageHasMarker(out.Input[0]))
+		assert.Equal(t, profileID, out.Model, "the wire model must stay the profile ID")
+		assert.False(t, chatMessageHasMarker(req.Input[0]), "the shared request was mutated")
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		req := responsesReqWithText("stable prefix")
+		req.Provider, req.Model = schemas.Bedrock, profileID
+
+		out := promptCacheResponsesRequest(aliasCtx(claude), promptCacheOn(), schemas.Bedrock, req)
+
+		require.NotSame(t, req, out, "the alias's canonical model is Claude, so a marker should be injected")
+		require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl)
+		assert.Equal(t, profileID, out.Model, "the wire model must stay the profile ID")
+		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "the shared request was mutated")
+	})
+
+	t.Run("anthropic messages route", func(t *testing.T) {
+		// /anthropic/v1/messages converts the body to a Responses request and
+		// dispatches it through prepareResponsesRequest.
+		ctx := aliasCtx(claude)
+		var incoming anthropic.AnthropicMessageRequest
+		require.NoError(t, schemas.Unmarshal([]byte(`{
+			"model":"bedrock/`+profileID+`","max_tokens":128,
+			"messages":[{"role":"user","content":[{"type":"text","text":"stable prefix"}]}]
+		}`), &incoming))
+		req := incoming.ToBifrostResponsesRequest(ctx)
+
+		out, bifrostErr := prepareResponsesRequest(ctx, promptCacheOn(), stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+
+		require.Nil(t, bifrostErr)
+		require.NotSame(t, req, out, "the alias's canonical model is Claude, so a marker should be injected")
+		require.NotNil(t, out.Input[0].Content.ContentBlocks[0].CacheControl)
+		assert.Equal(t, profileID, out.Model, "the wire model must stay the profile ID")
+		assert.Nil(t, req.Input[0].Content.ContentBlocks[0].CacheControl, "the shared request was mutated")
+	})
+
+	t.Run("an alias without model_name still judges the opaque ID", func(t *testing.T) {
+		req := chatReqWithText("stable prefix")
+		req.Provider, req.Model = schemas.Bedrock, profileID
+
+		assert.Same(t, req, promptCacheChatRequest(aliasCtx(nil), promptCacheOn(), schemas.Bedrock, req))
+	})
+}
+
 // TestPromptCacheDispatch_CallerMarkerSurvivesUnchanged proves the two guarantees
 // compose: a caller that set its own marker gets the request through untouched, and
 // nothing extra is added on top of it.
@@ -984,19 +1369,19 @@ func TestPrepareResponsesRequest_AliasesTravelWithThePreparedRequest(t *testing.
 	assert.Nil(t, second.NamespaceToolAliases)
 
 	// Restoring attempt 2's response with attempt 2's (empty) map leaves it untouched.
-	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+	resp := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
 		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new("namespace_a__js"), Arguments: new("{}")},
-	}}}}
-	providerUtils.RestoreResponsesNamespaceToolCalls(second.NamespaceToolAliases, resp)
-	assert.Equal(t, "namespace_a__js", *resp.ResponsesResponse.Output[0].Name)
-	assert.Nil(t, resp.ResponsesResponse.Output[0].Namespace)
+	}}}
+	providerUtils.RestoreResponsesToolCalls(second, resp)
+	assert.Equal(t, "namespace_a__js", *resp.Output[0].Name)
+	assert.Nil(t, resp.Output[0].Namespace)
 }
 
 // The streaming path restores through a wrapped PostHookRunner built from the prepared
 // request's map, so every chunk reaches the post hooks with the caller's names.
-func TestWrapNamespaceRestorePostHookRunner(t *testing.T) {
-	aliases := map[string]schemas.NamespaceToolAlias{"namespace_a__js": {Namespace: "namespace_a", Name: "js"}}
+func TestWrapResponsesToolRestorePostHookRunner_Namespace(t *testing.T) {
+	aliases := &schemas.BifrostResponsesRequest{NamespaceToolAliases: map[string]schemas.NamespaceToolAlias{"namespace_a__js": {Namespace: "namespace_a", Name: "js"}}}
 	var seen *schemas.BifrostResponse
 	inner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		seen = result
@@ -1009,14 +1394,14 @@ func TestWrapNamespaceRestorePostHookRunner(t *testing.T) {
 		}}
 	}
 
-	wrapped := providerUtils.WrapNamespaceRestorePostHookRunner(inner, aliases)
+	wrapped := providerUtils.WrapResponsesToolRestorePostHookRunner(inner, aliases)
 	wrapped(nil, chunk(), nil)
 	require.NotNil(t, seen)
 	assert.Equal(t, "js", *seen.ResponsesStreamResponse.Item.Name)
 	assert.Equal(t, "namespace_a", *seen.ResponsesStreamResponse.Item.Namespace)
 
 	// No aliases: the runner is returned as is and chunks pass through untouched.
-	plain := providerUtils.WrapNamespaceRestorePostHookRunner(inner, nil)
+	plain := providerUtils.WrapResponsesToolRestorePostHookRunner(inner, nil)
 	plain(nil, chunk(), nil)
 	assert.Equal(t, "namespace_a__js", *seen.ResponsesStreamResponse.Item.Name)
 }
@@ -1469,7 +1854,6 @@ func TestChatReasoningModeDispatch(t *testing.T) {
 		{name: "logit_bias", want: []string{"logit_bias"}, params: schemas.ChatParameters{LogitBias: &map[string]float64{"50256": -100}}},
 		{name: "presence_penalty", want: []string{"presence_penalty"}, params: schemas.ChatParameters{PresencePenalty: new(0.5)}},
 		{name: "frequency_penalty", want: []string{"frequency_penalty"}, params: schemas.ChatParameters{FrequencyPenalty: new(0.5)}},
-		{name: "logprobs", want: []string{"logprobs"}, params: schemas.ChatParameters{LogProbs: new(true)}},
 		{name: "audio modality", want: []string{"audio"}, params: schemas.ChatParameters{Modalities: []string{"text", "audio"}}},
 		{name: "prediction", want: []string{"prediction"}, params: schemas.ChatParameters{Prediction: &schemas.ChatPrediction{Type: "content", Content: "x"}}},
 		{name: "web_search_options", want: []string{"web_search_options"}, params: schemas.ChatParameters{WebSearchOptions: &schemas.ChatWebSearchOptions{}}},
@@ -1557,6 +1941,89 @@ func TestChatReasoningModeDispatch(t *testing.T) {
 	}
 }
 
+var reasoningModeLogProbs = []schemas.ResponsesOutputMessageContentTextLogProb{{Bytes: []int{79, 75}, LogProb: -0.01, Token: "OK", TopLogProbs: []schemas.LogProb{}}}
+
+// logprobsResponsesProvider answers Responses with output_text logprobs; its stream
+// pushes one output_text.delta carrying them through the runner dispatch hands it.
+type logprobsResponsesProvider struct {
+	billingHeaderCaptureProvider
+	streamed *schemas.BifrostResponse
+}
+
+func (p *logprobsResponsesProvider) Responses(_ *schemas.BifrostContext, _ schemas.Key, r *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	p.responses = r
+	return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type: new(schemas.ResponsesMessageTypeMessage),
+		Role: new(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:                              schemas.ResponsesOutputMessageContentTypeText,
+			Text:                              new("OK"),
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{LogProbs: reasoningModeLogProbs},
+		}}},
+	}}}, nil
+}
+
+func (p *logprobsResponsesProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, r *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.responses = r
+	p.streamed, _ = postHookRunner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type:     schemas.ResponsesStreamResponseTypeOutputTextDelta,
+		Delta:    new("OK"),
+		LogProbs: reasoningModeLogProbs,
+	}}, nil)
+	ch := make(chan *schemas.BifrostStreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+// TestChatReasoningModeForwardsLogProbs: a reasoning.mode chat request asking for
+// logprobs is served through Responses with the output_text include, and the returned
+// token logprobs come back on the chat choice, streamed or not.
+func TestChatReasoningModeForwardsLogProbs(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-6-luna",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("Reply with OK.")}}},
+				Params:   &schemas.ChatParameters{LogProbs: new(true), TopLogProbs: new(2), Reasoning: &schemas.ChatReasoning{Mode: new("pro")}},
+			}
+			message := &ChannelMessage{Context: ctx, BifrostRequest: schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: req}}
+			provider := &logprobsResponsesProvider{billingHeaderCaptureProvider: billingHeaderCaptureProvider{stubProvider: stubProvider{key: schemas.OpenAI}}}
+			client := &Bifrost{}
+
+			var chat *schemas.BifrostChatResponse
+			if stream {
+				message.RequestType = schemas.ChatCompletionStreamRequest
+				passthrough := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, e *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+					return r, e
+				}
+				_, bifrostErr := client.handleProviderStreamRequest(provider, nil, message, schemas.Key{}, passthrough, nil)
+				require.Nil(t, bifrostErr, "logprobs must not block the reasoning.mode reroute")
+				require.NotNil(t, provider.streamed)
+				chat = provider.streamed.ChatResponse
+			} else {
+				resp, bifrostErr := client.handleProviderRequest(provider, nil, message, schemas.Key{}, nil)
+				require.Nil(t, bifrostErr, "logprobs must not block the reasoning.mode reroute")
+				chat = resp.ChatResponse
+			}
+
+			require.NotNil(t, provider.responses, "reasoning.mode must route the chat request to the Responses API")
+			require.NotNil(t, provider.responses.Params)
+			assert.Contains(t, provider.responses.Params.Include, schemas.ResponsesIncludeOutputTextLogProbs)
+			require.NotNil(t, provider.responses.Params.TopLogProbs)
+			assert.Equal(t, 2, *provider.responses.Params.TopLogProbs)
+
+			require.NotNil(t, chat)
+			require.Len(t, chat.Choices, 1)
+			lp := chat.Choices[0].LogProbs
+			require.NotNil(t, lp, "returned logprobs must reach the chat choice")
+			require.Len(t, lp.Content, 1)
+			assert.Equal(t, "OK", lp.Content[0].Token)
+		})
+	}
+}
+
 // Drive the real custom OpenAI decoder through reasoning.mode dispatch and back to Chat.
 func TestChatReasoningModePreservesZeroUsage(t *testing.T) {
 	for _, tc := range []struct{ usage, want string }{
@@ -1626,4 +2093,175 @@ func TestChatReasoningModePreservesZeroUsage(t *testing.T) {
 			})
 		}
 	}
+}
+
+// customToolStub answers chat and Responses calls the way a model without custom tool
+// support does: a function call to the rewritten tool, with the input wrapped.
+type customToolStub struct {
+	stubProvider
+	chatReq      *schemas.BifrostChatRequest
+	responsesReq *schemas.BifrostResponsesRequest
+}
+
+func (s *customToolStub) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	s.chatReq = req
+	return &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+		FinishReason: new("tool_calls"),
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				ID: new("call_1"), Type: new("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: new("code_exec"), Arguments: `{"input":"print(1)"}`},
+			}}},
+		}},
+	}}}, nil
+}
+
+func (s *customToolStub) ChatCompletionStream(ctx *schemas.BifrostContext, runner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, req *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	s.chatReq = req
+	chunk := func(finish *string, calls ...schemas.ChatAssistantMessageToolCall) {
+		runner(ctx, &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{
+			FinishReason:             finish,
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{ToolCalls: calls}},
+		}}}}, nil)
+	}
+	chunk(nil, schemas.ChatAssistantMessageToolCall{ID: new("call_1"), Type: new("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: new("code_exec")}})
+	chunk(nil, schemas.ChatAssistantMessageToolCall{Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"input":"print(1)"}`}})
+	chunk(new("tool_calls"))
+	return nil, nil
+}
+
+func customFunctionCallItem() schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		ID:                   new("fc_1"),
+		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
+		Status:               new("completed"),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("call_1"), Name: new("code_exec"), Arguments: new(`{"input":"print(1)"}`)},
+	}
+}
+
+func (s *customToolStub) Responses(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+	s.responsesReq = req
+	return &schemas.BifrostResponsesResponse{Status: new(schemas.ResponsesResponseStatusCompleted), Output: []schemas.ResponsesMessage{customFunctionCallItem()}}, nil
+}
+
+func (s *customToolStub) ResponsesStream(ctx *schemas.BifrostContext, runner schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, req *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	s.responsesReq = req
+	item := customFunctionCallItem()
+	added := item
+	added.ResponsesToolMessage = &schemas.ResponsesToolMessage{CallID: item.CallID, Name: item.Name, Arguments: new("")}
+	for _, event := range []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: new(0), Item: &added},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: new(0), ItemID: item.ID, Delta: new(`{"input":"print(1)"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, OutputIndex: new(0), ItemID: item.ID, Arguments: new(`{"input":"print(1)"}`)},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: new(0), Item: &item},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{item}}},
+	} {
+		runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+	}
+	return nil, nil
+}
+
+func customToolChatRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("run it")}}},
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:   schemas.ChatToolTypeCustom,
+			Custom: &schemas.ChatToolCustom{Name: "code_exec", Format: &schemas.ChatToolCustomFormat{Type: "text"}},
+		}}},
+	}
+}
+
+func requireRestoredCustomCall(t *testing.T, calls []schemas.ChatAssistantMessageToolCall, input string) {
+	t.Helper()
+	require.Len(t, calls, 1)
+	require.Equal(t, "custom", *calls[0].Type)
+	require.NotNil(t, calls[0].Custom)
+	require.Equal(t, "code_exec", *calls[0].Custom.Name)
+	require.Equal(t, input, calls[0].Custom.Input)
+}
+
+// collectChatStream runs a dispatchChatStream attempt against the stub and accumulates the
+// tool calls the caller saw.
+func collectChatStream(t *testing.T, ctx *schemas.BifrostContext, stub *customToolStub, req *schemas.BifrostChatRequest) []schemas.ChatAssistantMessageToolCall {
+	t.Helper()
+	calls := map[uint16]*schemas.ChatAssistantMessageToolCall{}
+	runner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if result == nil || result.ChatResponse == nil {
+			return result, err
+		}
+		for _, choice := range result.ChatResponse.Choices {
+			if choice.ChatStreamResponseChoice == nil || choice.Delta == nil {
+				continue
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				acc, ok := calls[tc.Index]
+				if !ok {
+					acc = &schemas.ChatAssistantMessageToolCall{Index: tc.Index}
+					calls[tc.Index] = acc
+				}
+				if tc.Type != nil {
+					acc.Type = tc.Type
+				}
+				if tc.Custom != nil {
+					if acc.Custom == nil {
+						acc.Custom = &schemas.ChatAssistantMessageToolCallCustom{}
+					}
+					if tc.Custom.Name != nil {
+						acc.Custom.Name = tc.Custom.Name
+					}
+					acc.Custom.Input += tc.Custom.Input
+				}
+				acc.Function.Arguments += tc.Function.Arguments
+			}
+		}
+		return result, err
+	}
+	_, bifrostErr := (&Bifrost{}).dispatchChatStream(ctx, stub, &schemas.ProviderConfig{}, schemas.Key{}, req, runner, nil)
+	require.Nil(t, bifrostErr)
+	var out []schemas.ChatAssistantMessageToolCall
+	for i := uint16(0); int(i) < len(calls); i++ {
+		out = append(out, *calls[i])
+	}
+	return out
+}
+
+// A chat custom tool rewritten to a function for a model without custom tools comes back
+// to the caller as a custom call, on the chat wire and through the Responses conversion.
+func TestDispatchChat_RestoresRewrittenCustomToolCalls(t *testing.T) {
+	t.Run("chat", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stub := &customToolStub{stubProvider: stubProvider{key: schemas.Anthropic}}
+		req := customToolChatRequest(schemas.Anthropic, "claude-sonnet-5-5")
+		resp, bifrostErr := (&Bifrost{}).dispatchChat(ctx, stub, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+		require.Nil(t, bifrostErr)
+		require.Equal(t, schemas.ChatToolTypeFunction, stub.chatReq.Params.Tools[0].Type)
+		requireRestoredCustomCall(t, resp.Choices[0].Message.ChatAssistantMessage.ToolCalls, "print(1)")
+	})
+	t.Run("chat via responses", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		stub := &customToolStub{stubProvider: stubProvider{key: schemas.OpenAI}}
+		req := customToolChatRequest(schemas.OpenAI, "gpt-4o")
+		resp, bifrostErr := (&Bifrost{}).dispatchChat(ctx, stub, &schemas.ProviderConfig{}, schemas.Key{}, req, req)
+		require.Nil(t, bifrostErr)
+		require.Equal(t, schemas.ResponsesToolTypeFunction, stub.responsesReq.Params.Tools[0].Type)
+		requireRestoredCustomCall(t, resp.Choices[0].Message.ChatAssistantMessage.ToolCalls, "print(1)")
+	})
+	t.Run("chat stream", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stub := &customToolStub{stubProvider: stubProvider{key: schemas.Anthropic}}
+		calls := collectChatStream(t, ctx, stub, customToolChatRequest(schemas.Anthropic, "claude-sonnet-5-5"))
+		requireRestoredCustomCall(t, calls, "print(1)")
+		require.Empty(t, calls[0].Function.Arguments)
+	})
+	t.Run("chat stream via responses", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		stub := &customToolStub{stubProvider: stubProvider{key: schemas.OpenAI}}
+		calls := collectChatStream(t, ctx, stub, customToolChatRequest(schemas.OpenAI, "gpt-4o"))
+		requireRestoredCustomCall(t, calls, "print(1)")
+		require.Empty(t, calls[0].Function.Arguments)
+	})
 }

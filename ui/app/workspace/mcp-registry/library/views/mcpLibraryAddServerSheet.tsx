@@ -16,6 +16,7 @@ import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
+	authKindHasScope,
 	authKindOf,
 	authScopeOf,
 	type MCPAuthKind,
@@ -104,7 +105,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 	const needsHeaderKeys = authKind === "headers";
 
 	const applyAuthKind = (kind: MCPAuthKind) => {
-		if (kind === "none" || kind === "token_exchange") {
+		if (kind === "none" || kind === "token_exchange" || kind === "client_credentials" || kind === "aws_sigv4") {
 			setValue("auth_type", kind);
 			return;
 		}
@@ -346,6 +347,8 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 														<SelectItem value="none">{t("registry.filter.none")}</SelectItem>
 														<SelectItem value="headers">{t("registry.filter.headers")}</SelectItem>
 														<SelectItem value="oauth">{t("registry.form.oauth20")}</SelectItem>
+														<SelectItem value="client_credentials">{t("registry.clientCredentials.authType")}</SelectItem>
+														<SelectItem value="aws_sigv4">{t("registry.awsSigV4.authType")}</SelectItem>
 														{IS_ENTERPRISE && idpConfigured && (
 															<SelectItem value="token_exchange">{t("registry.form.tokenExchangeObo")}</SelectItem>
 														)}
@@ -353,7 +356,7 @@ export function MCPLibraryAddServerSheet({ open, onClose }: MCPLibraryAddServerS
 												</Select>
 											</FormItem>
 
-											{authKind !== "none" && authKind !== "token_exchange" && (
+											{authKindHasScope(authKind) && (
 												<FormItem className="w-full">
 													<FormLabel>{t("registry.columns.authScope")}</FormLabel>
 													<Select value={authScope} onValueChange={(value: MCPAuthScope) => applyAuthScope(value)}>

@@ -2139,3 +2139,86 @@ func TestCancelDuringAFallbackStopsTheChain(t *testing.T) {
 		t.Fatalf("the last fallback ran %d time(s) after the caller cancelled", n)
 	}
 }
+
+// trackedRunPlugin settles runs, as logging does with a job store, and keeps the errors it is shown.
+type trackedRunPlugin struct {
+	fakeRoutingPlugin
+	mu     sync.Mutex
+	errors []*schemas.BifrostError
+}
+
+func (p *trackedRunPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	ctx.SetValue(schemas.BifrostContextKeyJobAccounting, true)
+	return req, nil, nil
+}
+
+func (p *trackedRunPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if err != nil {
+		p.mu.Lock()
+		p.errors = append(p.errors, err)
+		p.mu.Unlock()
+	}
+	return resp, err, nil
+}
+
+// TestInterruptedBackgroundRunReachesPlugins pins that the plugins are shown the run a background stream left going,
+// and no usage to bill beside it, when the stream goes idle after output and when it fails before any.
+func TestInterruptedBackgroundRunReachesPlugins(t *testing.T) {
+	const created = `{"event_type":"interaction.created","interaction":{"id":"v1_idle","status":"in_progress","usage":{"total_tokens":8,"total_input_tokens":8}}}`
+	for name, frames := range map[string][]string{
+		"idle after output": {created, `{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`, `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"hello"}}`},
+		"failed at startup": {created, `{"event_type":"error","error":{"code":"internal","message":"boom"}}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			release := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				for _, frame := range frames {
+					fmt.Fprintf(w, "data: %s\n\n", frame)
+				}
+				w.(http.Flusher).Flush()
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}))
+			defer server.Close()
+			defer close(release)
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.Gemini, 1, 1, server.URL+"/v1beta")
+			account.configs[schemas.Gemini].NetworkConfig.MaxRetries = 0
+			account.configs[schemas.Gemini].NetworkConfig.StreamIdleTimeoutInSeconds = 1
+			account.SetKeysForProvider(schemas.Gemini, []schemas.Key{{ID: "k", Value: *schemas.NewSecretVar("k"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+			plugin := &trackedRunPlugin{}
+			client := newStreamTestClient(t, account, plugin)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(20*time.Second))
+			stream, bifrostErr := client.ResponsesStreamRequest(ctx, &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini, Model: "gemini-3.8-flash",
+				Input:  []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params: &schemas.ResponsesParameters{Background: schemas.Ptr(true)},
+			})
+			if bifrostErr == nil {
+				for range stream {
+				}
+			}
+			plugin.mu.Lock()
+			defer plugin.mu.Unlock()
+			if len(plugin.errors) == 0 {
+				t.Fatal("the plugins saw no error")
+			}
+			for i, err := range plugin.errors {
+				if err.ExtraFields.BilledUsage != nil {
+					t.Errorf("error %d bills %+v beside the run", i, err.ExtraFields.BilledUsage)
+				}
+				if job := err.ExtraFields.ProviderJob; job == nil || job.ID != "v1_idle" || !job.Created {
+					t.Errorf("error %d reports run %+v", i, job)
+				}
+			}
+			if calls.Load() != 1 {
+				t.Errorf("the run was created %d times", calls.Load())
+			}
+		})
+	}
+}

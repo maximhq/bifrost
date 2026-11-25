@@ -1,0 +1,616 @@
+{
+  "max_gap_segments": 80,
+  "narrow_before_broad": [
+    [
+      "/reports/[0-9]*",
+      "/reports/*"
+    ],
+    [
+      "/files/[a-f0-9]*/**",
+      "/files/*/**"
+    ],
+    [
+      "/a/?*",
+      "/a/*"
+    ],
+    [
+      "/a/[b]",
+      "/a/b*"
+    ],
+    [
+      "/a/[a-b][a-c]",
+      "/a/*b*"
+    ],
+    [
+      "/a/**/[b]",
+      "/a/**/b*"
+    ],
+    [
+      "/files/latest",
+      "/files/*"
+    ],
+    [
+      "/models/*:predict",
+      "/models/*"
+    ],
+    [
+      "/a/*",
+      "/*/*"
+    ],
+    [
+      "/*/*",
+      "/**"
+    ],
+    [
+      "/a/*/*",
+      "/a/**"
+    ],
+    [
+      "/a/b/**",
+      "/a/**"
+    ],
+    [
+      "/x/a*b*",
+      "/x/a*"
+    ],
+    [
+      "/x/foo*",
+      "/x/*foo*"
+    ],
+    [
+      "/files/?",
+      "/files/*"
+    ],
+    [
+      "/x/?",
+      "/x/*"
+    ],
+    [
+      "/files/[m]",
+      "/files/[a-z]"
+    ],
+    [
+      "/files/[a-z]",
+      "/files/?"
+    ],
+    [
+      "/files/[^m]",
+      "/files/*"
+    ],
+    [
+      "/files/a\\*",
+      "/files/a*"
+    ],
+    [
+      "/jobs/1/status",
+      "/jobs/*/status"
+    ],
+    [
+      "/jobs/*/status",
+      "/jobs/**/status"
+    ],
+    [
+      "/jobs/**/status",
+      "/jobs/**"
+    ],
+    [
+      "/jobs/**",
+      "/**"
+    ],
+    [
+      "/v1/jobs/**/status",
+      "/**/status"
+    ]
+  ],
+  "match_order": [
+    {
+      "name": "when the rules conflict, specificity wins: an exact header goes before the wildcard it narrows, and that wildcard keeps its saved place before an unrelated route",
+      "routes": [
+        { "method": "POST", "path": "/", "headers": { "X": "a*", "Z": "yes" } },
+        { "method": "POST", "path": "/", "headers": { "Y": "1" } },
+        { "method": "POST", "path": "/", "headers": { "X": "abc" } }
+      ],
+      "order": [2, 0, 1]
+    },
+    {
+      "name": "an exact value goes before a wildcard on the header both share, whatever wildcards sit on headers only one has",
+      "routes": [
+        { "method": "POST", "path": "/", "headers": { "X-Mode": "a*", "X-Region": "eu" }, "enabled": false },
+        { "method": "POST", "path": "/", "headers": { "X-Mode": "abc", "X-Tenant": "team*" } }
+      ],
+      "order": [1, 0]
+    },
+    {
+      "name": "an exact header goes before a wildcard that can take its calls, and nothing else moves",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Amz-Target": "Textract.*",
+            "Content-Type": "json-*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Amz-Target": "Textract.Get*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Amz-Target": "Textract.AnalyzeDocument"
+          }
+        }
+      ],
+      "order": [
+        2,
+        0,
+        1
+      ]
+    },
+    {
+      "name": "the saved order settles routes where neither is narrower",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Amz-Target": "Textract.AnalyzeDocument"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Amz-Target": "Textract.Get*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Amz-Target": "Textract.*",
+            "Content-Type": "json-*"
+          }
+        }
+      ],
+      "order": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "name": "a route with headers before the plain one",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/"
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Kind": "premium"
+          }
+        }
+      ],
+      "order": [
+        1,
+        0
+      ]
+    },
+    {
+      "name": "an extra wildcard header is still narrower",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "A": "x"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "A": "x",
+            "B": "*"
+          }
+        }
+      ],
+      "order": [
+        1,
+        0
+      ]
+    },
+    {
+      "name": "a proven narrower glob before a broader one",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "A": "a*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "A": "abc*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "A": "*"
+          }
+        }
+      ],
+      "order": [
+        1,
+        0,
+        2
+      ]
+    },
+    {
+      "name": "overlapping globs keep their saved order",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "foo*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "*foobar"
+          }
+        }
+      ],
+      "order": [
+        0,
+        1
+      ]
+    },
+    {
+      "name": "overlapping globs keep their saved order, reversed",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "a*c"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "abc*"
+          }
+        }
+      ],
+      "order": [
+        0,
+        1
+      ]
+    },
+    {
+      "name": "an equal-ranked path between two routes keeps its place",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/a/*",
+          "headers": {
+            "X": "other"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/*/b",
+          "headers": {
+            "X": "match"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/a/*",
+          "headers": {
+            "X": "match"
+          }
+        }
+      ],
+      "order": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "name": "another method does not shift tied paths",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/[ab]"
+        },
+        {
+          "method": "GET",
+          "path": "/[ac]"
+        },
+        {
+          "method": "GET",
+          "path": "/[ab]"
+        }
+      ],
+      "order": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "name": "a preference cycle falls back to the saved order",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "Y": "5"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "1",
+            "Y": "*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "1"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "Y": "5",
+            "X": "*"
+          }
+        }
+      ],
+      "order": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "name": "wildcard paths last",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/**"
+        },
+        {
+          "method": "GET",
+          "path": "/jobs/**"
+        },
+        {
+          "method": "GET",
+          "path": "/jobs/metrics"
+        }
+      ],
+      "order": [
+        2,
+        1,
+        0
+      ]
+    },
+    {
+      "name": "equivalent star runs keep their saved order",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "a*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "a**"
+          }
+        }
+      ],
+      "order": [
+        0,
+        1
+      ]
+    },
+    {
+      "name": "equivalent star runs keep their saved order, reversed",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "a**"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "a*"
+          }
+        }
+      ],
+      "order": [
+        0,
+        1
+      ]
+    },
+    {
+      "name": "a longer start still goes before a star run",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "a**"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "abc*"
+          }
+        }
+      ],
+      "order": [
+        1,
+        0
+      ]
+    },
+    {
+      "name": "an emoji counts as one character",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/x/*a"
+        },
+        {
+          "method": "GET",
+          "path": "/x/\ud83d\ude00*"
+        }
+      ],
+      "order": [
+        0,
+        1
+      ]
+    },
+    {
+      "name": "a plain route waits for a preference cycle",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/"
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "Y": "5"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "1",
+            "Y": "*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X": "1"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "Y": "5",
+            "X": "*"
+          }
+        }
+      ],
+      "order": [
+        1,
+        2,
+        3,
+        4,
+        0
+      ]
+    },
+    {
+      "name": "a shared exact header alone does not move a route",
+      "routes": [
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Mode": "shared",
+            "X-Format": "json*"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "headers": {
+            "X-Mode": "shared",
+            "X-Region": "eu"
+          }
+        }
+      ],
+      "order": [
+        0,
+        1
+      ]
+    },
+    {
+      "name": "equivalent path star runs keep their saved order",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/files/a**"
+        },
+        {
+          "method": "GET",
+          "path": "/files/a*"
+        }
+      ],
+      "order": [
+        0,
+        1
+      ]
+    },
+    {
+      "name": "equivalent path star runs keep their saved order, reversed",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/files/a*"
+        },
+        {
+          "method": "GET",
+          "path": "/files/a**"
+        }
+      ],
+      "order": [
+        0,
+        1
+      ]
+    }
+  ]
+}

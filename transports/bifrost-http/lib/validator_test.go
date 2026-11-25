@@ -173,6 +173,38 @@ func TestValidateConfigSchema_GlobalProxyTypes(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_RelayBodyOverrides pins that body_overrides is accepted on a relay and a
+// route with any JSON value, and that a key the relay would refuse (path syntax, an array index) is
+// refused when config.json loads.
+func TestValidateConfigSchema_RelayBodyOverrides(t *testing.T) {
+	relay := func(endpoint, route string) string {
+		return `{"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "bearer"}, "credential": {"value": "tvly-x"},
+			"body_overrides": ` + endpoint + `, "routes": [{"method": "POST", "path": "/search", "body_overrides": ` + route + `}]}]}`
+	}
+	for _, tc := range []struct {
+		name     string
+		endpoint string
+		route    string
+		valid    bool
+	}{
+		{"any JSON values", `{"include_usage": true}`, `{"options.depth": "advanced", "limits": {"max": 3}, "tags": [1], "x": null, "max_results": 5}`, true},
+		{"hyphen and digits inside a key", `{"x-trace-2": "a"}`, `{"v2.flag": true}`, true},
+		{"array index", `{}`, `{"items.0": 1}`, false},
+		{"path syntax", `{"items.#.id": 1}`, `{}`, false},
+		{"empty segment", `{"a..b": 1}`, `{}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(relay(tc.endpoint, tc.route)), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected body_overrides to pass validation: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatal("expected body_overrides to fail validation")
+			}
+		})
+	}
+}
+
 // TestValidateConfigSchema_NoWorkloadIdentityMappings pins that config.json holds no
 // workload identity mappings: workloads are mapped to service accounts in the dashboard or
 // through the API, and only the trusted issuers live in the file, on the SSO provider.
@@ -262,11 +294,14 @@ func TestValidateConfigSchema_WarpSectionCoversEverySetting(t *testing.T) {
 		t.Fatalf("failed to parse config.schema.json: %v", err)
 	}
 	declared := schema.Defs["warp_config"].Properties
+	// Warp's configuration tools need the Bifrost MCP, which is not released yet, so
+	// the schema does not advertise their setting.
+	unadvertised := map[string]bool{"management_writes": true}
 	inputType := reflect.TypeOf(warp.ConfigInput{})
 	fields := map[string]bool{}
 	for i := range inputType.NumField() {
 		name, _, _ := strings.Cut(inputType.Field(i).Tag.Get("json"), ",")
-		if name == "" || name == "-" {
+		if name == "" || name == "-" || unadvertised[name] {
 			continue
 		}
 		fields[name] = true
@@ -485,6 +520,42 @@ func TestValidateConfigSchema_ValidClientConfig(t *testing.T) {
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid client config to pass validation, got error: %v", err)
+	}
+}
+
+// TestValidateConfigSchema_ClaudeCodeGatewayManagedSettings pins that managed_settings accepts
+// null (no policy, what Go writes for an unset value), {} (empty policy) and a policy object.
+func TestValidateConfigSchema_ClaudeCodeGatewayManagedSettings(t *testing.T) {
+	cfg := func(managed string) []byte {
+		return []byte(`{"client": {"oauth2_server_config": {"issuer_url": "https://bifrost.example.com",
+			"gateways": {"claude_code": {"enabled": true, "managed_settings": ` + managed + `}}}}}`)
+	}
+	for _, valid := range []string{`null`, `{}`, `{"permissions": {"deny": ["Bash(rm:*)"]}}`} {
+		if err := ValidateConfigSchema(cfg(valid), loadLocalSchema(t)); err != nil {
+			t.Errorf("managed_settings %s must be valid, got: %v", valid, err)
+		}
+	}
+	if err := ValidateConfigSchema(cfg(`"not an object"`), loadLocalSchema(t)); err == nil {
+		t.Error("a string managed_settings must be rejected")
+	}
+}
+
+// TestValidateConfigSchema_ClaudeCodeGatewayTelemetryDestinations pins that enabled telemetry
+// needs at least one destination, as the config validator does; disabled telemetry needs none.
+func TestValidateConfigSchema_ClaudeCodeGatewayTelemetryDestinations(t *testing.T) {
+	cfg := func(telemetry string) []byte {
+		return []byte(`{"client": {"oauth2_server_config": {"issuer_url": "https://bifrost.example.com",
+			"gateways": {"claude_code": {"enabled": true, "telemetry": ` + telemetry + `}}}}}`)
+	}
+	for _, invalid := range []string{`{"enabled": true}`, `{"enabled": true, "destinations": []}`} {
+		if err := ValidateConfigSchema(cfg(invalid), loadLocalSchema(t)); err == nil {
+			t.Errorf("telemetry %s must be rejected", invalid)
+		}
+	}
+	for _, valid := range []string{`{"enabled": false}`, `{"enabled": true, "destinations": [{"endpoint": "https://otel.example.com"}]}`} {
+		if err := ValidateConfigSchema(cfg(valid), loadLocalSchema(t)); err != nil {
+			t.Errorf("telemetry %s must be valid, got: %v", valid, err)
+		}
 	}
 }
 
@@ -1028,6 +1099,106 @@ func TestValidateConfigSchema_MCPClientConfig_Valid_Sse(t *testing.T) {
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid MCP client config (sse) to pass validation, got error: %v", err)
+	}
+}
+
+// TestValidateConfigSchema_MCPClientConfig_ClientCredentialsTransports: client_credentials is a
+// shared credential, so SSE takes it like HTTP; a STDIO subprocess has nothing to send it to.
+func TestValidateConfigSchema_MCPClientConfig_ClientCredentialsTransports(t *testing.T) {
+	client := func(transport string) string {
+		target := `"connection_string": "https://mcp.example.com/mcp"`
+		if transport == "stdio" {
+			target = `"stdio_config": {"command": "npx", "args": []}`
+		}
+		return `{"mcp": {"client_configs": [{"name": "cc", "connection_type": "` + transport + `", ` + target +
+			`, "auth_type": "client_credentials", "client_credentials": {"client_id": "svc", "client_secret": "env.CC_SECRET"}}]}}`
+	}
+	for _, transport := range []string{"http", "sse"} {
+		if err := ValidateConfigSchema([]byte(client(transport)), loadLocalSchema(t)); err != nil {
+			t.Errorf("expected client_credentials on %s to pass validation, got error: %v", transport, err)
+		}
+	}
+	if err := ValidateConfigSchema([]byte(client("stdio")), loadLocalSchema(t)); err == nil {
+		t.Error("expected client_credentials on stdio to fail validation")
+	}
+}
+
+// TestValidateConfigSchema_MCPClientConfig_ClientCredentialsBlock: the schema refuses what
+// MCPClientCredentialsConfig.Validate refuses: no credential or both, auth_method without a
+// secret, and key_id, signing_algorithm or assertion_audience without a private key. Empty
+// optional settings stay valid.
+func TestValidateConfigSchema_MCPClientConfig_ClientCredentialsBlock(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		block string
+		valid bool
+	}{
+		{"secret only", `"client_id": "svc", "client_secret": "s"`, true},
+		{"key only", `"client_id": "svc", "private_key": "pem"`, true},
+		{"no credential", `"client_id": "svc"`, false},
+		{"both credentials", `"client_id": "svc", "client_secret": "s", "private_key": "pem"`, false},
+		{"secret with auth_method", `"client_id": "svc", "client_secret": "s", "auth_method": "client_secret_post"`, true},
+		{"key with signing_algorithm and key_id", `"client_id": "svc", "private_key": "pem", "signing_algorithm": "ES256", "key_id": "k1"`, true},
+		{"secret with an empty signing_algorithm", `"client_id": "svc", "client_secret": "s", "signing_algorithm": ""`, true},
+		{"key with an empty auth_method", `"client_id": "svc", "private_key": "pem", "auth_method": ""`, true},
+		{"secret with signing_algorithm", `"client_id": "svc", "client_secret": "s", "signing_algorithm": "RS256"`, false},
+		{"secret with key_id", `"client_id": "svc", "client_secret": "s", "key_id": "k1"`, false},
+		{"secret with assertion_audience", `"client_id": "svc", "client_secret": "s", "assertion_audience": "https://as.example.com"`, false},
+		{"key with auth_method", `"client_id": "svc", "private_key": "pem", "auth_method": "client_secret_post"`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := `{"mcp": {"client_configs": [{"name": "cc", "connection_type": "http", "connection_string": "https://mcp.example.com/mcp", ` +
+				`"auth_type": "client_credentials", "client_credentials": {` + tc.block + `}}]}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Errorf("expected valid, got error: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Error("expected a validation error")
+			}
+		})
+	}
+}
+
+// TestValidateConfigSchema_MCPClientConfig_AWSSigV4: the aws_sigv4 block is required
+// for its auth type and forbidden on others, its fields are checked, and the auth
+// type is accepted on http, sse and openapi but not stdio.
+func TestValidateConfigSchema_MCPClientConfig_AWSSigV4(t *testing.T) {
+	client := func(fields string) string {
+		return `{"mcp": {"client_configs": [{"name": "gateway", ` + fields + `}]}}`
+	}
+	const http = `"connection_type": "http", "connection_string": "https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp", `
+	valid := map[string]string{
+		"region only":        http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-gov-west-1"}`,
+		"assumed role":       http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "service": "bedrock-agentcore", "role_arn": "env.GATEWAY_ROLE_ARN", "external_id": "ext", "session_name": "bifrost"}`,
+		"references":         http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "env.AWS_REGION", "role_arn": "vault.aws/gateway-role", "session_name": "env.GATEWAY_SESSION"}`,
+		"sse":                `"connection_type": "sse", "connection_string": "https://mcp.example.com/sse", "auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "service": "lambda"}`,
+		"openapi":            `"connection_type": "openapi", "openapi_config": {"spec_url": "https://api.example.com/openapi.json"}, "auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "service": "execute-api"}`,
+		"empty session name": http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:role/r", "session_name": ""}`,
+	}
+	for name, fields := range valid {
+		if err := ValidateConfigSchema([]byte(client(fields)), loadLocalSchema(t)); err != nil {
+			t.Errorf("%s: expected valid, got %v", name, err)
+		}
+	}
+	invalid := map[string]string{
+		"missing block":             http + `"auth_type": "aws_sigv4"`,
+		"block on another type":     http + `"auth_type": "headers", "aws_sigv4": {"region": "us-east-1"}`,
+		"missing region":            http + `"auth_type": "aws_sigv4", "aws_sigv4": {"service": "lambda"}`,
+		"malformed region":          http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "US East"}`,
+		"service outside allowlist": http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "service": "s3"}`,
+		"external id without role":  http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "external_id": "ext"}`,
+		"role ARN not a role":       http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:user/u"}`,
+		"role ARN short account":    http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::1234:role/r"}`,
+		"session name too short":    http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:role/r", "session_name": "a"}`,
+		"session name too long":     http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:role/r", "session_name": "` + strings.Repeat("s", 65) + `"}`,
+		"unknown field":             http + `"auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1", "access_key": "AKIA"}`,
+		"stdio":                     `"connection_type": "stdio", "stdio_config": {"command": "npx", "args": []}, "auth_type": "aws_sigv4", "aws_sigv4": {"region": "us-east-1"}`,
+	}
+	for name, fields := range invalid {
+		if err := ValidateConfigSchema([]byte(client(fields)), loadLocalSchema(t)); err == nil {
+			t.Errorf("%s: expected a validation error", name)
+		}
 	}
 }
 
@@ -4701,6 +4872,10 @@ func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
 		{"both without issuer_url", `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{}}}`, true},
 		{"oauth with issuer_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://issuer.example.com"}}}`, false},
 		{"headers without issuer_url", `{"client":{"mcp_server_auth_mode":"headers"}}`, false},
+		{"oauth with additional_issuer_urls", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://corp.example.com","additional_issuer_urls":["https://tunnel.example.com",{"value":"env.BIFROST_TUNNEL_ISSUER","env_var":"BIFROST_TUNNEL_ISSUER","from_env":true}]}}}`, false},
+		{"additional_issuer_urls as a string", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://corp.example.com","additional_issuer_urls":"https://tunnel.example.com"}}}`, true},
+		{"oauth with browser_base_url", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://tunnel.example.com","browser_base_url":"https://bifrost.corp.example.com"}}}`, false},
+		{"browser_base_url as an env reference", `{"client":{"mcp_server_auth_mode":"oauth","oauth2_server_config":{"issuer_url":"https://tunnel.example.com","browser_base_url":{"value":"env.BIFROST_BROWSER_URL","env_var":"BIFROST_BROWSER_URL","from_env":true}}}}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ValidateConfigSchema([]byte(tc.config))
@@ -5114,5 +5289,52 @@ func TestConfigSchemaSuggestionsScheduleMatchesParser(t *testing.T) {
 		if (goErr == nil) != (schemaErr == nil) {
 			t.Errorf("start_at %s: decoder error %v, schema error %v", start, goErr, schemaErr)
 		}
+	}
+}
+
+// TestValidateConfigSchema_RelayJob pins that a route's job block loads from config.json, and that
+// a malformed one is refused when the file loads.
+func TestValidateConfigSchema_RelayJob(t *testing.T) {
+	relay := func(job string) string {
+		return `{"relays": [{"name": "textract", "base_url": "https://textract.us-east-1.amazonaws.com", "auth": {"type": "aws_sigv4", "aws": {"service": "textract"}},
+			"credential": {"aws": {"region": "us-east-1"}}, "routes": [{"method": "POST", "path": "/", "headers": {"X-Amz-Target": "Textract.Start*"}, "job": ` + job + `}]}]}`
+	}
+	textract := `{"id_path": "JobId", "poll": {"method": "POST", "path": "/", "headers": {"X-Amz-Target": "Textract.GetDocumentAnalysis"}, "body": "{\"JobId\":\"{{job.id}}\"}", "content_type": "application/x-amz-json-1.1"},
+		"status_path": "JobStatus", "succeeded": ["SUCCEEDED", "PARTIAL_SUCCESS"], "failed": ["FAILED"], "interval_seconds": 15, "timeout_seconds": 21600,
+		"usage": {"units_path": "DocumentMetadata.Pages", "cost_per_unit": 0.0015}}`
+	for _, tc := range []struct {
+		name  string
+		job   string
+		valid bool
+	}{
+		{"textract job", textract, true},
+		{"no succeeded status", `{"id_path": "JobId", "poll": {"path": "/"}, "status_path": "s", "succeeded": []}`, false},
+		{"unknown poll field", `{"id_path": "JobId", "poll": {"path": "/", "url": "https://x"}, "status_path": "s", "succeeded": ["x"]}`, false},
+		{"timeout over 7 days", `{"id_path": "JobId", "poll": {"path": "/"}, "status_path": "s", "succeeded": ["x"], "timeout_seconds": 604801}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(relay(tc.job)), loadLocalSchema(t))
+			if tc.valid && err != nil {
+				t.Fatalf("expected the job to pass validation: %v", err)
+			}
+			if !tc.valid && err == nil {
+				t.Fatal("expected the job to fail validation")
+			}
+		})
+	}
+}
+
+// TestValidateConfigSchema_RelayInheritBodyOverrides pins the route switch that turns the relay's
+// body_overrides off.
+func TestValidateConfigSchema_RelayInheritBodyOverrides(t *testing.T) {
+	cfg := func(v string) []byte {
+		return []byte(`{"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "bearer"}, "credential": {"value": "tvly-x"},
+			"body_overrides": {"include_usage": true}, "routes": [{"method": "POST", "path": "/usage", "inherit_body_overrides": ` + v + `}]}]}`)
+	}
+	if err := ValidateConfigSchema(cfg("false"), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected inherit_body_overrides: false to pass validation: %v", err)
+	}
+	if err := ValidateConfigSchema(cfg(`"no"`), loadLocalSchema(t)); err == nil {
+		t.Fatal("expected a non-boolean inherit_body_overrides to fail validation")
 	}
 }

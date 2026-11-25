@@ -34,6 +34,11 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 	if settler == nil {
 		return nil, fmt.Errorf("job accounting settler is nil")
 	}
+	return accountJob(ctx, stateStore, llmLogsRecorder{logStore: logStore, pricing: pricing}, pricing, settler, req)
+}
+
+// accountJob is the settlement every kind shares; recorder decides where the job is logged and billed.
+func accountJob(ctx context.Context, stateStore JobStore, recorder LogsRecorder, pricing PricingManager, settler Settler, req JobRequest) (*Outcome, error) {
 	if req.Provider == "" || req.ProviderJobID == "" {
 		return nil, nil
 	}
@@ -73,7 +78,7 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 		// caller still wants to show a price if one already exists, so mirror the
 		// already-written aggregate row for display. This never writes anything: no
 		// job transition, no governance report, no count change.
-		populateOutcomeFromExistingLog(ctx, logStore, settler, out)
+		recorder.MirrorSettled(ctx, settler, out)
 		return out, nil
 	}
 	// The persisted row carries the only record of how far a previous attempt got
@@ -91,7 +96,7 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 		mergeJobHints(job, persisted)
 	}
 	req.Job = job
-	req.SourceLog = resolveSourceLog(ctx, logStore, job, req.BaseLog)
+	req.SourceLog = recorder.SourceLog(ctx, job, req.BaseLog)
 	if req.FallbackModel == "" {
 		req.FallbackModel = job.Model
 	}
@@ -125,10 +130,10 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 		// missing-cost backfill. Skipping the write would lose the usage for good —
 		// the raw provider results are not persisted anywhere else.
 		if settlement.RecordUnpriced && job.AggregateLogWrittenAt == nil {
-			entry := buildAggregateLog(req, settlement, out, now, userAgentFromContext(ctx))
+			entry := recorder.Entry(req, settlement, out, now, userAgentFromContext(ctx))
 			// Unknown, not zero — a zero cost would read as "this job was free".
-			entry.Cost = nil
-			if err := writeAggregateLog(ctx, stateStore, logStore, req, job, runnerID, entry); err != nil {
+			entry.ClearCost()
+			if err := writeAggregateLog(ctx, stateStore, entry, job, runnerID); err != nil {
 				return nil, err
 			}
 		}
@@ -146,7 +151,7 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 	out.Cost = settlement.Cost
 	out.Complete = settlement.Complete
 
-	entry := buildAggregateLog(req, settlement, out, now, userAgentFromContext(ctx))
+	entry := recorder.Entry(req, settlement, out, now, userAgentFromContext(ctx))
 	if !settlement.Complete {
 		// Some work priced and some did not. out.Cost is therefore only the known part
 		// of the bill, and persisting it as the row's cost would be a lie with
@@ -157,10 +162,10 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 		// the full usage and the per-model breakdowns are all on it, so a later
 		// recalculation can complete it — and leave the job re-drivable rather than
 		// marking it accounted.
-		entry.Cost = nil
+		entry.ClearCost()
 	}
 	if job.AggregateLogWrittenAt == nil {
-		if err := writeAggregateLog(ctx, stateStore, logStore, req, job, runnerID, entry); err != nil {
+		if err := writeAggregateLog(ctx, stateStore, entry, job, runnerID); err != nil {
 			return nil, err
 		}
 	}
@@ -176,10 +181,8 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 		}
 		return out, nil
 	}
-	if req.UsageReporter != nil && job.GovernanceReportedAt == nil {
-		report := usageReportFor(req.Provider, entry, out)
-		report.SkipRequestCount = settlement.SkipRequestCount
-		if err := req.UsageReporter.ReportUsage(ctx, report); err != nil {
+	if entry.CanReport() && job.GovernanceReportedAt == nil {
+		if err := entry.Report(ctx); err != nil {
 			_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 			return nil, err
 		}
@@ -198,8 +201,8 @@ func AccountJob(ctx context.Context, stateStore JobStore, logStore AggregateLogS
 
 // writeAggregateLog persists the aggregate row, marks the job, and emits. Any
 // failure releases the claim so a later attempt can retry cleanly.
-func writeAggregateLog(ctx context.Context, stateStore JobStore, logStore AggregateLogStore, req JobRequest, job *cstables.TableProviderJob, runnerID string, entry *logstore.Log) error {
-	if err := logStore.CreateIfNotExists(ctx, entry); err != nil {
+func writeAggregateLog(ctx context.Context, stateStore JobStore, entry LogsRecord, job *cstables.TableProviderJob, runnerID string) error {
+	if err := entry.Write(ctx); err != nil {
 		_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 		return err
 	}
@@ -207,10 +210,62 @@ func writeAggregateLog(ctx context.Context, stateStore JobStore, logStore Aggreg
 		_ = stateStore.FailProviderJob(ctx, job.ID, runnerID, err)
 		return err
 	}
-	if req.Emitter != nil {
-		req.Emitter.EmitAggregateLog(ctx, entry)
-	}
+	entry.Emit(ctx)
 	return nil
+}
+
+// llmLogsRecorder logs a settled job in the LLM logs and bills it through the request's UsageReporter.
+type llmLogsRecorder struct {
+	logStore AggregateLogStore
+	pricing  PricingManager
+}
+
+func (l llmLogsRecorder) Ready() bool { return l.logStore != nil && l.pricing != nil }
+
+func (l llmLogsRecorder) SourceLog(ctx context.Context, job *cstables.TableProviderJob, baseLog *logstore.Log) *logstore.Log {
+	return resolveSourceLog(ctx, l.logStore, job, baseLog)
+}
+
+func (l llmLogsRecorder) MirrorSettled(ctx context.Context, settler Settler, out *Outcome) {
+	populateOutcomeFromExistingLog(ctx, l.logStore, settler, out)
+}
+
+func (l llmLogsRecorder) Entry(req JobRequest, settlement *Settlement, out *Outcome, now time.Time, userAgent string) LogsRecord {
+	return &llmLogsRecord{
+		logStore:   l.logStore,
+		req:        req,
+		settlement: settlement,
+		out:        out,
+		log:        buildAggregateLog(req, settlement, out, now, userAgent),
+	}
+}
+
+type llmLogsRecord struct {
+	logStore   AggregateLogStore
+	req        JobRequest
+	settlement *Settlement
+	out        *Outcome
+	log        *logstore.Log
+}
+
+func (e *llmLogsRecord) ClearCost() { e.log.Cost = nil }
+
+func (e *llmLogsRecord) Write(ctx context.Context) error {
+	return e.logStore.CreateIfNotExists(ctx, e.log)
+}
+
+func (e *llmLogsRecord) Emit(ctx context.Context) {
+	if e.req.Emitter != nil {
+		e.req.Emitter.EmitAggregateLog(ctx, e.log)
+	}
+}
+
+func (e *llmLogsRecord) CanReport() bool { return e.req.UsageReporter != nil }
+
+func (e *llmLogsRecord) Report(ctx context.Context) error {
+	report := usageReportFor(e.req.Provider, e.log, e.out)
+	report.SkipRequestCount = e.settlement.SkipRequestCount
+	return e.req.UsageReporter.ReportUsage(ctx, report)
 }
 
 // populateOutcomeFromExistingLog fills out from the aggregate log row already
@@ -256,6 +311,10 @@ func mergeJobHints(dst *cstables.TableProviderJob, src *cstables.TableProviderJo
 	}
 	dst.AggregateLogWrittenAt = src.AggregateLogWrittenAt
 	dst.GovernanceReportedAt = src.GovernanceReportedAt
+	// A relay job's polls are counted on the row as they are sent, so the stored count is current.
+	if dst.Kind == cstables.ProviderJobKindRelay && src.PollAttempts > dst.PollAttempts {
+		dst.PollAttempts = src.PollAttempts
+	}
 	dst.SelectedKeyID = src.SelectedKeyID
 	dst.VirtualKeyID = src.VirtualKeyID
 	dst.UserID = src.UserID

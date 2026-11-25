@@ -1407,6 +1407,7 @@ func NewGenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, acce
 	routes = append(routes, CreateGenAIBatchRouteConfigs("/genai", handlerStore)...)
 	routes = append(routes, CreateVertexBatchRouteConfigs("/genai")...)
 	routes = append(routes, CreateGenAICachedContentRouteConfigs("/genai", handlerStore)...)
+	routes = append(routes, CreateGenAIInteractionsRouteConfigs("/genai", handlerStore)...)
 
 	return &GenAIRouter{
 		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
@@ -1937,19 +1938,14 @@ func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
 		return false
 	}
 
-	// Check all contents for audio input
+	// Only inline audio counts: the transcription path carries bytes, not a fileData URI,
+	// so fileData audio stays on Responses, which forwards the URI.
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
 			if part == nil {
 				continue
 			}
-			// Check for inline audio data
 			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
-				return true
-			}
-
-			// Check for file-based audio data
-			if part.FileData != nil && isAudioMimeType(part.FileData.MIMEType) {
 				return true
 			}
 		}

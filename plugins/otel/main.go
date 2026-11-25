@@ -127,6 +127,8 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
+	ApplyTraceDimensionsToChildSpans bool `json:"apply_trace_dimensions_to_child_spans,omitempty"` // merge x-bf-dim-* onto every span; see convertTraceToResourceSpan
+
 	// ExportRawPayloads attaches captured provider or agent bodies to operation
 	// spans. Off by default; requires the corresponding raw-storage setting and
 	// is suppressed by disable_content_logging.
@@ -286,28 +288,29 @@ func profileCarriers(data []byte) []spanFilterCarrier {
 // flattened to plain strings ("env.VAR_NAME" or the literal value) for DB/config-file
 // persistence.
 type profileForStorage struct {
-	Enabled                  bool              `json:"enabled"`
-	TracesEnabled            bool              `json:"traces_enabled"`
-	ServiceName              string            `json:"service_name"`
-	CollectorURL             string            `json:"collector_url"`
-	Headers                  map[string]string `json:"headers,omitempty"`
-	TraceHeaders             map[string]string `json:"trace_headers,omitempty"`
-	MetricsHeaders           map[string]string `json:"metrics_headers,omitempty"`
-	TraceType                TraceType         `json:"trace_type"`
-	Protocol                 Protocol          `json:"protocol"`
-	TLSCACert                string            `json:"tls_ca_cert,omitempty"`
-	Insecure                 bool              `json:"insecure"`
-	ExportTimeout            int               `json:"export_timeout,omitempty"`
-	MetricsEnabled           bool              `json:"metrics_enabled"`
-	MetricsEndpoint          string            `json:"metrics_endpoint,omitempty"`
-	MetricsPushInterval      int               `json:"metrics_push_interval,omitempty"`
-	OverheadBreakdownEnabled bool              `json:"overhead_breakdown_enabled,omitempty"`
-	RequestHeaders           []string          `json:"request_headers,omitempty"`
-	DisableContentLogging    bool              `json:"disable_content_logging,omitempty"`
-	ExportRawPayloads        bool              `json:"export_raw_payloads,omitempty"`
-	ExcludedAttributes       []string          `json:"excluded_attributes,omitempty"`
-	GroupTracesBySession     bool              `json:"group_traces_by_session,omitempty"`
-	DisableRootSpanContent   bool              `json:"disable_root_span_content,omitempty"`
+	Enabled                          bool              `json:"enabled"`
+	TracesEnabled                    bool              `json:"traces_enabled"`
+	ServiceName                      string            `json:"service_name"`
+	CollectorURL                     string            `json:"collector_url"`
+	Headers                          map[string]string `json:"headers,omitempty"`
+	TraceHeaders                     map[string]string `json:"trace_headers,omitempty"`
+	MetricsHeaders                   map[string]string `json:"metrics_headers,omitempty"`
+	TraceType                        TraceType         `json:"trace_type"`
+	Protocol                         Protocol          `json:"protocol"`
+	TLSCACert                        string            `json:"tls_ca_cert,omitempty"`
+	Insecure                         bool              `json:"insecure"`
+	ExportTimeout                    int               `json:"export_timeout,omitempty"`
+	MetricsEnabled                   bool              `json:"metrics_enabled"`
+	MetricsEndpoint                  string            `json:"metrics_endpoint,omitempty"`
+	MetricsPushInterval              int               `json:"metrics_push_interval,omitempty"`
+	OverheadBreakdownEnabled         bool              `json:"overhead_breakdown_enabled,omitempty"`
+	RequestHeaders                   []string          `json:"request_headers,omitempty"`
+	DisableContentLogging            bool              `json:"disable_content_logging,omitempty"`
+	ApplyTraceDimensionsToChildSpans bool              `json:"apply_trace_dimensions_to_child_spans,omitempty"`
+	ExportRawPayloads                bool              `json:"export_raw_payloads,omitempty"`
+	ExcludedAttributes               []string          `json:"excluded_attributes,omitempty"`
+	GroupTracesBySession             bool              `json:"group_traces_by_session,omitempty"`
+	DisableRootSpanContent           bool              `json:"disable_root_span_content,omitempty"`
 }
 
 // configForStorage is the persisted wrapper shape.
@@ -332,28 +335,29 @@ func (c *Config) MarshalForStorage() ([]byte, error) {
 			continue
 		}
 		out.Profiles = append(out.Profiles, profileForStorage{
-			Enabled:                  p.Enabled,
-			TracesEnabled:            p.TracesEnabled,
-			ServiceName:              p.ServiceName,
-			CollectorURL:             schemas.SecretVarAsString(p.CollectorURL),
-			Headers:                  p.Headers,
-			TraceHeaders:             p.TraceHeaders,
-			MetricsHeaders:           p.MetricsHeaders,
-			TraceType:                p.TraceType,
-			Protocol:                 p.Protocol,
-			TLSCACert:                p.TLSCACert,
-			Insecure:                 p.Insecure,
-			ExportTimeout:            p.ExportTimeout,
-			MetricsEnabled:           p.MetricsEnabled,
-			MetricsEndpoint:          schemas.SecretVarAsString(p.MetricsEndpoint),
-			MetricsPushInterval:      p.MetricsPushInterval,
-			OverheadBreakdownEnabled: p.OverheadBreakdownEnabled,
-			RequestHeaders:           p.RequestHeaders,
-			DisableContentLogging:    p.DisableContentLogging,
-			ExportRawPayloads:        p.ExportRawPayloads,
-			ExcludedAttributes:       p.ExcludedAttributes,
-			GroupTracesBySession:     p.GroupTracesBySession,
-			DisableRootSpanContent:   p.DisableRootSpanContent,
+			Enabled:                          p.Enabled,
+			TracesEnabled:                    p.TracesEnabled,
+			ServiceName:                      p.ServiceName,
+			CollectorURL:                     schemas.SecretVarAsString(p.CollectorURL),
+			Headers:                          p.Headers,
+			TraceHeaders:                     p.TraceHeaders,
+			MetricsHeaders:                   p.MetricsHeaders,
+			TraceType:                        p.TraceType,
+			Protocol:                         p.Protocol,
+			TLSCACert:                        p.TLSCACert,
+			Insecure:                         p.Insecure,
+			ExportTimeout:                    p.ExportTimeout,
+			MetricsEnabled:                   p.MetricsEnabled,
+			MetricsEndpoint:                  schemas.SecretVarAsString(p.MetricsEndpoint),
+			MetricsPushInterval:              p.MetricsPushInterval,
+			OverheadBreakdownEnabled:         p.OverheadBreakdownEnabled,
+			RequestHeaders:                   p.RequestHeaders,
+			DisableContentLogging:            p.DisableContentLogging,
+			ApplyTraceDimensionsToChildSpans: p.ApplyTraceDimensionsToChildSpans,
+			ExportRawPayloads:                p.ExportRawPayloads,
+			ExcludedAttributes:               p.ExcludedAttributes,
+			GroupTracesBySession:             p.GroupTracesBySession,
+			DisableRootSpanContent:           p.DisableRootSpanContent,
 		})
 	}
 	return sonic.Marshal(out)
@@ -426,18 +430,19 @@ func hideResolvedEnvValue(v *schemas.SecretVar) *schemas.SecretVar {
 // plus an optional metrics exporter, along with the per-profile identity (service name)
 // used when converting traces for this destination.
 type otelTarget struct {
-	serviceName              string
-	url                      string
-	traceType                TraceType
-	client                   OtelClient
-	metricsExporter          *MetricsExporter
-	requestHeaders           []string
-	disableContentLogging    bool
-	exportRawPayloads        bool
-	excludedAttributes       []string
-	groupTracesBySession     bool
-	disableRootSpanContent   bool
-	overheadBreakdownEnabled bool
+	serviceName                      string
+	url                              string
+	traceType                        TraceType
+	client                           OtelClient
+	metricsExporter                  *MetricsExporter
+	requestHeaders                   []string
+	disableContentLogging            bool
+	applyTraceDimensionsToChildSpans bool
+	exportRawPayloads                bool
+	excludedAttributes               []string
+	groupTracesBySession             bool
+	disableRootSpanContent           bool
+	overheadBreakdownEnabled         bool
 
 	// exportTimeout bounds a single Emit. See Profile.ExportTimeout.
 	exportTimeout time.Duration
@@ -632,16 +637,17 @@ func (p *OtelPlugin) buildTarget(index int, profile *Profile) (*otelTarget, erro
 	}
 
 	target := &otelTarget{
-		serviceName:              serviceName,
-		traceType:                profile.TraceType,
-		requestHeaders:           slices.Clone(profile.RequestHeaders),
-		disableContentLogging:    profile.DisableContentLogging,
-		exportRawPayloads:        profile.ExportRawPayloads,
-		excludedAttributes:       profile.ExcludedAttributes,
-		groupTracesBySession:     profile.GroupTracesBySession,
-		disableRootSpanContent:   profile.DisableRootSpanContent,
-		overheadBreakdownEnabled: profile.OverheadBreakdownEnabled,
-		exportTimeout:            exportTimeout,
+		serviceName:                      serviceName,
+		traceType:                        profile.TraceType,
+		requestHeaders:                   slices.Clone(profile.RequestHeaders),
+		disableContentLogging:            profile.DisableContentLogging,
+		applyTraceDimensionsToChildSpans: profile.ApplyTraceDimensionsToChildSpans,
+		exportRawPayloads:                profile.ExportRawPayloads,
+		excludedAttributes:               profile.ExcludedAttributes,
+		groupTracesBySession:             profile.GroupTracesBySession,
+		disableRootSpanContent:           profile.DisableRootSpanContent,
+		overheadBreakdownEnabled:         profile.OverheadBreakdownEnabled,
+		exportTimeout:                    exportTimeout,
 	}
 
 	// Build the trace client only when traces are enabled; Inject skips a nil client.
@@ -968,7 +974,14 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			// Free when unconfigured: an empty list returns the trace unchanged.
 			disableContent := t.disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
 			traceForTarget := schemas.StripTraceAttributes(trace, t.excludedAttributes)
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, disableContent, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, convertOptions{
+				requestHeaders:                   t.requestHeaders,
+				disableContentLogging:            disableContent,
+				applyTraceDimensionsToChildSpans: t.applyTraceDimensionsToChildSpans,
+				exportRawPayloads:                t.exportRawPayloads,
+				groupTracesBySession:             t.groupTracesBySession,
+				disableRootSpanContent:           t.disableRootSpanContent,
+			})
 			// Again after conversion: it adds root-span attributes of its own
 			// (session.id, request id, instance attrs, captured headers).
 			stripExcludedFromResourceSpan(resourceSpan, t.excludedAttributes)
@@ -1127,24 +1140,40 @@ func buildSpanAttrs(span *schemas.Span) []attribute.KeyValue {
 	customerIDs, customerNames := entitySet(e, attrs, entityCustomer)
 	buIDs, buNames := entitySet(e, attrs, entityBusinessUnit)
 
-	return BuildBifrostAttributes(
-		provider,
-		schemas.NormalizeModelName(model),
-		method,
-		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyID, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyID }),
-		enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyName, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyName }),
-		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyID, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyID }),
-		enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyName, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyName }),
-		fallbackIndex(e, attrs),
-		teamIDs,
-		teamNames,
-		customerIDs,
-		customerNames,
-		buIDs,
-		buNames,
-		enrichedStr(e, attrs, schemas.AttrBifrostProjectID, func(e *schemas.SpanEnrichment) string { return e.ProjectID }),
-		enrichedStr(e, attrs, schemas.AttrBifrostProjectName, func(e *schemas.SpanEnrichment) string { return e.ProjectName }),
-	)
+	alias := schemas.GetStringAttr(attrs, schemas.AttrBifrostAlias)
+	if span.LLM != nil && span.LLM.Alias != "" {
+		alias = span.LLM.Alias
+	}
+	routingEngineUsed := schemas.GetStringAttr(attrs, schemas.AttrBifrostRoutingEngineUsed)
+	if e != nil && len(e.RoutingEnginesUsed) > 0 {
+		routingEngineUsed = strings.Join(e.RoutingEnginesUsed, ",")
+	}
+
+	return BuildBifrostAttributes(BifrostMetricLabels{
+		Provider:            provider,
+		Model:               schemas.NormalizeModelName(model),
+		Method:              method,
+		Alias:               alias,
+		App:                 enrichedStr(e, attrs, schemas.AttrBifrostApp, func(e *schemas.SpanEnrichment) string { return e.App }),
+		RoutingEngineUsed:   routingEngineUsed,
+		VirtualKeyID:        enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyID, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyID }),
+		VirtualKeyName:      enrichedStr(e, attrs, schemas.AttrBifrostVirtualKeyName, func(e *schemas.SpanEnrichment) string { return e.VirtualKeyName }),
+		SelectedKeyID:       enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyID, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyID }),
+		SelectedKeyName:     enrichedStr(e, attrs, schemas.AttrBifrostSelectedKeyName, func(e *schemas.SpanEnrichment) string { return e.SelectedKeyName }),
+		RoutingRuleID:       enrichedStr(e, attrs, schemas.AttrBifrostRoutingRuleID, func(e *schemas.SpanEnrichment) string { return e.RoutingRuleID }),
+		RoutingRuleName:     enrichedStr(e, attrs, schemas.AttrBifrostRoutingRuleName, func(e *schemas.SpanEnrichment) string { return e.RoutingRuleName }),
+		ComplexityTier:      enrichedStr(e, attrs, schemas.AttrBifrostComplexityTier, func(e *schemas.SpanEnrichment) string { return e.ComplexityTier }),
+		ComplexityMechanism: enrichedStr(e, attrs, schemas.AttrBifrostComplexityMechanism, func(e *schemas.SpanEnrichment) string { return e.ComplexityMechanism }),
+		TeamIDs:             teamIDs,
+		TeamNames:           teamNames,
+		CustomerIDs:         customerIDs,
+		CustomerNames:       customerNames,
+		BusinessUnitIDs:     buIDs,
+		BusinessUnitNames:   buNames,
+		ProjectID:           enrichedStr(e, attrs, schemas.AttrBifrostProjectID, func(e *schemas.SpanEnrichment) string { return e.ProjectID }),
+		ProjectName:         enrichedStr(e, attrs, schemas.AttrBifrostProjectName, func(e *schemas.SpanEnrichment) string { return e.ProjectName }),
+		FallbackIndex:       fallbackIndex(e, attrs),
+	})
 }
 
 // enrichedStr prefers the typed dimension, falling back to the attribute key.
@@ -1213,31 +1242,44 @@ func entitySet(e *schemas.SpanEnrichment, attrs map[string]any, kind entityKind)
 // metrics (e.g. cache hits) that fire without a provider-attempt span to read from.
 func buildContextAttrs(ctx context.Context, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) []attribute.KeyValue {
 	requestType, provider, originalModel, resolvedModel := bifrost.GetResponseFields(resp, bifrostErr)
+	// alias keeps the raw requested name, as the span path and Prometheus do.
 	model := originalModel
+	alias := ""
 	if resolvedModel != "" {
 		model = resolvedModel
+		if resolvedModel != originalModel {
+			alias = originalModel
+		}
 	}
+	routingEngines, _ := ctx.Value(schemas.BifrostContextKeyRoutingEnginesUsed).([]string)
 	teamIDs, teamNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceTeamIDs, schemas.BifrostContextKeyGovernanceTeamNames, schemas.BifrostContextKeyGovernanceTeamID, schemas.BifrostContextKeyGovernanceTeamName)
 	customerIDs, customerNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceCustomerIDs, schemas.BifrostContextKeyGovernanceCustomerNames, schemas.BifrostContextKeyGovernanceCustomerID, schemas.BifrostContextKeyGovernanceCustomerName)
 	buIDs, buNames := entitySetFromContext(ctx, schemas.BifrostContextKeyGovernanceBusinessUnitIDs, schemas.BifrostContextKeyGovernanceBusinessUnitNames, schemas.BifrostContextKeyGovernanceBusinessUnitID, schemas.BifrostContextKeyGovernanceBusinessUnitName)
-	return BuildBifrostAttributes(
-		string(provider),
-		schemas.NormalizeModelName(model),
-		string(requestType),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName),
-		bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex),
-		teamIDs,
-		teamNames,
-		customerIDs,
-		customerNames,
-		buIDs,
-		buNames,
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
-		bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
-	)
+	return BuildBifrostAttributes(BifrostMetricLabels{
+		Provider:            string(provider),
+		Model:               schemas.NormalizeModelName(model),
+		Method:              string(requestType),
+		Alias:               alias,
+		App:                 schemas.DetectAppFromUserAgent(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserAgent)),
+		RoutingEngineUsed:   strings.Join(routingEngines, ","),
+		VirtualKeyID:        bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyID),
+		VirtualKeyName:      bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceVirtualKeyName),
+		SelectedKeyID:       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyID),
+		SelectedKeyName:     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedKeyName),
+		RoutingRuleID:       bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleID),
+		RoutingRuleName:     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceRoutingRuleName),
+		ComplexityTier:      bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityTier),
+		ComplexityMechanism: bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceComplexityMechanism),
+		TeamIDs:             teamIDs,
+		TeamNames:           teamNames,
+		CustomerIDs:         customerIDs,
+		CustomerNames:       customerNames,
+		BusinessUnitIDs:     buIDs,
+		BusinessUnitNames:   buNames,
+		ProjectID:           bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID),
+		ProjectName:         bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName),
+		FallbackIndex:       bifrost.GetIntFromContext(ctx, schemas.BifrostContextKeyFallbackIndex),
+	})
 }
 
 // buildMCPSpanAttrs builds the duration-metric dimensions: semconv attrs + governance

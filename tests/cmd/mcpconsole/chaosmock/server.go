@@ -29,6 +29,7 @@ type Server struct {
 	counters *Counters
 	streams  *streamRegistry
 	oauth    *oauthState
+	sigv4    *sigv4State
 	rest     *restSurface
 	llm      *llmSurface
 	prompts  *promptSurface
@@ -72,6 +73,7 @@ func NewServer(name string) *Server {
 		counters: newCounters(),
 		streams:  newStreamRegistry(),
 		oauth:    newOAuthState(),
+		sigv4:    &sigv4State{},
 		rest:     &restSurface{},
 		llm:      newLLMSurface(),
 		prompts:  &promptSurface{},
@@ -321,6 +323,9 @@ type toolsListResult struct {
 type callParams struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Meta      struct {
+		ProgressToken json.RawMessage `json:"progressToken,omitempty"`
+	} `json:"_meta"`
 }
 
 type contentBlock struct {
@@ -352,6 +357,9 @@ type handleResult struct {
 	// Malformed tells the transport to write a body that is not valid
 	// JSON-RPC, to exercise a client's decoder rather than its error handling.
 	Malformed bool
+	// Notifications are sent, in order, on the request's own stream ahead of Response.
+	Notifications [][]byte
+	ProgressTool  string // the tool Notifications report progress on, counted once they are sent
 }
 
 // Handle runs one JSON-RPC message against the server's current state. It is
@@ -560,6 +568,36 @@ func (s *Server) handleToolsCall(req *request, identity string, f Faults) handle
 		}
 	}
 
+	res := s.toolReply(req, tool, params)
+	if len(tool.Progress) > 0 && hasJSON(params.Meta.ProgressToken) {
+		res.Notifications = progressNotifications(params.Meta.ProgressToken, tool.Progress)
+		res.ProgressTool = tool.Name
+	}
+	return res
+}
+
+// progressNotifications renders steps as notifications/progress carrying token.
+func progressNotifications(token json.RawMessage, steps []ProgressStep) [][]byte {
+	out := make([][]byte, 0, len(steps))
+	for _, step := range steps {
+		params := struct {
+			ProgressToken json.RawMessage `json:"progressToken"`
+			ProgressStep
+		}{token, step}
+		payload, err := json.Marshal(struct {
+			JSONRPC string `json:"jsonrpc"`
+			Method  string `json:"method"`
+			Params  any    `json:"params"`
+		}{jsonRPCVersion, NotificationProgress, params})
+		if err == nil {
+			out = append(out, payload)
+		}
+	}
+	return out
+}
+
+// toolReply is the result a call to tool answers with when nothing is faulted.
+func (s *Server) toolReply(req *request, tool Tool, params callParams) handleResult {
 	switch {
 	case len(tool.Reply) > 0:
 		// Verbatim, so the scenario decides every field of the result,
@@ -644,6 +682,9 @@ func (s *Server) callerIdentity(r *http.Request, method, sessionID string) strin
 		}
 	}
 	a := s.auth.get()
+	if a.SigV4 != nil {
+		return sigv4Identity(r)
+	}
 	if a.OAuth == nil {
 		return s.auth.check(r.Header).Identity
 	}

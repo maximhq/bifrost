@@ -129,11 +129,28 @@ func RunStdioBridge(ctx context.Context, cfg StdioBridgeConfig) error {
 			// framing expects.
 			continue
 		}
-		if err := stdout.writeLine(respBody); err != nil {
-			return fmt.Errorf("stdio bridge could not write: %w", err)
+		// A request answered as a stream (progress ahead of a result) is one line per message.
+		for _, msg := range streamMessages(respBody) {
+			if err := stdout.writeLine(msg); err != nil {
+				return fmt.Errorf("stdio bridge could not write: %w", err)
+			}
 		}
 	}
 	return scanner.Err()
+}
+
+// streamMessages splits an SSE answer into the messages its data lines carry; any other body is one message.
+func streamMessages(body []byte) [][]byte {
+	if !bytes.HasPrefix(bytes.TrimSpace(body), []byte("event:")) {
+		return [][]byte{body}
+	}
+	var out [][]byte
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		if data, ok := bytes.CutPrefix(line, []byte("data: ")); ok {
+			out = append(out, data)
+		}
+	}
+	return out
 }
 
 // lineWriter writes whole newline-terminated lines, one at a time.

@@ -807,6 +807,148 @@ expect_render_failure "postgresql: schema rejects non-string arguments" "extraAr
 expect_render_failure "postgresql: schema rejects non-string PVC annotations" "annotations" \
   --set 'postgresql.primary.persistence.annotations.invalid=42'
 
+# Bundled Redis: metrics.enabled runs a redis_exporter sidecar, and master.extraEnv/envFrom
+# reach the Redis container. With both off the pod is unchanged.
+REDIS_BUNDLED=(--set vectorStore.enabled=true --set vectorStore.type=redis --set vectorStore.redis.enabled=true)
+cat > "$VALUES_DIR/redis-metrics.yaml" << 'VALS'
+vectorStore:
+  redis:
+    master:
+      extraEnv:
+        - name: REDIS_ARGS
+          value: "--maxmemory 400mb"
+      envFrom:
+        - configMapRef:
+            name: redis-tuning
+    metrics:
+      enabled: true
+      port: 9200
+      serviceMonitor:
+        enabled: true
+        interval: 30s
+        labels:
+          release: kube-prometheus-stack
+VALS
+
+check_workload "redis: no exporter, metrics port or ServiceMonitor by default" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+rs = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "bifrost-redis-master")
+c = rd["spec"]["template"]["spec"]["containers"]
+assert [x["name"] for x in c] == ["redis"], "Redis manifest contract failed: %s" % [x["name"] for x in c]
+assert [e["name"] for e in c[0]["env"]] == ["REDIS_PASSWORD", "REDISCLI_AUTH"], "Redis manifest contract failed"
+assert c[0]["command"] == ["redis-stack-server", "--dir", "/data", "--requirepass", "$(REDIS_PASSWORD)"], "redis-stack must save to the /data volume: %r" % c[0]["command"]
+assert "envFrom" not in c[0] and "annotations" not in rd["spec"]["template"]["metadata"], "Redis manifest contract failed"
+assert [p["name"] for p in rs["spec"]["ports"]] == ["redis"], "Redis manifest contract failed"
+assert not any(d.get("kind") == "ServiceMonitor" for d in docs), "ServiceMonitor unexpectedly rendered"' \
+  "${REDIS_BUNDLED[@]}"
+
+check_workload "redis: extraEnv, envFrom, exporter sidecar, metrics port and ServiceMonitor render" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+rs = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "bifrost-redis-master")
+sm = next(d for d in docs if d.get("kind") == "ServiceMonitor")
+redis, exporter = rd["spec"]["template"]["spec"]["containers"]
+assert [e["name"] for e in redis["env"]] == ["REDIS_PASSWORD", "REDISCLI_AUTH", "REDIS_ARGS"], "Redis manifest contract failed"
+assert redis["envFrom"] == [{"configMapRef": {"name": "redis-tuning"}}], "Redis manifest contract failed"
+assert redis["command"] == ["sh", "-c", "exec redis-stack-server --dir /data --requirepass \"$REDIS_PASSWORD\" $REDIS_ARGS"], "REDIS_ARGS not wired under auth: %r" % redis["command"]
+env = {e["name"]: e for e in exporter["env"]}
+assert exporter["name"] == "metrics" and exporter["image"].startswith("oliver006/redis_exporter:"), "Redis manifest contract failed"
+assert env["REDIS_ADDR"]["value"] == "redis://localhost:6379" and env["REDIS_EXPORTER_WEB_LISTEN_ADDRESS"]["value"] == ":9200", "Redis manifest contract failed"
+assert env["REDIS_PASSWORD"]["valueFrom"]["secretKeyRef"] == {"name": "bifrost-redis", "key": "password"}, "Redis manifest contract failed"
+assert env["REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT"]["value"] == "true", "the /scrape endpoint leaks the Redis password and must be off by default"
+assert exporter["ports"][0]["containerPort"] == 9200, "Redis manifest contract failed"
+assert "readinessProbe" not in exporter, "exporter readiness would gate the Redis Service endpoints"
+assert exporter["livenessProbe"]["tcpSocket"] == {"port": "metrics"} and "httpGet" not in exporter["livenessProbe"], "exporter liveness must not call /health: %r" % exporter["livenessProbe"]
+assert rd["spec"]["template"]["metadata"]["annotations"] == {"prometheus.io/scrape": "true", "prometheus.io/port": "9200", "prometheus.io/path": "/metrics"}, "Redis manifest contract failed"
+assert {"name": "metrics", "port": 9200, "targetPort": "metrics", "protocol": "TCP"} in rs["spec"]["ports"], "Redis manifest contract failed"
+assert all(rs["metadata"]["labels"].get(k) == v for k, v in sm["spec"]["selector"]["matchLabels"].items()), "ServiceMonitor does not select the Redis Service"
+assert sm["spec"]["endpoints"] == [{"port": "metrics", "path": "/metrics", "interval": "30s"}], "ServiceMonitor contract failed"
+assert sm["metadata"]["labels"]["release"] == "kube-prometheus-stack", "ServiceMonitor contract failed"' \
+  "${REDIS_BUNDLED[@]}" -f "$VALUES_DIR/redis-metrics.yaml"
+
+check_workload "redis: envFrom alone also starts through the shell, plain redis image uses redis-server" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+redis = rd["spec"]["template"]["spec"]["containers"][0]
+assert redis["command"] == ["sh", "-c", "exec redis-server --requirepass \"$REDIS_PASSWORD\" $REDIS_ARGS"], "Redis manifest contract failed: %r" % redis["command"]' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.image.repository=redis --set vectorStore.redis.image.tag=7.2 \
+  --set-json 'vectorStore.redis.master.envFrom=[{"secretRef":{"name":"redis-extra"}}]'
+
+check_workload "redis: plain redis image keeps the legacy redis-server command without extra env" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+redis = rd["spec"]["template"]["spec"]["containers"][0]
+assert redis["command"] == ["redis-server", "--requirepass", "$(REDIS_PASSWORD)"], "Redis manifest contract failed: %r" % redis["command"]' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.image.repository=redis --set vectorStore.redis.image.tag=7.2
+
+check_workload "redis: auth disabled leaves the image entrypoint, which reads REDIS_ARGS itself" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+redis = rd["spec"]["template"]["spec"]["containers"][0]
+assert "command" not in redis, "Redis manifest contract failed: %r" % redis.get("command")' \
+  "${REDIS_BUNDLED[@]}" -f "$VALUES_DIR/redis-metrics.yaml" --set vectorStore.redis.auth.enabled=false
+
+check_workload "redis: metrics.enabled alone falls back to the built-in exporter defaults" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+rs = next(d for d in docs if d.get("kind") == "Service" and d["metadata"]["name"] == "bifrost-redis-master")
+exporter = rd["spec"]["template"]["spec"]["containers"][1]
+assert exporter["image"] == "oliver006/redis_exporter:v1.97.0" and exporter["imagePullPolicy"] == "IfNotPresent", "exporter image default changed: %r" % exporter["image"]
+assert exporter["ports"][0]["containerPort"] == 9121 and {e["name"]: e.get("value") for e in exporter["env"]}["REDIS_EXPORTER_WEB_LISTEN_ADDRESS"] == ":9121", "exporter port default changed"
+assert "resources" not in exporter, "unset resources must not render: %r" % exporter.get("resources")
+assert rd["spec"]["template"]["metadata"]["annotations"]["prometheus.io/port"] == "9121", "Redis manifest contract failed"
+assert {"name": "metrics", "port": 9121, "targetPort": "metrics", "protocol": "TCP"} in rs["spec"]["ports"], "Redis manifest contract failed"
+assert not any(d.get("kind") == "ServiceMonitor" for d in docs), "ServiceMonitor rendered without being enabled"' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.metrics.enabled=true
+
+check_workload "redis: exporter basic auth keeps a liveness probe that needs no credentials" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+exporter = rd["spec"]["template"]["spec"]["containers"][1]
+env = [e["name"] for e in exporter["env"]]
+assert "REDIS_EXPORTER_BASIC_AUTH_USERNAME" in env and "REDIS_EXPORTER_BASIC_AUTH_PASSWORD" in env, "basic auth env not passed: %r" % env
+assert exporter["livenessProbe"]["tcpSocket"] == {"port": "metrics"}, "liveness would hit /health without credentials: %r" % exporter["livenessProbe"]' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.metrics.enabled=true \
+  --set-json 'vectorStore.redis.metrics.extraEnv=[{"name":"REDIS_EXPORTER_BASIC_AUTH_USERNAME","value":"u"},{"name":"REDIS_EXPORTER_BASIC_AUTH_PASSWORD","value":"p"}]'
+
+check_workload "redis: metrics.extraEnv can turn /scrape back on, after the chart default" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+names = [e["name"] for e in rd["spec"]["template"]["spec"]["containers"][1]["env"]]
+vals = [e.get("value") for e in rd["spec"]["template"]["spec"]["containers"][1]["env"] if e["name"] == "REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT"]
+assert vals == ["true", "false"], "user override must come after the default, last one wins: %r" % vals' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.metrics.enabled=true \
+  --set-json 'vectorStore.redis.metrics.extraEnv=[{"name":"REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT","value":"false"}]'
+
+check_workload "redis: ServiceMonitor sends exporter basic auth from a Secret" \
+  'sm = next(d for d in docs if d.get("kind") == "ServiceMonitor" and d["metadata"]["name"] == "bifrost-redis")
+ep = sm["spec"]["endpoints"][0]
+assert ep["basicAuth"] == {"username": {"name": "redis-exporter-auth", "key": "username"}, "password": {"name": "redis-exporter-auth", "key": "pass"}}, "ServiceMonitor basicAuth contract failed: %r" % ep.get("basicAuth")' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.metrics.enabled=true \
+  --set-json 'vectorStore.redis.metrics.extraEnv=[{"name":"REDIS_EXPORTER_BASIC_AUTH_USERNAME","value":"u"},{"name":"REDIS_EXPORTER_BASIC_AUTH_PASSWORD","value":"p"}]' \
+  --set vectorStore.redis.metrics.serviceMonitor.enabled=true \
+  --set vectorStore.redis.metrics.serviceMonitor.basicAuth.enabled=true \
+  --set vectorStore.redis.metrics.serviceMonitor.basicAuth.existingSecret=redis-exporter-auth \
+  --set vectorStore.redis.metrics.serviceMonitor.basicAuth.passwordKey=pass
+
+check_workload "redis: ServiceMonitor sends no basicAuth unless enabled" \
+  'sm = next(d for d in docs if d.get("kind") == "ServiceMonitor" and d["metadata"]["name"] == "bifrost-redis")
+assert "basicAuth" not in sm["spec"]["endpoints"][0], "basicAuth rendered without being enabled"' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.metrics.enabled=true --set vectorStore.redis.metrics.serviceMonitor.enabled=true
+
+expect_render_failure "redis: ServiceMonitor basicAuth requires existingSecret" "existingSecret" \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.metrics.enabled=true --set vectorStore.redis.metrics.serviceMonitor.enabled=true \
+  --set vectorStore.redis.metrics.serviceMonitor.basicAuth.enabled=true
+
+check_workload "redis: exporter carries no password when auth is disabled" \
+  'rd = next(d for d in docs if d.get("kind") == "Deployment" and d["metadata"]["name"] == "bifrost-redis-master")
+exporter = rd["spec"]["template"]["spec"]["containers"][1]
+assert [e["name"] for e in exporter["env"]] == ["REDIS_ADDR", "REDIS_EXPORTER_WEB_LISTEN_ADDRESS", "REDIS_EXPORTER_DISABLE_SCRAPE_ENDPOINT"], "Redis manifest contract failed"' \
+  "${REDIS_BUNDLED[@]}" --set vectorStore.redis.auth.enabled=false --set vectorStore.redis.metrics.enabled=true
+
+check_workload "redis: external Redis renders no bundled workload or ServiceMonitor" \
+  'assert not any(d["metadata"]["name"].startswith("bifrost-redis") or d.get("kind") == "ServiceMonitor" for d in docs), "bundled Redis resources unexpectedly rendered"' \
+  "${REDIS_BUNDLED[@]}" -f "$VALUES_DIR/redis-metrics.yaml" \
+  --set vectorStore.redis.external.enabled=true --set vectorStore.redis.external.host=redis.example.com
+
+expect_render_failure "redis: schema rejects an extraEnv entry without a name" "name" \
+  --set-json 'vectorStore.redis.master.extraEnv=[{"value":"x"}]'
+expect_render_failure "redis: schema rejects an out-of-range metrics port" "port" \
+  --set vectorStore.redis.metrics.port=70000
+
 # token_exchange in config.schema.json requires client_id unless use_idp_credentials is true or
 # the profile is id_jag; the values schema must refuse what config.json validation would.
 TOKEN_EXCHANGE_CLIENT=(
@@ -832,6 +974,128 @@ test_template "mcp tokenExchange: id_jag needs resourceClientId, not clientId" \
   "${TOKEN_EXCHANGE_CLIENT[@]}" \
   --set 'bifrost.mcp.clientConfigs[0].tokenExchange.profile=id_jag' \
   --set 'bifrost.mcp.clientConfigs[0].tokenExchange.resourceClientId=bifrost-client'
+
+# client_credentials and aws_sigv4 render under their config.schema.json keys, and the values schema
+# plus the template guards refuse what config.schema.json refuses.
+CC_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=cc'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http'
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp'
+  --set 'bifrost.mcp.clientConfigs[0].authType=client_credentials'
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientId=bifrost-app'
+)
+check_config "mcp clientCredentials: the block renders under client_credentials" \
+  'c = cfg["mcp"]["client_configs"][0]["client_credentials"]
+assert c == {"client_id": "bifrost-app", "client_secret": "env.CC_SECRET", "token_url": "https://auth.example.com/token", "scopes": ["read"]}, c' \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.tokenUrl=https://auth.example.com/token' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.scopes[0]=read'
+check_config "mcp clientCredentials: a blank secret beside a key is not rendered" \
+  'c = cfg["mcp"]["client_configs"][0]["client_credentials"]
+assert "client_secret" not in c and c["private_key"] == "env.CC_KEY", c' \
+  "${CC_CLIENT[@]}" \
+  --set-string 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret= ' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.privateKey=env.CC_KEY'
+check_config "mcp clientCredentials: an explicitly empty resource renders as empty" \
+  'c = cfg["mcp"]["client_configs"][0]["client_credentials"]
+assert c.get("resource") == "", c' \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set-string 'bifrost.mcp.clientConfigs[0].clientCredentials.resource='
+check_config "mcp clientCredentials: an omitted resource is left out" \
+  'c = cfg["mcp"]["client_configs"][0]["client_credentials"]
+assert "resource" not in c, c' \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET'
+expect_render_failure "mcp clientCredentials: schema requires the block for its auth type" "clientCredentials" \
+  --set bifrost.mcp.enabled=true \
+  --set 'bifrost.mcp.clientConfigs[0].name=cc' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://mcp.example.com/mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=client_credentials'
+expect_render_failure "mcp clientCredentials: schema refuses a secret and a key together" "clientCredentials': 'not' failed" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.privateKey=env.CC_KEY'
+expect_render_failure "mcp clientCredentials: schema requires a secret or a key" "anyOf" \
+  "${CC_CLIENT[@]}"
+expect_render_failure "mcp clientCredentials: schema refuses the block on another auth type" "clientConfigs/0': 'not' failed" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=headers'
+expect_render_failure "mcp clientCredentials: schema refuses authMethod with a private key" "missing property 'clientSecret'" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.privateKey=env.CC_KEY' \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.authMethod=client_secret_post'
+for opt in keyId=k1 signingAlgorithm=RS256 assertionAudience=https://auth.example.com; do
+  expect_render_failure "mcp clientCredentials: schema refuses ${opt%%=*} with a client secret" "missing property 'privateKey'" \
+    "${CC_CLIENT[@]}" \
+    --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+    --set "bifrost.mcp.clientConfigs[0].clientCredentials.${opt}"
+done
+test_template "mcp clientCredentials: an empty authMethod and signingAlgorithm leave a private key valid" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.privateKey=env.CC_KEY' \
+  --set-string 'bifrost.mcp.clientConfigs[0].clientCredentials.authMethod=' \
+  --set-string 'bifrost.mcp.clientConfigs[0].clientCredentials.signingAlgorithm='
+expect_render_failure "mcp clientCredentials: refused on stdio" "value must be one of 'none', 'headers', 'oauth'" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=stdio' \
+  --set 'bifrost.mcp.clientConfigs[0].stdioConfig.command=npx'
+expect_render_failure "mcp clientCredentials: refused on openapi" "value must be one of 'none', 'headers', 'per_user_headers', 'aws_sigv4'" \
+  "${CC_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].clientCredentials.clientSecret=env.CC_SECRET' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=openapi' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json'
+
+SIGV4_CLIENT=(
+  --set bifrost.mcp.enabled=true
+  --set 'bifrost.mcp.clientConfigs[0].name=sigv4'
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http'
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp'
+  --set 'bifrost.mcp.clientConfigs[0].authType=aws_sigv4'
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.region=us-east-1'
+)
+check_config "mcp awsSigV4: the block renders under aws_sigv4" \
+  'c = cfg["mcp"]["client_configs"][0]["aws_sigv4"]
+assert c == {"region": "us-east-1", "service": "aws-mcp", "role_arn": "arn:aws:iam::123456789012:role/gateway", "external_id": "env.EXT_ID", "session_name": "bifrost-mcp"}, c' \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.service=aws-mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.roleArn=arn:aws:iam::123456789012:role/gateway' \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.externalId=env.EXT_ID' \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.sessionName=bifrost-mcp'
+check_config "mcp awsSigV4: an empty sessionName is the documented default and is not rendered" \
+  'c = cfg["mcp"]["client_configs"][0]["aws_sigv4"]
+assert c == {"region": "us-east-1", "role_arn": "arn:aws:iam::123456789012:role/gateway"}, c' \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.roleArn=arn:aws:iam::123456789012:role/gateway' \
+  --set-string 'bifrost.mcp.clientConfigs[0].awsSigV4.sessionName='
+test_template "mcp awsSigV4: allowed on openapi" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=openapi' \
+  --set 'bifrost.mcp.clientConfigs[0].openapiConfig.specUrl=https://api.example.com/openapi.json'
+expect_render_failure "mcp awsSigV4: schema requires the block for its auth type" "awsSigV4" \
+  --set bifrost.mcp.enabled=true \
+  --set 'bifrost.mcp.clientConfigs[0].name=sigv4' \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=http' \
+  --set 'bifrost.mcp.clientConfigs[0].httpConfig.url=https://gw.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp' \
+  --set 'bifrost.mcp.clientConfigs[0].authType=aws_sigv4'
+expect_render_failure "mcp awsSigV4: schema refuses the block on another auth type" "clientConfigs/0': 'not' failed" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].authType=headers'
+expect_render_failure "mcp awsSigV4: schema refuses externalId without roleArn" "properties 'roleArn' required" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.externalId=ext'
+expect_render_failure "mcp awsSigV4: schema refuses a roleArn that is not a role" "awsSigV4/roleArn'" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].awsSigV4.roleArn=arn:aws:iam::123456789012:user/alice'
+expect_render_failure "mcp awsSigV4: refused on stdio" "value must be one of 'none', 'headers', 'oauth'" \
+  "${SIGV4_CLIENT[@]}" \
+  --set 'bifrost.mcp.clientConfigs[0].connectionType=stdio' \
+  --set 'bifrost.mcp.clientConfigs[0].stdioConfig.command=npx'
 
 # connection_type "openapi" builds an MCP server from an OpenAPI/Swagger document. Every
 # openapiConfig field must render under its config.schema.json key, and the values schema plus
@@ -1098,8 +1362,8 @@ assert "complexity_analyzer_config" not in cfg.get("governance", {}), "model rou
   -f "$VALUES_DIR/model-router-values.yaml"
 check_config "model routers: omitted by default, leaving stored routers alone" \
   'assert "model_routers" not in cfg, "rendered without being configured: %r" % cfg.get("model_routers")'
-check_config "model routers: an empty list renders nothing" \
-  'assert "model_routers" not in cfg, "empty list rendered: %r" % cfg.get("model_routers")' \
+check_config "model routers: an explicit empty list renders [] so source-of-truth installs can prune" \
+  'assert cfg.get("model_routers") == [], "empty list not rendered: %r" % cfg.get("model_routers")' \
   --set-json 'bifrost.modelRouters=[]'
 expect_render_failure "model routers: schema requires keywords" "keywords" \
   --set-json 'bifrost.modelRouters=[{"id":"support","name":"Support"}]'
@@ -1350,6 +1614,27 @@ expect_render_failure "serviceMonitor: schema rejects a zero hashmod modulus" \
   "modulus" \
   --set serviceMonitor.enabled=true \
   --set-json 'serviceMonitor.relabelings=[{"sourceLabels":["__address__"],"modulus":0,"targetLabel":"__tmp_hash","action":"hashmod"}]'
+
+# Client gateways render under oauth2_server_config.gateways; an empty managedSettings is an
+# empty policy and must not be dropped, and enabling a gateway without issuerUrl fails.
+GW='bifrost.client.oauth2ServerConfig'
+check_config "gateways: Claude Code renders under oauth2_server_config.gateways.claude_code" \
+  'o = cfg["client"]["oauth2_server_config"]
+assert o["gateways"]["claude_code"] == {"enabled": True, "managed_settings": {"permissions": {"deny": ["Bash(rm:*)"]}}}, "claude_code changed: %r" % o.get("gateways")' \
+  --set "$GW.issuerUrl=https://bifrost.example.com" --set "$GW.gateways.claudeCode.enabled=true" \
+  --set-json "$GW.gateways.claudeCode.managedSettings={\"permissions\":{\"deny\":[\"Bash(rm:*)\"]}}"
+check_config "gateways: an empty managedSettings stays an empty policy" \
+  'cc = cfg["client"]["oauth2_server_config"]["gateways"]["claude_code"]
+assert cc.get("managed_settings") == {}, "empty policy was dropped: %r" % cc' \
+  --set "$GW.issuerUrl=https://bifrost.example.com" --set "$GW.gateways.claudeCode.enabled=true" \
+  --set-json "$GW.gateways.claudeCode.managedSettings={}"
+check_config "gateways: omitted by default" \
+  'assert "gateways" not in cfg.get("client", {}).get("oauth2_server_config", {}), "gateways rendered without being set"'
+expect_render_failure "gateways: Claude Code requires issuerUrl" "issuerUrl is required" \
+  --set "$GW.gateways.claudeCode.enabled=true"
+expect_render_failure "gateways: enabled telemetry needs a destination" "destinations" \
+  --set "$GW.issuerUrl=https://bifrost.example.com" --set "$GW.gateways.claudeCode.enabled=true" \
+  --set "$GW.gateways.claudeCode.telemetry.enabled=true"
 
 # Cleanup
 rm -f /tmp/helm-template-output.yaml

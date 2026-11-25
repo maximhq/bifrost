@@ -27,7 +27,7 @@ A good first check is **Observability → Relay Logs**. If the call has a row th
 
 **Fix:** compare the call with the route table:
 - A trailing slash is an extra segment: `/search/` does not match `/search`.
-- `*` stays inside one segment: `/results/*` does not match `/results/abc/pages`. Use `/results/**` to match everything below.
+- `*` stays inside one segment: `/results/*` does not match `/results/abc/pages`. Use `/results/**` to match everything below, or `/results/**/pages` to match any depth before a fixed ending.
 - If the route has **Header Matchers**, the call must send those headers too.
 - The method must match: a `GET` route does not cover `POST`.
 

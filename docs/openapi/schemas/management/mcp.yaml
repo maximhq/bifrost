@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials, aws_sigv4]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -13,6 +13,13 @@ MCPAuthType:
     - token_exchange: Delegated token exchange (each caller's own identity-provider token is
       exchanged for a short-lived token scoped to this server on every call; nothing is
       stored per caller). Requires an enabled identity-provider integration (enterprise).
+    - client_credentials: OAuth client_credentials grant with a client registered in advance
+      at the server's authorization server; one token is shared by every caller and no
+      user signs in (MCP OAuth Client Credentials extension).
+    - aws_sigv4: AWS Signature Version 4. Bifrost signs every request with its own
+      AWS identity, optionally assuming a role first, for servers that require
+      AWS IAM such as Amazon Bedrock AgentCore Gateway. For connection_type
+      "openapi", the upstream API's requests are signed.
 
 MCPTokenExchangeConfig:
   type: object
@@ -85,6 +92,208 @@ MCPTokenExchangeConfig:
     deployment's identity-provider integration; this block only says which
     resource the exchanged token must be scoped to and which application
     performs the exchange.
+
+MCPClientCredentialsConfig:
+  type: object
+  required: [client_id]
+  properties:
+    token_url:
+      type: string
+      description: |
+        Token endpoint (https; http only on a loopback host). When empty on
+        create or update, it is discovered from the MCP server's OAuth metadata
+        and stored, and the authorization server must advertise the
+        client_credentials grant. Changing it, or clearing it to discover again,
+        requires a masked plain-text client_secret or private_key to be resent;
+        an env. or vault. reference is kept.
+        A token endpoint on a private network must be on the OAuth Private
+        Network Allowlist in MCP Settings (mcp_oauth_private_allowlist);
+        otherwise the save fails.
+    client_id:
+      allOf:
+        - $ref: ./common.yaml#/EnvVar
+        - $ref: '#/MCPSecretSet'
+      description: |
+        Bifrost's client ID at the authorization server. Supports env.VAR_NAME
+        and vault.path references. Redacted in API responses.
+    client_secret:
+      $ref: ./common.yaml#/EnvVar
+      description: |
+        Client secret. Exactly one of client_secret and private_key is
+        required. Supports env.VAR_NAME and vault.path references. Redacted in
+        API responses.
+    auth_method:
+      type: string
+      enum: ['', client_secret_basic, client_secret_post]
+      description: |
+        How client_secret is sent. Empty: HTTP Basic unless the discovered
+        metadata lists only client_secret_post; the stored value is the one
+        chosen. Requires client_secret.
+    private_key:
+      $ref: ./common.yaml#/EnvVar
+      description: |
+        PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,
+        a client assertion signed with this key, instead of a secret. Supports
+        env.VAR_NAME and vault.path references. Redacted in API responses.
+    key_id:
+      type: string
+      description: kid header of the client assertion. Requires private_key.
+    signing_algorithm:
+      type: string
+      enum: ['', RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512]
+      description: |
+        Client assertion signing algorithm. Empty: chosen from the key on save,
+        the ES algorithm for an EC key's curve, or for an RSA key the first RSA
+        algorithm the authorization server advertises, else RS256; the stored
+        value is the one chosen. With an env. or vault. private_key the key is
+        not read on save, so empty means RS256: set it (for example ES256 for an
+        EC key) when the authorization server does not accept RS256. Requires
+        private_key.
+    assertion_audience:
+      type: string
+      description: |
+        aud of the client assertion (https; http only on a loopback host).
+        Empty: the token endpoint.
+        Changing it requires a masked plain-text private_key to be resent; an
+        env. or vault. reference is kept. Requires private_key.
+    scopes:
+      type: array
+      items:
+        type: string
+        minLength: 1
+        pattern: '^\S+$'
+        description: One scope; no spaces.
+      description: Scopes to request, sent space-joined.
+    resource:
+      type: string
+      description: |
+        Resource indicator (RFC 8707) sent on the token request. Omitted: the
+        MCP server URL. Empty string: not sent.
+  allOf:
+    - not:
+        required: [client_secret, private_key]
+        properties:
+          client_secret: {$ref: '#/MCPSecretSet'}
+          private_key: {$ref: '#/MCPSecretSet'}
+      description: Bifrost authenticates with a client secret or a private key, not both.
+    - anyOf:
+        - required: [client_secret]
+          properties:
+            client_secret: {$ref: '#/MCPSecretSet'}
+        - required: [private_key]
+          properties:
+            private_key: {$ref: '#/MCPSecretSet'}
+    - if:
+        anyOf:
+          - required: [key_id]
+            properties: {key_id: {minLength: 1}}
+          - required: [signing_algorithm]
+            properties: {signing_algorithm: {minLength: 1}}
+          - required: [assertion_audience]
+            properties: {assertion_audience: {minLength: 1}}
+      then:
+        required: [private_key]
+        properties:
+          private_key: {$ref: '#/MCPSecretSet'}
+      description: key_id, signing_algorithm and assertion_audience apply to private_key.
+    - if:
+        required: [auth_method]
+        properties: {auth_method: {minLength: 1}}
+      then:
+        required: [client_secret]
+        properties:
+          client_secret: {$ref: '#/MCPSecretSet'}
+      description: auth_method applies to client_secret.
+  additionalProperties: false
+  description: |
+    OAuth client_credentials grant for auth_type "client_credentials". Saving
+    the client discovers what was left empty and requests one token, so
+    credentials the authorization server refuses fail the request with 400.
+
+MCPSecretSet:
+  description: |
+    A secret-capable value that is set, as the server reads one: a non-empty
+    string; a reference object, which needs its type (env or vault) and a
+    non-empty ref; or a literal object with a non-empty value, typed
+    plain_text or untyped without a ref.
+  anyOf:
+    - type: string
+      minLength: 1
+    - type: object
+      required: [type, ref]
+      properties:
+        type: {enum: [env, vault]}
+        ref: {type: string, minLength: 1}
+    - type: object
+      required: [value]
+      properties:
+        value: {type: string, minLength: 1}
+        type: {const: plain_text}
+      if:
+        not:
+          required: [type]
+      then:
+        not:
+          required: [ref]
+
+MCPAWSSigV4Config:
+  type: object
+  required: [region]
+  properties:
+    region:
+      $ref: './common.yaml#/EnvVar'
+      description: |
+        AWS region requests are signed for, such as us-east-1 or us-gov-west-1.
+        Supports env.VAR_NAME and vault.path references. A value from a
+        reference is redacted in API responses; a literal is returned as set.
+    service:
+      type: string
+      enum: ['', bedrock-agentcore, aws-mcp, lambda, execute-api]
+      description: |
+        SigV4 signing name. Empty: bedrock-agentcore (AgentCore Gateway).
+        aws-mcp for the AWS MCP Server, lambda for Lambda function URLs,
+        execute-api for API Gateway.
+    role_arn:
+      $ref: './common.yaml#/EnvVar'
+      description: |
+        IAM role to assume before signing. Omitted: requests are signed with
+        Bifrost's own identity from the default credential chain (environment,
+        EKS Pod Identity, IRSA, instance profile). Supports env.VAR_NAME and
+        vault.path references.
+    external_id:
+      $ref: './common.yaml#/EnvVar'
+      description: |
+        External ID for the AssumeRole call, when the role's trust policy
+        requires one. Requires role_arn. Supports env.VAR_NAME and vault.path
+        references. Always masked in API responses, also when entered as a
+        literal. On update, sending the mask back keeps the stored value, also
+        when role_arn changes; send the new external ID when the new role needs
+        a different one. On create, send the value itself or a reference.
+    session_name:
+      $ref: './common.yaml#/EnvVar'
+      description: |
+        Role session name, 2 to 64 of letters, digits and +=,.@_-. Empty:
+        bifrost-session. Requires role_arn. Supports env.VAR_NAME and
+        vault.path references.
+  allOf:
+    - if:
+        anyOf:
+          - required: [external_id]
+            properties: {external_id: {$ref: '#/MCPSecretSet'}}
+          - required: [session_name]
+            properties: {session_name: {$ref: '#/MCPSecretSet'}}
+      then:
+        required: [role_arn]
+        properties:
+          role_arn: {$ref: '#/MCPSecretSet'}
+      description: external_id and session_name apply to role_arn.
+  additionalProperties: false
+  description: |
+    AWS SigV4 signing for auth_type "aws_sigv4". There are no static keys: the
+    credentials come from the environment Bifrost runs in. region, role_arn,
+    external_id and session_name accept a bare string on input and are returned
+    as `{value, ref, type}` objects in API responses. external_id is always
+    redacted; the other fields are redacted when held in a reference.
 
 MCPConnectionType:
   type: string
@@ -228,6 +437,49 @@ MCPClientCreateRequestBase:
         description: |
           A `token_exchange` block only applies to auth_type "token_exchange";
           reject it for every other auth_type instead of silently ignoring it.
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: client_credentials
+      then:
+        required: [client_credentials]
+        description: |
+          When `auth_type` is `client_credentials`, `client_credentials` must
+          carry a `client_id` and a `client_secret` or `private_key`.
+    - if:
+        properties:
+          auth_type:
+            not:
+              const: client_credentials
+      then:
+        not:
+          required: [client_credentials]
+        description: |
+          A `client_credentials` block only applies to auth_type
+          "client_credentials"; reject it for every other auth_type, including
+          an omitted one, which defaults to "headers".
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: aws_sigv4
+      then:
+        required: [aws_sigv4]
+        description: |
+          When `auth_type` is `aws_sigv4`, `aws_sigv4` must carry a `region`.
+    - if:
+        properties:
+          auth_type:
+            not:
+              const: aws_sigv4
+      then:
+        not:
+          required: [aws_sigv4]
+        description: |
+          An `aws_sigv4` block only applies to auth_type "aws_sigv4"; reject it
+          for every other auth_type, including an omitted one, which defaults
+          to "headers".
     - if:
         required: [per_user_discovery]
         properties:
@@ -379,13 +631,33 @@ MCPClientCreateRequestBase:
       description: |
         Resource URIs and URI templates served through Bifrost's MCP gateway.
         Omitted, null or ["*"] => all; [] => none.
-    allow_on_all_virtual_keys:
+    endpoint_slug:
+      type: string
+      description: |
+        URL-safe path segment this client is served at (/mcp/<slug>). Derived from the name
+        when omitted; rejected with 400 if no slug can be derived and 409 if it is taken.
+        Immutable after creation.
+    tool_pricing:
+      type: object
+      additionalProperties:
+        type: number
+        format: double
+      description: |
+        Per-tool cost in USD for execution.
+        Key is the tool name, value is the cost per execution.
+    allow_by_default:
       type: boolean
       default: false
       description: |
         When true, this MCP client's tools are available to all virtual keys by default,
         without requiring an explicit virtual key assignment.
         An explicit virtual key config always overrides this setting for that key.
+    allow_on_all_virtual_keys:
+      type: boolean
+      deprecated: true
+      description: |
+        Deprecated earlier name of allow_by_default, still accepted. allow_by_default
+        decides when both are sent.
     tls_config:
       type: object
       description: |
@@ -424,6 +696,18 @@ MCPClientCreateRequestBase:
         POST /api/mcp/client/{id}/verify-exchange). A request with neither,
         such as one made with an API key, creates the client in
         pending_verification. There is no sample-token field on this request.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        Required when creating a client with auth_type "client_credentials".
+        Not accepted for connection_type "stdio" or "openapi".
+    aws_sigv4:
+      $ref: '#/MCPAWSSigV4Config'
+      description: |
+        Required when creating a client with auth_type "aws_sigv4". Not
+        accepted for connection_type "stdio". `headers` and
+        `allowed_extra_headers` cannot name `Authorization` or any `X-Amz-*`
+        header, which the signer sets (400).
     per_user_discovery:
       type: boolean
       default: false
@@ -482,7 +766,7 @@ MCPClientCreateRequestSSE:
           description: SSE URL (required for SSE connection type)
         auth_type:
           type: string
-          enum: [none, headers, oauth]
+          enum: [none, headers, oauth, client_credentials, aws_sigv4]
           description: |
             The per-user auth types open a new connection for each call, which an
             SSE stream does not allow, so SSE takes the shared auth types only.
@@ -519,14 +803,16 @@ MCPClientCreateRequestOpenAPI:
           enum: [openapi]
         auth_type:
           type: string
-          enum: [none, headers, per_user_headers]
+          enum: [none, headers, per_user_headers, aws_sigv4]
           description: |
             The synthesized server has no remote MCP handshake, so only the
-            header-shaped auth types apply. Static `headers` and per-user
-            headers are forwarded to the upstream API on every call; the
-            document's own security schemes are satisfied from
-            `openapi_config.security_credentials`. OAuth-flavored and
-            token-exchange auth types are rejected with 400.
+            header-shaped auth types and aws_sigv4 apply. Static `headers` and
+            per-user headers are forwarded to the upstream API on every call;
+            the document's own security schemes are satisfied from
+            `openapi_config.security_credentials`. With aws_sigv4 every
+            upstream API request is signed, while `spec_url` is fetched
+            unsigned. OAuth-flavored and token-exchange auth types are
+            rejected with 400.
         openapi_config:
           $ref: '#/MCPOpenAPIConfig'
         tools_to_execute:
@@ -831,7 +1117,11 @@ MCPClientUpdateRequest:
         type: string
       description: |
         Custom headers to include in requests.
-        Only used when auth_type is "headers". Supports env./vault. references.
+        Only used when auth_type is "headers" or "aws_sigv4". Supports
+        env./vault. references. On `aws_sigv4` clients they are sent with each
+        signed request (headers that change in transit are not covered by the
+        signature); `Authorization` and `X-Amz-*` names are refused with 400,
+        here and in `allowed_extra_headers`.
         Values echoed back redacted from a GET response are recognized and
         preserve the stored value, so a fetch-modify-put round trip is safe.
     allowed_extra_headers:
@@ -907,13 +1197,19 @@ MCPClientUpdateRequest:
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
         Note: Only available when updating an existing client after tools have been fetched.
-    allow_on_all_virtual_keys:
+    allow_by_default:
       type: boolean
-      default: false
       description: |
         When true, this MCP client's tools are accessible to all virtual keys without requiring
         explicit per-key assignment. All tools are allowed by default. If a virtual key has an
         explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+        Omit to keep the current value.
+    allow_on_all_virtual_keys:
+      type: boolean
+      deprecated: true
+      description: |
+        Deprecated earlier name of allow_by_default, still accepted. allow_by_default
+        decides when both are sent.
     per_user_header_keys:
       type: array
       items:
@@ -957,6 +1253,42 @@ MCPClientUpdateRequest:
         from a prior GET is resolved back to the stored value rather than
         overwriting it; any other change re-scopes future exchanges and
         invalidates cached exchanged tokens for this client.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        For `client_credentials` clients only. Omitted preserves the stored
+        configuration; when sent, it replaces the stored block, and when it
+        differs from it, Bifrost discovers what was left empty and requests one
+        token. Round-tripped from a prior GET:
+        - a masked `client_id` keeps the stored value;
+        - a masked plain-text `client_secret` or `private_key` keeps the stored
+          value, except when `token_url` or `assertion_audience` changes, which
+          requires the secret or key itself (400 otherwise);
+        - an `env.` or `vault.` reference is kept as the reference, also when the
+          target changes, since the credential is never sent back.
+        Sending an `env.` or `vault.` reference requires an authenticated admin
+        (403 when dashboard authentication is off); to change other settings,
+        omit `client_credentials` and the stored block is kept.
+        If the token request succeeds but reconnecting the live client fails,
+        the change is saved and the response is 200 with status
+        `partial_success`; the client retries with the new credentials, so do
+        not resend them.
+    aws_sigv4:
+      $ref: '#/MCPAWSSigV4Config'
+      description: |
+        For `aws_sigv4` clients only. Omitted preserves the stored
+        configuration; when sent, it replaces the stored block. On an enabled
+        client a change applies at once: a persistent connection
+        (needs_session_stickiness true) reconnects with the new signing
+        settings, and a per-call client signs its next call with them. A
+        disabled client stores the change and uses it when it is enabled
+        again. A masked plain-text value round-tripped from a prior GET keeps
+        the stored value; an `env.` or `vault.` reference is stored as sent.
+        If applying it fails, the change is still stored and the response is
+        200 with status `partial_success`. An HTTP or SSE persistent connection
+        keeps its current settings until it reconnects; an `openapi` client is
+        rebuilt from scratch, so its tool calls fail until a rebuild succeeds.
+        POST /api/mcp/client/{id}/reconnect retries.
     disabled:
       type: boolean
       default: false
@@ -1125,13 +1457,17 @@ MCPClientConfig:
         Per-tool cost in USD for execution.
         Key is the tool name, value is the cost per execution.
         Example: {"read_file": 0.001, "write_file": 0.002}
-    allow_on_all_virtual_keys:
+    allow_by_default:
       type: boolean
       default: false
       description: |
         When true, this MCP client's tools are accessible to all virtual keys without requiring
         explicit per-key assignment. All tools are allowed by default. If a virtual key has an
         explicit MCP config for this client, that config takes precedence and overrides this behaviour.
+    allow_on_all_virtual_keys:
+      type: boolean
+      deprecated: true
+      description: Deprecated earlier name of allow_by_default, returned with the same value.
     per_user_header_keys:
       type: array
       items:
@@ -1145,6 +1481,18 @@ MCPClientConfig:
       description: |
         For `token_exchange` clients only. `client_id` and `client_secret` are
         redacted in this response.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        For `client_credentials` clients only, including the token_url,
+        auth_method and signing_algorithm chosen on save. `client_id`,
+        `client_secret` and `private_key` are redacted in this response.
+    aws_sigv4:
+      $ref: '#/MCPAWSSigV4Config'
+      description: |
+        For `aws_sigv4` clients only. `external_id` is always redacted in this
+        response. `region`, `role_arn` and `session_name` are redacted when
+        held in an env or vault reference and otherwise returned as set.
     per_user_discovery:
       type: boolean
       default: false
@@ -1922,3 +2270,199 @@ MCPHeadersSubmitResponse:
       description: >-
         Present when the credential was stored but the MCP client's tools could
         not be loaded with it. Connecting to the client again retries.
+
+# ─── MCP server library (catalog) ───────────────────────────────────────────
+
+MCPLibraryEntry:
+  type: object
+  description: An MCP server in the library catalog, synced from the remote source or published by the organization.
+  properties:
+    id:
+      type: integer
+    slug:
+      type: string
+      description: URL-safe identifier generated from the name
+    name:
+      type: string
+    description:
+      type: string
+    category:
+      type: string
+    connection_type:
+      $ref: '#/MCPConnectionType'
+    connection_url:
+      type: string
+      description: Server URL for http and sse entries
+    stdio_config:
+      $ref: '#/MCPStdioConfig'
+    auth_type:
+      $ref: '#/MCPAuthType'
+    required_header_keys:
+      type: array
+      items:
+        type: string
+    icon_url:
+      type: string
+    docs_url:
+      type: string
+    publisher:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+    metadata:
+      type: object
+      additionalProperties: true
+    source:
+      type: string
+      enum: [remote, custom]
+      description: "`remote` rows come from the catalog sync; `custom` rows were published through POST /api/mcp/library and are never overwritten by the sync."
+    created_at:
+      type: string
+      format: date-time
+    updated_at:
+      type: string
+      format: date-time
+
+MCPLibraryListResponse:
+  type: object
+  description: Paginated list of MCP library entries.
+  properties:
+    servers:
+      type: array
+      items:
+        allOf:
+          - $ref: '#/MCPLibraryEntry'
+          - type: object
+            properties:
+              installed:
+                type: boolean
+                description: Whether an MCP client already installs this entry
+    count:
+      type: integer
+      description: Number of entries returned in this page
+    total_count:
+      type: integer
+      format: int64
+      description: Total number of entries matching the query (before pagination)
+    limit:
+      type: integer
+      description: Page size used for the response
+    offset:
+      type: integer
+      description: Page offset used for the response
+
+MCPLibraryFilterData:
+  type: object
+  description: Distinct facet values for filtering the MCP library.
+  properties:
+    categories:
+      type: array
+      items:
+        type: string
+    connection_types:
+      type: array
+      items:
+        type: string
+    auth_types:
+      type: array
+      items:
+        type: string
+    tags:
+      type: array
+      items:
+        type: string
+
+CreateMCPLibraryEntryRequest:
+  type: object
+  description: |
+    A custom MCP server to publish into the library. The slug is generated from
+    `name`; a name whose slug already exists is rejected with 409.
+  required:
+    - name
+    - connection_type
+  properties:
+    name:
+      type: string
+      description: Must contain at least one alphanumeric character
+    description:
+      type: string
+    category:
+      type: string
+    connection_type:
+      type: string
+      enum: [http, stdio, sse]
+    connection_url:
+      type: string
+      description: Required for http and sse entries
+    stdio_config:
+      $ref: '#/MCPStdioConfig'
+      description: Required (with a non-empty command) for stdio entries
+    auth_type:
+      $ref: '#/MCPAuthType'
+      description: Defaults to none
+    required_header_keys:
+      type: array
+      items:
+        type: string
+    icon_url:
+      type: string
+    docs_url:
+      type: string
+    publisher:
+      type: string
+    tags:
+      type: array
+      items:
+        type: string
+
+# ─── Downstream OAuth2 grants for /mcp (Bifrost as authorization server) ────
+
+OAuth2SessionRow:
+  type: object
+  description: An active OAuth2 grant issued by Bifrost to a downstream /mcp client.
+  properties:
+    id:
+      type: string
+    client_id:
+      type: string
+    client_name:
+      type: string
+    bf_mode:
+      type: string
+      enum: [user, vk, session]
+      description: Identity dimension the grant is bound to
+    bf_sub:
+      type: string
+      description: Bound identity
+    bf_sub_display:
+      type: string
+      description: Human-readable identity (the virtual key name for vk mode)
+    scope:
+      type: string
+    created_at:
+      type: string
+      format: date-time
+    last_used_at:
+      type: string
+      format: date-time
+
+OAuth2SessionsListResponse:
+  type: object
+  properties:
+    sessions:
+      type: array
+      items:
+        $ref: '#/OAuth2SessionRow'
+    count:
+      type: integer
+    total_count:
+      type: integer
+    limit:
+      type: integer
+    offset:
+      type: integer
+    access_token_ttl:
+      type: integer
+      description: Configured access token lifetime in seconds, for estimating when a grant's current access token expires.

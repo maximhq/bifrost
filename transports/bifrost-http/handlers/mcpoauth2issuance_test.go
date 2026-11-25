@@ -28,7 +28,7 @@ import (
 // newRealOAuth2Store builds a real sqlite-backed ConfigStore (full migrations,
 // including the OAuth2 issuance tables) so issuance handlers exercise the actual
 // atomic store semantics rather than a hand-rolled mock.
-func newRealOAuth2Store(t *testing.T) configstore.ConfigStore {
+func newRealOAuth2Store(t testing.TB) configstore.ConfigStore {
 	t.Helper()
 	cs, err := configstore.NewConfigStore(context.Background(), &configstore.Config{
 		Enabled: true,
@@ -104,6 +104,12 @@ func seedClient(t *testing.T, store configstore.ConfigStore, redirectURIs []stri
 // identity, with a code hash and PKCE challenge, returning the plaintext code.
 func seedConsentedRequest(t *testing.T, store configstore.ConfigStore, id, clientID, code, challenge, bfMode, bfSub string, expires time.Time) {
 	t.Helper()
+	seedConsentedRequestFor(t, store, testMCPResource, id, clientID, code, challenge, bfMode, bfSub, expires)
+}
+
+// seedConsentedRequestFor is seedConsentedRequest for a grant bound to resource.
+func seedConsentedRequestFor(t *testing.T, store configstore.ConfigStore, resource, id, clientID, code, challenge, bfMode, bfSub string, expires time.Time) {
+	t.Helper()
 	h := hashSHA256Hex(code)
 	req := &configtables.TableOAuth2AuthorizeRequest{
 		ID:                  id,
@@ -111,7 +117,7 @@ func seedConsentedRequest(t *testing.T, store configstore.ConfigStore, id, clien
 		RedirectURI:         "http://127.0.0.1/cb",
 		State:               "state",
 		Scope:               "mcp",
-		Resource:            testMCPResource,
+		Resource:            resource,
 		CodeChallenge:       challenge,
 		CodeChallengeMethod: "S256",
 		Status:              configtables.OAuth2AuthorizeRequestStatusConsented,
@@ -270,6 +276,38 @@ func TestHandleAuthorize(t *testing.T) {
 		h.handleAuthorize(ctx)
 		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
 		assert.Contains(t, string(ctx.Response.Header.Peek("Location")), "/oauth/consent?flow=")
+	})
+
+	t.Run("browser_base_url hosts the consent page", func(t *testing.T) {
+		h, store, cfg := newIssuanceHandler(t)
+		cfg.ClientConfig.OAuth2ServerConfig.BrowserBaseURL = schemas.NewSecretVar(testBrowserBase)
+		cid := seedClient(t, store, []string{"http://127.0.0.1:1234/cb"})
+		// The resource is still the issuer's /mcp, so the request is accepted.
+		ctx := getCtx("/oauth2/authorize?" + base(cid, "http://127.0.0.1:1234/cb").Encode())
+
+		h.handleAuthorize(ctx)
+		require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode(), string(ctx.Response.Header.Peek("Location")))
+		assert.True(t, strings.HasPrefix(string(ctx.Response.Header.Peek("Location")), testBrowserBase+"/oauth/consent?flow="))
+	})
+
+	t.Run("an additional issuer's resource is accepted on another hostname", func(t *testing.T) {
+		h, store, cfg := newIssuanceHandler(t)
+		withTunnelIssuer(cfg)
+		cid := seedClient(t, store, []string{"http://127.0.0.1:1234/cb"})
+		for resource, stored := range map[string]string{testTunnelIssuer + "/mcp": testTunnelIssuer + "/mcp", "": testMCPResource} {
+			v := base(cid, "http://127.0.0.1:1234/cb")
+			v.Set("resource", resource)
+			// No Host: the request arrives on the primary's (browser's) hostname.
+			ctx := getCtx("/oauth2/authorize?" + v.Encode())
+			h.handleAuthorize(ctx)
+			require.Equal(t, fasthttp.StatusFound, ctx.Response.StatusCode())
+			loc, err := url.Parse(string(ctx.Response.Header.Peek("Location")))
+			require.NoError(t, err)
+			require.Contains(t, loc.Path, "/oauth/consent", loc.String())
+			req, err := store.GetOAuth2AuthorizeRequestByID(context.Background(), loc.Query().Get("flow"))
+			require.NoError(t, err)
+			assert.Equal(t, stored, req.Resource, "resource %q", resource)
+		}
 	})
 
 	t.Run("loopback redirect matches on any port", func(t *testing.T) {
@@ -648,6 +686,45 @@ func TestHandleToken_RefreshRotationAndReplay(t *testing.T) {
 		assert.Contains(t, string(after.Response.Body()), "invalid_grant")
 	})
 
+	t.Run("debug lines trace a replay and never carry a token", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		capLogger := &captureLogger{}
+		SetLogger(capLogger)
+		defer SetLogger(&mockLogger{})
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		seedRefresh(t, store, "refresh-plain-1")
+
+		rotate := formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-plain-1"}, "client_id": {"client-1"},
+		}.Encode())
+		h.handleToken(rotate)
+		require.Equal(t, fasthttp.StatusOK, rotate.Response.StatusCode())
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rotate.Response.Body(), &resp))
+
+		replay := formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-plain-1"}, "client_id": {"client-1"},
+		}.Encode())
+		replay.Request.Header.Set("x-request-id", "req-replay")
+		h.handleToken(replay)
+		require.Equal(t, fasthttp.StatusBadRequest, replay.Response.StatusCode())
+
+		logs := strings.Join(capLogger.debugs, "\n")
+		assert.Contains(t, logs, "[oauth2-token] event=refresh.rotated")
+		assert.Contains(t, logs, "event=refresh.lookup")
+		assert.Contains(t, logs, "outcome=previously_revoked refresh_token_id=rt-1 family_id=fam-1")
+		assert.Contains(t, logs, "event=family.revoked")
+		assert.Contains(t, logs, "reason=refresh_replay family_id=fam-1 refresh_token_id=rt-1 revoked_rows=1")
+		assert.NotEmpty(t, rotate.Request.Header.Peek("x-request-id"), "an untraced token request gets a request ID")
+		assert.Contains(t, logs, `request_id="`+string(rotate.Request.Header.Peek("x-request-id"))+`"`)
+		assert.Contains(t, logs, `request_id="req-replay"`)
+		assert.Contains(t, logs, `grant_type="refresh_token"`)
+		assert.Contains(t, logs, `status=400 error=invalid_grant error_description="refresh token not found or revoked"`)
+		for _, secret := range []string{"refresh-plain-1", resp["refresh_token"].(string), resp["access_token"].(string)} {
+			assert.NotContains(t, logs, secret)
+		}
+	})
+
 	t.Run("client_id mismatch is rejected", func(t *testing.T) {
 		h, store, _ := newIssuanceHandler(t)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
@@ -783,6 +860,68 @@ func TestHandleToken_RefreshVKLiveness(t *testing.T) {
 // TestHandleToken_RefreshAfterIssuerChange pins that a grant bound to a resource this server no longer
 // serves cannot refresh. Changing issuer_url moves the /mcp resource, and the refresh carried the old one
 // forward, minting access tokens that /mcp then rejected for their audience.
+// TestHandleToken_AdditionalIssuer pins that a grant bound to an additional
+// issuer's /mcp gets tokens naming that issuer whichever hostname the token
+// request arrives on, that they refresh on any hostname, and that removing the
+// issuer ends the grant.
+func TestHandleToken_AdditionalIssuer(t *testing.T) {
+	const verifier = "test-verifier-string-of-sufficient-length-1234567890"
+	h, store, cfg := newIssuanceHandler(t)
+	withTunnelIssuer(cfg)
+	cid := seedClient(t, store, []string{"http://127.0.0.1/cb"})
+	seedConsentedRequestFor(t, store, testTunnelIssuer+"/mcp", "req-tunnel", cid, "code-tunnel", pkceChallenge(verifier), "session", "sess-1", time.Now().Add(time.Minute))
+	seedConsentedRequestFor(t, store, testTunnelIssuer+"/mcp", "req-removed", cid, "code-removed", pkceChallenge(verifier), "session", "sess-1", time.Now().Add(time.Minute))
+	signingKey, err := cfg.ConfigStore.GetOAuth2SigningKey(bgCtx())
+	require.NoError(t, err)
+
+	tokens := func(ctx *fasthttp.RequestCtx) (access, refresh string) {
+		t.Helper()
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		access, _ = resp["access_token"].(string)
+		refresh, _ = resp["refresh_token"].(string)
+		claims := jwt.MapClaims{}
+		_, _, err := jwt.NewParser().ParseUnverified(access, claims)
+		require.NoError(t, err)
+		assert.Equal(t, testTunnelIssuer, claims["iss"])
+		assert.Equal(t, []any{testTunnelIssuer + "/mcp"}, claims["aud"])
+		for _, host := range []string{"bifrost-tunnel.test", "bifrost.test"} {
+			_, err := verifyMCPJWT(hostCtx(host), access, cfg, signingKey)
+			assert.NoError(t, err, "accepted on %s", host)
+		}
+		return access, refresh
+	}
+
+	// The exchange arrives on the primary's hostname, not the tunnel's.
+	exchange := formPostCtx(url.Values{
+		"grant_type": {"authorization_code"}, "code": {"code-tunnel"}, "code_verifier": {verifier},
+		"client_id": {cid}, "redirect_uri": {"http://127.0.0.1/cb"},
+	}.Encode())
+	h.handleToken(exchange)
+	_, refresh := tokens(exchange)
+
+	renewed := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {cid}}.Encode())
+	h.handleToken(renewed)
+	_, refresh = tokens(renewed)
+
+	cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs = nil
+	ended := formPostCtx(url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {cid}}.Encode())
+	h.handleToken(ended)
+	assert.Equal(t, fasthttp.StatusBadRequest, ended.Response.StatusCode())
+	assert.Contains(t, string(ended.Response.Body()), "no longer serves")
+
+	// A code consented through the removed issuer is refused rather than exchanged for an unusable token.
+	orphaned := formPostCtx(url.Values{
+		"grant_type": {"authorization_code"}, "code": {"code-removed"}, "code_verifier": {verifier},
+		"client_id": {cid}, "redirect_uri": {"http://127.0.0.1/cb"},
+	}.Encode())
+	h.handleToken(orphaned)
+	assert.Equal(t, fasthttp.StatusBadRequest, orphaned.Response.StatusCode(), string(orphaned.Response.Body()))
+	assert.Contains(t, string(orphaned.Response.Body()), "invalid_grant")
+	assert.Contains(t, string(orphaned.Response.Body()), "no longer serves")
+}
+
 func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
 	refresh := func(t *testing.T, resource string) *fasthttp.RequestCtx {
 		t.Helper()
@@ -1011,6 +1150,71 @@ func TestUpdateConfig_RejectsMissingIssuerURLForDiscovery(t *testing.T) {
 					assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
 				})
 			}
+		})
+	}
+}
+
+// TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL pins that the Claude Code
+// gateway, which works in any MCP auth mode, cannot be stored on without a
+// pinned issuer_url, including via a partial update that clears the issuer.
+func TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for name, body := range map[string]string{
+		"issuer omitted":       `{"client_config":{"oauth2_server_config":{"gateways":{"claude_code":{"enabled":true}}}}}`,
+		"issuer env unset":     `{"client_config":{"oauth2_server_config":{"issuer_url":"env.BIFROST_TEST_UNSET_ISSUER_URL","gateways":{"claude_code":{"enabled":true}}}}}`,
+		"issuer cleared later": `{"client_config":{"oauth2_server_config":{"issuer_url":"","gateways":{"claude_code":{"enabled":true}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &lib.Config{
+				ConfigStore:  newRealOAuth2Store(t),
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+			ctx := putConfigCtx(body)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "oauth2_server_config.gateways")
+		})
+	}
+}
+
+// TestUpdateConfig_ClientGatewayTelemetryValidated pins that PUT /api/config
+// refuses a switched-on telemetry block that could not forward or would store a
+// collector credential in the config: no destination, a non-http endpoint, or a
+// plain-text header value. A valid block passes telemetry validation.
+func TestUpdateConfig_ClientGatewayTelemetryValidated(t *testing.T) {
+	SetLogger(&mockLogger{})
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", "secret")
+	gateway := func(telemetry string) string {
+		return `{"client_config":{"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":` + telemetry + `}}}}}`
+	}
+	for name, tc := range map[string]struct {
+		body    string
+		wantErr string
+	}{
+		"no destinations":    {gateway(`{"enabled":true}`), "destinations must list at least one collector"},
+		"non-http endpoint":  {gateway(`{"enabled":true,"destinations":[{"endpoint":"ftp://otel.example.com"}]}`), "must be an http or https URL"},
+		"plain-text header":  {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"Bearer abc"}}]}`), ""},
+		"empty header value": {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":" "}}]}`), "needs a value"},
+		"valid":              {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"env.BIFROST_TEST_OTEL_TOKEN"}}],"drop_attributes":["prompt"]}`), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &lib.Config{
+				ConfigStore:  newRealOAuth2Store(t),
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+			ctx := putConfigCtx(tc.body)
+			h.updateConfig(ctx)
+			if tc.wantErr == "" {
+				// The partial body may still be refused for unrelated required fields;
+				// what matters here is that telemetry validation passed.
+				assert.NotContains(t, string(ctx.Response.Body()), "telemetry", string(ctx.Response.Body()))
+				return
+			}
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), tc.wantErr)
 		})
 	}
 }

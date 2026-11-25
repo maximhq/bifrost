@@ -969,6 +969,28 @@ var bifrostClientCapabilities = mcp.ClientCapabilities{
 	Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{"mimeTypes": []string{schemas.MCPAppsMimeType}}},
 }
 
+// clientCredentialsCapabilities is bifrostClientCapabilities plus the OAuth Client
+// Credentials extension, for clients that authenticate with it.
+var clientCredentialsCapabilities = withExtension(bifrostClientCapabilities, schemas.MCPOAuthClientCredentialsExtension)
+
+// withExtension returns a copy of base that also declares the extension name, with no settings.
+func withExtension(base mcp.ClientCapabilities, name string) mcp.ClientCapabilities {
+	base.Extensions = maps.Clone(base.Extensions)
+	if base.Extensions == nil {
+		base.Extensions = map[string]any{}
+	}
+	base.Extensions[name] = struct{}{}
+	return base
+}
+
+// clientCapabilitiesFor returns the capabilities Bifrost declares when connecting with config.
+func clientCapabilitiesFor(config *schemas.MCPClientConfig) mcp.ClientCapabilities {
+	if config != nil && config.AuthType == schemas.MCPAuthTypeClientCredentials {
+		return clientCredentialsCapabilities
+	}
+	return bifrostClientCapabilities
+}
+
 // manualInputRoundTrips leaves an upstream's input_required to CallUpstreamTool instead of mcp-go's loop.
 var manualInputRoundTrips = client.WithManualInputRoundTrips()
 
@@ -999,6 +1021,9 @@ func CallUpstreamTool(ctx context.Context, conn *client.Client, call mcp.CallToo
 	var relayed mcp.ClientCapabilities
 	if relay {
 		relayed = relayedClientCapabilities
+		var stopProgress func()
+		call, stopProgress = withProgressToken(ctx, call)
+		defer stopProgress()
 	}
 	ctx, answerable, hasCaller := upstreamContext(ctx, conn, relayed)
 	relay = relay && hasCaller
@@ -1632,10 +1657,65 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 				Properties: properties,
 				Required:   mcpTool.InputSchema.Required,
 				Defs:       defs,
+				OneOf:      rootComposition(mcpTool.InputSchema, "oneOf", logger),
+				AnyOf:      rootComposition(mcpTool.InputSchema, "anyOf", logger),
+				AllOf:      rootComposition(mcpTool.InputSchema, "allOf", logger),
 			},
 		},
 		Annotations: annotations,
 		MCP:         toolMetadata(mcpTool),
+	}
+}
+
+// rootComposition returns the root-level oneOf, anyOf or allOf of an MCP input schema, which mcp-go
+// keeps in AdditionalFields. A tagged union declares its arguments this way, so dropping it would
+// leave the tool with no parameters. Boolean members become their object forms (true as {}, false
+// as {"not": {}}), since the branches are objects; a value that is not a list of schemas is skipped.
+func rootComposition(schema mcp.ToolInputSchema, keyword string, logger schemas.Logger) []schemas.OrderedMap {
+	value, ok := schema.AdditionalFields[keyword]
+	if !ok {
+		return nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		logger.Debug("%s Ignoring root %s that is not an array", MCPLogPrefix, keyword)
+		return nil
+	}
+	branches := make([]schemas.OrderedMap, 0, len(items))
+	for _, item := range items {
+		var branch map[string]any
+		switch member := item.(type) {
+		case bool:
+			branch = map[string]any{}
+			if !member {
+				branch["not"] = map[string]any{}
+			}
+		case map[string]any:
+			branch = member
+			fixBranchArraySchemas(branch, logger)
+		default:
+			logger.Debug("%s Ignoring root %s with a member that is not a schema", MCPLogPrefix, keyword)
+			return nil
+		}
+		// Keys sorted for the same reason as properties: a stable tool JSON and tools hash.
+		branches = append(branches, *schemas.OrderedMapFromMap(branch))
+	}
+	return branches
+}
+
+// fixBranchArraySchemas repairs array schemas in a composition branch's properties and in the
+// branches of its own oneOf, anyOf and allOf, which the flattener can merge into the root.
+func fixBranchArraySchemas(branch map[string]any, logger schemas.Logger) {
+	if properties, ok := branch["properties"].(map[string]any); ok {
+		FixArraySchemas(properties, logger)
+	}
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		members, _ := branch[keyword].([]any)
+		for _, member := range members {
+			if nested, ok := member.(map[string]any); ok {
+				fixBranchArraySchemas(nested, logger)
+			}
+		}
 	}
 }
 
@@ -1778,6 +1858,23 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 	if err := ValidatePerUserDiscovery(config); err != nil {
 		return err
 	}
+	if config.AuthType == schemas.MCPAuthTypeClientCredentials {
+		// The token goes on an HTTP request, which a STDIO subprocess never receives.
+		if config.ConnectionType == schemas.MCPConnectionTypeSTDIO {
+			return fmt.Errorf("client_credentials auth type is not supported for STDIO connection type in client '%s' (use http or sse)", config.Name)
+		}
+		if err := config.ClientCredentials.Validate(); err != nil {
+			return fmt.Errorf("%w in client '%s'", err, config.Name)
+		}
+		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
+			return fmt.Errorf("oauth_config_id must not be set for client_credentials auth type in client '%s'", config.Name)
+		}
+	}
+	if config.AuthType == schemas.MCPAuthTypeAWSSigV4 {
+		if err := validateAWSSigV4ClientConfig(config); err != nil {
+			return err
+		}
+	}
 	if config.AuthType == schemas.MCPAuthTypeTokenExchange {
 		if config.TokenExchange == nil || strings.TrimSpace(config.TokenExchange.Audience) == "" {
 			return fmt.Errorf("token_exchange.audience is required (non-empty) for token_exchange auth type in client '%s'", config.Name)
@@ -1791,6 +1888,26 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if err := config.TokenExchange.ValidateProfile(); err != nil {
 			return fmt.Errorf("%w in client '%s'", err, config.Name)
 		}
+	}
+	return nil
+}
+
+// validateAWSSigV4ClientConfig checks an aws_sigv4 client: an HTTP-reachable server,
+// a valid aws_sigv4 block, and no configured or forwardable header the signer owns.
+func validateAWSSigV4ClientConfig(config *schemas.MCPClientConfig) error {
+	switch config.ConnectionType {
+	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeOpenAPI:
+	default:
+		return fmt.Errorf("aws_sigv4 auth type needs connection_type http, sse or openapi in client '%s'", config.Name)
+	}
+	if err := config.AWSSigV4.Validate(); err != nil {
+		return fmt.Errorf("%w in client '%s'", err, config.Name)
+	}
+	if config.OauthConfigID != nil && *config.OauthConfigID != "" {
+		return fmt.Errorf("oauth_config_id must not be set for aws_sigv4 auth type in client '%s'", config.Name)
+	}
+	if err := schemas.CheckAWSSigV4Headers(config.Headers, config.AllowedExtraHeaders); err != nil {
+		return fmt.Errorf("%w in client '%s'", err, config.Name)
 	}
 	return nil
 }
@@ -1821,9 +1938,9 @@ func validateOpenAPIClientConfig(config *schemas.MCPClientConfig) error {
 		return fmt.Errorf("openapi_config.max_response_bytes must not be negative in client '%s'", config.Name)
 	}
 	switch config.AuthType {
-	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders:
+	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders, schemas.MCPAuthTypeAWSSigV4:
 	default:
-		return fmt.Errorf("auth_type %q is not supported for openapi connection type in client '%s' (use none, headers or per_user_headers)", config.AuthType, config.Name)
+		return fmt.Errorf("auth_type %q is not supported for openapi connection type in client '%s' (use none, headers, per_user_headers or aws_sigv4)", config.AuthType, config.Name)
 	}
 	return nil
 }

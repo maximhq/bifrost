@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"path"
 	"strings"
@@ -144,7 +145,18 @@ type BifrostPassthroughRequest struct {
 	RawQuery     string // raw query string, no "?"
 	UpstreamURL  string // optional base URL override for host-backed passthrough routes
 	Body         []byte
-	SafeHeaders  map[string]string // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
+	BodySource   BodySource          // multipart body as an exact-length stream, set instead of Body; see PassthroughBodySourceSender
+	Form         *multipart.Form     // parsed multipart form (fields, file headers) behind BodySource; valid during the request
+	FormTypes    map[string][]string // Content-Type of each Form.Value part, by name and index; nil when unknown
+	SafeHeaders  map[string]string   // client headers; auth stripped unless the caller's OAuth/JWT bearer is the upstream credential (Anthropic sk-ant-oat, OpenAI JWT)
+}
+
+// PassthroughBodySourceSender is implemented by providers whose Passthrough and
+// PassthroughStream send BifrostPassthroughRequest.BodySource as a stream. For any other provider
+// Bifrost reads BodySource into Body before the call, so providers that need the bytes keep
+// working unchanged.
+type PassthroughBodySourceSender interface {
+	SendsPassthroughBodySource()
 }
 
 // BifrostPassthroughUsage carries usage data extracted by the provider at stream
@@ -185,6 +197,9 @@ type BifrostPassthroughUsage struct {
 	Cost *BifrostCost
 }
 
+// PassthroughModelListFilter rewrites a provider's raw model-list body, keeping only the models keep accepts.
+type PassthroughModelListFilter func(body []byte, keep func(model string) bool) ([]byte, error)
+
 type BifrostPassthroughResponse struct {
 	StatusCode       int
 	Headers          map[string]string
@@ -207,6 +222,8 @@ type BifrostPassthroughJob struct {
 	PollPath   string                   // stripped provider path that reads the run by id
 	APIVersion string                   // version segment PollPath is served under
 	Usage      *BifrostPassthroughUsage // the run's usage as of this read
+	// SearchQueries is how many searches the run made, set when the read named no model to count them by.
+	SearchQueries int
 }
 
 type PassthroughLogParams struct {

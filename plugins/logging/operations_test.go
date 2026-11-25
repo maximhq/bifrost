@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -425,6 +426,35 @@ func TestCustomUserAgentMappingOverridesBuiltInDetection(t *testing.T) {
 
 	if got := plugin.detectAppFromUserAgent("claude-cli/2.1.168 (external, cli)"); got != "Internal Claude Wrapper" {
 		t.Fatalf("expected custom app mapping, got %q", got)
+	}
+}
+
+// Values longer than their columns (and the schema's maxLength) are a client
+// fault, refused before they reach the store; limits count characters, as
+// varchar does.
+func TestValidateUserAgentMappingRejectsOversizedValues(t *testing.T) {
+	mime := func(s string) *string { return &s }
+	cases := []struct {
+		name    string
+		mapping logstore.UserAgentMapping
+		wantErr bool
+	}{
+		{"pattern at limit", logstore.UserAgentMapping{Pattern: strings.Repeat("p", 512), MatchType: "contains", App: "a"}, false},
+		{"pattern over limit", logstore.UserAgentMapping{Pattern: strings.Repeat("p", 513), MatchType: "contains", App: "a"}, true},
+		{"app at limit in characters", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: strings.Repeat("é", 128)}, false},
+		{"app over limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: strings.Repeat("a", 129)}, true},
+		{"logo_mime at limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: "a", LogoMime: mime(strings.Repeat("m", 128))}, false},
+		{"logo_mime over limit", logstore.UserAgentMapping{Pattern: "p", MatchType: "contains", App: "a", LogoMime: mime(strings.Repeat("m", 129))}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateUserAgentMapping(&tc.mapping)
+			if !tc.wantErr {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, ErrInvalidUserAgentMapping)
+		})
 	}
 }
 
@@ -4447,7 +4477,7 @@ func TestGuardrailMetadataForLogReadsContextWithoutResponse(t *testing.T) {
 	if metadata == nil || len(metadata.JudgeCalls) != 1 {
 		t.Fatalf("guardrail metadata = %#v; want one context judge call", metadata)
 	}
-	if metadata.JudgeCalls[0] != requireCall {
+	if !reflect.DeepEqual(metadata.JudgeCalls[0], requireCall) {
 		t.Fatalf("guardrail call = %#v; want %#v", metadata.JudgeCalls[0], requireCall)
 	}
 }
@@ -6687,13 +6717,28 @@ func BenchmarkRelayLogHooks(b *testing.B) {
 }
 
 func TestRelayLogQueryRedaction(t *testing.T) {
-	got := redactQuery("q=private-search&api_key=sk-123&access_token=tok&page=2&Signature=abc&flag")
+	got := redactQuery("q=private-search&api_key=sk-123&access_token=tok&page=2&Signature=abc&X-Amz-Credential=akid&pwd=hunter2&flag")
+	require.NotContains(t, got, "akid", "the AWS presign parameters job validation refuses are masked too")
+	require.NotContains(t, got, "hunter2")
 	require.NotContains(t, got, "sk-123")
 	require.NotContains(t, got, "tok&")
 	require.NotContains(t, got, "abc")
 	require.Contains(t, got, "q=private-search", "ordinary parameters are kept")
 	require.Contains(t, got, "page=2")
 	require.True(t, strings.HasSuffix(got, "&flag"), "a parameter without a value is kept as is")
+}
+
+// The job row is filed under the relay that served the start call, even when the entry found by a
+// shared x-request-id belongs to another relay's call in flight.
+func TestRelayJobRowTakesTheRelayFromTheReply(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-1", RequestID: "shared", RelayName: "slowrelay"}, "textract", &schemas.RelayJobHandle{ID: "j-77", Params: `{"job":{}}`})
+	require.Len(t, store.jobs, 1)
+	for _, row := range store.jobs {
+		require.Equal(t, "textract", row.Provider)
+	}
 }
 
 func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
@@ -6703,7 +6748,7 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	job := &schemas.RelayJobHandle{ID: "j-1", IntervalSeconds: 30, Params: `{"job":{}}`}
 
 	first := &logstore.RelayLog{ID: "req-1", RequestID: "req-1", RelayName: "textract", BudgetIDsParsed: []string{"budget-1"}}
-	plugin.recordEndpointJob(first, job)
+	plugin.recordEndpointJob(first, "", job)
 	require.Len(t, store.jobs, 1)
 	var row *cstables.TableProviderJob
 	for _, r := range store.jobs {
@@ -6715,18 +6760,37 @@ func TestRelayJobRowDedupesIdempotentStarts(t *testing.T) {
 	require.Equal(t, `["budget-1"]`, *row.BudgetIDs)
 	require.Equal(t, "req-1", *row.SourceLogID)
 
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, job)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-2", RequestID: "req-2", RelayName: "textract"}, "", job)
 	require.Len(t, store.jobs, 1, "a retried start while the job is open records nothing new")
 
 	row.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, job)
-	require.Len(t, store.jobs, 2, "an id reused after settlement is a new job")
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-4", RequestID: "req-4", RelayName: "textract"}, job)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3", RequestID: "req-3", RelayName: "textract"}, "", job)
+	require.Len(t, store.jobs, 1, "a start retried after its job was charged is not charged again")
+
+	reusing := &schemas.RelayJobHandle{ID: "j-1", IntervalSeconds: 30, Params: `{"job":{}}`, ReusedIDIsNewJob: true}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-3b", RequestID: "req-3b", RelayName: "textract"}, "", reusing)
+	require.Len(t, store.jobs, 2, "with reused_id_is_new_job an id reused after settlement is a new job")
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-4", RequestID: "req-4", RelayName: "textract"}, "", reusing)
 	require.Len(t, store.jobs, 2, "a retried start of the reused job dedupes against its slot")
 
 	store.fail = errors.New("database is down")
-	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`})
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "req-5", RequestID: "req-5", RelayName: "textract"}, "", &schemas.RelayJobHandle{ID: "j-2", Params: `{"job":{}}`})
 	require.Len(t, store.jobs, 2, "a lookup error records nothing rather than risk a duplicate row")
+}
+
+// Past the last generation slot each start gets its own row, even when callers share an x-request-id.
+func TestRelayJobRowPastTheLastGenerationIsKeyedByItsCall(t *testing.T) {
+	store := &endpointJobStore{jobs: map[string]*cstables.TableProviderJob{}}
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.batchStore = store
+	for gen := 1; gen <= jobaccounting.MaxRelayJobGenerations; gen++ {
+		id, scoped := jobaccounting.RelayJobRowID("textract", "", "j-1", gen)
+		store.jobs[id] = &cstables.TableProviderJob{ID: id, JobID: scoped, AccountingStatus: cstables.ProviderJobAccountingStatusAccounted}
+	}
+	reusing := &schemas.RelayJobHandle{ID: "j-1", Params: `{"job":{}}`, ReusedIDIsNewJob: true}
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-a", RequestID: "shared", RelayName: "textract"}, "", reusing)
+	plugin.recordEndpointJob(&logstore.RelayLog{ID: "row-b", RequestID: "shared", RelayName: "textract"}, "", reusing)
+	require.Len(t, store.jobs, jobaccounting.MaxRelayJobGenerations+2)
 }
 
 func clientIPTestContext(requestID string) *schemas.BifrostContext {
@@ -7351,4 +7415,32 @@ func BenchmarkSpeechSessionContextLookup(b *testing.B) {
 			}
 		})
 	}
+}
+
+// Status-check settles are bounded: one per job, and maxRelaySettles at once; the rest wait for the sweeper.
+func TestAdmitRelaySettleIsBounded(t *testing.T) {
+	p := &LoggerPlugin{}
+	release, ok := p.admitRelaySettle("relay\x00j1")
+	require.True(t, ok)
+	_, again := p.admitRelaySettle("relay\x00j1")
+	require.False(t, again, "a second check of the same job is left to the first")
+	release()
+	release, ok = p.admitRelaySettle("relay\x00j1")
+	require.True(t, ok, "admitted again once the first finished")
+	release()
+
+	var releases []func()
+	for i := range maxRelaySettles {
+		r, ok := p.admitRelaySettle(fmt.Sprintf("relay\x00job-%d", i))
+		require.True(t, ok)
+		releases = append(releases, r)
+	}
+	_, full := p.admitRelaySettle("relay\x00one-more")
+	require.False(t, full, "past the cap the check is left to the sweeper")
+	for _, r := range releases {
+		r()
+	}
+	r, ok := p.admitRelaySettle("relay\x00one-more")
+	require.True(t, ok)
+	r()
 }

@@ -172,7 +172,7 @@ RelayStreamingConfig:
 RelayRouteConfig:
   type: object
   description: >
-    One upstream operation. Routes are matched in order, first match wins. Without `skip_route_check`,
+    One upstream operation. The most specific matching route wins, and listed order only breaks ties. Without `skip_route_check`,
     a request matching no route is refused with 404.
   properties:
     method:
@@ -180,7 +180,7 @@ RelayRouteConfig:
       enum: [GET, POST, PUT, PATCH, DELETE, HEAD]
     path:
       type: string
-      description: Segment glob below the endpoint, for example `/v1/search` or `/jobs/*`. A trailing `/**` matches the prefix and everything below it.
+      description: Segment glob below the endpoint, for example `/v1/search` or `/jobs/*`. A trailing `/**` matches the prefix and everything below it, and one middle `/**/` matches 1 to 80 segments. Neither takes a `.` or `..` segment, with or without `;params`, and a middle `/**/` never takes an empty one.
     headers:
       type: object
       additionalProperties:
@@ -200,9 +200,97 @@ RelayRouteConfig:
       description: Forces the streaming (true) or buffered (false) relay for this route.
     usage:
       $ref: '#/RelayUsageConfig'
+    body_overrides:
+      $ref: '#/RelayBodyOverrides'
+    inherit_body_overrides:
+      type: boolean
+      default: true
+      description: false stops the relay's `body_overrides` being applied on this route; only the route's own are sent.
+    job:
+      $ref: '#/RelayJobConfig'
   required:
     - method
     - path
+
+RelayJobConfig:
+  type: object
+  description: >
+    The matched call starts an upstream job that is billed once, when it finishes, instead of on every status check. The job id is read from the start reply, Bifrost polls the upstream with the relay's credential until the status is terminal, prices the terminal reply with the job's usage mapping and charges the start call's budgets. The start call is counted as usual and carries the route's fee. A route that starts a job is buffered and billable, and a caller's own status check for a job Bifrost started (a call matching the poll request) is relayed free, with no route of its own.
+  properties:
+    id_path:
+      type: string
+      description: Path of the job id in the start reply, for example `JobId`.
+    poll:
+      type: object
+      description: "The request Bifrost sends to check a job. {{job.id}} in the path, a header value or the body is replaced with the job id."
+      properties:
+        method:
+          type: string
+          enum: [GET, POST, PUT, PATCH, DELETE, HEAD]
+          default: POST
+        path:
+          type: string
+          description: Rooted path below the base URL, may contain `{{job.id}}` and a query.
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Literal headers, values may contain `{{job.id}}`. Credential headers are refused; the relay adds its own.
+        body:
+          type: string
+          description: Literal body, may contain `{{job.id}}` (JSON-escaped in a JSON body).
+        content_type:
+          type: string
+          description: Content type of the body, default `application/json`.
+      required: [path]
+    status_path:
+      type: string
+      description: Path of the status in the poll reply, for example `JobStatus`.
+    succeeded:
+      type: array
+      items:
+        type: string
+        minLength: 1
+      minItems: 1
+      description: Statuses that end the job and bill it (case-insensitive).
+    failed:
+      type: array
+      items:
+        type: string
+        minLength: 1
+      description: Statuses that end the job at no charge.
+    interval_seconds:
+      type: integer
+      minimum: 0
+      description: Seconds between polls, default 30.
+    timeout_seconds:
+      type: integer
+      minimum: 0
+      maximum: 604800
+      description: Stop polling after this long, default 3600, at most 7 days. The job is checked once more at the deadline; one still running then is not charged.
+    reused_id_is_new_job:
+      type: boolean
+      description: >
+        true when the upstream can return an id it already used for new work (a caller-chosen job id), so a
+        start that returns the id of a job already charged starts a new billable job. By default such a start
+        is a retry of that job and is not charged again.
+    usage:
+      $ref: '#/RelayUsageConfig'
+  required: [id_path, poll, status_path, succeeded]
+
+RelayBodyOverrides:
+  type: object
+  additionalProperties: true
+  description: >
+    Request body fields forced on every call - a dotted path of object keys (`include_usage`,
+    `options.depth`) to the JSON value the upstream receives, whatever the caller sent. A missing field
+    is added and a different value replaced; an empty POST, PUT or PATCH body becomes a JSON object, and
+    an empty GET, HEAD or DELETE body stays empty. A body that is not a JSON object, or that
+    names a forced field twice or under different letter case, or has a non-object where a forced path
+    goes deeper (`options` as a string when `options.depth` is forced) is refused with 400. A route's
+    fields apply over the relay's for the same path.
+  example:
+    include_usage: true
 
 RelayConfig:
   type: object
@@ -248,6 +336,8 @@ RelayConfig:
       type: boolean
       default: false
       description: Drop values read at `cost_path`. The operator's fee and unit pricing still apply.
+    body_overrides:
+      $ref: '#/RelayBodyOverrides'
   required:
     - name
     - base_url
@@ -282,6 +372,11 @@ Relay:
         url:
           type: string
           description: The path callers send requests to, `/relay/{name}`.
+        match_order:
+          type: array
+          items:
+            type: integer
+          description: Indices into `routes` in the order the gateway tries them, most specific first. Read-only; the stored order only breaks ties.
       required:
         - url
 
@@ -515,6 +610,32 @@ RelayLog:
     parent_log_id:
       type: string
       description: On a job row, the id of the start call's log.
+    job_debug:
+      type: object
+      description: On a job row, how Bifrost followed the job. Poll replies are not stored.
+      properties:
+        outcome:
+          type: string
+          enum: [succeeded, failed, unpriced]
+          description: How the job ended. `failed` is a $0 settlement; `unpriced` has a blank cost.
+        polls:
+          type: integer
+          description: Status checks Bifrost sent.
+        last_status:
+          type: string
+          description: The job status last read from a reply.
+        last_http_status:
+          type: integer
+          description: HTTP status of the poll that ended the job.
+        last_error:
+          type: string
+          description: Why the job ended unpriced.
+        settled_by_request_id:
+          type: string
+          description: The caller's status check that found the job finished; Bifrost's own poll then priced it.
+        settled_at:
+          type: string
+          format: date-time
     user_id:
       type: string
     user_name:

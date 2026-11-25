@@ -3,12 +3,16 @@ import { expect, test } from "../../core/fixtures/base.fixture";
 import {
   createContentHiddenKeyPayload,
   createGrantedKeyPayload,
+  createRelayLogsJobRelayPayload,
   createRelayLogsRelayPayload,
   createRelayLogsTeamPayload,
   createUngrantedKeyPayload,
   EXTRACT_COST,
+  JOB_ID,
+  JOB_PAGES,
   PAGED_ROW_COUNT,
   RELAY_LOGS_API,
+  RATE_PER_UNIT,
   RELAYS_API,
   type RelayLogRow,
   type RelayUpstream,
@@ -217,6 +221,60 @@ test.describe("Relay Logs", () => {
   // ---------------------------------------------------------------------------------------------
   // Table
   // ---------------------------------------------------------------------------------------------
+
+  test("shows how a settled job was followed in its job row's details", async ({ relayLogsPage: page, request }) => {
+    const jobRelay = `e2e-relay-job-${Date.now()}`;
+    const created = await request.post(RELAYS_API, { data: createRelayLogsJobRelayPayload(jobRelay, upstream.url) });
+    expect(created.status(), await created.text()).toBe(201);
+    try {
+      // Created inside the try, so a failure here still deletes the relay.
+      const key = await request.post(VK_API, { data: createGrantedKeyPayload(`${jobRelay}-key`, jobRelay, teamId) });
+      expect(key.ok(), await key.text()).toBeTruthy();
+      const keyBody = await key.json();
+      vkIds.push(keyBody.virtual_key.id);
+      const start = await request.post(`/relay/${jobRelay}/v1/jobs`, {
+        headers: { "x-bf-vk": keyBody.virtual_key.value, "Content-Type": "application/json" },
+        data: { document: "invoice.pdf" },
+      });
+      expect(start.status(), await start.text()).toBe(200);
+
+      // The sweeper polls the job within a tick or two, finds it done and writes one job row.
+      let jobRow: RelayLogRow | undefined;
+      await expect
+        .poll(
+          async () => {
+            const res = await request.get(`${RELAY_LOGS_API}?relay_names=${encodeURIComponent(jobRelay)}&kinds=job&limit=5`);
+            jobRow = ((await res.json()).logs ?? [])[0];
+            return jobRow?.job_id;
+          },
+          { timeout: 60_000, message: "the job settles into one job row" },
+        )
+        .toBe(JOB_ID);
+      expect(jobRow!.cost).toBeCloseTo(JOB_PAGES * RATE_PER_UNIT, 9);
+      expect(jobRow!.job_debug?.last_status, JSON.stringify(jobRow)).toBe("SUCCEEDED");
+
+      await page.goto({ relay_names: jobRelay, kinds: ["job"] });
+      await page.openRow(jobRelay, { logId: jobRow!.id });
+      await page.openMoreDetails();
+      // One status check found this one-step job done.
+      expect(jobRow!.job_debug?.polls, JSON.stringify(jobRow)).toBe(1);
+      await expect(page.sheet.getByTestId("relay-log-job-polls")).toContainText(/status check attempts/i);
+      await expect(page.sheet.getByTestId("relay-log-job-polls")).toContainText(/\b1\b/);
+      await expect(page.sheet.getByTestId("relay-log-job-last-status")).toContainText("SUCCEEDED");
+      // The settled time as the browser shows it, in its own time zone.
+      const settled = await page.page.evaluate((iso) => {
+        const d = new Date(iso);
+        const p = (n: number) => String(n).padStart(2, "0");
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours() % 12 || 12)}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+      }, jobRow!.job_debug!.settled_at);
+      await expect(page.sheet.getByTestId("relay-log-job-settled-at")).toContainText(settled);
+      await expect(page.sheet).not.toContainText(/why it ended unpriced/i);
+    } finally {
+      const rows = await fetchRows(request, jobRelay).catch(() => [] as RelayLogRow[]);
+      if (rows.length) await request.delete(RELAY_LOGS_API, { data: { ids: rows.map((r) => r.id) } }).catch(() => undefined);
+      await request.delete(`${RELAYS_API}/${jobRelay}`).catch(() => undefined);
+    }
+  });
 
   test("lists one row per relay call with its route, status, cost and billing", async ({ relayLogsPage: page }) => {
     await page.goto({ relay_names: relayName });
@@ -586,7 +644,7 @@ test.describe("Relay Logs", () => {
     await expect(sheet).toContainText("Request details");
     await expect(sheet).toContainText(relayName);
     await expect(sheet).toContainText("Call");
-    await expect(sheet).toContainText("success");
+    await expect(sheet).toContainText("Success");
     await expect(sheet).toContainText("POST /v1/search");
     await expect(sheet).toContainText(row.request_id);
     await expect(sheet).toContainText(grantedKeyName);
@@ -652,7 +710,7 @@ test.describe("Relay Logs", () => {
     await page.toggleColumn("virtual_key");
     await page.openRow(relayName, "-ungranted");
 
-    await expect(page.sheet).toContainText("error");
+    await expect(page.sheet).toContainText("Error");
     await expect(page.sheetError).toBeVisible();
     await expect(page.sheetError).toContainText("Error");
     await expect(page.sheetError).toContainText(`Relay '${relayName}' is not allowed for virtual key`);

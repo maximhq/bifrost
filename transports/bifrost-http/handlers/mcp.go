@@ -1977,6 +1977,8 @@ func (h *MCPHandler) getMCPClientsPaginated(ctx *fasthttp.RequestCtx, params con
 			Disabled:               dbClient.Disabled,
 			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 			TokenExchange:          dbClient.TokenExchange,
+			ClientCredentials:      dbClient.ClientCredentials,
+			AWSSigV4:               dbClient.AWSSigV4,
 			OpenAPIConfig:          dbClient.OpenAPIConfig,
 		}
 		// Populate oauth client credentials from pre-fetched batch
@@ -2323,31 +2325,33 @@ const maxToolSyncIntervalMinutes = int64(math.MaxInt64) / int64(time.Minute)
 // Immutable fields (connection_type, auth_type, connection_string, stdio_config) are not
 // accepted here; they cannot be changed after creation.
 type MCPClientUpdateRequest struct {
-	Name                   *string                         `json:"name,omitempty"`
-	Disabled               *bool                           `json:"disabled,omitempty"`
-	AllowByDefault         *bool                           `json:"allow_by_default,omitempty"`
-	IsCodeModeClient       *bool                           `json:"is_code_mode_client,omitempty"`
-	ServerTypeOnSlug       *string                         `json:"server_type_on_slug,omitempty"` // "inherit", "enabled" or "disabled"
-	IsPingAvailable        *bool                           `json:"is_ping_available,omitempty"`
-	NeedsSessionStickiness *bool                           `json:"needs_session_stickiness,omitempty"`
-	ToolSyncInterval       *MCPSyncInterval                `json:"tool_sync_interval,omitempty"`
-	MaxProtocolVersion     *string                         `json:"max_protocol_version,omitempty"` // "" = use the global setting
-	ToolExecutionTimeout   *int                            `json:"tool_execution_timeout,omitempty"`
-	MaxInstructionsLength  *int                            `json:"max_instructions_length,omitempty"`
-	Headers                map[string]schemas.SecretVar    `json:"headers,omitempty"`
-	AllowedExtraHeaders    *schemas.WhiteList              `json:"allowed_extra_headers,omitempty"`
-	ToolPricing            map[string]float64              `json:"tool_pricing,omitempty"`
-	ToolsToExecute         *schemas.WhiteList              `json:"tools_to_execute,omitempty"`
-	ToolsToAutoExecute     *schemas.WhiteList              `json:"tools_to_auto_execute,omitempty"`
-	PromptsToExpose        *schemas.WhiteList              `json:"prompts_to_expose,omitempty"`
-	ResourcesToExpose      *schemas.WhiteList              `json:"resources_to_expose,omitempty"`
-	PerUserHeaderKeys      *[]string                       `json:"per_user_header_keys,omitempty"`
-	PerUserDiscovery       *bool                           `json:"per_user_discovery,omitempty"`
-	TokenExchange          *schemas.MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
-	TLSConfig              *schemas.MCPTLSConfig           `json:"tls_config,omitempty"`
-	VKConfigs              *[]MCPVKConfigRequest           `json:"vk_configs,omitempty"`
-	OauthConfig            *OAuthConfigRequest             `json:"oauth_config,omitempty"`
-	OpenAPIConfig          *schemas.MCPOpenAPIConfig       `json:"openapi_config,omitempty"` // openapi clients only; replaces the spec/credentials (PATCH-style inside the block)
+	Name                   *string                             `json:"name,omitempty"`
+	Disabled               *bool                               `json:"disabled,omitempty"`
+	AllowByDefault         *bool                               `json:"allow_by_default,omitempty"`
+	IsCodeModeClient       *bool                               `json:"is_code_mode_client,omitempty"`
+	ServerTypeOnSlug       *string                             `json:"server_type_on_slug,omitempty"` // "inherit", "enabled" or "disabled"
+	IsPingAvailable        *bool                               `json:"is_ping_available,omitempty"`
+	NeedsSessionStickiness *bool                               `json:"needs_session_stickiness,omitempty"`
+	ToolSyncInterval       *MCPSyncInterval                    `json:"tool_sync_interval,omitempty"`
+	MaxProtocolVersion     *string                             `json:"max_protocol_version,omitempty"` // "" = use the global setting
+	ToolExecutionTimeout   *int                                `json:"tool_execution_timeout,omitempty"`
+	MaxInstructionsLength  *int                                `json:"max_instructions_length,omitempty"`
+	Headers                map[string]schemas.SecretVar        `json:"headers,omitempty"`
+	AllowedExtraHeaders    *schemas.WhiteList                  `json:"allowed_extra_headers,omitempty"`
+	ToolPricing            map[string]float64                  `json:"tool_pricing,omitempty"`
+	ToolsToExecute         *schemas.WhiteList                  `json:"tools_to_execute,omitempty"`
+	ToolsToAutoExecute     *schemas.WhiteList                  `json:"tools_to_auto_execute,omitempty"`
+	PromptsToExpose        *schemas.WhiteList                  `json:"prompts_to_expose,omitempty"`
+	ResourcesToExpose      *schemas.WhiteList                  `json:"resources_to_expose,omitempty"`
+	PerUserHeaderKeys      *[]string                           `json:"per_user_header_keys,omitempty"`
+	PerUserDiscovery       *bool                               `json:"per_user_discovery,omitempty"`
+	TokenExchange          *schemas.MCPTokenExchangeConfig     `json:"token_exchange,omitempty"`
+	ClientCredentials      *schemas.MCPClientCredentialsConfig `json:"client_credentials,omitempty"`
+	AWSSigV4               *schemas.MCPAWSSigV4Config          `json:"aws_sigv4,omitempty"`
+	TLSConfig              *schemas.MCPTLSConfig               `json:"tls_config,omitempty"`
+	VKConfigs              *[]MCPVKConfigRequest               `json:"vk_configs,omitempty"`
+	OauthConfig            *OAuthConfigRequest                 `json:"oauth_config,omitempty"`
+	OpenAPIConfig          *schemas.MCPOpenAPIConfig           `json:"openapi_config,omitempty"` // openapi clients only; replaces the spec/credentials (PATCH-style inside the block)
 
 	// AllowOnAllVirtualKeys is the earlier name of allow_by_default, still accepted. AllowByDefault
 	// decides when both are sent; see schemas.ResolveAllowByDefault.
@@ -2462,6 +2466,23 @@ func rejectStdioMCPClientIfAuthBypassed(ctx *fasthttp.RequestCtx, connType strin
 	return true
 }
 
+// rejectAWSSigV4IfAuthBypassed refuses to register an aws_sigv4 MCP client, or to
+// change one's aws_sigv4 block, for a caller let through because dashboard auth is
+// unconfigured or disabled. Such a client signs requests with Bifrost's own AWS
+// identity (and any role it may assume), which is no more a caller's to direct
+// than a stored secret reference. Returns true if the request was rejected (the
+// error response has already been written).
+func rejectAWSSigV4IfAuthBypassed(ctx *fasthttp.RequestCtx, authType string, block *schemas.MCPAWSSigV4Config) bool {
+	if authType != string(schemas.MCPAuthTypeAWSSigV4) && block == nil {
+		return false
+	}
+	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); !bypassed {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, "Configuring an aws_sigv4 MCP client requires an authenticated admin session: it signs requests with Bifrost's own AWS identity. Enable dashboard authentication, or provision this client via config.json instead.")
+	return true
+}
+
 // resourceCredentialResendRequired refuses an update that changes where the
 // id_jag resource credential is sent (the audience it is discovered from,
 // resource_token_endpoint, or the client assertion's audience) while keeping
@@ -2477,16 +2498,44 @@ func resourceCredentialResendRequired(existing, req *schemas.MCPTokenExchangeCon
 	targetChanged := req.ResourceTokenEndpointURL() != existing.ResourceTokenEndpointURL() ||
 		strings.TrimSpace(req.ResourceAssertionAudience) != strings.TrimSpace(existing.ResourceAssertionAudience) ||
 		strings.TrimSpace(req.Audience) != strings.TrimSpace(existing.Audience)
-	if targetChanged && (req.ResourceClientSecret.IsMaskedPlaceholder() || req.ResourcePrivateKey.IsMaskedPlaceholder()) {
+	if credentialResendRequired(targetChanged, req.ResourceClientSecret, req.ResourcePrivateKey) {
 		return fmt.Errorf("token_exchange.resource_client_secret and resource_private_key must be resent explicitly when audience, resource_token_endpoint or resource_assertion_audience changes")
 	}
 	return nil
 }
 
+// clientCredentialsResendRequired is resourceCredentialResendRequired for a
+// client_credentials block: a changed token_url (an emptied one is discovered
+// again) or assertion_audience needs the secret or key resent.
+func clientCredentialsResendRequired(existing, req *schemas.MCPClientCredentialsConfig) error {
+	if existing == nil || req == nil {
+		return nil
+	}
+	if credentialResendRequired(req.TargetChangedFrom(existing), req.ClientSecret, req.PrivateKey) {
+		return fmt.Errorf("client_credentials.client_secret and private_key must be resent explicitly when token_url or assertion_audience changes")
+	}
+	return nil
+}
+
+// credentialResendRequired reports whether an update that changes where a stored
+// credential is sent keeps any of creds through a masked placeholder: the stored
+// credential was never paired with the new target.
+func credentialResendRequired(targetChanged bool, creds ...*schemas.SecretVar) bool {
+	if !targetChanged {
+		return false
+	}
+	for _, c := range creds {
+		if c.IsMaskedPlaceholder() {
+			return true
+		}
+	}
+	return false
+}
+
 // mcpClientSecretReferences lists the credential-bearing fields of an MCP
 // client request whose value is an env./vault. reference rather than a literal.
 // Keys are wire field names so a refusal can name what to change.
-func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionString *schemas.SecretVar, oauth *OAuthConfigRequest, tokenExchange *schemas.MCPTokenExchangeConfig, tlsConfig *schemas.MCPTLSConfig, openAPI *schemas.MCPOpenAPIConfig) []string {
+func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionString *schemas.SecretVar, oauth *OAuthConfigRequest, tokenExchange *schemas.MCPTokenExchangeConfig, clientCredentials *schemas.MCPClientCredentialsConfig, tlsConfig *schemas.MCPTLSConfig, openAPI *schemas.MCPOpenAPIConfig) []string {
 	var refs []string
 	isRef := func(v *schemas.SecretVar) bool { return v != nil && v.Type() != schemas.SecretTypePlainText }
 	for name, value := range headers {
@@ -2521,6 +2570,17 @@ func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionS
 		}
 		if isRef(tokenExchange.ResourcePrivateKey) {
 			refs = append(refs, "token_exchange.resource_private_key")
+		}
+	}
+	if clientCredentials != nil {
+		if isRef(clientCredentials.ClientID) {
+			refs = append(refs, "client_credentials.client_id")
+		}
+		if isRef(clientCredentials.ClientSecret) {
+			refs = append(refs, "client_credentials.client_secret")
+		}
+		if isRef(clientCredentials.PrivateKey) {
+			refs = append(refs, "client_credentials.private_key")
 		}
 	}
 	if tlsConfig != nil && isRef(tlsConfig.CACertPEM) {
@@ -2612,6 +2672,12 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	req.AuthType = string(authType)
+	// Refused before any auth-mode branch: the OAuth ones return pending_oauth
+	// early and would otherwise drop the block silently.
+	if req.ClientCredentials != nil && authType != schemas.MCPAuthTypeClientCredentials {
+		SendError(ctx, fasthttp.StatusBadRequest, "client_credentials can only be set for client_credentials clients")
+		return
+	}
 	isOpenAPIClient := req.ConnectionType == string(schemas.MCPConnectionTypeOpenAPI)
 
 	// Both gates run before anything else: registering a client is what makes
@@ -2620,7 +2686,15 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	if rejectStdioMCPClientIfAuthBypassed(ctx, req.ConnectionType) {
 		return
 	}
-	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, req.ConnectionString, req.OauthConfig, req.TokenExchange, req.TLSConfig, req.OpenAPIConfig)) {
+	if rejectAWSSigV4IfAuthBypassed(ctx, req.AuthType, req.AWSSigV4) {
+		return
+	}
+	// Checked here, not with the block below: the per-user branches return before it.
+	if req.AuthType != string(schemas.MCPAuthTypeAWSSigV4) && req.AWSSigV4 != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "aws_sigv4 can only be set for aws_sigv4 clients")
+		return
+	}
+	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, req.ConnectionString, req.OauthConfig, req.TokenExchange, req.ClientCredentials, req.TLSConfig, req.OpenAPIConfig)) {
 		return
 	}
 	if rejectPrivateMCPTargetIfAuthBypassed(ctx, req.ConnectionType, req.ConnectionString) {
@@ -2686,9 +2760,9 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 	var preparedOpenAPI *preparedOpenAPIClient
 	if isOpenAPIClient {
 		switch req.AuthType {
-		case "", string(schemas.MCPAuthTypeNone), string(schemas.MCPAuthTypeHeaders), string(schemas.MCPAuthTypePerUserHeaders):
+		case "", string(schemas.MCPAuthTypeNone), string(schemas.MCPAuthTypeHeaders), string(schemas.MCPAuthTypePerUserHeaders), string(schemas.MCPAuthTypeAWSSigV4):
 		default:
-			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth_type %q is not supported for connection_type 'openapi' (use none, headers or per_user_headers)", req.AuthType))
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("auth_type %q is not supported for connection_type 'openapi' (use none, headers, per_user_headers or aws_sigv4)", req.AuthType))
 			return
 		}
 		if req.ConnectionString != nil && strings.TrimSpace(req.ConnectionString.GetValue()) != "" {
@@ -2700,7 +2774,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, msg)
 			return
 		}
-		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, req.Name, req.OpenAPIConfig, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -3274,6 +3348,41 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// client_credentials: nothing interactive. The token endpoint is discovered
+	// when not given and checked against what the authorization server
+	// advertises, and one token is requested, before anything is stored; the
+	// client then connects like a headers client.
+	var clientCredentials *schemas.MCPClientCredentialsConfig
+	if req.AuthType == string(schemas.MCPAuthTypeClientCredentials) {
+		if h.store.OAuthProvider == nil {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider is not available")
+			return
+		}
+		if req.ClientCredentials == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, "client_credentials is required for client_credentials auth type")
+			return
+		}
+		resolved, err := h.store.OAuthProvider.ResolveClientCredentials(ctx, strings.TrimSpace(req.ConnectionString.GetValue()), req.RequirePublicTarget, req.ClientCredentials)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		clientCredentials = resolved
+	}
+
+	// aws_sigv4: the block and the headers are checked here; the client then
+	// connects like a headers client, and that connect is its first signed request.
+	if req.AuthType == string(schemas.MCPAuthTypeAWSSigV4) {
+		if err := req.AWSSigV4.Validate(); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		if err := schemas.CheckAWSSigV4Headers(req.Headers, req.AllowedExtraHeaders); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	// Convert to schemas.MCPClientConfig for runtime bifrost client (without tool_pricing)
 	schemasConfig := &schemas.MCPClientConfig{
 		ID:                     req.ClientID,
@@ -3301,6 +3410,8 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		ToolExecutionTimeout:   resolvedToolExecutionTimeout,
 		MaxInstructionsLength:  resolvedMaxInstructionsLength,
 		AllowByDefault:         req.AllowByDefault,
+		ClientCredentials:      clientCredentials,
+		AWSSigV4:               req.AWSSigV4,
 	}
 	if preparedOpenAPI != nil {
 		schemasConfig.OpenAPIConfig = preparedOpenAPI.config
@@ -3401,7 +3512,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	before := auditMCPClient(h.store, existingConfig)
-	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, nil, req.OauthConfig, req.TokenExchange, req.TLSConfig, req.OpenAPIConfig)) {
+	if rejectAWSSigV4IfAuthBypassed(ctx, "", req.AWSSigV4) {
+		return
+	}
+	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, nil, req.OauthConfig, req.TokenExchange, req.ClientCredentials, req.TLSConfig, req.OpenAPIConfig)) {
 		return
 	}
 	if err := validateNeedsSessionStickiness(req.NeedsSessionStickiness, existingConfig.ConnectionType); err != nil {
@@ -3499,13 +3613,23 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 		tlsConfig = &tlsCopy
 	}
+	// Weakening TLS would expose what an aws_sigv4 client signs with Bifrost's own identity.
+	if authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); authBypassed &&
+		existingConfig.AuthType == schemas.MCPAuthTypeAWSSigV4 && !mcpTLSConfigEqual(existingConfig.TLSConfig, tlsConfig) {
+		SendError(ctx, fasthttp.StatusForbidden, "Changing the TLS settings of an aws_sigv4 MCP client requires an authenticated admin session: its requests are signed with Bifrost's own AWS identity. Enable dashboard authentication, or provision this client via config.json instead.")
+		return
+	}
 	// A TLS edit is baked into the live transport the same way a header is, so
 	// it takes the same path: tried first where the pre-flight can reach the
 	// upstream with the client's own credential (headers and none), then
 	// applied by redialing.
 	tlsChanged := remoteTransport && !disabled && !mcpTLSConfigEqual(existingConfig.TLSConfig, tlsConfig)
 	preflightConnectionEdit := staticHeadersChanged || (tlsChanged && sharedHeaderAuth)
-	connectionEditChanged := (staticHeadersChanged || tlsChanged) && !existingConfig.Disabled
+	// An aws_sigv4 client's headers are set on its live connection too. They aren't
+	// checked against the server first: VerifyHeadersConnection doesn't sign.
+	sigV4HeadersChanged := existingConfig.AuthType == schemas.MCPAuthTypeAWSSigV4 && remoteTransport && !disabled &&
+		req.Headers != nil && !mcpHeadersEqual(existingConfig.Headers, headers)
+	connectionEditChanged := (staticHeadersChanged || sigV4HeadersChanged || tlsChanged) && !existingConfig.Disabled
 	resolvedMaxProtocolVersion := existingConfig.MaxProtocolVersion
 	if req.MaxProtocolVersion != nil {
 		if err := schemas.ValidateMCPMaxProtocolVersion("max_protocol_version", *req.MaxProtocolVersion); err != nil {
@@ -3617,6 +3741,10 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		candidate := mergeOpenAPIConfigUpdate(existingConfig.OpenAPIConfig, req.OpenAPIConfig, openAPIOptionsSent(ctx.PostBody()))
 		if authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); authBypassed && req.OpenAPIConfig != nil &&
 			openAPITargetChanged(existingConfig.OpenAPIConfig, candidate) && openAPIRetargetCarriesStoredSecrets(existingConfig, candidate, headers) {
+			if existingConfig.AuthType == schemas.MCPAuthTypeAWSSigV4 {
+				SendError(ctx, fasthttp.StatusForbidden, "Changing an aws_sigv4 OpenAPI client's spec, spec_url or base_url requires an authenticated admin session: its requests are signed with Bifrost's own AWS identity. Enable dashboard authentication, or provision this client via config.json instead.")
+				return
+			}
 			SendError(ctx, fasthttp.StatusForbidden, "Changing an OpenAPI client's spec, spec_url or base_url while it keeps stored credentials or headers requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Send replacement security_credentials and headers (or {} to clear them), or enable dashboard authentication.")
 			return
 		}
@@ -3624,7 +3752,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		// later connects from the document fresh.
 		rebuildOpenAPIServer = !disabled && req.OpenAPIConfig == nil && existingConfig.OpenAPIConfig != nil &&
 			strings.TrimSpace(existingConfig.OpenAPIConfig.Spec) == "" && existingConfig.OpenAPIConfig.SpecURL != nil
-		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate)
+		prepared, status, msg := prepareOpenAPIConfig(ctx, name, candidate, h.store.MCPOpenAPIMaxSpecBytes())
 		if status != 0 {
 			SendError(ctx, status, msg)
 			return
@@ -3758,6 +3886,73 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	// "Re-verify as me". Unlike OAuth there's no per-user row to cascade —
 	// end-user exchanged tokens are cache-only and simply re-exchange fresh
 	// on the next call once evicted below.
+	// client_credentials: masked values keep the stored ones, and the block is
+	// resolved again (discovery when token_url was cleared, then a token
+	// request) only when something changed. A change is applied to the live
+	// client like a header edit.
+	clientCredentials := existingConfig.ClientCredentials
+	if req.ClientCredentials != nil {
+		if existingConfig.AuthType != schemas.MCPAuthTypeClientCredentials {
+			SendError(ctx, fasthttp.StatusBadRequest, "client_credentials can only be set for client_credentials clients")
+			return
+		}
+		if err := clientCredentialsResendRequired(existingConfig.ClientCredentials, req.ClientCredentials); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		req.ClientCredentials.KeepMaskedFrom(existingConfig.ClientCredentials)
+		if !req.ClientCredentials.Equal(existingConfig.ClientCredentials) {
+			if h.store.OAuthProvider == nil {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider is not available")
+				return
+			}
+			// An unauthenticated caller gets the public-address rule, as on create.
+			if authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); authBypassed {
+				requirePublicTarget = true
+			}
+			resolved, err := h.store.OAuthProvider.ResolveClientCredentials(ctx, strings.TrimSpace(existingConfig.ConnectionString.GetValue()), requirePublicTarget, req.ClientCredentials)
+			if err != nil {
+				SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+				return
+			}
+			clientCredentials = resolved
+			connectionEditChanged = connectionEditChanged || !existingConfig.Disabled
+		}
+	}
+
+	// aws_sigv4: the block is replaced whole and checked; a change re-signs the
+	// live client's connection like a header edit. The headers are checked
+	// against the signer's whatever changed, since either may be edited alone.
+	awsSigV4 := existingConfig.AWSSigV4
+	if req.AWSSigV4 != nil {
+		if existingConfig.AuthType != schemas.MCPAuthTypeAWSSigV4 {
+			SendError(ctx, fasthttp.StatusBadRequest, "aws_sigv4 can only be set for aws_sigv4 clients")
+			return
+		}
+		req.AWSSigV4.KeepMaskedFrom(existingConfig.AWSSigV4)
+		if err := req.AWSSigV4.Validate(); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		if !req.AWSSigV4.Equal(existingConfig.AWSSigV4) {
+			awsSigV4 = req.AWSSigV4
+			connectionEditChanged = connectionEditChanged || !existingConfig.Disabled
+		}
+	}
+	if existingConfig.AuthType == schemas.MCPAuthTypeAWSSigV4 {
+		headers, extras := existingConfig.Headers, existingConfig.AllowedExtraHeaders
+		if req.Headers != nil {
+			headers = req.Headers
+		}
+		if req.AllowedExtraHeaders != nil {
+			extras = *req.AllowedExtraHeaders
+		}
+		if err := schemas.CheckAWSSigV4Headers(headers, extras); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	shouldMarkExchangeNeedsReauth := req.TokenExchange != nil &&
 		existingConfig.AuthType == schemas.MCPAuthTypeTokenExchange &&
 		existingConfig.TokenExchange.DiffersFrom(req.TokenExchange)
@@ -3990,6 +4185,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
+		ClientCredentials:      clientCredentials,
+		AWSSigV4:               awsSigV4,
 		TLSConfig:              tlsConfig,
 		OpenAPIConfig:          resolvedOpenAPIConfig,
 		PerUserDiscovery:       req.PerUserDiscovery, // only what was asked: the store keeps its own value when nil, and runs a flip only on a change
@@ -4093,6 +4290,8 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		Disabled:               disabled,
 		PerUserHeaderKeys:      perUserHeaderKeys,
 		TokenExchange:          tokenExchange,
+		ClientCredentials:      clientCredentials,
+		AWSSigV4:               awsSigV4,
 		OpenAPIConfig:          resolvedOpenAPIConfig,
 		PerUserDiscovery:       perUserDiscovery,
 		PendingVerification:    pendingVerification,

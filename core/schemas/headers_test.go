@@ -74,3 +74,20 @@ func BenchmarkIsSensitiveHeader(b *testing.B) {
 		}
 	}
 }
+
+// Relay job validation and Relay Logs redaction share this check, so they agree on every name.
+func TestIsCredentialQueryParam(t *testing.T) {
+	for _, name := range []string{"api_key", "API-KEY", "apikey", "key", "token", "access_token", "refresh_token", "client_secret",
+		"password", "pwd", "sig", "Signature", "X-Amz-Signature", "x-amz-credential", "X-Amz-Security-Token", "x-goog-api-key", " auth_token ",
+		"subscription-key", "subscription_key", "x-functions-key"} {
+		if !IsCredentialQueryParam(name) {
+			t.Errorf("IsCredentialQueryParam(%q) = false, want true", name)
+		}
+	}
+	// Generic words that status APIs use for ordinary values are not credentials.
+	for _, name := range []string{"code", "auth", "id", "page", "q", "status", "job_id"} {
+		if IsCredentialQueryParam(name) {
+			t.Errorf("IsCredentialQueryParam(%q) = true, want false", name)
+		}
+	}
+}

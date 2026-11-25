@@ -5,8 +5,6 @@ package logging
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -570,21 +568,6 @@ func (p *LoggerPlugin) sleepCtx(d time.Duration) bool {
 // out is not lost: the job stays due and the sweeper re-drives it.
 const jobAccountingTimeout = 30 * time.Second
 
-// batchRunnerProcessID distinguishes this process when no cluster node id is set.
-// Deliberately random rather than PID-based: two replicas on different hosts can
-// share a PID, and this identity is what keeps their batch claims apart.
-var batchRunnerProcessID = newBatchRunnerProcessID()
-
-func newBatchRunnerProcessID() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// crypto/rand is effectively infallible here; a time-based value still
-		// separates processes far better than a shared constant would.
-		return strconv.FormatInt(time.Now().UnixNano(), 36)
-	}
-	return hex.EncodeToString(b[:])
-}
-
 // batchRunnerID builds the ownership-fence identity for a batch accounting worker.
 //
 // Batch claims are fenced on this value, so it must differ between workers that
@@ -596,10 +579,13 @@ func newBatchRunnerProcessID() string {
 // live workers, and a restarted process should not inherit its predecessor's
 // claims — those are recovered through the staleness path instead.
 func (p *LoggerPlugin) batchRunnerID(prefix string) string {
-	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
-		return prefix + ":" + nodeID
-	}
-	return prefix + ":" + batchRunnerProcessID
+	return jobaccounting.RunnerID(prefix, p.ClusterNodeID())
+}
+
+// ClusterNodeID is the node id SetClusterNodeID set, "" in OSS.
+func (p *LoggerPlugin) ClusterNodeID() string {
+	nodeID, _ := p.clusterNodeID.Load().(string)
+	return nodeID
 }
 
 func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.BifrostResponse, pricingScopes *modelcatalog.PricingLookupScopes) {
@@ -1366,6 +1352,10 @@ type LoggerPlugin struct {
 	logDeleteSubscribers         map[uint64]LogDeleteCallback
 	nextLogDeleteSubscriberID    uint64
 	batchUsageReporter           jobaccounting.UsageReporter
+	relayJobPoller               jobaccounting.RelayJobPoller // polls a relay job a caller's status check found finished
+	relaySettling                sync.Map                     // relay+job id -> struct{}: a settle from a status check is running
+	relaySettleSlotsOnce         sync.Once
+	relaySettleSlots             chan struct{}      // bounds concurrent settles from status checks
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
@@ -1714,6 +1704,14 @@ func (p *LoggerPlugin) notifyLogCallbacks(ctx context.Context, entry *logstore.L
 	}
 }
 
+// SetRelayJobPoller sets how a caller's finished status check is confirmed: Bifrost polls the job
+// itself with its stored template and prices that reply. nil leaves such jobs to the sweeper.
+func (p *LoggerPlugin) SetRelayJobPoller(poller jobaccounting.RelayJobPoller) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.relayJobPoller = poller
+}
+
 func (p *LoggerPlugin) SetBatchUsageReporter(reporter jobaccounting.UsageReporter) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -2033,6 +2031,9 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		if sessionID := liveSessionID(ctx); sessionID != "" {
 			requestID = sessionID
 		}
+	}
+	if p.batchStore != nil && req.ResponsesRequest != nil {
+		ctx.SetValue(schemas.BifrostContextKeyJobAccounting, true)
 	}
 	createdTimestamp := time.Now().UTC()
 
@@ -2581,6 +2582,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// logs DB reflects what we were actually billed, mirroring the governance
 		// budget.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+		p.recordInterruptedJob(entry, bifrostErr)
 		p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
@@ -2639,6 +2641,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			// A stream error can arrive with a response chunk, bypassing Path A.
 			// Preserve provider-billed usage and the sidecar calls in that case.
 			p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
+			p.recordInterruptedJob(entry, bifrostErr)
 			p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		} else if streamResponse == nil {
 			// tracer or traceID not available, or accumulator returned nil - still write what we have
@@ -2684,6 +2687,10 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if bifrostErr == nil && result.PassthroughResponse.ProviderJob != nil {
 				p.handleInteractionJob(ctx, entry, result)
 			}
+		}
+		if bifrostErr == nil && result != nil && result.ResponsesStreamResponse != nil &&
+			result.ResponsesStreamResponse.Response != nil && result.ResponsesStreamResponse.Response.ProviderJob != nil {
+			p.handleInteractionJob(ctx, entry, result)
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
 		if tracer != nil && traceID != "" {
@@ -2776,7 +2783,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			p.accountVideoResults(entry, result, pricingScopes)
 		}
 	}
-	if bifrostErr == nil && result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.ProviderJob != nil {
+	if bifrostErr == nil && result != nil &&
+		(result.PassthroughResponse != nil && result.PassthroughResponse.ProviderJob != nil ||
+			result.ResponsesResponse != nil && result.ResponsesResponse.ProviderJob != nil) {
 		p.handleInteractionJob(ctx, entry, result)
 	}
 
@@ -4121,7 +4130,13 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 			Model:    req.PassthroughRequest.Model,
 		}
 		initialData.Params = passthroughParams
-		if len(req.PassthroughRequest.Body) > 0 {
+		if len(req.PassthroughRequest.Body) == 0 && req.PassthroughRequest.Form != nil {
+			// A streamed multipart upload: summarize its parsed form, never the file contents.
+			if summary, ok := passthroughparse.SummarizeMultipartForm(req.PassthroughRequest.Form, req.PassthroughRequest.FormTypes); ok {
+				initialData.PassthroughRequestBody = string(summary)
+				passthroughParams.MultipartSummary = true
+			}
+		} else if len(req.PassthroughRequest.Body) > 0 {
 			rawCT := req.PassthroughRequest.SafeHeaders["content-type"]
 			ct := strings.ToLower(rawCT)
 			if strings.Contains(ct, "application/json") {

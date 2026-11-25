@@ -2,6 +2,7 @@ package relay
 
 import (
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -31,19 +32,23 @@ type resolvedUsage struct {
 
 // compiledRoute is one routes[] entry with its glob split once at construction.
 type compiledRoute struct {
-	method   string
-	glob     routeGlob
-	headers  []headerMatch // every one must match; nil for a route on method and path alone
-	billable bool
-	disabled bool // matched requests are refused rather than falling through to a later route
-	stream   *bool
-	usage    resolvedUsage
+	configIndex int // its position in the saved routes[], which matching does not follow
+	method      string
+	glob        routeGlob
+	headers     []headerMatch // every one must match; nil for a route on method and path alone
+	billable    bool
+	disabled    bool // matched requests are refused rather than falling through to a later route
+	stream      *bool
+	usage       resolvedUsage
+	// bodyOverrides are the forced body fields, the endpoint's merged under the route's.
+	bodyOverrides []bodyOverride
 	// job, jobParams and jobInterval are set for a route that starts an upstream job: the
 	// block itself, its settlement snapshot (built once here, attached to every start response)
 	// and the seconds until the first poll.
 	job         *schemas.RelayJobConfig
 	jobParams   string
 	jobInterval int
+	jobRouteKey string // names the route in the job's row, so two job routes never share one
 }
 
 // headerMatch is one required request header: a lower-cased name and a value glob. AWS JSON
@@ -71,7 +76,7 @@ func (route *compiledRoute) matchHeaders(headers, operator map[string]string) bo
 			}
 			continue
 		}
-		if ok, _ := path.Match(strings.ReplaceAll(h.glob, "/", "\x01"), strings.ReplaceAll(value, "/", "\x01")); !ok {
+		if !headerGlobMatches(h.glob, value) {
 			return false
 		}
 	}
@@ -119,27 +124,34 @@ func compileHeaders(headers map[string]string) []headerMatch {
 	}
 	out := make([]headerMatch, 0, len(headers))
 	for name, glob := range headers {
-		out = append(out, headerMatch{name: strings.ToLower(name), glob: glob, literal: !strings.ContainsAny(glob, "*?[\\")})
+		out = append(out, headerMatch{name: strings.ToLower(name), glob: glob, literal: !isHeaderGlob(glob)})
 	}
 	// A fixed order keeps matching deterministic whatever the map's iteration order.
 	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
 	return out
 }
 
-// routeGlob is a rooted segment pattern. prefix is set for a trailing /**.
+// maxGapSegments is the most segments a middle ** takes: as many as the longest job id can hold.
+const maxGapSegments = (maxRelayJobIDLength + 1) / 2
+
+// routeGlob is a rooted segment pattern. prefix is set for a trailing /**; tail counts the segments
+// after a middle **, which is not kept in segments.
 type routeGlob struct {
 	segments []string
 	prefix   bool
+	tail     int32
 }
 
 func compileGlob(glob string) routeGlob {
 	segments := strings.Split(strings.TrimPrefix(glob, "/"), "/")
-	out := routeGlob{segments: segments}
-	if n := len(segments); n > 0 && segments[n-1] == "**" {
-		out.segments = segments[:n-1]
-		out.prefix = true
+	n := len(segments)
+	if segments[n-1] == "**" {
+		return routeGlob{segments: segments[:n-1], prefix: true}
 	}
-	return out
+	if at := slices.Index(segments, "**"); at >= 0 {
+		return routeGlob{segments: slices.Delete(segments, at, at+1), tail: int32(n - at - 1)}
+	}
+	return routeGlob{segments: segments}
 }
 
 // match reports whether a stripped request path ("/a/b") satisfies the glob. Each pattern segment
@@ -152,6 +164,9 @@ func (g routeGlob) match(requestPath string) bool {
 // matchSegments is match on a path already split once, so a request checked against many routes
 // splits its path a single time.
 func (g routeGlob) matchSegments(segments []string) bool {
+	if g.tail > 0 {
+		return g.matchGap(segments)
+	}
 	if g.prefix {
 		if len(segments) < len(g.segments) {
 			return false
@@ -160,11 +175,95 @@ func (g routeGlob) matchSegments(segments []string) bool {
 		return false
 	}
 	for i, pattern := range g.segments {
-		if ok, _ := path.Match(pattern, segments[i]); !ok {
+		if !segmentMatch(pattern, segments[i]) {
+			return false
+		}
+	}
+	if g.prefix {
+		// A trailing ** refuses dot segments as a middle one does; an empty one is a trailing slash.
+		for _, segment := range segments[len(g.segments):] {
+			if segment != "" && !gapSegmentOK(segment) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// matchGap matches a path with a middle **, which takes one or more segments. The fixed segments
+// sit at known positions, so there is no backtracking.
+func (g routeGlob) matchGap(segments []string) bool {
+	gap := len(segments) - len(g.segments)
+	if gap < 1 || gap > maxGapSegments {
+		return false
+	}
+	head := len(g.segments) - int(g.tail)
+	for i, pattern := range g.segments {
+		at := i
+		if i >= head {
+			at = i + gap
+		}
+		if !segmentMatch(pattern, segments[at]) {
+			return false
+		}
+	}
+	for _, segment := range segments[head : head+gap] {
+		if !gapSegmentOK(segment) {
 			return false
 		}
 	}
 	return true
+}
+
+// segmentMatch matches one pattern segment against one path segment. A dot segment is taken only by
+// the same literal, never by a wildcard: /public/*/admin must not take /public/../admin, which an
+// upstream may resolve to /admin past a disabled catch-all.
+func segmentMatch(pattern, segment string) bool {
+	if segment != "" && !gapSegmentOK(segment) {
+		return pattern == segment
+	}
+	ok, _ := path.Match(pattern, segment)
+	return ok
+}
+
+// gapSegmentOK refuses empty and dot segments, with or without ;params, since an upstream can resolve
+// them to a different path than the free route was written for.
+func gapSegmentOK(segment string) bool {
+	if i := strings.IndexByte(segment, ';'); i >= 0 {
+		segment = segment[:i]
+	}
+	return segment != "" && segment != "." && segment != ".."
+}
+
+// tidyPath drops empty segments from a request path (a trailing or doubled slash); the path is
+// returned as is when it has none, with no allocation.
+func tidyPath(requestPath string) string {
+	trimmed := strings.TrimPrefix(requestPath, "/")
+	// A leading doubled slash (//secret) leaves trimmed starting with "/", an empty first segment.
+	if !strings.HasPrefix(trimmed, "/") && !strings.Contains(trimmed, "//") && !strings.HasSuffix(trimmed, "/") {
+		return requestPath
+	}
+	var b strings.Builder
+	for segment := range strings.SplitSeq(trimmed, "/") {
+		if segment != "" {
+			b.WriteByte('/')
+			b.WriteString(segment)
+		}
+	}
+	if b.Len() == 0 {
+		return "/"
+	}
+	return b.String()
+}
+
+// hasDotSegment reports a "." or ".." segment in a request path, with or without ;params.
+func hasDotSegment(requestPath string) bool {
+	for segment := range strings.SplitSeq(strings.TrimPrefix(requestPath, "/"), "/") {
+		if segment != "" && !gapSegmentOK(segment) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveUsage(base *schemas.RelayUsageConfig, override *schemas.RelayUsageConfig) resolvedUsage {
@@ -244,15 +343,18 @@ func compileRoutesWithCostPolicy(cfg *schemas.RelayConfig, ignoreUpstreamCost bo
 		return nil
 	}
 	routes := make([]compiledRoute, 0, len(cfg.Routes))
-	for _, route := range cfg.Routes {
+	for i, route := range cfg.Routes {
 		compiled := compiledRoute{
-			method:   strings.ToUpper(route.Method),
-			glob:     compileGlob(route.Path),
-			headers:  compileHeaders(route.Headers),
-			billable: billableByDefault(route.Method, route.Billable),
-			disabled: route.Enabled != nil && !*route.Enabled,
-			stream:   route.Stream,
-			usage:    resolveUsage(cfg.Usage, route.Usage),
+			configIndex: i,
+			method:      strings.ToUpper(route.Method),
+			glob:        compileGlob(route.Path),
+			headers:     compileHeaders(route.Headers),
+			billable:    billableByDefault(route.Method, route.Billable),
+			disabled:    route.Enabled != nil && !*route.Enabled,
+			stream:      route.Stream,
+			usage:       resolveUsage(cfg.Usage, route.Usage),
+
+			bodyOverrides: compileBodyOverrides(route.EffectiveBodyOverrides(cfg.BodyOverrides)),
 		}
 		if route.Job != nil {
 			// Validate ran on the config, so the snapshot marshals; a failure here would be a
@@ -261,11 +363,17 @@ func compileRoutesWithCostPolicy(cfg *schemas.RelayConfig, ignoreUpstreamCost bo
 				compiled.job = route.Job
 				compiled.jobParams = params
 				compiled.jobInterval = (&JobSnapshot{Job: *route.Job}).Interval()
+				compiled.jobRouteKey = jobRouteKey(route)
 			}
 		}
 		routes = append(routes, compiled)
 	}
-	return routes
+	// Specific routes are tried first and wildcards last, however the config lists them.
+	ordered := make([]compiledRoute, len(routes))
+	for k, i := range routeMatchOrder(cfg.Routes) {
+		ordered[k] = routes[i]
+	}
+	return ordered
 }
 
 func compileStreamGlobs(cfg *schemas.RelayConfig) []routeGlob {
@@ -279,7 +387,7 @@ func compileStreamGlobs(cfg *schemas.RelayConfig) []routeGlob {
 	return globs
 }
 
-// matchRoute returns the first routes[] entry whose method, glob and required headers fit, or
+// matchRoute returns the first routes[] entry, most specific first (see routeMatchOrder), whose method, glob and required headers fit, or
 // nil. headers is the lower-cased caller header map; nil matches only routes without headers.
 func (e *endpoint) matchRoute(method, requestPath string, headers map[string]string) *compiledRoute {
 	if len(e.routes) == 0 {
@@ -345,3 +453,12 @@ func isUpper(s string) bool {
 	}
 	return true
 }
+
+// headerGlobMatches matches a header value against a glob; / is swapped out so * can span it.
+func headerGlobMatches(pattern, value string) bool {
+	ok, _ := path.Match(strings.ReplaceAll(pattern, "/", "\x01"), strings.ReplaceAll(value, "/", "\x01"))
+	return ok
+}
+
+// isHeaderGlob reports whether a header matcher is a glob rather than an exact value.
+func isHeaderGlob(value string) bool { return strings.ContainsAny(value, "*?[\\") }

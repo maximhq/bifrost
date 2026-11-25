@@ -16,7 +16,7 @@ Most APIs you want an agent to use have an OpenAPI (or Swagger) document but no 
 The result is a regular MCP client in Bifrost. Everything that applies to other servers applies here too: tool filtering and auto-execute, pricing, virtual-key access, [code mode](/mcp/code-mode), the hosted `/mcp/<slug>` endpoint, and tool sync.
 
 <Info>
-Supported documents: **Swagger 2.0**, **OpenAPI 3.0**, **3.1** and **3.2**, as JSON or YAML, up to 5 MiB. Newer 3.x minor versions are parsed as 3.2 with a warning.
+Supported documents: **Swagger 2.0**, **OpenAPI 3.0**, **3.1** and **3.2**, as JSON or YAML, up to 32 MiB by default. Raise or lower the limit with **Max OpenAPI Spec Size** under **Settings > MCP Gateway**, or `client.mcp_openapi_max_spec_mb` in `config.json`. Newer 3.x minor versions are parsed as 3.2 with a warning.
 </Info>
 
 ## How operations become tools
@@ -52,7 +52,7 @@ The upstream defaults to the first `servers` entry of the document (server varia
 Two layers reach the API on every call:
 
 1. **Security schemes from the document.** The preview lists every `securitySchemes` entry. For `apiKey` (header, query or cookie) and `http` `bearer` schemes you enter one value; for `http` `basic` a username and password. Values accept `env.VAR` and `vault.path` references. Stored credentials are encrypted only when `encryption_key` (or `BIFROST_ENCRYPTION_KEY`) is configured; without a key they are stored in plain text. The first security requirement of an operation whose schemes all have a credential is applied.
-2. **The server's own auth type.** `none`, `headers` (static headers sent with every request) and `per_user_headers` (each caller supplies their own values) work as for any other server. OAuth and token exchange do not apply: there is no MCP server to run that handshake against. For the same reason a caller's per-user headers are saved once every required key has a value, with no verification handshake; the upstream API sees them on the first tool call.
+2. **The server's own auth type.** `none`, `headers` (static headers sent with every request) and `per_user_headers` (each caller supplies their own values) work as for any other server. [AWS SigV4](/mcp/auth/aws-sigv4) (`aws_sigv4`) signs every request to the API with Bifrost's AWS identity, for an API Gateway API that uses IAM authorization. OAuth and token exchange do not apply: there is no MCP server to run that handshake against. For the same reason a caller's per-user headers are saved once every required key has a value, with no verification handshake; the upstream API sees them on the first tool call.
 
 ### Per-user credentials for security schemes
 
@@ -128,7 +128,7 @@ curl -X POST http://localhost:8080/api/mcp/client \
   }'
 ```
 
-The `env.PETSTORE_API_KEY` reference needs an authenticated admin session: when dashboard authentication is disabled or unconfigured, `env.` and `vault.` references in `security_credentials` are refused with 403 (literal values are accepted). `spec` (inline text) can be sent instead of `spec_url`. A `spec_url` is fetched once and stored with the server. Unknown names in `tools_to_execute` are rejected with 400, as are `auth_type` values other than `none`, `headers` and `per_user_headers`.
+The `env.PETSTORE_API_KEY` reference needs an authenticated admin session: when dashboard authentication is disabled or unconfigured, `env.` and `vault.` references in `security_credentials` are refused with 403 (literal values are accepted). `spec` (inline text) can be sent instead of `spec_url`. A `spec_url` is fetched once and stored with the server. Unknown names in `tools_to_execute` are rejected with 400, as are `auth_type` values other than `none`, `headers`, `per_user_headers` and `aws_sigv4`.
 
 Replace the document on an existing server with `PUT /api/mcp/client/{id}`. The block is merged onto the stored one: every field you leave out keeps its stored value, including `include_deprecated` and `max_response_bytes`, and a redacted credential keeps the stored secret. An empty `base_url` removes the override, an empty `spec_url` removes the stored URL, and a `security_credentials` map replaces the stored set (schemes left out are removed). Renaming the server re-checks `tools_to_execute`, since long tool names are shortened to fit beside the name. Replace `{id}` with the server's ID, and pass the new document as a JSON-escaped string:
 

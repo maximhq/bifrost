@@ -27,6 +27,25 @@ import (
 // deterministic across mint and verify.
 const testIssuer = "https://bifrost.test"
 
+// testBrowserBase is a browser_base_url on a different host from testIssuer.
+const testBrowserBase = "https://bifrost.corp.test"
+
+// testTunnelIssuer is an additional issuer on its own hostname, as for a private tunnel.
+const testTunnelIssuer = "https://bifrost-tunnel.test"
+
+// withTunnelIssuer adds testTunnelIssuer to cfg's additional issuers.
+func withTunnelIssuer(cfg *lib.Config) *lib.Config {
+	cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs = []*schemas.SecretVar{schemas.NewSecretVar(testTunnelIssuer)}
+	return cfg
+}
+
+// hostCtx is a request that arrived with the given Host header.
+func hostCtx(host string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetHost(host)
+	return ctx
+}
+
 // testMCPResource is the canonical /mcp resource audience derived from the issuer.
 const testMCPResource = testIssuer + "/mcp"
 
@@ -103,6 +122,15 @@ func (m *mockOAuth2Store) ConsentOAuth2AuthorizeRequest(_ context.Context, req *
 	return nil
 }
 
+func (m *mockOAuth2Store) DenyOAuth2AuthorizeRequest(_ context.Context, id string) error {
+	existing, ok := m.authReqs[id]
+	if !ok || existing.Status != configtables.OAuth2AuthorizeRequestStatusPending {
+		return configstore.ErrNotFound
+	}
+	existing.Status = configtables.OAuth2AuthorizeRequestStatusRevoked
+	return nil
+}
+
 func (m *mockOAuth2Store) GetOAuth2SigningKey(_ context.Context) (*configtables.OAuth2SigningKey, error) {
 	if m.signingErr != nil {
 		return nil, m.signingErr
@@ -159,7 +187,7 @@ func newTestOAuth2Config(store configstore.ConfigStore, authMode configtables.MC
 // mintTestToken signs a token with valid defaults (vk mode), applying mutate to
 // override claims/header for negative cases. signMethod and signKey let callers
 // force a non-RS256 algorithm or a wrong signing key.
-func mintTestToken(t *testing.T, priv *rsa.PrivateKey, kid string, mutate func(jwt.MapClaims)) string {
+func mintTestToken(t testing.TB, priv *rsa.PrivateKey, kid string, mutate func(jwt.MapClaims)) string {
 	t.Helper()
 	now := time.Now()
 	claims := jwt.MapClaims{
@@ -231,6 +259,70 @@ func TestVerifyMCPJWT_ValidEachMode(t *testing.T) {
 			require.NotNil(t, claims)
 			assert.Equal(t, string(m.mode), claims.BfMode)
 			assert.Equal(t, m.sub, claims.Subject)
+		})
+	}
+}
+
+// TestVerifyMCPJWT_AdditionalIssuers pins that a token from any configured issuer
+// is honoured on every hostname, that its aud must sit under its own iss, and that
+// an issuer outside the list is refused.
+func TestVerifyMCPJWT_AdditionalIssuers(t *testing.T) {
+	key, priv := newTestSigningKey(t)
+	cfg := withTunnelIssuer(newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeOAuth, false))
+	token := func(iss, aud string) string {
+		return mintTestToken(t, priv, key.KID, func(c jwt.MapClaims) {
+			c["iss"] = iss
+			c["aud"] = jwt.ClaimStrings{aud}
+		})
+	}
+	tunnelToken := token(testTunnelIssuer, testTunnelIssuer+"/mcp")
+	primaryToken := token(testIssuer, testMCPResource)
+
+	for _, host := range []string{"bifrost.test", "bifrost-tunnel.test", "unknown.test"} {
+		for name, raw := range map[string]string{"tunnel": tunnelToken, "primary": primaryToken} {
+			_, err := verifyMCPJWT(hostCtx(host), raw, cfg, key)
+			assert.NoError(t, err, "%s token on %s", name, host)
+		}
+	}
+
+	_, err := verifyMCPJWT(hostCtx("bifrost.test"), token(testTunnelIssuer, testMCPResource), cfg, key)
+	assert.ErrorIs(t, err, errOAuth2TokenRejected, "one hostname's iss with another's aud")
+	_, err = verifyMCPJWT(hostCtx("evil.test"), token("https://evil.test", "https://evil.test/mcp"), cfg, key)
+	assert.ErrorIs(t, err, errOAuth2TokenRejected, "an issuer outside the list")
+
+	cfg.ClientConfig.OAuth2ServerConfig.AdditionalIssuerURLs = nil
+	_, err = verifyMCPJWT(hostCtx("bifrost-tunnel.test"), tunnelToken, cfg, key)
+	assert.ErrorIs(t, err, errOAuth2TokenRejected, "control: without the additional issuer its tokens are refused")
+}
+
+// BenchmarkVerifyMCPJWT measures the token check every authenticated /mcp request
+// runs: with one issuer, and with an additional issuer for each kind of token.
+func BenchmarkVerifyMCPJWT(b *testing.B) {
+	key, priv := newTestSigningKey(&testing.T{})
+	tunnelToken := mintTestToken(b, priv, key.KID, func(c jwt.MapClaims) {
+		c["iss"] = testTunnelIssuer
+		c["aud"] = jwt.ClaimStrings{testTunnelIssuer + "/mcp"}
+	})
+	primaryToken := mintTestToken(b, priv, key.KID, nil)
+	single := newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeOAuth, false)
+	split := withTunnelIssuer(newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeOAuth, false))
+	for _, bc := range []struct {
+		name  string
+		cfg   *lib.Config
+		token string
+	}{
+		{"single issuer", single, primaryToken},
+		{"additional issuer, primary token", split, primaryToken},
+		{"additional issuer, tunnel token on the primary host", split, tunnelToken},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := hostCtx("bifrost.test")
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := verifyMCPJWT(ctx, bc.token, bc.cfg, key); err != nil {
+					b.Fatal(err)
+				}
+			}
 		})
 	}
 }
@@ -356,6 +448,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 			claims, err := verifyMCPJWT(ctx, tc.raw(), cfg, key)
 			require.Error(t, err)
 			assert.Nil(t, claims)
+			assert.ErrorIs(t, err, errOAuth2TokenRejected, "a bad token must be reported as a rejected token")
 		})
 	}
 }
@@ -374,6 +467,7 @@ func TestVerifyMCPJWT_NilSigningKeyNotLabeledInvalidToken(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "signing key unavailable")
 	assert.NotContains(t, err.Error(), "invalid token")
+	assert.NotErrorIs(t, err, errOAuth2TokenRejected)
 }
 
 // TestCachedSigningKey_ConfigFaults pins that the handler's key loader — which

@@ -23,7 +23,8 @@ import (
 // holds the first choice only, so n>1 streams are undercounted.
 func Estimate(ctx *schemas.BifrostContext, request *schemas.BifrostRequest, model string, failure *schemas.BifrostError) {
 	idle, ok := estimable(failure)
-	if !ok {
+	// A stored run goes on without its stream and is settled once, for all of it.
+	if !ok || failure.ExtraFields.ProviderJob != nil {
 		return
 	}
 	estimate(ctx, ctx.GetAccumulatedResponse(), request, model, failure, idle)
@@ -376,6 +377,8 @@ func promptCount(c namedCounter, request *schemas.BifrostRequest) (int, error) {
 					if key == "tool_calls" {
 						if fn, ok := block["function"].(map[string]interface{}); ok {
 							text, _ = fn["arguments"].(string)
+						} else if custom, ok := block["custom"].(map[string]interface{}); ok {
+							text, _ = custom["input"].(string)
 						}
 					} else if key == "content" {
 						text, _ = block["text"].(string)
@@ -407,10 +410,6 @@ func promptCount(c namedCounter, request *schemas.BifrostRequest) (int, error) {
 			return 0, err
 		}
 		total += n
-		if n, err = responsesCustomToolHistoryCount(c, request.ResponsesRequest.Input); err != nil {
-			return 0, err
-		}
-		total += n
 	}
 	n, err := paramsCount(c, params)
 	if err != nil {
@@ -438,45 +437,6 @@ func responsesToolsCount(c namedCounter, params *schemas.ResponsesParameters) (i
 			return 0, err
 		}
 		n, err := c.count(string(encoded))
-		if err != nil {
-			return 0, err
-		}
-		total += n
-	}
-	return total, nil
-}
-
-// responsesCustomToolHistoryCount counts the custom tool history the chat
-// conversion drops: each custom_tool_call's input and each
-// custom_tool_call_output's text. The per-message overhead is already counted,
-// because the conversion keeps these items as empty messages.
-func responsesCustomToolHistoryCount(c namedCounter, input []schemas.ResponsesMessage) (int, error) {
-	total := 0
-	for _, item := range input {
-		if item.Type == nil || item.ResponsesToolMessage == nil {
-			continue
-		}
-		var text strings.Builder
-		switch *item.Type {
-		case schemas.ResponsesMessageTypeCustomToolCall:
-			if call := item.ResponsesToolMessage.ResponsesCustomToolCall; call != nil {
-				text.WriteString(call.Input)
-			}
-		case schemas.ResponsesMessageTypeCustomToolCallOutput:
-			if output := item.ResponsesToolMessage.Output; output != nil {
-				if output.ResponsesToolCallOutputStr != nil {
-					text.WriteString(*output.ResponsesToolCallOutputStr)
-				}
-				for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
-					if block.Text != nil {
-						text.WriteString(*block.Text)
-					}
-				}
-			}
-		default:
-			continue
-		}
-		n, err := c.count(text.String())
 		if err != nil {
 			return 0, err
 		}

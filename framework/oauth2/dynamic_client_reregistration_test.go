@@ -38,7 +38,32 @@ import (
 type dcrConfigStore struct {
 	configstore.ConfigStore
 	db           *gorm.DB
-	beforeRotate func() // runs as a rotation starts, standing in for a concurrent writer
+	locks        *testConfigStore // in-memory distributed_locks for the refresh lock
+	beforeRotate func()           // runs as a rotation starts, standing in for a concurrent writer
+}
+
+func (s *dcrConfigStore) TryAcquireLock(ctx context.Context, lock *tables.TableDistributedLock) (bool, error) {
+	return s.locks.TryAcquireLock(ctx, lock)
+}
+
+func (s *dcrConfigStore) GetLock(ctx context.Context, lockKey string) (*tables.TableDistributedLock, error) {
+	return s.locks.GetLock(ctx, lockKey)
+}
+
+func (s *dcrConfigStore) UpdateLockExpiry(ctx context.Context, lockKey, holderID string, expiresAt time.Time) error {
+	return s.locks.UpdateLockExpiry(ctx, lockKey, holderID, expiresAt)
+}
+
+func (s *dcrConfigStore) ReleaseLock(ctx context.Context, lockKey, holderID string) (bool, error) {
+	return s.locks.ReleaseLock(ctx, lockKey, holderID)
+}
+
+func (s *dcrConfigStore) CleanupExpiredLocks(ctx context.Context) (int64, error) {
+	return s.locks.CleanupExpiredLocks(ctx)
+}
+
+func (s *dcrConfigStore) CleanupExpiredLockByKey(ctx context.Context, lockKey string) (bool, error) {
+	return s.locks.CleanupExpiredLockByKey(ctx, lockKey)
 }
 
 func newDCRConfigStore(t *testing.T) *dcrConfigStore {
@@ -54,7 +79,7 @@ func newDCRConfigStore(t *testing.T) *dcrConfigStore {
 		&tables.TableMCPOauthToken{},
 		&tables.TableMCPClient{},
 	))
-	return &dcrConfigStore{db: db}
+	return &dcrConfigStore{db: db, locks: newTestConfigStore()}
 }
 
 func (s *dcrConfigStore) ExecuteTransaction(ctx context.Context, fn func(tx *gorm.DB) error) error {
@@ -167,6 +192,13 @@ func (s *dcrConfigStore) MarkOauthUserTokenNeedsReauthByID(ctx context.Context, 
 	return s.db.WithContext(ctx).Model(&tables.TableMCPOauthToken{}).
 		Where("id = ?", tokenID).
 		Updates(map[string]any{"status": "needs_reauth", "status_reason": reason}).Error
+}
+
+func (s *dcrConfigStore) MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(ctx context.Context, tokenID, redeemedRefreshToken, reason string) (bool, error) {
+	res := s.db.WithContext(ctx).Model(&tables.TableMCPOauthToken{}).
+		Where("id = ? AND status = ? AND refresh_token = ?", tokenID, "active", redeemedRefreshToken).
+		Updates(map[string]any{"status": "needs_reauth", "status_reason": reason})
+	return res.RowsAffected > 0, res.Error
 }
 
 func (s *dcrConfigStore) MarkTokensNeedsReauthByConfigID(ctx context.Context, oauthConfigID, reason string, tx ...*gorm.DB) error {

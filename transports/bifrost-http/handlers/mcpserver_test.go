@@ -30,6 +30,7 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -76,6 +77,30 @@ func TestConvertToolFunctionParametersToMCPInputSchemaPreservesLegacyDefinitions
 	data, err := json.Marshal(inputSchema)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), `"$defs"`)
+}
+
+// A tool whose arguments are a root-level union must be re-listed on /mcp as its server declared
+// it, or clients connected through Bifrost see a tool with no parameters.
+func TestConvertToolFunctionParametersToMCPInputSchemaPreservesRootComposition(t *testing.T) {
+	const branches = `[
+		{"type":"object","properties":{"kind":{"type":"string","const":"sales"},"region":{"type":"string"}},"required":["kind"]},
+		{"type":"object","properties":{"kind":{"type":"string","const":"inventory"},"warehouse":{"type":"string"}},"required":["kind"]}
+	]`
+	var want []any
+	require.NoError(t, json.Unmarshal([]byte(branches), &want))
+
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		t.Run(keyword, func(t *testing.T) {
+			var params schemas.ToolFunctionParameters
+			require.NoError(t, schemas.Unmarshal([]byte(`{"type":"object","properties":{},"`+keyword+`":`+branches+`}`), &params))
+
+			data, err := json.Marshal(convertToolFunctionParametersToMCPInputSchema(&params))
+			require.NoError(t, err)
+			var got map[string]any
+			require.NoError(t, json.Unmarshal(data, &got))
+			assert.Equal(t, want, got[keyword], "the %s branches must be re-listed unchanged", keyword)
+		})
+	}
 }
 
 // Forwarding upstream MCP `instructions` on the gateway's own initialize response.
@@ -496,6 +521,74 @@ func TestMCPGateway_TransportRules(t *testing.T) {
 	}
 }
 
+// The server-side version cap applies to both eras and changes without rebuilding the handler.
+func TestMCPGateway_ServerMaxProtocolVersion(t *testing.T) {
+	h := newGatewayHandler(t)
+	baseURL := startGateway(t, h)
+	modernList := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"raw","version":"0"}}}}`
+	legacyList := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"raw","version":"0"}}}`
+	post := func(t *testing.T, body string, headers map[string]string) (int, string) {
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(out)
+	}
+	modern := map[string]string{"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"}
+	legacy := func(version string) map[string]string { return map[string]string{"MCP-Protocol-Version": version} }
+	negotiated := func(t *testing.T, version string) string {
+		tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+		require.NoError(t, err)
+		c := client.NewClient(tr, client.WithProtocolVersion(version))
+		require.NoError(t, c.Start(context.Background()))
+		t.Cleanup(func() { _ = c.Close() })
+		init := mcp.InitializeRequest{}
+		init.Params.ProtocolVersion = version
+		init.Params.ClientInfo = mcp.Implementation{Name: "cap", Version: "0.0.1"}
+		result, err := c.Initialize(context.Background(), init)
+		require.NoError(t, err)
+		return result.ProtocolVersion
+	}
+
+	h.UpdateServerMaxProtocolVersion(schemas.MCPProtocolVersion20250618)
+	status, body := post(t, modernList, modern)
+	assert.Equal(t, http.StatusBadRequest, status, body)
+	assert.Equal(t, int64(-32022), gjson.Get(body, "error.code").Int(), body)
+	assert.Equal(t, int64(1), gjson.Get(body, "id").Int(), "the refusal answers the request's id: %s", body)
+	assert.Equal(t, `["2025-06-18","2025-03-26","2024-11-05"]`, gjson.Get(body, "error.data.supported").Raw, "the client falls back from this list: %s", body)
+	assert.Equal(t, mcp.ProtocolVersion20250618, negotiated(t, mcp.ProtocolVersion20251125))
+	assert.Equal(t, mcp.ProtocolVersion20250326, negotiated(t, mcp.ProtocolVersion20250326))
+
+	// A legacy request declaring a version above the cap is refused; versions under it, and no header, are served.
+	status, body = post(t, legacyList, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusBadRequest, status, body)
+	assert.Equal(t, "Unsupported protocol version: 2025-11-25\n", body)
+	for _, headers := range []map[string]string{legacy(mcp.ProtocolVersion20250618), legacy(mcp.ProtocolVersion20250326), nil} {
+		status, body = post(t, legacyList, headers)
+		assert.Equal(t, http.StatusOK, status, "headers %v: %s", headers, body)
+		assert.Contains(t, body, "gw-echo")
+	}
+	// initialize carrying the header is lowered, not refused.
+	status, body = post(t, initialize, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusOK, status, body)
+	assert.Contains(t, body, `"protocolVersion":"2025-06-18"`)
+
+	h.UpdateServerMaxProtocolVersion(schemas.MCPMaxProtocolVersionAuto)
+	status, body = post(t, modernList, modern)
+	assert.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, mcp.ProtocolVersion20251125, negotiated(t, mcp.ProtocolVersion20251125))
+	status, body = post(t, legacyList, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusOK, status, "uncapped: %s", body)
+}
+
 // Browser requests to /mcp are refused with 403 when their Origin may not reach it (Streamable
 // HTTP "Security Warning"). While /mcp accepts unauthenticated calls the bare "*" does not count and
 // same-origin is not exempt; with auth enforced allowed_origins applies as configured. Requests
@@ -641,6 +734,40 @@ func TestMCPGateway_GetStreamCommitsHeadersPromptly(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+}
+
+// A legacy session opened before a cap change still opens its notification stream after it: the session is
+// registered on the shared server at initialize, so the cap must not be applied by replacing the transport.
+func TestMCPGateway_ServerCapChangeKeepsSessions(t *testing.T) {
+	h := newGatewayHandler(t)
+	baseURL := startGateway(t, h)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"raw","version":"0"}}}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+
+	for _, cap := range []string{schemas.MCPProtocolVersion20251125, schemas.MCPMaxProtocolVersionAuto} {
+		h.UpdateServerMaxProtocolVersion(cap)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		get, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/mcp", nil)
+		require.NoError(t, err)
+		get.Header.Set("Accept", "text/event-stream")
+		get.Header.Set("MCP-Protocol-Version", mcp.ProtocolVersion20251125)
+		get.Header.Set("Mcp-Session-Id", sessionID)
+		resp, err := http.DefaultClient.Do(get)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "cap %s", cap)
+		assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"), "cap %s", cap)
+		resp.Body.Close()
+		cancel()
+	}
 }
 
 // A client that hangs up ends its stream on the server, legacy GET and subscriptions/listen alike.
@@ -1051,6 +1178,151 @@ func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
 	assert.Empty(t, *tm.carried.Load())
 }
 
+// An upstream's progress on a tools/call reaches the caller under the caller's own token, before the
+// result; a caller that sent no token gets none, and the upstream is not asked for any.
+func TestMCPGateway_RelaysUpstreamProgress(t *testing.T) {
+	// The caller acknowledges the last step, so the result is sent only once the progress has arrived.
+	relayed := make(chan struct{}, 1)
+	upstream := server.NewMCPServer("progress-upstream", "1.0.0", server.WithToolCapabilities(true))
+	upstream.AddTool(mcp.NewTool("work"), func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if req.Params.Meta == nil || req.Params.Meta.ProgressToken == nil {
+			return mcp.NewToolResultText("no token"), nil
+		}
+		srv := server.ServerFromContext(ctx)
+		for step := 1; step <= 2; step++ {
+			params := map[string]any{"progressToken": req.Params.Meta.ProgressToken, "progress": float64(step), "total": float64(2), "message": fmt.Sprintf("step %d", step)}
+			if err := srv.SendNotificationToClient(ctx, string(mcp.MethodNotificationProgress), params); err != nil {
+				return nil, err
+			}
+		}
+		select {
+		case <-relayed:
+		case <-time.After(5 * time.Second):
+		}
+		return mcp.NewToolResultText("done"), nil
+	})
+	upstream.AddTool(mcp.NewTool("quiet"), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultText("quiet"), nil
+	})
+	streamable := httptest.NewServer(server.NewStreamableHTTPServer(upstream))
+	t.Cleanup(streamable.Close)
+	sse := httptest.NewServer(server.NewSSEServer(upstream))
+	t.Cleanup(sse.Close)
+
+	for _, up := range []struct {
+		name           string
+		connectionType schemas.MCPConnectionType
+		url            string
+	}{
+		{"streamable", schemas.MCPConnectionTypeHTTP, streamable.URL},
+		{"sse", schemas.MCPConnectionTypeSSE, sse.URL + "/sse"},
+	} {
+		t.Run(up.name, func(t *testing.T) { testRelaysUpstreamProgress(t, up.connectionType, up.url, relayed) })
+	}
+}
+
+func testRelaysUpstreamProgress(t *testing.T, connectionType schemas.MCPConnectionType, upstreamURL string, relayed chan<- struct{}) {
+	ctx := context.Background()
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	upstreamConfig := &schemas.MCPClientConfig{
+		ID: "slow", Name: "slow", EndpointSlug: "slow", ConnectionType: connectionType,
+		ConnectionString: schemas.NewSecretVar(upstreamURL), ToolsToExecute: []string{"*"},
+	}
+	require.NoError(t, m.AddClient(ctx, upstreamConfig))
+	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{upstreamConfig}}}
+	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, nil, nil, nil)
+	require.NoError(t, err)
+	baseURL := startGateway(t, h)
+
+	for _, version := range []string{mcp.ProtocolVersion20250618, mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
+		t.Run(version, func(t *testing.T) {
+			tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+			require.NoError(t, err)
+			c := client.NewClient(tr, client.WithProtocolVersion(version))
+			var mu sync.Mutex
+			var progress []map[string]any
+			c.OnNotification(func(n mcp.JSONRPCNotification) {
+				if n.Method == string(mcp.MethodNotificationProgress) {
+					mu.Lock()
+					progress = append(progress, n.Params.AdditionalFields)
+					mu.Unlock()
+					if n.Params.AdditionalFields["progress"] == float64(2) {
+						select {
+						case relayed <- struct{}{}:
+						default:
+						}
+					}
+				}
+			})
+			require.NoError(t, c.Start(ctx))
+			t.Cleanup(func() { _ = c.Close() })
+			init := mcp.InitializeRequest{}
+			init.Params.ProtocolVersion = version
+			_, err = c.Initialize(ctx, init)
+			require.NoError(t, err)
+
+			call := mcp.CallToolRequest{}
+			call.Params.Name = "slow-work"
+			call.Params.Meta = &mcp.Meta{ProgressToken: "caller-token"}
+			result, err := c.CallTool(ctx, call)
+			require.NoError(t, err)
+			require.False(t, result.IsError, "%v", result.Content)
+			assert.Equal(t, "done", result.Content[0].(mcp.TextContent).Text)
+			mu.Lock()
+			assert.Equal(t, []map[string]any{
+				{"progressToken": "caller-token", "progress": float64(1), "total": float64(2), "message": "step 1"},
+				{"progressToken": "caller-token", "progress": float64(2), "total": float64(2), "message": "step 2"},
+			}, progress, "progress arrives before the result, under the caller's token")
+			progress = nil
+			mu.Unlock()
+
+			call.Params.Meta = nil
+			result, err = c.CallTool(ctx, call)
+			require.NoError(t, err)
+			assert.Equal(t, "no token", result.Content[0].(mcp.TextContent).Text)
+
+			quiet := mcp.CallToolRequest{}
+			quiet.Params.Name = "slow-quiet"
+			quiet.Params.Meta = &mcp.Meta{ProgressToken: "caller-token"}
+			result, err = c.CallTool(ctx, quiet)
+			require.NoError(t, err, "a call that asked for progress and got none is answered all the same")
+			assert.Equal(t, "quiet", result.Content[0].(mcp.TextContent).Text)
+			mu.Lock()
+			assert.Empty(t, progress)
+			mu.Unlock()
+		})
+	}
+}
+
+// Only the requests that may answer with a stream leave the inline path.
+func TestOpensMCPStream(t *testing.T) {
+	cases := []struct {
+		name, httpMethod, mcpMethod, body string
+		want                              bool
+	}{
+		{"legacy GET stream", fasthttp.MethodGet, "", "", true},
+		{"modern listen", fasthttp.MethodPost, "subscriptions/listen", `{}`, true},
+		{"legacy listen in body", fasthttp.MethodPost, "", `{"method":"subscriptions/listen"}`, true},
+		{"tools/call with progressToken", fasthttp.MethodPost, "", `{"method":"tools/call","params":{"name":"t","_meta":{"progressToken":1}}}`, true},
+		{"modern tools/call with progressToken", fasthttp.MethodPost, "tools/call", `{"params":{"_meta":{"progressToken":"p"}}}`, true},
+		{"tools/call without progressToken", fasthttp.MethodPost, "", `{"method":"tools/call","params":{"name":"t","_meta":{}}}`, false},
+		{"progressToken on another method", fasthttp.MethodPost, "", `{"method":"tools/list","params":{"_meta":{"progressToken":1}}}`, false},
+		{"DELETE", fasthttp.MethodDelete, "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.httpMethod)
+			if tc.mcpMethod != "" {
+				ctx.Request.Header.Set(mcp.HeaderMethod, tc.mcpMethod)
+			}
+			ctx.Request.SetBodyString(tc.body)
+			assert.Equal(t, tc.want, opensMCPStream(&ctx))
+		})
+	}
+}
+
 // A caller narrowed away from the owning client lists none of its prompts or resources and gets
 // not-found for them.
 func TestMCPGateway_NarrowedCallerCannotReachPromptsOrResources(t *testing.T) {
@@ -1204,6 +1476,7 @@ func BenchmarkMCPGateway(b *testing.B) {
 		{"initialize/2025-11-25", map[string]string{"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"bench","version":"0"}}}`},
 		{"tools-list/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
 		{"tools-call/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"}}}`},
+		{"tools-call-progress/2025-11-25", legacy, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"},"_meta":{"progressToken":"p"}}}`},
 		{"tools-list-narrowed/2025-11-25", narrowed("gw-echo"), `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`},
 		{"tools-call-hidden/2025-11-25", narrowed("other-tool"), `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"gw-echo","arguments":{"text":"hi"}}}`},
 		{"discover/2026-07-28", modern("server/discover", ""), `{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{` + modernMeta + `}}`},

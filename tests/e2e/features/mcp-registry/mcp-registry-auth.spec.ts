@@ -1,5 +1,7 @@
 import { expect, test } from "../../core/fixtures/base.fixture";
 import {
+  createAWSSigV4ClientData,
+  createClientCredentialsClientData,
   createHeadersAuthClientData,
   createOAuthClientData,
   createPerUserOAuthClientData,
@@ -174,6 +176,334 @@ test.describe("MCP Registry - Authentication", () => {
       // Client should now be connected and visible in table
       const exists = await mcpRegistryPage.clientExists(clientData.name);
       expect(exists).toBe(true);
+    });
+  });
+
+  test.describe("MCP OAuth Client Credentials", () => {
+    // A listed client_credentials server, as the API returns it: credentials masked.
+    const ccServer = () => ({
+      config: {
+        client_id: "cc-edit-1",
+        name: "cc_edit_server",
+        connection_type: "http",
+        connection_string: { value: "https://mcp.example.com/mcp", type: "plain_text" },
+        auth_type: "client_credentials",
+        client_credentials: {
+          token_url: "https://as.example.com/token",
+          client_id: { value: "svc-bifrost", type: "plain_text" },
+          client_secret: { value: "<redacted>", type: "plain_text" },
+          auth_method: "client_secret_basic",
+        },
+        tools_to_execute: ["*"],
+      },
+      tools: [],
+      state: "healthy",
+      vk_configs: [],
+    });
+
+    test("should create a client with a client secret, sending only the secret's fields", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client created successfully" } });
+      });
+
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await mcpRegistryPage.fillClientForm(createClientCredentialsClientData());
+      await expect(page.getByTestId("client-credentials-fields")).toBeVisible();
+      // Client credentials are shared only, so there is no scope to pick.
+      await expect(page.getByTestId("auth-scope-select")).toHaveCount(0);
+
+      // Saving without credentials is refused beside the fields.
+      await mcpRegistryPage.saveBtn.click({ force: true });
+      await expect(page.getByText("Client ID is required")).toBeVisible();
+      await expect(page.getByText("Enter a client secret or a private key")).toBeVisible();
+      expect(sent).toBeUndefined();
+
+      await page.getByTestId("client-credentials-client-id-input").fill("svc-bifrost");
+      await page.getByTestId("client-credentials-client-secret-input").fill("s3cret");
+      await page.getByTestId("client-credentials-scopes-input").fill("mcp:read, mcp:write");
+      await mcpRegistryPage.saveBtn.click({ force: true });
+
+      await expect.poll(() => sent?.auth_type).toBe("client_credentials");
+      expect(sent?.client_credentials).toEqual({
+        client_id: { value: "svc-bifrost", ref: "" },
+        client_secret: { value: "s3cret", ref: "" },
+        scopes: ["mcp:read", "mcp:write"],
+      });
+      await expect(mcpRegistryPage.sheet).not.toBeVisible({ timeout: 10000 });
+    });
+
+    test("should switch to a private key, clearing the secret, and send the key's fields", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client created successfully" } });
+      });
+
+      await mcpRegistryPage.createBtn.click();
+      await mcpRegistryPage.fillClientForm(createClientCredentialsClientData());
+      await page.getByTestId("client-credentials-client-id-input").fill("svc-bifrost");
+      await page.getByTestId("client-credentials-client-secret-input").fill("typed-before-switching");
+
+      await page.getByTestId("client-credentials-auth-method-select").click();
+      await page.getByRole("option", { name: "Private key (private_key_jwt)" }).click();
+      await expect(page.getByTestId("client-credentials-client-secret-input")).toHaveCount(0);
+      await page.getByTestId("client-credentials-private-key-input").fill("env.CC_PRIVATE_KEY");
+      await page.getByTestId("client-credentials-key-id-input").fill("key-1");
+      // The algorithm defaults to "Automatic": the server chooses it from the key.
+      await expect(page.getByTestId("client-credentials-signing-algorithm-select")).toContainText("Automatic");
+      await page.getByTestId("client-credentials-omit-resource-switch").click();
+      await mcpRegistryPage.saveBtn.click({ force: true });
+
+      await expect.poll(() => sent?.client_credentials).toBeDefined();
+      const cc = sent?.client_credentials;
+      expect(cc.client_secret).toBeUndefined();
+      expect(cc.auth_method).toBeUndefined();
+      expect(cc.private_key).toEqual({ value: "", ref: "env.CC_PRIVATE_KEY", type: "env" });
+      expect(cc.key_id).toBe("key-1");
+      expect(cc.signing_algorithm).toBeUndefined();
+      expect(cc.resource).toBe("");
+    });
+
+    test("should ask for the secret again when the token URL changes, then send the whole block", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      await page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [ccServer()], count: 1, total_count: 1, limit: 25, offset: 0 } }),
+      );
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client/cc-edit-1", async (route) => {
+        if (route.request().method() !== "PUT") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client updated successfully" } });
+      });
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.openClientEditor("cc_edit_server");
+      await mcpRegistryPage.showEditorTab("authentication");
+
+      const sheet = mcpRegistryPage.editSheet;
+      const tokenUrl = sheet.getByTestId("client-credentials-token-url-input");
+      await expect(tokenUrl).toHaveValue("https://as.example.com/token");
+      await expect(sheet.getByTestId("client-credentials-retarget-warning")).toHaveCount(0);
+      await tokenUrl.fill("https://as2.example.com/token");
+      await expect(sheet.getByTestId("client-credentials-retarget-warning")).toBeVisible();
+
+      const save = sheet.getByTestId("mcpclient-save-btn");
+      await save.click();
+      await expect(sheet.getByText(/Re-enter it: the token URL or assertion audience changed/)).toBeVisible();
+      expect(sent).toBeUndefined();
+
+      await sheet.getByTestId("client-credentials-client-secret-input").fill("rotated-secret");
+      await save.click();
+      await expect.poll(() => sent?.client_credentials).toBeDefined();
+      expect(sent?.client_credentials).toMatchObject({
+        token_url: "https://as2.example.com/token",
+        client_id: { value: "svc-bifrost" },
+        client_secret: { value: "rotated-secret" },
+        auth_method: "client_secret_basic",
+      });
+    });
+  });
+
+  test.describe("MCP AWS SigV4", () => {
+    // A listed aws_sigv4 server, as the API returns it: the env-backed region is masked.
+    const awsServer = () => ({
+      config: {
+        client_id: "aws-edit-1",
+        name: "aws_edit_server",
+        connection_type: "http",
+        connection_string: { value: "https://gw-1.gateway.bedrock-agentcore.us-east-1.amazonaws.com/mcp", type: "plain_text" },
+        auth_type: "aws_sigv4",
+        aws_sigv4: {
+          region: { value: "us-e****t-1", ref: "env.AWS_REGION", type: "env" },
+          service: "bedrock-agentcore",
+          role_arn: { value: "arn:aws:iam::123456789012:role/gateway", type: "plain_text" },
+        },
+        tools_to_execute: ["*"],
+      },
+      tools: [],
+      state: "healthy",
+      vk_configs: [],
+    });
+
+    test("should create a client with a region, and an assumed role's settings only with a role", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client created successfully" } });
+      });
+
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await mcpRegistryPage.fillClientForm(createAWSSigV4ClientData());
+      await expect(page.getByTestId("aws-sigv4-fields")).toBeVisible();
+      // SigV4 signs with Bifrost's own identity, so there is no scope to pick.
+      await expect(page.getByTestId("auth-scope-select")).toHaveCount(0);
+      await expect(page.getByTestId("aws-sigv4-service-select")).toContainText("bedrock-agentcore");
+      // The external ID and session name belong to an assumed role.
+      await expect(page.getByTestId("aws-sigv4-external-id-input")).toHaveCount(0);
+
+      await mcpRegistryPage.saveBtn.click();
+      await expect(page.getByText("Region is required")).toBeVisible();
+      expect(sent).toBeUndefined();
+
+      await page.getByTestId("aws-sigv4-region-input").fill("us-east");
+      await page.getByTestId("aws-sigv4-role-arn-input").fill("arn:aws:iam::123:role/gateway");
+      await mcpRegistryPage.saveBtn.click();
+      await expect(page.getByText("Enter an AWS region such as us-east-1")).toBeVisible();
+      await expect(page.getByText("Enter an IAM role ARN such as arn:aws:iam::123456789012:role/name")).toBeVisible();
+      expect(sent).toBeUndefined();
+
+      await page.getByTestId("aws-sigv4-region-input").fill("us-east-1");
+      await page.getByTestId("aws-sigv4-role-arn-input").fill("arn:aws:iam::123456789012:role/gateway");
+      await page.getByTestId("aws-sigv4-external-id-input").fill("env.GATEWAY_EXTERNAL_ID");
+      await page.getByTestId("aws-sigv4-session-name-input").fill("bifrost-mcp");
+      await mcpRegistryPage.saveBtn.click();
+
+      await expect.poll(() => sent?.auth_type).toBe("aws_sigv4");
+      expect(sent?.aws_sigv4).toEqual({
+        region: { value: "us-east-1", ref: "" },
+        service: "bedrock-agentcore",
+        role_arn: { value: "arn:aws:iam::123456789012:role/gateway", ref: "" },
+        external_id: { value: "", ref: "env.GATEWAY_EXTERNAL_ID", type: "env" },
+        session_name: { value: "bifrost-mcp", ref: "" },
+      });
+      await expect(mcpRegistryPage.sheet).not.toBeVisible({ timeout: 10000 });
+    });
+
+    test("should drop the external ID and session name when the role is cleared", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client created successfully" } });
+      });
+
+      await mcpRegistryPage.createBtn.click();
+      await mcpRegistryPage.fillClientForm(createAWSSigV4ClientData());
+      await page.getByTestId("aws-sigv4-region-input").fill("us-east-1");
+      await page.getByTestId("aws-sigv4-role-arn-input").fill("arn:aws:iam::123456789012:role/gateway");
+      await page.getByTestId("aws-sigv4-external-id-input").fill("ext");
+      await page.getByTestId("aws-sigv4-session-name-input").fill("bifrost-mcp");
+      await page.getByTestId("aws-sigv4-role-arn-input").fill("");
+      await expect(page.getByTestId("aws-sigv4-external-id-input")).toHaveCount(0);
+      await mcpRegistryPage.saveBtn.click();
+
+      await expect.poll(() => sent?.aws_sigv4).toBeDefined();
+      expect(sent?.aws_sigv4).toEqual({ region: { value: "us-east-1", ref: "" }, service: "bedrock-agentcore" });
+    });
+
+    test("should refuse a header the SigV4 signer sets", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client", async (route) => {
+        if (route.request().method() !== "POST") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client created successfully" } });
+      });
+
+      await mcpRegistryPage.createBtn.click();
+      await mcpRegistryPage.fillClientForm(createAWSSigV4ClientData());
+      await page.getByTestId("aws-sigv4-region-input").fill("us-east-1");
+      await page.getByTestId("allowed-extra-headers-input").fill("X-Request-Id, X-Amz-Security-Token");
+      await mcpRegistryPage.saveBtn.click();
+      await expect(page.getByText("Header not allowed").first()).toBeVisible();
+      expect(sent).toBeUndefined();
+
+      await page.getByTestId("allowed-extra-headers-input").fill("X-Request-Id");
+      await mcpRegistryPage.saveBtn.click();
+      await expect.poll(() => sent?.allowed_extra_headers).toEqual(["X-Request-Id"]);
+    });
+
+    test("should offer SigV4 for an OpenAPI server", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      await mcpRegistryPage.createBtn.click();
+      await expect(mcpRegistryPage.sheet).toBeVisible();
+      await page.getByTestId("mcp-server-source-openapi").click();
+      await mcpRegistryPage.authTypeSelect.click();
+      await expect(page.getByTestId("auth-type-aws-sigv4")).toBeVisible();
+      // client_credentials runs an OAuth handshake against an MCP server, which OpenAPI has none of.
+      await expect(page.getByTestId("auth-type-client-credentials")).toHaveCount(0);
+    });
+
+    test("should clear a stored role's external ID and session name when the role is removed", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      const server = awsServer();
+      Object.assign(server.config.aws_sigv4, {
+        external_id: { value: "ext", type: "plain_text" },
+        session_name: { value: "bifrost-mcp", type: "plain_text" },
+      });
+      await page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [server], count: 1, total_count: 1, limit: 25, offset: 0 } }),
+      );
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client/aws-edit-1", async (route) => {
+        if (route.request().method() !== "PUT") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client updated successfully" } });
+      });
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.openClientEditor("aws_edit_server");
+      await mcpRegistryPage.showEditorTab("authentication");
+
+      const sheet = mcpRegistryPage.editSheet;
+      await expect(sheet.getByTestId("aws-sigv4-external-id-input")).toHaveValue("ext");
+      await sheet.getByTestId("aws-sigv4-role-arn-input").fill("");
+      await expect(sheet.getByTestId("aws-sigv4-external-id-input")).toHaveCount(0);
+      // Re-entering a role shows the cleared settings as empty, as they will be saved.
+      await sheet.getByTestId("aws-sigv4-role-arn-input").fill("arn:aws:iam::123456789012:role/other");
+      await expect(sheet.getByTestId("aws-sigv4-external-id-input")).toHaveValue("");
+      await expect(sheet.getByTestId("aws-sigv4-session-name-input")).toHaveValue("");
+      await sheet.getByTestId("mcpclient-save-btn").click();
+
+      await expect.poll(() => sent?.aws_sigv4).toBeDefined();
+      expect(sent?.aws_sigv4).toEqual({
+        region: { value: "us-e****t-1", ref: "env.AWS_REGION", type: "env" },
+        service: "bedrock-agentcore",
+        role_arn: { value: "arn:aws:iam::123456789012:role/other", ref: "" },
+      });
+    });
+
+    test("should keep the stored region reference and resend the whole block on an edit", async ({ mcpRegistryPage }) => {
+      const page = mcpRegistryPage.page;
+      await page.route("**/api/mcp/clients?**", (route) =>
+        route.fulfill({ json: { clients: [awsServer()], count: 1, total_count: 1, limit: 25, offset: 0 } }),
+      );
+      let sent: Record<string, any> | undefined;
+      await page.route("**/api/mcp/client/aws-edit-1", async (route) => {
+        if (route.request().method() !== "PUT") return route.continue();
+        sent = route.request().postDataJSON();
+        await route.fulfill({ json: { status: "success", message: "MCP client updated successfully" } });
+      });
+      await mcpRegistryPage.goto();
+      await mcpRegistryPage.openClientEditor("aws_edit_server");
+      await mcpRegistryPage.showEditorTab("authentication");
+
+      const sheet = mcpRegistryPage.editSheet;
+      await expect(sheet.getByTestId("aws-sigv4-advanced-heading")).toBeVisible();
+      await expect(sheet.getByText("env.AWS_REGION")).toBeVisible();
+      // The reference is shown as its badge; the masked resolved value is never put up for editing.
+      await expect(sheet.getByTestId("aws-sigv4-region-input")).toHaveValue("");
+      await expect(sheet.getByTestId("aws-sigv4-role-arn-input")).toHaveValue("arn:aws:iam::123456789012:role/gateway");
+
+      await sheet.getByTestId("aws-sigv4-service-select").click();
+      await page.getByTestId("aws-sigv4-service-execute-api").click();
+      await sheet.getByTestId("mcpclient-save-btn").click();
+
+      await expect.poll(() => sent?.aws_sigv4).toBeDefined();
+      expect(sent?.aws_sigv4).toEqual({
+        region: { value: "us-e****t-1", ref: "env.AWS_REGION", type: "env" },
+        service: "execute-api",
+        role_arn: { value: "arn:aws:iam::123456789012:role/gateway", type: "plain_text" },
+      });
     });
   });
 

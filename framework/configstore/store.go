@@ -560,6 +560,9 @@ type ConfigStore interface {
 	DeleteRoutingRule(ctx context.Context, id string, tx ...*gorm.DB) error
 
 	// Model config CRUD
+	// GetModelConfigs reads every model config with no row-visibility scope. It serves internal
+	// callers that must see all rows (the governance load, the name collision check); a listing
+	// for a caller goes through GetModelConfigsPaginated.
 	GetModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
 	GetModelConfigsByScopeAndScopeIDs(ctx context.Context, scope string, scopeIDs []string, tx ...*gorm.DB) ([]tables.TableModelConfig, error)
 	GetProviderGovernanceModelConfigs(ctx context.Context) ([]tables.TableModelConfig, error)
@@ -853,6 +856,11 @@ type ConfigStore interface {
 	// still active, has no refresh token and its access token has expired, so a reauthorize that
 	// landed in between is not overwritten. Reports whether the row was flipped.
 	MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Context, tokenID string, reason string) (bool, error)
+	// MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged flips one token row to 'needs_reauth' only
+	// while it is still active and still holds redeemedRefreshToken, so a rejected refresh never
+	// overwrites credentials another writer has already moved the row on to. Reports whether the
+	// row was flipped.
+	MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(ctx context.Context, tokenID, redeemedRefreshToken, reason string) (bool, error)
 	// MarkTokensNeedsReauthByConfigID flips status to 'needs_reauth' on every
 	// token row bound to an OAuth config in one bulk UPDATE, with no
 	// auth_mode filter — rotating an oauth_configs row's client_id/client_secret
@@ -1135,6 +1143,9 @@ type ConfigStore interface {
 	GetProviderJobsByIDs(ctx context.Context, jobIDs []string) ([]*tables.TableProviderJob, error)
 	ListDueProviderJobs(ctx context.Context, kind, provider string, now time.Time, limit int) ([]*tables.TableProviderJob, error)
 	ClaimProviderJob(ctx context.Context, jobID, runnerID string, staleBefore time.Time, allowUnpriceable bool) (bool, error)
+	// IncrementProviderJobPollAttempts counts one sent poll on a job, touching nothing else. It is on the
+	// interface so a store that wraps this one (the enterprise store embeds it) passes it through.
+	IncrementProviderJobPollAttempts(ctx context.Context, jobID string) error
 	MarkProviderJobAggregateLogWritten(ctx context.Context, jobID, runnerID string) error
 	MarkProviderJobGovernanceReported(ctx context.Context, jobID, runnerID string) error
 	CompleteProviderJob(ctx context.Context, jobID, runnerID string) error
@@ -1231,11 +1242,22 @@ type ConfigStore interface {
 	// minted for while it is consented or already exchanged (code_issued), so the
 	// token endpoint can tell a replayed code from an unknown one.
 	GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetOAuth2AuthorizeRequestByDeviceCodeHash returns the device-grant request
+	// for a device_code hash in any status, so the token endpoint can answer
+	// authorization_pending, expired_token or issue tokens.
+	GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx context.Context, deviceCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
+	// GetPendingOAuth2AuthorizeRequestByUserCodeHash returns the still-pending,
+	// unexpired device-grant request for a user_code hash.
+	GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx context.Context, userCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error)
 	// ConsentOAuth2AuthorizeRequest atomically transitions a still-pending request
 	// to consented (recording the code hash and resolved identity) — returns
 	// ErrNotFound when no longer pending, so concurrent double-consent can't
 	// overwrite an already-minted code.
 	ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
+	// DenyOAuth2AuthorizeRequest atomically transitions a still-pending request to
+	// revoked when the person on the consent page refuses it - returns ErrNotFound
+	// when no longer pending.
+	DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error
 	SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error
 
 	// OAuth2 refresh tokens
@@ -1250,15 +1272,15 @@ type ConfigStore interface {
 	// new one — if either fails the old token stays active and the client can retry.
 	RotateOAuth2RefreshToken(ctx context.Context, oldID string, newRT *tables.TableOAuth2RefreshToken) error
 	// RevokeOAuth2RefreshTokensByFamilyID revokes all active tokens in a family
-	// when a stolen-token reuse is detected (RFC 9700 §2.2.2).
-	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error
+	// when a stolen-token reuse is detected (RFC 9700 §2.2.2), and returns how many it revoked.
+	RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) (int64, error)
 	// RevokeOAuth2RefreshTokensByMode revokes all active tokens for a given mode.
 	RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error
 	// RevokeOAuth2GrantsBySubject revokes, in one transaction, every grant bound to
 	// one identity (bf_mode + bf_sub): its consented but not yet exchanged
 	// authorization codes and its active refresh tokens. Used when a virtual key
-	// rotates; pass tx to commit it together with the key update.
-	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error
+	// rotates; pass tx to commit it together with the key update. Returns the number of refresh tokens revoked.
+	RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) (int64, error)
 	// SweepOAuth2RefreshTokens deletes revoked tokens older than the given duration.
 	SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error)
 	// SweepOrphanedOAuth2Clients deletes registered clients that back no refresh

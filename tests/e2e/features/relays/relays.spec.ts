@@ -2,6 +2,7 @@ import type { APIRequestContext } from "@playwright/test";
 import { createServer } from "http";
 import type { AddressInfo } from "net";
 import { expect, test } from "../../core/fixtures/base.fixture";
+import { fillSelect } from "../../core/utils/test-helpers";
 
 const API = "/api/relays";
 const VK_API = "/api/governance/virtual-keys";
@@ -59,7 +60,7 @@ test.describe("Relays", () => {
     await page.page.getByTestId("relay-route-usage-cost-per-unit").fill("0.008");
     await page.page.getByTestId("relay-route-save").click();
     await expect(page.page.getByTestId("relay-route-row-0")).toContainText("/search");
-    await expect(page.page.getByTestId("relay-route-row-0")).toContainText("override");
+    await expect(page.page.getByTestId("relay-route-row-0")).toContainText("Override");
     await expect(page.page.getByTestId("relay-route-enabled-switch-0")).toBeChecked();
 
     // Test a call against the saved mapping: 0.001 + 4 * 0.008.
@@ -305,27 +306,30 @@ test.describe("Relays", () => {
     await page.closeSheets();
     expect((await getRelay(request, name)).routes[0].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
 
-    // A POST route (the default method) with no matcher. Routes are saved in match order, literal
-    // paths A to Z, so /v1/search lands ahead of /v1/status.
+    // A POST route (the default method) with no matcher. Routes are saved in the order they were
+    // added; the gateway ranks them itself, and two literal paths keep that order.
     await page.addRoute({ path: "/v1/search" });
-    await expect(page.routeRow(0)).toContainText("POST");
-    await expect(page.routeRow(0)).toContainText("/v1/search");
-    await expect(page.routeRow(0)).not.toContainText("Free");
-    await expect(page.routeRow(1)).toContainText("/v1/status");
+    await expect(page.routeRow(1)).toContainText("POST");
+    await expect(page.routeRow(1)).toContainText("/v1/search");
+    await expect(page.routeRow(1)).not.toContainText("Free");
+    await expect(page.routeRow(0)).toContainText("/v1/status");
 
     let relay = await getRelay(request, name);
     expect(relay.routes).toHaveLength(2);
-    expect(relay.routes[0]).toMatchObject({ method: "POST", path: "/v1/search" });
-    expect(relay.routes[1].method).toBe("GET");
-    expect(relay.routes[1].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
+    expect(relay.routes[1]).toMatchObject({ method: "POST", path: "/v1/search" });
+    expect(relay.routes[0].method).toBe("GET");
+    expect(relay.routes[0].headers).toEqual({ "X-Amz-Target": "Textract.Analyze*" });
 
-    // Edit: widen /v1/search into a catch-all, which is saved after the literal route it would otherwise shadow.
-    await page.openEditRoute(0);
+    // Edit: widen /v1/search into a catch-all. It keeps its saved place, and is listed after the
+    // literal route, which the gateway tries first.
+    await page.openEditRoute(1);
     await expect(page.page.getByTestId("relay-route-path")).toHaveValue("/v1/search");
     await page.fillRoute({ path: "/v1/search/**" });
     await page.saveRoute();
     await expect(page.routeRow(0)).toContainText("/v1/status");
     await expect(page.routeRow(1)).toContainText("/v1/search/**");
+    await expect(page.routeRows().nth(0)).toContainText("/v1/status");
+    await expect(page.routeRows().nth(1)).toContainText("/v1/search/**");
 
     // Disable from the row switch.
     await page.routeEnabledSwitch(1).click();
@@ -352,6 +356,289 @@ test.describe("Relays", () => {
     await expect(page.routesEmpty).toBeVisible();
     relay = await getRelay(request, name);
     expect(relay.routes ?? []).toHaveLength(0);
+  });
+
+  test("Tab in a body override name moves to that row's value, not the header table's", async ({ relaysPage: page }) => {
+    const name = `e2e-pte-tab-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    await page.select(name);
+    await page.openAddRoute();
+    await page.page.getByTestId("relay-route-body-override-name-0").fill("search_depth");
+    await page.page.getByTestId("relay-route-body-override-name-0").press("Tab");
+    await expect(page.page.getByTestId("relay-route-body-override-value-0")).toBeFocused();
+    await expect(page.page.getByTestId("relay-route-header-value-0")).not.toBeFocused();
+  });
+
+  test("adds an async job as one start route: callers' status checks need no route of their own", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://textract.example.com", "sk-e2e-secret");
+    await page.select(name);
+    await expect(page.routesEmpty).toBeVisible();
+
+    await page.openAddAsyncJob();
+    await page.fillAsyncJob({
+      start: { path: "/", headers: [{ name: "X-Amz-Target", value: "Textract.StartDocumentAnalysis" }] },
+      fee: "0.01",
+      idPath: "JobId",
+      poll: { method: "POST", path: "/", headers: [{ name: "X-Amz-Target", value: "Textract.GetDocumentAnalysis" }] },
+      statusPath: "JobStatus",
+      succeeded: "SUCCEEDED",
+      failed: "FAILED",
+    });
+    // A status check that never names the job is refused on the field, as the gateway would refuse it.
+    await page.page.getByTestId("relay-async-job-save").click();
+    await expect(page.asyncJobSheet).toContainText("every check asks about no job");
+    await page.page.getByTestId("relay-job-poll-body").fill('{"JobId":"{{job.id}}"}');
+    await page.page.getByTestId("relay-job-poll-content-type").fill("application/x-amz-json-1.1");
+    await page.saveAsyncJob();
+
+    // The gateway relays status checks free, so only the start route is saved.
+    const relay = await getRelay(request, name);
+    expect(relay.routes).toHaveLength(1);
+    expect(relay.routes[0]).toMatchObject({
+      method: "POST",
+      path: "/",
+      headers: { "X-Amz-Target": "Textract.StartDocumentAnalysis" },
+      usage: { cost_per_request: 0.01 },
+      job: { id_path: "JobId", poll: { method: "POST", path: "/" }, status_path: "JobStatus", succeeded: ["SUCCEEDED"], failed: ["FAILED"] },
+    });
+    const rows = page.routeRows();
+    await expect(rows).toHaveCount(1);
+    await expect(rows.nth(0).locator('[data-testid^="relay-route-job-badge-"]')).toBeVisible();
+
+    // Editing the start route opens the job again.
+    await page.page.getByTestId("relay-route-actions-0").click();
+    await page.page.getByTestId("relay-route-edit-0").click();
+    await expect(page.asyncJobSheet).toBeVisible();
+    await expect(page.page.getByTestId("relay-job-id-path")).toHaveValue("JobId");
+    await page.page.getByTestId("relay-job-reused-id").click();
+    await page.saveAsyncJob();
+    const saved = await getRelay(request, name);
+    expect(saved.routes).toHaveLength(1);
+    expect(saved.routes[0].job.reused_id_is_new_job).toBe(true);
+  });
+
+  test("deleting a job's start route removes only that route", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-delete-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://jobs.example.com", "sk-e2e-secret");
+    await page.select(name);
+    await page.openAddAsyncJob();
+    await page.fillAsyncJob({
+      start: { path: "/jobs" },
+      idPath: "id",
+      poll: { method: "POST", path: "/jobs/{{job.id}}" },
+      statusPath: "status",
+      succeeded: "done",
+    });
+    await page.saveAsyncJob();
+    let relay = await getRelay(request, name);
+    expect(relay.routes.map((r: { method: string; path: string }) => `${r.method} ${r.path}`)).toEqual(["POST /jobs"]);
+
+    await page.page.getByTestId("relay-route-actions-0").click();
+    await page.page.getByTestId("relay-route-remove-0").click();
+    await page.page.getByTestId("relay-route-delete-confirm").click();
+    await page.waitForSuccessToast("Route deleted");
+    relay = await getRelay(request, name);
+    expect(relay.routes ?? []).toHaveLength(0);
+  });
+
+  test("async job sheet keeps each job's status check headers and its route settings", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-edit-${Date.now()}`;
+    created.push(name);
+    const job = (path: string, headers: Record<string, string>) => ({
+      id_path: "id",
+      poll: { method: "GET", path: `${path}/{{job.id}}`, headers },
+      status_path: "status",
+      succeeded: ["done"],
+    });
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    const saved = await request.put(`${API}/${name}`, {
+      data: {
+        name,
+        base_url: "https://api.example.com",
+        auth: { type: "bearer" },
+        credential: { value: { value: "sk-e2e-secret" } },
+        routes: [
+          { method: "POST", path: "/a", job: job("/a", { "X-Mode": "A" }) },
+          { method: "POST", path: "/b", job: job("/b", { "X-Mode": "B", "X-Region": "east" }) },
+        ],
+      },
+    });
+    expect(saved.status(), await saved.text()).toBe(200);
+    await page.goto();
+    await page.select(name);
+    const relay = await getRelay(request, name);
+    const indexOf = (path: string) => relay.routes.findIndex((r: { path: string }) => r.path === path);
+    const openJob = async (index: number) => {
+      await page.page.getByTestId(`relay-route-actions-${index}`).click();
+      await page.page.getByTestId(`relay-route-edit-${index}`).click();
+      await expect(page.asyncJobSheet).toBeVisible();
+    };
+
+    // Opening a second job shows its own headers, and editing one keeps the other.
+    await openJob(indexOf("/a"));
+    await expect(page.page.locator('[data-testid^="relay-job-poll-header-name-"]')).toHaveCount(1);
+    await page.page.getByTestId("relay-async-job-cancel").click();
+    await expect(page.asyncJobSheet).toBeHidden();
+    await openJob(indexOf("/b"));
+    const names = page.page.locator('[data-testid^="relay-job-poll-header-name-"]');
+    await expect(names).toHaveCount(2);
+    const modeRow = (await names.nth(0).inputValue()) === "X-Mode" ? 0 : 1;
+    await page.page.getByTestId(`relay-job-poll-header-value-${modeRow}`).fill("C");
+    await page.saveAsyncJob();
+    let current = await getRelay(request, name);
+    expect(current.routes.find((r: { path: string }) => r.path === "/b").job.poll.headers).toEqual({ "X-Mode": "C", "X-Region": "east" });
+    expect(current.routes.find((r: { path: string }) => r.path === "/a").job.poll.headers).toEqual({ "X-Mode": "A" });
+
+    // A job route's body overrides are reached through its route settings, and the job survives.
+    const start = current.routes.findIndex((r: { path: string }) => r.path === "/b");
+    await page.page.getByTestId(`relay-route-actions-${start}`).click();
+    await page.page.getByTestId(`relay-route-settings-${start}`).click();
+    await expect(page.routeSheet).toBeVisible();
+    await page.waitForSheetAnimation();
+    await page.fillBodyOverrides("relay-route-body-override", [{ path: "search_depth", value: '"advanced"' }]);
+    await page.saveRoute();
+    current = await getRelay(request, name);
+    const route = current.routes.find((r: { path: string }) => r.path === "/b");
+    expect(route.body_overrides).toEqual({ search_depth: "advanced" });
+    expect(route.job.id_path).toBe("id");
+  });
+
+  test("async job sheet refuses a per-unit price with no units path, whatever route status checks reach", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-refuse-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    const saved = await request.put(`${API}/${name}`, {
+      data: {
+        name,
+        base_url: "https://api.example.com",
+        auth: { type: "bearer" },
+        credential: { value: { value: "sk-e2e-secret" } },
+        routes: [{ method: "GET", path: "/jobs/**", enabled: false }],
+      },
+    });
+    expect(saved.status(), await saved.text()).toBe(200);
+    await page.goto();
+    await page.select(name);
+    await page.openAddAsyncJob();
+    await page.fillAsyncJob({ start: { path: "/jobs" }, idPath: "id", poll: { method: "GET", path: "/jobs/{{job.id}}" }, statusPath: "status", succeeded: "done" });
+    // A disabled route on the status path no longer blocks the job: the gateway relays status checks itself.
+    await expect(page.page.getByTestId("relay-async-job-save")).toBeEnabled();
+    await page.page.getByTestId("relay-job-usage-cost-per-unit").fill("0.5");
+    await page.page.getByTestId("relay-async-job-save").click();
+    await expect(page.page.getByTestId("relay-job-usage-units-path")).toHaveAttribute("aria-invalid", "true");
+    await expect(page.asyncJobSheet).toBeVisible();
+    expect((await getRelay(request, name)).routes).toHaveLength(1);
+  });
+
+  test("lists routes in the order the gateway tries them, and edits the route each row shows", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-order-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    const saved = await request.put(`${API}/${name}`, {
+      data: {
+        name,
+        base_url: "https://api.example.com",
+        auth: { type: "bearer" },
+        credential: { value: { value: "sk-e2e-secret" } },
+        routes: [
+          { method: "GET", path: "/**" },
+          { method: "GET", path: "/jobs/**" },
+          { method: "GET", path: "/jobs/metrics" },
+        ],
+      },
+    });
+    expect(saved.status(), await saved.text()).toBe(200);
+    expect((await saved.json()).match_order).toEqual([2, 1, 0]);
+    await page.goto();
+    await page.select(name);
+
+    // The most specific route is listed first; each row keeps its saved index in its test ids.
+    const rows = page.routeRows();
+    await expect(rows.nth(0)).toHaveAttribute("data-testid", "relay-route-row-2");
+    await expect(rows.nth(1)).toHaveAttribute("data-testid", "relay-route-row-1");
+    await expect(rows.nth(2)).toHaveAttribute("data-testid", "relay-route-row-0");
+
+    // Toggling and deleting the first row act on the route it shows, not on saved position 0.
+    await page.routeEnabledSwitch(2).click();
+    await page.waitForSuccessToast("Route disabled");
+    let relay = await getRelay(request, name);
+    expect(relay.routes.find((r: { path: string }) => r.path === "/jobs/metrics").enabled).toBe(false);
+    expect(relay.routes.find((r: { path: string }) => r.path === "/**").enabled ?? true).toBe(true);
+    await page.removeRoute(2);
+    relay = await getRelay(request, name);
+    expect(relay.routes.map((r: { path: string }) => r.path)).toEqual(["/**", "/jobs/**"]);
+  });
+
+  test("sets body overrides on a route and on the relay, refusing a value that is not JSON", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-body-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    await page.select(name);
+
+    // A bare word is not JSON, so the route is refused until the string is quoted.
+    await page.openAddRoute();
+    await page.fillRoute({ path: "/search", bodyOverrides: [{ path: "search_depth", value: "advanced" }] });
+    await page.page.getByTestId("relay-route-save").click();
+    await expect(page.routeSheet).toContainText('Enter a JSON value, such as true, 5 or "advanced" (text needs quotes)');
+    await page.page.getByTestId("relay-route-body-override-value-0").fill('"advanced"');
+    await page.fillBodyOverrides("relay-route-body-override", [{ path: "options.max_results", value: "5" }]);
+    await page.saveRoute();
+    // The chip counts the route's enforced fields and lists them on hover.
+    const bodyBadge = page.page.getByTestId("relay-route-body-badge-0");
+    await expect(bodyBadge).toHaveText("2 enforced fields");
+    await expect(bodyBadge).toHaveAttribute("title", /search_depth/);
+    await expect(bodyBadge).toHaveAttribute("title", /options\.max_results/);
+    let relay = await getRelay(request, name);
+    expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
+
+    // The relay's own fields are set on the Advanced tab and shown on the route as inherited.
+    await page.openConfigTab("advanced");
+    await page.fillBodyOverrides("relay-body-override", [{ path: "include_usage", value: "true" }]);
+    await page.saveConfigTab("advanced");
+    relay = await getRelay(request, name);
+    expect(relay.body_overrides).toEqual({ include_usage: true });
+    expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
+    await page.closeSheets();
+    await page.openEditRoute(0);
+    await expect(page.page.getByTestId("relay-route-body-override-inherited")).toContainText("include_usage");
+    // Saved fields come back in key order.
+    await expect(page.page.getByTestId("relay-route-body-override-name-0")).toHaveValue("options.max_results");
+    await expect(page.page.getByTestId("relay-route-body-override-value-1")).toHaveValue('"advanced"');
+
+    // Turning the relay's fields off on this route is saved.
+    await expect(page.page.getByTestId("relay-route-inherit-body-overrides")).toBeChecked();
+    await page.page.getByTestId("relay-route-inherit-body-overrides").click();
+    await expect(page.page.getByTestId("relay-route-body-override-inherited")).toHaveCount(0);
+    await page.saveRoute();
+    relay = await getRelay(request, name);
+    expect(relay.routes[0].inherit_body_overrides).toBe(false);
+    expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
+
+    // A route edit made from the table (the enabled switch) keeps the route's body overrides.
+    await page.routeEnabledSwitch(0).click();
+    await page.waitForSuccessToast("Route disabled");
+    relay = await getRelay(request, name);
+    expect(relay.routes[0].enabled).toBe(false);
+    expect(relay.routes[0].body_overrides).toEqual({ search_depth: "advanced", "options.max_results": 5 });
+    expect(relay.routes[0].inherit_body_overrides).toBe(false);
+
+    // A field set twice under different letter case is refused on the relay too.
+    await page.openConfigTab("advanced");
+    await page.fillBodyOverrides("relay-body-override", [{ path: "Include_Usage", value: "false" }]);
+    await page.saveButton("advanced").click();
+    await expect(page.configSheet).toContainText("This field is already set (paths ignore letter case)");
+    expect((await getRelay(request, name)).body_overrides).toEqual({ include_usage: true });
   });
 
   test("refuses letters in a route price and clears a price back to the relay's", async ({ relaysPage: page, request }) => {

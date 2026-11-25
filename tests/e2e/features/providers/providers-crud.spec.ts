@@ -491,7 +491,9 @@ test.describe("Providers", () => {
       await expect(providersPage.keyForm).not.toBeVisible();
       const saved = await savedAliases();
       expect(saved, "the replaced pattern must be gone").not.toHaveProperty([pattern]);
-      expect(saved[corrected].model_id).toBe("global.anthropic.$1");
+      // An alias with only model_id comes back in the legacy string shape.
+      const correctedAlias: string | { model_id: string } = saved[corrected];
+      expect(typeof correctedAlias === "string" ? correctedAlias : correctedAlias.model_id).toBe("global.anthropic.$1");
     });
 
     test("should save the Azure Speech endpoints switch and its deployment override", async ({ providersPage, page }) => {
@@ -574,6 +576,145 @@ test.describe("Providers", () => {
       expect(key.aliases["speech-tts"].use_speech_endpoints).toBeUndefined();
     });
 
+    test("should save a key service tier, its deployment override, and clear both", async ({ providersPage, page }) => {
+      if (!(await providersPage.providerExists("openai"))) {
+        await providersPage.addKnownProviderFromDropdown("openai");
+        createdProviders.push("openai");
+      }
+      const keyName = `OpenAI-Tier-${Date.now()}`;
+      createdKeys.push({ provider: "openai", keyName });
+      const created = await page.request.post("/api/providers/openai/keys", {
+        data: {
+          name: keyName,
+          value: "sk-e2e-service-tier",
+          models: ["*"],
+          weight: 0,
+          aliases: { "tier-model": { model_id: "gpt-4o-mini", description: "service tier e2e" } },
+        },
+      });
+      expect(created.ok(), await created.text()).toBe(true);
+      await page.reload();
+      await providersPage.selectProvider("openai");
+      const keyTier = page.getByTestId("apikey-service-tier-select");
+      const override = page.getByTestId("deployment-service-tier-select");
+      const edit = async () => {
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId("deployment-expand-tier-model").click();
+      };
+      const choose = async (select: typeof keyTier, label: string) => {
+        await select.click();
+        await page.getByRole("option", { name: label, exact: true }).click();
+      };
+      const save = async () => {
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+      const savedKey = async () => {
+        const response = await page.request.get("/api/providers/openai/keys");
+        expect(response.ok()).toBe(true);
+        const body = await response.json();
+        const key = body.keys.find((entry: { name: string }) => entry.name === keyName);
+        expect(key).toBeTruthy();
+        return key;
+      };
+
+      await edit();
+      await expect(keyTier).toContainText("Not set");
+      await expect(override).toContainText("Use key setting");
+      await choose(keyTier, "priority");
+      await choose(override, "flex");
+      await save();
+      let key = await savedKey();
+      expect(key.service_tier).toBe("priority");
+      expect(key.weight).toBe(0);
+      expect(key.aliases["tier-model"].service_tier).toBe("flex");
+
+      await edit();
+      await expect(keyTier).toContainText("priority");
+      await expect(override).toContainText("flex");
+      await choose(keyTier, "Not set");
+      await choose(override, "Use key setting");
+      await save();
+      key = await savedKey();
+      expect(key.service_tier).toBeUndefined();
+      expect(key.aliases["tier-model"].service_tier).toBeUndefined();
+    });
+
+    test("should offer only the service tiers a provider takes, and none where it takes no tier", async ({ providersPage, page }) => {
+      const openKeyForm = async (provider: string, keyName: string, alias: string) => {
+        await page.reload();
+        await providersPage.selectProvider(provider);
+        await providersPage.dismissToasts();
+        await providersPage.getKeyRow(keyName).getByTestId("key-actions-trigger").click();
+        await page.getByRole("menuitem", { name: /Edit/i }).click();
+        await expect(providersPage.keyForm).toBeVisible();
+        await page.getByTestId(`deployment-expand-${alias}`).click();
+      };
+      const closeKeyForm = async () => {
+        await providersPage.keyCancelBtn.click();
+        await expect(providersPage.keyForm).not.toBeVisible();
+      };
+
+      for (const provider of ["anthropic", "groq"]) {
+        if (!(await providersPage.providerExists(provider))) {
+          await providersPage.addKnownProviderFromDropdown(provider);
+          createdProviders.push(provider);
+        }
+      }
+
+      const anthropicKey = `Anthropic-Tier-${Date.now()}`;
+      createdKeys.push({ provider: "anthropic", keyName: anthropicKey });
+      const rejected = await page.request.post("/api/providers/anthropic/keys", {
+        data: { name: anthropicKey, value: "sk-e2e-service-tier", models: ["*"], weight: 1, service_tier: "flex" },
+      });
+      expect(rejected.status(), await rejected.text()).toBe(400);
+      expect(await rejected.text()).toContain("service_tier");
+      const anthropicCreated = await page.request.post("/api/providers/anthropic/keys", {
+        data: {
+          name: anthropicKey,
+          value: "sk-e2e-service-tier",
+          models: ["*"],
+          weight: 1,
+          aliases: { "tier-model": { model_id: "claude-sonnet-4-6", description: "service tier e2e" } },
+        },
+      });
+      expect(anthropicCreated.ok(), await anthropicCreated.text()).toBe(true);
+      await openKeyForm("anthropic", anthropicKey, "tier-model");
+      for (const select of [page.getByTestId("apikey-service-tier-select"), page.getByTestId("deployment-service-tier-select")]) {
+        await select.click();
+        const options = (await page.getByRole("option").allTextContents()).map((text) => text.trim());
+        expect(options.filter((text) => !["Not set", "Use key setting"].includes(text))).toEqual(["auto", "default"]);
+        await page.keyboard.press("Escape");
+      }
+      await closeKeyForm();
+
+      const groqKey = `Groq-Tier-${Date.now()}`;
+      createdKeys.push({ provider: "groq", keyName: groqKey });
+      const groqRejected = await page.request.post("/api/providers/groq/keys", {
+        data: { name: groqKey, value: "gsk-e2e-service-tier", models: ["*"], weight: 1, service_tier: "priority" },
+      });
+      expect(groqRejected.status(), await groqRejected.text()).toBe(400);
+      const groqCreated = await page.request.post("/api/providers/groq/keys", {
+        data: {
+          name: groqKey,
+          value: "gsk-e2e-service-tier",
+          models: ["*"],
+          weight: 1,
+          aliases: { "tier-model": { model_id: "llama-3.3-70b-versatile", description: "service tier e2e" } },
+        },
+      });
+      expect(groqCreated.ok(), await groqCreated.text()).toBe(true);
+      await openKeyForm("groq", groqKey, "tier-model");
+      await expect(page.getByTestId("deployment-expand-tier-model")).toBeVisible();
+      await expect(page.getByTestId("apikey-service-tier-select")).toHaveCount(0);
+      await expect(page.getByTestId("deployment-service-tier-select")).toHaveCount(0);
+      await closeKeyForm();
+    });
+
     test("should save a Cloudflare key with its account ID", async ({
       providersPage,
       page,
@@ -615,6 +756,40 @@ test.describe("Providers", () => {
       const saved = provider.keys.find((k) => k.name === keyName);
       expect(saved, "saved key must be listed").toBeTruthy();
       expect(saved?.cloudflare_key_config?.account_id?.value).toBe(accountId);
+    });
+
+    test("should add MachGen from the provider list and save a key", async ({
+      providersPage,
+      page,
+    }) => {
+      if (!(await providersPage.providerExists("machgen"))) {
+        await providersPage.addKnownProviderFromDropdown("machgen");
+        createdProviders.push("machgen");
+      }
+      await expect(providersPage.getProviderItem("machgen")).toBeVisible({
+        timeout: 15000,
+      });
+      await providersPage.selectProvider("machgen");
+
+      const keyData = createProviderKeyData({
+        name: `MachGen-Key-${Date.now()}`,
+        value: "MGA_e2e-machgen-key",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "machgen", keyName: keyData.name });
+
+      // Model discovery runs on save and fails against a fake key; the key must still save.
+      await providersPage.addKey(keyData);
+      expect(await providersPage.keyExists(keyData.name)).toBe(true);
+
+      const keysResponse = await page.request.get("/api/providers/machgen/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; models?: string[] }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyData.name);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.models).toEqual(["*"]);
     });
   });
 
@@ -734,6 +909,27 @@ test.describe("Providers", () => {
       await expect(hint).toContainText(`x-model-provider: ${providerData.name}`);
       // A custom provider stays off until it is given a policy.
       await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("Off");
+    });
+
+    test("should show the elevenlabs passthrough route on the built-in ElevenLabs provider", async ({
+      providersPage,
+      providerSettingsPage,
+    }) => {
+      if (!(await providersPage.providerExists("elevenlabs"))) {
+        await providersPage.addKnownProviderFromDropdown("elevenlabs");
+        createdProviders.push("elevenlabs");
+      }
+      await expect(providersPage.getProviderItem("elevenlabs")).toBeVisible({ timeout: 15000 });
+
+      // Reload so the sheet opens on the saved provider, not on the list that was refreshing after the add.
+      await providersPage.goto();
+      await providersPage.selectProvider("elevenlabs");
+      await providerSettingsPage.selectConfigTab("passthrough");
+      const hint = providerSettingsPage.page.getByTestId("provider-passthrough-endpoint-hint");
+      await expect(hint).toContainText("/elevenlabs_passthrough/");
+      await expect(hint).not.toContainText("x-model-provider");
+      // A built-in provider forwards every route until it is given a policy.
+      await expect(providerSettingsPage.getPassthroughModeSelect()).toContainText("All routes");
     });
 
     test("should add an OAuth client-credentials key to a custom OpenAI-compatible provider", async ({
@@ -1105,7 +1301,7 @@ test.describe("Providers", () => {
 
       // Change only the weight, then save without touching the auth method.
       await providersPage.openKeyEditor(keyName);
-      await page.getByLabel("Weight").fill("2");
+      await page.getByLabel("Weight").fill("0.5");
       await providersPage.keySaveBtn.click();
       await providersPage.waitForSuccessToast();
       await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
@@ -1115,7 +1311,7 @@ test.describe("Providers", () => {
       const body = (await response.json()) as { keys: { name: string; weight?: number; value?: { value?: string; ref?: string } }[] };
       const saved = body.keys.find((k) => k.name === keyName);
       expect(saved, "saved key must be listed").toBeTruthy();
-      expect(saved?.weight).toBe(2);
+      expect(saved?.weight).toBe(0.5);
       expect(saved?.value?.value ?? "", "the static key the server uses must survive the edit").not.toBe("");
     });
 

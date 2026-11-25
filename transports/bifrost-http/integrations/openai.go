@@ -2849,6 +2849,9 @@ func extractResponsesLifecycleFromPath(_ lib.HandlerStore) PreRequestCallback {
 				}
 				r.StartingAfter = schemas.Ptr(n)
 			}
+			if raw := ctx.QueryArgs().Peek("last_event_id"); len(raw) > 0 {
+				r.LastEventID = schemas.Ptr(string(raw))
+			}
 			if raw := ctx.QueryArgs().Peek("include_obfuscation"); len(raw) > 0 {
 				b, err := strconv.ParseBool(string(raw))
 				if err != nil {
@@ -2922,20 +2925,11 @@ func parseOpenAIFileUploadMultipartRequest(ctx *fasthttp.RequestCtx, req interfa
 		return errors.New("file field is required")
 	}
 
+	// Pass the file as a handle, not bytes: a file over fasthttp's in-memory limit stays in the
+	// request's temp file and is streamed to the provider (or read once, for a provider that
+	// needs the bytes). Uploads are served synchronously, so the temp file outlives its use.
 	fileHeader := fileHeaders[0]
-	file, err := fileHeader.Open()
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	// Read file data
-	fileData, err := io.ReadAll(file)
-	if err != nil {
-		return err
-	}
-
-	uploadReq.File = fileData
+	uploadReq.FileSource = schemas.NewMultipartFileBodySource(fileHeader)
 	uploadReq.Filename = fileHeader.Filename
 
 	if contentTypeValues := form.Value["content_type"]; len(contentTypeValues) > 0 && contentTypeValues[0] != "" {
@@ -3883,11 +3877,66 @@ func videoIDProviderSuffix(videoID string) string {
 	return ""
 }
 
+// parseOpenAIImageEditJSONRequest reads OpenAI's application/json image edit body, where images
+// are referenced by image_url. A mask must be a base64 data URL, since Bifrost carries mask bytes only.
+func parseOpenAIImageEditJSONRequest(body []byte, imageEditReq *openai.OpenAIImageEditRequest) error {
+	var jsonReq openai.OpenAIImageEditJSONRequest
+	if err := sonic.Unmarshal(body, &jsonReq); err != nil {
+		return fmt.Errorf("invalid image edit request: %w", err)
+	}
+	if jsonReq.Model == "" {
+		return errors.New("model field is required")
+	}
+	if jsonReq.Prompt == "" {
+		return errors.New("prompt field is required")
+	}
+	if len(jsonReq.Images) == 0 {
+		return errors.New("at least one image is required")
+	}
+	images := make([]schemas.ImageInput, 0, len(jsonReq.Images))
+	for _, ref := range jsonReq.Images {
+		if ref.ImageURL == "" {
+			return errors.New("each image needs an image_url; file_id references are not supported")
+		}
+		images = append(images, schemas.ImageInput{URL: ref.ImageURL})
+	}
+	if jsonReq.Mask != nil {
+		_, isBase64, payload, ok := schemas.ParseDataURL(jsonReq.Mask.ImageURL)
+		if !ok || !isBase64 {
+			return errors.New("mask must be a base64 data URL in image_url")
+		}
+		mask, err := base64.StdEncoding.DecodeString(payload)
+		if err != nil {
+			return fmt.Errorf("invalid mask data URL: %w", err)
+		}
+		imageEditReq.Mask = mask
+	}
+
+	imageEditReq.Model = jsonReq.Model
+	imageEditReq.Input = &schemas.ImageEditInput{Images: images, Prompt: jsonReq.Prompt}
+	imageEditReq.Stream = jsonReq.Stream
+	imageEditReq.Fallbacks = jsonReq.Fallbacks
+	imageEditReq.N = jsonReq.N
+	imageEditReq.Size = jsonReq.Size
+	imageEditReq.ResponseFormat = jsonReq.ResponseFormat
+	imageEditReq.Quality = jsonReq.Quality
+	imageEditReq.Background = jsonReq.Background
+	imageEditReq.InputFidelity = jsonReq.InputFidelity
+	imageEditReq.PartialImages = jsonReq.PartialImages
+	imageEditReq.OutputFormat = jsonReq.OutputFormat
+	imageEditReq.OutputCompression = jsonReq.OutputCompression
+	imageEditReq.User = jsonReq.User
+	return nil
+}
+
 // parseOpenAIImageEditMultipartRequest is a RequestParser that handles multipart/form-data for image edit requests
 func parseOpenAIImageEditMultipartRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
 	imageEditReq, ok := req.(*openai.OpenAIImageEditRequest)
 	if !ok {
 		return errors.New("invalid request type for image edit")
+	}
+	if !strings.HasPrefix(strings.ToLower(string(ctx.Request.Header.ContentType())), "multipart/form-data") {
+		return parseOpenAIImageEditJSONRequest(ctx.PostBody(), imageEditReq)
 	}
 
 	// Parse multipart form

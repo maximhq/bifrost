@@ -1,4 +1,4 @@
-import { BaseProvider, ConcurrencyAndBufferSize, NetworkConfig } from "@/lib/types/config";
+import { BaseProvider, ConcurrencyAndBufferSize, KnownProvider, NetworkConfig, ServiceTier } from "@/lib/types/config";
 import { ProviderName } from "./logs";
 
 /**
@@ -69,6 +69,7 @@ export const ModelPlaceholders = {
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	minimax: "e.g. MiniMax-M3, image-01, MiniMax-H3",
 	byteplus: "e.g. deepseek-v4-flash-260425, dola-seedream-5-0-pro-260628, dreamina-seedance-2-5-260628",
+	machgen: "e.g. MiniMax-H3, Kling-v3, FLUX.2-dev",
 	baseten: "e.g. zai-org/GLM-5.3, openai/gpt-oss-120b",
 	kimchi: "e.g. deepseek-v4.1-flash, glm-5.3-flash, minimax-m3",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
@@ -112,6 +113,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	wafer: true,
 	minimax: true,
 	byteplus: true,
+	machgen: true,
 	baseten: true,
 	kimchi: true,
 	databricks: false,
@@ -184,6 +186,16 @@ export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
 	// Fallback for a status value this build does not know. Neutral on
 	// purpose: an unrecognized status must not read as usable.
 	unknown: "bg-gray-100 text-gray-800 border-gray-200 dark:border-border dark:bg-muted dark:text-muted-foreground",
+};
+
+// Service tiers a key or alias may set, by base provider; mirrors keyServiceTiers in core/schemas/account.go.
+// A provider not listed takes no key tier, so the setting is hidden for it.
+export const PROVIDER_SERVICE_TIERS: Partial<Record<KnownProvider, ServiceTier[]>> = {
+	openai: ["auto", "default", "flex", "priority", "fast", "ultrafast"],
+	azure: ["auto", "default", "flex", "priority"],
+	anthropic: ["auto", "default"],
+	vertex: ["default", "flex", "priority"],
+	gemini: ["default", "flex", "priority"],
 };
 
 // Mapping of what IS supported by each base provider

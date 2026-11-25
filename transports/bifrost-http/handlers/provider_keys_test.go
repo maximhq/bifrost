@@ -232,6 +232,7 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 			SGLKeyConfig:      &schemas.SGLKeyConfig{URL: *schemas.NewSecretVar("http://old:30000")},
 			Enabled:           schemas.Ptr(false),
 			UseForBatchAPI:    schemas.Ptr(true),
+			ServiceTier:       schemas.Ptr(schemas.BifrostServiceTierPriority),
 			Description:       "primary",
 		}
 	}
@@ -270,6 +271,9 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 		if merged.Description != "primary" {
 			t.Fatalf("description: got %q, want primary", merged.Description)
 		}
+		if merged.ServiceTier == nil || *merged.ServiceTier != schemas.BifrostServiceTierPriority {
+			t.Fatalf("service_tier: got %v, want the stored priority", merged.ServiceTier)
+		}
 		// The fields that were sent still apply.
 		if len(merged.Models) != 2 || merged.Models[0] != "m1" {
 			t.Fatalf("models: got %v, want [m1 m2]", merged.Models)
@@ -290,7 +294,7 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 	})
 
 	t.Run("fields sent explicitly empty are cleared", func(t *testing.T) {
-		merged := update(t, `{"value":"","weight":0,"models":[],"description":"","sgl_key_config":null}`)
+		merged := update(t, `{"value":"","weight":0,"models":[],"description":"","sgl_key_config":null,"service_tier":null}`)
 		if merged.Value.GetValue() != "" {
 			t.Fatalf("value: got %q, want it cleared", merged.Value.GetValue())
 		}
@@ -305,6 +309,9 @@ func TestDecodeKeyUpdate_PartialBody(t *testing.T) {
 		}
 		if merged.SGLKeyConfig != nil {
 			t.Fatalf("sgl_key_config: got %+v, want nil", merged.SGLKeyConfig)
+		}
+		if merged.ServiceTier != nil {
+			t.Fatalf("service_tier: got %v, want it cleared", *merged.ServiceTier)
 		}
 	})
 }
@@ -1393,6 +1400,82 @@ func TestProviderKeyWeight_RejectsNegative(t *testing.T) {
 			}
 			if keys[0].Weight != tc.wantWeight {
 				t.Fatalf("stored weight of key-1 got %v, want %v", keys[0].Weight, tc.wantWeight)
+			}
+		})
+	}
+}
+
+// TestProviderKeyServiceTier_RejectsUnsupported pins that neither key write path stores a
+// service_tier, on the key or an alias, that the key's provider does not take, since a stored
+// tier fills every request that sets none.
+func TestProviderKeyServiceTier_RejectsUnsupported(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	cases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		create     bool
+		body       string
+		wantStatus int
+		wantTier   string // the stored service_tier of key-1 after the call
+	}{
+		{name: "create with an unknown key tier", provider: schemas.OpenAI, create: true, body: `{"name":"new-key","value":"sk-test","service_tier":"prioroty"}`, wantStatus: fasthttp.StatusBadRequest, wantTier: "default"},
+		{name: "create with an unknown alias tier", provider: schemas.OpenAI, create: true, body: `{"name":"new-key","value":"sk-test","aliases":{"a":{"model_id":"gpt-4o","service_tier":"prioroty"}}}`, wantStatus: fasthttp.StatusBadRequest, wantTier: "default"},
+		{name: "create with a supported key tier", provider: schemas.OpenAI, create: true, body: `{"name":"new-key","value":"sk-test","service_tier":"priority"}`, wantStatus: fasthttp.StatusOK, wantTier: "default"},
+		{name: "create with a tier the provider does not offer", provider: schemas.Anthropic, create: true, body: `{"name":"new-key","value":"sk-test","service_tier":"flex"}`, wantStatus: fasthttp.StatusBadRequest, wantTier: "default"},
+		{name: "create with a tier on a provider without key tiers", provider: schemas.Groq, create: true, body: `{"name":"new-key","value":"sk-test","service_tier":"priority"}`, wantStatus: fasthttp.StatusBadRequest, wantTier: "default"},
+		{name: "update to an unknown key tier", provider: schemas.OpenAI, body: `{"name":"stored-key","service_tier":"prioroty"}`, wantStatus: fasthttp.StatusBadRequest, wantTier: "default"},
+		{name: "update to an unknown alias tier", provider: schemas.OpenAI, body: `{"name":"stored-key","aliases":{"a":{"model_id":"gpt-4o","service_tier":"prioroty"}}}`, wantStatus: fasthttp.StatusBadRequest, wantTier: "default"},
+		{name: "update to an alias tier the provider does not offer", provider: schemas.Anthropic, body: `{"name":"stored-key","aliases":{"a":{"model_id":"claude-sonnet-4-6","service_tier":"priority"}}}`, wantStatus: fasthttp.StatusBadRequest, wantTier: "default"},
+		{name: "update to a supported key tier", provider: schemas.OpenAI, body: `{"name":"stored-key","service_tier":"priority"}`, wantStatus: fasthttp.StatusOK, wantTier: "priority"},
+		{name: "update to a supported anthropic key tier", provider: schemas.Anthropic, body: `{"name":"stored-key","service_tier":"auto"}`, wantStatus: fasthttp.StatusOK, wantTier: "auto"},
+		{name: "update clearing the key tier", provider: schemas.OpenAI, body: `{"name":"stored-key","service_tier":null}`, wantStatus: fasthttp.StatusOK, wantTier: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &ProviderHandler{
+				inMemoryStore: &lib.Config{
+					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+						tc.provider: {Keys: []schemas.Key{{
+							ID:          "key-1",
+							Name:        "stored-key",
+							Value:       *schemas.NewSecretVar("sk-stored"),
+							Weight:      1,
+							ServiceTier: schemas.Ptr(schemas.BifrostServiceTierDefault),
+						}}},
+					},
+				},
+				modelsManager: &mockModelsManager{},
+			}
+			attachBifrostClient(t, h.inMemoryStore)
+
+			ctx := newTestRequestCtx(tc.body)
+			ctx.SetUserValue("provider", string(tc.provider))
+			if tc.create {
+				h.createProviderKey(ctx)
+			} else {
+				ctx.SetUserValue("key_id", "key-1")
+				h.updateProviderKey(ctx)
+			}
+
+			if ctx.Response.StatusCode() != tc.wantStatus {
+				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
+			}
+			if tc.wantStatus == fasthttp.StatusBadRequest && !strings.Contains(string(ctx.Response.Body()), "service_tier") {
+				t.Fatalf("expected the error to name service_tier, got %s", ctx.Response.Body())
+			}
+			keys := h.inMemoryStore.Providers[tc.provider].Keys
+			if tc.create && tc.wantStatus == fasthttp.StatusBadRequest && len(keys) != 1 {
+				t.Fatalf("a rejected key must not be stored, got %d keys", len(keys))
+			}
+			got := ""
+			if keys[0].ServiceTier != nil {
+				got = string(*keys[0].ServiceTier)
+			}
+			if got != tc.wantTier {
+				t.Fatalf("stored service_tier of key-1 got %q, want %q", got, tc.wantTier)
 			}
 		})
 	}

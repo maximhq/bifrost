@@ -371,6 +371,7 @@
 			"outputCost": "Custo de Saída",
 			"additionalCost": "Custo adicional",
 			"guardrailCost": "Custo do Guardrail",
+			"externalGuardrailCostNote": "Inclui {{cost}} de custo estimado de guardrails externos, não contabilizado no custo total nem nos orçamentos.",
 			"semanticCacheCost": "Custo da Cache Semântica",
 			"routingCost": "Custo de Roteamento",
 			"inputTextTokens": "Tokens de texto de entrada",
@@ -404,6 +405,9 @@
 			"judgeProvider": "Juíza Fornecedora",
 			"judgeModel": "Modelo do Juiz",
 			"promptTokens": "Avisos",
+			"usageUnits": "Unidades de uso",
+			"estimatedCost": "Custo estimado",
+			"estimatedCostTooltip": "Estimado pelo preço de tabela do fornecedor do guardrail. Não contabilizado no custo total nem nos orçamentos.",
 			"reason": "Justificação",
 			"routingClassificationDetails": "Detalhes da Classificação de Roteamento",
 			"mechanism": "Mecanismo",
@@ -793,6 +797,7 @@
 			"toastExported_other": "{{count}} logs exportados",
 			"toastFailed": "Falha na exportação: {{error}}",
 			"summary": {
+				"jobId": "ID da tarefa: {{value}}",
 				"search": "pesquisa \"{{value}}\"",
 				"request": "solicitação \"{{value}}\"",
 				"providers": "provedores ({{total}})",
@@ -819,6 +824,20 @@
 		"batchMixedModel": "misto"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "A linha de liquidação foi excluída antes da cobrança",
+			"relay_job_no_usage": "A resposta final não tinha uso para cobrar",
+			"relay_job_rejected": "O upstream recusou o id da tarefa",
+			"relay_job_access_denied": "O upstream negou acesso à tarefa",
+			"relay_job_gone": "O upstream não reconhece mais a tarefa",
+			"relay_job_timeout": "Não terminou antes do tempo limite",
+			"relay_job_params": "Não foi possível ler as configurações da tarefa"
+		},
+		"jobOutcome": {
+			"unpriced": "Sem preço",
+			"failed": "Falhou",
+			"succeeded": "Concluído"
+		},
 		"fields": {
 			"relay": "Relay",
 			"kind": "Tipo",
@@ -837,7 +856,10 @@
 			"no": "Não"
 		},
 		"columns": {
-			"jobBadge": "TAREFA",
+			"startsJob": "Inicia a tarefa {{id}}",
+			"jobUnpriced": "Sem preço: {{reason}}",
+			"jobFailed": "Falhou: {{status}}",
+			"jobBadge": "Tarefa",
 			"noRoute": "Sem rota",
 			"route": "Rota {{route}}",
 			"settled": "Liquidada: {{status}}",
@@ -877,6 +899,13 @@
 			"perRequest": "{{value}}/pedido"
 		},
 		"detail": {
+			"jobStatusStat": "Status da tarefa",
+			"jobNotSettled": "Ainda não liquidado",
+			"jobSettlementFailed": "Não foi possível verificar a liquidação.",
+			"jobSettlement": "Liquidação da tarefa",
+			"costUnpriced": "sem preço",
+			"unpricedBody": "O Bifrost não conseguiu precificar esta tarefa, então o custo é desconhecido e a tarefa não foi cobrada. A chamada de início manteve sua própria cobrança.",
+			"unpricedTitle": "Tarefa sem preço",
 			"loadingDetails": "A carregar detalhes do registo de relay",
 			"notFound": "Registo de relay não encontrado",
 			"loadFailed": "Não foi possível carregar este registo de relay.",
@@ -907,6 +936,12 @@
 			"tokensNotPricedValue": "{{input}} entrada / {{output}} saída",
 			"matchedRoute": "Rota correspondida",
 			"parentLog": "Registo principal",
+			"jobPolls": "Tentativas de verificação de status",
+			"jobLastStatus": "Último status da tarefa",
+			"jobLastHttpStatus": "Status HTTP da última consulta",
+			"jobSettledAt": "Liquidado em",
+			"jobSettledBy": "Liquidado pela verificação de status",
+			"jobLastError": "Por que terminou sem preço",
 			"responseBodyPreview": "Corpo da resposta (pré-visualização)",
 			"filterByValue": "Mostrar chamadas de relay com este valor",
 			"queryParameters": "Parâmetros de consulta",
@@ -916,6 +951,7 @@
 			"contentHidden": "O registo de conteúdo foi desativado para este pedido."
 		},
 		"filters": {
+			"unpriced": "Tarefas sem preço",
 			"reset": "Repor",
 			"searchRelays": "Pesquisar relays",
 			"searchMethods": "Pesquisar métodos",
@@ -1121,6 +1157,8 @@
 			"groupTracesBySessionHelp": "Quando habilitado, as requisições que compartilham o mesmo cabeçalho são agrupadas em um único traço, cada requisição aparecendo como um span de nível superior. Um pedido que transporta um rastreador W3C se mantém em seu próprio rastro distribuído e não é afetado.",
 			"disableRootSpanContent": "Desactivar o Conteúdo da Raíz",
 			"disableRootSpanContentHelp": "Quando habilitado, o conteúdo da mensagem de entrada/saída é retirado do intervalo root somente; o span de geração subjacente (llm.call) mantém o conteúdo completo.",
+			"applyTraceDimensionsToChildSpans": "Aplicar dimensões aos spans filhos",
+			"applyTraceDimensionsToChildSpansHelp": "Quando habilitado, as dimensões da solicitação (cabeçalhos x-bf-dim-*) são mescladas em cada span exportado, não apenas no span raiz, para que os spans filhos possam ser filtrados ou agrupados por dimensão. path, method e namespaces reservados como gen_ai.* são ignorados. Cada dimensão é adicionada a todos os spans, então valores de alta cardinalidade aumentam o custo de ingestão do coletor.",
 			"enableMetricsExport": "Activar a Exportação de Métricas",
 			"enableMetricsExportHelp": "Empurre métricas para um coletor para agregação adequada em implantações de cluster",
 			"overheadBreakdown": "Desagregação global",

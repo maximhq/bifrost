@@ -197,6 +197,9 @@ func (s *InteractionSettler) Settle(ctx context.Context, pricing PricingManager,
 		return settlement, nil
 	}
 
+	if load.Model == "" && load.Run.SearchQueries > 0 {
+		usage = withInteractionSearchUnits(usage, schemas.GeminiSearchUnits(load.Run.SearchQueries, model))
+	}
 	settlement.Usage = *usage.LLMUsage
 	settlement.Usage.Cost = nil
 	if usage.ServiceTier != nil && *usage.ServiceTier != "" {
@@ -215,6 +218,31 @@ func (s *InteractionSettler) Settle(ctx context.Context, pricing PricingManager,
 	settlement.Complete = true
 	settlement.Cost = breakdown.TotalCost
 	return settlement, nil
+}
+
+// withInteractionSearchUnits is usage with its search count set to units. A read that names no
+// model cannot tell how its searches bill, so they are counted here by the model the create named.
+// The read's own usage is not modified.
+func withInteractionSearchUnits(usage *schemas.BifrostPassthroughUsage, units int) *schemas.BifrostPassthroughUsage {
+	out, llm := *usage, *usage.LLMUsage
+	details := schemas.ChatCompletionTokensDetails{}
+	if llm.CompletionTokensDetails != nil {
+		details = *llm.CompletionTokensDetails
+	}
+	details.NumSearchQueries = &units
+	tools := schemas.ToolUsage{}
+	if llm.ToolUsage != nil {
+		tools = *llm.ToolUsage
+	}
+	search := schemas.WebSearchToolUsage{}
+	if tools.WebSearch != nil {
+		search = *tools.WebSearch
+	}
+	search.NumRequests = units
+	tools.WebSearch = &search
+	llm.CompletionTokensDetails, llm.ToolUsage = &details, &tools
+	out.LLMUsage = &llm
+	return &out
 }
 
 // interactionPricingResponse rebuilds the passthrough response the run's final read would have been

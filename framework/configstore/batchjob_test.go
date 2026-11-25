@@ -487,3 +487,60 @@ func TestGetProviderJobsByJobIDSuffixesMatchTheLastSegmentWhole(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, jobs, 2, "several suffixes are matched in one query, duplicates and empties ignored")
 }
+
+// Relay polls hold no claim, so a late upsert must not put a settled job back on the schedule.
+func TestUpsertProviderJobLeavesSettledRelayJobsAlone(t *testing.T) {
+	ctx := context.Background()
+	for _, finish := range []string{tables.ProviderJobAccountingStatusAccounted, tables.ProviderJobAccountingStatusUnpriceable} {
+		t.Run(finish, func(t *testing.T) {
+			store := setupBatchJobTestStore(t)
+			id := tables.ProviderJobID(tables.ProviderJobKindRelay, "textract", "j-1")
+			job := &tables.TableProviderJob{ID: id, Kind: tables.ProviderJobKindRelay, Provider: "textract", JobID: "j-1", ProviderStatus: "SUCCEEDED"}
+			require.NoError(t, store.UpsertProviderJob(ctx, job))
+			require.NoError(t, store.DB().Model(&tables.TableProviderJob{}).Where("id = ?", id).Update("accounting_status", finish).Error)
+
+			next := time.Now().UTC().Add(time.Hour)
+			require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{ID: id, Kind: tables.ProviderJobKindRelay, Provider: "textract", JobID: "j-1", ProviderStatus: "IN_PROGRESS", NextCheckAt: &next, PollAttempts: 9}))
+
+			persisted := getBatchJob(t, store, id)
+			assert.Nil(t, persisted.NextCheckAt)
+			assert.Equal(t, "SUCCEEDED", persisted.ProviderStatus)
+			assert.Zero(t, persisted.PollAttempts)
+		})
+	}
+}
+
+// A poll sent outside the sweeper is counted on the row alone: its schedule and status are untouched.
+func TestIncrementProviderJobPollAttempts(t *testing.T) {
+	ctx := context.Background()
+	store := setupBatchJobTestStore(t)
+	id := tables.ProviderJobID(tables.ProviderJobKindRelay, "textract", "j-1")
+	next := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{ID: id, Kind: tables.ProviderJobKindRelay, Provider: "textract", JobID: "j-1", ProviderStatus: "IN_PROGRESS", NextCheckAt: &next, PollAttempts: 2}))
+	require.NoError(t, store.IncrementProviderJobPollAttempts(ctx, id))
+	job, err := store.GetProviderJob(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, 3, job.PollAttempts)
+	assert.Equal(t, "IN_PROGRESS", job.ProviderStatus)
+	require.NotNil(t, job.NextCheckAt)
+	assert.True(t, job.NextCheckAt.Equal(next), "the schedule is untouched")
+}
+
+// Every poll is counted on the row as it is sent, so a settlement write carrying a count read
+// earlier never drops a poll counted since: two polls elsewhere plus this node's own make 7.
+func TestUpsertProviderJobKeepsEveryRelayPoll(t *testing.T) {
+	ctx := context.Background()
+	store := setupBatchJobTestStore(t)
+	id := tables.ProviderJobID(tables.ProviderJobKindRelay, "textract", "j-1")
+	require.NoError(t, store.UpsertProviderJob(ctx, &tables.TableProviderJob{ID: id, Kind: tables.ProviderJobKindRelay, Provider: "textract", JobID: "j-1", PollAttempts: 4}))
+	read, err := store.GetProviderJob(ctx, id)
+	require.NoError(t, err)
+	require.NoError(t, store.IncrementProviderJobPollAttempts(ctx, id)) // another node's poll
+	require.NoError(t, store.IncrementProviderJobPollAttempts(ctx, id)) // and another
+	require.NoError(t, store.IncrementProviderJobPollAttempts(ctx, id)) // this node's own poll
+	read.PollAttempts++                                                 // its stale copy now says 5
+	require.NoError(t, store.UpsertProviderJob(ctx, read))
+	job, err := store.GetProviderJob(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, 7, job.PollAttempts)
+}

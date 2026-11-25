@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -254,6 +255,8 @@ type MCPConfig struct {
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
 	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
+	// ServerMaxProtocolVersion caps the MCP protocol version Bifrost's own /mcp serves to clients ("" or "auto" = newest supported).
+	ServerMaxProtocolVersion string `json:"server_max_protocol_version,omitempty"`
 
 	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
 	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
@@ -397,9 +400,10 @@ var ErrMCPOpenAPIConfigInvalid = errors.New("openapi client configuration cannot
 // synthesized server's tool handlers reach the upstream the same way core's own
 // transports would.
 type InProcessServerDeps struct {
-	HTTPClient *http.Client                                   // TLS, proxy and public-target rules of the client already applied
-	Headers    func(ctx context.Context) (http.Header, error) // Static config headers + resolved credentials + allow-listed per-request extras
-	Logger     Logger
+	HTTPClient     *http.Client                                   // TLS, proxy and public-target rules of the client already applied
+	SpecHTTPClient *http.Client                                   // fetches spec_url: HTTPClient without request signing; nil means HTTPClient
+	Headers        func(ctx context.Context) (http.Header, error) // Static config headers + resolved credentials + allow-listed per-request extras
+	Logger         Logger
 }
 
 // InProcessServerFactory synthesizes an in-process MCP server for config. ctx is
@@ -651,16 +655,40 @@ func ValidateMCPMaxProtocolVersion(field, v string) error {
 	return fmt.Errorf("%s must be one of %s, got %q", field, strings.Join(MCPMaxProtocolVersions, ", "), v)
 }
 
+// MCPProtocolVersionsUpTo returns the protocol versions the SDK implements at or below maxVersion,
+// newest first, or nil when maxVersion is "", "auto" or invalid (uncapped).
+func MCPProtocolVersionsUpTo(maxVersion string) []string {
+	if maxVersion == "" || maxVersion == MCPMaxProtocolVersionAuto || !IsValidMCPMaxProtocolVersion(maxVersion) {
+		return nil
+	}
+	versions := make([]string, 0, len(mcp.ValidProtocolVersions))
+	for _, v := range mcp.ValidProtocolVersions {
+		if v <= maxVersion {
+			versions = append(versions, v)
+		}
+	}
+	return versions
+}
+
+// MCPAllowsClientMetadataDocuments reports whether a server capped at maxVersion offers Client ID
+// Metadata Documents, which arrived in 2025-11-25.
+func MCPAllowsClientMetadataDocuments(maxVersion string) bool {
+	versions := MCPProtocolVersionsUpTo(maxVersion)
+	return versions == nil || versions[0] >= MCPProtocolVersion20251125
+}
+
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
 
 const (
-	MCPAuthTypeNone           MCPAuthType = "none"             // No authentication
-	MCPAuthTypeHeaders        MCPAuthType = "headers"          // Header-based authentication (API keys, etc.)
-	MCPAuthTypeOauth          MCPAuthType = "oauth"            // OAuth 2.0 authentication (server-level, admin authenticates once)
-	MCPAuthTypePerUserOauth   MCPAuthType = "per_user_oauth"   // Per-user OAuth 2.0 authentication (each user authenticates individually)
-	MCPAuthTypePerUserHeaders MCPAuthType = "per_user_headers" // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
-	MCPAuthTypeTokenExchange  MCPAuthType = "token_exchange"   // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
+	MCPAuthTypeNone              MCPAuthType = "none"               // No authentication
+	MCPAuthTypeHeaders           MCPAuthType = "headers"            // Header-based authentication (API keys, etc.)
+	MCPAuthTypeOauth             MCPAuthType = "oauth"              // OAuth 2.0 authentication (server-level, admin authenticates once)
+	MCPAuthTypePerUserOauth      MCPAuthType = "per_user_oauth"     // Per-user OAuth 2.0 authentication (each user authenticates individually)
+	MCPAuthTypePerUserHeaders    MCPAuthType = "per_user_headers"   // Per-user header authentication (each user submits API keys / signed tokens; admin declares the required key names via PerUserHeaderKeys)
+	MCPAuthTypeClientCredentials MCPAuthType = "client_credentials" // Shared OAuth client_credentials grant with pre-registered credentials (MCP OAuth Client Credentials extension)
+	MCPAuthTypeAWSSigV4          MCPAuthType = "aws_sigv4"          // Every request signed with AWS SigV4 using Bifrost's own AWS identity (default chain, optionally an assumed role)
+	MCPAuthTypeTokenExchange     MCPAuthType = "token_exchange"     // Delegated token exchange: the caller's identity-provider token is exchanged for a short-lived upstream token scoped to this server's audience; requires user-identity authentication to be available
 )
 
 // IsPerUser reports whether callers of a client with this auth type
@@ -746,10 +774,10 @@ type MCPTokenExchangeConfig struct {
 	ResourceClientAuthMethod string `json:"resource_client_auth_method,omitempty"`
 }
 
-// Values of MCPTokenExchangeConfig.ResourceClientAuthMethod.
+// How a client secret is sent to a token endpoint (UpstreamClientAuth.Method).
 const (
-	ResourceClientAuthBasic = "client_secret_basic"
-	ResourceClientAuthPost  = "client_secret_post"
+	ClientSecretBasic = "client_secret_basic"
+	ClientSecretPost  = "client_secret_post"
 )
 
 // Token-exchange profiles (MCPTokenExchangeConfig.Profile).
@@ -807,38 +835,354 @@ func (c *MCPTokenExchangeConfig) ValidateProfile() error {
 // UsesResourcePrivateKey reports whether Bifrost authenticates to the upstream
 // authorization server with private_key_jwt rather than a client secret.
 func (c *MCPTokenExchangeConfig) UsesResourcePrivateKey() bool {
-	return c != nil && (strings.TrimSpace(c.ResourcePrivateKey.GetValue()) != "" || c.ResourcePrivateKey.IsFromSecret())
+	return c != nil && c.ResourceClientAuth().UsesPrivateKey()
+}
+
+// ResourceClientAuth returns how Bifrost authenticates at the upstream
+// authorization server for the id_jag profile.
+func (c *MCPTokenExchangeConfig) ResourceClientAuth() UpstreamClientAuth {
+	return UpstreamClientAuth{
+		ClientID:          c.ResourceClientID,
+		ClientSecret:      c.ResourceClientSecret,
+		Method:            c.ResourceClientAuthMethod,
+		PrivateKey:        c.ResourcePrivateKey,
+		KeyID:             c.ResourceKeyID,
+		SigningAlgorithm:  c.ResourceSigningAlgorithm,
+		AssertionAudience: c.ResourceAssertionAudience,
+	}
 }
 
 // validateResourceClientAuth checks the upstream client authentication: a
 // secret or a private key, never both, and key settings only with a key.
 func (c *MCPTokenExchangeConfig) validateResourceClientAuth() error {
-	hasSecret := strings.TrimSpace(c.ResourceClientSecret.GetValue()) != "" || c.ResourceClientSecret.IsFromSecret()
-	if c.UsesResourcePrivateKey() {
+	return c.ResourceClientAuth().validate(upstreamClientAuthFields{
+		block: "token_exchange", secret: "resource_client_secret", key: "resource_private_key", method: "resource_client_auth_method",
+		keyID: "resource_key_id", alg: "resource_signing_algorithm", audience: "resource_assertion_audience",
+	})
+}
+
+// UpstreamClientAuth is how Bifrost authenticates as an OAuth client at an
+// upstream token endpoint: a client secret, or a private key signing an RFC 7523
+// §2.2 client assertion (private_key_jwt).
+type UpstreamClientAuth struct {
+	ClientID          *SecretVar
+	ClientSecret      *SecretVar
+	Method            string // ClientSecretBasic or ClientSecretPost; empty follows the server's metadata, else Basic
+	PrivateKey        *SecretVar
+	KeyID             string
+	SigningAlgorithm  string
+	AssertionAudience string // empty: the token endpoint
+}
+
+// UsesPrivateKey reports whether a private key, not a secret, authenticates the client.
+func (a UpstreamClientAuth) UsesPrivateKey() bool {
+	return strings.TrimSpace(a.PrivateKey.GetValue()) != "" || a.PrivateKey.IsFromSecret()
+}
+
+// HasSecret reports whether a client secret is set. A whitespace-only value is not.
+func (a UpstreamClientAuth) HasSecret() bool {
+	return strings.TrimSpace(a.ClientSecret.GetValue()) != "" || a.ClientSecret.IsFromSecret()
+}
+
+// upstreamClientAuthFields names a config block's client authentication fields for error messages.
+type upstreamClientAuthFields struct {
+	block, secret, key, method, keyID, alg, audience string
+}
+
+// validate checks a secret or a private key, never both, and key settings only with a key.
+func (a UpstreamClientAuth) validate(f upstreamClientAuthFields) error {
+	hasSecret := a.HasSecret()
+	if a.UsesPrivateKey() {
 		if hasSecret {
-			return fmt.Errorf("token_exchange: set either resource_client_secret or resource_private_key, not both")
+			return fmt.Errorf("%s: set either %s or %s, not both", f.block, f.secret, f.key)
 		}
-		if c.ResourceClientAuthMethod != "" {
-			return fmt.Errorf("token_exchange.resource_client_auth_method applies to resource_client_secret, not resource_private_key")
+		if a.Method != "" {
+			return fmt.Errorf("%s.%s applies to %s, not %s", f.block, f.method, f.secret, f.key)
 		}
-	} else if c.ResourceKeyID != "" || c.ResourceSigningAlgorithm != "" || c.ResourceAssertionAudience != "" {
-		return fmt.Errorf("token_exchange.resource_key_id, resource_signing_algorithm and resource_assertion_audience require resource_private_key")
+	} else if a.KeyID != "" || a.SigningAlgorithm != "" || a.AssertionAudience != "" {
+		return fmt.Errorf("%s.%s, %s and %s require %s", f.block, f.keyID, f.alg, f.audience, f.key)
 	}
-	switch c.ResourceClientAuthMethod {
-	case "", ResourceClientAuthBasic, ResourceClientAuthPost:
+	switch a.Method {
+	case "", ClientSecretBasic, ClientSecretPost:
 	default:
-		return fmt.Errorf("token_exchange.resource_client_auth_method must be empty, %q or %q", ResourceClientAuthBasic, ResourceClientAuthPost)
+		return fmt.Errorf("%s.%s must be empty, %q or %q", f.block, f.method, ClientSecretBasic, ClientSecretPost)
 	}
-	if c.ResourceClientAuthMethod != "" && !hasSecret {
-		return fmt.Errorf("token_exchange.resource_client_auth_method requires resource_client_secret")
+	if a.Method != "" && !hasSecret {
+		return fmt.Errorf("%s.%s requires %s", f.block, f.method, f.secret)
 	}
-	if aud := strings.TrimSpace(c.ResourceAssertionAudience); aud != "" && !IsHTTPSOrLoopbackURL(aud) {
-		return fmt.Errorf("token_exchange.resource_assertion_audience must be an https URL")
+	if aud := strings.TrimSpace(a.AssertionAudience); aud != "" && !IsHTTPSOrLoopbackURL(aud) {
+		return fmt.Errorf("%s.%s must be an https URL", f.block, f.audience)
 	}
-	if alg := c.ResourceSigningAlgorithm; alg != "" && !slices.Contains(OAuthSigningAlgorithms, alg) {
-		return fmt.Errorf("token_exchange.resource_signing_algorithm must be one of %s", strings.Join(OAuthSigningAlgorithms, ", "))
+	if alg := a.SigningAlgorithm; alg != "" && !slices.Contains(OAuthSigningAlgorithms, alg) {
+		return fmt.Errorf("%s.%s must be one of %s", f.block, f.alg, strings.Join(OAuthSigningAlgorithms, ", "))
 	}
 	return nil
+}
+
+// MCPClientCredentialsConfig configures auth_type client_credentials: Bifrost
+// obtains a shared access token with the OAuth client_credentials grant, using
+// credentials registered with the upstream's authorization server out of band
+// (MCP OAuth Client Credentials extension). TokenURL, AuthMethod and
+// SigningAlgorithm are filled in on save from discovery when left empty, so later
+// token requests never depend on what the upstream advertises.
+type MCPClientCredentialsConfig struct {
+	TokenURL          string     `json:"token_url,omitempty"`          // discovered on save when empty
+	ClientID          *SecretVar `json:"client_id,omitempty"`          // required
+	ClientSecret      *SecretVar `json:"client_secret,omitempty"`      // or PrivateKey, never both
+	AuthMethod        string     `json:"auth_method,omitempty"`        // client_secret_basic or client_secret_post; empty follows the server
+	PrivateKey        *SecretVar `json:"private_key,omitempty"`        // PEM RSA or EC key signing the client assertion
+	KeyID             string     `json:"key_id,omitempty"`             // kid header of the client assertion
+	SigningAlgorithm  string     `json:"signing_algorithm,omitempty"`  // empty: chosen from the key on save
+	AssertionAudience string     `json:"assertion_audience,omitempty"` // aud of the client assertion; empty: token_url
+	Scopes            []string   `json:"scopes,omitempty"`
+	Resource          *string    `json:"resource,omitempty"` // RFC 8707 resource indicator; nil: the server URL, "": omitted
+}
+
+// ClientAuth returns how Bifrost authenticates at the token endpoint.
+func (c *MCPClientCredentialsConfig) ClientAuth() UpstreamClientAuth {
+	return UpstreamClientAuth{
+		ClientID:          c.ClientID,
+		ClientSecret:      c.ClientSecret,
+		Method:            c.AuthMethod,
+		PrivateKey:        c.PrivateKey,
+		KeyID:             c.KeyID,
+		SigningAlgorithm:  c.SigningAlgorithm,
+		AssertionAudience: c.AssertionAudience,
+	}
+}
+
+// Validate checks the block without network access: a client ID, exactly one of a
+// secret or a key, key settings only with a key, and an https token_url when set.
+func (c *MCPClientCredentialsConfig) Validate() error {
+	if c == nil {
+		return fmt.Errorf("client_credentials is required for client_credentials auth type")
+	}
+	auth := c.ClientAuth()
+	if !c.ClientID.IsSet() {
+		return fmt.Errorf("client_credentials.client_id is required")
+	}
+	if !auth.HasSecret() && !auth.UsesPrivateKey() {
+		return fmt.Errorf("client_credentials: set client_secret or private_key")
+	}
+	if err := auth.validate(upstreamClientAuthFields{
+		block: "client_credentials", secret: "client_secret", key: "private_key", method: "auth_method",
+		keyID: "key_id", alg: "signing_algorithm", audience: "assertion_audience",
+	}); err != nil {
+		return err
+	}
+	if u := strings.TrimSpace(c.TokenURL); u != "" && !IsHTTPSOrLoopbackURL(u) {
+		return fmt.Errorf("client_credentials.token_url must be an https URL")
+	}
+	for i, scope := range c.Scopes {
+		if strings.TrimSpace(scope) == "" || strings.ContainsAny(scope, " \t\n") {
+			return fmt.Errorf("client_credentials.scopes[%d] must be a single non-empty scope", i)
+		}
+	}
+	return nil
+}
+
+// ResourceFor returns the resource indicator to send for an MCP server at
+// serverURL: the configured one, or serverURL when unset. "" means none.
+func (c *MCPClientCredentialsConfig) ResourceFor(serverURL string) string {
+	if c.Resource != nil {
+		return strings.TrimSpace(*c.Resource)
+	}
+	return serverURL
+}
+
+// Redacted returns a copy with the client ID, secret and key masked.
+func (c *MCPClientCredentialsConfig) Redacted() *MCPClientCredentialsConfig {
+	if c == nil {
+		return nil
+	}
+	cfg := *c
+	cfg.ClientID = c.ClientID.Redacted()
+	cfg.ClientSecret = c.ClientSecret.Redacted()
+	cfg.PrivateKey = c.PrivateKey.Redacted()
+	cfg.Scopes = slices.Clone(c.Scopes)
+	return &cfg
+}
+
+// KeepMaskedFrom replaces each masked credential in c with existing's stored one,
+// so an update that sends back what a read returned keeps the stored values.
+func (c *MCPClientCredentialsConfig) KeepMaskedFrom(existing *MCPClientCredentialsConfig) {
+	if c == nil || existing == nil {
+		return
+	}
+	if c.ClientID.IsMaskedPlaceholder() {
+		c.ClientID = existing.ClientID
+	}
+	if c.ClientSecret.IsMaskedPlaceholder() {
+		c.ClientSecret = existing.ClientSecret
+	}
+	if c.PrivateKey.IsMaskedPlaceholder() {
+		c.PrivateKey = existing.PrivateKey
+	}
+}
+
+// Equal reports whether c and o hold the same settings.
+func (c *MCPClientCredentialsConfig) Equal(o *MCPClientCredentialsConfig) bool {
+	if c == nil || o == nil {
+		return c == o
+	}
+	resource := func(r *string) string {
+		if r == nil {
+			return "\x00"
+		}
+		return *r
+	}
+	return c.TokenURL == o.TokenURL && c.ClientID.Equals(o.ClientID) && c.ClientSecret.Equals(o.ClientSecret) &&
+		c.AuthMethod == o.AuthMethod && c.PrivateKey.Equals(o.PrivateKey) && c.KeyID == o.KeyID &&
+		c.SigningAlgorithm == o.SigningAlgorithm && c.AssertionAudience == o.AssertionAudience &&
+		slices.Equal(c.Scopes, o.Scopes) && resource(c.Resource) == resource(o.Resource)
+}
+
+// TargetChangedFrom reports whether c sends the credential somewhere other than
+// existing does: another token endpoint, or another assertion audience. An empty
+// token_url counts as a change, since it is discovered again.
+func (c *MCPClientCredentialsConfig) TargetChangedFrom(existing *MCPClientCredentialsConfig) bool {
+	if c == nil || existing == nil {
+		return false
+	}
+	return strings.TrimSpace(c.TokenURL) != strings.TrimSpace(existing.TokenURL) ||
+		strings.TrimSpace(c.AssertionAudience) != strings.TrimSpace(existing.AssertionAudience)
+}
+
+// DefaultAWSSigV4Service is the SigV4 signing name of Amazon Bedrock AgentCore, used
+// when an aws_sigv4 block names no service.
+const DefaultAWSSigV4Service = "bedrock-agentcore"
+
+// AllowedAWSSigV4Services are the signing names an aws_sigv4 MCP client may sign for:
+// the AWS services that host MCP servers or HTTP APIs. Any other service would let
+// whoever registers an MCP client call that AWS API as Bifrost's own identity.
+var AllowedAWSSigV4Services = []string{DefaultAWSSigV4Service, "aws-mcp", "lambda", "execute-api"}
+
+var (
+	awsRegionPattern      = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
+	awsRoleARNPattern     = regexp.MustCompile(`^arn:aws[a-z-]*:iam::[0-9]{12}:role/[\w+=,.@/-]+$`)
+	awsSessionNamePattern = regexp.MustCompile(`^[\w+=,.@-]{2,64}$`)
+)
+
+// MCPAWSSigV4Config configures auth_type aws_sigv4: Bifrost signs every request to
+// the MCP server with SigV4, using the AWS identity it runs as (environment, Pod
+// Identity, IRSA, instance profile), optionally assuming RoleARN first.
+type MCPAWSSigV4Config struct {
+	Region      *SecretVar `json:"region"`                 // signing region, required
+	Service     string     `json:"service,omitempty"`      // signing name; empty: bedrock-agentcore
+	RoleARN     *SecretVar `json:"role_arn,omitempty"`     // role to assume before signing
+	ExternalID  *SecretVar `json:"external_id,omitempty"`  // sts:ExternalId of the AssumeRole call
+	SessionName *SecretVar `json:"session_name,omitempty"` // role session name; empty: bifrost-session
+}
+
+// SigningService returns the service requests are signed for.
+func (c *MCPAWSSigV4Config) SigningService() string {
+	if service := strings.TrimSpace(c.Service); service != "" {
+		return service
+	}
+	return DefaultAWSSigV4Service
+}
+
+// Validate checks the block without network access. A value held in a secret reference
+// is checked as it resolves.
+func (c *MCPAWSSigV4Config) Validate() error {
+	if c == nil {
+		return fmt.Errorf("aws_sigv4 is required for aws_sigv4 auth type")
+	}
+	if !awsRegionPattern.MatchString(strings.TrimSpace(c.Region.GetValue())) {
+		if c.Region.IsFromSecret() {
+			return fmt.Errorf("aws_sigv4.region references %s, which does not resolve to an AWS region", c.Region.GetRawRef())
+		}
+		return fmt.Errorf("aws_sigv4.region must be an AWS region such as us-east-1")
+	}
+	if !slices.Contains(AllowedAWSSigV4Services, c.SigningService()) {
+		return fmt.Errorf("aws_sigv4.service must be one of %s", strings.Join(AllowedAWSSigV4Services, ", "))
+	}
+	hasRole := c.RoleARN.IsSet()
+	if hasRole && !awsRoleARNPattern.MatchString(strings.TrimSpace(c.RoleARN.GetValue())) {
+		if c.RoleARN.IsFromSecret() {
+			return fmt.Errorf("aws_sigv4.role_arn references %s, which does not resolve to an IAM role ARN", c.RoleARN.GetRawRef())
+		}
+		return fmt.Errorf("aws_sigv4.role_arn must be an IAM role ARN such as arn:aws:iam::123456789012:role/name")
+	}
+	if c.ExternalID.IsSet() && !hasRole {
+		return fmt.Errorf("aws_sigv4.external_id requires role_arn")
+	}
+	if c.SessionName.IsSet() {
+		if !hasRole {
+			return fmt.Errorf("aws_sigv4.session_name requires role_arn")
+		}
+		if !awsSessionNamePattern.MatchString(strings.TrimSpace(c.SessionName.GetValue())) {
+			return fmt.Errorf("aws_sigv4.session_name must be 2 to 64 letters, digits or +=,.@_- characters")
+		}
+	}
+	return nil
+}
+
+// Equal reports whether c and o hold the same settings.
+func (c *MCPAWSSigV4Config) Equal(o *MCPAWSSigV4Config) bool {
+	if c == nil || o == nil {
+		return c == o
+	}
+	return c.Region.Equals(o.Region) && c.SigningService() == o.SigningService() && c.RoleARN.Equals(o.RoleARN) &&
+		c.ExternalID.Equals(o.ExternalID) && c.SessionName.Equals(o.SessionName)
+}
+
+// Redacted returns a copy for an API response. The external ID is always masked; the
+// other fields are identifiers and read back as set unless held in an env or vault
+// reference.
+func (c *MCPAWSSigV4Config) Redacted() *MCPAWSSigV4Config {
+	if c == nil {
+		return nil
+	}
+	cfg := *c
+	cfg.Region = c.Region.RedactedIfSecret()
+	cfg.RoleARN = c.RoleARN.RedactedIfSecret()
+	cfg.ExternalID = c.ExternalID.Redacted()
+	cfg.SessionName = c.SessionName.RedactedIfSecret()
+	return &cfg
+}
+
+// KeepMaskedFrom replaces each masked value in c with existing's stored one, so an
+// update that sends back what a read returned keeps the stored references.
+func (c *MCPAWSSigV4Config) KeepMaskedFrom(existing *MCPAWSSigV4Config) {
+	if c == nil || existing == nil {
+		return
+	}
+	if c.Region.IsMaskedPlaceholder() {
+		c.Region = existing.Region
+	}
+	if c.RoleARN.IsMaskedPlaceholder() {
+		c.RoleARN = existing.RoleARN
+	}
+	if c.ExternalID.IsMaskedPlaceholder() {
+		c.ExternalID = existing.ExternalID
+	}
+	if c.SessionName.IsMaskedPlaceholder() {
+		c.SessionName = existing.SessionName
+	}
+}
+
+// CheckAWSSigV4Headers refuses a configured header, or a header callers may
+// forward, that the SigV4 signer sets on an aws_sigv4 client.
+func CheckAWSSigV4Headers(headers map[string]SecretVar, allowedExtraHeaders WhiteList) error {
+	for name := range headers {
+		if IsAWSSigV4ReservedHeader(name) {
+			return fmt.Errorf("header %q is set by the SigV4 signer and cannot be configured", name)
+		}
+	}
+	for _, name := range allowedExtraHeaders {
+		if IsAWSSigV4ReservedHeader(name) {
+			return fmt.Errorf("allowed_extra_headers cannot include %q: it is set by the SigV4 signer", name)
+		}
+	}
+	return nil
+}
+
+// IsAWSSigV4ReservedHeader reports whether a header is set by the SigV4 signer, so an
+// aws_sigv4 client may neither configure it nor accept it from a caller.
+func IsAWSSigV4ReservedHeader(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return lower == "authorization" || strings.HasPrefix(lower, "x-amz-")
 }
 
 // IsHTTPSOrLoopbackURL reports whether raw is an https URL, or plain http on a
@@ -945,10 +1289,16 @@ type MCPClientConfig struct {
 	PerUserHeaderKeys []string `json:"per_user_header_keys,omitempty"`
 	// TokenExchange scopes delegated token exchange. Required (with a
 	// non-empty Audience) when AuthType == token_exchange; ignored otherwise.
-	TokenExchange       *MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
-	AllowedExtraHeaders WhiteList               `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
-	InProcessServer     *server.MCPServer       `json:"-"`                               // MCP server instance for in-process connections (Go package only)
-	ToolsToExecute      WhiteList               `json:"tools_to_execute,omitempty"`      // Include-only list.
+	TokenExchange *MCPTokenExchangeConfig `json:"token_exchange,omitempty"`
+	// ClientCredentials configures the client_credentials grant. Required when
+	// AuthType == client_credentials; ignored otherwise.
+	ClientCredentials *MCPClientCredentialsConfig `json:"client_credentials,omitempty"`
+	// AWSSigV4 configures SigV4 request signing. Required when AuthType ==
+	// aws_sigv4; ignored otherwise.
+	AWSSigV4            *MCPAWSSigV4Config `json:"aws_sigv4,omitempty"`
+	AllowedExtraHeaders WhiteList          `json:"allowed_extra_headers,omitempty"` // Allowlist of request-level headers that callers may forward to this MCP server at execution time
+	InProcessServer     *server.MCPServer  `json:"-"`                               // MCP server instance for in-process connections (Go package only)
+	ToolsToExecute      WhiteList          `json:"tools_to_execute,omitempty"`      // Include-only list.
 	// ToolsToExecute semantics:
 	// - ["*"] => all tools are included
 	// - []    => no tools are included (deny-by-default)
@@ -1715,10 +2065,13 @@ type MCPToolMetadata struct {
 
 // MCP Apps (SEP-1865) extension id, resource mime type and _meta.ui.visibility values.
 const (
-	MCPAppsExtension       = "io.modelcontextprotocol/ui"
-	MCPAppsMimeType        = "text/html;profile=mcp-app"
-	MCPToolVisibilityModel = "model"
-	MCPToolVisibilityApp   = "app"
+	MCPAppsExtension = "io.modelcontextprotocol/ui"
+	// MCPOAuthClientCredentialsExtension is the MCP OAuth Client Credentials
+	// extension, declared by clients that authenticate with that grant.
+	MCPOAuthClientCredentialsExtension = "io.modelcontextprotocol/oauth-client-credentials"
+	MCPAppsMimeType                    = "text/html;profile=mcp-app"
+	MCPToolVisibilityModel             = "model"
+	MCPToolVisibilityApp               = "app"
 )
 
 // ModelVisible reports whether a model may see and call the tool; no visibility means yes.

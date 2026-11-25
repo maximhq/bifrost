@@ -33,7 +33,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { RouterConfigForm } from "./useRouterConfigForm";
 
-const DOCS_URL = "https://docs.getbifrost.ai/features/complexity-router";
+const DOCS_URL = "https://docs.getbifrost.ai/features/routers#classifiers";
 
 // A dot on a settings button: its sheet holds edits that are not saved yet.
 function UnsavedDot({ label }: { label: string }) {

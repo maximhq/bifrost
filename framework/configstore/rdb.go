@@ -183,6 +183,7 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		UseForBatchAPI:         dbKey.UseForBatchAPI,
 		UseAnthropicEndpoints:  dbKey.UseAnthropicEndpoints,
 		UseOpenAIEndpoints:     dbKey.UseOpenAIEndpoints,
+		ServiceTier:            dbKey.ServiceTier,
 		AzureKeyConfig:         dbKey.AzureKeyConfig,
 		VertexKeyConfig:        dbKey.VertexKeyConfig,
 		BedrockKeyConfig:       dbKey.BedrockKeyConfig,
@@ -218,6 +219,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		UseForBatchAPI:         key.UseForBatchAPI,
 		UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 		UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+		ServiceTier:            key.ServiceTier,
 		AzureKeyConfig:         key.AzureKeyConfig,
 		VertexKeyConfig:        key.VertexKeyConfig,
 		BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -332,6 +334,9 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPAgentDepth:                             config.MCPAgentDepth,
 		MCPMaxInstructionsPerClient:               config.MCPMaxInstructionsPerClient,
 		MCPMaxInstructionsTotal:                   config.MCPMaxInstructionsTotal,
+		MCPOpenAPIMaxSpecMB:                       config.MCPOpenAPIMaxSpecMB,
+		BifrostURL:                                mcpExternalURLToString(config.BifrostURL),
+		BifrostMCPAllowWrites:                     config.BifrostMCPAllowWrites,
 		MCPCodeModeLimits:                         config.MCPCodeModeLimits,
 		MCPOAuthPrivateAllowlist:                  config.MCPOAuthPrivateAllowlist,
 		A2APrivateAllowlist:                       config.A2APrivateAllowlist,
@@ -339,6 +344,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		MCPCodeModeBindingLevel:                   config.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                       config.MCPToolSyncInterval,
 		MCPMaxProtocolVersion:                     config.MCPMaxProtocolVersion,
+		MCPServerMaxProtocolVersion:               config.MCPServerMaxProtocolVersion,
 		MCPDisableAutoToolInject:                  config.MCPDisableAutoToolInject,
 		MCPEnableTempTokenAuth:                    config.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                         config.AsyncJobResultTTL,
@@ -350,6 +356,7 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		EnforceVKObjectOwnership:                  config.EnforceVKObjectOwnership,
 		SkipAccessProfileUserVirtualKeyCreation:   config.SkipAccessProfileUserVirtualKeyCreation,
 		SkipAccessProfileUserVirtualKeyDeletion:   config.SkipAccessProfileUserVirtualKeyDeletion,
+		EntityAccessProfileMode:                   config.EntityAccessProfileMode,
 		HiddenRequestTypes:                        config.HiddenRequestTypes,
 		UsageEstimationTokenizers:                 config.UsageEstimationTokenizers,
 		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
@@ -656,6 +663,9 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPAgentDepth:                           dbConfig.MCPAgentDepth,
 		MCPMaxInstructionsPerClient:             dbConfig.MCPMaxInstructionsPerClient,
 		MCPMaxInstructionsTotal:                 dbConfig.MCPMaxInstructionsTotal,
+		MCPOpenAPIMaxSpecMB:                     dbConfig.MCPOpenAPIMaxSpecMB,
+		BifrostURL:                              schemas.NewSecretVar(dbConfig.BifrostURL),
+		BifrostMCPAllowWrites:                   dbConfig.BifrostMCPAllowWrites,
 		MCPCodeModeLimits:                       dbConfig.MCPCodeModeLimits,
 		MCPOAuthPrivateAllowlist:                dbConfig.MCPOAuthPrivateAllowlist,
 		A2APrivateAllowlist:                     dbConfig.A2APrivateAllowlist,
@@ -663,6 +673,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		MCPCodeModeBindingLevel:                 dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                     dbConfig.MCPToolSyncInterval,
 		MCPMaxProtocolVersion:                   dbConfig.MCPMaxProtocolVersion,
+		MCPServerMaxProtocolVersion:             dbConfig.MCPServerMaxProtocolVersion,
 		MCPDisableAutoToolInject:                dbConfig.MCPDisableAutoToolInject,
 		MCPEnableTempTokenAuth:                  dbConfig.MCPEnableTempTokenAuth,
 		AsyncJobResultTTL:                       dbConfig.AsyncJobResultTTL,
@@ -674,6 +685,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		EnforceVKObjectOwnership:                dbConfig.EnforceVKObjectOwnership,
 		SkipAccessProfileUserVirtualKeyCreation: dbConfig.SkipAccessProfileUserVirtualKeyCreation,
 		SkipAccessProfileUserVirtualKeyDeletion: dbConfig.SkipAccessProfileUserVirtualKeyDeletion,
+		EntityAccessProfileMode:                 dbConfig.EntityAccessProfileMode,
 		HiddenRequestTypes:                      dbConfig.HiddenRequestTypes,
 		UsageEstimationTokenizers:               dbConfig.UsageEstimationTokenizers,
 		RoutingChainMaxDepth:                    dbConfig.RoutingChainMaxDepth,
@@ -863,6 +875,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				UseForBatchAPI:         key.UseForBatchAPI,
 				UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 				UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+				ServiceTier:            key.ServiceTier,
 				AzureKeyConfig:         key.AzureKeyConfig,
 				VertexKeyConfig:        key.VertexKeyConfig,
 				BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1163,6 +1176,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+			ServiceTier:            key.ServiceTier,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1334,6 +1348,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			UseForBatchAPI:         key.UseForBatchAPI,
 			UseAnthropicEndpoints:  key.UseAnthropicEndpoints,
 			UseOpenAIEndpoints:     key.UseOpenAIEndpoints,
+			ServiceTier:            key.ServiceTier,
 			AzureKeyConfig:         key.AzureKeyConfig,
 			VertexKeyConfig:        key.VertexKeyConfig,
 			BedrockKeyConfig:       key.BedrockKeyConfig,
@@ -1840,6 +1855,8 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 					DiscoveredInstructions: dbClient.DiscoveredInstructions,
 					PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 					TokenExchange:          dbClient.TokenExchange,
+					ClientCredentials:      dbClient.ClientCredentials,
+					AWSSigV4:               dbClient.AWSSigV4,
 					PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 					OpenAPIConfig:          dbClient.OpenAPIConfig,
 					// ConfigHash must round-trip so config-file reconciliation
@@ -1909,6 +1926,8 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 			DiscoveredInstructions: dbClient.DiscoveredInstructions,
 			PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 			TokenExchange:          dbClient.TokenExchange,
+			ClientCredentials:      dbClient.ClientCredentials,
+			AWSSigV4:               dbClient.AWSSigV4,
 			PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 			OpenAPIConfig:          dbClient.OpenAPIConfig,
 			// ConfigHash must round-trip so config-file reconciliation can
@@ -1929,8 +1948,9 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		// config row. Without carrying it here, a boot with no mcp section in
 		// config.json would hand bifrost.Init a zero and the checkers would
 		// silently fall back to the built-in default.
-		ToolSyncInterval:   time.Duration(clientConfig.MCPToolSyncInterval) * time.Minute,
-		MaxProtocolVersion: clientConfig.MCPMaxProtocolVersion,
+		ToolSyncInterval:         time.Duration(clientConfig.MCPToolSyncInterval) * time.Minute,
+		MaxProtocolVersion:       clientConfig.MCPMaxProtocolVersion,
+		ServerMaxProtocolVersion: clientConfig.MCPServerMaxProtocolVersion,
 	}, nil
 }
 
@@ -2370,6 +2390,8 @@ func (s *RDBConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) 
 		DiscoveredInstructions: dbClient.DiscoveredInstructions,
 		PerUserHeaderKeys:      dbClient.PerUserHeaderKeys,
 		TokenExchange:          dbClient.TokenExchange,
+		ClientCredentials:      dbClient.ClientCredentials,
+		AWSSigV4:               dbClient.AWSSigV4,
 		PendingOAuthConfig:     dbClient.PendingOAuthConfig,
 		OpenAPIConfig:          dbClient.OpenAPIConfig,
 
@@ -2577,6 +2599,8 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 			// invalid for per_user_headers), leaving the client orphaned.
 			PerUserHeaderKeys:  clientConfigCopy.PerUserHeaderKeys,
 			TokenExchange:      clientConfigCopy.TokenExchange,
+			ClientCredentials:  clientConfigCopy.ClientCredentials,
+			AWSSigV4:           clientConfigCopy.AWSSigV4,
 			PendingOAuthConfig: clientConfigCopy.PendingOAuthConfig,
 			OpenAPIConfig:      clientConfigCopy.OpenAPIConfig,
 			Disabled:           clientConfigCopy.Disabled,
@@ -2597,23 +2621,22 @@ func (s *RDBConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig
 	})
 }
 
-// marshalTokenExchangeJSON serialises the token_exchange block the way
-// TableMCPClient.BeforeSave does (nil -> NULL, encrypted at rest when
-// enabled — the block carries the exchange application's client_secret),
+// marshalEncryptedJSON serialises a credential-bearing block the way
+// TableMCPClient.BeforeSave does (nil -> NULL, encrypted at rest when enabled),
 // for the map-based update path that bypasses GORM hooks.
-func marshalTokenExchangeJSON(cfg *schemas.MCPTokenExchangeConfig) (*string, error) {
+func marshalEncryptedJSON[T any](cfg *T, name string) (*string, error) {
 	if cfg == nil {
 		return nil, nil
 	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal token_exchange: %w", err)
+		return nil, fmt.Errorf("failed to marshal %s: %w", name, err)
 	}
 	s := string(data)
 	if encrypt.IsEnabled() && s != "" {
 		encrypted, err := encrypt.Encrypt(s)
 		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt mcp token exchange config: %w", err)
+			return nil, fmt.Errorf("failed to encrypt mcp %s config: %w", name, err)
 		}
 		s = encrypted
 	}
@@ -2812,12 +2835,26 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		}
 		// Mirror BeforeSave for the token_exchange block: nil means
 		// "preserve" on API updates (same convention as PerUserHeaderKeys).
-		tokenExchangeJSON, tokenExchangeErr := marshalTokenExchangeJSON(clientConfig.TokenExchange)
+		tokenExchangeJSON, tokenExchangeErr := marshalEncryptedJSON(clientConfig.TokenExchange, "token exchange")
 		if tokenExchangeErr != nil {
 			return tokenExchangeErr
 		}
 		if tokenExchangeJSON != nil {
 			updates["token_exchange_json"] = tokenExchangeJSON
+		}
+		clientCredentialsJSON, clientCredentialsErr := marshalEncryptedJSON(clientConfig.ClientCredentials, "client_credentials")
+		if clientCredentialsErr != nil {
+			return clientCredentialsErr
+		}
+		if clientCredentialsJSON != nil {
+			updates["client_credentials_json"] = clientCredentialsJSON
+		}
+		awsSigV4JSON, awsSigV4Err := marshalEncryptedJSON(clientConfig.AWSSigV4, "aws_sigv4")
+		if awsSigV4Err != nil {
+			return awsSigV4Err
+		}
+		if awsSigV4JSON != nil {
+			updates["aws_sigv4_json"] = awsSigV4JSON
 		}
 		// openapi_config follows the same PATCH convention: nil preserves the
 		// stored spec and credentials, non-nil replaces both columns.
@@ -2856,6 +2893,8 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 			// Config-file mode syncs the full auth metadata, so nil here
 			// means "clear", not "preserve".
 			updates["token_exchange_json"] = tokenExchangeJSON
+			updates["client_credentials_json"] = clientCredentialsJSON
+			updates["aws_sigv4_json"] = awsSigV4JSON
 			// Mirror BeforeSave: nil → NULL; non-nil → serialised JSON,
 			// encrypted at rest (the stash can carry an inline OAuth
 			// client_secret).
@@ -4738,6 +4777,7 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 	} else {
 		txDB = s.DB()
 	}
+	var revokedGrants int64
 	if err := txDB.WithContext(ctx).Transaction(func(txDB *gorm.DB) error {
 		var virtualKey tables.TableVirtualKey
 		if err := dbForUpdate(txDB.WithContext(ctx)).Preload("ProviderConfigs").First(&virtualKey, "id = ?", id).Error; err != nil {
@@ -4808,11 +4848,13 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		// stop minting access tokens on refresh and drop off the active-grants
 		// view, while remaining available for reuse detection until the sweep.
 		now := time.Now()
-		if err := txDB.WithContext(ctx).Model(&tables.TableOAuth2RefreshToken{}).
+		revoked := txDB.WithContext(ctx).Model(&tables.TableOAuth2RefreshToken{}).
 			Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", string(schemas.MCPAuthModeVK), id).
-			Update("revoked_at", &now).Error; err != nil {
-			return err
+			Update("revoked_at", &now)
+		if revoked.Error != nil {
+			return revoked.Error
 		}
+		revokedGrants = revoked.RowsAffected
 		// Delete per-user MCP header credentials tied to this VK
 		if err := txDB.WithContext(ctx).Where("virtual_key_id = ?", id).Delete(&tables.TableMCPPerUserHeaderCredential{}).Error; err != nil {
 			return err
@@ -4855,6 +4897,10 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 			return ErrNotFound
 		}
 		return err
+	}
+	// Logged only once committed: inside a caller's transaction the revocation can still roll back.
+	if len(tx) == 0 && revokedGrants > 0 && s.logger != nil {
+		s.logger.Debug("[oauth2-token] event=family.revoked reason=virtual_key_deleted virtual_key_id=%s revoked_rows=%d", id, revokedGrants)
 	}
 	return nil
 }
@@ -5772,7 +5818,11 @@ func (s *RDBConfigStore) UpdateTeam(ctx context.Context, team *tables.TableTeam,
 			return err
 		}
 	}
-	if err := txDB.WithContext(ctx).Save(team).Error; err != nil {
+	// Save would write the preloaded Customer back and copy its id over CustomerID, so a team
+	// moved to another customer (or detached) would snap back; loaded virtual keys would likewise be
+	// repointed at this team. Budgets and the rate limit are still saved with the team, which config
+	// sync relies on for inline declarations.
+	if err := txDB.WithContext(ctx).Omit("Customer", "VirtualKeys").Save(team).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -5930,7 +5980,11 @@ func (s *RDBConfigStore) UpdateCustomer(ctx context.Context, customer *tables.Ta
 			return err
 		}
 	}
-	if err := txDB.WithContext(ctx).Save(customer).Error; err != nil {
+	// Saving the loaded teams and virtual keys would repoint each one's customer_id at this
+	// customer, including one that moved to another customer after this row was read. Budgets and
+	// the rate limit are still saved with the customer, which config sync relies on for inline
+	// declarations.
+	if err := txDB.WithContext(ctx).Omit("Teams", "VirtualKeys").Save(customer).Error; err != nil {
 		return s.parseGormError(err)
 	}
 	return nil
@@ -7045,10 +7099,12 @@ func (s *RDBConfigStore) GetModelConfig(ctx context.Context, scope string, scope
 	return &modelConfig, nil
 }
 
-// GetModelConfigByID retrieves a specific model config from the database by ID.
+// GetModelConfigByID retrieves a specific model config from the database by ID. It reads
+// through ScopedDB, so a caller whose row visibility is restricted reads a config it may not
+// see as not found.
 func (s *RDBConfigStore) GetModelConfigByID(ctx context.Context, id string) (*tables.TableModelConfig, error) {
 	var modelConfig tables.TableModelConfig
-	if err := s.DB().WithContext(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
+	if err := s.ScopedDB(ctx).Preload("Budgets").Preload("Budget").Preload("RateLimit").First(&modelConfig, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -9126,6 +9182,38 @@ func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Cont
 	return marked, nil
 }
 
+// MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged flips an active row still holding
+// redeemedRefreshToken to 'needs_reauth', under a row lock. The comparison runs on the loaded
+// model because refresh_token is encrypted at rest. A per-user row's discovery is deleted with
+// the flip, as MarkOauthUserTokenNeedsReauthByID does.
+func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(ctx context.Context, tokenID, redeemedRefreshToken, reason string) (bool, error) {
+	if tokenID == "" {
+		return false, nil
+	}
+	marked := false
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current tables.TableMCPOauthToken
+		if err := dbForUpdate(tx).Where("id = ?", tokenID).First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if current.Status != "active" || current.RefreshToken != redeemedRefreshToken {
+			return nil
+		}
+		if err := tx.Model(&tables.TableMCPOauthToken{}).Where("id = ?", tokenID).Updates(needsReauthColumns(reason)).Error; err != nil {
+			return err
+		}
+		marked = true
+		return deleteCredentialDiscovery(tx, current.AuthMode, current.UserID, current.VirtualKeyID, current.MCPClientID)
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to mark oauth token %s needs_reauth: %w", tokenID, err)
+	}
+	return marked, nil
+}
+
 // MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth' on a single
 // token row, regardless of auth_mode. Called by the unified refresh function
 // when the upstream credential is permanently rejected: the row stays
@@ -10591,6 +10679,38 @@ func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context
 	return &req, nil
 }
 
+// GetOAuth2AuthorizeRequestByDeviceCodeHash finds a device-grant authorize
+// request by the hash of its device_code, whatever its status. Used by the
+// device-grant token endpoint.
+func (s *RDBConfigStore) GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx context.Context, deviceCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	var req tables.TableOAuth2AuthorizeRequest
+	err := s.DB().WithContext(ctx).Where("device_code_hash = ?", deviceCodeHash).First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 authorize request by device code hash: %w", err)
+	}
+	return &req, nil
+}
+
+// GetPendingOAuth2AuthorizeRequestByUserCodeHash finds the pending, unexpired
+// device-grant authorize request for a user_code hash. Used by the device
+// verification page to hand the user to the consent flow.
+func (s *RDBConfigStore) GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx context.Context, userCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	var req tables.TableOAuth2AuthorizeRequest
+	err := s.DB().WithContext(ctx).
+		Where("user_code_hash = ? AND status = ? AND expires_at > ?", userCodeHash, tables.OAuth2AuthorizeRequestStatusPending, time.Now()).
+		First(&req).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 authorize request by user code hash: %w", err)
+	}
+	return &req, nil
+}
+
 // ConsentOAuth2AuthorizeRequest atomically transitions a still-pending authorize
 // request to consented, recording the minted code hash and resolved identity in
 // a single conditional update. The status guard makes the transition idempotent
@@ -10608,6 +10728,26 @@ func (s *RDBConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req 
 		})
 	if result.Error != nil {
 		return fmt.Errorf("consent authorize request: %w", result.Error)
+	}
+	if result.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DenyOAuth2AuthorizeRequest atomically transitions a still-pending authorize
+// request to revoked, for a sign-in the person on the consent page refused. The
+// status guard keeps it from undoing a consent that won a race: a request that
+// is no longer pending matches zero rows and returns ErrNotFound.
+func (s *RDBConfigStore) DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error {
+	result := s.DB().WithContext(ctx).Model(&tables.TableOAuth2AuthorizeRequest{}).
+		Where("id = ? AND status = ?", id, tables.OAuth2AuthorizeRequestStatusPending).
+		Updates(map[string]any{
+			"status":     tables.OAuth2AuthorizeRequestStatusRevoked,
+			"updated_at": time.Now(),
+		})
+	if result.Error != nil {
+		return fmt.Errorf("deny authorize request: %w", result.Error)
 	}
 	if result.RowsAffected == 0 {
 		return ErrNotFound
@@ -10716,13 +10856,14 @@ func (s *RDBConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, has
 
 // RevokeOAuth2RefreshTokensByFamilyID revokes all active refresh tokens sharing
 // the same family ID. Called when a revoked token is re-presented, indicating
-// the token family has been compromised (RFC 9700 §2.2.2).
-func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
+// the token family has been compromised (RFC 9700 §2.2.2). Returns the number of rows revoked.
+func (s *RDBConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) (int64, error) {
 	now := time.Now()
-	return s.DB().WithContext(ctx).
+	result := s.DB().WithContext(ctx).
 		Model(&tables.TableOAuth2RefreshToken{}).
 		Where("family_id = ? AND revoked_at IS NULL", familyID).
-		Update("revoked_at", &now).Error
+		Update("revoked_at", &now)
+	return result.RowsAffected, result.Error
 }
 
 // RevokeOAuth2RefreshTokensByMode revokes all active refresh tokens for a given
@@ -10757,29 +10898,34 @@ func lockOAuth2Subject(tx *gorm.DB, bfMode, bfSub string) error {
 // revoked or creates a token the second statement still sees. Rotating a virtual
 // key uses it so nothing minted with the retired value, redeemed or not, outlives
 // that value. Rows are kept, never deleted, so stolen-token replay detection keeps
-// working. Pass tx to run inside a caller's transaction.
-func (s *RDBConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error {
+// working. Pass tx to run inside a caller's transaction. Returns the number of refresh tokens revoked.
+func (s *RDBConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) (int64, error) {
 	if len(tx) == 0 {
-		return s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
-			return s.RevokeOAuth2GrantsBySubject(ctx, bfMode, bfSub, transaction)
+		var revoked int64
+		err := s.DB().WithContext(ctx).Transaction(func(transaction *gorm.DB) error {
+			var err error
+			revoked, err = s.RevokeOAuth2GrantsBySubject(ctx, bfMode, bfSub, transaction)
+			return err
 		})
+		return revoked, err
 	}
 	db := tx[0].WithContext(ctx)
 	if err := lockOAuth2Subject(db, bfMode, bfSub); err != nil {
-		return fmt.Errorf("lock oauth2 subject: %w", err)
+		return 0, fmt.Errorf("lock oauth2 subject: %w", err)
 	}
 	now := time.Now()
 	if err := db.Model(&tables.TableOAuth2AuthorizeRequest{}).
 		Where("bf_mode = ? AND bf_sub = ? AND status = ?", bfMode, bfSub, tables.OAuth2AuthorizeRequestStatusConsented).
 		Updates(map[string]any{"status": tables.OAuth2AuthorizeRequestStatusRevoked, "updated_at": now}).Error; err != nil {
-		return fmt.Errorf("revoke oauth2 authorization codes: %w", err)
+		return 0, fmt.Errorf("revoke oauth2 authorization codes: %w", err)
 	}
-	if err := db.Model(&tables.TableOAuth2RefreshToken{}).
+	revoked := db.Model(&tables.TableOAuth2RefreshToken{}).
 		Where("bf_mode = ? AND bf_sub = ? AND revoked_at IS NULL", bfMode, bfSub).
-		Update("revoked_at", &now).Error; err != nil {
-		return fmt.Errorf("revoke oauth2 refresh tokens: %w", err)
+		Update("revoked_at", &now)
+	if revoked.Error != nil {
+		return 0, fmt.Errorf("revoke oauth2 refresh tokens: %w", revoked.Error)
 	}
-	return nil
+	return revoked.RowsAffected, nil
 }
 
 // SweepOAuth2RefreshTokens deletes revoked refresh tokens older than the given

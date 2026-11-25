@@ -1008,6 +1008,19 @@ Availability varies by region. Check [GCP documentation](https://cloud.google.co
 
 Some models (e.g. Claude Opus 4.7/4.8) are published only on Google's multi-region pool endpoints. When such a model is requested with a single US or Europe region, Bifrost automatically promotes the call to the matching pool endpoint (`aiplatform.us.rep.googleapis.com` / `aiplatform.eu.rep.googleapis.com`) and rewrites the `locations/` path segment to `us` / `eu`. Set `force_single_region: true` on the Vertex key (or per-deployment) to disable this and keep the exact region you configured — for example when you serve these models from a single region via provisioned throughput. Endpoint rewrites are emitted at `debug` log level.
 
+## Service Tiers
+
+Gemini requests with `service_tier: "priority"` or `"flex"` are sent with the `X-Vertex-AI-LLM-Shared-Request-Type` header ([Priority PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/priority-paygo), [Flex PayGo](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/flex-paygo)). The header is sent only when both hold:
+
+| Tier | Regions | Models |
+| ---- | ------- | ------ |
+| `priority` | `global`, `us`, `eu` | The datasheet's `service_tiers` for the model when it lists any; otherwise Google's Priority PayGo list |
+| `flex` | `global` | The datasheet's `service_tiers` for the model when it lists any; otherwise Google's Flex PayGo list |
+
+Custom model IDs (all digits) skip the model check, so in a tier's regions they always get the header. When no header is sent, Vertex serves the request on its default path: Standard PayGo, or Provisioned Throughput where the project has it for the model and region. The tier that served the request is returned as `service_tier`.
+
+The tier comes from the key's or alias's `service_tier` when either sets one, in place of the request's own; otherwise from the request.
+
 ## Streaming
 
 Streaming format depends on model type:
@@ -1347,7 +1360,7 @@ Image variation is not supported by Vertex AI.
 
 ## Request Parameters
 
-None required. The key's `region` picks the Model Garden host (`aiplatform.googleapis.com` for `global` and multi-region endpoints, `{region}-aiplatform.googleapis.com` otherwise).
+None required. The key's `region` picks the Model Garden host (`aiplatform.googleapis.com` for `global`, `aiplatform.{region}.rep.googleapis.com` for the `us` and `eu` multi-region endpoints, `{region}-aiplatform.googleapis.com` otherwise).
 
 ## How Models Are Listed
 
@@ -1541,6 +1554,22 @@ curl -X POST http://localhost:8080/v1/audio/speech \
 
 The same request works on the OpenAI-compatible routes (`/openai/v1/audio/speech`, and the same path under `/litellm`, `/langchain` and `/pydanticai`). On the GenAI route, send it as a `generateContent` call with `speechConfig` to `/genai/v1beta/models/vertex/chirp-3-hd:generateContent`; the audio comes back as `inlineData`.
 
+With the OpenAI Python SDK:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/openai", api_key="dummy-key")  # use your Bifrost virtual key if the gateway enforces them
+
+audio = client.audio.speech.create(
+    model="vertex/chirp-3-hd",
+    voice="hi-IN-Chirp3-HD-Erinome",
+    input="नमस्ते, आप कैसे हैं?",
+    response_format="mp3",
+)
+audio.write_to_file("speech.mp3")
+```
+
 **Parameter Mapping**
 
 | Bifrost                              | Cloud Text-to-Speech           | Notes                                                                                              |
@@ -1557,10 +1586,16 @@ The same request works on the OpenAI-compatible routes (`/openai/v1/audio/speech
 
 `instructions` is ignored.
 
-<Note>
-  - Input is limited to 5000 bytes per request. Longer input returns Google's error.
-  - Cloud Text-to-Speech voices do not stream or support multi-speaker input. Streaming is available for Gemini TTS models only.
-</Note>
+On `/v1/audio/speech`, extra parameters go at the top level of the request body, next to `input` and `voice`:
+
+```json
+{
+  "model": "vertex/chirp-3-hd",
+  "input": "नमस्ते, आप कैसे हैं?",
+  "voice": "hi-IN-Chirp3-HD-Erinome",
+  "volume_gain_db": -6
+}
+```
 
 ### Gemini TTS
 
@@ -1583,7 +1618,14 @@ The same request works on the OpenAI-compatible routes and on the GenAI route (`
 
 ## Realtime
 
-Gemini Live models such as `gemini-3.8-live` run on Vertex AI over a WebSocket. Open `/v1/realtime` with a Vertex model, for example `vertex/gemini-3.8-live`, and Bifrost translates the OpenAI Realtime events to Live and back, the same translation it does for Gemini Live on the Gemini API.
+Gemini Live models such as `gemini-3.8-live` run on Vertex AI over a WebSocket. Bifrost serves them on two routes:
+
+| Route | Protocol | Use it for |
+| ----- | -------- | ---------- |
+| `/v1/realtime?model=vertex/gemini-3.8-live` | OpenAI Realtime | Apps written for the OpenAI Realtime API. Bifrost translates the events to Live and back, the same translation it does for Gemini Live on the Gemini API |
+| `/genai/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent` | Google Live | Clients that already speak Live to Vertex AI, such as the Google GenAI SDK in Vertex mode. Frames are relayed as they are |
+
+Authenticate with your Bifrost virtual key, as on any other route. After the first message, a `session.update` can still change `output_modalities` (or `modalities`) and `audio.input.format` on any Live model, and `instructions`, `tools` and `tool_choice` on Gemini 3 and later. The other settings are fixed when the session opens, so changes to them are ignored.
 
 | Part | On Vertex AI |
 | ---- | ------------ |
@@ -1591,8 +1633,3 @@ Gemini Live models such as `gemini-3.8-live` run on Vertex AI over a WebSocket. 
 | Authentication | An OAuth bearer token from the key's service account or workload identity credentials. A key that carries only an API key is refused for realtime |
 | Model | The setup frame names the model as `projects/{project}/locations/{region}/publishers/google/models/{model}`. The project and region are the key's, or those of the model alias the connection resolved through |
 | Usage | Vertex names the response token fields `candidates*` where the Gemini API names them `response*`. Bifrost reads both, so output, audio and thinking tokens are counted the same way on either |
-
-<Note>
-  - Transcription sessions (`intent=transcription`) and WebRTC are not supported.
-  - The native Google GenAI route (`/genai`) serves the Gemini API only. A client that speaks Live to Vertex directly is not relayed.
-</Note>

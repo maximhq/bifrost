@@ -216,6 +216,11 @@ env.BIFROST_WEAVIATE_API_KEY
 {{- end -}}
 {{- end -}}
 
+{{- /* Redis exporter port; the metrics values are optional, so the default lives here. */ -}}
+{{- define "bifrost.redis.metricsPort" -}}
+{{- .Values.vectorStore.redis.metrics.port | default 9121 -}}
+{{- end }}
+
 {{- define "bifrost.redis.host" -}}
 {{- if .Values.vectorStore.redis.external.enabled }}
 {{- .Values.vectorStore.redis.external.host }}
@@ -468,6 +473,9 @@ false
 {{- if .Values.bifrost.client.allowedHeaders }}
 {{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
 {{- end }}
+{{- if .Values.bifrost.client.usageEstimationTokenizers }}
+{{- $_ := set $client "usage_estimation_tokenizers" .Values.bifrost.client.usageEstimationTokenizers }}
+{{- end }}
 {{- if .Values.bifrost.client.mcpAgentDepth }}
 {{- $_ := set $client "mcp_agent_depth" .Values.bifrost.client.mcpAgentDepth }}
 {{- end }}
@@ -492,6 +500,9 @@ false
 {{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyDeletion" }}
 {{- $_ := set $client "skip_access_profile_user_virtual_key_deletion" .Values.bifrost.client.skipAccessProfileUserVirtualKeyDeletion }}
 {{- end }}
+{{- if .Values.bifrost.client.entityAccessProfileMode }}
+{{- $_ := set $client "entity_access_profile_mode" .Values.bifrost.client.entityAccessProfileMode }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
 {{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
 {{- end }}
@@ -513,6 +524,16 @@ false
 {{- if hasKey .Values.bifrost.client "mcpClientMetadataUrl" }}
 {{- $_ := set $client "mcp_client_metadata_url" .Values.bifrost.client.mcpClientMetadataUrl }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "bifrostUrl" }}
+{{- $_ := set $client "bifrost_url" .Values.bifrost.client.bifrostUrl }}
+{{- end }}
+{{- /* hasKey: an explicit false must render, since the default is true */ -}}
+{{- if hasKey .Values.bifrost.client "bifrostMcpAllowWrites" }}
+{{- $_ := set $client "bifrost_mcp_allow_writes" .Values.bifrost.client.bifrostMcpAllowWrites }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "mcpOpenapiMaxSpecMb" }}
+{{- $_ := set $client "mcp_openapi_max_spec_mb" (.Values.bifrost.client.mcpOpenapiMaxSpecMb | int) }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
 {{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
 {{- end }}
@@ -533,10 +554,28 @@ false
 {{- if .Values.bifrost.client.oauth2ServerConfig }}
 {{- $oauth2 := dict }}
 {{- with .Values.bifrost.client.oauth2ServerConfig.issuerUrl }}{{- $_ := set $oauth2 "issuer_url" . }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.browserBaseUrl }}{{- $_ := set $oauth2 "browser_base_url" . }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.additionalIssuerUrls }}{{- $_ := set $oauth2 "additional_issuer_urls" . }}{{- end }}
 {{- with .Values.bifrost.client.oauth2ServerConfig.authCodeTtl }}{{- $_ := set $oauth2 "auth_code_ttl" (. | int) }}{{- end }}
 {{- with .Values.bifrost.client.oauth2ServerConfig.accessTokenTtl }}{{- $_ := set $oauth2 "access_token_ttl" (. | int) }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "disableVkIdentity" }}{{- $_ := set $oauth2 "disable_vk_identity" .Values.bifrost.client.oauth2ServerConfig.disableVkIdentity }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "allowedRedirectUris" }}{{- $_ := set $oauth2 "allowed_redirect_uris" (default (list) .Values.bifrost.client.oauth2ServerConfig.allowedRedirectUris) }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.gateways }}
+{{- $gateways := dict }}
+{{- with .claudeCode }}
+{{- if and .enabled (not $.Values.bifrost.client.oauth2ServerConfig.issuerUrl) }}{{- fail "ERROR: bifrost.client.oauth2ServerConfig.issuerUrl is required when bifrost.client.oauth2ServerConfig.gateways.claudeCode.enabled is true. Bifrost exits at startup without it." }}{{- end }}
+{{- $claudeCode := dict "enabled" (.enabled | default false) }}
+{{- if hasKey . "managedSettings" }}{{- $_ := set $claudeCode "managed_settings" .managedSettings }}{{- end }}
+{{- with .telemetry }}
+{{- $telemetry := dict "enabled" (.enabled | default false) }}
+{{- with .destinations }}{{- $_ := set $telemetry "destinations" . }}{{- end }}
+{{- with .dropAttributes }}{{- $_ := set $telemetry "drop_attributes" . }}{{- end }}
+{{- $_ := set $claudeCode "telemetry" $telemetry }}
+{{- end }}
+{{- $_ := set $gateways "claude_code" $claudeCode }}
+{{- end }}
+{{- if $gateways }}{{- $_ := set $oauth2 "gateways" $gateways }}{{- end }}
+{{- end }}
 {{- if $oauth2 }}{{- $_ := set $client "oauth2_server_config" $oauth2 }}{{- end }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
@@ -594,7 +633,11 @@ false
 {{- if not (kindIs "invalid" .Values.bifrost.framework.pricing.liveModelsSyncInterval) }}
 {{- $_ := set $pricing "live_models_sync_interval" .Values.bifrost.framework.pricing.liveModelsSyncInterval }}
 {{- end }}
-{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") }}
+{{- /* hasKey: "" must render (the build's default spec, clearing a stored override), since an omitted one keeps the stored value */ -}}
+{{- if hasKey .Values.bifrost.framework.pricing "openapiUrl" }}
+{{- $_ := set $pricing "openapi_url" .Values.bifrost.framework.pricing.openapiUrl }}
+{{- end }}
+{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") (hasKey $pricing "openapi_url") }}
 {{- $_ := set $framework "pricing" $pricing }}
 {{- end }}
 {{- end }}
@@ -1003,6 +1046,8 @@ false
 {{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
 {{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
 {{- if .output_mode }}{{- $_ := set $rule "output_mode" .output_mode }}{{- end }}
+{{- if .input_timing }}{{- $_ := set $rule "input_timing" .input_timing }}{{- end }}
+{{- if .profile_execution_mode }}{{- $_ := set $rule "profile_execution_mode" .profile_execution_mode }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -1097,11 +1142,17 @@ false
 {{- end }}
 {{- $_ := set $config "relays" (default (list) .Values.bifrost.relays) }}
 {{- end }}
-{{- /* Model routers, each with its targets and routing, rendered as declared. Like
-       governance.routingRules, an empty list renders nothing, so installs that do not set it keep
-       their stored routers. */ -}}
-{{- if .Values.bifrost.modelRouters }}
-{{- $_ := set $config "model_routers" .Values.bifrost.modelRouters }}
+{{- /* Model routers, each with its targets and routing, rendered as declared. Rendered whenever the
+       key is declared, [] included: with config.json as the source of truth an explicit list removes
+       stored routers it does not name, and omitting the key leaves them. */ -}}
+{{- if hasKey .Values.bifrost "modelRouters" }}
+{{- $_ := set $config "model_routers" (default (list) .Values.bifrost.modelRouters) }}
+{{- end }}
+{{- /* Datasheet overrides. Rendered whenever the key is declared, [] included: with config.json as
+       the source of truth an explicit list removes stored overrides it does not name, and omitting
+       the key leaves them. */ -}}
+{{- if hasKey .Values.bifrost "datasheetOverrides" }}
+{{- $_ := set $config "datasheet_overrides" (default (list) .Values.bifrost.datasheetOverrides) }}
 {{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
@@ -1596,6 +1647,32 @@ false
 {{- with $client.tokenExchange.resourceClientAuthMethod }}{{- $_ := set $te "resource_client_auth_method" . }}{{- end }}
 {{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
+{{- /* OAuth client_credentials grant for auth_type "client_credentials". resource is rendered when set, even empty: "" means send no resource. */ -}}
+{{- if $client.clientCredentials }}
+{{- $ccc := dict }}
+{{- with $client.clientCredentials.tokenUrl }}{{- $_ := set $ccc "token_url" . }}{{- end }}
+{{- with $client.clientCredentials.clientId }}{{- $_ := set $ccc "client_id" . }}{{- end }}
+{{- /* A whitespace-only secret or key counts as unset, as the values schema treats it; the value is rendered as written. */ -}}
+{{- if trim (toString (default "" $client.clientCredentials.clientSecret)) }}{{- $_ := set $ccc "client_secret" $client.clientCredentials.clientSecret }}{{- end }}
+{{- with $client.clientCredentials.authMethod }}{{- $_ := set $ccc "auth_method" . }}{{- end }}
+{{- if trim (toString (default "" $client.clientCredentials.privateKey)) }}{{- $_ := set $ccc "private_key" $client.clientCredentials.privateKey }}{{- end }}
+{{- with $client.clientCredentials.keyId }}{{- $_ := set $ccc "key_id" . }}{{- end }}
+{{- with $client.clientCredentials.signingAlgorithm }}{{- $_ := set $ccc "signing_algorithm" . }}{{- end }}
+{{- with $client.clientCredentials.assertionAudience }}{{- $_ := set $ccc "assertion_audience" . }}{{- end }}
+{{- with $client.clientCredentials.scopes }}{{- $_ := set $ccc "scopes" . }}{{- end }}
+{{- if hasKey $client.clientCredentials "resource" }}{{- $_ := set $ccc "resource" $client.clientCredentials.resource }}{{- end }}
+{{- $_ := set $cc "client_credentials" $ccc }}
+{{- end }}
+{{- /* AWS SigV4 signing for auth_type "aws_sigv4": Bifrost signs with its own AWS identity, optionally assuming roleArn. */ -}}
+{{- if $client.awsSigV4 }}
+{{- $aws := dict }}
+{{- with $client.awsSigV4.region }}{{- $_ := set $aws "region" . }}{{- end }}
+{{- with $client.awsSigV4.service }}{{- $_ := set $aws "service" . }}{{- end }}
+{{- with $client.awsSigV4.roleArn }}{{- $_ := set $aws "role_arn" . }}{{- end }}
+{{- with $client.awsSigV4.externalId }}{{- $_ := set $aws "external_id" . }}{{- end }}
+{{- with $client.awsSigV4.sessionName }}{{- $_ := set $aws "session_name" . }}{{- end }}
+{{- $_ := set $cc "aws_sigv4" $aws }}
+{{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
 {{- end }}
@@ -1941,6 +2018,9 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
+{{- end }}
+{{- if hasKey $inputConfig "apply_trace_dimensions_to_child_spans" }}
+{{- $_ := set $otelConfig "apply_trace_dimensions_to_child_spans" $inputConfig.apply_trace_dimensions_to_child_spans }}
 {{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
@@ -2941,8 +3021,8 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig needs one of spec, specFile or specUrl for client '%s'." $idx $client.name) }}
 {{- end }}
 {{- $oaAuth := default "none" (default $client.authType $client.auth_type) }}
-{{- if not (has $oaAuth (list "none" "headers" "per_user_headers")) }}
-{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'openapi' (client '%s'). Use none, headers or per_user_headers; upstream API credentials go in openapiConfig.securityCredentials." $idx $oaAuth $client.name) }}
+{{- if not (has $oaAuth (list "none" "headers" "per_user_headers" "aws_sigv4")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'openapi' (client '%s'). Use none, headers, per_user_headers or aws_sigv4; upstream API credentials go in openapiConfig.securityCredentials." $idx $oaAuth $client.name) }}
 {{- end }}
 {{- else if $client.openapiConfig }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig only applies to connectionType 'openapi' (client '%s' is '%s')." $idx $client.name $client.connectionType) }}
@@ -2952,6 +3032,15 @@ Call this template at the beginning of deployment/stateful templates
 {{- /* websocket renders as sse, so it takes the same restriction. */ -}}
 {{- if and (has $client.connectionType (list "sse" "stdio" "websocket")) (has $ccAuth $perUserAuthTypes) }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType '%s' (client '%s'). Per-user auth types open a connection per call, which SSE and STDIO cannot serve; use none, headers or oauth." $idx $ccAuth $client.connectionType $client.name) }}
+{{- end }}
+{{- if and (eq $client.connectionType "stdio") (has $ccAuth (list "client_credentials" "aws_sigv4")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'stdio' (client '%s'). It authenticates HTTP requests, which a STDIO server never receives." $idx $ccAuth $client.name) }}
+{{- end }}
+{{- if and (eq $ccAuth "client_credentials") (not (and $client.clientCredentials $client.clientCredentials.clientId)) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].clientCredentials.clientId is required for authType 'client_credentials' (client '%s')." $idx $client.name) }}
+{{- end }}
+{{- if and (eq $ccAuth "aws_sigv4") (not (and $client.awsSigV4 $client.awsSigV4.region)) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].awsSigV4.region is required for authType 'aws_sigv4' (client '%s')." $idx $client.name) }}
 {{- end }}
 {{- if $client.perUserDiscovery }}
 {{- if eq $client.connectionType "openapi" }}

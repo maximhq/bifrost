@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash"
+	"maps"
 	"math"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -38,6 +40,11 @@ const (
 // entry point (PUT /api/config and the config.json load path), mirroring
 // MaxAuthCodeTTL, and matching the maximum published in config.schema.json.
 const MaxVKRotationCooldown = 30 * 24 * time.Hour
+
+// MaxMCPOpenAPISpecMB is the ceiling on mcp_openapi_max_spec_mb: parsing holds several times the
+// spec's size in memory, so the setting may raise the limit but not without bound. Enforced at
+// PUT /api/config and the config.json load path, matching the maximum in config.schema.json.
+const MaxMCPOpenAPISpecMB = 256
 
 // EnvKeyInfo stores information about a key sourced from environment
 type EnvKeyInfo struct {
@@ -115,6 +122,9 @@ type ClientConfig struct {
 	MCPAgentDepth                           int                                   `json:"mcp_agent_depth"`                               // The maximum depth for MCP agent mode tool execution
 	MCPMaxInstructionsPerClient             int                                   `json:"mcp_max_instructions_per_client"`               // Byte bound on one server's forwarded instructions; 0 is the default
 	MCPMaxInstructionsTotal                 int                                   `json:"mcp_max_instructions_total"`                    // Byte bound on the whole forwarded aggregate; 0 is the default
+	MCPOpenAPIMaxSpecMB                     int                                   `json:"mcp_openapi_max_spec_mb"`                       // Size limit on an openapi MCP client's spec in MiB; 0 is the default (32)
+	BifrostURL                              *schemas.SecretVar                    `json:"bifrost_url,omitempty"`                         // The gateway's public base URL; /v1/mcp tool calls address it. Supports env var syntax ("env.MY_VAR")
+	BifrostMCPAllowWrites                   *bool                                 `json:"bifrost_mcp_allow_writes,omitempty"`            // Whether /v1/mcp serves non-GET /api tools; nil is true
 	MCPCodeModeLimits                       *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`                // Per-execution code mode limits; nil or zero fields use the defaults
 	MCPOAuthPrivateAllowlist                []string                              `json:"mcp_oauth_private_allowlist,omitempty"`         // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
 	A2APrivateAllowlist                     []string                              `json:"a2a_private_allowlist,omitempty"`               // Private hosts, IPs and CIDRs the Agent Gateway may reach for clients registered with admin auth
@@ -122,6 +132,7 @@ type ClientConfig struct {
 	MCPCodeModeBindingLevel                 string                                `json:"mcp_code_mode_binding_level"`                   // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                     int                                   `json:"mcp_tool_sync_interval"`                        // Global tool sync interval in minutes (default: 10, 0 = built-in default)
 	MCPMaxProtocolVersion                   string                                `json:"mcp_max_protocol_version,omitempty"`            // Global cap on the MCP protocol version offered to upstreams ("" or "auto" = newest)
+	MCPServerMaxProtocolVersion             string                                `json:"mcp_server_max_protocol_version,omitempty"`     // Cap on the MCP protocol version Bifrost's /mcp serves ("" or "auto" = newest)
 	MCPDisableAutoToolInject                bool                                  `json:"mcp_disable_auto_tool_inject"`                  // When true, MCP tools are not injected into requests by default
 	MCPEnableTempTokenAuth                  bool                                  `json:"mcp_enable_temp_token_auth"`                    // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
 	HeaderFilterConfig                      *tables.GlobalHeaderFilterConfig      `json:"header_filter_config,omitempty"`                // Global header filtering configuration for x-bf-eh-* headers
@@ -134,6 +145,7 @@ type ClientConfig struct {
 	EnforceVKObjectOwnership                bool                                  `json:"enforce_vk_object_ownership"`                   // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
 	SkipAccessProfileUserVirtualKeyCreation bool                                  `json:"skip_access_profile_user_virtual_key_creation"` // Enterprise: a user's first access profile does not create a virtual key for them
 	SkipAccessProfileUserVirtualKeyDeletion bool                                  `json:"skip_access_profile_user_virtual_key_deletion"` // Enterprise: losing the last access profile does not delete the user's virtual keys
+	EntityAccessProfileMode                 tables.EntityAccessProfileMode        `json:"entity_access_profile_mode,omitempty"`          // Enterprise: "union" (default) or "intersect" combination of team, business unit and customer access profiles with a caller's own access
 	HiddenRequestTypes                      []string                              `json:"hidden_request_types,omitempty"`                // Request types excluded from dashboard and log API reads; logs are still written
 	UsageEstimationTokenizers               []string                              `json:"usage_estimation_tokenizers,omitempty"`         // Embedded tokenizer families ("anthropic", "deepseek", "llama2", "llama3", "all") used to estimate a cancelled stream's usage; empty uses only o200k_base/cl100k_base
 	RoutingChainMaxDepth                    int                                   `json:"routing_chain_max_depth"`                       // Maximum depth for routing rule chain evaluation (default: 10)
@@ -269,6 +281,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.SkipAccessProfileUserVirtualKeyDeletion {
 		hash.Write([]byte("skipAccessProfileUserVirtualKeyDeletion:true"))
 	}
+	if c.EntityAccessProfileMode != "" && c.EntityAccessProfileMode != tables.EntityAccessProfileModeUnion {
+		hash.Write([]byte("entityAccessProfileMode:" + string(c.EntityAccessProfileMode)))
+	}
 	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
 	if !c.EnforceVKObjectOwnership {
 		hash.Write([]byte("enforceVKObjectOwnership:false"))
@@ -293,6 +308,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.MCPMaxInstructionsTotal > 0 {
 		hash.Write([]byte("mcpMaxInstructionsTotal:" + strconv.Itoa(c.MCPMaxInstructionsTotal)))
+	}
+	if c.MCPOpenAPIMaxSpecMB > 0 {
+		hash.Write([]byte("mcpOpenAPIMaxSpecMB:" + strconv.Itoa(c.MCPOpenAPIMaxSpecMB)))
 	}
 
 	if c.MCPToolExecutionTimeout > 0 {
@@ -582,6 +600,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			hash.Write([]byte("a2aExternalClientURL:val:" + c.A2AExternalClientURL.GetValue()))
 		}
 	}
+	// Length-prefixed, so where each value ends is unambiguous: a URL whose path
+	// ends in the next field's text must not hash like a shorter URL with that
+	// field set. Each is written only when set, so configs without them keep their hash.
+	if c.BifrostURL != nil {
+		if c.BifrostURL.IsFromSecret() {
+			writeLengthPrefixed(hash, "bifrostURL:ref:", c.BifrostURL.GetRawRef())
+		} else if v := c.BifrostURL.GetValue(); v != "" {
+			writeLengthPrefixed(hash, "bifrostURL:val:", v)
+		}
+	}
+	if c.BifrostMCPAllowWrites != nil {
+		writeLengthPrefixed(hash, "bifrostMCPAllowWrites:", strconv.FormatBool(*c.BifrostMCPAllowWrites))
+	}
 
 	// Only hash non-default values to avoid legacy config hash churn on upgrade —
 	// existing configs carry an empty auth mode and a nil OAuth2 server config.
@@ -599,6 +630,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 				hash.Write([]byte("oauth2IssuerURL:val:" + oc.IssuerURL.GetValue()))
 			}
 		}
+		// Each is hashed only when set, so configs without them keep their hash. The NUL
+		// ends the unframed issuer URL, which cannot hold control characters.
+		if oc.BrowserBaseURL.IsSet() {
+			writeLengthPrefixed(hash, "\x00oauth2BrowserBaseURL:", secretVarHashForm(oc.BrowserBaseURL))
+		}
+		for _, issuer := range oc.AdditionalIssuerURLs {
+			writeLengthPrefixed(hash, "\x00oauth2AdditionalIssuerURL:", secretVarHashForm(issuer))
+		}
 		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
 		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
 		// Unset policy fields contribute nothing so rows stored before they were
@@ -608,6 +647,38 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 		if oc.DisableVKIdentity {
 			hash.Write([]byte("oauth2DisableVKIdentity:true"))
+		}
+		// Client gateways are only hashed when set, so configs without them keep
+		// their existing hash.
+		if cc := oc.ClaudeCodeGateway(); cc != nil {
+			// The NUL starts the block where no redirect URI can reach: URIs are written
+			// unframed (kept for existing hashes) and cannot hold control characters.
+			hash.Write([]byte("\x00gateways.claude_code.enabled:" + strconv.FormatBool(cc.Enabled)))
+			if cc.ManagedSettings != nil {
+				// MarshalSorted sorts map keys at every level, so the bytes are stable.
+				settings, err := providerUtils.MarshalSorted(cc.ManagedSettings)
+				if err != nil {
+					return "", fmt.Errorf("failed to marshal gateways.claude_code.managed_settings: %w", err)
+				}
+				hash.Write([]byte("gateways.claude_code.managed_settings:"))
+				hash.Write(settings)
+			}
+			if t := cc.Telemetry; t != nil {
+				hash.Write([]byte("gateways.claude_code.telemetry.enabled:" + strconv.FormatBool(t.Enabled)))
+				// Length-prefixed, so where one value ends is unambiguous: concatenated, a value
+				// containing the next field's text hashed like two shorter values.
+				for _, d := range t.Destinations {
+					writeLengthPrefixed(hash, "gateways.claude_code.telemetry.endpoint:", secretVarHashForm(d.Endpoint))
+					names := slices.Sorted(maps.Keys(d.Headers))
+					for _, name := range names {
+						writeLengthPrefixed(hash, "gateways.claude_code.telemetry.header.name:", name)
+						writeLengthPrefixed(hash, "gateways.claude_code.telemetry.header.value:", secretVarHashForm(d.Headers[name]))
+					}
+				}
+				for _, key := range t.DropAttributes {
+					writeLengthPrefixed(hash, "gateways.claude_code.telemetry.drop:", key)
+				}
+			}
 		}
 	}
 
@@ -678,6 +749,10 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	if c.A2AExternalClientURL != nil && c.A2AExternalClientURL.IsFromSecret() {
 		out.A2AExternalClientURL = c.A2AExternalClientURL.Redacted()
 	}
+	if c.BifrostURL != nil && c.BifrostURL.IsFromSecret() {
+		out.BifrostURL = c.BifrostURL.Redacted()
+	}
+	out.OAuth2ServerConfig = c.OAuth2ServerConfig.Redacted()
 	return out
 }
 
@@ -778,6 +853,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		} else {
 			redactedConfig.Keys[i].UseOpenAIEndpoints = new(false)
 		}
+		redactedConfig.Keys[i].ServiceTier = key.ServiceTier
 
 		// Add model discovery status and error
 		redactedConfig.Keys[i].Status = key.Status
@@ -1529,6 +1605,9 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	}
 	if useAnthropicEndpoints {
 		hash.Write([]byte("useAnthropicEndpoints:true"))
+	}
+	if key.ServiceTier != nil {
+		hash.Write([]byte("serviceTier:" + string(*key.ServiceTier)))
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
@@ -2419,6 +2498,28 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write(data)
 	}
 
+	// Same for the client_credentials block.
+	if m.ClientCredentialsJSON != nil && *m.ClientCredentialsJSON != "" {
+		hash.Write([]byte(*m.ClientCredentialsJSON))
+	} else if m.ClientCredentials != nil {
+		data, err := json.Marshal(m.ClientCredentials)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
+	// Same for the aws_sigv4 block.
+	if m.AWSSigV4JSON != nil && *m.AWSSigV4JSON != "" {
+		hash.Write([]byte(*m.AWSSigV4JSON))
+	} else if m.AWSSigV4 != nil {
+		data, err := json.Marshal(m.AWSSigV4)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash openapi_config so a changed spec, upstream, credential set or option
 	// in config.json drifts the hash and triggers reconciliation. The spec is
 	// hashed by content (or by its file reference when the content was not
@@ -2750,7 +2851,7 @@ func GenerateRelayHash(cfg *schemas.RelayConfig) (string, error) {
 		hash.Write(data)
 	}
 
-	// Hash Routes in file order (the first match wins); route headers are a map, so sort keys
+	// Hash Routes in file order (order still breaks ties between equally specific routes); route headers are a map, so sort keys
 	if len(cfg.Routes) > 0 {
 		data, err := providerUtils.MarshalSorted(cfg.Routes)
 		if err != nil {
@@ -2768,6 +2869,16 @@ func GenerateRelayHash(cfg *schemas.RelayConfig) (string, error) {
 	// Hash IgnoreUpstreamCost
 	if cfg.IgnoreUpstreamCost {
 		hash.Write([]byte("ignoreUpstreamCost"))
+	}
+
+	// Hash BodyOverrides; a map, so sort keys
+	if len(cfg.BodyOverrides) > 0 {
+		data, err := providerUtils.MarshalSorted(cfg.BodyOverrides)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("bodyOverrides:"))
+		hash.Write(data)
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -2848,7 +2959,7 @@ func GeneratePluginHash(p tables.TablePlugin) (string, error) {
 
 // frameworkConfigHashPayload holds the config.json-sourced fields used for hashing.
 //
-// LiveModelsSyncInterval carries omitempty deliberately: a nil pointer must
+// LiveModelsSyncInterval and OpenAPIURL carry omitempty deliberately: a nil pointer must
 // marshal to exactly the bytes this struct produced before the field existed,
 // so hashes already persisted in framework_configs stay valid and no upgraded
 // deployment sees a spurious "file changed" override on first boot.
@@ -2857,6 +2968,7 @@ type frameworkConfigHashPayload struct {
 	ModelParametersURL     *string `json:"model_parameters_url"`
 	PricingSyncInterval    *int64  `json:"pricing_sync_interval"`
 	LiveModelsSyncInterval *int64  `json:"live_models_sync_interval,omitempty"`
+	OpenAPIURL             *string `json:"openapi_url,omitempty"`
 }
 
 type frameworkConfigHashPayloadWithMCP struct {
@@ -2866,6 +2978,7 @@ type frameworkConfigHashPayloadWithMCP struct {
 	MCPLibraryURL          *string `json:"mcp_library_url"`
 	MCPLibrarySyncInterval *int64  `json:"mcp_library_sync_interval"`
 	LiveModelsSyncInterval *int64  `json:"live_models_sync_interval,omitempty"`
+	OpenAPIURL             *string `json:"openapi_url,omitempty"`
 }
 
 // FrameworkConfigHashOptions adds optional framework config fields to the
@@ -2875,6 +2988,7 @@ type FrameworkConfigHashOptions struct {
 	MCPLibraryURL          *string
 	MCPLibrarySyncInterval *int64
 	LiveModelsSyncInterval *int64
+	OpenAPIURL             *string
 }
 
 // GenerateFrameworkConfigHash generates a SHA256 hash for a framework config.
@@ -2892,6 +3006,7 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 				ModelParametersURL:     modelParametersURL,
 				PricingSyncInterval:    pricingSyncInterval,
 				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
+				OpenAPIURL:             opts[0].OpenAPIURL,
 			})
 		} else {
 			data, err = sonic.Marshal(frameworkConfigHashPayloadWithMCP{
@@ -2901,6 +3016,7 @@ func GenerateFrameworkConfigHash(pricingURL *string, modelParametersURL *string,
 				MCPLibraryURL:          opts[0].MCPLibraryURL,
 				MCPLibrarySyncInterval: opts[0].MCPLibrarySyncInterval,
 				LiveModelsSyncInterval: opts[0].LiveModelsSyncInterval,
+				OpenAPIURL:             opts[0].OpenAPIURL,
 			})
 		}
 	} else {
@@ -2943,11 +3059,51 @@ type GovernanceConfig struct {
 	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
 }
 
+// MaxOpenAPIURLLength bounds the framework config's openapi_url, matching config.schema.json.
+const MaxOpenAPIURLLength = 2048
+
+// ValidateOpenAPIURL accepts an empty setting (the build's default spec), an
+// absolute http(s) URL, or a relative path that stays inside the app directory. An
+// absolute path is refused: the setting is writable over the API, and a spec file
+// belongs beside config.json.
+func ValidateOpenAPIURL(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len(value) > MaxOpenAPIURLLength {
+		return fmt.Errorf("must be at most %d characters", MaxOpenAPIURLLength)
+	}
+	if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Hostname() == "" {
+			return fmt.Errorf("must be an absolute http(s) URL or a path relative to the app directory")
+		}
+		return nil
+	}
+	if strings.Contains(value, "://") {
+		return fmt.Errorf("must be an http(s) URL or a path relative to the app directory")
+	}
+	clean := filepath.Clean(filepath.FromSlash(value))
+	if filepath.IsAbs(clean) || strings.HasPrefix(value, "/") || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("must be a path relative to the app directory that stays inside it")
+	}
+	return nil
+}
+
+// MaxPublicURLLength is the longest public URL a setting accepts: bifrost_url
+// and the MCP, Skills and A2A external client URLs are stored in varchar(512)
+// columns, so a longer value would be accepted and then fail to save.
+const MaxPublicURLLength = 512
+
 // ValidatePublicBaseURL accepts an empty setting or a public HTTP base URL without private URL components.
 // Errors omit the value because it may contain credentials resolved from a secret reference.
 func ValidatePublicBaseURL(value string) error {
 	if value == "" {
 		return nil
+	}
+	if len(value) > MaxPublicURLLength {
+		return fmt.Errorf("must be at most %d characters", MaxPublicURLLength)
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
@@ -2957,4 +3113,102 @@ func ValidatePublicBaseURL(value string) error {
 		return fmt.Errorf("must not contain userinfo, query, or fragment components")
 	}
 	return nil
+}
+
+// MaxAdditionalIssuerURLs caps oauth2_server_config.additional_issuer_urls.
+const MaxAdditionalIssuerURLs = 10
+
+// ValidateOAuth2AdditionalIssuers checks oauth2_server_config.additional_issuer_urls:
+// they need issuer_url, each is an absolute HTTP(S) base URL, and no two issuers,
+// the primary included, share a hostname, since the hostname picks the issuer.
+func ValidateOAuth2AdditionalIssuers(oc *tables.OAuth2ServerConfig) error {
+	if oc == nil || len(oc.AdditionalIssuerURLs) == 0 {
+		return nil
+	}
+	if len(oc.AdditionalIssuerURLs) > MaxAdditionalIssuerURLs {
+		return fmt.Errorf("oauth2_server_config.additional_issuer_urls allows at most %d entries", MaxAdditionalIssuerURLs)
+	}
+	primary := oc.IssuerURL.GetValue()
+	if primary == "" {
+		return fmt.Errorf("oauth2_server_config.additional_issuer_urls requires issuer_url")
+	}
+	hosts := map[string]bool{IssuerHost(primary): true}
+	for i, issuer := range oc.AdditionalIssuerURLs {
+		value := issuer.GetValue()
+		if value == "" && issuer.IsFromSecret() {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] references %s, which resolves to an empty value", i, issuer.GetRawRef())
+		}
+		if value == "" {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] is empty", i)
+		}
+		if err := ValidatePublicBaseURL(value); err != nil {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] %w", i, err)
+		}
+		// Requests are matched on the host as written, so an escape (an IPv6 zone identifier,
+		// the only one url.Parse lets through) would never match.
+		if _, rest, _ := strings.Cut(value, "://"); strings.Contains(strings.SplitN(rest, "/", 2)[0], "%") {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] host must not be percent-encoded", i)
+		}
+		host := IssuerHost(value)
+		if hosts[host] {
+			return fmt.Errorf("oauth2_server_config.additional_issuer_urls[%d] repeats the hostname of another issuer", i)
+		}
+		hosts[host] = true
+	}
+	return nil
+}
+
+// IssuerHost is the lowercased host of an issuer URL, without a default port, so
+// it compares equal to the Host a request for that issuer arrives with.
+func IssuerHost(issuer string) string {
+	u, err := url.Parse(strings.TrimSpace(issuer))
+	if err != nil {
+		return ""
+	}
+	return NormalizeHost(u.Host)
+}
+
+// NormalizeHost lowercases host and drops a default port (443 or 80). The scheme
+// is left out on purpose: behind a proxy a request's scheme is not reliable.
+func NormalizeHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if strings.HasSuffix(host, ":443") || strings.HasSuffix(host, ":80") {
+		host = host[:strings.LastIndexByte(host, ':')]
+	}
+	return host
+}
+
+// ValidateOAuth2BrowserBaseURL checks oauth2_server_config.browser_base_url, which
+// must be an absolute HTTP(S) base URL when set, and a reference must resolve.
+func ValidateOAuth2BrowserBaseURL(oc *tables.OAuth2ServerConfig) error {
+	if oc == nil || !oc.BrowserBaseURL.IsSet() {
+		return nil
+	}
+	// The error names a reference, never what it resolves to.
+	if oc.BrowserBaseURL.IsFromSecret() && oc.BrowserBaseURL.GetValue() == "" {
+		return fmt.Errorf("oauth2_server_config.browser_base_url references %s, which resolves to an empty value", oc.BrowserBaseURL.GetRawRef())
+	}
+	if err := ValidatePublicBaseURL(oc.BrowserBaseURL.GetValue()); err != nil {
+		return fmt.Errorf("oauth2_server_config.browser_base_url %w", err)
+	}
+	return nil
+}
+
+// writeLengthPrefixed writes prefix, then value preceded by its byte length, so
+// a value can never run on into the field written after it.
+func writeLengthPrefixed(h hash.Hash, prefix, value string) {
+	h.Write([]byte(prefix + strconv.Itoa(len(value)) + ":" + value))
+}
+
+// secretVarHashForm is the form of a SecretVar that goes into the config hash:
+// the reference for an env or vault value (so a changed environment does not
+// look like a changed config), the plain value otherwise.
+func secretVarHashForm(v *schemas.SecretVar) string {
+	if v == nil {
+		return ""
+	}
+	if v.IsFromSecret() {
+		return "ref:" + v.GetRawRef()
+	}
+	return "val:" + v.GetValue()
 }

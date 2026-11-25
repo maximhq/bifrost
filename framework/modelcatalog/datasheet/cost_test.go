@@ -301,6 +301,19 @@ func advisorCostFixture(t testing.TB, route string, iterations string) (*Store, 
 		usage := anthropic.ExtractAnthropicPassthroughUsage("/v1/messages", nil, []byte(`{"usage":`+usageJSON+`}`))
 		require.NotNil(t, usage)
 		return store, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: usage, ExtraFields: extra}}
+	case "passthrough_stream":
+		// The stream accumulator sees the cumulative iterations list on message_delta (twice here, as a
+		// replayed delta would) and must still report it once at message_stop.
+		extra.RequestType = schemas.PassthroughStreamRequest
+		extra.PassthroughPath = "/v1/messages"
+		acc := &anthropic.AnthropicPassthroughStreamUsage{}
+		acc.ObserveEvent([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":1000,"output_tokens":1}}}`))
+		delta := []byte(`{"type":"message_delta","usage":` + usageJSON + `}`)
+		acc.ObserveEvent(delta)
+		acc.ObserveEvent(delta)
+		usage := acc.ObserveEvent([]byte(`{"type":"message_stop"}`))
+		require.NotNil(t, usage)
+		return store, &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{PassthroughUsage: usage, ExtraFields: extra}}
 	}
 	var native anthropic.AnthropicUsage
 	require.NoError(t, json.Unmarshal([]byte(usageJSON), &native))
@@ -319,7 +332,7 @@ func advisorCostFixture(t testing.TB, route string, iterations string) (*Store, 
 func TestCalculateCost_AnthropicAdvisorIterations(t *testing.T) {
 	const executorCost = 1000*0.000001 + 500*0.000005 // 0.0035
 	const advisorPass = `,"iterations":[{"type":"message","input_tokens":1000,"output_tokens":500},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`
-	for _, route := range []string{"responses", "responses_stream", "passthrough"} {
+	for _, route := range []string{"responses", "responses_stream", "passthrough", "passthrough_stream"} {
 		t.Run(route+": advisor pass priced at the advisor rate", func(t *testing.T) {
 			store, result := advisorCostFixture(t, route, advisorPass)
 			assert.InDelta(t, executorCost+2000*0.000005+1000*0.000025, store.CalculateCost(result, nil), 1e-12)
@@ -356,6 +369,58 @@ func TestCalculateCost_AnthropicAdvisorPassIgnoresExecutorPriorityTier(t *testin
 	const executorAtPriority = 1000*0.000002 + 500*0.00001
 	const advisorAtStandard = 2000*0.000005 + 1000*0.000025
 	assert.InDelta(t, executorAtPriority+advisorAtStandard, store.CalculateCost(result, nil), 1e-12)
+}
+
+// The flat per-request fee is charged once, for the request's own model. An advisor pass is part of
+// the same upstream request, so neither its model's fee nor the executor's is added again per pass.
+func TestCalculateCost_AnthropicAdvisorPassChargesNoRequestFee(t *testing.T) {
+	const executorFee, advisorFee = 0.01, 0.02
+	for _, route := range []string{"responses", "passthrough"} {
+		t.Run(route, func(t *testing.T) {
+			store, result := advisorCostFixture(t, route, `,"iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000},{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+			for key, fee := range map[string]float64{
+				makeKeyNormalized("claude-haiku-4-5", "anthropic", "chat"): executorFee,
+				makeKeyNormalized("claude-opus-4-8", "anthropic", "chat"):  advisorFee,
+			} {
+				row := store.pricingData[key]
+				row.CostPerRequest = bifrost.Ptr(fee)
+				store.pricingData[key] = row
+			}
+			const executorCost = 1000*0.000001 + 500*0.000005
+			const advisorPasses = 2 * (2000*0.000005 + 1000*0.000025)
+			assert.InDelta(t, executorCost+executorFee+advisorPasses, store.CalculateCost(result, nil), 1e-12)
+		})
+	}
+}
+
+// Fast mode and US data residency are properties of how the whole request was served, unlike a
+// Priority Tier commitment, so the advisor pass is priced at its model's fast rates and US multiplier.
+func TestCalculateCost_AnthropicAdvisorPassKeepsFastModeAndUSGeo(t *testing.T) {
+	store, result := advisorCostFixture(t, "passthrough", `,"speed":"fast","inference_geo":"us","iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+	for key, rates := range map[string][2]float64{
+		makeKeyNormalized("claude-haiku-4-5", "anthropic", "chat"): {0.000006, 0.00003},
+		makeKeyNormalized("claude-opus-4-8", "anthropic", "chat"):  {0.00003, 0.00015},
+	} {
+		row := store.pricingData[key]
+		row.InputCostPerTokenFast, row.OutputCostPerTokenFast = bifrost.Ptr(rates[0]), bifrost.Ptr(rates[1])
+		row.InferenceGeoUSMultiplier = bifrost.Ptr(1.1)
+		store.pricingData[key] = row
+	}
+	const executorFastUS = (1000*0.000006 + 500*0.00003) * 1.1
+	const advisorFastUS = (2000*0.00003 + 1000*0.00015) * 1.1
+	assert.InDelta(t, executorFastUS+advisorFastUS, store.CalculateCost(result, nil), 1e-12)
+}
+
+// A semantic-cache hit replays the original payload, iterations included, without calling the
+// provider. Neither the executor nor the replayed advisor passes are billed for it.
+func TestCalculateCost_AnthropicAdvisorPassNotBilledOnCacheHit(t *testing.T) {
+	for _, hitType := range []string{"direct", "semantic"} {
+		t.Run(hitType, func(t *testing.T) {
+			store, result := advisorCostFixture(t, "responses", `,"iterations":[{"type":"advisor_message","model":"claude-opus-4-8","input_tokens":2000,"output_tokens":1000}]`)
+			result.ResponsesResponse.ExtraFields.CacheDebug = &schemas.BifrostCacheMetadata{CacheHit: true, HitType: schemas.Ptr(hitType)}
+			assert.Zero(t, store.CalculateCost(result, nil))
+		})
+	}
 }
 
 // A Responses stream cut after message_delta is billed from a bare usage (BifrostError BilledUsage),
@@ -3546,6 +3611,59 @@ func TestCalculateCostAddsGuardrailJudgeCost(t *testing.T) {
 	assert.InDelta(t, bd.TotalCost, bd.InputCost+bd.OutputCost+bd.AdditionalCost, 1e-12)
 }
 
+// TestCalculateCostExcludesExternalGuardrailEstimatedCost verifies an external
+// guardrail service call's estimated cost is display-only: it never reaches the
+// request cost, the guardrail cost, or (through CalculateCost) budgets, while the
+// LLM judge call beside it is still billed.
+func TestCalculateCostExcludesExternalGuardrailEstimatedCost(t *testing.T) {
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("gpt-4o", "openai", "chat"): {
+			Model: "gpt-4o", Provider: "openai", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000001), OutputCostPerToken: bifrost.Ptr(0.000002),
+		},
+		makeKeyNormalized("claude-judge", "anthropic", "chat"): {
+			Model: "claude-judge", Provider: "anthropic", Mode: "chat",
+			InputCostPerToken: bifrost.Ptr(0.000003), OutputCostPerToken: bifrost.Ptr(0.000004),
+		},
+	})
+	externalCall := schemas.BifrostGuardrailJudgeCall{
+		GuardrailProvider: "vendor",
+		UsageUnits:        map[string]int{"content_policy_units": 3},
+		EstimatedCost:     0.5, // Large on purpose: any leak would dominate the totals.
+	}
+	resp := makeChatResponse(schemas.OpenAI, "gpt-4o", &schemas.BifrostLLMUsage{
+		PromptTokens:     100,
+		CompletionTokens: 50,
+		TotalTokens:      150,
+	})
+	resp.GetExtraFields().GuardrailDebug = &schemas.BifrostGuardrailMetadata{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{
+			{
+				JudgeProvider:    schemas.Anthropic,
+				JudgeModel:       "claude-judge",
+				PromptTokens:     20,
+				CompletionTokens: 5,
+				TotalTokens:      25,
+			},
+			externalCall,
+		},
+	}
+
+	// Main 0.0002 plus judge 0.00008; the external call adds nothing.
+	assert.InDelta(t, 0.00028, s.CalculateCost(resp, nil), 1e-12)
+	bd := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, bd)
+	require.NotNil(t, bd.AdditionalCostDetails)
+	assert.InDelta(t, 0.00008, bd.AdditionalCostDetails.GuardrailCost, 1e-12)
+	assert.InDelta(t, 0.00008, bd.AdditionalCost, 1e-12)
+	assert.InDelta(t, 0.00028, bd.TotalCost, 1e-12)
+
+	// The blocked-request path prices guardrail metadata directly.
+	assert.Zero(t, s.CalculateGuardrailCost(&schemas.BifrostGuardrailMetadata{
+		JudgeCalls: []schemas.BifrostGuardrailJudgeCall{externalCall},
+	}, nil))
+}
+
 // TestCalculateGuardrailCostPreservesUsageDetails verifies cache-aware judge pricing uses detailed usage.
 func TestCalculateGuardrailCostPreservesUsageDetails(t *testing.T) {
 	pricing := chatPricing(0.00001, 0)
@@ -3772,6 +3890,38 @@ func TestCalculateCost_VideoRetrieveIsNotBilled(t *testing.T) {
 	}
 
 	assert.Zero(t, s.CalculateCost(resp, nil))
+}
+
+// A read or cancel of a stored run is a status read too: every GET of a finished Gemini Interaction repeats
+// the run's full usage. Only the create is priced; job accounting settles the run once, so a read that
+// reports one prices at zero, a cost the provider reported included. A retrieve no run covers, such as an
+// OpenAI background response, keeps the cost its provider reports.
+func TestCalculateCost_ResponsesLifecycleReadsAreNotBilled(t *testing.T) {
+	model := chatPricing(0.000002, 0.000012)
+	model.Provider, model.Model = "gemini", "gemini-3.8-flash"
+	store := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized(model.Model, model.Provider, model.Mode): model,
+	})
+	priced := func(requestType schemas.RequestType, job *schemas.BifrostPassthroughJob, reported *schemas.BifrostCost) float64 {
+		extra := schemas.BifrostResponseExtraFields{RequestType: requestType, RoutingInfo: routingInfoFor(schemas.Gemini, "gemini-3.8-flash")}
+		response := &schemas.BifrostResponsesResponse{
+			Usage:       &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100, Cost: reported},
+			ProviderJob: job, ExtraFields: extra,
+		}
+		if requestType == schemas.ResponsesRetrieveStreamRequest {
+			return store.CalculateCost(&schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: response, ExtraFields: extra}}, nil)
+		}
+		return store.CalculateCost(&schemas.BifrostResponse{ResponsesResponse: response}, nil)
+	}
+	run, reported := &schemas.BifrostPassthroughJob{ID: "v1_x", Terminal: true}, &schemas.BifrostCost{TotalCost: 0.5}
+	assert.Greater(t, priced(schemas.ResponsesRequest, nil, nil), 0.0, "the create is billed")
+	for _, read := range []schemas.RequestType{schemas.ResponsesRetrieveRequest, schemas.ResponsesRetrieveStreamRequest, schemas.ResponsesCancelRequest} {
+		assert.Zero(t, priced(read, run, nil), read)
+		assert.Zero(t, priced(read, run, reported), read)
+		assert.Zero(t, priced(read, nil, nil), read)
+	}
+	assert.InDelta(t, 0.5, priced(schemas.ResponsesRetrieveRequest, nil, reported), 1e-9, "no run covers it")
+	assert.InDelta(t, 0.5, priced(schemas.ResponsesCancelRequest, nil, reported), 1e-9)
 }
 
 // A Gemini Interactions poll names no model on the request: the agent that ran comes back on the

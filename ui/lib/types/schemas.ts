@@ -1,8 +1,9 @@
 import { validatePatternAlias } from "@/components/modelAccess/utils";
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
+import { MCP_AWS_SIGV4_SERVICES, MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
 import { msg } from "@/lib/i18n/validationMessage";
+import { JOB_ID_PLACEHOLDER } from "@/lib/types/relays";
 import { isRedacted } from "@/lib/utils/validation";
 import { z } from "zod";
 
@@ -84,8 +85,21 @@ export const privateKeyRequiredMessage = () => i18n.t("validation.mcp.privateKey
 // Message for a send method chosen without the secret it sends.
 export const secretRequiredForMethodMessage = () => i18n.t("validation.mcp.secretRequiredForMethod");
 
-// The id_jag upstream-authentication fields the form checks below read.
-interface IDJAGUpstreamAuthFields {
+// UpstreamClientAuthFields is how Bifrost authenticates at an upstream token endpoint: a client
+// secret, or a private key signing a client assertion. Mirrors the server's UpstreamClientAuth.
+export interface UpstreamClientAuthFields {
+	authMode?: string;
+	secret?: { value?: string; ref?: string };
+	method?: string;
+	key?: { value?: string; ref?: string };
+	keyId?: string;
+	alg?: string;
+	audience?: string;
+}
+
+// idjagUpstreamAuth returns a token_exchange block's id_jag upstream authentication, or undefined
+// for the direct profile, whose hidden fields must not be checked.
+export function idjagUpstreamAuth(te?: {
 	profile?: string;
 	resource_auth_mode?: string;
 	resource_client_secret?: { value?: string; ref?: string };
@@ -94,23 +108,133 @@ interface IDJAGUpstreamAuthFields {
 	resource_key_id?: string;
 	resource_signing_algorithm?: string;
 	resource_assertion_audience?: string;
+}): UpstreamClientAuthFields | undefined {
+	if (te?.profile !== "id_jag") return undefined;
+	return {
+		authMode: te.resource_auth_mode,
+		secret: te.resource_client_secret,
+		method: te.resource_client_auth_method,
+		key: te.resource_private_key,
+		keyId: te.resource_key_id,
+		alg: te.resource_signing_algorithm,
+		audience: te.resource_assertion_audience,
+	};
 }
 
-// hasPrivateKeySettingsWithoutKey reports an id_jag config set to private_key_jwt, or carrying a key
+// hasPrivateKeySettingsWithoutKey reports authentication set to private_key_jwt, or carrying a key
 // ID, signing algorithm or assertion audience, without a private key. Saved as is, the payload would
-// store a public client, so the forms refuse it.
-export function hasPrivateKeySettingsWithoutKey(te?: IDJAGUpstreamAuthFields): boolean {
-	if (te?.profile !== "id_jag" || isSecretVarSet(te.resource_private_key)) return false;
-	return (
-		te.resource_auth_mode === "private_key" ||
-		!!(te.resource_key_id?.trim() || te.resource_signing_algorithm || te.resource_assertion_audience?.trim())
-	);
+// drop the key settings, so the forms refuse it.
+export function hasPrivateKeySettingsWithoutKey(a?: UpstreamClientAuthFields): boolean {
+	if (!a || isSecretVarSet(a.key)) return false;
+	return a.authMode === "private_key" || !!(a.keyId?.trim() || a.alg || a.audience?.trim());
 }
 
-// hasSendMethodWithoutSecret reports an id_jag config that names how to send the client secret but
-// has none. The payload would drop the method and store a public client, which the server refuses.
-export function hasSendMethodWithoutSecret(te?: IDJAGUpstreamAuthFields): boolean {
-	return te?.profile === "id_jag" && !!te.resource_client_auth_method && !isSecretVarSet(te.resource_client_secret);
+// hasSendMethodWithoutSecret reports authentication that names how to send the client secret but
+// has none. The payload would drop the method, which the server refuses.
+export function hasSendMethodWithoutSecret(a?: UpstreamClientAuthFields): boolean {
+	return !!a?.method && !isSecretVarSet(a.secret);
+}
+
+// The client_credentials fields clientCredentialsIssues checks.
+interface ClientCredentialsFields {
+	token_url?: string;
+	client_id?: { value?: string; ref?: string };
+	client_secret?: { value?: string; ref?: string };
+	auth_method?: string;
+	private_key?: { value?: string; ref?: string };
+	key_id?: string;
+	signing_algorithm?: string;
+	assertion_audience?: string;
+	auth_mode?: string;
+}
+
+// clientCredentialsIssues mirrors the server's check of a client_credentials block: a client ID, a
+// secret or a private key but not both, key settings only with a key, and https URLs. The create
+// form and the edit sheet both report these beside the field they name.
+export function clientCredentialsIssues(cc?: ClientCredentialsFields): { path: keyof ClientCredentialsFields; message: string }[] {
+	const issues: { path: keyof ClientCredentialsFields; message: string }[] = [];
+	const auth: UpstreamClientAuthFields = {
+		authMode: cc?.auth_mode,
+		secret: cc?.client_secret,
+		method: cc?.auth_method,
+		key: cc?.private_key,
+		keyId: cc?.key_id,
+		alg: cc?.signing_algorithm,
+		audience: cc?.assertion_audience,
+	};
+	if (!isSecretVarSet(cc?.client_id)) {
+		issues.push({ path: "client_id", message: i18n.t("registry.clientCredentials.clientIdRequired", { ns: "mcp" }) });
+	}
+	if (isSecretVarSet(auth.secret) && isSecretVarSet(auth.key)) {
+		issues.push({ path: "private_key", message: i18n.t("registry.form.resourceBothAuth", { ns: "mcp" }) });
+	} else if (hasPrivateKeySettingsWithoutKey(auth)) {
+		issues.push({ path: "private_key", message: privateKeyRequiredMessage() });
+	} else if (!isSecretVarSet(auth.secret) && !isSecretVarSet(auth.key)) {
+		issues.push({ path: "client_secret", message: i18n.t("registry.clientCredentials.secretRequired", { ns: "mcp" }) });
+	}
+	if (hasSendMethodWithoutSecret(auth)) {
+		issues.push({ path: "client_secret", message: secretRequiredForMethodMessage() });
+	}
+	if (cc?.token_url?.trim() && !isHTTPSOrLoopbackURL(cc.token_url.trim())) {
+		issues.push({ path: "token_url", message: i18n.t("registry.form.resourceTokenEndpointHttps", { ns: "mcp" }) });
+	}
+	if (auth.audience?.trim() && !isHTTPSOrLoopbackURL(auth.audience.trim())) {
+		issues.push({ path: "assertion_audience", message: i18n.t("registry.form.assertionAudienceHttps", { ns: "mcp" }) });
+	}
+	return issues;
+}
+
+// The aws_sigv4 fields awsSigV4Issues checks.
+interface AWSSigV4Fields {
+	region?: { value?: string; ref?: string };
+	service?: string;
+	role_arn?: { value?: string; ref?: string };
+	external_id?: { value?: string; ref?: string };
+	session_name?: { value?: string; ref?: string };
+}
+
+const awsRegionPattern = /^[a-z]{2}(-[a-z]+)+-[0-9]+$/;
+const awsRoleARNPattern = /^arn:aws[a-z-]*:iam::[0-9]{12}:role\/[\w+=,.@/-]+$/;
+const awsSessionNamePattern = /^[\w+=,.@-]{2,64}$/;
+
+// A literal value to check against a pattern; a secret reference is checked by the server as it resolves.
+const literalOf = (v?: { value?: string; ref?: string }) => (v?.ref?.trim() ? undefined : v?.value?.trim());
+
+// awsSigV4Issues mirrors the server's check of an aws_sigv4 block: a region, a role ARN, and an
+// external ID or session name only with a role. Patterns apply to literals only.
+export function awsSigV4Issues(cfg?: AWSSigV4Fields): { path: keyof AWSSigV4Fields; message: string }[] {
+	const issues: { path: keyof AWSSigV4Fields; message: string }[] = [];
+	const region = literalOf(cfg?.region);
+	if (!isSecretVarSet(cfg?.region)) {
+		issues.push({ path: "region", message: i18n.t("registry.awsSigV4.regionRequired", { ns: "mcp" }) });
+	} else if (region && !awsRegionPattern.test(region)) {
+		issues.push({ path: "region", message: i18n.t("registry.awsSigV4.regionInvalid", { ns: "mcp" }) });
+	}
+	const role = literalOf(cfg?.role_arn);
+	if (role && !awsRoleARNPattern.test(role)) {
+		issues.push({ path: "role_arn", message: i18n.t("registry.awsSigV4.roleArnInvalid", { ns: "mcp" }) });
+	}
+	const hasRole = isSecretVarSet(cfg?.role_arn);
+	if (isSecretVarSet(cfg?.external_id) && !hasRole) {
+		issues.push({ path: "external_id", message: i18n.t("registry.awsSigV4.needsRole", { ns: "mcp" }) });
+	}
+	const session = literalOf(cfg?.session_name);
+	if (isSecretVarSet(cfg?.session_name) && !hasRole) {
+		issues.push({ path: "session_name", message: i18n.t("registry.awsSigV4.needsRole", { ns: "mcp" }) });
+	} else if (session && !awsSessionNamePattern.test(session)) {
+		issues.push({ path: "session_name", message: i18n.t("registry.awsSigV4.sessionNameInvalid", { ns: "mcp" }) });
+	}
+	return issues;
+}
+
+// awsSigV4ReservedHeader returns the first configured or forwardable header the SigV4 signer sets
+// (Authorization or X-Amz-*), which the server refuses on an aws_sigv4 client.
+export function awsSigV4ReservedHeader(headers?: Record<string, unknown>, allowedExtraHeaders?: string[]): string | undefined {
+	const reserved = (name: string) => {
+		const lower = name.trim().toLowerCase();
+		return lower === "authorization" || lower.startsWith("x-amz-");
+	};
+	return [...Object.keys(headers ?? {}), ...(allowedExtraHeaders ?? [])].find(reserved);
 }
 
 // Azure key config schema
@@ -424,11 +548,38 @@ export function resourceCredentialResendRequired(
 		!same(saved.resource_token_endpoint, edited.resource_token_endpoint) ||
 		!same(saved.resource_assertion_audience, edited.resource_assertion_audience);
 	if (!targetChanged) return undefined;
-	// A credential kept as an env or vault reference is resent as the reference, which the server
-	// accepts; only a saved literal, shown masked, has to be typed again.
-	const savedLiteral = (v?: { value?: string; ref?: string; type?: string }) => !v?.ref?.trim() && isSecretVarMasked(v);
-	if (savedLiteral(edited.resource_client_secret)) return "resource_client_secret";
-	if (savedLiteral(edited.resource_private_key)) return "resource_private_key";
+	if (isSavedLiteral(edited.resource_client_secret)) return "resource_client_secret";
+	if (isSavedLiteral(edited.resource_private_key)) return "resource_private_key";
+	return undefined;
+}
+
+// A credential kept as an env or vault reference is resent as the reference, which the server
+// accepts; only a saved literal, shown masked, has to be typed again.
+const isSavedLiteral = (v?: { value?: string; ref?: string; type?: string }) => !v?.ref?.trim() && isSecretVarMasked(v);
+
+// The client_credentials fields clientCredentialsResendRequired compares.
+interface ClientCredentialsTarget {
+	token_url?: string;
+	assertion_audience?: string;
+	client_secret?: { value?: string; ref?: string; type?: string };
+	private_key?: { value?: string; ref?: string; type?: string };
+}
+
+// clientCredentialsResendMessage explains why a saved secret or key must be typed again.
+export const clientCredentialsResendMessage = () => i18n.t("registry.clientCredentials.credentialResend", { ns: "mcp" });
+
+// clientCredentialsResendRequired is resourceCredentialResendRequired for a client_credentials
+// block: a changed token URL (an emptied one is discovered again) or assertion audience needs the
+// saved literal secret or key typed again. It returns the field to re-enter, or undefined.
+export function clientCredentialsResendRequired(
+	saved: ClientCredentialsTarget | undefined,
+	edited: ClientCredentialsTarget | undefined,
+): "client_secret" | "private_key" | undefined {
+	if (!saved || !edited) return undefined;
+	const same = (a?: string, b?: string) => (a ?? "").trim() === (b ?? "").trim();
+	if (same(saved.token_url, edited.token_url) && same(saved.assertion_audience, edited.assertion_audience)) return undefined;
+	if (isSavedLiteral(edited.client_secret)) return "client_secret";
+	if (isSavedLiteral(edited.private_key)) return "private_key";
 	return undefined;
 }
 
@@ -756,6 +907,9 @@ export const databricksKeyConfigSchema = z
 	});
 
 // Model family enum schema — must mirror schemas.ModelFamily in Go.
+// Request-side values of Go's schemas.BifrostServiceTier.
+export const serviceTierSchema = z.enum(["auto", "default", "flex", "priority", "fast", "ultrafast"]);
+
 export const modelFamilySchema = z.enum([
 	"anthropic",
 	"openai",
@@ -805,6 +959,7 @@ const aliasConfigObjectSchema = z.object({
 	deployment_url: secretVarSchema.optional().refine(isLiteralHTTPSURL, msg("validation.basetenDeploymentUrl")),
 	use_anthropic_endpoints: z.boolean().optional(),
 	use_openai_endpoints: z.boolean().optional(),
+	service_tier: serviceTierSchema.optional(),
 });
 
 // The Go server emits the legacy string wire shape (`{"my-alias": "model-id"}`)
@@ -866,6 +1021,8 @@ export const modelProviderKeySchema = z
 		use_for_batch_api: z.boolean().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
+		// null clears a stored tier: the key update API keeps every field the payload omits.
+		service_tier: serviceTierSchema.nullable().optional(),
 		enabled: z.boolean().optional(),
 	})
 	.refine(
@@ -1530,6 +1687,97 @@ const providerBackedCacheConfigSchema = baseCacheConfigSchema
 export const cacheConfigSchema = z.union([directCacheConfigSchema, providerBackedCacheConfigSchema]);
 
 // Core config schema
+// Mirrors configstore.MaxPublicURLLength: bifrost_url is stored in a varchar(512) column.
+export const MAX_PUBLIC_URL_LENGTH = 512;
+// Mirrors configstore.MaxOpenAPIURLLength.
+export const MAX_OPENAPI_URL_LENGTH = 2048;
+
+// Go measures these limits with len(), in UTF-8 bytes, not UTF-16 code units.
+const utf8Length = (value: string) => new TextEncoder().encode(value).length;
+
+// The browser's URL parser normalizes what Go's url.Parse refuses (it drops tabs and
+// newlines, empty userinfo, missing or extra slashes after the scheme, and treats "\"
+// as "/"), so the raw text is checked first. urlAuthority returns the authority as
+// written, or null when the value has no "scheme://" or contains a control character.
+function urlAuthority(value: string): string | null {
+	if (/[\x00-\x1f\x7f]/.test(value)) return null;
+	const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(value);
+	return match ? match[1] : null;
+}
+
+// publicBaseUrlError mirrors configstore.ValidatePublicBaseURL: empty, or an absolute
+// http(s) URL without userinfo, a query or a fragment. The server checks the value as
+// sent, so surrounding whitespace is an error here too (the URL parser would drop it).
+export function publicBaseUrlError(value: string): string | null {
+	if (value === "") return null;
+	if (utf8Length(value) > MAX_PUBLIC_URL_LENGTH) return i18n.t("validation.maxChars", { maximum: String(MAX_PUBLIC_URL_LENGTH) });
+	const authority = urlAuthority(value);
+	if (authority === null || authority === "" || authority.includes("\\")) return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	}
+	if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) {
+		return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	}
+	// Go keeps an empty userinfo ("https://@host"), which the browser drops.
+	if (authority.includes("@") || value.includes("?") || value.includes("#")) {
+		return i18n.t("validation.publicUrlNoUserinfoQueryOrFragment");
+	}
+	return null;
+}
+
+// openAPIUrlError mirrors configstore.ValidateOpenAPIURL: empty (the build's default
+// spec), an absolute http(s) URL, or a relative path that stays inside the app directory.
+export function openAPIUrlError(raw: string): string | null {
+	const value = raw.trim();
+	if (value === "") return null;
+	if (utf8Length(value) > MAX_OPENAPI_URL_LENGTH) return i18n.t("validation.maxChars", { maximum: String(MAX_OPENAPI_URL_LENGTH) });
+	if (value.startsWith("http://") || value.startsWith("https://")) {
+		// Go takes the host after any userinfo, so "https://@host" is fine but "https:///x" is not.
+		const authority = urlAuthority(value);
+		const host = authority?.slice(authority.lastIndexOf("@") + 1);
+		if (host && !host.includes("\\")) {
+			try {
+				if (new URL(value).hostname) return null;
+			} catch {
+				// falls through to the error below
+			}
+		}
+		return i18n.t("validation.openapiUrlMustBeHttpUrlOrRelativePath");
+	}
+	if (value.includes("://")) return i18n.t("validation.openapiUrlMustBeHttpUrlOrRelativePath");
+	if (value.startsWith("/")) return i18n.t("validation.openapiUrlMustStayInAppDir");
+	// filepath.Clean, then refuse a path whose first segment is "..".
+	let depth = 0;
+	for (const segment of value.split("/")) {
+		if (segment === "" || segment === ".") continue;
+		if (segment === "..") {
+			if (depth === 0) return i18n.t("validation.openapiUrlMustStayInAppDir");
+			depth--;
+		} else {
+			depth++;
+		}
+	}
+	return null;
+}
+
+// bifrost_url as the client settings form edits it. An env or vault reference resolves
+// on the server, so only a literal value is checked here.
+export const bifrostUrlSchema = secretVarSchema.superRefine((secret, ctx) => {
+	if (secret.ref?.trim() || secret.type === "env" || secret.type === "vault") return;
+	const error = publicBaseUrlError(secret.value ?? "");
+	if (error) ctx.addIssue({ code: "custom", message: error });
+});
+
+// framework_config.openapi_url as the client settings form edits it.
+export const openAPIUrlSchema = z.string().superRefine((value, ctx) => {
+	const error = openAPIUrlError(value);
+	if (error) ctx.addIssue({ code: "custom", message: error });
+});
+
 export const coreConfigSchema = z.object({
 	drop_excess_requests: z.boolean().default(false),
 	initial_pool_size: z.number().min(1).default(10),
@@ -1542,6 +1790,7 @@ export const coreConfigSchema = z.object({
 	enforce_vk_object_ownership: z.boolean().default(true),
 	skip_access_profile_user_virtual_key_creation: z.boolean().default(false),
 	skip_access_profile_user_virtual_key_deletion: z.boolean().default(false),
+	entity_access_profile_mode: z.enum(["union", "intersect"]).default("union"),
 	extra_fields_placement: z.enum(["body", "headers"]).default("body"),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
@@ -1552,6 +1801,9 @@ export const coreConfigSchema = z.object({
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
 	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
 	mcp_max_instructions_total: z.number().int().min(0).default(0),
+	mcp_openapi_max_spec_mb: z.number().int().min(0).max(256).default(0),
+	bifrost_url: bifrostUrlSchema.optional(),
+	bifrost_mcp_allow_writes: z.boolean().optional(),
 	mcp_code_mode_limits: z
 		.object({
 			max_source_bytes: z.number().int().min(0).optional(),
@@ -1679,6 +1931,7 @@ export const otelConfigSchema = z
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
 		disable_content_logging: z.boolean().default(false),
+		apply_trace_dimensions_to_child_spans: z.boolean().default(false),
 		export_raw_payloads: z.boolean().default(false),
 		group_traces_by_session: z.boolean().default(false),
 		disable_root_span_content: z.boolean().default(false),
@@ -2084,11 +2337,46 @@ export const mcpClientUpdateSchema = z
 				if (isSecretVarSet(te.resource_client_secret) && isSecretVarSet(te.resource_private_key)) {
 					issue("resource_private_key", i18n.t("registry.form.resourceBothAuth", { ns: "mcp" }));
 				}
-				if (hasPrivateKeySettingsWithoutKey(te)) {
+				if (hasPrivateKeySettingsWithoutKey(idjagUpstreamAuth(te))) {
 					issue("resource_private_key", privateKeyRequiredMessage());
 				}
-				if (hasSendMethodWithoutSecret(te)) {
+				if (hasSendMethodWithoutSecret(idjagUpstreamAuth(te))) {
 					issue("resource_client_secret", secretRequiredForMethodMessage());
+				}
+			})
+			.optional(),
+		client_credentials: z
+			.object({
+				token_url: z.string().optional(),
+				client_id: secretVarSchema.optional(),
+				client_secret: secretVarSchema.optional(),
+				auth_method: z.enum(["", "client_secret_basic", "client_secret_post"]).optional(),
+				private_key: secretVarSchema.optional(),
+				key_id: z.string().optional(),
+				signing_algorithm: z.string().optional(),
+				assertion_audience: z.string().optional(),
+				resource: z.string().optional(),
+				auth_mode: z.enum(["secret", "private_key"]).optional(),
+				scopes_text: z.string().optional(),
+				omit_resource: z.boolean().optional(),
+			})
+			.superRefine((cc, ctx) => {
+				for (const { path, message } of clientCredentialsIssues(cc)) {
+					ctx.addIssue({ code: "custom", path: [path], message });
+				}
+			})
+			.optional(),
+		aws_sigv4: z
+			.object({
+				region: secretVarSchema.optional(),
+				service: z.enum(MCP_AWS_SIGV4_SERVICES).optional(),
+				role_arn: secretVarSchema.optional(),
+				external_id: secretVarSchema.optional(),
+				session_name: secretVarSchema.optional(),
+			})
+			.superRefine((cfg, ctx) => {
+				for (const { path, message } of awsSigV4Issues(cfg)) {
+					ctx.addIssue({ code: "custom", path: [path], message });
 				}
 			})
 			.optional(),
@@ -2389,13 +2677,20 @@ export const relayUsageSchema = relayUsageBaseSchema.superRefine((usage, ctx) =>
 // anything else is refused on the field rather than as a fetch error.
 export const relayOpenAPISpecUrlSchema = z.string().trim().refine(isHttpUrl, msg("validation.relays.absoluteUrl"));
 
-// Mirrors the gateway's rule for a route or streaming path: rooted, and ** only as the last segment.
+// Mirrors the gateway's rule for a route or streaming path: rooted, and at most one **.
 const relayGlob = z
 	.string()
 	.trim()
 	.min(1, msg("validation.relays.pathRequired"))
 	.refine((p) => p.startsWith("/"), msg("validation.relays.pathMustStartWithSlash"))
-	.refine((p) => !p.slice(1).split("/").slice(0, -1).includes("**"), msg("validation.relays.doubleStarLast"));
+	.refine(
+		(p) =>
+			p
+				.slice(1)
+				.split("/")
+				.filter((s) => s === "**").length <= 1,
+		msg("validation.relays.doubleStarOnce"),
+	);
 
 export const relayAuthSchema = z
 	.object({
@@ -2435,27 +2730,253 @@ export const relayHeaderPairSchema = z
 		if (!pair.name && pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.matcherNeedsName"), path: ["name"] });
 	});
 
-// A route's async job block is set through config.json or the API; the form carries it untouched.
-export const relayJobSchema = z.object({
-	id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
-	poll: z.object({
-		method: z.string().optional(),
-		path: z
-			.string()
-			.trim()
-			.min(1, msg("validation.relays.pollPathRequired"))
-			.refine((p) => p.startsWith("/"), { error: () => i18n.t("validation.relays.pollPathRooted", { example: "/jobs/{{job.id}}" }) }),
-		headers: z.record(z.string(), z.string()).optional(),
-		body: z.string().optional(),
-		content_type: z.string().optional(),
-	}),
-	status_path: z.string().trim().min(1, msg("validation.relays.statusPathRequired")),
-	succeeded: z.array(z.string()).min(1, msg("validation.relays.succeededRequired")),
-	failed: z.array(z.string()).optional(),
-	interval_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
-	timeout_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).optional(),
-	usage: relayUsageBaseSchema.optional(),
-});
+// Forced body fields are edited as path/JSON pairs, checked as core's validateBodyOverrides does.
+const relayBodyOverrideSegment = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isRelayBodyOverridePath(path: string): boolean {
+	// An all-digit key is an array index to the gateway's JSON setter, and -1 an array append.
+	return path.split(".").every((segment) => relayBodyOverrideSegment.test(segment) && !/^[0-9]+$/.test(segment) && segment !== "-1");
+}
+
+// JSON.parse reads 1e400 as Infinity, which the API request would send as null.
+export function hasNonFiniteNumber(value: unknown): boolean {
+	if (typeof value === "number") return !Number.isFinite(value);
+	if (Array.isArray(value)) return value.some(hasNonFiniteNumber);
+	if (value && typeof value === "object") return Object.values(value).some(hasNonFiniteNumber);
+	return false;
+}
+
+// Two paths that reach one parent key under different letter case (options.a, Options.b).
+function parentCaseClash(a: string, b: string): boolean {
+	const as = a.split(".");
+	const bs = b.split(".");
+	for (let i = 0; i < Math.min(as.length, bs.length) - 1; i++) {
+		if (as[i] === bs[i]) continue;
+		return as[i].toLowerCase() === bs[i].toLowerCase();
+	}
+	return false;
+}
+
+/** The non-blank field paths of a body overrides list. */
+export const bodyOverridePaths = (pairs: { name: string }[] | undefined) => (pairs ?? []).map((pair) => pair.name.trim()).filter(Boolean);
+
+/** The first relay and route path the gateway refuses together once the route's fields are merged over the relay's. */
+export function bodyOverrideMergeClash(relayPaths: string[], routePaths: string[]): { relay: string; route: string } | undefined {
+	const route = routePaths.filter(isRelayBodyOverridePath);
+	for (const r of relayPaths) {
+		// The route's field replaces a relay field at exactly the same path.
+		if (!isRelayBodyOverridePath(r) || route.includes(r)) continue;
+		const rl = r.toLowerCase();
+		for (const p of route) {
+			const pl = p.toLowerCase();
+			if (rl === pl || rl.startsWith(pl + ".") || pl.startsWith(rl + ".") || parentCaseClash(r, p)) return { relay: r, route: p };
+		}
+	}
+	return undefined;
+}
+
+/** Whether JSON text holds a whole number JavaScript cannot keep exactly, which a save would round. */
+type RawJSON = { readonly rawJSON: string };
+const jsonWithRaw = JSON as unknown as { rawJSON?: (text: string) => RawJSON };
+
+/** Whether this browser can send a number's exact digits (JSON.rawJSON and the reviver's source text). */
+export const exactJSONNumbers = typeof jsonWithRaw.rawJSON === "function";
+
+/**
+ * JSON.parse that keeps a number JSON would round (past 2^53, or written in more digits than a double
+ * holds) as its exact digits; JSON.stringify writes them back unchanged. Without browser support it is
+ * plain JSON.parse.
+ */
+export function parseJSONExact(text: string): unknown {
+	if (!exactJSONNumbers) return JSON.parse(text);
+	const reviver = (_key: string, value: unknown, context?: { source?: string }) =>
+		typeof value === "number" && context?.source !== undefined && roundsWholeNumber(context.source)
+			? jsonWithRaw.rawJSON!(context.source)
+			: value;
+	return JSON.parse(text, reviver as (key: string, value: unknown) => unknown);
+}
+
+/**
+ * Whether a JSON number denotes a whole number that JSON.parse cannot hold exactly, in any spelling
+ * (1.0, 1e3). Past 1e21 a number is written as a float anyway (1e300), so it is left alone.
+ */
+export function roundsWholeNumber(token: string): boolean {
+	const m = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(token);
+	if (!m) return false;
+	const [, sign, whole, frac = "", exp = "0"] = m;
+	const digits = whole + frac;
+	const shift = Number(exp) - frac.length;
+	let exact: string;
+	if (shift >= 0) {
+		// A number typed in exponent form past 21 digits (1e300) is a float on purpose; one typed in full is checked.
+		if (m[4] !== undefined && digits.replace(/^0+/, "").length + shift > 21) return false;
+		exact = digits + "0".repeat(shift);
+	} else {
+		if (digits.length + shift <= 0) return false; // the point moves past every digit: below 1 (100e-4)
+		if (!/^0*$/.test(digits.slice(digits.length + shift))) return false; // a fraction, not a whole number
+		exact = digits.slice(0, digits.length + shift) || "0";
+	}
+	// Compared with the digits JSON writes out, not the double: 1000000000000000128 is exact but is sent as ...100.
+	const sent = String(Number(token));
+	// One that overflows to Infinity cannot be sent as typed either (a key written twice still reaches here).
+	if (!Number.isFinite(Number(token))) return true;
+	// A whole number that rounds to 1e21 or more is sent in exponent form (1e+21), so it changes too.
+	if (/e/i.test(sent)) return true;
+	return BigInt(sent) !== BigInt(sign + exact);
+}
+
+export function hasUnsafeInteger(text: string): boolean {
+	return someNumberToken(text, roundsWholeNumber);
+}
+
+/** Whether a non-zero number in this JSON text reads as 0 (1e-400): saving it would send 0. */
+export function hasVanishingNumber(text: string): boolean {
+	return someNumberToken(text, (token) => Number(token) === 0 && /[1-9]/.test(token.split(/[eE]/)[0]));
+}
+
+// Tests each number written in JSON text, as written, skipping strings.
+function someNumberToken(text: string, test: (token: string) => boolean): boolean {
+	for (let i = 0; i < text.length; i++) {
+		const c = text[i];
+		if (c === '"') {
+			for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
+			continue;
+		}
+		if (c === "-" || (c >= "0" && c <= "9")) {
+			const token = /^-?\d+(\.\d+)?([eE][+-]?\d+)?/.exec(text.slice(i))?.[0] ?? c;
+			if (test(token)) return true;
+			i += token.length - 1;
+		}
+	}
+	return false;
+}
+
+export function isJSONText(text: string): boolean {
+	if (!text.trim()) return false;
+	try {
+		JSON.parse(text);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export const relayBodyOverridesSchema = z
+	.array(z.object({ name: z.string().trim(), value: z.string().trim() }))
+	.superRefine((pairs, ctx) => {
+		const seen = new Map<string, number>();
+		pairs.forEach((pair, i) => {
+			if (!pair.name && !pair.value) return;
+			if (!pair.name) {
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideNeedsPath"), path: [i, "name"] });
+				return;
+			}
+			if (!pair.value) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideNeedsValue"), path: [i, "value"] });
+			else if (!isJSONText(pair.value))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideValueJson"), path: [i, "value"] });
+			else if (hasNonFiniteNumber(JSON.parse(pair.value)))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideFiniteNumber"), path: [i, "value"] });
+			else if (hasVanishingNumber(pair.value))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideTinyNumber"), path: [i, "value"] });
+			// Where the browser can keep the digits (JSON.rawJSON) they are sent exactly, so nothing to refuse.
+			else if (!exactJSONNumbers && hasUnsafeInteger(pair.value))
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideUnsafeInteger"), path: [i, "value"] });
+			if (!isRelayBodyOverridePath(pair.name)) {
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverridePathFormat"), path: [i, "name"] });
+				return;
+			}
+			const lower = pair.name.toLowerCase();
+			if (seen.has(lower)) ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideDup"), path: [i, "name"] });
+			else seen.set(lower, i);
+			const clash = pairs.slice(0, i).find((other) => isRelayBodyOverridePath(other.name) && parentCaseClash(other.name, pair.name));
+			if (clash) {
+				const parent = clash.name.split(".").find((segment, j) => segment !== pair.name.split(".")[j]);
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.bodyOverrideParentCase", { parent }), path: [i, "name"] });
+			}
+		});
+		seen.forEach((i, lower) => {
+			for (let prefix = lower; prefix.includes("."); ) {
+				prefix = prefix.slice(0, prefix.lastIndexOf("."));
+				const parent = seen.get(prefix);
+				if (parent !== undefined)
+					ctx.addIssue({
+						code: "custom",
+						message: i18n.t("validation.relays.bodyOverrideNested", { path: pairs[i].name, parent: pairs[parent].name }),
+						path: [i, "name"],
+					});
+			}
+		});
+	});
+
+// The longest a job may run before it is written off, as the gateway caps it (7 days), and its default.
+const RELAY_JOB_MAX_TIMEOUT_SECONDS = 604800;
+const RELAY_JOB_DEFAULT_TIMEOUT_SECONDS = 3600;
+
+// A route's async job, edited in the async job sheet. The checks mirror the gateway's, so a refused
+// save shows on the field instead of in a toast.
+export const relayJobSchema = z
+	.object({
+		id_path: z.string().trim().min(1, msg("validation.relays.jobIdPath")),
+		poll: z.object({
+			method: z.string().optional(),
+			path: z
+				.string()
+				.trim()
+				.min(1, msg("validation.relays.pollPathRequired"))
+				.refine((p) => p.startsWith("/"), {
+					error: () => i18n.t("validation.relays.pollPathRooted", { example: `/jobs/${JOB_ID_PLACEHOLDER}` }),
+				}),
+			headers: z.record(z.string(), z.string()).optional(),
+			body: z.string().optional(),
+			content_type: z.string().optional(),
+		}),
+		status_path: z.string().trim().min(1, msg("validation.relays.statusPathRequired")),
+		succeeded: z.array(z.string()).min(1, msg("validation.relays.succeededRequired")),
+		failed: z.array(z.string()).optional(),
+		// null is a cleared field: the editor keeps it so the control shows it empty, and cleanJob drops it.
+		interval_seconds: z.number().int().min(1, msg("validation.relays.atLeastOneSecond")).nullish(),
+		timeout_seconds: z
+			.number()
+			.int()
+			.min(1, msg("validation.relays.atLeastOneSecond"))
+			.max(RELAY_JOB_MAX_TIMEOUT_SECONDS, msg("validation.relays.jobTimeoutMax"))
+			.nullish(),
+		usage: relayUsageBaseSchema.optional(),
+		reused_id_is_new_job: z.boolean().optional(),
+	})
+	.superRefine((job, ctx) => {
+		const token = JOB_ID_PLACEHOLDER;
+		// With a body the gateway sends its own Content-Type, so a header row of that name is not sent.
+		const sentHeaders = Object.entries(job.poll.headers ?? {}).filter(
+			([name]) => !job.poll.body || name.trim().toLowerCase() !== "content-type",
+		);
+		const mentioned = (job.poll.path + (job.poll.body ?? "") + sentHeaders.map(([, v]) => v).join("")).includes(token);
+		if (!mentioned)
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.pollNeedsJobId", { token }), path: ["poll", "path"] });
+		// A blank value is dropped from a route's matchers, so the status route built from it would match every call.
+		for (const [name, value] of Object.entries(job.poll.headers ?? {}))
+			if (name.trim() && !value.trim())
+				ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.pollHeaderValueRequired", { name }), path: ["poll", "headers"] });
+		const timeout = job.timeout_seconds ?? RELAY_JOB_DEFAULT_TIMEOUT_SECONDS;
+		if (job.interval_seconds != null && job.interval_seconds > timeout)
+			ctx.addIssue({
+				code: "custom",
+				message: i18n.t("validation.relays.jobIntervalOverTimeout", { timeout }),
+				path: ["interval_seconds"],
+			});
+		// Folded like Go's strings.EqualFold, one character to one: "ſ" and "S" collide, "ß" and "SS" do not.
+		const fold = (s: string) =>
+			[...s]
+				.map((c) => {
+					const upper = c.toUpperCase();
+					return [...upper].length === 1 ? upper.toLowerCase() : c.toLowerCase();
+				})
+				.join("");
+		const failed = new Set((job.failed ?? []).map(fold));
+		const both = job.succeeded.find((s) => failed.has(fold(s)));
+		if (both !== undefined)
+			ctx.addIssue({ code: "custom", message: i18n.t("validation.relays.jobStatusBoth", { status: both }), path: ["failed"] });
+	});
 
 export const relayRouteFormSchema = z.object({
 	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
@@ -2474,7 +2995,13 @@ export const relayRouteFormSchema = z.object({
 	stream: z.boolean().optional(),
 	usage: relayUsageBaseSchema.optional(),
 	job: relayJobSchema.optional(),
+	body_overrides: relayBodyOverridesSchema.optional(),
+	inherit_body_overrides: z.boolean().optional(),
 });
+
+// The async job sheet: the start route with its job, which is required there.
+export const relayAsyncJobFormSchema = relayRouteFormSchema.extend({ job: relayJobSchema });
+export type RelayAsyncJobForm = z.infer<typeof relayAsyncJobFormSchema>;
 
 // The endpoint editor form. Extra headers are edited as pairs; the credential is a SecretVar so env.
 // and vault references round-trip, and a redacted value sent back keeps the stored secret.
@@ -2485,6 +3012,21 @@ export const relayNetworkFormSchema = z.object({
 	insecure_skip_verify: z.boolean().optional(),
 	ca_cert_pem: z.string().optional(),
 });
+
+/** The route form schema inside a relay: the gateway refuses a route field that clashes with an inherited relay field. */
+export function relayRouteFormSchemaFor(relayPaths: string[] | undefined) {
+	return relayRouteFormSchema.superRefine((route, ctx) => {
+		if (route.inherit_body_overrides === false || !relayPaths?.length) return;
+		const pairs = route.body_overrides ?? [];
+		const clash = bodyOverrideMergeClash(relayPaths, bodyOverridePaths(pairs));
+		if (!clash) return;
+		ctx.addIssue({
+			code: "custom",
+			message: i18n.t("validation.relays.bodyOverrideRelayConflict", { other: clash.relay }),
+			path: ["body_overrides", pairs.findIndex((pair) => pair.name.trim() === clash.route), "name"],
+		});
+	});
+}
 
 export const relayFormSchema = z
 	.object({
@@ -2570,8 +3112,21 @@ export const relayFormSchema = z
 		routes: z.array(relayRouteFormSchema),
 		skip_route_check: z.boolean(),
 		ignore_upstream_cost: z.boolean(),
+		body_overrides: relayBodyOverridesSchema,
 	})
 	.superRefine((form, ctx) => {
+		// The gateway checks each route's fields merged over the relay's, so a relay field can clash with a route's.
+		const relayPaths = bodyOverridePaths(form.body_overrides);
+		form.routes.forEach((route) => {
+			if (route.inherit_body_overrides === false) return;
+			const clash = bodyOverrideMergeClash(relayPaths, bodyOverridePaths(route.body_overrides));
+			if (!clash) return;
+			ctx.addIssue({
+				code: "custom",
+				message: i18n.t("validation.relays.bodyOverrideRouteConflict", { other: clash.route, route: `${route.method} ${route.path}` }),
+				path: ["body_overrides", form.body_overrides.findIndex((pair) => pair.name.trim() === clash.relay), "name"],
+			});
+		});
 		const type = form.auth.type;
 		if (type === "aws_sigv4") {
 			if (!isSecretVarSet(form.aws?.region))
@@ -2598,6 +3153,7 @@ export const relayFormSchema = z
 	});
 
 export type RelayFormValues = z.infer<typeof relayFormSchema>;
+export type RelayRouteForm = RelayFormValues["routes"][number];
 
 // The sample call the Test tab sends to the usage preview; the path mirrors the relay's own guard.
 export const relayPreviewSampleSchema = z.object({

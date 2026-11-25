@@ -318,6 +318,7 @@ type OAuthMetadata struct {
 	ResponseTypes    []string `json:"response_types_supported,omitempty"`
 	GrantTypes       []string `json:"grant_types_supported,omitempty"`
 	TokenAuthMethods []string `json:"token_endpoint_auth_methods_supported,omitempty"`
+	SigningAlgs      []string `json:"token_endpoint_auth_signing_alg_values_supported,omitempty"`
 	PKCEMethods      []string `json:"code_challenge_methods_supported,omitempty"`
 	// Accepts an HTTPS URL to a Client ID Metadata Document as client_id (MCP 2025-11-25+).
 	ClientIDMetadataDocumentSupported bool `json:"client_id_metadata_document_supported,omitempty"`
@@ -351,6 +352,19 @@ type ResourceMetadata struct {
 // 5. Fetch authorization server metadata from discovered URLs
 // 6. Return complete OAuth configuration
 func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadata, error) {
+	return discoverOAuthMetadata(ctx, serverURL, hasAuthorizationEndpoint)
+}
+
+// DiscoverTokenEndpointMetadata is DiscoverOAuthMetadata for a token-endpoint-only
+// grant such as client_credentials: the authorization server need not publish an
+// authorization endpoint.
+func DiscoverTokenEndpointMetadata(ctx context.Context, serverURL string) (*OAuthMetadata, error) {
+	return discoverOAuthMetadata(ctx, serverURL, hasTokenEndpoint)
+}
+
+// discoverOAuthMetadata runs discovery, accepting the first authorization server
+// metadata usable accepts.
+func discoverOAuthMetadata(ctx context.Context, serverURL string, usable func(*OAuthMetadata) bool) (*OAuthMetadata, error) {
 	if logger != nil {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Starting discovery for server: %s", serverURL))
 	}
@@ -411,7 +425,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	}
 
 	// Step 5: Fetch authorization server metadata
-	metadata, err := fetchAuthorizationServerMetadata(ctx, authServers)
+	metadata, err := fetchAuthorizationServerMetadata(ctx, authServers, usable)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch authorization server metadata: %w", err)
 	}
@@ -543,11 +557,11 @@ func attemptWellKnownDiscovery(ctx context.Context, serverURL string) ([]string,
 
 // fetchAuthorizationServerMetadata fetches OAuth endpoints from authorization server(s)
 // Tries multiple authorization servers until one succeeds
-func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string) (*OAuthMetadata, error) {
+func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string, usable func(*OAuthMetadata) bool) (*OAuthMetadata, error) {
 	var lastErr error
 	for _, issuer := range authServers {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Fetching metadata from authorization server: %s", issuer))
-		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasAuthorizationEndpoint, true)
+		metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, usable, true)
 		if err == nil && metadata != nil {
 			logger.Debug(fmt.Sprintf("[OAuth Discovery] Successfully fetched metadata from: %s", issuer))
 			return metadata, nil

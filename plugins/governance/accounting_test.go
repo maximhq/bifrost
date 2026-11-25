@@ -399,6 +399,36 @@ func TestReportUsage_PerModelChargingIsInertWithoutModelConfigs(t *testing.T) {
 	assert.Equal(t, 12.0, f.budgetUsage("wildcard-budget"))
 }
 
+// A batch row ran the model as written, so settling it charges the budget on that name and never
+// the budget of the model a key alias would have stood for.
+func TestReportUsage_BatchModelUsageIsChargedWithoutAliasExpansion(t *testing.T) {
+	provider := "anthropic"
+	const aliased, target = "claude-opus-4-6", "claude-sonnet-4-6"
+	targetCfg := buildModelConfig("target-cfg", target, &provider, buildBudget("target-budget", 100.0, "1d"), nil)
+	aliasCfg := buildModelConfig("alias-cfg", aliased, &provider, buildBudget("alias-budget", 100.0, "1d"), nil)
+	store := modelKeyStore(t, targetCfg, aliasCfg)
+	store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{aliased: {ModelID: target}}}}},
+	}}
+	logger := NewMockLogger()
+	tracker := NewUsageTracker(context.Background(), store, NewBudgetResolver(store, nil, logger, nil), nil, logger)
+	t.Cleanup(func() { _ = tracker.Cleanup() })
+	plugin := &GovernancePlugin{store: store, tracker: tracker}
+	usage := func(id string) float64 {
+		return store.GetGovernanceData(context.Background()).Budgets[id].CurrentUsage
+	}
+
+	require.NoError(t, plugin.ReportUsage(context.Background(), jobaccounting.UsageReport{
+		RequestID:  "batch-cost:anthropic:batch-alias",
+		Provider:   schemas.Anthropic,
+		Cost:       7.0,
+		ModelUsage: []jobaccounting.ModelUsage{{Model: aliased, Cost: 7.0}},
+	}))
+
+	assert.Equal(t, 7.0, usage("alias-budget"), "the model the row ran is charged")
+	assert.Equal(t, 0.0, usage("target-budget"), "the alias target did not run, so its budget is not charged")
+}
+
 // The set a request is checked against, the set named on its log row, and the set its usage is counted
 // against are one list. This is what several independent walks over the holder's shape used to risk: a
 // limit enforced on a request and then not counted lets a caller spend past it forever, and one counted
@@ -898,4 +928,38 @@ func TestPostHookWorkerBillsEstimatedCancelledStream(t *testing.T) {
 		assert.InDelta(c, want, fixture.cost(), 1e-12)
 		assert.Equal(c, int64(160), fixture.tokens())
 	}, time.Second, 10*time.Millisecond)
+}
+
+// TestPostHookWorkerReadOfStoredRunChargesNoTokens: every read and cancel of a stored run repeats
+// the run's full usage, and job accounting charges its tokens once, so a read that reports the run
+// charges none. A create, and a read of a run nothing settles, are charged as before.
+func TestPostHookWorkerReadOfStoredRunChargesNoTokens(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 1000, OutputTokens: 100, TotalTokens: 1100}
+	run := &schemas.BifrostPassthroughJob{ID: "v1_run", Status: "completed", Terminal: true}
+	resp := func(job *schemas.BifrostPassthroughJob) *schemas.BifrostResponsesResponse {
+		return &schemas.BifrostResponsesResponse{ID: schemas.Ptr("v1_run"), Usage: usage, ProviderJob: job}
+	}
+	stream := func(job *schemas.BifrostPassthroughJob) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: resp(job)}}
+	}
+	for name, tc := range map[string]struct {
+		requestType schemas.RequestType
+		result      *schemas.BifrostResponse
+		want        int64
+	}{
+		"retrieve":         {schemas.ResponsesRetrieveRequest, &schemas.BifrostResponse{ResponsesResponse: resp(run)}, 0},
+		"cancel":           {schemas.ResponsesCancelRequest, &schemas.BifrostResponse{ResponsesResponse: resp(run)}, 0},
+		"replay":           {schemas.ResponsesRetrieveStreamRequest, stream(run), 0},
+		"retrieve, no run": {schemas.ResponsesRetrieveRequest, &schemas.BifrostResponse{ResponsesResponse: resp(nil)}, 1100},
+		"create":           {schemas.ResponsesRequest, &schemas.BifrostResponse{ResponsesResponse: resp(run)}, 1100},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newAccountingFixture(t)
+			plugin := &GovernancePlugin{ctx: context.Background(), tracker: fixture.tracker}
+			settled := settleLimits(fixture.store, "sk-bf-acct", schemas.Gemini, "gemini-3.8-flash", &UsageUpdate{})
+			plugin.postHookWorker(tc.result, nil, schemas.Gemini, "gemini-3.8-flash", tc.requestType, "read-"+name, "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+			assert.EventuallyWithT(t, func(c *assert.CollectT) { assert.Equal(c, int64(1), fixture.requests()) }, time.Second, 10*time.Millisecond)
+			assert.Equal(t, tc.want, fixture.tokens())
+		})
+	}
 }

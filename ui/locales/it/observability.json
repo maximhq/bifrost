@@ -371,6 +371,7 @@
 			"outputCost": "Costo di output",
 			"additionalCost": "Costo aggiuntivo",
 			"guardrailCost": "Costo dei guardrail",
+			"externalGuardrailCostNote": "Include {{cost}} di costo stimato dei guardrail esterni, non conteggiato nel costo totale né nei budget.",
 			"semanticCacheCost": "Costo della cache semantica",
 			"routingCost": "Costo di routing",
 			"inputTextTokens": "Token di testo in input",
@@ -404,6 +405,9 @@
 			"judgeProvider": "Provider judge",
 			"judgeModel": "Modello judge",
 			"promptTokens": "Token del prompt",
+			"usageUnits": "Unità di utilizzo",
+			"estimatedCost": "Costo stimato",
+			"estimatedCostTooltip": "Stimato al prezzo di listino del fornitore del guardrail. Non conteggiato nel costo totale né nei budget.",
 			"reason": "Motivo",
 			"routingClassificationDetails": "Dettagli della classificazione di routing",
 			"mechanism": "Meccanismo",
@@ -793,6 +797,7 @@
 			"toastExported_other": "Esportati {{count}} log",
 			"toastFailed": "Esportazione non riuscita: {{error}}",
 			"summary": {
+				"jobId": "ID job: {{value}}",
 				"search": "ricerca «{{value}}»",
 				"request": "richiesta «{{value}}»",
 				"providers": "provider ({{total}})",
@@ -819,6 +824,20 @@
 		"batchMixedModel": "misto"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "La riga di regolazione è stata eliminata prima dell'addebito",
+			"relay_job_no_usage": "La risposta finale non conteneva un utilizzo da prezzare",
+			"relay_job_rejected": "L'upstream ha rifiutato l'ID del job",
+			"relay_job_access_denied": "L'upstream ha negato l'accesso al job",
+			"relay_job_gone": "L'upstream non conosce più il job",
+			"relay_job_timeout": "Non terminato entro il timeout",
+			"relay_job_params": "Impostazioni del job non leggibili"
+		},
+		"jobOutcome": {
+			"unpriced": "Senza prezzo",
+			"failed": "Non riuscito",
+			"succeeded": "Riuscito"
+		},
 		"fields": {
 			"relay": "Relay",
 			"kind": "Tipo",
@@ -837,7 +856,10 @@
 			"no": "No"
 		},
 		"columns": {
-			"jobBadge": "JOB",
+			"startsJob": "Avvia il job {{id}}",
+			"jobUnpriced": "Senza prezzo: {{reason}}",
+			"jobFailed": "Non riuscito: {{status}}",
+			"jobBadge": "Job",
 			"noRoute": "Nessuna route",
 			"route": "Route {{route}}",
 			"settled": "Saldato: {{status}}",
@@ -877,6 +899,13 @@
 			"perRequest": "{{value}}/req"
 		},
 		"detail": {
+			"jobStatusStat": "Stato del job",
+			"jobNotSettled": "Non ancora regolato",
+			"jobSettlementFailed": "Impossibile verificare il regolamento.",
+			"jobSettlement": "Regolazione del job",
+			"costUnpriced": "senza prezzo",
+			"unpricedBody": "Bifrost non ha potuto prezzare questo job, quindi il suo costo è sconosciuto e il job non è stato addebitato. La chiamata di avvio ha mantenuto il proprio addebito.",
+			"unpricedTitle": "Job senza prezzo",
 			"loadingDetails": "Caricamento dei dettagli del log del relay",
 			"notFound": "Log del relay non trovato",
 			"loadFailed": "Impossibile caricare questo log del relay.",
@@ -907,6 +936,12 @@
 			"tokensNotPricedValue": "{{input}} in ingresso / {{output}} in uscita",
 			"matchedRoute": "Route corrispondente",
 			"parentLog": "Log padre",
+			"jobPolls": "Tentativi di controllo dello stato",
+			"jobLastStatus": "Ultimo stato del job",
+			"jobLastHttpStatus": "Stato HTTP dell'ultimo polling",
+			"jobSettledAt": "Regolato il",
+			"jobSettledBy": "Regolato dal controllo di stato",
+			"jobLastError": "Perché è terminato senza prezzo",
 			"responseBodyPreview": "Corpo della risposta (anteprima)",
 			"filterByValue": "Mostra le chiamate relay con questo valore",
 			"queryParameters": "Parametri di query",
@@ -916,6 +951,7 @@
 			"contentHidden": "Il logging dei contenuti è stato disabilitato per questa richiesta."
 		},
 		"filters": {
+			"unpriced": "Job senza prezzo",
 			"reset": "Reimposta",
 			"searchRelays": "Cerca relay",
 			"searchMethods": "Cerca metodi",
@@ -1121,6 +1157,8 @@
 			"groupTracesBySessionHelp": "Quando abilitata, le richieste che condividono la stessa intestazione x-bf-session-id vengono raggruppate in una singola traccia, con ciascuna richiesta che compare come span sibling di primo livello. Una richiesta con un traceparent W3C in ingresso rimane nella propria traccia distribuita e non viene influenzata.",
 			"disableRootSpanContent": "Disabilita il contenuto del root span",
 			"disableRootSpanContentHelp": "Quando abilitata, il contenuto dei messaggi di input/output viene escluso solo dal root span; lo span di generazione sottostante (llm.call) mantiene il contenuto completo.",
+			"applyTraceDimensionsToChildSpans": "Applica le dimensioni agli span figli",
+			"applyTraceDimensionsToChildSpansHelp": "Quando abilitata, le dimensioni della richiesta (header x-bf-dim-*) vengono unite in ogni span esportato, non solo nello span radice, così gli span figli possono essere filtrati o raggruppati per dimensione. path, method e i namespace riservati come gen_ai.* vengono ignorati. Ogni dimensione viene aggiunta a ogni span, quindi valori ad alta cardinalità aumentano il costo di ingestione del collector.",
 			"enableMetricsExport": "Abilita esportazione metriche",
 			"enableMetricsExportHelp": "Invia le metriche a un collector OTEL per una corretta aggregazione nei deployment in cluster",
 			"overheadBreakdown": "Suddivisione dell'overhead",

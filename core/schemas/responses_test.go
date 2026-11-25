@@ -954,6 +954,40 @@ func TestResponsesMessageSurfacesToolSearchIdentity(t *testing.T) {
 	assert.False(t, hosted.IsClientToolSearchItem())
 }
 
+// A Gemini tool search item carries the signature Google issued as encrypted_content. A client
+// replaying it sends the item back verbatim, so the verbatim decode must surface the signature
+// for the Gemini converter to send back, and the bytes must still round-trip unchanged. An item
+// Bifrost builds with only a signature must not gain a null reasoning summary.
+func TestResponsesMessageSurfacesToolSearchSignature(t *testing.T) {
+	for _, raw := range []string{
+		`{"type":"tool_search_call","id":"ts_1","call_id":"ts_1","execution":"server","status":"completed","arguments":{"function_names":["f"]},"encrypted_content":"sig_call"}`,
+		`{"type":"tool_search_output","call_id":"ts_1","execution":"server","status":"completed","tools":[{"type":"function","name":"f"}],"encrypted_content":"sig_result"}`,
+	} {
+		var msg ResponsesMessage
+		require.NoError(t, Unmarshal([]byte(raw), &msg))
+		require.NotNil(t, msg.ResponsesReasoning, raw)
+		assert.Equal(t, gjson.Get(raw, "encrypted_content").String(), *msg.ResponsesReasoning.EncryptedContent)
+		encoded, err := MarshalSorted(msg)
+		require.NoError(t, err)
+		assert.Equal(t, raw, string(encoded))
+	}
+
+	var plain ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"type":"tool_search_call","id":"tsc_1","execution":"server","arguments":{}}`), &plain))
+	assert.Nil(t, plain.ResponsesReasoning, "an item without a signature gains no reasoning")
+
+	built := ResponsesMessage{
+		Type:                  Ptr(ResponsesMessageTypeToolSearchOutput),
+		ToolSearchOutputTools: json.RawMessage(`[{"type":"function","name":"f"}]`),
+		ResponsesToolMessage:  &ResponsesToolMessage{CallID: Ptr("ts_1"), Execution: Ptr("server")},
+		ResponsesReasoning:    &ResponsesReasoning{EncryptedContent: Ptr("sig")},
+	}
+	encoded, err := MarshalSorted(built)
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(encoded, "summary").Exists(), string(encoded))
+	assert.Equal(t, "sig", gjson.GetBytes(encoded, "encrypted_content").String())
+}
+
 // An Anthropic tool_search_call replayed through /v1/responses (Bifrost's own output
 // echoed back) surfaces its name and tool_references, so the Anthropic rebuild keeps
 // the search variant and the discovered tools; the bytes still round-trip unchanged.

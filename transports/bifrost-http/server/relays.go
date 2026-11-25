@@ -8,8 +8,10 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"github.com/maximhq/bifrost/plugins/logging"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
@@ -59,6 +61,8 @@ func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager h
 
 // startEndpointJobSweeper (re)starts the sweeper that settles async jobs relay
 // routes started. It runs on every reload so the reporter tracks the live governance plugin.
+// It ticks every 10s, so a job's interval_seconds below 30 is honoured; each tick is one indexed
+// query for due relay jobs.
 func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.RelayUsageReporter) {
 	s.endpointSweeperMu.Lock()
 	defer s.endpointSweeperMu.Unlock()
@@ -66,11 +70,26 @@ func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.Relay
 		s.endpointSweeperCancel()
 		s.endpointSweeperCancel = nil
 	}
-	if s.relays == nil || s.Config == nil || s.Config.LogsStore == nil {
+	if s.relays == nil || s.Config == nil {
 		return
 	}
 	store, ok := s.Config.ConfigStore.(jobaccounting.SweepStore)
 	if !ok {
+		return
+	}
+	// Only a call naming a job Bifrost started is relayed free as a status check. The lookup reads
+	// the config store alone, so it stays on with logging off: a job started before logging was
+	// turned off still has free status checks, though it settles only once logs are back, as batch
+	// and video jobs do. A job the store does not have is no job; any other store error is a failed
+	// lookup, so the status check is retried rather than charged or refused.
+	s.relays.SetJobLookup(func(ctx context.Context, relayName, routeKey, jobID string) (bool, error) {
+		known, err := jobaccounting.HasRelayJob(ctx, store, relayName, routeKey, jobID)
+		if errors.Is(err, configstore.ErrNotFound) {
+			return false, nil
+		}
+		return known, err
+	})
+	if s.Config.LogsStore == nil {
 		return
 	}
 	var base context.Context = context.Background()
@@ -79,7 +98,19 @@ func (s *BifrostHTTPServer) startEndpointJobSweeper(reporter jobaccounting.Relay
 	}
 	sweepCtx, cancel := context.WithCancel(base)
 	s.endpointSweeperCancel = cancel
-	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, jobaccounting.RelayJobSweeperConfig{Interval: 30 * time.Second, Logger: logger})
+	// Named per node, as the batch and video sweepers are, so claims show the relay kind and survive reloads.
+	nodeID := ""
+	if loggerPlugin, err := lib.FindPluginAs[*logging.LoggerPlugin](s.Config, logging.PluginName); err == nil && loggerPlugin != nil {
+		nodeID = loggerPlugin.ClusterNodeID()
+		// A caller's finished status check is confirmed with Bifrost's own poll.
+		loggerPlugin.SetRelayJobPoller(s.relays)
+	}
+	config := jobaccounting.SweeperConfig{Interval: 10 * time.Second, Logger: logger, ClaimedBy: jobaccounting.RunnerID("relay-sweeper", nodeID)}
+	// Assigned only when set: a nil *kvstore.Store in the interface would not compare as nil.
+	if s.Config.KVStore != nil {
+		config.KVStore = s.Config.KVStore
+	}
+	sweeper := jobaccounting.NewRelayJobSweeper(store, s.relays, s.Config.LogsStore, reporter, config)
 	go sweeper.Run(sweepCtx)
 }
 

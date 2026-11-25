@@ -1,15 +1,21 @@
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Relay, RelayRouteConfig } from "@/lib/types/relays";
-import { relayAuthSchema, relayFormSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
+import { parseJSONExact, relayAuthSchema, relayFormSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
 import {
+	displayOrder,
+	hasRoundedBodyOverride,
 	cleanJob,
 	cleanUsage,
-	compareRoutes,
 	describePricing,
 	emptyNetworkForm,
 	emptyRelayForm,
 	emptyUsageForm,
+	locateRoute,
 	mergeUsage,
+	routeKey,
+	toBodyOverridePairs,
+	toBodyOverrides,
 	toRelayConfig,
 	toRelayForm,
 	relayGatewayPath,
@@ -30,6 +36,56 @@ const stored: Relay = {
 };
 
 describe("relay form", () => {
+	it("round-trips body overrides on the relay and its routes as JSON values", () => {
+		const withOverrides: Relay = {
+			...stored,
+			body_overrides: { include_usage: true },
+			routes: [
+				{ method: "POST", path: "/search", body_overrides: { "options.depth": "advanced", limits: { max: 3 }, tags: [1, 2], none: null } },
+				{ method: "POST", path: "/extract" },
+			],
+		};
+		const form = toRelayForm(withOverrides);
+		expect(form.body_overrides).toEqual([{ name: "include_usage", value: "true" }]);
+		expect(form.routes[0].body_overrides).toContainEqual({ name: "options.depth", value: '"advanced"' });
+		const back = toRelayConfig(form);
+		expect(back.body_overrides).toEqual({ include_usage: true });
+		expect(back.routes?.find((r) => r.path === "/search")?.body_overrides).toEqual({
+			"options.depth": "advanced",
+			limits: { max: 3 },
+			tags: [1, 2],
+			none: null,
+		});
+		expect(back.routes?.find((r) => r.path === "/extract")).not.toHaveProperty("body_overrides");
+	});
+
+	it("keeps a __proto__ path as a field", () => {
+		const out = toBodyOverrides([{ name: "__proto__", value: "true" }]);
+		expect(out && Object.keys(out)).toEqual(["__proto__"]);
+		expect(JSON.stringify(out)).toBe('{"__proto__":true}');
+	});
+
+	it("saves no body_overrides when every row is blank", () => {
+		expect(toBodyOverrides([{ name: "", value: "" }])).toBeUndefined();
+		expect(toBodyOverrides(undefined)).toBeUndefined();
+		expect(toBodyOverridePairs(undefined)).toEqual([]);
+		expect(toRelayConfig(toRelayForm(stored)).body_overrides).toBeUndefined();
+	});
+
+	it("saves a route's switch that turns the relay's enforced fields off, and leaves it out when on", () => {
+		const relay = {
+			...stored,
+			body_overrides: { include_usage: true },
+			routes: [
+				{ method: "POST" as const, path: "/off", inherit_body_overrides: false },
+				{ method: "POST" as const, path: "/on", inherit_body_overrides: true },
+			],
+		};
+		const back = toRelayConfig(toRelayForm(relay));
+		expect(back.routes?.find((r) => r.path === "/off")?.inherit_body_overrides).toBe(false);
+		expect(back.routes?.find((r) => r.path === "/on")).not.toHaveProperty("inherit_body_overrides");
+	});
+
 	it("round-trips an endpoint, keeping route overrides and the redacted secret", () => {
 		const back = toRelayConfig(toRelayForm(stored));
 		const route = (path: string) => back.routes?.find((r) => r.path === path);
@@ -60,91 +116,6 @@ describe("relay form", () => {
 		// The gateway reads the model and tokens on every call, billed or not; only pricing is dropped.
 		expect(route("/free")?.usage).toEqual({ model_path: "model", model_source: "query", total_tokens_path: "usage.total" });
 		expect(route("/search")?.usage).toEqual({ cost_per_request: 0.02 });
-	});
-
-	it("saves routes in match order: literals A to Z, then globs, then catch-alls", () => {
-		const routes: RelayRouteConfig[] = [
-			{ method: "POST", path: "/**" },
-			{ method: "GET", path: "/models/*" },
-			{ method: "POST", path: "/search" },
-			{ method: "POST", path: "/" },
-			{ method: "GET", path: "/models/*:predict" },
-			{ method: "GET", path: "/*/*" },
-			{ method: "POST", path: "/", headers: { "X-Amz-Target": "Textract.AnalyzeDocument" } },
-			{ method: "GET", path: "/files/**" },
-			{ method: "GET", path: "/files/latest" },
-			{ method: "DELETE", path: "/batches" },
-		];
-		const back = toRelayConfig(toRelayForm({ ...stored, routes }));
-		expect(back.routes?.map((r) => `${r.method} ${r.path}${r.headers ? " +h" : ""}`)).toEqual([
-			"POST / +h",
-			"POST /",
-			"DELETE /batches",
-			"GET /files/latest",
-			"POST /search",
-			"GET /models/*:predict",
-			"GET /models/*",
-			"GET /*/*",
-			"GET /files/**",
-			"POST /**",
-		]);
-	});
-
-	it("puts an exact header matcher before a glob on the same path, which would otherwise take its calls", () => {
-		const target = (value: string): RelayRouteConfig => ({ method: "POST", path: "/", headers: { "X-Amz-Target": value } });
-		const routes = [target("*"), target("Textract.Analyze*"), target("Textract.AnalyzeDocument"), target("Textract.AnalyzeExpense")];
-		const back = toRelayConfig(toRelayForm({ ...stored, routes }));
-		expect(back.routes?.map((r) => r.headers?.["X-Amz-Target"])).toEqual([
-			"Textract.AnalyzeDocument",
-			"Textract.AnalyzeExpense",
-			"Textract.Analyze*",
-			"*",
-		]);
-	});
-
-	it("never lets a broader header matcher precede one it covers on the same path", () => {
-		const pairs: [string, string][] = [
-			["poll", "*"],
-			["Textract.Analyze*", "*"],
-			["a*b*", "a*"],
-			["foo*", "*foo*"],
-			["v?", "v*"],
-			["?", "*"],
-			["v[12]", "v[0-9]"],
-			["v[0-9]", "v?"],
-		];
-		const route = (value: string): RelayRouteConfig => ({ method: "POST", path: "/", headers: { "X-Kind": value } });
-		for (const [narrow, broad] of pairs) {
-			expect(compareRoutes(route(narrow), route(broad)), `${narrow} before ${broad}`).toBeLessThan(0);
-			expect(compareRoutes(route(broad), route(narrow)), `${narrow} before ${broad}`).toBeGreaterThan(0);
-		}
-	});
-
-	it("never lets a broader route precede one it covers", () => {
-		// Each pair is [narrower, broader]: every request the first matches, the second matches too.
-		const pairs: [string, string][] = [
-			["/files/latest", "/files/*"],
-			["/models/*:predict", "/models/*"],
-			["/a/*", "/*/*"],
-			["/*/*", "/**"],
-			["/a/*/*", "/a/**"],
-			["/a/b/**", "/a/**"],
-			["/x/a*b*", "/x/a*"],
-			["/x/foo*", "/x/*foo*"],
-			["/files/?", "/files/*"],
-			["/x/?", "/x/*"],
-			["/files/[m]", "/files/[a-z]"],
-			["/files/[a-z]", "/files/?"],
-			["/files/[^m]", "/files/*"],
-			// An escaped wildcard is a literal character, so this route is narrower than a real *.
-			["/files/a\\*", "/files/a*"],
-		];
-		for (const [narrow, broad] of pairs) {
-			expect(compareRoutes({ method: "GET", path: narrow }, { method: "GET", path: broad }), `${narrow} before ${broad}`).toBeLessThan(0);
-			expect(compareRoutes({ method: "GET", path: broad }, { method: "GET", path: narrow }), `${narrow} before ${broad}`).toBeGreaterThan(
-				0,
-			);
-		}
 	});
 
 	it("keeps settings the form does not edit, and saves a none proxy as unset, as for providers", () => {
@@ -216,7 +187,7 @@ describe("relay form", () => {
 			succeeded: ["SUCCEEDED"],
 			failed: [],
 			interval_seconds: 30,
-			timeout_seconds: undefined,
+			timeout_seconds: null,
 			usage: { units_path: "DocumentMetadata.Pages", cost_per_unit: 0.0015, cost_per_request: undefined },
 		});
 		expect(job).toEqual({
@@ -227,6 +198,12 @@ describe("relay form", () => {
 			interval_seconds: 30,
 			usage: { units_path: "DocumentMetadata.Pages", cost_per_unit: 0.0015 },
 		});
+	});
+
+	it("keeps a job's reused id switch, which only the API used to set", () => {
+		const job = { id_path: "id", poll: { path: "/jobs/{{job.id}}" }, status_path: "status", succeeded: ["done"] };
+		expect(cleanJob({ ...job, reused_id_is_new_job: true }).reused_id_is_new_job).toBe(true);
+		expect(cleanJob({ ...job, reused_id_is_new_job: false })).not.toHaveProperty("reused_id_is_new_job");
 	});
 
 	it("leaves the reported cost out of the price when the relay ignores it", () => {
@@ -333,5 +310,78 @@ describe("relayGatewayPath", () => {
 		vi.stubGlobal("window", { __BIFROST_BASE_PATH__: "/bifrost" });
 		expect(relayGatewayPath({ name: "tavily", url: "/relay/tavily" })).toBe("/bifrost/relay/tavily");
 		expect(relayGatewayPath({ name: "tavily" })).toBe("/bifrost/relay/tavily");
+	});
+});
+
+describe("locateRoute", () => {
+	const r = (path: string) => ({ method: "GET", path, headers: [] });
+
+	it("follows the opened route when the list reorders", () => {
+		expect(locateRoute([r("/a"), r("/b")], 0, routeKey(r("/b")))).toBe(1);
+	});
+
+	it("keeps the position of an identical duplicate", () => {
+		expect(locateRoute([r("/a"), r("/a")], 1, routeKey(r("/a")))).toBe(1);
+	});
+
+	it("reports a route that is gone", () => {
+		expect(locateRoute([r("/a")], 0, routeKey(r("/b")))).toBe(-1);
+	});
+
+	it("treats header matchers as part of the route", () => {
+		const start = { ...r("/"), headers: [{ name: "X-Target", value: "Start" }] };
+		const get = { ...r("/"), headers: [{ name: "x-target", value: "Get" }] };
+		expect(locateRoute([get, start], 0, routeKey(start))).toBe(1);
+	});
+
+	it("never takes another route whose headers read the same when glued together", () => {
+		const one = { ...r("/"), headers: [{ name: "x", value: "a y: b" }] };
+		const two = {
+			...r("/"),
+			headers: [
+				{ name: "x", value: "a" },
+				{ name: "y", value: "b" },
+			],
+		};
+		expect(routeKey(one)).not.toBe(routeKey(two));
+		expect(locateRoute([two], 0, routeKey(one)), "the opened route is gone, so nothing is overwritten").toBe(-1);
+	});
+});
+
+describe("exact body override numbers", () => {
+	it("keeps digits a double cannot hold, from the API and from the form", () => {
+		const loaded = parseJSONExact('{"tenant":9007199254740993,"limit":5,"nested":{"id":12345678901234567891}}');
+		expect(JSON.stringify(loaded)).toBe('{"tenant":9007199254740993,"limit":5,"nested":{"id":12345678901234567891}}');
+		const pairs = toBodyOverridePairs(loaded as { tenant: unknown; limit: unknown } as Record<string, unknown>);
+		expect(pairs.find((p) => p.name === "tenant")?.value).toBe("9007199254740993");
+		expect(JSON.stringify(toBodyOverrides(pairs))).toContain('"tenant":9007199254740993');
+	});
+});
+
+describe("hasRoundedBodyOverride", () => {
+	const relay = (overrides: Record<string, unknown>, routeOverrides?: Record<string, unknown>) =>
+		({
+			name: "r",
+			body_overrides: overrides,
+			routes: routeOverrides ? [{ method: "POST", path: "/", body_overrides: routeOverrides }] : [],
+		}) as unknown as Relay;
+	it("flags a whole number past 2^53 read by a browser without JSON.rawJSON", () => {
+		expect(hasRoundedBodyOverride(relay({ seed: 9007199254740992 }), false)).toBe(true);
+		expect(hasRoundedBodyOverride(relay({}, { nested: { ids: [1, 9007199254740992] } }), false)).toBe(true);
+	});
+	it("leaves ordinary numbers alone", () => {
+		expect(hasRoundedBodyOverride(relay({ max: 50, ratio: 0.5, big: 9007199254740991 }), false)).toBe(false);
+		expect(hasRoundedBodyOverride(relay({ huge: Infinity }), false), "a number past a double's range").toBe(true);
+	});
+	it("never flags in a browser that keeps exact digits", () => {
+		expect(hasRoundedBodyOverride(relay({ seed: 9007199254740992 }), true)).toBe(false);
+	});
+});
+
+describe("displayOrder", () => {
+	it("follows the gateway's match_order, and falls back to the saved order when it is unusable", () => {
+		expect(displayOrder([2, 1, 0], 3)).toEqual([2, 1, 0]);
+		for (const bad of [undefined, [0, 1], [0, 0, 1], [0, 1.5, 2], [0, 1, 3], [-1, 0, 1]])
+			expect(displayOrder(bad, 3), JSON.stringify(bad)).toEqual([0, 1, 2]);
 	});
 });

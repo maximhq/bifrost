@@ -1,7 +1,14 @@
 import { ModelAccessSelector } from "@/components/modelAccess";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import { DefaultAnthropicWorkloadIdentityConfig, DefaultVertexAWSWorkloadIdentityConfig, OAuthSigningAlgorithms } from "@/lib/types/config";
+import {
+	DefaultAnthropicWorkloadIdentityConfig,
+	DefaultVertexAWSWorkloadIdentityConfig,
+	OAuthSigningAlgorithms,
+	KnownProvider,
+	ServiceTier,
+} from "@/lib/types/config";
+import { PROVIDER_SERVICE_TIERS } from "@/lib/constants/config";
 import { identitySourceType } from "@/lib/types/schemas";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,6 +31,9 @@ import { GithubCopilotSignIn } from "./githubCopilotSignIn";
 // Vertex authentication methods offered by the key form. The backend picks the mode from which
 // fields are set; this discriminator only drives the tabs and validation.
 type VertexAuthType = "service_account" | "service_account_json" | "api_key" | "aws_workload_identity";
+
+// Select value for "no key-level service tier"; Radix Select reserves the empty string.
+const NO_SERVICE_TIER = "__none__";
 
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex", "wafer"];
 
@@ -52,6 +62,46 @@ function BatchAPIFormField({ control }: { control: Control<any>; form: UseFormRe
 					<FormControl>
 						<Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
 					</FormControl>
+				</FormItem>
+			)}
+		/>
+	);
+}
+
+// Service tier field, shown only for providers that take a key tier, with that provider's values.
+function ServiceTierFormField({ control, tiers }: { control: Control<any>; tiers: ServiceTier[] }) {
+	const { t } = useTranslation("models");
+	if (tiers.length === 0) {
+		return null;
+	}
+	return (
+		<FormField
+			control={control}
+			name={`key.service_tier`}
+			render={({ field }) => (
+				<FormItem>
+					<FormLabel>{t("providers.keys.serviceTier")}</FormLabel>
+					<FormDescription>{t("providers.keys.serviceTierHelp")}</FormDescription>
+					<Select
+						value={field.value ?? NO_SERVICE_TIER}
+						// null, not undefined: the key update API keeps a field the payload omits.
+						onValueChange={(v) => field.onChange(v === NO_SERVICE_TIER ? null : (v as ServiceTier))}
+					>
+						<FormControl>
+							<SelectTrigger className="w-[260px]" data-testid="apikey-service-tier-select">
+								<SelectValue />
+							</SelectTrigger>
+						</FormControl>
+						<SelectContent>
+							<SelectItem value={NO_SERVICE_TIER}>{t("providers.keys.serviceTierNotSet")}</SelectItem>
+							{tiers.map((tier) => (
+								<SelectItem key={tier} value={tier} data-testid={`apikey-service-tier-option-${tier}`}>
+									{tier}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+					<FormMessage />
 				</FormItem>
 			)}
 		/>
@@ -158,6 +208,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// Credential UI keys off the base provider type for custom providers; the
 	// model list, deployments table, and API calls still use the real providerName.
 	const effectiveProvider = baseProviderType ?? providerName;
+	const serviceTiers = PROVIDER_SERVICE_TIERS[effectiveProvider as KnownProvider] ?? [];
 	const isBedrock = effectiveProvider === "bedrock";
 	const isBedrockMantle = effectiveProvider === "bedrock_mantle";
 	const isSageMaker = effectiveProvider === "sagemaker";
@@ -543,6 +594,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								<div data-testid="apikey-deployments-table">
 									<DeploymentsTable
 										providerName={providerName}
+										serviceTiers={serviceTiers}
 										value={field.value}
 										onChange={(next) => {
 											form.clearErrors("key.aliases");
@@ -557,6 +609,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</>
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
+			{!isAzure && !isVertex && <ServiceTierFormField control={control} tiers={serviceTiers} />}
 			{isAzure && (
 				<div className="space-y-4 px-0.5">
 					<Separator className="my-6" />
@@ -745,6 +798,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<ServiceTierFormField control={control} tiers={serviceTiers} />
 				</div>
 			)}
 			{isVertex && (
@@ -1065,6 +1119,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						)}
 					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
+					<ServiceTierFormField control={control} tiers={serviceTiers} />
 				</div>
 			)}
 			{isReplicate && (

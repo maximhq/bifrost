@@ -4,18 +4,41 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.49
+**Latest Version:** 2.1.50
 
 ## Changelog
 
 ### Upcoming
 
-- Added `serviceMonitor`: renders a Prometheus Operator `ServiceMonitor` that scrapes `/metrics` on the `http` port. Disabled by default; the `monitoring.coreos.com/v1` CRDs must exist when the manifest is applied, not when it is rendered.
-- Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` to authenticate the scrape when auth is enabled. `basicAuth` inherits the Secret and keys of the active `bifrost.governance.authConfig` or `bifrost.authConfig`; rendering fails if no Secret can be resolved.
-- `serviceMonitor.enabled: true` is refused at render time when `bifrost.plugins.telemetry.config.metrics_enabled` is `false`, since `/metrics` would return `404`.
-- Added the `app.kubernetes.io/component: server` label to the primary `Service` so the `ServiceMonitor` does not also scrape the SQLite headless service.
-- Added `bifrost.mcp.clientConfigs[].serverTypeOnSlug` (`server_type_on_slug`): code mode for the client on its own `/mcp/<slug>` only (`inherit`, `enabled` or `disabled`); `/mcp`, Virtual MCPs and LLM requests follow `isCodeModeClient`.
-- Added `bifrost.client.mcpClientMetadataUrl` (`client.mcp_client_metadata_url`): where you host Bifrost's Client ID Metadata Document, for MCP servers that cannot reach Bifrost. Unset, the document is served under `mcpExternalClientUrl`.
+- Added `bifrost.relays[].body_overrides` and `bifrost.relays[].routes[].body_overrides` (`relays[].body_overrides`, `relays[].routes[].body_overrides`): JSON fields forced into every request body, whatever the caller sent. A route's value replaces the relay's for the same path.
+- Added `bifrost.relays[].routes[].inherit_body_overrides` (`relays[].routes[].inherit_body_overrides`): `false` leaves the relay's `body_overrides` out of that route.
+- Added `bifrost.relays[].routes[].job` (`relays[].routes[].job`): the route starts an upstream async job, such as AWS Textract's StartDocumentAnalysis, which Bifrost polls and charges once when it finishes instead of on every status check.
+- Added `client_credentials` to `bifrost.mcp.clientConfigs[].authType`, with a `clientCredentials` block that renders into `client_credentials`: Bifrost requests one token with credentials registered at the server's authorization server.
+- Added `aws_sigv4` to `bifrost.mcp.clientConfigs[].authType`, with an `awsSigV4` block (`region`, `service`, `roleArn`, `externalId`, `sessionName`) that renders into `aws_sigv4`: Bifrost signs requests with its own AWS identity, for Amazon Bedrock AgentCore Gateway and other IAM-protected servers.
+- `aws_sigv4` is accepted for `http`, `sse` and `openapi` clients, and `client_credentials` for `http` and `sse`. The chart refuses both on `stdio`.
+
+### 2.1.49
+
+- Added `serviceMonitor` to create a Prometheus Operator ServiceMonitor that scrapes Bifrost's `/metrics`. Off by default.
+- Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` for scraping when auth is enabled. `basicAuth` reuses your existing auth Secret.
+- The chart now refuses `serviceMonitor.enabled: true` when telemetry metrics are turned off.
+- The main Service now carries the `app.kubernetes.io/component: server` label, so the ServiceMonitor scrapes only that Service.
+- Added `bifrost.mcp.clientConfigs[].serverTypeOnSlug` to turn code mode on or off for a client on its own `/mcp/<slug>` endpoint.
+- Added `bifrost.client.mcpClientMetadataUrl` to host Bifrost's MCP Client ID Metadata Document elsewhere, for MCP servers that cannot reach Bifrost.
+- Added `bifrost.modelRouters` to configure model routers, which classify requests as simple, medium or complex and send each tier to a chosen model. They run after routing rules. With config.json as the source of truth, `[]` removes stored routers.
+- `bifrost.governance.complexityAnalyzerConfig.classifier` now accepts `llm`, which requires the `llm` block.
+- Added Prometheus metrics for the embedded Redis: `vectorStore.redis.metrics.enabled` runs a `redis_exporter` sidecar on port 9121.
+- Added `vectorStore.redis.metrics.serviceMonitor` to create a Prometheus Operator ServiceMonitor for the Redis exporter, with optional basic auth.
+- Added `vectorStore.redis.master.extraEnv` and `envFrom` to pass environment variables such as `REDIS_ARGS` to the embedded Redis. They work with Redis auth enabled.
+- Fixed the embedded Redis not saving its data to the persistent volume when Redis auth is enabled, which lost data whenever the pod was replaced. **Behavior change:** the Redis pod restarts once on upgrade.
+- Added `bifrost.client.usageEstimationTokenizers` to choose the tokenizers that estimate usage for cancelled or timed-out streams.
+- Added `bifrost.datasheetOverrides` for pricing and model-parameter overrides that survive datasheet syncs. With config.json as the source of truth, `[]` removes stored overrides.
+- Baseten keys now accept a per-alias `deployment_url`.
+- The semantic cache now accepts `byteplus` and `baseten` as providers.
+- Added `bifrost.client.mcpOpenapiMaxSpecMb` (`client.mcp_openapi_max_spec_mb`) to raise or lower the size limit on an openapi MCP client's spec. 0 keeps the 32 MiB default.
+- Added `bifrost.client.bifrostUrl` (`client.bifrost_url`), the gateway's public base URL including `server.basePath`. `/v1/mcp` needs it; it accepts env and vault references.
+- Added `bifrost.client.bifrostMcpAllowWrites` (`client.bifrost_mcp_allow_writes`) to stop `/v1/mcp` serving configuration changes as tools. On by default.
+- Added `bifrost.framework.pricing.openapiUrl` (`framework.pricing.openapi_url`) to point `/v1/mcp` at a local OpenAPI spec on air-gapped installs.
 
 ### 2.1.48
 
@@ -26,8 +49,6 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `bifrost.mcp.clientConfigs[].perUserDiscovery` (`per_user_discovery`): discover each caller's tools with their own credential. Needs a per-user `authType`.
 - `sse`, `stdio` and `websocket` MCP clients now refuse per-user auth types at render time.
 - `bifrost.governance.routingRules[].id` (`governance.routing_rules[].id`) is now optional: a rule without one is matched by `name`, `scope` and `scope_id`.
-- Added `bifrost.modelRouters` (`model_routers`): named model routers, each a complexity classifier (`semantic`, `decision` or `llm`) with its own Simple, Medium and Complex phrases, the model each tier gets (`targets`), and the requests it takes after the routing rules (`routing`: `enabled`, `scope`, `scope_id`, `cel_expression`, `priority`). Routers are separate from `bifrost.governance.complexityAnalyzerConfig`, which routing rules keep reading `complexity_tier` from.
-- `bifrost.governance.complexityAnalyzerConfig.classifier` (`governance.complexity_analyzer_config.classifier`) now also accepts `llm`. Phrase suggestions are set per model router (`bifrost.modelRouters[].suggestions`), not on the complexity analyzer config.
 
 ### 2.1.47
 
@@ -1055,6 +1076,13 @@ vectorStore:
     # external:
     #   enabled: true
     #   host: "redis.example.com"
+    # master:
+    #   extraEnv: [] # Extra EnvVar entries for the Redis container, e.g. REDIS_ARGS
+    #   envFrom: [] # secretRef / configMapRef sources for the Redis container
+    metrics:
+      enabled: false # redis_exporter sidecar + `metrics` Service port (9121) + prometheus.io annotations
+      # serviceMonitor:
+      #   enabled: false # Prometheus Operator ServiceMonitor
 ```
 
 #### Qdrant

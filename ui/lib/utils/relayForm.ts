@@ -2,6 +2,9 @@ import i18n from "@/lib/i18n";
 import { withBasePath } from "@/lib/utils/basePath";
 import type { Relay, RelayJobConfig, RelayRouteConfig, RelaySecret, RelayUsageConfig } from "@/lib/types/relays";
 import {
+	exactJSONNumbers,
+	isJSONText,
+	parseJSONExact,
 	type RelayFormValues,
 	type RelayUsageForm,
 	relayAuthSchema,
@@ -37,114 +40,30 @@ const toApiSecret = (s?: FormSecret): RelaySecret | undefined => {
 	return { value: s.value ?? "", ...(s.ref ? { ref: s.ref } : {}), ...(s.type ? { type: s.type } : {}) };
 };
 
-type RouteOrderKey = Pick<RelayRouteConfig, "method" | "path" | "headers">;
+/** Escapes text so a glob matches it literally. */
+export const escapeGlob = (text: string) => text.replace(/[*?[\]\\]/g, "\\$&");
 
-const GLOB_CHARS = /[*?[]/;
-const codePointOrder = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-
-/** The sort key of a route path; see compareRoutes. */
-function pathRank(path: string): number[] {
-	const segments = path.replace(/^\//, "").split("/");
-	const catchAll = segments[segments.length - 1] === "**";
-	const fixed = catchAll ? segments.slice(0, -1) : segments;
-	const glob = fixed.some((s) => GLOB_CHARS.test(s));
-	// Equal literal text, fewer and narrower wildcards first: /x/foo* is covered by /x/*foo*, and
-	// /files/[m] by /files/[a-z] by /files/? by /files/*.
-	const shape = globShape(fixed.join("/"));
-	return [
-		catchAll ? 1 : 0,
-		catchAll ? -fixed.length : 0,
-		glob ? 1 : 0,
-		glob ? fixed.length : 0,
-		glob ? -shape.literal : 0,
-		glob ? shape.stars : 0,
-		glob ? shape.singles : 0,
-	];
-}
-
-// How many characters a ? (or a negated class) can stand for, for ranking only.
-const ANY_CHARACTER = 0x110000;
+/** The header matchers a save keeps: named, with a value. */
+export const savedHeaders = (headers: { name: string; value: string }[]): Record<string, string> =>
+	Object.fromEntries(headers.filter((h) => h.name.trim() && h.value.trim()).map((h) => [h.name.trim(), h.value.trim()]));
 
 /**
- * The shape of a path.Match pattern, as the gateway reads it: literal characters (outside brackets,
- * an escaped character included), * wildcards, and the breadth of the single-character positions: a
- * class counts the characters it matches ([m] 1, [a-z] 26, a negated one nearly all), and a ? all.
+ * What identifies a route, since routes have no id: its method, path and header matchers. JSON keeps
+ * each part separate, so a header value containing "y: b" cannot pass for a second header.
  */
-function globShape(pattern: string): { literal: number; stars: number; singles: number } {
-	let literal = 0;
-	let stars = 0;
-	let singles = 0;
-	for (let i = 0; i < pattern.length; i++) {
-		const c = pattern[i];
-		if (c === "\\" && i + 1 < pattern.length) {
-			literal++;
-			i++;
-		} else if (c === "*") stars++;
-		else if (c === "?") singles += ANY_CHARACTER;
-		else if (c === "[") {
-			const negated = pattern[i + 1] === "^";
-			let j = negated ? i + 2 : i + 1;
-			let size = 0;
-			for (; j < pattern.length && pattern[j] !== "]"; j++) {
-				let lo = pattern[j];
-				if (lo === "\\" && j + 1 < pattern.length) lo = pattern[++j];
-				if (pattern[j + 1] === "-" && j + 2 < pattern.length && pattern[j + 2] !== "]") {
-					let hi = pattern[j + 2];
-					j += 2;
-					if (hi === "\\" && j + 1 < pattern.length) hi = pattern[++j];
-					size += Math.max(1, hi.codePointAt(0)! - lo.codePointAt(0)! + 1);
-				} else size++;
-			}
-			singles += negated ? ANY_CHARACTER - size : size;
-			i = j;
-		} else literal++;
-	}
-	return { literal, stars, singles };
+export function routeKey(r: { method: string; path: string; headers: { name: string; value: string }[] }): string {
+	const headers = r.headers
+		.filter((h) => h.name.trim())
+		.map((h) => [h.name.trim().toLowerCase(), h.value.trim()])
+		// Its own comparison, so the key does not depend on the route-ranking helpers.
+		.sort(([a, x], [b, y]) => (a < b ? -1 : a > b ? 1 : x < y ? -1 : x > y ? 1 : 0));
+	return JSON.stringify([r.method.toUpperCase(), r.path, headers]);
 }
 
-/**
- * The order routes are saved in. The relay takes the first route that matches, so a route must come
- * before every broader route that also matches its requests. Literal paths never overlap one another
- * and come first, A to Z. Globs follow by depth, more literal text first (/models/*:predict before
- * /models/*), and a trailing /** catch-all comes last, deepest first. On the same path a route with
- * header matchers precedes the plain one, and exact header values precede globbed ones, since the
- * broader route would otherwise take their requests.
- */
-export function compareRoutes(a: RouteOrderKey, b: RouteOrderKey): number {
-	const ra = pathRank(a.path);
-	const rb = pathRank(b.path);
-	for (let i = 0; i < ra.length; i++) if (ra[i] !== rb[i]) return ra[i] - rb[i];
-	const headerKey = (r: RouteOrderKey) =>
-		Object.entries(r.headers ?? {})
-			.map(([name, value]) => `${name.toLowerCase()}: ${value}`)
-			.sort()
-			.join("\n");
-	// Header values are globs too: on one path, X-Amz-Target: * must not precede an exact target.
-	const ha = headerRank(a);
-	const hb = headerRank(b);
-	return (
-		codePointOrder(a.path, b.path) ||
-		Object.keys(b.headers ?? {}).length - Object.keys(a.headers ?? {}).length ||
-		ha[0] - hb[0] ||
-		ha[1] - hb[1] ||
-		ha[2] - hb[2] ||
-		ha[3] - hb[3] ||
-		codePointOrder(a.method.toUpperCase(), b.method.toUpperCase()) ||
-		codePointOrder(headerKey(a), headerKey(b))
-	);
-}
-
-/**
- * How broad a route's header matchers are: fewer glob values first, then, among globs, more literal
- * text first (Textract.Analyze* before *), then fewer and narrower wildcards (foo* before *foo*,
- * v[12] before v[0-9] before v?). Exact values never overlap, so they stay A to Z.
- */
-function headerRank(r: RouteOrderKey): [number, number, number, number] {
-	const values = Object.values(r.headers ?? {});
-	const globs = values.filter((v) => GLOB_CHARS.test(v)).length;
-	const shapes = values.map(globShape);
-	const sum = (k: "literal" | "stars" | "singles") => shapes.reduce((n, shape) => n + shape[k], 0);
-	return [globs, globs ? -sum("literal") : 0, globs ? sum("stars") : 0, globs ? sum("singles") : 0];
+/** Where an opened route is now, as the list can refetch in a new order; -1 when it is gone. */
+export function locateRoute<T extends Parameters<typeof routeKey>[0]>(routes: T[], index: number, key: string): number {
+	if (routes[index] && routeKey(routes[index]) === key) return index;
+	return routes.findIndex((r) => routeKey(r) === key);
 }
 
 export function emptyRelayForm(): RelayFormValues {
@@ -163,7 +82,43 @@ export function emptyRelayForm(): RelayFormValues {
 		routes: [],
 		skip_route_check: false,
 		ignore_upstream_cost: false,
+		body_overrides: [],
 	};
+}
+
+type BodyOverridePair = { name: string; value: string };
+
+/** Forced body fields as the form's path/JSON-text pairs. */
+// A whole number past 2^53 that this browser already rounded while reading (no JSON.rawJSON).
+function roundedNumber(value: unknown): boolean {
+	// Infinity too: a number past a double's range would be saved back as null.
+	if (typeof value === "number") return !Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value));
+	if (Array.isArray(value)) return value.some(roundedNumber);
+	if (value && typeof value === "object") return Object.values(value).some(roundedNumber);
+	return false;
+}
+
+/** Whether saving this relay from this browser would write back a rounded body override. */
+export function hasRoundedBodyOverride(relay: Relay, exact = exactJSONNumbers): boolean {
+	if (exact) return false;
+	return roundedNumber(relay.body_overrides) || (relay.routes ?? []).some((route) => roundedNumber(route.body_overrides));
+}
+
+export function toBodyOverridePairs(overrides: Record<string, unknown> | undefined): BodyOverridePair[] {
+	return Object.entries(overrides ?? {}).map(([name, value]) => ({ name, value: JSON.stringify(value) }));
+}
+
+/** The form's pairs as the API's map; blank rows are skipped, the schema has refused invalid ones. */
+export function toBodyOverrides(pairs: BodyOverridePair[] | undefined): Record<string, unknown> | undefined {
+	// No prototype, so a __proto__ path is stored as a key instead of hitting the inherited setter.
+	const out: Record<string, unknown> = Object.create(null);
+	for (const pair of pairs ?? []) {
+		const name = pair.name.trim();
+		if (!name || !isJSONText(pair.value)) continue;
+		// Exact: a big whole number keeps its digits on the way to the API.
+		out[name] = parseJSONExact(pair.value);
+	}
+	return Object.keys(out).length ? out : undefined;
 }
 
 /** Turns an endpoint read from the API (secrets redacted) into form values. */
@@ -205,9 +160,12 @@ export function toRelayForm(e: Relay): RelayFormValues {
 			stream: r.stream,
 			usage: r.usage ? { ...r.usage } : undefined,
 			job: r.job,
+			body_overrides: toBodyOverridePairs(r.body_overrides),
+			inherit_body_overrides: r.inherit_body_overrides,
 		})),
 		skip_route_check: e.skip_route_check ?? false,
 		ignore_upstream_cost: e.ignore_upstream_cost ?? false,
+		body_overrides: toBodyOverridePairs(e.body_overrides),
 	};
 }
 
@@ -316,34 +274,41 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 					},
 		usage: cleanUsage(v.usage, false),
 		streaming: streamingSet ? { ...v.streaming, paths: v.streaming.paths.filter((p) => p.trim()) } : undefined,
-		routes: v.routes
-			.map((r) => {
-				const headers = Object.fromEntries(
-					r.headers.filter((h) => h.name.trim() && h.value.trim()).map((h) => [h.name.trim(), h.value.trim()]),
-				);
-				// A route that is not billed is never priced and hides its pricing, so only the model and
-				// token mapping the gateway still reads on every call is sent.
-				const usage =
-					(r.billable ?? routeBillableByDefault(r.method)) ? cleanUsage(r.usage, true) : withoutPricing(cleanUsage(r.usage, true));
-				return {
-					method: r.method,
-					path: r.path.trim(),
-					...(Object.keys(headers).length ? { headers } : {}),
-					...(r.enabled === false ? { enabled: false } : {}),
-					...(r.billable !== undefined && r.billable !== routeBillableByDefault(r.method) ? { billable: r.billable } : {}),
-					...(r.stream !== undefined ? { stream: r.stream } : {}),
-					...(usage ? { usage } : {}),
-					...(r.job ? { job: cleanJob(r.job) } : {}),
-				};
-			})
-			.sort(compareRoutes),
+		// Saved as listed: the gateway ranks routes itself and reports the order (match_order).
+		routes: v.routes.map((r) => {
+			const headers = savedHeaders(r.headers);
+			// A route that is not billed is never priced and hides its pricing, so only the model and
+			// token mapping the gateway still reads on every call is sent.
+			const usage =
+				(r.billable ?? routeBillableByDefault(r.method)) ? cleanUsage(r.usage, true) : withoutPricing(cleanUsage(r.usage, true));
+			const bodyOverrides = toBodyOverrides(r.body_overrides);
+			return {
+				method: r.method,
+				path: r.path.trim(),
+				...(Object.keys(headers).length ? { headers } : {}),
+				...(r.enabled === false ? { enabled: false } : {}),
+				...(r.billable !== undefined && r.billable !== routeBillableByDefault(r.method) ? { billable: r.billable } : {}),
+				...(r.stream !== undefined ? { stream: r.stream } : {}),
+				...(usage ? { usage } : {}),
+				...(r.job ? { job: cleanJob(r.job) } : {}),
+				...(bodyOverrides ? { body_overrides: bodyOverrides } : {}),
+				...(r.inherit_body_overrides === false ? { inherit_body_overrides: false } : {}),
+			};
+		}),
 		skip_route_check: v.skip_route_check || undefined,
 		ignore_upstream_cost: v.ignore_upstream_cost || undefined,
+		body_overrides: toBodyOverrides(v.body_overrides),
 	};
 }
 
 /** Drops a job's empty optional fields so the stored config carries only what was set. */
-export function cleanJob(job: Omit<RelayJobConfig, "usage"> & { usage?: RelayUsageForm }): RelayJobConfig {
+export function cleanJob(
+	job: Omit<RelayJobConfig, "usage" | "interval_seconds" | "timeout_seconds"> & {
+		usage?: RelayUsageForm;
+		interval_seconds?: number | null;
+		timeout_seconds?: number | null;
+	},
+): RelayJobConfig {
 	const poll = {
 		...(job.poll.method ? { method: job.poll.method } : {}),
 		path: job.poll.path.trim(),
@@ -361,6 +326,7 @@ export function cleanJob(job: Omit<RelayJobConfig, "usage"> & { usage?: RelayUsa
 		...(job.interval_seconds ? { interval_seconds: job.interval_seconds } : {}),
 		...(job.timeout_seconds ? { timeout_seconds: job.timeout_seconds } : {}),
 		...(usage ? { usage } : {}),
+		...(job.reused_id_is_new_job ? { reused_id_is_new_job: true } : {}),
 	};
 }
 
@@ -415,4 +381,11 @@ export function mergeUsage(
 		(out as Record<string, unknown>)[k] = v;
 	}
 	return out;
+}
+
+/** The order the gateway tries the routes in, as the API reports it; the saved order when it does not. */
+export function displayOrder(matchOrder: number[] | undefined, count: number): number[] {
+	const saved = Array.from({ length: count }, (_, i) => i);
+	if (!matchOrder || matchOrder.length !== count) return saved;
+	return new Set(matchOrder).size === count && matchOrder.every((i) => Number.isInteger(i) && i >= 0 && i < count) ? matchOrder : saved;
 }

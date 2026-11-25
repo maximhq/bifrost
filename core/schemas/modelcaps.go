@@ -503,6 +503,15 @@ func (c ModelCaps) SupportsMidConversationSystem(fallback bool) bool {
 	return fallback
 }
 
+// SupportsNativeMidConversationSystem is the datasheet's supports_native_mid_conversation_system,
+// the gate the Anthropic converter reads in place of SupportsMidConversationSystem.
+func (c ModelCaps) SupportsNativeMidConversationSystem(fallback bool) bool {
+	if c.record != nil && c.record.SupportsNativeMidConversationSystem != nil {
+		return *c.record.SupportsNativeMidConversationSystem
+	}
+	return fallback
+}
+
 // SupportsMidConvOutputConfig reports whether the pair accepts output_config.effort
 // on a role:"system" message inside messages (per-message effort). The record is keyed per
 // (provider, model), so it decides for both the provider and the model when set.
@@ -844,6 +853,16 @@ func (c ModelCaps) BedrockRequiresSignedReasoning(fallback bool) bool {
 func (c ModelCaps) SupportsConverseToolResultImages(fallback bool) bool {
 	if c.record != nil && c.record.SupportsConverseToolResultImages != nil {
 		return *c.record.SupportsConverseToolResultImages
+	}
+	return fallback
+}
+
+// StripsUserTurnTrailingWhitespace reports whether the model drops trailing whitespace from the
+// text that ends a user turn while keeping it mid-turn, which decides whether a block an inlined
+// reminder joins is trimmed. Falls back to the caller's name-based answer when the row says nothing.
+func (c ModelCaps) StripsUserTurnTrailingWhitespace(fallback bool) bool {
+	if c.record != nil && c.record.StripsUserTurnTrailingWhitespace != nil {
+		return *c.record.StripsUserTurnTrailingWhitespace
 	}
 	return fallback
 }

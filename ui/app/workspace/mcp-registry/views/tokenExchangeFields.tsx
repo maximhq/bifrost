@@ -445,8 +445,10 @@ export function TokenExchangeFields({
 								</FormItem>
 							)}
 						/>
-						<ResourceClientAuthFields
+						<UpstreamClientAuthFields
 							control={control}
+							names={idjagAuthNames}
+							testIdPrefix="token-exchange-resource"
 							disabled={disabled}
 							hideValueWhenEnv={clientSecretHideValueWhenEnv}
 							maskNonEnvValue={clientSecretMaskNonEnvValue}
@@ -532,11 +534,47 @@ export function TokenExchangeFields({
 	);
 }
 
-// Radix Select can't hold an empty value; this stands in for "" (follow discovery).
-const AUTO_CLIENT_AUTH = "auto";
+// Radix Select can't hold an empty value; this stands in for "" (follow discovery,
+// or for the signing algorithm, choose from the key).
+const AUTO = "auto";
 
-interface ResourceClientAuthFieldsProps {
+/** The form field names one upstream client authentication is stored under. */
+export interface UpstreamClientAuthNames {
+	mode: string;
+	secret: string;
+	method: string;
+	key: string;
+	keyId: string;
+	alg: string;
+	audience: string;
+}
+
+const idjagAuthNames: UpstreamClientAuthNames = {
+	mode: "token_exchange.resource_auth_mode",
+	secret: "token_exchange.resource_client_secret",
+	method: "token_exchange.resource_client_auth_method",
+	key: "token_exchange.resource_private_key",
+	keyId: "token_exchange.resource_key_id",
+	alg: "token_exchange.resource_signing_algorithm",
+	audience: "token_exchange.resource_assertion_audience",
+};
+
+/** Labels that differ between surfaces; each defaults to the id_jag wording. */
+export interface UpstreamClientAuthLabels {
+	mode?: string;
+	secretOption?: string;
+	secret?: string;
+	secretPlaceholder?: string;
+	privateKeyHelp?: string;
+}
+
+interface UpstreamClientAuthFieldsProps {
 	control: Control<any>;
+	names: UpstreamClientAuthNames;
+	testIdPrefix: string;
+	labels?: UpstreamClientAuthLabels;
+	/** Offers "Automatic" for the signing algorithm, sent as "" so the server picks it from the key. */
+	autoAlgorithm?: boolean;
 	disabled?: boolean;
 	hideValueWhenEnv?: boolean;
 	maskNonEnvValue?: boolean;
@@ -544,47 +582,51 @@ interface ResourceClientAuthFieldsProps {
 }
 
 /**
- * ResourceClientAuthFields picks how Bifrost authenticates to the upstream
- * authorization server when redeeming an ID-JAG: a client secret, or a client
- * assertion signed with a private key (private_key_jwt). Switching clears the
- * other method's settings, since the backend refuses both together. The fields
- * themselves are registered by their FormFields; this only watches and clears.
+ * UpstreamClientAuthFields picks how Bifrost authenticates at an upstream token
+ * endpoint: a client secret, or a client assertion signed with a private key
+ * (private_key_jwt). Switching clears the other method's settings, since the
+ * backend refuses both together. Shared by the id_jag profile of token exchange
+ * and by client_credentials.
  */
-function ResourceClientAuthFields({
+export function UpstreamClientAuthFields({
 	control,
+	names,
+	testIdPrefix,
+	labels,
+	autoAlgorithm,
 	disabled,
 	hideValueWhenEnv,
 	maskNonEnvValue,
 	redactNonEnvValue,
-}: ResourceClientAuthFieldsProps) {
+}: UpstreamClientAuthFieldsProps) {
 	const { t } = useTranslation("mcp");
 	const { setValue } = useFormContext();
-	const key = useWatch({ control, name: "token_exchange.resource_private_key" }) as SecretVar | undefined;
-	const mode = useWatch({ control, name: "token_exchange.resource_auth_mode" }) as MCPResourceAuthMode | undefined;
+	const key = useWatch({ control, name: names.key }) as SecretVar | undefined;
+	const mode = useWatch({ control, name: names.mode }) as MCPResourceAuthMode | undefined;
 	// The choice lives in the form so validation can require a key for it; a
 	// form seeded without one goes by whether a key is stored.
 	const method: MCPResourceAuthMode = mode ?? (isSecretVarSet(key) ? "private_key" : "secret");
 
 	const choose = (next: MCPResourceAuthMode) => {
-		setValue("token_exchange.resource_auth_mode", next, { shouldDirty: true });
-		const clear = (name: string) => setValue(`token_exchange.${name}`, undefined, { shouldDirty: true });
+		setValue(names.mode, next, { shouldDirty: true });
+		const clear = (name: string) => setValue(name, undefined, { shouldDirty: true });
 		if (next === "private_key") {
-			["resource_client_secret", "resource_client_auth_method"].forEach(clear);
+			[names.secret, names.method].forEach(clear);
 		} else {
-			["resource_private_key", "resource_key_id", "resource_signing_algorithm", "resource_assertion_audience"].forEach(clear);
+			[names.key, names.keyId, names.alg, names.audience].forEach(clear);
 		}
 	};
 
 	return (
 		<>
 			<FormItem className="flex flex-col gap-2">
-				<FormLabel>{t("registry.tokenExchange.resourceAuth")}</FormLabel>
+				<FormLabel>{labels?.mode ?? t("registry.tokenExchange.resourceAuth")}</FormLabel>
 				<Select value={method} onValueChange={(v) => choose(v as MCPResourceAuthMode)} disabled={disabled}>
-					<SelectTrigger className="w-full" data-testid="token-exchange-resource-auth-method-select">
+					<SelectTrigger className="w-full" data-testid={`${testIdPrefix}-auth-method-select`}>
 						<SelectValue />
 					</SelectTrigger>
 					<SelectContent>
-						<SelectItem value="secret">{t("registry.tokenExchange.resourceAuthSecret")}</SelectItem>
+						<SelectItem value="secret">{labels?.secretOption ?? t("registry.tokenExchange.resourceAuthSecret")}</SelectItem>
 						<SelectItem value="private_key">{t("registry.tokenExchange.resourceAuthPrivateKey")}</SelectItem>
 					</SelectContent>
 				</Select>
@@ -593,14 +635,14 @@ function ResourceClientAuthFields({
 				<>
 					<FormField
 						control={control}
-						name="token_exchange.resource_client_secret"
+						name={names.secret}
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
-								<FormLabel>{t("registry.tokenExchange.resourceClientSecret")}</FormLabel>
+								<FormLabel>{labels?.secret ?? t("registry.tokenExchange.resourceClientSecret")}</FormLabel>
 								<FormControl>
 									<SecretVarInput
-										data-testid="token-exchange-resource-client-secret-input"
-										placeholder={t("registry.tokenExchange.resourceClientSecretPlaceholder")}
+										data-testid={`${testIdPrefix}-client-secret-input`}
+										placeholder={labels?.secretPlaceholder ?? t("registry.tokenExchange.resourceClientSecretPlaceholder")}
 										disabled={disabled}
 										hideValueWhenEnv={hideValueWhenEnv}
 										maskNonEnvValue={maskNonEnvValue}
@@ -615,22 +657,18 @@ function ResourceClientAuthFields({
 					/>
 					<FormField
 						control={control}
-						name="token_exchange.resource_client_auth_method"
+						name={names.method}
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
 								<FormLabel>{t("registry.tokenExchange.sendSecret")}</FormLabel>
-								<Select
-									value={field.value || AUTO_CLIENT_AUTH}
-									onValueChange={(v) => field.onChange(v === AUTO_CLIENT_AUTH ? "" : v)}
-									disabled={disabled}
-								>
+								<Select value={field.value || AUTO} onValueChange={(v) => field.onChange(v === AUTO ? "" : v)} disabled={disabled}>
 									<FormControl>
-										<SelectTrigger className="w-full" data-testid="token-exchange-resource-client-auth-method-select">
+										<SelectTrigger className="w-full" data-testid={`${testIdPrefix}-client-auth-method-select`}>
 											<SelectValue />
 										</SelectTrigger>
 									</FormControl>
 									<SelectContent>
-										<SelectItem value={AUTO_CLIENT_AUTH}>{t("registry.tokenExchange.authMethodAutomatic")}</SelectItem>
+										<SelectItem value={AUTO}>{t("registry.tokenExchange.authMethodAutomatic")}</SelectItem>
 										<SelectItem value="client_secret_basic">{t("registry.tokenExchange.authMethodBasic")}</SelectItem>
 										<SelectItem value="client_secret_post">{t("registry.tokenExchange.authMethodPost")}</SelectItem>
 									</SelectContent>
@@ -645,13 +683,13 @@ function ResourceClientAuthFields({
 				<>
 					<FormField
 						control={control}
-						name="token_exchange.resource_private_key"
+						name={names.key}
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
 								<FormLabel>{t("registry.tokenExchange.privateKey")}</FormLabel>
 								<FormControl>
 									<SecretVarInput
-										data-testid="token-exchange-resource-private-key-input"
+										data-testid={`${testIdPrefix}-private-key-input`}
 										variant="textarea"
 										rows={4}
 										placeholder={t("registry.tokenExchange.privateKeyPlaceholder")}
@@ -663,14 +701,14 @@ function ResourceClientAuthFields({
 										onChange={field.onChange}
 									/>
 								</FormControl>
-								<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.privateKeyHelp")}</p>
+								<p className="text-muted-foreground text-xs">{labels?.privateKeyHelp ?? t("registry.tokenExchange.privateKeyHelp")}</p>
 								<FormMessage />
 							</FormItem>
 						)}
 					/>
 					<FormField
 						control={control}
-						name="token_exchange.resource_key_id"
+						name={names.keyId}
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
 								<FormLabel>{t("registry.tokenExchange.keyIdOptional")}</FormLabel>
@@ -680,7 +718,7 @@ function ResourceClientAuthFields({
 										value={field.value ?? ""}
 										disabled={disabled}
 										placeholder={t("registry.tokenExchange.keyIdPlaceholder")}
-										data-testid="token-exchange-resource-key-id-input"
+										data-testid={`${testIdPrefix}-key-id-input`}
 									/>
 								</FormControl>
 								<FormMessage />
@@ -689,17 +727,22 @@ function ResourceClientAuthFields({
 					/>
 					<FormField
 						control={control}
-						name="token_exchange.resource_signing_algorithm"
+						name={names.alg}
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
 								<FormLabel>{t("registry.tokenExchange.signingAlgorithm")}</FormLabel>
-								<Select value={field.value || "RS256"} onValueChange={field.onChange} disabled={disabled}>
+								<Select
+									value={field.value || (autoAlgorithm ? AUTO : "RS256")}
+									onValueChange={(v) => field.onChange(v === AUTO ? "" : v)}
+									disabled={disabled}
+								>
 									<FormControl>
-										<SelectTrigger className="w-full" data-testid="token-exchange-resource-signing-algorithm-select">
+										<SelectTrigger className="w-full" data-testid={`${testIdPrefix}-signing-algorithm-select`}>
 											<SelectValue />
 										</SelectTrigger>
 									</FormControl>
 									<SelectContent>
+										{autoAlgorithm && <SelectItem value={AUTO}>{t("registry.clientCredentials.algorithmFromKey")}</SelectItem>}
 										{OAuthSigningAlgorithms.map((alg) => (
 											<SelectItem key={alg} value={alg}>
 												{alg}
@@ -713,7 +756,7 @@ function ResourceClientAuthFields({
 					/>
 					<FormField
 						control={control}
-						name="token_exchange.resource_assertion_audience"
+						name={names.audience}
 						render={({ field }) => (
 							<FormItem className="flex flex-col gap-2">
 								<FormLabel>{t("registry.tokenExchange.assertionAudience")}</FormLabel>
@@ -723,7 +766,7 @@ function ResourceClientAuthFields({
 										value={field.value ?? ""}
 										disabled={disabled}
 										placeholder={t("registry.tokenExchange.assertionAudiencePlaceholder")}
-										data-testid="token-exchange-resource-assertion-audience-input"
+										data-testid={`${testIdPrefix}-assertion-audience-input`}
 									/>
 								</FormControl>
 								<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.assertionAudienceHelp")}</p>

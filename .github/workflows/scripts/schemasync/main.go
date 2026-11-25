@@ -101,9 +101,11 @@ var ignoreSchemaProps = map[string]string{
 	// so removal would break validation of older config files that still carry it).
 	"/properties/governance/properties/virtual_keys/items/properties/access_profile_id": "stale; reverted in v1.5.9 (#3669/#3670), kept deprecated for backward-compatible validation",
 	// SecretVar-typed for env flexibility, not credentials.
-	"/properties/client/properties/oauth2_server_config/properties/issuer_url": "not a secret; env.X + envFrom pattern",
-	"/properties/client/properties/mcp_external_client_url":                    "not a secret; env.X + envFrom pattern",
-	"/properties/client/properties/mcp_client_metadata_url":                    "not a secret; env.X + envFrom pattern",
+	"/properties/client/properties/oauth2_server_config/properties/issuer_url":                   "not a secret; env.X + envFrom pattern",
+	"/properties/client/properties/oauth2_server_config/properties/browser_base_url":             "not a secret; env.X + envFrom pattern",
+	"/properties/client/properties/oauth2_server_config/properties/additional_issuer_urls/items": "not a secret; env.X + envFrom pattern",
+	"/properties/client/properties/mcp_external_client_url":                                      "not a secret; env.X + envFrom pattern",
+	"/properties/client/properties/mcp_client_metadata_url":                                      "not a secret; env.X + envFrom pattern",
 	// CA certificates are trust anchors, not private keys; bulky values ride env.X + envFrom.
 	"/properties/governance/properties/providers/items/properties/network_config/properties/ca_cert_pem": "CA trust anchor, not a credential; env.X + envFrom pattern",
 	"/properties/governance/properties/providers/items/properties/proxy_config/properties/ca_cert_pem":   "CA trust anchor, not a credential; env.X + envFrom pattern",
@@ -126,7 +128,8 @@ var ignoreGoFields = map[string]string{
 	"/properties/client|mcp_max_instructions_total":      "storage column; configured only via mcp.tool_manager_config.max_instructions_total",
 	// Same shape: the client column stores the global MCP protocol cap, which config.json sets
 	// only as mcp.max_protocol_version (applyMCPMaxProtocolVersion).
-	"/properties/client|mcp_max_protocol_version": "storage column; configured only via mcp.max_protocol_version",
+	"/properties/client|mcp_max_protocol_version":        "storage column; configured only via mcp.max_protocol_version",
+	"/properties/client|mcp_server_max_protocol_version": "storage column; configured only via mcp.server_max_protocol_version",
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
@@ -135,6 +138,11 @@ var ignoreGoFields = map[string]string{
 	// (TestValidateConfigSchema_InjectedTools pins that).
 	"/properties/governance/properties/providers/items|injected_tools": "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.injected_tools",
 	"/properties/governance/properties/providers/items|passthrough":    "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.passthrough",
+
+	// Phrase suggestions are set per model router (model_routers[].suggestions);
+	// the global complexity analyzer config refuses them, so the schema leaves them out.
+	// Mirrors excludedGoFields in transports/bifrost-http/lib/config_test.go.
+	"/properties/governance/properties/complexity_analyzer_config|suggestions": "set per model router; refused on the global complexity analyzer config",
 	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
@@ -190,6 +198,10 @@ var ignoreGoFields = map[string]string{
 	// business_unit is a non-persisted (gorm:"-") display object the governance read paths fill
 	// from the enterprise resolver; config.json links a key to a unit through business_unit_id.
 	"/properties/governance/properties/virtual_keys/items|business_unit": "response-only; resolved on read from business_unit_id (TableVirtualKey.BusinessUnit), not user-configurable via config.json",
+	// A business unit declares its budgets on business_units[] itself; the loader clears this owner FK
+	// on governance.budgets with a warning (ignoreBudgetBusinessUnitIDs). Mirrors excludedGoFields in
+	// transports/bifrost-http/lib/config_test.go.
+	"/properties/governance/properties/budgets/items|business_unit_id": "owner FK set from business_units[]; the loader clears it on governance.budgets (ignoreBudgetBusinessUnitIDs)",
 }
 
 // ignoreGoFieldNames are field names (regardless of parent path) that are
@@ -225,17 +237,25 @@ var narrowedEnumPaths = map[string]struct {
 		reason:   "global proxy rejects socks5/tcp at load (lib/configproxy.go) and on the API; only http is supported today",
 	},
 	"/properties/agents/items/properties/discovery_auth/properties/type": {
-		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange", "client_credentials", "aws_sigv4"},
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
 	},
 	"/properties/agents/items/properties/runtime_auth/properties/type": {
-		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange"},
+		excluded: []string{"per_user_headers", "per_user_oauth", "token_exchange", "client_credentials", "aws_sigv4"},
 		reason:   "UpstreamAuth reuses MCPAuthType; Agent Gateway accepts only none, headers, and oauth (agent.validateUpstreamAuth)",
 	},
 	"/properties/governance/properties/providers/items/properties/custom_provider_config/properties/base_provider_type": {
-		excluded: []string{"baseten", "byteplus", "kimchi", "minimax", "sagemaker", "soniox"},
+		excluded: []string{"baseten", "byteplus", "kimchi", "machgen", "minimax", "sagemaker", "soniox"},
 		reason:   "not in schemas.SupportedBaseProviders; IsSupportedBaseProvider rejects them as a custom provider base at load",
 	},
+}
+
+// wireRenamedEnumConsts are schema paths whose Go type marshals some consts under a different
+// wire value (custom MarshalJSON), keyed Go value -> wire value. The schema enum lists wire values,
+// so checkEnum compares the renamed value instead of the Go one.
+var wireRenamedEnumConsts = map[string]map[string]string{
+	// MCPServerTypeOnSlugInherit is "" in Go and storage, written as "inherit" (MCPServerTypeOnSlug.String).
+	"/properties/mcp/properties/client_configs/items/properties/server_type_on_slug": {"": "inherit"},
 }
 
 // opaqueLeafTypes are named Go types that have custom JSON marshalling and
@@ -1037,7 +1057,11 @@ func (c *checker) checkEnum(goVals []string, schemaNode map[string]any, schemaPa
 		}
 	}
 	goSet := map[string]bool{}
+	renamed := wireRenamedEnumConsts[schemaPath]
 	for _, v := range goVals {
+		if wire, ok := renamed[v]; ok {
+			v = wire
+		}
 		goSet[v] = true
 	}
 	excused := map[string]bool{}

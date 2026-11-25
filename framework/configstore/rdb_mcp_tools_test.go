@@ -196,6 +196,105 @@ func TestMCPClientConfig_OpenAPIConfigRoundTripsThroughStore(t *testing.T) {
 	assert.Equal(t, 4, afterReplace.OpenAPIConfig.OperationCount)
 }
 
+// TestMCPClientConfig_ClientCredentialsRoundTripsThroughStore: the
+// client_credentials block survives create, both read paths, a PATCH-style
+// update that omits it, and a replacement.
+func TestMCPClientConfig_ClientCredentialsRoundTripsThroughStore(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	cc := &schemas.MCPClientCredentialsConfig{TokenURL: "https://as.example.com/token", ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s-1"), AuthMethod: schemas.ClientSecretBasic}
+	require.NoError(t, s.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:                "cc-store-1",
+		Name:              "inventory",
+		ConnectionType:    schemas.MCPConnectionTypeHTTP,
+		ConnectionString:  schemas.NewSecretVar("https://mcp.example.com/mcp"),
+		AuthType:          schemas.MCPAuthTypeClientCredentials,
+		ClientCredentials: cc,
+	}))
+
+	byID, err := s.GetMCPClientConfigByID(ctx, "cc-store-1")
+	require.NoError(t, err)
+	require.NotNil(t, byID.ClientCredentials)
+	assert.True(t, byID.ClientCredentials.Equal(cc))
+
+	all, err := s.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	var found *schemas.MCPClientConfig
+	for _, c := range all.ClientConfigs {
+		if c.ID == "cc-store-1" {
+			found = c
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.ClientCredentials, "GetMCPConfig carries client_credentials")
+	assert.Equal(t, "s-1", found.ClientCredentials.ClientSecret.GetValue())
+
+	row, err := s.GetMCPClientByName(ctx, "inventory")
+	require.NoError(t, err)
+	row.ClientCredentials = nil
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "cc-store-1", row))
+	afterPatch, err := s.GetMCPClientByID(ctx, "cc-store-1")
+	require.NoError(t, err)
+	require.NotNil(t, afterPatch.ClientCredentials, "nil client_credentials on update preserves the stored one")
+
+	rotated := *cc
+	rotated.ClientSecret = schemas.NewSecretVar("s-2")
+	row.ClientCredentials = &rotated
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "cc-store-1", row))
+	afterReplace, err := s.GetMCPClientByID(ctx, "cc-store-1")
+	require.NoError(t, err)
+	assert.Equal(t, "s-2", afterReplace.ClientCredentials.ClientSecret.GetValue())
+}
+
+// TestMCPClientConfig_AWSSigV4RoundTripsThroughStore: the aws_sigv4 block survives
+// create, both read paths, a PATCH-style update that omits it, and a replacement.
+func TestMCPClientConfig_AWSSigV4RoundTripsThroughStore(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	cfg := &schemas.MCPAWSSigV4Config{Region: schemas.NewSecretVar("us-gov-west-1"), RoleARN: schemas.NewSecretVar("arn:aws-us-gov:iam::123456789012:role/gateway"), ExternalID: schemas.NewSecretVar("ext-1"), SessionName: schemas.NewSecretVar("bifrost")}
+	require.NoError(t, s.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "sigv4-store-1",
+		Name:             "web_search",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://gw.gateway.bedrock-agentcore.us-gov-west-1.amazonaws.com/mcp"),
+		AuthType:         schemas.MCPAuthTypeAWSSigV4,
+		AWSSigV4:         cfg,
+	}))
+
+	byID, err := s.GetMCPClientConfigByID(ctx, "sigv4-store-1")
+	require.NoError(t, err)
+	require.NotNil(t, byID.AWSSigV4)
+	assert.True(t, byID.AWSSigV4.Equal(cfg))
+
+	all, err := s.GetMCPConfig(ctx)
+	require.NoError(t, err)
+	var found *schemas.MCPClientConfig
+	for _, c := range all.ClientConfigs {
+		if c.ID == "sigv4-store-1" {
+			found = c
+		}
+	}
+	require.NotNil(t, found)
+	require.NotNil(t, found.AWSSigV4, "GetMCPConfig carries aws_sigv4")
+	assert.Equal(t, "ext-1", found.AWSSigV4.ExternalID.GetValue())
+
+	row, err := s.GetMCPClientByName(ctx, "web_search")
+	require.NoError(t, err)
+	row.AWSSigV4 = nil
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "sigv4-store-1", row))
+	afterPatch, err := s.GetMCPClientByID(ctx, "sigv4-store-1")
+	require.NoError(t, err)
+	require.NotNil(t, afterPatch.AWSSigV4, "nil aws_sigv4 on update preserves the stored one")
+
+	moved := *cfg
+	moved.Region = schemas.NewSecretVar("us-gov-east-1")
+	row.AWSSigV4 = &moved
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "sigv4-store-1", row))
+	afterReplace, err := s.GetMCPClientByID(ctx, "sigv4-store-1")
+	require.NoError(t, err)
+	assert.Equal(t, "us-gov-east-1", afterReplace.AWSSigV4.Region.GetValue())
+}
+
 // The global and per-client max protocol versions round-trip through the store, and GetMCPConfig
 // hands both to core.
 func TestMaxProtocolVersion_RoundTripsThroughStore(t *testing.T) {

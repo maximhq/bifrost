@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/mcp_headers"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,10 +51,16 @@ const petstoreSpecYAML = "openapi: 3.0.3\ninfo:\n  title: Petstore YAML\n  versi
 // the runtime would have synthesized from.
 type openAPIRecordingManager struct {
 	MCPManager
-	added     []*schemas.MCPClientConfig
-	updated   []*schemas.MCPClientConfig
-	refreshed []string
-	updateErr error // when set, UpdateMCPClient fails with it and records nothing
+	added       []*schemas.MCPClientConfig
+	updated     []*schemas.MCPClientConfig
+	refreshed   []string
+	reconnected []*schemas.MCPClientConfig
+	updateErr   error // when set, UpdateMCPClient fails with it and records nothing
+}
+
+func (m *openAPIRecordingManager) UpdateMCPClientCredentials(_ context.Context, _ string, c *schemas.MCPClientConfig) error {
+	m.reconnected = append(m.reconnected, c)
+	return nil
 }
 
 func (m *openAPIRecordingManager) RefreshMCPClientTools(_ context.Context, id string) (int, error) {
@@ -264,12 +272,41 @@ func TestPreviewOpenAPISpec_Errors(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
 	assert.Contains(t, body, "top level must be a mapping")
 
-	huge, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: "{" + strings.Repeat(" ", 5<<20) + "}"})
+	huge, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: "{" + strings.Repeat(" ", openapimcp.MaxSpecBytes) + "}"})
 	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(huge), "", false)
 	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
 
 	status, _ = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, `not json`, "", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// client_config.mcp_openapi_max_spec_mb is read on every request: lowering it refuses a spec the
+// default admits, on preview and on create, and 0 restores the default.
+func TestOpenAPISpec_ConfiguredMaxSpecSize(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	// Padded inside the object: the handlers trim surrounding whitespace before measuring.
+	padded := "{" + strings.Repeat(" ", 1<<20) + strings.TrimPrefix(strings.TrimSpace(petstoreSpecJSON), "{")
+	preview, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: padded})
+	create, _ := json.Marshal(map[string]any{
+		"name": "petstore_sized", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"*"},
+		"openapi_config":   map[string]any{"spec": padded},
+	})
+
+	h.store.ClientConfig.MCPOpenAPIMaxSpecMB = 1
+	status, body := doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(preview), "", false)
+	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
+	assert.Contains(t, body, fmt.Sprintf("exceeds %d bytes", 1<<20))
+	status, body = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(create), "", false)
+	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
+	assert.Empty(t, mgr.added)
+
+	h.store.ClientConfig.MCPOpenAPIMaxSpecMB = 0
+	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(preview), "", false)
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	status, body = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(create), "", false)
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	assert.Len(t, mgr.added, 1)
 }
 
 func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {
@@ -308,6 +345,26 @@ func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, stored.OpenAPIConfig)
 	assert.JSONEq(t, petstoreSpecJSON, stored.OpenAPIConfig.Spec, "the row carries the document")
+}
+
+// TestAddMCPClient_OpenAPI_AWSSigV4: an OpenAPI client may sign its upstream API
+// calls with aws_sigv4 (API Gateway with IAM auth); the block reaches the manager.
+func TestAddMCPClient_OpenAPI_AWSSigV4(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	payload := map[string]any{
+		"name":             "iam_api",
+		"connection_type":  "openapi",
+		"auth_type":        "aws_sigv4",
+		"aws_sigv4":        map[string]string{"region": "us-east-1", "service": "execute-api"},
+		"tools_to_execute": []string{"*"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://abc123.execute-api.us-east-1.amazonaws.com/prod"},
+	}
+	body, _ := json.Marshal(payload)
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	require.NotNil(t, mgr.added[0].AWSSigV4)
+	assert.Equal(t, "execute-api", mgr.added[0].AWSSigV4.Service)
 }
 
 func TestAddMCPClient_OpenAPI_SpecURLIsInlinedOnCreate(t *testing.T) {
@@ -864,7 +921,7 @@ func TestOpenAPICredentialSecretReferences(t *testing.T) {
 	assert.Equal(t, []string{"openapi_config.security_credentials.ApiKey.value", "openapi_config.security_credentials.Basic.password"}, refs)
 	assert.Nil(t, openAPICredentialSecretReferences(nil))
 
-	full := mcpClientSecretReferences(nil, nil, nil, nil, nil, &schemas.MCPOpenAPIConfig{SecurityCredentials: map[string]schemas.MCPOpenAPICredential{"ApiKey": {Value: &env}}})
+	full := mcpClientSecretReferences(nil, nil, nil, nil, nil, nil, &schemas.MCPOpenAPIConfig{SecurityCredentials: map[string]schemas.MCPOpenAPICredential{"ApiKey": {Value: &env}}})
 	assert.Equal(t, []string{"openapi_config.security_credentials.ApiKey.value"}, full)
 }
 
@@ -1056,6 +1113,20 @@ func TestUpdateMCPClient_OpenAPI_AuthBypassedRetargetCannotReuseStoredSecrets(t 
 		status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, retarget, id, true)
 		assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
 	})
+	t.Run("aws_sigv4", func(t *testing.T) {
+		// Created by an admin; nothing is stored but the identity it signs with.
+		h, mgr := newOpenAPITestHandler(t)
+		createBody, _ := json.Marshal(map[string]any{"name": "petstore", "connection_type": "openapi", "auth_type": "aws_sigv4", "tools_to_execute": []string{"listPets"},
+			"aws_sigv4": map[string]any{"region": "us-east-1", "service": "execute-api"}, "openapi_config": map[string]any{"spec": spec}})
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+		h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{mgr.added[0]}
+		status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, retarget, mgr.added[0].ID, true)
+		assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
+		assert.Contains(t, respBody, "signed with Bifrost's own AWS identity")
+		status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, retarget, mgr.added[0].ID, false)
+		assert.Equal(t, fasthttp.StatusOK, status, "an authenticated admin may retarget it: "+respBody)
+	})
 	t.Run("credentials replaced", func(t *testing.T) {
 		h, id := setup(t, nil)
 		status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"openapi_config":{"base_url":"https://8.8.8.8","security_credentials":{}}}`, id, true)
@@ -1098,4 +1169,32 @@ func TestMergeOpenAPIConfigUpdate_MaskedBaseURLKeepsStored(t *testing.T) {
 	other := "https://other.example.com"
 	merged = mergeOpenAPIConfigUpdate(existing, &schemas.MCPOpenAPIConfig{BaseURL: &other}, openAPIOptionFields{})
 	assert.Equal(t, other, *merged.BaseURL)
+}
+
+// TestFetchOpenAPISpecForCallerDerivesFromRequestContext: the download's
+// context is derived from the request's, so a server shutdown (which closes
+// the RequestCtx's Done) cancels it, and it still carries the size-scaled
+// deadline.
+func TestFetchOpenAPISpecForCallerDerivesFromRequestContext(t *testing.T) {
+	private := newAuthenticatedSpecClient
+	t.Cleanup(func() { newAuthenticatedSpecClient = private })
+	type markerKey struct{}
+	var sawMarker any
+	var deadline time.Duration
+	newAuthenticatedSpecClient = func(timeout time.Duration) *http.Client {
+		return &http.Client{Timeout: timeout, Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			sawMarker = r.Context().Value(markerKey{})
+			if d, ok := r.Context().Deadline(); ok {
+				deadline = time.Until(d)
+			}
+			return nil, errors.New("not dialed in tests")
+		})}
+	}
+	ctx := initCtx(&fasthttp.Request{})
+	ctx.SetUserValue(markerKey{}, "request")
+	_, _, _, err := fetchOpenAPISpecForCaller(ctx, "https://1.1.1.1/openapi.json", 64<<20)
+	require.Error(t, err)
+	assert.Equal(t, "request", sawMarker, "the fetch context must be derived from the request context")
+	assert.Greater(t, deadline, 15*time.Second, "the size-scaled deadline still applies")
+	assert.LessOrEqual(t, deadline, 30*time.Second)
 }

@@ -365,6 +365,43 @@ export function authRows(config: MCPClientConfig, scopeLabel: string): MCPClient
 			});
 		}
 	}
+	if (config.auth_type === "aws_sigv4") {
+		const aws = config.aws_sigv4;
+		// A reference is shown as its name; its resolved value is masked on read.
+		const shown = (v?: { value?: string; ref?: string }) => v?.ref?.trim() || v?.value?.trim() || "";
+		rows.push(
+			{ key: "aws_sigv4_region", label: i18n.t("registry.awsSigV4.region", { ns: "mcp" }), value: shown(aws?.region) || notSet() },
+			{ key: "aws_sigv4_service", label: i18n.t("registry.awsSigV4.service", { ns: "mcp" }), value: aws?.service || "bedrock-agentcore" },
+			{
+				key: "aws_sigv4_role",
+				label: i18n.t("registry.awsSigV4.assumedRole", { ns: "mcp" }),
+				value: shown(aws?.role_arn) || i18n.t("registry.awsSigV4.noRole", { ns: "mcp" }),
+			},
+		);
+	}
+	if (config.auth_type === "client_credentials") {
+		const cc = config.client_credentials;
+		const usesKey = !!(cc?.private_key?.value || cc?.private_key?.ref);
+		rows.push(
+			{ key: "client_credentials_token_url", label: i18n.t("registry.sheet.tokenUrl", { ns: "mcp" }), value: cc?.token_url || notSet() },
+			{
+				key: "client_credentials_authentication",
+				label: i18n.t("registry.clientCredentials.authenticateWith", { ns: "mcp" }),
+				value: usesKey
+					? `${i18n.t("registry.tokenExchange.resourceAuthPrivateKey", { ns: "mcp" })} · ${cc?.signing_algorithm || "RS256"}`
+					: cc?.auth_method || i18n.t("registry.tokenExchange.authMethodAutomatic", { ns: "mcp" }),
+			},
+			listRow("client_credentials_scopes", i18n.t("sessions.scopes", { ns: "mcp" }), cc?.scopes),
+			{
+				key: "client_credentials_resource",
+				label: i18n.t("registry.form.resource", { ns: "mcp" }),
+				value:
+					cc?.resource === ""
+						? i18n.t("registry.clientCredentials.resourceOmitted", { ns: "mcp" })
+						: cc?.resource || i18n.t("registry.clientCredentials.resourceDefault", { ns: "mcp" }),
+			},
+		);
+	}
 	if (config.connection_type === "openapi") {
 		const schemes = Object.keys(config.openapi_config?.security_credentials ?? {});
 		if (schemes.length > 0) {

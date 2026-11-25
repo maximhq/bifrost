@@ -2,7 +2,9 @@ package jobaccounting
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,16 +20,28 @@ import (
 type fakeEndpointPoller struct {
 	status int
 	body   string
+	err    *schemas.BifrostError
 	calls  int
+	onPoll func()
 }
 
 func (p *fakeEndpointPoller) PollJob(_ *schemas.BifrostContext, _ string, _ relay.JobPollRequest) (*relay.JobPollResponse, *schemas.BifrostError) {
 	p.calls++
+	if p.onPoll != nil {
+		p.onPoll()
+	}
+	if p.err != nil {
+		return nil, p.err
+	}
 	return &relay.JobPollResponse{StatusCode: p.status, ContentType: "application/json", Body: []byte(p.body)}, nil
 }
 
 type fakeEndpointLogs struct {
 	rows map[string]*logstore.RelayLog
+}
+
+func newFakeEndpointLogs() *fakeEndpointLogs {
+	return &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}
 }
 
 func (l *fakeEndpointLogs) BatchCreateRelayLogsIfNotExists(_ context.Context, entries []*logstore.RelayLog) ([]string, error) {
@@ -52,11 +66,15 @@ func (l *fakeEndpointLogs) FindRelayLog(_ context.Context, id string) (*logstore
 }
 
 type fakeEndpointReporter struct {
-	reports []RelayUsageReport
-	fail    bool
+	reports    []RelayUsageReport
+	fail       bool
+	failAlways bool
 }
 
 func (r *fakeEndpointReporter) ReportRelayUsage(_ context.Context, report RelayUsageReport) error {
+	if r.failAlways {
+		return assert.AnError
+	}
 	if r.fail {
 		r.fail = false
 		return assert.AnError
@@ -65,12 +83,31 @@ func (r *fakeEndpointReporter) ReportRelayUsage(_ context.Context, report RelayU
 	return nil
 }
 
+// failMarkOnceStore fails the first "row written" marker, after the row itself was stored.
+type failMarkOnceStore struct {
+	*fakeAccountingStore
+	failed bool
+}
+
+func (s *failMarkOnceStore) MarkProviderJobAggregateLogWritten(ctx context.Context, id, runnerID string) error {
+	if !s.failed {
+		s.failed = true
+		return assert.AnError
+	}
+	return s.fakeAccountingStore.MarkProviderJobAggregateLogWritten(ctx, id, runnerID)
+}
+
 func seedEndpointJob(t *testing.T, store *fakeAccountingStore) *cstables.TableProviderJob {
+	t.Helper()
+	return seedEndpointJobWithInterval(t, store, 0)
+}
+
+func seedEndpointJobWithInterval(t *testing.T, store *fakeAccountingStore, interval int) *cstables.TableProviderJob {
 	t.Helper()
 	snap := relay.JobSnapshot{
 		Job: schemas.RelayJobConfig{
 			IDPath: "JobId", StatusPath: "status", Succeeded: []string{"SUCCEEDED"}, Failed: []string{"FAILED"},
-			Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"},
+			Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}, IntervalSeconds: interval,
 		},
 		Usage: &schemas.RelayUsageConfig{UnitsPath: "pages", CostPerUnit: schemas.Ptr(0.05)},
 	}
@@ -93,17 +130,24 @@ func makeDue(job *cstables.TableProviderJob) {
 	job.NextCheckAt = &past
 }
 
+func relaySweeper(store SweepStore, poller RelayJobPoller, logs RelayJobLogStore, reporter RelayUsageReporter) *Sweeper {
+	return NewRelayJobSweeper(store, poller, logs, reporter, SweeperConfig{ClaimedBy: "node-1"})
+}
+
 func TestEndpointJobSweeperSettlesOnce(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeAccountingStore()
 	job := seedEndpointJob(t, store)
 	poller := &fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}
-	logs := &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}
+	logs := newFakeEndpointLogs()
+	// The start call's row, whose model, route and names the job row copies.
+	logs.rows["req-1"] = &logstore.RelayLog{ID: "req-1", Model: "textract-v2", RoutePath: "/jobs", VirtualKeyName: schemas.Ptr("prod"),
+		TeamName: schemas.Ptr("Team One"), ProjectID: schemas.Ptr("p-1"), App: schemas.Ptr("claude-code"), TeamIDsParsed: []string{"t1"}}
 	reporter := &fakeEndpointReporter{}
-	sweeper := NewRelayJobSweeper(store, poller, logs, reporter, RelayJobSweeperConfig{ClaimedBy: "node-1"})
+	sweeper := relaySweeper(store, poller, logs, reporter)
 
-	require.NoError(t, sweeper.SweepOnce(ctx))
-	assert.Empty(t, logs.rows, "a running job writes nothing")
+	sweeper.SweepOnce(ctx)
+	assert.Len(t, logs.rows, 1, "a running job writes nothing")
 	assert.Equal(t, 1, job.PollAttempts)
 	assert.Equal(t, "IN_PROGRESS", job.ProviderStatus)
 	assert.True(t, job.NextCheckAt.After(time.Now()), "and is polled again later")
@@ -112,14 +156,14 @@ func TestEndpointJobSweeperSettlesOnce(t *testing.T) {
 	poller.body = `{"status":"SUCCEEDED","pages":3}`
 	reporter.fail = true
 	makeDue(job)
-	require.Error(t, sweeper.SweepOnce(ctx))
-	require.Len(t, logs.rows, 1)
+	sweeper.SweepOnce(ctx)
+	require.Len(t, logs.rows, 2)
 	assert.NotNil(t, job.AggregateLogWrittenAt)
 	assert.Empty(t, reporter.reports)
 
 	pollsBefore := poller.calls
 	makeDue(job)
-	require.NoError(t, sweeper.SweepOnce(ctx))
+	sweeper.SweepOnce(ctx)
 	assert.Equal(t, pollsBefore, poller.calls, "a settlement resumed after its row was written does not poll again")
 	require.Len(t, reporter.reports, 1)
 	report := reporter.reports[0]
@@ -128,58 +172,67 @@ func TestEndpointJobSweeperSettlesOnce(t *testing.T) {
 	assert.Equal(t, "vk-1", report.VirtualKeyID)
 	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
 
-	var row *logstore.RelayLog
-	for _, r := range logs.rows {
-		row = r
-	}
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
 	assert.Equal(t, logstore.RelayLogKindJob, row.Kind)
 	assert.Equal(t, "j-1", *row.JobID)
 	assert.Equal(t, "req-1", *row.ParentLogID)
 	assert.Equal(t, report.RequestID, row.ID, "the charge is keyed by the settlement row, so governance dedupes retries")
+	require.NotNil(t, row.JobDebugParsed)
+	assert.Equal(t, 2, row.JobDebugParsed.Polls, "one poll found it running, one found it done")
+	assert.Equal(t, "SUCCEEDED", row.JobDebugParsed.LastStatus)
+	assert.Equal(t, 200, row.JobDebugParsed.LastHTTPStatus)
+	assert.Equal(t, logstore.RelayJobOutcomeSucceeded, row.JobDebugParsed.Outcome)
+	assert.Empty(t, row.JobDebugParsed.LastError)
+	assert.Equal(t, "textract-v2", row.Model)
+	assert.Equal(t, "/jobs", row.RoutePath)
+	assert.Equal(t, "prod", *row.VirtualKeyName)
+	assert.Equal(t, "Team One", *row.TeamName)
+	assert.Equal(t, "p-1", *row.ProjectID)
+	assert.Equal(t, "claude-code", *row.App)
+	assert.Equal(t, []string{"t1"}, row.TeamIDsParsed)
 
 	makeDue(job)
-	require.NoError(t, sweeper.SweepOnce(ctx))
+	sweeper.SweepOnce(ctx)
 	assert.Len(t, reporter.reports, 1, "an accounted job is never charged twice")
 }
 
-func TestEndpointJobSweeperRecoversWrittenSettlementPastTimeout(t *testing.T) {
-	ctx := context.Background()
+func TestEndpointJobSweeperChargesAWrittenRowOverALaterReply(t *testing.T) {
 	store := newFakeAccountingStore()
 	job := seedEndpointJob(t, store)
 	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour) // past the default 3600s timeout
-	logs := &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}
+	logs := newFakeEndpointLogs()
 	reporter := &fakeEndpointReporter{}
-	poller := &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}
-	sweeper := NewRelayJobSweeper(store, poller, logs, reporter, RelayJobSweeperConfig{ClaimedBy: "node-1"})
+	poller := &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":9}`}
 
 	// A worker wrote the row and stopped before recording it on the job.
-	id := sweeper.settlementRowID(job)
+	id := relayRowID(job)
 	logs.rows[id] = &logstore.RelayLog{ID: id, Cost: schemas.Ptr(0.15)}
 
-	require.NoError(t, sweeper.SweepOnce(ctx))
-	assert.Zero(t, poller.calls, "the written settlement is finished without polling")
-	require.Len(t, reporter.reports, 1, "and its cost is charged instead of the job being dropped as timed out")
-	assert.InDelta(t, 0.15, reporter.reports[0].Cost, 1e-12)
+	relaySweeper(store, poller, logs, reporter).SweepOnce(context.Background())
+	require.Len(t, reporter.reports, 1)
+	assert.InDelta(t, 0.15, reporter.reports[0].Cost, 1e-12, "the written row is what is charged")
 	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
 }
 
-func TestEndpointJobSweeperRereadsMarkersAfterClaim(t *testing.T) {
-	ctx := context.Background()
+func TestEndpointJobSweeperRereadsMarkersBeforePolling(t *testing.T) {
 	store := newFakeAccountingStore()
 	job := seedEndpointJob(t, store)
-	logs := &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}
+	logs := newFakeEndpointLogs()
+	logs.rows[relayRowID(job)] = &logstore.RelayLog{ID: relayRowID(job), Cost: schemas.Ptr(0.15)}
 	reporter := &fakeEndpointReporter{}
 	poller := &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}
-	sweeper := NewRelayJobSweeper(store, poller, logs, reporter, RelayJobSweeperConfig{ClaimedBy: "node-1"})
+	sweeper := relaySweeper(store, poller, logs, reporter)
 
 	// Another node settled and charged the job after this node listed it, then stopped before
 	// completing it. The stale listed copy has neither marker.
 	stale := *job
 	now := time.Now().UTC()
 	job.AggregateLogWrittenAt, job.GovernanceReportedAt = &now, &now
-	require.NoError(t, sweeper.handle(ctx, &stale))
-	assert.Empty(t, reporter.reports, "the markers read after the claim stop a second charge")
+	sweeper.sweepJob(context.Background(), &stale, now)
+	assert.Empty(t, reporter.reports, "the markers read after listing stop a second charge")
 	assert.Zero(t, poller.calls)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
 }
 
 func TestEndpointJobSettlementTimestampIsStable(t *testing.T) {
@@ -188,23 +241,731 @@ func TestEndpointJobSettlementTimestampIsStable(t *testing.T) {
 	assert.Equal(t, created, settlementTimestamp(job), "a retried settlement reuses the same ClickHouse key")
 }
 
-func TestEndpointJobSweeperFailedAndGoneJobs(t *testing.T) {
+func TestEndpointJobSweeperFailedJobCostsNothing(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	logs := newFakeEndpointLogs()
+	reporter := &fakeEndpointReporter{}
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"FAILED","pages":3}`}, logs, reporter).SweepOnce(context.Background())
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	assert.Zero(t, *row.Cost)
+	assert.Equal(t, "FAILED", *row.JobStatus)
+	assert.Empty(t, reporter.reports, "a failed job is recorded at no charge")
+}
+
+// One 4xx poll does not forgive a job: eventually consistent APIs answer 404 for a new job and a key
+// rotation answers 403, so the poll is retried until the timeout and only then ends the job unpriced.
+func TestEndpointJobSweeperRetriesClientErrorsUntilTimeout(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		reason string
+	}{
+		{"not found", http.StatusNotFound, `{}`, UnpriceableReasonRelayJobGone},
+		{"access denied", http.StatusForbidden, `{"__type":"AccessDeniedException"}`, UnpriceableReasonRelayJobDenied},
+		{"refused id", http.StatusBadRequest, `{"__type":"InvalidJobIdException"}`, UnpriceableReasonRelayJobRefused},
+		{"conflict", http.StatusConflict, `{}`, UnpriceableReasonRelayJobRefused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeAccountingStore()
+			job := seedEndpointJob(t, store)
+			poller := &fakeEndpointPoller{status: tc.status, body: tc.body}
+			sweeper := relaySweeper(store, poller, newFakeEndpointLogs(), &fakeEndpointReporter{})
+			sweeper.SweepOnce(ctx)
+			assert.NotEqual(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus, "retried before the timeout")
+			assert.True(t, job.NextCheckAt.After(time.Now()))
+
+			job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+			makeDue(job)
+			sweeper.SweepOnce(ctx)
+			assert.Equal(t, 2, poller.calls, "polled once more past the timeout")
+			assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+			require.NotNil(t, job.UnpriceableReason)
+			assert.Equal(t, tc.reason, *job.UnpriceableReason)
+		})
+	}
+
+	// A failed poll before the timeout comes back as an error, so the sweeper logs it like other kinds.
+	{
+		store := newFakeAccountingStore()
+		job := seedEndpointJob(t, store)
+		sweeper := relaySweeper(store, &fakeEndpointPoller{status: http.StatusBadGateway, body: `{}`}, newFakeEndpointLogs(), &fakeEndpointReporter{})
+		poll, err := sweeper.settler.Poll(ctx, job)
+		assert.Nil(t, poll)
+		assert.ErrorContains(t, err, "job poll answered 502")
+	}
+
+	// The same 4xx answering a later poll before the timeout no longer matters once the job succeeds.
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	poller := &fakeEndpointPoller{status: http.StatusNotFound, body: `{}`}
+	reporter := &fakeEndpointReporter{}
+	sweeper := relaySweeper(store, poller, newFakeEndpointLogs(), reporter)
+	sweeper.SweepOnce(ctx)
+	poller.status, poller.body = 200, `{"status":"SUCCEEDED","pages":2}`
+	makeDue(job)
+	sweeper.SweepOnce(ctx)
+	require.Len(t, reporter.reports, 1, "a job that answered 404 once is still charged when it succeeds")
+	assert.InDelta(t, 2*0.05, reporter.reports[0].Cost, 1e-12)
+}
+
+// A job past its timeout is polled one last time, so one that finished just before the deadline,
+// or while the sweeper was behind, is charged; one still running is written off.
+func TestEndpointJobSweeperPollsOnceMorePastTimeout(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeAccountingStore()
 	job := seedEndpointJob(t, store)
-	logs := &fakeEndpointLogs{rows: map[string]*logstore.RelayLog{}}
+	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	poller := &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}
 	reporter := &fakeEndpointReporter{}
-	sweeper := NewRelayJobSweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"FAILED","pages":3}`}, logs, reporter, RelayJobSweeperConfig{ClaimedBy: "node-1"})
-	require.NoError(t, sweeper.SweepOnce(ctx))
+	relaySweeper(store, poller, newFakeEndpointLogs(), reporter).SweepOnce(ctx)
+	assert.Equal(t, 1, poller.calls)
 	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
-	require.Len(t, logs.rows, 1)
-	assert.Empty(t, reporter.reports, "a failed job is recorded at no charge")
+	require.Len(t, reporter.reports, 1)
+	assert.InDelta(t, 3*0.05, reporter.reports[0].Cost, 1e-12)
 
 	store = newFakeAccountingStore()
 	job = seedEndpointJob(t, store)
-	sweeper = NewRelayJobSweeper(store, &fakeEndpointPoller{status: http.StatusNotFound, body: `{}`}, logs, reporter, RelayJobSweeperConfig{ClaimedBy: "node-1"})
-	require.NoError(t, sweeper.SweepOnce(ctx))
-	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus, "a job the upstream forgot stops being polled")
+	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	logs := newFakeEndpointLogs()
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}, logs, &fakeEndpointReporter{}).SweepOnce(ctx)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
 	require.NotNil(t, job.UnpriceableReason)
-	assert.Equal(t, UnpriceableReasonRelayJobGone, *job.UnpriceableReason)
+	assert.Equal(t, UnpriceableReasonRelayJobTimeout, *job.UnpriceableReason)
+	// The job row says why: the status it was stuck at and the timeout.
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	require.NotNil(t, row.JobDebugParsed)
+	assert.Equal(t, 1, row.JobDebugParsed.Polls)
+	assert.Equal(t, "IN_PROGRESS", row.JobDebugParsed.LastStatus)
+	assert.Contains(t, row.JobDebugParsed.LastError, "did not finish")
+	assert.Equal(t, logstore.RelayJobOutcomeUnpriced, row.JobDebugParsed.Outcome)
+	assert.Empty(t, row.Model, "no start row to copy from leaves the job row as it was")
+}
+
+// A poll the upstream throttles, or one sent while the relay is missing from the live set (a reload,
+// a config.json prune), is retried later instead of writing the job off for free.
+func TestEndpointJobSweeperRetriesThrottledAndMissingRelayPolls(t *testing.T) {
+	for name, c := range map[string]struct {
+		poller *fakeEndpointPoller
+		sent   int
+	}{
+		"AWS throttling as 400": {&fakeEndpointPoller{status: http.StatusBadRequest, body: `{"__type":"ThrottlingException","message":"Rate exceeded"}`}, 1},
+		"relay not loaded":      {&fakeEndpointPoller{err: relay.RelayNotFoundError("textract")}, 0}, // refused locally, nothing sent
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newFakeAccountingStore()
+			job := seedEndpointJob(t, store)
+			relaySweeper(store, c.poller, newFakeEndpointLogs(), &fakeEndpointReporter{}).SweepOnce(context.Background())
+			assert.NotEqual(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+			assert.Equal(t, c.sent, job.PollAttempts, "only a poll that was sent is counted")
+			assert.True(t, job.NextCheckAt.After(time.Now()), "polled again after the backoff")
+		})
+	}
+}
+
+// A missing relay at the deadline sends no check: the job row counts none for it and shows no HTTP status.
+func TestRelayJobEndingWithAMissingRelayRecordsNoCheck(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	logs := newFakeEndpointLogs()
+	relaySweeper(store, &fakeEndpointPoller{err: relay.RelayNotFoundError("textract")}, logs, &fakeEndpointReporter{}).SweepOnce(context.Background())
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	require.NotNil(t, row.JobDebugParsed)
+	assert.Equal(t, 0, row.JobDebugParsed.Polls)
+	assert.Zero(t, row.JobDebugParsed.LastHTTPStatus)
+}
+
+// A succeeded job whose reply carries no units cannot be priced, so it is not recorded as a free success.
+func TestEndpointJobSweeperSucceededWithoutUnitsIsUnpriceable(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	logs := newFakeEndpointLogs()
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","DocumentMetadata":{"Pages":3}}`}, logs, &fakeEndpointReporter{}).SweepOnce(context.Background())
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+	require.NotNil(t, job.UnpriceableReason)
+	assert.Equal(t, UnpriceableReasonRelayJobNoUsage, *job.UnpriceableReason)
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row, "every job that ends gets a row")
+	assert.Nil(t, row.Cost, "an unknown cost is not $0")
+	assert.Equal(t, "SUCCEEDED", *row.JobStatus)
+}
+
+// Every ending writes a job row with a blank cost and its reason, and charges nothing.
+func TestEndpointJobEndingUnpricedGetsARow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		poller    *fakeEndpointPoller
+		reason    string
+		jobStatus string
+	}{
+		"timed out":     {&fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}, UnpriceableReasonRelayJobTimeout, "IN_PROGRESS"},
+		"gone":          {&fakeEndpointPoller{status: http.StatusNotFound, body: `{}`}, UnpriceableReasonRelayJobGone, UnpriceableReasonRelayJobGone},
+		"access denied": {&fakeEndpointPoller{status: http.StatusForbidden, body: `{}`}, UnpriceableReasonRelayJobDenied, UnpriceableReasonRelayJobDenied},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newFakeAccountingStore()
+			job := seedEndpointJob(t, store)
+			job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+			logs := newFakeEndpointLogs()
+			reporter := &fakeEndpointReporter{}
+			relaySweeper(store, tc.poller, logs, reporter).SweepOnce(context.Background())
+
+			assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+			assert.Equal(t, tc.reason, *job.UnpriceableReason)
+			row := logs.rows[relayRowID(job)]
+			require.NotNil(t, row)
+			assert.Nil(t, row.Cost)
+			assert.Equal(t, tc.jobStatus, *row.JobStatus)
+			assert.Equal(t, tc.reason, *row.ErrorDetailsParsed.Error.Type)
+			assert.Empty(t, reporter.reports)
+		})
+	}
+}
+
+// A retry after the row's marker failed keeps the unpriced ending instead of counting it as a $0 job.
+func TestEndpointJobUnpricedRowSurvivesAFailedMarker(t *testing.T) {
+	inner := newFakeAccountingStore()
+	job := seedEndpointJob(t, inner)
+	store := &failMarkOnceStore{fakeAccountingStore: inner}
+	logs := newFakeEndpointLogs()
+	reporter := &fakeEndpointReporter{}
+	poller := &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED"}`}
+	sweeper := relaySweeper(store, poller, logs, reporter)
+	sweeper.SweepOnce(context.Background())
+	require.Len(t, logs.rows, 1)
+
+	poller.body = `{"status":"SUCCEEDED","pages":3}`
+	makeDue(job)
+	sweeper.SweepOnce(context.Background())
+	assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+	assert.Equal(t, UnpriceableReasonRelayJobNoUsage, *job.UnpriceableReason)
+	assert.Nil(t, logs.rows[relayRowID(job)].Cost)
+	assert.Empty(t, reporter.reports)
+}
+
+// A settlement that keeps failing backs off like a poll instead of retrying on every sweep.
+func TestEndpointJobSweeperBacksOffFailedSettlement(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	reporter := &fakeEndpointReporter{failAlways: true}
+	sweeper := relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}, newFakeEndpointLogs(), reporter)
+	sweeper.SweepOnce(context.Background())
+	assert.Equal(t, 1, job.PollAttempts)
+	assert.True(t, job.NextCheckAt.After(time.Now()))
+	sweeper.SweepOnce(context.Background())
+	assert.Equal(t, 1, job.PollAttempts, "not due again yet, so the second sweep leaves it alone")
+}
+
+// A final poll failing while another node writes the row must not write the job off.
+func TestEndpointJobFinalPollFailureRacingAWrittenRowStillCharges(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	logs := newFakeEndpointLogs()
+	reporter := &fakeEndpointReporter{}
+	poller := &fakeEndpointPoller{status: http.StatusNotFound, body: `{}`, onPoll: func() {
+		now := time.Now().UTC()
+		logs.rows[relayRowID(job)] = &logstore.RelayLog{ID: relayRowID(job), Cost: schemas.Ptr(0.15)}
+		job.AggregateLogWrittenAt = &now
+		job.AccountingStatus = cstables.ProviderJobAccountingStatusError
+	}}
+	relaySweeper(store, poller, logs, reporter).SweepOnce(context.Background())
+	require.Len(t, reporter.reports, 1)
+	assert.InDelta(t, 0.15, reporter.reports[0].Cost, 1e-12)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+}
+
+func TestEndpointJobRowWrittenMarkerFailedReplyWithoutUsageCharges(t *testing.T) {
+	inner := newFakeAccountingStore()
+	job := seedEndpointJob(t, inner)
+	store := &failMarkOnceStore{fakeAccountingStore: inner}
+	logs := newFakeEndpointLogs()
+	reporter := &fakeEndpointReporter{}
+	poller := &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}
+	sweeper := relaySweeper(store, poller, logs, reporter)
+
+	sweeper.SweepOnce(context.Background())
+	require.Len(t, logs.rows, 1)
+	require.Nil(t, job.AggregateLogWrittenAt)
+	assert.Empty(t, reporter.reports)
+
+	poller.body = `{"status":"SUCCEEDED"}`
+	makeDue(job)
+	sweeper.SweepOnce(context.Background())
+	require.Len(t, reporter.reports, 1, "the written row is charged, not written off")
+	assert.InDelta(t, 3*0.05, reporter.reports[0].Cost, 1e-12)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+}
+
+func TestEndpointJobMarkedWrittenWithRowMissing(t *testing.T) {
+	ctx := context.Background()
+	marked := func(t *testing.T, store *fakeAccountingStore) *cstables.TableProviderJob {
+		job := seedEndpointJob(t, store)
+		now := time.Now().UTC()
+		job.AggregateLogWrittenAt = &now
+		return job
+	}
+
+	t.Run("already reported", func(t *testing.T) {
+		store := newFakeAccountingStore()
+		job := marked(t, store)
+		now := time.Now().UTC()
+		job.GovernanceReportedAt = &now
+		reporter := &fakeEndpointReporter{}
+		relaySweeper(store, &fakeEndpointPoller{}, newFakeEndpointLogs(), reporter).SweepOnce(ctx)
+		assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+		assert.Empty(t, reporter.reports)
+	})
+	t.Run("no reporter", func(t *testing.T) {
+		store := newFakeAccountingStore()
+		job := marked(t, store)
+		relaySweeper(store, &fakeEndpointPoller{}, newFakeEndpointLogs(), nil).SweepOnce(ctx)
+		assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+	})
+	t.Run("unreported before the deadline retries", func(t *testing.T) {
+		store := newFakeAccountingStore()
+		job := marked(t, store)
+		relaySweeper(store, &fakeEndpointPoller{}, newFakeEndpointLogs(), &fakeEndpointReporter{}).SweepOnce(ctx)
+		assert.Equal(t, cstables.ProviderJobAccountingStatusError, job.AccountingStatus)
+		assert.True(t, job.NextCheckAt.After(time.Now()))
+	})
+	t.Run("unreported past the deadline parks", func(t *testing.T) {
+		store := newFakeAccountingStore()
+		job := marked(t, store)
+		job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+		relaySweeper(store, &fakeEndpointPoller{}, newFakeEndpointLogs(), &fakeEndpointReporter{}).SweepOnce(ctx)
+		assert.Equal(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+		require.NotNil(t, job.UnpriceableReason)
+		assert.Equal(t, UnpriceableReasonRelayJobRowMissing, *job.UnpriceableReason)
+	})
+}
+
+func TestEndpointJobIsNotCappedAtMaxPollAttempts(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	job.PollAttempts = MaxPollAttempts
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}, newFakeEndpointLogs(), &fakeEndpointReporter{}).SweepOnce(context.Background())
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusUnpriceable, job.AccountingStatus)
+	assert.Equal(t, MaxPollAttempts+1, job.PollAttempts)
+}
+
+func TestEndpointJobFreshClaimIsNotPolled(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	now := time.Now().UTC()
+	job.AccountingStatus = cstables.ProviderJobAccountingStatusProcessing
+	job.ClaimedAt = &now
+	poller := &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}
+	relaySweeper(store, poller, newFakeEndpointLogs(), &fakeEndpointReporter{}).SweepOnce(context.Background())
+	assert.Zero(t, poller.calls)
+	assert.True(t, job.NextCheckAt.After(now))
+}
+
+func TestEndpointJobKeepsItsIntervalAfterFailures(t *testing.T) {
+	const interval = 300 * time.Second
+	for name, setup := range map[string]struct {
+		poller   *fakeEndpointPoller
+		reporter *fakeEndpointReporter
+	}{
+		"poll failure":       {&fakeEndpointPoller{status: http.StatusBadGateway, body: `{}`}, &fakeEndpointReporter{}},
+		"settlement failure": {&fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}, &fakeEndpointReporter{failAlways: true}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newFakeAccountingStore()
+			job := seedEndpointJobWithInterval(t, store, int(interval/time.Second))
+			before := time.Now().UTC()
+			relaySweeper(store, setup.poller, newFakeEndpointLogs(), setup.reporter).SweepOnce(context.Background())
+			after := time.Now().UTC()
+			require.NotNil(t, job.NextCheckAt)
+			assert.False(t, job.NextCheckAt.Before(before.Add(interval)))
+			assert.False(t, job.NextCheckAt.After(after.Add(interval)), "no jitter on a relay job's own interval")
+		})
+	}
+}
+
+func TestRelayRowIDDiffersFromBatch(t *testing.T) {
+	assert.NotEqual(t,
+		AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "job-1"),
+		AccountingLogID(ProviderJobKindRelay, schemas.OpenAI, "job-1"))
+}
+
+// Relay claims are named like the other kinds': the kind, then the node, or this process when unclustered.
+func TestRelayRunnerIDAndBackoffMatchTheOtherKinds(t *testing.T) {
+	assert.Equal(t, "relay-sweeper:node-1", RunnerID("relay-sweeper", "node-1"))
+	assert.Equal(t, RunnerID("relay-sweeper", ""), RunnerID("relay-sweeper", ""), "stable across reloads within a process")
+	assert.True(t, strings.HasPrefix(RunnerID("relay-sweeper", ""), "relay-sweeper:"))
+
+	relay, video := &RelaySettler{}, NewVideoSettler(nil)
+	for _, attempts := range []int{0, 20, 40} {
+		assert.Equal(t, video.Backoff(attempts, 30*time.Second), relay.Backoff(attempts, 30*time.Second), "attempts %d", attempts)
+	}
+	assert.Equal(t, 5*time.Minute, relay.Backoff(40, 30*time.Second))
+}
+
+// The job details record the status the upstream answered, and count a final poll that got no answer.
+func TestRelayJobDebugRecordsTheAnsweredStatusAndEverySentPoll(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name       string
+		poller     *fakeEndpointPoller
+		wantStatus int
+	}{
+		{"throttled 400 past the deadline", &fakeEndpointPoller{status: http.StatusBadRequest, body: `{"__type":"ThrottlingException"}`}, http.StatusBadRequest},
+		{"no answer past the deadline", &fakeEndpointPoller{err: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "connection reset"}}}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeAccountingStore()
+			job := seedEndpointJob(t, store)
+			job.PollAttempts = 2
+			job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+			logs := newFakeEndpointLogs()
+			relaySweeper(store, tc.poller, logs, &fakeEndpointReporter{}).SweepOnce(ctx)
+			row := logs.rows[relayRowID(job)]
+			require.NotNil(t, row)
+			require.NotNil(t, row.JobDebugParsed)
+			assert.Equal(t, tc.wantStatus, row.JobDebugParsed.LastHTTPStatus)
+			assert.Equal(t, 3, row.JobDebugParsed.Polls, "two earlier polls and the one that ended the job")
+		})
+	}
+}
+
+// seedRelayJobGeneration records a job the way the start call does, in generation gen of upstream id j-1.
+func seedRelayJobGeneration(t *testing.T, store *fakeAccountingStore, gen int) *cstables.TableProviderJob {
+	t.Helper()
+	job := seedEndpointJob(t, store)
+	delete(store.jobs, job.ID)
+	id, scoped := RelayJobRowID("textract", "", "j-1", gen)
+	job.ID, job.JobID = id, scoped
+	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
+	return store.jobs[id]
+}
+
+func statusCheck(status int, body string) JobRequest {
+	return JobRequest{Provider: "textract", ProviderJobID: "j-1", ClaimedBy: "logging:node-1",
+		Payload: RelayStatusCheckPayload{StatusCode: status, ContentType: "application/json", Body: []byte(body), RequestID: "call-9",
+			Matches: []schemas.RelayJobMatch{{Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}}}}}
+}
+
+// A caller's status check that finds the job finished settles it there, as a terminal video retrieve does.
+func TestRelayStatusCheckSettlesAFinishedJobOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedRelayJobGeneration(t, store, 1)
+	logs := newFakeEndpointLogs()
+	reporter := &fakeEndpointReporter{}
+
+	out, err := AccountRelayJob(ctx, store, logs, reporter, donePoller(3), statusCheck(200, `{"status":"IN_PROGRESS"}`))
+	require.NoError(t, err)
+	assert.Nil(t, out, "a running job is left to the sweeper")
+	assert.Empty(t, logs.rows)
+
+	out, err = AccountRelayJob(ctx, store, logs, reporter, donePoller(3), statusCheck(200, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.True(t, out.Accounted)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+	require.Len(t, reporter.reports, 1)
+	assert.InDelta(t, 3*0.05, reporter.reports[0].Cost, 1e-12)
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	assert.Equal(t, "call-9", row.JobDebugParsed.SettledByRequestID)
+	assert.Equal(t, 1, row.JobDebugParsed.Polls, "Bifrost confirmed it with one poll of its own")
+
+	_, err = AccountRelayJob(ctx, store, logs, reporter, donePoller(3), statusCheck(200, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	assert.Len(t, reporter.reports, 1, "a later status check finds the job settled and charges nothing")
+}
+
+// The caller's reply only says the job looks finished: Bifrost's own poll prices it, so a reply the
+// caller shaped (fewer pages, no usage) cannot change the charge, and a job Bifrost still sees
+// running is left to the sweeper.
+func TestRelayStatusCheckIsPricedFromBifrostsOwnPoll(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedRelayJobGeneration(t, store, 1)
+	logs := newFakeEndpointLogs()
+	reporter := &fakeEndpointReporter{}
+
+	running := &fakeEndpointPoller{status: 200, body: `{"status":"IN_PROGRESS"}`}
+	out, err := AccountRelayJob(ctx, store, logs, reporter, running, statusCheck(200, `{"status":"SUCCEEDED"}`))
+	require.NoError(t, err)
+	assert.Nil(t, out, "Bifrost still sees it running")
+	assert.Equal(t, 1, running.calls)
+	assert.Equal(t, 1, store.jobs[job.ID].PollAttempts, "the confirming poll is counted though it settled nothing")
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+
+	missing := &fakeEndpointPoller{err: relay.RelayNotFoundError("textract")}
+	out, err = AccountRelayJob(ctx, store, logs, reporter, missing, statusCheck(200, `{"status":"SUCCEEDED"}`))
+	require.NoError(t, err)
+	assert.Nil(t, out)
+	assert.Equal(t, 1, store.jobs[job.ID].PollAttempts, "a relay that is not loaded sent nothing, so nothing is counted")
+
+	out, err = AccountRelayJob(ctx, store, logs, reporter, nil, statusCheck(200, `{"status":"SUCCEEDED","pages":1}`))
+	require.NoError(t, err)
+	assert.Nil(t, out, "with no poller the sweeper settles it")
+
+	out, err = AccountRelayJob(ctx, store, logs, reporter, donePoller(3), statusCheck(200, `{"status":"SUCCEEDED","pages":1}`))
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	require.Len(t, reporter.reports, 1)
+	assert.InDelta(t, 3*0.05, reporter.reports[0].Cost, 1e-12, "priced from Bifrost's poll, not the caller's one page")
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	assert.Equal(t, 2, row.JobDebugParsed.Polls, "the earlier running confirmation and the one that settled")
+}
+
+// A job settles only from a check that matched its own poll template: another job's check with the
+// same id, or one from a template changed since the start, is left to the sweeper.
+func TestRelayStatusCheckSettlesOnlyFromTheJobsOwnPollTemplate(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedRelayJobGeneration(t, store, 1)
+	logs := newFakeEndpointLogs()
+	finished := func(poll schemas.RelayJobPoll) JobRequest {
+		req := statusCheck(200, `{"status":"SUCCEEDED","pages":3}`)
+		load := req.Payload.(RelayStatusCheckPayload)
+		load.Matches = []schemas.RelayJobMatch{{Poll: poll}}
+		req.Payload = load
+		return req
+	}
+	none := statusCheck(200, `{"status":"SUCCEEDED","pages":3}`)
+	load := none.Payload.(RelayStatusCheckPayload)
+	load.Matches = nil
+	none.Payload = load
+	out, err := AccountRelayJob(ctx, store, logs, nil, donePoller(3), none)
+	require.NoError(t, err)
+	assert.Nil(t, out, "a check that names no template settles nothing")
+	out, err = AccountRelayJob(ctx, store, logs, nil, donePoller(3), finished(schemas.RelayJobPoll{Method: "GET", Path: "/exports/{{job.id}}"}))
+	require.NoError(t, err)
+	assert.Nil(t, out)
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus, "another template's reply does not settle it")
+
+	out, err = AccountRelayJob(ctx, store, logs, nil, donePoller(3), finished(schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}", Headers: map[string]string{}}))
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.True(t, out.Accounted, "its own template settles it, an empty header map included")
+}
+
+func TestRelayStatusCheckIgnoresUnknownJobsAndFailedReplies(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	logs := newFakeEndpointLogs()
+	out, err := AccountRelayJob(ctx, store, logs, nil, donePoller(3), statusCheck(200, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	assert.Nil(t, out, "an id Bifrost never saw started is not billed to anyone")
+
+	job := seedRelayJobGeneration(t, store, 1)
+	out, err = AccountRelayJob(ctx, store, logs, nil, donePoller(3), statusCheck(500, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	assert.Nil(t, out)
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusAccounted, job.AccountingStatus)
+}
+
+// A slow reply to a check sent before a reused id opened its new generation is about the earlier job,
+// so it does not settle the new one; a check sent after it opened still does.
+func TestRelayStatusCheckSentBeforeTheGenerationOpenedIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	first := seedRelayJobGeneration(t, store, 1)
+	first.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	second := seedRelayJobGeneration(t, store, 2)
+	reporter := &fakeEndpointReporter{}
+	late := statusCheck(200, `{"status":"SUCCEEDED","pages":1}`)
+	payload := late.Payload.(RelayStatusCheckPayload)
+	payload.SentAt = second.CreatedAt.Add(-time.Second)
+	late.Payload = payload
+	out, err := AccountRelayJob(ctx, store, newFakeEndpointLogs(), reporter, donePoller(1), late)
+	require.NoError(t, err)
+	assert.Nil(t, out)
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusAccounted, second.AccountingStatus)
+
+	payload.SentAt = second.CreatedAt.Add(time.Second)
+	late.Payload = payload
+	out, err = AccountRelayJob(ctx, store, newFakeEndpointLogs(), reporter, donePoller(1), late)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, second.ID, out.JobID)
+}
+
+// With reused_id_is_new_job, a status check settles the open generation, not one already charged.
+func TestRelayStatusCheckSettlesTheOpenGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	first := seedRelayJobGeneration(t, store, 1)
+	first.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	second := seedRelayJobGeneration(t, store, 2)
+	reporter := &fakeEndpointReporter{}
+	out, err := AccountRelayJob(ctx, store, newFakeEndpointLogs(), reporter, donePoller(1), statusCheck(200, `{"status":"SUCCEEDED","pages":1}`))
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, second.ID, out.JobID)
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, second.AccountingStatus)
+	require.Len(t, reporter.reports, 1)
+}
+
+// donePoller answers every poll with a finished job of the given pages.
+func donePoller(pages int) *fakeEndpointPoller {
+	return &fakeEndpointPoller{status: 200, body: fmt.Sprintf(`{"status":"SUCCEEDED","pages":%d}`, pages)}
+}
+
+// A job Bifrost started stays known after it settles, so a caller can still read its results for
+// free; an id it never started is not.
+func TestHasRelayJob(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	known := func(store JobStore, routeKey string) bool {
+		ok, _ := HasRelayJob(ctx, store, "textract", routeKey, "j-1")
+		return ok
+	}
+	_, err := HasRelayJob(ctx, store, "textract", "", "j-1")
+	assert.Error(t, err, "the store's own error comes back, so the caller can tell not-found from a failure")
+	job := seedRelayJobGeneration(t, store, 1)
+	assert.True(t, known(store, ""))
+	job.AccountingStatus = cstables.ProviderJobAccountingStatusAccounted
+	assert.True(t, known(store, ""), "a settled job is still known")
+	assert.False(t, known(store, "rother"), "another route's job is not")
+	ok, err := HasRelayJob(ctx, nil, "textract", "", "j-1")
+	assert.False(t, ok)
+	assert.NoError(t, err)
+}
+
+// Two routes started the same id with templates that both fit: a reply the first job's statuses do
+// not call finished still settles the second, whose statuses do.
+func TestRelayStatusCheckTriesTheNextRoutesJob(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	// The second route's job is seeded and moved to its own route key first, so seeding the first
+	// route's job afterwards does not overwrite it.
+	second := seedRelayJobGeneration(t, store, 1)
+	delete(store.jobs, second.ID)
+	secondID, scoped := RelayJobRowID("textract", "rsecond", "j-1", 1)
+	second.ID, second.JobID = secondID, scoped
+	params := strings.Replace(*second.Params, `"succeeded":["SUCCEEDED"]`, `"succeeded":["DONE"]`, 1)
+	second.Params = &params
+	require.NoError(t, store.UpsertProviderJob(ctx, second))
+	first := seedRelayJobGeneration(t, store, 1)
+	require.NotEqual(t, first.ID, secondID)
+	require.Contains(t, store.jobs, first.ID, "the first route's job is stored")
+	require.Contains(t, store.jobs, secondID, "the second route's job is stored")
+	poll := schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}
+	req := statusCheck(200, `{"status":"DONE","pages":2}`)
+	load := req.Payload.(RelayStatusCheckPayload)
+	load.Matches = []schemas.RelayJobMatch{{RouteKey: "", Poll: poll}, {RouteKey: "rsecond", Poll: poll}}
+	req.Payload = load
+	poller := &fakeEndpointPoller{status: 200, body: `{"status":"DONE","pages":2}`}
+	out, err := AccountRelayJob(ctx, store, newFakeEndpointLogs(), nil, poller, req)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.Equal(t, secondID, out.JobID)
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[first.ID].AccountingStatus, "the first route reads DONE as running and is left open")
+}
+
+// A settlement that resumes from a cost row already written sends no poll, so it counts none.
+func TestRelayResumedSettlementCountsNoPoll(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedRelayJobGeneration(t, store, 1)
+	now := time.Now().UTC()
+	store.jobs[job.ID].AggregateLogWrittenAt = &now
+	store.jobs[job.ID].PollAttempts = 3
+	logs := newFakeEndpointLogs()
+	logs.rows[relayRowID(job)] = &logstore.RelayLog{ID: relayRowID(job), Cost: schemas.Ptr(0.15)}
+	poller := donePoller(3)
+	reporter := &fakeEndpointReporter{}
+	out, err := AccountRelayJob(ctx, store, logs, reporter, poller, statusCheck(200, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	require.NotNil(t, out, "the settlement resumed")
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, store.jobs[job.ID].AccountingStatus)
+	require.Len(t, reporter.reports, 1, "the stored cost is reported once")
+	assert.InDelta(t, 0.15, reporter.reports[0].Cost, 1e-12)
+	assert.Zero(t, poller.calls, "nothing was sent")
+	assert.Equal(t, 3, store.jobs[job.ID].PollAttempts)
+}
+
+// A last poll that never reached the upstream records no upstream status: the gateway's own 502 is
+// not something the upstream said.
+func TestRelayJobDebugRecordsNoStatusWhenThePollNeverConnected(t *testing.T) {
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	job.CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	unreachable := &schemas.BifrostError{StatusCode: schemas.Ptr(http.StatusBadGateway), Error: &schemas.ErrorField{Message: "connection refused"}}
+	logs := newFakeEndpointLogs()
+	relaySweeper(store, &fakeEndpointPoller{err: unreachable}, logs, &fakeEndpointReporter{}).SweepOnce(context.Background())
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	require.NotNil(t, row.JobDebugParsed)
+	assert.Zero(t, row.JobDebugParsed.LastHTTPStatus)
+}
+
+// Past its deadline, a caller's check whose confirming poll fails leaves the job to the sweeper
+// instead of writing it off: a brief upstream error must not cost a charge.
+func TestRelayStatusCheckNeverWritesOffAnOverdueJob(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedRelayJobGeneration(t, store, 1)
+	store.jobs[job.ID].CreatedAt = time.Now().UTC().Add(-2 * time.Hour)
+	failing := &fakeEndpointPoller{status: http.StatusServiceUnavailable, body: `{}`}
+	out, err := AccountRelayJob(ctx, store, newFakeEndpointLogs(), &fakeEndpointReporter{}, failing, statusCheck(200, `{"status":"SUCCEEDED","pages":3}`))
+	require.NoError(t, err)
+	assert.Nil(t, out)
+	assert.Equal(t, 1, failing.calls)
+	assert.NotEqual(t, cstables.ProviderJobAccountingStatusUnpriceable, store.jobs[job.ID].AccountingStatus, "left open for the sweeper")
+	assert.Equal(t, 1, store.jobs[job.ID].PollAttempts, "the poll it sent is still counted")
+}
+
+type failingPollCountStore struct{ *fakeAccountingStore }
+
+func (failingPollCountStore) IncrementProviderJobPollAttempts(context.Context, string) error {
+	return fmt.Errorf("database unavailable")
+}
+
+type recordingWarnLogger struct {
+	schemas.Logger
+	warnings []string
+}
+
+func (l *recordingWarnLogger) Warn(msg string, args ...any) {
+	l.warnings = append(l.warnings, fmt.Sprintf(msg, args...))
+}
+
+// A poll count that cannot be written is reported and does not stop the job from settling.
+func TestRelayFailedPollCountIsReported(t *testing.T) {
+	ctx := context.Background()
+	inner := newFakeAccountingStore()
+	job := seedRelayJobGeneration(t, inner, 1)
+	logger := &recordingWarnLogger{}
+	req := statusCheck(200, `{"status":"SUCCEEDED","pages":3}`)
+	load := req.Payload.(RelayStatusCheckPayload)
+	load.Logger = logger
+	req.Payload = load
+	out, err := AccountRelayJob(ctx, failingPollCountStore{inner}, newFakeEndpointLogs(), &fakeEndpointReporter{}, donePoller(3), req)
+	require.NoError(t, err)
+	require.NotNil(t, out)
+	assert.True(t, out.Accounted, "the job still settles")
+	assert.Equal(t, cstables.ProviderJobAccountingStatusAccounted, inner.jobs[job.ID].AccountingStatus)
+	require.Len(t, logger.warnings, 1)
+	assert.Contains(t, logger.warnings[0], job.ID)
+}
+
+// A poll that fails before the deadline returns no job, so the sweeper reschedules the copy it listed;
+// that copy carries the new count, so the backoff grows from the attempt just made.
+func TestRelayFailedPollUpdatesTheListedCount(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	listed := *store.jobs[job.ID]
+	listed.PollAttempts = 19
+	store.jobs[job.ID].PollAttempts = 19
+	settler := &RelaySettler{store: store, poller: &fakeEndpointPoller{status: http.StatusServiceUnavailable, body: `{}`}, logs: newFakeEndpointLogs()}
+	_, err := settler.Poll(ctx, &listed)
+	require.Error(t, err)
+	assert.Equal(t, 20, listed.PollAttempts, "the listed copy has the attempt just sent")
+	assert.Equal(t, 20, store.jobs[job.ID].PollAttempts, "counted once on the row")
 }

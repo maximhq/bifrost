@@ -366,6 +366,7 @@
 			"outputCost": "输出费用",
 			"additionalCost": "额外费用",
 			"guardrailCost": "护栏费用",
+			"externalGuardrailCostNote": "包含 {{cost}} 外部护栏预估费用，不计入总费用或预算。",
 			"semanticCacheCost": "语义缓存费用",
 			"routingCost": "路由费用",
 			"inputTextTokens": "输入文本 token",
@@ -399,6 +400,9 @@
 			"judgeProvider": "评判供应商",
 			"judgeModel": "评判模型",
 			"promptTokens": "提示词 token",
+			"usageUnits": "用量单位",
+			"estimatedCost": "预估费用",
+			"estimatedCostTooltip": "按护栏供应商的标价估算。不计入总费用或预算。",
 			"reason": "原因",
 			"routingClassificationDetails": "路由分类详情",
 			"mechanism": "机制",
@@ -788,6 +792,7 @@
 			"toastExported_other": "已导出 {{count}} 条日志",
 			"toastFailed": "导出失败：{{error}}",
 			"summary": {
+				"jobId": "作业 ID：{{value}}",
 				"search": "搜索“{{value}}”",
 				"request": "请求“{{value}}”",
 				"providers": "供应商（{{total}}）",
@@ -814,6 +819,20 @@
 		"batchMixedModel": "混合"
 	},
 	"relayLogs": {
+		"jobReasons": {
+			"relay_job_row_missing": "结算行在扣费前已被删除",
+			"relay_job_no_usage": "最终回复中没有可计价的用量",
+			"relay_job_rejected": "上游拒绝了作业 ID",
+			"relay_job_access_denied": "上游拒绝访问该作业",
+			"relay_job_gone": "上游已找不到该作业",
+			"relay_job_timeout": "未在超时前完成",
+			"relay_job_params": "无法读取作业设置"
+		},
+		"jobOutcome": {
+			"unpriced": "未计价",
+			"failed": "失败",
+			"succeeded": "成功"
+		},
 		"fields": {
 			"relay": "中继",
 			"kind": "类型",
@@ -832,6 +851,9 @@
 			"no": "否"
 		},
 		"columns": {
+			"startsJob": "启动作业 {{id}}",
+			"jobUnpriced": "未计价：{{reason}}",
+			"jobFailed": "失败：{{status}}",
 			"jobBadge": "作业",
 			"noRoute": "无路由",
 			"route": "路由 {{route}}",
@@ -872,6 +894,13 @@
 			"perRequest": "{{value}}/请求"
 		},
 		"detail": {
+			"jobStatusStat": "作业状态",
+			"jobNotSettled": "尚未结算",
+			"jobSettlementFailed": "无法检查结算。",
+			"jobSettlement": "作业结算",
+			"costUnpriced": "未计价",
+			"unpricedBody": "Bifrost 无法为此作业计价，因此其费用未知，作业本身未扣费。启动调用保留其自身的扣费。",
+			"unpricedTitle": "未计价的作业",
 			"loadingDetails": "正在加载中继日志详情",
 			"notFound": "未找到中继日志",
 			"loadFailed": "无法加载此中继日志。",
@@ -902,6 +931,12 @@
 			"tokensNotPricedValue": "输入 {{input}} / 输出 {{output}}",
 			"matchedRoute": "匹配的路由",
 			"parentLog": "父日志",
+			"jobPolls": "状态查询尝试次数",
+			"jobLastStatus": "最后的作业状态",
+			"jobLastHttpStatus": "最后一次轮询的 HTTP 状态",
+			"jobSettledAt": "结算时间",
+			"jobSettledBy": "由状态查询结算",
+			"jobLastError": "未计价结束的原因",
 			"responseBodyPreview": "响应正文（预览）",
 			"filterByValue": "显示具有此值的中继调用",
 			"queryParameters": "查询参数",
@@ -911,6 +946,7 @@
 			"contentHidden": "此请求已禁用内容日志记录。"
 		},
 		"filters": {
+			"unpriced": "未计价的作业",
 			"reset": "重置",
 			"searchRelays": "搜索中继",
 			"searchMethods": "搜索方法",
@@ -1116,6 +1152,8 @@
 			"groupTracesBySessionHelp": "启用后，共享同一 x-bf-session-id 请求头的请求会合入同一条 trace，每个请求作为顶级兄弟 span。携带入站 W3C traceparent 的请求仍留在自己的分布式 trace 上，不受影响。",
 			"disableRootSpanContent": "禁用根 Span 内容",
 			"disableRootSpanContentHelp": "启用后，仅从根 span 丢弃输入/输出消息内容；底层 generation（llm.call）span 仍保留完整内容。",
+			"applyTraceDimensionsToChildSpans": "将维度应用到子 span",
+			"applyTraceDimensionsToChildSpansHelp": "启用后，请求维度（x-bf-dim-* 请求头）会合并到每个导出的 span 上，而不仅是根 span，从而可以按维度筛选或分组子 span。path、method 以及 gen_ai.* 等保留命名空间会被跳过。每个维度都会添加到每个 span 上，因此高基数的值会增加采集器的摄取成本。",
 			"enableMetricsExport": "启用 Metrics 导出",
 			"enableMetricsExportHelp": "将指标推送到 OTEL Collector，以便在集群部署中正确聚合",
 			"overheadBreakdown": "开销分解",

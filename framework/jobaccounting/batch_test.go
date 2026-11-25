@@ -66,6 +66,10 @@ func (s *fakeAccountingStore) UpsertProviderJob(ctx context.Context, job *cstabl
 		s.jobs[job.ID] = &copied
 		return nil
 	}
+	if existing.Kind == cstables.ProviderJobKindRelay &&
+		(existing.AccountingStatus == cstables.ProviderJobAccountingStatusAccounted || existing.AccountingStatus == cstables.ProviderJobAccountingStatusUnpriceable) {
+		return nil
+	}
 	if job.ProviderStatus != "" {
 		existing.ProviderStatus = job.ProviderStatus
 	}
@@ -75,12 +79,19 @@ func (s *fakeAccountingStore) UpsertProviderJob(ctx context.Context, job *cstabl
 	if job.NextCheckAt != nil {
 		existing.NextCheckAt = job.NextCheckAt
 	}
-	if job.PollAttempts > 0 {
+	if job.PollAttempts > 0 && existing.Kind != cstables.ProviderJobKindRelay {
 		existing.PollAttempts = job.PollAttempts
 	}
 	// Refresh updated_at like the real store does. This is deliberately unfenced,
 	// which is exactly why claim staleness must not be measured on it.
 	existing.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (s *fakeAccountingStore) IncrementProviderJobPollAttempts(_ context.Context, jobID string) error {
+	if job, ok := s.jobs[jobID]; ok {
+		job.PollAttempts++
+	}
 	return nil
 }
 
@@ -2407,4 +2418,11 @@ func TestBatchSweeper_TransientRetrieveFailureStillRetries(t *testing.T) {
 	assert.NotEqual(t, cstables.ProviderJobAccountingStatusUnpriceable, settled.AccountingStatus,
 		"a 5xx must stay retryable, not park the batch")
 	assert.Positive(t, settled.PollAttempts, "the attempt must be recorded for backoff")
+}
+
+// These ids are billing idempotency keys, so a settled job must keep its id forever.
+func TestAccountingLogIDsAreStable(t *testing.T) {
+	assert.Equal(t, "7622b3da-cc87-528e-a129-6128148cda72", AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "job-1"))
+	assert.Equal(t, "64b947bf-9184-5546-8d45-a0c2c809759a", AccountingLogID(ProviderJobKindVideo, schemas.OpenAI, "job-1"))
+	assert.Equal(t, "078f8d89-c32e-59ac-b273-6cf8900fb93f", AccountingLogID(ProviderJobKindInteraction, schemas.OpenAI, "job-1"))
 }

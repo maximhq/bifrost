@@ -629,13 +629,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	messages = make([]schemas.ResponsesMessage, 0, len(bifrostReq.Input))
 	// Tools lifted out of codex additional_tools items for providers that reject them.
 	var hoistedTools []schemas.ResponsesTool
-	// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'", so
-	// each one is sent as a function tool and its replayed calls follow suit. Their
-	// additional_tools items are lifted to the top level so the tools inside them get
-	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
-	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
 	developerAsSystem := !caps.SupportsDeveloperRole(true)
-	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
+	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider)
 	keepsReasoningItemIDs := baseProvider == schemas.BedrockMantle || baseProvider == schemas.Bedrock
 	joinsReasoningBlocks := baseProvider == schemas.VLLM
 	keepConfigurationUpdate := supportsConfigurationUpdateItem(ctx, bifrostReq.Provider)
@@ -643,6 +638,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
 		return t.Type == schemas.ResponsesToolTypeComputer
 	})
+	signedSearches := schemas.SignedToolSearchCalls(bifrostReq.Input)
 	for _, message := range bifrostReq.Input {
 		if !keepAdditionalTools && message.Type != nil &&
 			*message.Type == schemas.ResponsesMessageTypeAdditionalTools {
@@ -769,6 +765,10 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// OpenAI's limit — shorter IDs are left intact so distinct upstream IDs are preserved.
 		// Deterministic, so a call and its output still match. Clone first — the
 		// ResponsesToolMessage pointer is shared with the caller's input.
+		var searchID *string // a tool search item's id as its pair holds it, before it is shortened
+		if message.ResponsesToolMessage != nil {
+			searchID = message.ResponsesToolMessage.CallID
+		}
 		if message.ResponsesToolMessage != nil && message.ResponsesToolMessage.CallID != nil &&
 			len(*message.ResponsesToolMessage.CallID) > MaxToolCallIDLength {
 			if stripped := utils.StripThoughtSignature(*message.ResponsesToolMessage.CallID); stripped != *message.ResponsesToolMessage.CallID {
@@ -785,6 +785,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// message is a value copy, so the caller's input is untouched.
 		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeFunctionCall &&
 			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "fc") {
+			message.ID = nil
+		}
+		// A custom_tool_call id must begin with "ctc".
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeCustomToolCall &&
+			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "ctc") {
 			message.ID = nil
 		}
 
@@ -918,7 +923,21 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		// Drop the token for every model: OpenAI never mints encrypted_content on a message item
 		// and rejects any it receives, and the fail-soft retry would then also strip the genuine
 		// reasoning items' tokens. Separate reasoning items are handled below, unchanged.
-		if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 &&
+		if message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeToolSearchCall || *message.Type == schemas.ResponsesMessageTypeToolSearchOutput) {
+			// A tool search item's encrypted_content is Google's signature, which only Google reads.
+			stripped, signed := message.WithoutEncryptedContent()
+			message = stripped
+			message.ResponsesReasoning = nil
+			if !signed && searchID != nil {
+				_, signed = signedSearches[*searchID]
+			}
+			if signed && !message.IsClientToolSearchItem() {
+				// A signed pair is Google's, which pairs a call and its output by call_id; OpenAI's hosted
+				// items have none, so both are rebuilt with the other providers' (replayTypedToolSearchCalls).
+				message = message.WithoutPreservedBytes()
+			}
+			messages = append(messages, message)
+		} else if message.ResponsesReasoning != nil && len(message.ResponsesReasoning.Summary) == 0 &&
 			message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage {
 			message.ResponsesReasoning = nil
 			messages = append(messages, message)
@@ -1051,9 +1070,6 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	params := bifrostReq.Params
 	asyncToolsSupported := caps.SupportsAsyncTools(defaultSupportsAsyncTools(capModel))
 	messages = normalizeAsyncCallItems(messages, asyncToolsSupported)
-	if customToolsAsFunctions {
-		messages = responsesCustomCallItemsAsFunctions(messages)
-	}
 	// Create the responses request with properly mapped parameters
 	req := &OpenAIResponsesRequest{
 		Model:    bifrostReq.Model,
@@ -1065,12 +1081,28 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if params != nil {
 		req.ResponsesParameters = *params
+		// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
+		if !caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(capModel)) ||
+			caps.FieldUnsupported(schemas.FieldPromptCacheOptions, false) {
+			req.PromptCacheOptions = nil
+		}
 		// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl
 		if opts := req.PromptCacheOptions; opts != nil && opts.TTL != nil && *opts.TTL != "30m" &&
 			(cachePromptProvider == schemas.BedrockMantle || cachePromptProvider == schemas.Bedrock) {
 			optsCopy := *opts
 			optsCopy.TTL = nil
 			req.PromptCacheOptions = &optsCopy
+		}
+		// OpenRouter Responses accepts only mode "explicit"; "implicit" is the default, so omit it.
+		if opts := req.PromptCacheOptions; opts != nil && opts.Mode != nil && *opts.Mode == "implicit" &&
+			cachePromptProvider == schemas.OpenRouter {
+			if opts.TTL == nil {
+				req.PromptCacheOptions = nil
+			} else {
+				optsCopy := *opts
+				optsCopy.Mode = nil
+				req.PromptCacheOptions = &optsCopy
+			}
 		}
 		req.ServiceTier = serviceTierForModel(caps, req.ServiceTier)
 		if req.ResponsesParameters.MaxOutputTokens != nil && *req.ResponsesParameters.MaxOutputTokens < MinMaxCompletionTokens {
@@ -1197,7 +1229,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			req.ResponsesParameters.TopP = nil
 		}
 		// Only OpenAI hosts gate these; third-party gpt-oss hosts accept them.
-		if base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider); base == schemas.OpenAI || base == schemas.Azure {
+		base := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+		if base == schemas.OpenAI || base == schemas.Azure || ((base == schemas.BedrockMantle || base == schemas.Bedrock) && !isGPTOSS(capModel)) {
 			if samplingParamUnsupported(caps, schemas.FieldTemperature, capModel, effort) {
 				req.ResponsesParameters.Temperature = nil
 			}
@@ -1205,12 +1238,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				req.ResponsesParameters.TopLogProbs = nil
 			}
 			if samplingParamUnsupported(caps, schemas.FieldLogprobs, capModel, effort) &&
-				slices.Contains(req.ResponsesParameters.Include, "message.output_text.logprobs") {
+				slices.Contains(req.ResponsesParameters.Include, schemas.ResponsesIncludeOutputTextLogProbs) {
 				// Clone: Include shares its backing array with bifrostReq.Params.
 				req.ResponsesParameters.Include = slices.DeleteFunc(slices.Clone(req.ResponsesParameters.Include), func(s string) bool {
-					return s == "message.output_text.logprobs"
+					return s == schemas.ResponsesIncludeOutputTextLogProbs
 				})
 			}
+		}
+		if base == schemas.OpenAI || base == schemas.Azure {
 			// Codex asks for encrypted reasoning on every request; models that do not
 			// reason reject it ("Encrypted content is not supported with this model").
 			if !caps.SupportsReasoning(IsOpenAIReasoningModel(capModel)) &&
@@ -1239,12 +1274,6 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	if reserved := resolveReservedToolNamespaces(toolProvider, capModel); len(reserved) > 0 && len(req.Tools) > 0 {
 		substitute := toolProvider == schemas.BedrockMantle && caps.SupportsWebSearch(true)
 		req.Tools = dropReservedNamespaceTools(req.Tools, reserved, substitute)
-	}
-
-	// Runs before the normalization below so the rewritten tools are normalized too.
-	if customToolsAsFunctions {
-		req.Tools = responsesCustomToolsAsFunctions(req.Tools)
-		req.ToolChoice = responsesCustomToolChoiceAsFunction(req.ToolChoice)
 	}
 
 	// Normalize function tool parameters for deterministic JSON serialization, and

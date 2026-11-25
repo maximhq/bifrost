@@ -1,13 +1,7 @@
 package handlers
 
 import (
-	"bytes"
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/rsa"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"math"
@@ -20,6 +14,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
@@ -191,6 +186,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
 		return
 	}
+	if err := schemas.ValidateKeyServiceTier(baseProvider, key.ServiceTier); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid service_tier: %v", err))
+		return
+	}
 
 	if key.ID == "" {
 		key.ID = uuid.NewString()
@@ -322,6 +321,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := validateWeight(mergedKey.Weight); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
+		return
+	}
+	if err := schemas.ValidateKeyServiceTier(baseProvider, mergedKey.ServiceTier); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid service_tier: %v", err))
 		return
 	}
 
@@ -541,6 +544,7 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
 		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
 		"use_openai_endpoints":      func() { updateKey.UseOpenAIEndpoints = oldRawKey.UseOpenAIEndpoints },
+		"service_tier":              func() { updateKey.ServiceTier = oldRawKey.ServiceTier },
 		"description":               func() { updateKey.Description = oldRawKey.Description },
 	} {
 		if !gjson.GetBytes(body, field).Exists() {
@@ -1067,11 +1071,11 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 			return fmt.Errorf("oauth_key_config.token_url must use https (http is allowed for loopback hosts only)")
 		}
 		if cfg.GrantType == schemas.OAuthGrantJWTBearer && cfg.PrivateKey != nil && !cfg.PrivateKey.IsFromSecret() {
-			key, ok := parseAsymmetricPEMPrivateKey(cfg.PrivateKey.GetValue())
+			key, ok := tokencache.ParsePEMPrivateKey(cfg.PrivateKey.GetValue())
 			if !ok {
 				return fmt.Errorf("oauth_key_config.private_key must be an RSA or EC private key in PEM form")
 			}
-			if err := keyMatchesSigningAlgorithm(key, cfg.SigningAlgorithm); err != nil {
+			if err := tokencache.KeyMatchesSigningAlgorithm(key, cfg.SigningAlgorithm, "oauth_key_config.signing_algorithm"); err != nil {
 				return err
 			}
 		}
@@ -1109,65 +1113,6 @@ func isHTTPSOrLoopbackURL(raw string) bool {
 	default:
 		return false
 	}
-}
-
-// parseAsymmetricPEMPrivateKey parses s as an RSA or EC private key Bifrost can sign a
-// JWT bearer assertion with: PKCS#1, SEC 1, or a PKCS#8 container holding either. Literal
-// backslash-n is repaired first, because that is how a PEM most often arrives from a JSON
-// config or an environment variable.
-func parseAsymmetricPEMPrivateKey(s string) (crypto.PrivateKey, bool) {
-	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
-		s = strings.ReplaceAll(s, `\n`, "\n")
-	}
-	block, rest := pem.Decode([]byte(strings.TrimSpace(s)))
-	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
-		return nil, false
-	}
-	switch block.Type {
-	case "RSA PRIVATE KEY":
-		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-		return key, err == nil
-	case "EC PRIVATE KEY":
-		key, err := x509.ParseECPrivateKey(block.Bytes)
-		return key, err == nil
-	case "PRIVATE KEY":
-		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, false
-		}
-		switch key.(type) {
-		case *rsa.PrivateKey, *ecdsa.PrivateKey:
-			return key, true
-		}
-		return nil, false
-	default:
-		return nil, false
-	}
-}
-
-// keyMatchesSigningAlgorithm checks a parsed literal key against the algorithm it will sign
-// with (RS256 when unset): RSA for RS*/PS*, and for ES* an EC key on the curve the algorithm
-// names. The signer selects its key parser from the algorithm, so a mismatch saves cleanly and
-// then fails at the first token mint, far from the field that caused it.
-func keyMatchesSigningAlgorithm(key crypto.PrivateKey, alg string) error {
-	if alg == "" {
-		alg = "RS256"
-	}
-	if strings.HasPrefix(alg, "ES") {
-		ec, ok := key.(*ecdsa.PrivateKey)
-		if !ok {
-			return fmt.Errorf("oauth_key_config.signing_algorithm %s needs an EC private key; private_key is RSA", alg)
-		}
-		want := map[string]string{"ES256": "P-256", "ES384": "P-384", "ES512": "P-521"}[alg]
-		if got := ec.Curve.Params().Name; want != "" && got != want {
-			return fmt.Errorf("oauth_key_config.signing_algorithm %s needs a %s key; private_key is on %s", alg, want, got)
-		}
-		return nil
-	}
-	if _, ok := key.(*rsa.PrivateKey); !ok {
-		return fmt.Errorf("oauth_key_config.signing_algorithm %s needs an RSA private key; private_key is EC (set an ES* algorithm)", alg)
-	}
-	return nil
 }
 
 // keyDialTargets returns every caller-chosen host Bifrost will later dial with this key's

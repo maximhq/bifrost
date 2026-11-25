@@ -226,14 +226,15 @@ func TestMCPClientSecretReferences(t *testing.T) {
 		schemas.NewSecretVar("https://mcp.example.com/mcp"),
 		&OAuthConfigRequest{ClientID: &plain, ClientSecret: &vaultSecret},
 		&schemas.MCPTokenExchangeConfig{ClientSecret: &envHeader, ResourcePrivateKey: &vaultSecret},
+		&schemas.MCPClientCredentialsConfig{ClientID: &plain, ClientSecret: &envHeader, PrivateKey: &vaultSecret},
 		&schemas.MCPTLSConfig{CACertPEM: &envHeader},
 		nil,
 	)
-	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "token_exchange.resource_private_key", "tls_config.ca_cert_pem"}
+	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "token_exchange.resource_private_key", "client_credentials.client_secret", "client_credentials.private_key", "tls_config.ca_cert_pem"}
 	if strings.Join(refs, ",") != strings.Join(want, ",") {
 		t.Fatalf("expected %v, got %v", want, refs)
 	}
-	if got := mcpClientSecretReferences(map[string]schemas.SecretVar{"X-Plain": plain}, nil, nil, nil, nil, nil); len(got) != 0 {
+	if got := mcpClientSecretReferences(map[string]schemas.SecretVar{"X-Plain": plain}, nil, nil, nil, nil, nil, nil); len(got) != 0 {
 		t.Fatalf("expected no references for literal values, got %v", got)
 	}
 }
@@ -309,5 +310,31 @@ func TestResourceCredentialResendRequired(t *testing.T) {
 	}
 	if resourceCredentialResendRequired(nil, &schemas.MCPTokenExchangeConfig{}) != nil {
 		t.Error("a first token_exchange block has nothing stored to carry over")
+	}
+}
+
+// TestClientCredentialsResendRequired: a masked client_credentials secret or key
+// cannot follow a changed or cleared token_url, or a new assertion audience.
+func TestClientCredentialsResendRequired(t *testing.T) {
+	endpoint := "https://as.example.com/token"
+	existing := &schemas.MCPClientCredentialsConfig{TokenURL: endpoint, ClientID: schemas.NewSecretVar("bifrost"), ClientSecret: schemas.NewSecretVar("s3cret")}
+	masked := existing.ClientSecret.Redacted()
+	for name, tc := range map[string]struct {
+		req     *schemas.MCPClientCredentialsConfig
+		refused bool
+	}{
+		"masked secret, same endpoint":       {req: &schemas.MCPClientCredentialsConfig{TokenURL: endpoint, ClientSecret: masked}},
+		"masked secret, moved endpoint":      {req: &schemas.MCPClientCredentialsConfig{TokenURL: "https://evil.example.com/token", ClientSecret: masked}, refused: true},
+		"masked secret, endpoint cleared":    {req: &schemas.MCPClientCredentialsConfig{ClientSecret: masked}, refused: true},
+		"resent secret, moved endpoint":      {req: &schemas.MCPClientCredentialsConfig{TokenURL: "https://evil.example.com/token", ClientSecret: schemas.NewSecretVar("s3cret")}},
+		"masked key, new assertion audience": {req: &schemas.MCPClientCredentialsConfig{TokenURL: endpoint, PrivateKey: masked, AssertionAudience: "https://as.example.com"}, refused: true},
+	} {
+		err := clientCredentialsResendRequired(existing, tc.req)
+		if (err != nil) != tc.refused {
+			t.Errorf("%s: err = %v, refused want %v", name, err, tc.refused)
+		}
+	}
+	if clientCredentialsResendRequired(nil, &schemas.MCPClientCredentialsConfig{}) != nil {
+		t.Error("a first client_credentials block has nothing stored to carry over")
 	}
 }

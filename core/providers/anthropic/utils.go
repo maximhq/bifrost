@@ -450,6 +450,12 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 		!SupportsThinkingDisplayUpdates(caps) {
 		req.Thinking.Display = new("omitted")
 	}
+	// Runs after every thinking.type rewrite above so a block_binding left on a mode that
+	// cannot carry it (or on a host without the beta) is dropped instead of 400ing.
+	if req.Thinking != nil && req.Thinking.BlockBinding != nil &&
+		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(req.Thinking.Type)) {
+		req.Thinking.BlockBinding = nil
+	}
 	if req.InferenceGeo != nil && !caps.SupportsInferenceGeo(features.InferenceGeo) {
 		req.InferenceGeo = nil
 	}
@@ -599,6 +605,21 @@ func stripUnsupportedAnthropicFields(req *AnthropicMessageRequest, provider sche
 			tool.Strict = nil
 		}
 	}
+}
+
+// setRawServiceTier writes the attempt's service tier into a raw Messages body in Anthropic's form,
+// so a key or alias tier also reaches client bytes sent as-is. A request with no tier, or a body
+// already carrying that value, is returned unchanged; a host that takes no service_tier drops it
+// afterwards in StripUnsupportedFieldsFromRawBody.
+func setRawServiceTier(jsonBody []byte, tier *schemas.BifrostServiceTier) ([]byte, error) {
+	if tier == nil {
+		return jsonBody, nil
+	}
+	want := MapBifrostServiceTierToAnthropicRequest(*tier)
+	if current := providerUtils.GetJSONField(jsonBody, "service_tier"); current.Exists() && current.String() == want {
+		return jsonBody, nil
+	}
+	return providerUtils.SetJSONField(jsonBody, "service_tier", want)
 }
 
 // StripUnsupportedFieldsFromRawBody is the raw-JSON equivalent of
@@ -780,8 +801,7 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 
 	// tool_addition / tool_removal blocks — mid-conversation tool changes (beta
 	// mid-conversation-tool-changes). Claude Code sends them in role:"system" messages, and a
-	// surface without the beta rejects the unknown content block (Vertex: "Input tag
-	// 'tool_addition' found using 'type' does not match any of the expected tags"). They are
+	// surface without the beta rejects the unknown content block. They are
 	// removed, as is a replayed compaction block's tool_changes; the text next to them stays,
 	// and a message left with no content is dropped whole rather than sent empty.
 	//
@@ -1041,6 +1061,16 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 		jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.display", "omitted")
 		if err != nil {
 			return nil, fmt.Errorf("rewrite raw thinking.display to omitted: %w", err)
+		}
+	}
+
+	// thinking.block_binding — mirrors the typed path. Placed here, after the
+	// thinking.type rewrites above, so it sees the type that is actually sent.
+	if providerUtils.JSONFieldExists(jsonBody, "thinking.block_binding") &&
+		(!features.ThinkingBinding || !thinkingTypeTakesBlockBinding(providerUtils.GetJSONField(jsonBody, "thinking.type").String())) {
+		jsonBody, err = providerUtils.DeleteJSONField(jsonBody, "thinking.block_binding")
+		if err != nil {
+			return nil, fmt.Errorf("strip raw thinking.block_binding: %w", err)
 		}
 	}
 
@@ -1356,6 +1386,15 @@ func IsHaiku5Plus(model string) bool {
 func IsFableFamily(model string) bool {
 	m := strings.ToLower(model)
 	return strings.Contains(m, "fable") || strings.Contains(m, "mythos")
+}
+
+// DefaultStripsUserTurnTrailingWhitespace is the name-based fallback for
+// ModelCaps.StripsUserTurnTrailingWhitespace: the Claude 5 generation. Measured live on Haiku 5.5,
+// Opus 5.5 and (from customer traffic) Fable 5.1; Haiku 4.5 and Sonnet 4.6 keep the whitespace, so
+// trimming there makes a block stop matching its own history on the next turn. A model this does
+// not recognise is not trimmed, which is the behaviour before the trim existed.
+func DefaultStripsUserTurnTrailingWhitespace(model string) bool {
+	return IsFableFamily(model) || IsOpus5Plus(model) || IsSonnet5Plus(model) || IsHaiku5Plus(model)
 }
 
 // IsMythosPreview returns true for Claude Mythos Preview, the one member of the
@@ -1680,6 +1719,13 @@ func SupportsThinkingDisplayUpdates(caps schemas.ModelCaps) bool {
 			DefaultSupportsThinkingDisplayUpdates(caps.Model()))
 }
 
+// thinkingTypeTakesBlockBinding reports whether thinking.block_binding is valid on a
+// thinking mode: it governs signed thinking blocks, so it is a 400 with thinking off
+// ("disabled", "between_tools") and meaningless without a type.
+func thinkingTypeTakesBlockBinding(thinkingType string) bool {
+	return thinkingType == "adaptive" || thinkingType == "enabled"
+}
+
 // DefaultSupportsBetweenToolsThinking: Sonnet 5.5 accepts thinking:{type:"between_tools"}
 // as its lowest setting (it rejects "disabled").
 //
@@ -1891,8 +1937,10 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 		return nil
 	}
 
+	// No trailing newline: a cached block ending in whitespace stops matching once the content
+	// after it in the same turn changes (Claude Code drops its trailing reminder on the next turn).
 	wrap := func(text string) string {
-		return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		return "<system-reminder>\n" + text + "\n</system-reminder>"
 	}
 
 	var blocks []AnthropicContentBlock
@@ -1906,19 +1954,21 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 		// prompt_cache config. Conversion paths like this one never synthesize a marker, so a
 		// request either carries the caller's intent or the operator's, never a third thing
 		// invented mid-translation. Note that "never synthesizes" is the guarantee, not
-		// "never drops": the loop below deliberately collapses intermediate markers onto the
-		// last block, for the reasons stated there. Adding is what changes the caller's cost
-		// profile behind their back; collapsing a redundant marker does not.
+		// "never drops": the loop below deliberately drops intermediate markers, for the
+		// reasons stated there. Adding is what changes the caller's cost profile behind their
+		// back; dropping a redundant marker does not.
 		blocks = append(blocks, AnthropicContentBlock{
 			Type: AnthropicContentBlockTypeText,
 			Text: schemas.Ptr(wrap(*content.ContentStr)),
 		})
 	}
-	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter. Within a
-	// single message an intermediate marker buys nothing — one on the final block already closes
-	// over every preceding block, and the message is atomic so no later request can diverge in its
-	// middle — while still consuming one of the four checkpoints the API allows per request.
+	// Only the LAST breakpoint in the message is kept, matching the Bedrock converter: an earlier
+	// marker in the same message closes over nothing the last one does not, and still consumes one
+	// of the four checkpoints the API allows per request. It stays on the block the caller marked.
+	// Text after it is not part of the checkpoint, and Claude Code drops such a trailing reminder on
+	// the next turn, so moving the marker onto it writes a prefix no later request matches.
 	var lastCacheControl *schemas.CacheControl
+	marked := -1
 	for _, block := range content.ContentBlocks {
 		if block.Text == nil || *block.Text == "" {
 			continue
@@ -1928,15 +1978,15 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 			Text: schemas.Ptr(wrap(*block.Text)),
 		})
 		if block.CacheControl != nil {
-			lastCacheControl = block.CacheControl
+			lastCacheControl, marked = block.CacheControl, len(blocks)-1
 		}
 	}
 
 	if len(blocks) == 0 {
 		return nil
 	}
-	if lastCacheControl != nil {
-		blocks[len(blocks)-1].CacheControl = lastCacheControl
+	if marked >= 0 {
+		blocks[marked].CacheControl = lastCacheControl
 	}
 
 	return &AnthropicMessage{
@@ -1945,29 +1995,64 @@ func inlineMidConversationSystem(content *AnthropicContent) *AnthropicMessage {
 	}
 }
 
+// trimUserTurnTail strips trailing whitespace from the text that ends a user turn, called before an
+// inlined reminder joins that turn on a model that strips it at the end of a turn
+// (ModelCaps.StripsUserTurnTrailingWhitespace). Applied whether or not the block carries the
+// breakpoint: it gives the block the bytes the model sees when it ends its turn, so they match
+// whether a later request keeps the reminder after it, drops it, or moves the breakpoint on.
+func trimUserTurnTail(msgs []AnthropicMessage) {
+	n := len(msgs)
+	if n == 0 || msgs[n-1].Role != AnthropicMessageRoleUser {
+		return
+	}
+	content := &msgs[n-1].Content
+	tail := &content.ContentStr
+	if *tail == nil {
+		k := len(content.ContentBlocks) - 1
+		if k < 0 || content.ContentBlocks[k].Type != AnthropicContentBlockTypeText {
+			return
+		}
+		tail = &content.ContentBlocks[k].Text
+	}
+	// The pointer is replaced, not written through: it can alias the caller's request.
+	if *tail != nil {
+		if trimmed := strings.TrimRight(**tail, " \n\r\t"); trimmed != "" && len(trimmed) < len(**tail) {
+			*tail = new(trimmed)
+		}
+	}
+}
+
 // SupportsMidConversationSystem returns true if the provider+model combination
 // supports role:"system" entries inside the messages array (mid-conversation
-// system messages). Available on the Anthropic API only — not on Bedrock or
-// Vertex. Supported on Claude Opus 4.8+ (including Opus 5 and 5.5), Claude
-// Sonnet 5.5 (not Sonnet 5), and the Claude Fable/Mythos family. No beta header
-// is required.
-//
-// Override-aware on the MODEL gate only: after the hardcoded Anthropic provider
-// gate, prefers the datasheet's supports_mid_conversation_system_messages
-// boolean; falls back to substring detection. The provider gate stays hardcoded
-// because a bare-model override lookup can't distinguish provider.
+// system messages). Anthropic API: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Haiku 5.5
+// and Fable/Mythos. Vertex, Bedrock InvokeModel, Mantle and Azure: Claude 5 Opus,
+// Sonnet 5.5, Haiku 5.5 and Fable. Fallback only; the datasheet's
+// supports_native_mid_conversation_system wins when set (midConversationSystemSupported).
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
 func DefaultSupportsMidConversationSystem(provider schemas.ModelProvider, model string) bool {
-	if provider != schemas.Anthropic {
-		return false
-	}
 	m := strings.ToLower(model)
-	if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) {
-		return true
+	switch provider {
+	case schemas.Anthropic:
+		if IsFableFamily(m) || IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m) {
+			return true
+		}
+		return strings.Contains(m, "opus") &&
+			(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	case schemas.Vertex, schemas.Bedrock, schemas.BedrockMantle, schemas.Azure:
+		return IsOpus5Plus(m) || IsSonnet55Plus(m) || IsHaiku5Plus(m) ||
+			(IsFableFamily(m) && !strings.Contains(m, "mythos"))
 	}
-	return strings.Contains(m, "opus") &&
-		(strings.Contains(m, "4-8") || strings.Contains(m, "4.8"))
+	return false
+}
+
+// midConversationSystemSupported resolves whether a mid-conversation system message may be
+// emitted as role:"system": the datasheet's supports_native_mid_conversation_system, then
+// DefaultSupportsMidConversationSystem. The older key is not read here: gateways without
+// enforceMidConversationSystemPlacement (core <= v1.15.2) read it and flip a tail reminder
+// between native and wrapped across turns, so it is held false for them; they ignore this key.
+func midConversationSystemSupported(caps schemas.ModelCaps) bool {
+	return caps.SupportsNativeMidConversationSystem(DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
 }
 
 // DefaultSupportsMidConversationOutputConfig reports whether the provider+model pair
@@ -2622,6 +2707,13 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicThinkingDisplayUpdatesBetaHeader)
 		}
 	}
+	// thinking.block_binding is a 400 without its beta, and SDK clients on the neutral
+	// routes cannot set anthropic-beta themselves.
+	if req.Thinking != nil && req.Thinking.BlockBinding != nil && thinkingTypeTakesBlockBinding(req.Thinking.Type) {
+		if !hasProvider || features.ThinkingBinding {
+			headers = appendUniqueHeader(headers, AnthropicThinkingBindingControlsBetaHeader)
+		}
+	}
 	// Check for fast mode. Only add the beta header when both the provider
 	// supports fast mode AND the model does (DefaultSupportsFastMode); otherwise
 	// sending the header guarantees a 400. Headerless hosts (Vertex) take the
@@ -2798,6 +2890,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
 	AnthropicInlineToolsBetaHeaderPrefix,
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix,
+	AnthropicThinkingBindingControlsBetaHeaderPrefix,
 }
 
 // stripBifrostFallbacksFromBody removes Bifrost cross-provider fallback entries
@@ -3025,12 +3118,18 @@ func hasProgrammaticCaller(callers []string) bool {
 	return false
 }
 
-// StripEmptyThinkingBlocks removes thinking content blocks that would be
-// rejected by Anthropic: those with an empty "thinking" field, or those
-// with an empty "signature" field. An empty signature means the block came
-// from a non-Anthropic upstream (OpenAI never emits signatures; Anthropic
-// always does), so it is unsafe to replay to Anthropic. keepUnsigned keeps the
-// latter for upstreams that never sign their own thinking (vLLM, SGLang).
+// StripEmptyThinkingBlocks removes unsigned thinking content blocks, which
+// Anthropic would reject. An empty signature means the block came from a
+// non-Anthropic upstream (OpenAI never emits signatures; Anthropic always does),
+// so it is unsafe to replay to Anthropic. keepUnsigned keeps unsigned blocks that
+// carry thinking text, for upstreams that never sign their own thinking (vLLM,
+// SGLang); unsigned blocks with empty thinking are always stripped.
+//
+// Signed blocks are kept even with empty thinking: thinking.display "omitted"
+// (the default on Opus 4.7+ and Claude 5.x) returns "thinking": "" with the
+// reasoning only in the signature, and Anthropic expects those blocks replayed
+// unchanged. The "thinking" field must be a JSON string. Missing fields (such
+// as with a Gemini thought signature) and non-string values are stripped.
 //
 // The predicate must stay scoped to "thinking" blocks: "redacted_thinking"
 // blocks carry only an encrypted "data" payload (no thinking or signature
@@ -3062,10 +3161,13 @@ func StripEmptyThinkingBlocks(jsonBody []byte, keepUnsigned bool) ([]byte, error
 		stripped := false
 		kept := make([]gjson.Result, 0, len(blocks))
 		for _, block := range blocks {
-			if block.Get("type").String() == "thinking" &&
-				(block.Get("thinking").String() == "" || (!keepUnsigned && block.Get("signature").String() == "")) {
-				stripped = true
-				continue
+			if block.Get("type").String() == "thinking" {
+				thinking := block.Get("thinking")
+				if thinking.Type != gjson.String ||
+					(block.Get("signature").String() == "" && (thinking.Str == "" || !keepUnsigned)) {
+					stripped = true
+					continue
+				}
 			}
 			kept = append(kept, block)
 		}
@@ -3408,6 +3510,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
 	AnthropicInlineToolsBetaHeaderPrefix:                 func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 	AnthropicThinkingDisplayUpdatesBetaHeaderPrefix:      func(f ProviderFeatureSupport) bool { return f.ThinkingDisplayUpdates },
+	AnthropicThinkingBindingControlsBetaHeaderPrefix:     func(f ProviderFeatureSupport) bool { return f.ThinkingBinding },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
@@ -5211,9 +5314,61 @@ func sanitizeWebSearchArguments(argumentsJSON string) string {
 	return argumentsJSON
 }
 
+// anthropicServerToolUseIDPrefix starts every id Anthropic gives a server_tool_use block.
+const anthropicServerToolUseIDPrefix = "srvtoolu_"
+
+// isWebSearchPendingCall reports whether a web_search_call is a search Anthropic has not
+// run yet (deferred beside a client tool, or a paused turn): it is replayed as a bare
+// server_tool_use.
+func isWebSearchPendingCall(msg *schemas.ResponsesMessage) bool {
+	return msg.Status != nil && *msg.Status == "in_progress"
+}
+
+// isWebSearchResultOnlyCall reports whether a web_search_call carries only the result of a
+// search whose server_tool_use was sent in an earlier assistant message. Anthropic returns
+// a deferred search's web_search_tool_result at the start of the next assistant message;
+// newWebSearchResultOnlyCall represents it as a finished web_search_call with the same id
+// and no query. An Anthropic server_tool_use always has a query (its input requires one),
+// so a finished Anthropic search (srvtoolu_ id) with none can only be a result. Other
+// providers' calls (OpenAI ws_ ids) may legitimately omit the query and are never
+// result-only: they keep the server_tool_use plus result rebuild.
+func isWebSearchResultOnlyCall(msg *schemas.ResponsesMessage) bool {
+	if msg == nil || msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeWebSearchCall ||
+		msg.ID == nil || !strings.HasPrefix(*msg.ID, anthropicServerToolUseIDPrefix) ||
+		msg.Status == nil || isWebSearchPendingCall(msg) ||
+		msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Action == nil {
+		return false
+	}
+	action := msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction
+	return action != nil && action.Type == "search" &&
+		(action.Query == nil || *action.Query == "") && len(action.Queries) == 0
+}
+
+// newWebSearchResultOnlyCall builds the web_search_call for a web_search_tool_result whose
+// server_tool_use is not in the same message (see isWebSearchResultOnlyCall).
+func newWebSearchResultOnlyCall(toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) schemas.ResponsesMessage {
+	action := &schemas.ResponsesWebSearchToolCallAction{Type: "search"}
+	if resultBlock.Content != nil && len(resultBlock.Content.ContentBlocks) > 0 {
+		action.Sources = extractWebSearchSources(resultBlock.Content.ContentBlocks, includeExtendedFields)
+	}
+	toolMsg := &schemas.ResponsesToolMessage{
+		Action: &schemas.ResponsesToolMessageActionStruct{ResponsesWebSearchToolCallAction: action},
+	}
+	if resultBlock.Caller != nil {
+		toolMsg.Caller = &schemas.ResponsesToolCaller{Type: string(resultBlock.Caller.Type), ToolID: resultBlock.Caller.ToolID}
+	}
+	return schemas.ResponsesMessage{
+		ID:                   schemas.Ptr(toolUseID),
+		Type:                 schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall),
+		Status:               schemas.Ptr("completed"),
+		ResponsesToolMessage: toolMsg,
+	}
+}
+
 // attachWebSearchSourcesToCall finds a web_search_call by tool_use_id and attaches sources to it.
-// It searches backwards through bifrostMessages to find the matching call and updates its action.
-func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) {
+// It searches backwards through bifrostMessages to find the matching call and updates its action,
+// and reports whether it found one.
+func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, toolUseID string, resultBlock AnthropicContentBlock, includeExtendedFields bool) bool {
 	// Search backwards to find matching web_search_call
 	for i := len(bifrostMessages) - 1; i >= 0; i-- {
 		msg := &bifrostMessages[i]
@@ -5223,6 +5378,12 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 
 			if msg.ResponsesToolMessage == nil {
 				msg.ResponsesToolMessage = &schemas.ResponsesToolMessage{}
+			}
+
+			// The result is here, so the search is no longer pending. Written in place:
+			// the status was allocated for this item when its server_tool_use was converted.
+			if msg.Status != nil && *msg.Status == "in_progress" {
+				*msg.Status = "completed"
 			}
 
 			// Found the matching web_search_call, add sources
@@ -5240,9 +5401,10 @@ func attachWebSearchSourcesToCall(bifrostMessages []schemas.ResponsesMessage, to
 				}
 				msg.ResponsesToolMessage.Action.ResponsesWebSearchToolCallAction.Sources = sources
 			}
-			break
+			return true
 		}
 	}
+	return false
 }
 
 // attachToolSearchReferencesToCall finds the tool_search_call emitted for this
