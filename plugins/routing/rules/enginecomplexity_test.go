@@ -266,13 +266,13 @@ func TestEvaluateRoutingRules_ComplexityUnavailableNegativePredicatesDoNotMatch(
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			store, err := newTestRuleStore()
+			store, err := newTestRuleStore(t)
 			require.NoError(t, err)
 
 			rule := complexityRoutingRule("complexity-unavailable-"+tt.name, tt.expression)
-			require.NoError(t, store.UpsertRule(ctx, rule))
+			require.NoError(t, store.Put(ctx, rule))
 
-			engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+			engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 			require.NoError(t, err)
 
 			computeCalls := 0
@@ -295,13 +295,13 @@ func TestEvaluateRoutingRules_ComplexityUnavailableNegativePredicatesDoNotMatch(
 
 func TestEvaluateRoutingRules_ComplexityTierLiteralDoesNotComputeComplexity(t *testing.T) {
 	ctx := context.Background()
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 
 	rule := complexityRoutingRule("complexity-tier-literal", `model == "complexity_tier"`)
-	require.NoError(t, store.UpsertRule(ctx, rule))
+	require.NoError(t, store.Put(ctx, rule))
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	computeCalls := 0
@@ -324,13 +324,13 @@ func TestEvaluateRoutingRules_ComplexityTierLiteralDoesNotComputeComplexity(t *t
 
 func TestEvaluateRoutingRules_ComplexityNegativePredicateMatchesAvailableTier(t *testing.T) {
 	ctx := context.Background()
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 
 	rule := complexityRoutingRule("complexity-available-not-simple", `complexity_tier != "SIMPLE"`)
-	require.NoError(t, store.UpsertRule(ctx, rule))
+	require.NoError(t, store.Put(ctx, rule))
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	decision, err := engine.EvaluateRoutingRules(schemas.NewBifrostContext(ctx, time.Now()), &EvaluationContext{
@@ -352,7 +352,7 @@ func TestEvaluateRoutingRules_ComplexityNegativePredicateMatchesAvailableTier(t 
 // models, and requests for that model are classified exactly once across all tier rules.
 func TestEvaluateRoutingRules_ComplexityNotComputedWhenOtherConditionFails(t *testing.T) {
 	ctx := context.Background()
-	store, err := newTestRuleStore()
+	store, err := newTestRuleStore(t)
 	require.NoError(t, err)
 
 	for i, tier := range []string{"SIMPLE", "MEDIUM", "COMPLEX"} {
@@ -360,10 +360,10 @@ func TestEvaluateRoutingRules_ComplexityNotComputedWhenOtherConditionFails(t *te
 		rule.Priority = i + 1
 		target := "target-" + tier
 		rule.Targets[0].Model = &target
-		require.NoError(t, store.UpsertRule(ctx, rule))
+		require.NoError(t, store.Put(ctx, rule))
 	}
 
-	engine, err := NewEngine(store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
+	engine, err := NewEngine(store.Store, NewMockGovernanceStore(), NewMockLogger(), schemas.Ptr(10))
 	require.NoError(t, err)
 
 	evaluate := func(model string) (*Decision, int) {

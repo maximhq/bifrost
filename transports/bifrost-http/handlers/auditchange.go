@@ -70,7 +70,10 @@ func auditCustomer(customer *configstoreTables.TableCustomer) json.RawMessage {
 	return lib.AuditSnapshot(c, "virtual_keys")
 }
 
-// auditProviderConfig snapshots an already-redacted provider config for the audit log, leaving keys to their own events.
+// auditProviderConfig snapshots an already-redacted provider config for the audit log; keys have
+// their own events. ProviderConfig has no "keys" field any more, but naming it to drop routes the
+// snapshot through AuditSnapshot's field map, which keeps the fields in sorted order: byte for byte
+// the snapshot the audit log stored when the config still carried keys.
 func auditProviderConfig(cfg *configstore.ProviderConfig) json.RawMessage {
 	if cfg == nil {
 		return nil
@@ -148,17 +151,18 @@ func auditDeletedIDs(ids []string) map[string]any {
 	return snap
 }
 
-// findMCPClientConfig returns the in-memory MCP client config with the given id, or nil.
+// findMCPClientConfig returns the MCP client config with the given id from the live store, or
+// nil. The config is the store's record: read it, never change it. A refresh replaces the record
+// rather than changing it, so the config keeps the values it was read with.
 func findMCPClientConfig(store *lib.Config, id string) *schemas.MCPClientConfig {
-	if store == nil || store.MCPConfig == nil {
+	if store == nil {
 		return nil
 	}
-	for _, client := range store.MCPConfig.ClientConfigs {
-		if client != nil && client.ID == id {
-			return client
-		}
+	client, ok := store.LiveStore.Collections.MCPClients.Get(id)
+	if !ok {
+		return nil
 	}
-	return nil
+	return &client.Config
 }
 
 // pluginAuditSnapshot is the audit view of a plugin; Config is set only when the plugin itself redacted it.

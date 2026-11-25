@@ -44,7 +44,7 @@ Bifrost evaluates alert rules on a periodic sweep and dispatches notifications s
     Each enabled rule's CEL expression is evaluated against the governance metrics for its scope. If the rule has a `target_type` of `"budget"` and a specific `target_id`, only metrics for that budget are used. If no target is specified, the expression is evaluated against every budget in the scope.
   </Step>
   <Step title="Cooldowns are applied">
-    When a rule matches, its cooldown suppresses repeat notifications for the same rule, scope, and target. Bifrost checks compact successful-send state in the shared key-value store. Channels can define their own optional cooldown on top of the rule cooldown.
+    When a rule matches, its cooldown suppresses repeat notifications for the same rule, scope, and target. Bifrost checks compact successful-send state that every gateway instance shares. Channels can define their own optional cooldown on top of the rule cooldown.
   </Step>
   <Step title="Notifications are dispatched">
     The rule's channels are notified. Every outcome - `sent`, `failed`, or `skipped` - is written to [alert history](/enterprise/alerting/alert-history).
@@ -116,13 +116,13 @@ Alerting uses a dual-layer cooldown system to prevent alert storms:
 - **Rule cooldown**: Suppresses repeat notifications for the same rule, scope, and target until the cooldown window elapses. Default is 60 seconds. The cooldown window is measured from the latest successful send for that rule and target.
 - **Channel cooldown**: An optional per-channel cooldown that suppresses a channel after it receives any alert. Default is 0 seconds (no suppression). Useful when one channel (such as PagerDuty) should be notified less frequently than another (such as Slack) for the same rule.
 
-Cooldowns are enforced from compact state in Bifrost's shared key-value store. Successful deliveries update that state before their [alert history](/enterprise/alerting/alert-history) row is appended. On startup, leadership changes, or relevant rule configuration changes, Bifrost rebuilds the required state with bounded aggregate reads from alert history.
+Cooldowns are enforced from compact state that every gateway instance shares. Successful deliveries update that state before their [alert history](/enterprise/alerting/alert-history) row is appended. On startup, leadership changes, or relevant rule configuration changes, Bifrost rebuilds the required state with bounded aggregate reads from alert history.
 
 ---
 
 ## Clustering behavior
 
-When Bifrost runs as a [cluster](/enterprise/clustering), only the leader node evaluates rules and dispatches notifications. Successful-send state is shared through the cluster key-value store. A newly elected leader recovers and reconciles that state before its first scheduled dispatch. When a node loses leadership, its alerting engine stops until leadership is regained.
+When Bifrost runs as a [cluster](/enterprise/clustering), only the leader node evaluates rules and dispatches notifications. Successful-send state is shared across the cluster. A newly elected leader recovers and reconciles that state before its first scheduled dispatch. When a node loses leadership, its alerting engine stops until leadership is regained.
 
 No additional configuration is required; leader-aware alerting activates automatically in cluster mode.
 
