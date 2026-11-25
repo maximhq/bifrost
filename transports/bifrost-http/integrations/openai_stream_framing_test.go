@@ -188,3 +188,47 @@ func TestStreamErrorEventFramingPerRoute(t *testing.T) {
 		})
 	}
 }
+
+// x-bf-request-timeout passing after the first chunk on an integration route: core's
+// forwarding closes the channel without the provider's timeout chunk, so the route must end
+// with its own error frame carrying request_timed_out, not [DONE].
+func TestStreamDeadlineAfterFirstChunkEndsWithTimeoutError(t *testing.T) {
+	route := func(routes []RouteConfig, method, path string) RouteConfig {
+		t.Helper()
+		for _, r := range routes {
+			if r.Method == method && r.Path == path {
+				return r
+			}
+		}
+		t.Fatalf("route %s %s not found", method, path)
+		return RouteConfig{}
+	}(CreateOpenAIRouteConfigs("/openai", &mockHandlerStore{}), "POST", "/openai/v1/chat/completions")
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(100*time.Millisecond))
+	defer ctx.Cancel()
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	stream <- &schemas.BifrostStreamChunk{BifrostChatResponse: &schemas.BifrostChatResponse{
+		ID:     "chatcmpl-deadline",
+		Object: "chat.completion.chunk",
+		Model:  "gpt-4o-mini",
+		Choices: []schemas.BifrostResponseChoice{{
+			ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+				Delta: &schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("partial answer")},
+			},
+		}},
+	}}
+	go func() {
+		<-ctx.Done()
+		close(stream)
+	}()
+
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	httpCtx := &fasthttp.RequestCtx{}
+	router.handleStreaming(httpCtx, ctx, route, "", stream, ctx.Cancel)
+	body, err := io.ReadAll(httpCtx.Response.BodyStream())
+	require.NoError(t, err)
+	wire := string(body)
+	require.Contains(t, wire, "partial answer")
+	require.Contains(t, wire, string(schemas.RequestTimedOut), "wire stream: %q", wire)
+	require.NotContains(t, wire, "[DONE]", "a stream cut short by the deadline must not end as complete")
+}

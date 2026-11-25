@@ -1092,6 +1092,28 @@ func BenchmarkConvertToBifrostContextVirtualKeyHeader(b *testing.B) {
 	}
 }
 
+// BenchmarkConvertToBifrostContextRequestTimeout measures building the request context without
+// x-bf-request-timeout (no deadline, no timer) and with it as a duration or as seconds (a timer
+// bounds the context).
+func BenchmarkConvertToBifrostContextRequestTimeout(b *testing.B) {
+	for _, tc := range []struct{ name, value string }{{"none", ""}, {"duration", "90s"}, {"seconds", "90"}} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("Content-Type", "application/json")
+			ctx.Request.Header.Set("x-bf-vk", "sk-bf-benchmark-vk")
+			if tc.value != "" {
+				ctx.Request.Header.Set("x-bf-request-timeout", tc.value)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				_, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+				cancel()
+				ctx.ResetUserValues()
+			}
+		})
+	}
+}
+
 // BenchmarkConvertToBifrostContextClientIP measures a request from a real peer behind a proxy, with capture off (the default) and on.
 func BenchmarkConvertToBifrostContextClientIP(b *testing.B) {
 	for _, capture := range []bool{false, true} {

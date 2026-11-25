@@ -38,6 +38,13 @@ func serveStreamingResponseWithConfig(t *testing.T, config *lib.Config, chunks [
 // runs on the request context before the handler, e.g. to install a trace completer.
 func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup func(*fasthttp.RequestCtx), chunks []*schemas.BifrostStreamChunk) string {
 	t.Helper()
+	return serveStreamingResponseWithDeadline(t, config, setup, schemas.NoDeadline, chunks)
+}
+
+// serveStreamingResponseWithDeadline is serveStreamingResponseWithSetup with a deadline on
+// the request context, as x-bf-request-timeout sets.
+func serveStreamingResponseWithDeadline(t *testing.T, config *lib.Config, setup func(*fasthttp.RequestCtx), deadline time.Time, chunks []*schemas.BifrostStreamChunk) string {
+	t.Helper()
 
 	handler := func(reqCtx *fasthttp.RequestCtx) {
 		if setup != nil {
@@ -46,14 +53,23 @@ func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup fun
 		h := &CompletionHandler{config: config}
 
 		base, cancel := context.WithCancel(context.Background())
-		bifrostCtx := schemas.NewBifrostContext(base, schemas.NoDeadline)
+		bifrostCtx := schemas.NewBifrostContext(base, deadline)
 
 		getStream := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			stream := make(chan *schemas.BifrostStreamChunk, len(chunks))
 			for _, chunk := range chunks {
 				stream <- chunk
 			}
-			close(stream)
+			if deadline.IsZero() {
+				close(stream)
+				return stream, nil
+			}
+			// As core's forwarding does when the deadline passes mid-stream: the channel
+			// closes without a timeout chunk once the context is done.
+			go func() {
+				<-bifrostCtx.Done()
+				close(stream)
+			}()
 			return stream, nil
 		}
 
@@ -167,6 +183,25 @@ func TestStreamingResponseSendsDoneOnCleanStream(t *testing.T) {
 
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Errorf("expected [DONE] to terminate a clean stream, got:\n%s", body)
+	}
+}
+
+// x-bf-request-timeout passing after the first chunk: core's forwarding stops on the done
+// context and closes the channel without the provider's timeout chunk. The client must get a
+// request_timed_out error frame, not [DONE], so partial output does not look complete.
+func TestStreamingResponseDeadlineAfterFirstChunkEndsWithTimeoutError(t *testing.T) {
+	body := serveStreamingResponseWithDeadline(t, &lib.Config{}, nil, time.Now().Add(100*time.Millisecond), []*schemas.BifrostStreamChunk{
+		contentChunk("partial answer"),
+	})
+
+	if !strings.Contains(body, "partial answer") {
+		t.Errorf("expected the chunk sent before the deadline to reach the client, got:\n%s", body)
+	}
+	if !strings.Contains(body, string(schemas.RequestTimedOut)) || !strings.Contains(body, lib.StreamDeadlineMessage) {
+		t.Errorf("expected a request_timed_out error frame after the deadline, got:\n%s", body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Errorf("[DONE] must not end a stream cut short by the deadline, got:\n%s", body)
 	}
 }
 

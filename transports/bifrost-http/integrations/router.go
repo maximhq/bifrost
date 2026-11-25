@@ -3369,6 +3369,14 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 		}
 
+		// A deadline that passed mid-stream closes the channel without the provider's
+		// timeout chunk reaching it (an error chunk returns above); end with the route's
+		// error frame instead of [DONE], so partial output does not look complete.
+		if deadlineErr := lib.StreamDeadlineError(bifrostCtx, streamRequestType); deadlineErr != nil {
+			sendConvertedStreamError(deadlineErr)
+			return
+		}
+
 		// Only send the [DONE] marker for plain SSE APIs that expect it.
 		// Do NOT send [DONE] for the following cases:
 		//   - OpenAI "responses" API and Anthropic messages API: they signal completion by simply closing the stream, not sending [DONE].
