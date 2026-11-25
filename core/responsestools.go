@@ -62,7 +62,9 @@ type toolDeclarationSlot struct{ index, member int }
 // container form, namespaced or top-level) so the unchanged tools before it keep their
 // byte-stable prompt-cache prefix. A namespace declared again merges its members into
 // the first declaration instead of replacing it, so an item that re-declares only exec
-// keeps the namespace's other members. Tools without a name, and non-function tools
+// keeps the namespace's other members. A tool placed in a container (a namespace, or
+// the top level) that would give it a different deferral than its own declaration did
+// carries that deferral as its own defer_loading. Tools without a name, and non-function tools
 // other than namespaces, are kept as declared.
 //
 // Namespace entries get fresh member slices, so neither input is mutated.
@@ -70,16 +72,29 @@ func mergeResponsesToolDeclarations(top, declared []schemas.ResponsesTool) []sch
 	merged := make([]schemas.ResponsesTool, 0, len(top)+len(declared))
 	slots := make(map[toolDeclarationKey]toolDeclarationSlot, len(top)+len(declared))
 	namespaces := make(map[string]int)
-	place := func(key toolDeclarationKey, tool schemas.ResponsesTool, appendSlot func() toolDeclarationSlot) {
+	// fit returns tool as it sits in container (nil for the top level): a tool that
+	// would read a different deferral there than the one its declaration gave it
+	// (deferred) carries defer_loading itself.
+	fit := func(tool schemas.ResponsesTool, deferred bool, container *schemas.ResponsesTool) schemas.ResponsesTool {
+		inherited := tool.DeferLoading != nil && *tool.DeferLoading
+		if container != nil {
+			inherited = schemas.IsDeferredNamespaceMember(container, &tool)
+		}
+		if inherited != deferred {
+			tool.DeferLoading = schemas.Ptr(deferred)
+		}
+		return tool
+	}
+	place := func(key toolDeclarationKey, tool schemas.ResponsesTool, deferred bool, appendSlot func() toolDeclarationSlot) {
 		slot, seen := slots[key]
 		if !seen {
 			slots[key] = appendSlot()
 			return
 		}
 		if slot.member < 0 {
-			merged[slot.index] = tool
+			merged[slot.index] = fit(tool, deferred, nil)
 		} else {
-			merged[slot.index].ResponsesToolNamespace.Tools[slot.member] = tool
+			merged[slot.index].ResponsesToolNamespace.Tools[slot.member] = fit(tool, deferred, &merged[slot.index])
 		}
 	}
 	add := func(tool schemas.ResponsesTool) {
@@ -101,19 +116,20 @@ func mergeResponsesToolDeclarations(top, declared []schemas.ResponsesTool) []sch
 				merged = append(merged, entry)
 			}
 			for _, member := range tool.ResponsesToolNamespace.Tools {
+				deferred := schemas.IsDeferredNamespaceMember(&tool, &member)
 				appendMember := func() toolDeclarationSlot {
 					container := merged[index].ResponsesToolNamespace
-					container.Tools = append(container.Tools, member)
+					container.Tools = append(container.Tools, fit(member, deferred, &merged[index]))
 					return toolDeclarationSlot{index: index, member: len(container.Tools) - 1}
 				}
 				if member.Name == nil || *member.Name == "" {
 					appendMember()
 					continue
 				}
-				place(toolDeclarationKey{keyNamespace, *member.Name}, member, appendMember)
+				place(toolDeclarationKey{keyNamespace, *member.Name}, member, deferred, appendMember)
 			}
 		case (tool.Type == schemas.ResponsesToolTypeFunction || tool.Type == schemas.ResponsesToolTypeCustom) && tool.Name != nil && *tool.Name != "":
-			place(toolDeclarationKey{"", *tool.Name}, tool, func() toolDeclarationSlot {
+			place(toolDeclarationKey{"", *tool.Name}, tool, tool.DeferLoading != nil && *tool.DeferLoading, func() toolDeclarationSlot {
 				merged = append(merged, tool)
 				return toolDeclarationSlot{index: len(merged) - 1, member: -1}
 			})
@@ -146,6 +162,14 @@ func hoistClientToolSearchOutputTools(ctx *schemas.BifrostContext, request *sche
 	if request == nil || !declaresClientToolSearch(request) || !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return request, nil
 	}
+	return mergeClientToolSearchOutputTools(request)
+}
+
+// mergeClientToolSearchOutputTools adds the tools request's client tool_search_output
+// items loaded to its tools, deferred and declared once, merging namespace members into
+// a namespace the request already declares. It returns request itself when no item
+// loaded a tool. The gateway tool search uses it too, so it can catalog those tools.
+func mergeClientToolSearchOutputTools(request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
 	var declared []schemas.ResponsesTool
 	if request.Params != nil {
 		declared = request.Params.Tools

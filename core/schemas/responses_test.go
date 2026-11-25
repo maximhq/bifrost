@@ -997,6 +997,17 @@ func TestClientToolSearchFunctionName(t *testing.T) {
 		}
 		return tool
 	}
+	withDeferLoading := func(tool ResponsesTool, deferred bool) ResponsesTool {
+		tool.DeferLoading = Ptr(deferred)
+		return tool
+	}
+	namespace := func(deferLoading *bool, members ...ResponsesTool) ResponsesTool {
+		return ResponsesTool{Type: ResponsesToolTypeNamespace, Name: Ptr("mcp__demo"), DeferLoading: deferLoading,
+			ResponsesToolNamespace: &ResponsesToolNamespace{Tools: members}}
+	}
+	defaultNamespace := func(deferLoading *bool, members ...ResponsesTool) ResponsesTool {
+		return ResponsesTool{Type: ResponsesToolTypeNamespace, Name: Ptr("functions"), DeferLoading: deferLoading, ResponsesToolNamespace: &ResponsesToolNamespace{Tools: members}}
+	}
 	referenceHistory := []ResponsesMessage{
 		{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Name: Ptr("find_tools")}},
 		{Type: Ptr(ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Output: &ResponsesToolMessageOutputStruct{
@@ -1015,6 +1026,18 @@ func TestClientToolSearchFunctionName(t *testing.T) {
 		{"nothing deferred", []ResponsesTool{function("tool_search", false), function("get_weather", false)}, nil, ""},
 		{"deferred search name is not the search", []ResponsesTool{function("tool_search", true)}, nil, ""},
 		{"no search function", []ResponsesTool{function("lookup", false), function("get_weather", true)}, nil, ""},
+		// Deferral inside a namespace counts the same way: the member's own defer_loading
+		// when set, otherwise the namespace's.
+		{"deferred namespace", []ResponsesTool{function("ToolSearch", false), namespace(Ptr(true), function("get_weather", false))}, nil, "ToolSearch"},
+		{"deferred member of an eager namespace", []ResponsesTool{function("ToolSearch", false), namespace(nil, function("get_weather", true))}, nil, "ToolSearch"},
+		// The default namespace is the top level under another spelling (Codex and
+		// UnwrapDefaultNamespaceTools treat functions.ToolSearch and ToolSearch alike).
+		{"search in the default namespace", []ResponsesTool{defaultNamespace(nil, function("ToolSearch", false)), namespace(Ptr(true), function("get_weather", false))}, nil, "ToolSearch"},
+		{"deferred search in the default namespace is not the search", []ResponsesTool{defaultNamespace(nil, function("ToolSearch", true)), namespace(Ptr(true), function("get_weather", false))}, nil, ""},
+		{"eager member of a deferred namespace", []ResponsesTool{function("ToolSearch", false), namespace(Ptr(true), withDeferLoading(function("get_weather", false), false))}, nil, ""},
+		// A default-namespace member inherits the namespace's defer_loading like any other.
+		{"search inheriting deferral from the default namespace is not the search", []ResponsesTool{defaultNamespace(Ptr(true), function("ToolSearch", false)), namespace(Ptr(true), function("get_weather", false))}, nil, ""},
+		{"eager search in a deferred default namespace", []ResponsesTool{defaultNamespace(Ptr(true), withDeferLoading(function("ToolSearch", false), false)), namespace(Ptr(true), function("get_weather", false))}, nil, "ToolSearch"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, ClientToolSearchFunctionName(tc.tools, tc.input))
