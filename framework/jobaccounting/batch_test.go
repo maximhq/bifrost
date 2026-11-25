@@ -2408,3 +2408,10 @@ func TestBatchSweeper_TransientRetrieveFailureStillRetries(t *testing.T) {
 		"a 5xx must stay retryable, not park the batch")
 	assert.Positive(t, settled.PollAttempts, "the attempt must be recorded for backoff")
 }
+
+// These ids are billing idempotency keys, so a settled job must keep its id forever.
+func TestAccountingLogIDsAreStable(t *testing.T) {
+	assert.Equal(t, "7622b3da-cc87-528e-a129-6128148cda72", AccountingLogID(ProviderJobKindBatch, schemas.OpenAI, "job-1"))
+	assert.Equal(t, "64b947bf-9184-5546-8d45-a0c2c809759a", AccountingLogID(ProviderJobKindVideo, schemas.OpenAI, "job-1"))
+	assert.Equal(t, "078f8d89-c32e-59ac-b273-6cf8900fb93f", AccountingLogID(ProviderJobKindInteraction, schemas.OpenAI, "job-1"))
+}
