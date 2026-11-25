@@ -20,11 +20,11 @@ func accessFor(t testing.TB, vk *configstoreTables.TableVirtualKey, openClients 
 }
 
 // newPluginWithFixture builds a minimal GovernancePlugin over a live store holding fixture's
-// providers and MCP clients, with fixture's agents enabled.
+// providers, MCP clients and agents.
 func newPluginWithFixture(t testing.TB, fixture *liveFixture) *GovernancePlugin {
 	t.Helper()
 	h := newLiveHarness(t, &configstore.GovernanceConfig{}, fixture)
-	return &GovernancePlugin{live: h.live, enabledAgents: fixture.agents()}
+	return &GovernancePlugin{live: h.live}
 }
 
 // buildVKWithMCPConfigs returns a VK that has explicit MCPConfigs for the given client.

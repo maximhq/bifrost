@@ -2923,12 +2923,6 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 	}
 	s.AgentGatewayHandler = handlers.NewAgentGatewayHandler(manager, registrationManager, s.Config, vkReloader)
 	s.agentGatewayManager = manager
-	if err := s.AgentGatewayHandler.SyncEnabledAgents(ctx); err != nil {
-		manager.Close()
-		s.AgentGatewayHandler = nil
-		s.agentGatewayManager = nil
-		return fmt.Errorf("failed to initialize enabled agent configuration: %v", err)
-	}
 	agentCount := 0
 	if registrations, err := manager.List(ctx); err == nil {
 		agentCount = len(registrations)
