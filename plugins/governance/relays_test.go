@@ -204,3 +204,38 @@ func TestReportEndpointUsageIsIdempotent(t *testing.T) {
 	assert.InDelta(t, 0.15, data.Budgets["pte-budget"].CurrentUsage, 1e-9, "a retried settlement charges once")
 	assert.EqualValues(t, 0, data.RateLimits["pte-rl"].RequestCurrentUsage, "a settlement counts no request; the start call did")
 }
+
+// A direct key is a provider credential the caller supplies for a model call. A relay never uses
+// it: the relay calls its upstream with the credential stored on the relay. So on a relay call a
+// direct key says nothing about who is calling, and where authentication is mandatory it does not
+// stand in for a virtual key or an authenticated identity.
+func TestPreRelayHookDirectKeyIsNotACallerCredential(t *testing.T) {
+	p, _ := newPluginForEndpoints(t, "tavily")
+	p.isVkMandatory = boolPtr(true)
+
+	directKeyCtx := func() *schemas.BifrostContext {
+		ctx := anonymousA2ACtx()
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct", Value: *schemas.NewSecretVar("anything")})
+		return ctx
+	}
+
+	_, short, err := p.PreRelayHook(directKeyCtx(), endpointReq("tavily"))
+	require.NoError(t, err)
+	require.NotNil(t, short, "a direct key alone must not admit a relay call when authentication is mandatory")
+	require.NotNil(t, short.Error.StatusCode)
+	assert.Equal(t, 401, *short.Error.StatusCode)
+
+	_, short, err = p.PreRelayHook(anonymousA2ACtx(), endpointReq("tavily"))
+	require.NoError(t, err)
+	require.NotNil(t, short, "no credential at all is refused as before")
+	assert.Equal(t, 401, *short.Error.StatusCode)
+
+	_, short, err = p.PreRelayHook(a2aVKCtx(pteTestVKValue), endpointReq("tavily"))
+	require.NoError(t, err)
+	assert.Nil(t, short, "a granted virtual key is admitted")
+
+	p.isVkMandatory = boolPtr(false)
+	_, short, err = p.PreRelayHook(directKeyCtx(), endpointReq("tavily"))
+	require.NoError(t, err)
+	assert.Nil(t, short, "with authentication optional the call is unrestricted, as for any key-less request")
+}
