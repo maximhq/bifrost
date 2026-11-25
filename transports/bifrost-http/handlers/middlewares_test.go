@@ -6777,3 +6777,216 @@ func TestRequestBodyMiddleware_StreamErrorAndIncompleteBody(t *testing.T) {
 		}
 	})
 }
+
+type delayedBodySliceReader struct {
+	body    []byte
+	offset  int
+	release chan struct{}
+	once    bool
+}
+
+func (r *delayedBodySliceReader) Read(p []byte) (int, error) {
+	if !r.once {
+		<-r.release
+		r.once = true
+	}
+	if r.offset >= len(r.body) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.body[r.offset:])
+	r.offset += n
+	return n, nil
+}
+
+// TestRequestBodyMiddleware_BodySurvivesPastHandlerReturn verifies that
+// Request.Body() slices remain owned by fasthttp.Request after the handler
+// returns, so a subsequent concurrent request cannot reuse the pool buffer and
+// overwrite an active streaming response's parsed request body.
+func TestRequestBodyMiddleware_BodySurvivesPastHandlerReturn(t *testing.T) {
+	prevProcs := runtime.GOMAXPROCS(1)
+	defer runtime.GOMAXPROCS(prevProcs)
+
+	bodyA := []byte(`{"prompt":"` + strings.Repeat("A", 2048) + `"}`)
+	bodyB := []byte(`{"prompt":"` + strings.Repeat("B", 2048) + `"}`)
+
+	reqAInStream := make(chan struct{})
+	releaseA := make(chan struct{})
+	var reqCount atomic.Int32
+
+	mw := RequestBodyMiddleware(nil)(func(ctx *fasthttp.RequestCtx) {
+		if reqCount.Add(1) == 1 {
+			aliased := ctx.Request.Body()
+			ctx.SetStatusCode(fasthttp.StatusOK)
+			ctx.Response.SetBodyStream(&delayedBodySliceReader{
+				body:    aliased,
+				release: releaseA,
+			}, len(aliased))
+			return
+		}
+		got := ctx.Request.Body()
+		ctx.SetStatusCode(fasthttp.StatusOK)
+		ctx.SetBody(got)
+	})
+
+	handler := func(ctx *fasthttp.RequestCtx) {
+		isFirst := reqCount.Load() == 0
+		mw(ctx)
+		if isFirst {
+			close(reqAInStream)
+		}
+	}
+
+	ln := fasthttputil.NewInmemoryListener()
+	srv := &fasthttp.Server{
+		Handler:                      handler,
+		StreamRequestBody:            true,
+		DisablePreParseMultipartForm: true,
+		MaxRequestBodySize:           10 << 20,
+	}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = srv.Serve(ln)
+	}()
+	client := &fasthttp.Client{Dial: func(string) (net.Conn, error) { return ln.Dial() }}
+	t.Cleanup(func() {
+		client.CloseIdleConnections()
+		_ = srv.Shutdown()
+		<-served
+		_ = ln.Close()
+	})
+
+	type result struct {
+		status int
+		body   []byte
+		err    error
+	}
+	resACh := make(chan result, 1)
+	go func() {
+		reqA := fasthttp.AcquireRequest()
+		respA := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseRequest(reqA)
+		defer fasthttp.ReleaseResponse(respA)
+		reqA.SetRequestURI("http://bifrost/v1/chat/completions")
+		reqA.Header.SetMethod(fasthttp.MethodPost)
+		reqA.Header.SetContentType("application/json")
+		reqA.SetBody(bodyA)
+		err := client.Do(reqA, respA)
+		resACh <- result{status: respA.StatusCode(), body: append([]byte(nil), respA.Body()...), err: err}
+	}()
+
+	select {
+	case <-reqAInStream:
+	case <-time.After(5 * time.Second):
+		close(releaseA)
+		t.Fatal("timed out waiting for request A middleware to return")
+	}
+
+	reqB := fasthttp.AcquireRequest()
+	respB := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(reqB)
+	defer fasthttp.ReleaseResponse(respB)
+	reqB.SetRequestURI("http://bifrost/v1/chat/completions")
+	reqB.Header.SetMethod(fasthttp.MethodPost)
+	reqB.Header.SetContentType("application/json")
+	reqB.SetBody(bodyB)
+	if err := client.Do(reqB, respB); err != nil {
+		close(releaseA)
+		t.Fatalf("request B failed: %v", err)
+	}
+	if respB.StatusCode() != fasthttp.StatusOK || !bytes.Equal(respB.Body(), bodyB) {
+		close(releaseA)
+		t.Fatalf("request B mismatch: status=%d len=%d", respB.StatusCode(), len(respB.Body()))
+	}
+
+	close(releaseA)
+	resA := <-resACh
+	if resA.err != nil {
+		t.Fatalf("request A failed: %v", resA.err)
+	}
+	if resA.status != fasthttp.StatusOK {
+		t.Fatalf("request A status = %d, want 200", resA.status)
+	}
+	if !bytes.Equal(resA.body, bodyA) {
+		t.Fatalf("request A streamed body corrupted after handler return (got %q..., want %q...)", resA.body[:min(32, len(resA.body))], bodyA[:min(32, len(bodyA))])
+	}
+}
+
+// BenchmarkRequestBodyMiddleware measures known-length JSON request processing through
+// RequestBodyMiddleware on a streaming fasthttp server (StreamRequestBody: true).
+func BenchmarkRequestBodyMiddleware(b *testing.B) {
+	sizes := []struct {
+		name string
+		size int
+	}{
+		{name: "1KB", size: 1 << 10},
+		{name: "64KB", size: 64 << 10},
+		{name: "1MB", size: 1 << 20},
+		{name: "5MB", size: 5 << 20},
+	}
+
+	handler := RequestBodyMiddleware(nil)(func(ctx *fasthttp.RequestCtx) {
+		_ = ctx.Request.Body()
+		ctx.SetStatusCode(fasthttp.StatusOK)
+	})
+
+	ln := fasthttputil.NewInmemoryListener()
+	srv := &fasthttp.Server{
+		Handler:                      handler,
+		StreamRequestBody:            true,
+		DisablePreParseMultipartForm: true,
+		MaxRequestBodySize:           64 << 20,
+	}
+	served := make(chan struct{})
+	go func() {
+		defer close(served)
+		_ = srv.Serve(ln)
+	}()
+	client := &fasthttp.Client{Dial: func(string) (net.Conn, error) { return ln.Dial() }}
+	b.Cleanup(func() {
+		client.CloseIdleConnections()
+		_ = srv.Shutdown()
+		<-served
+		_ = ln.Close()
+	})
+
+	for _, tc := range sizes {
+		payload := make([]byte, tc.size)
+		prefix := []byte(`{"prompt":"`)
+		copy(payload, prefix)
+		for i := len(prefix); i < len(payload)-2; i++ {
+			payload[i] = 'a'
+		}
+		payload[len(payload)-2] = '"'
+		payload[len(payload)-1] = '}'
+
+		b.Run(tc.name, func(b *testing.B) {
+			req := fasthttp.AcquireRequest()
+			resp := fasthttp.AcquireResponse()
+			defer fasthttp.ReleaseRequest(req)
+			defer fasthttp.ReleaseResponse(resp)
+			req.SetRequestURI("http://bifrost/v1/chat/completions")
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.SetBody(payload)
+
+			// Warm connection and pool
+			if err := client.Do(req, resp); err != nil || resp.StatusCode() != fasthttp.StatusOK {
+				b.Fatalf("warmup failed: status=%d err=%v", resp.StatusCode(), err)
+			}
+
+			b.SetBytes(int64(tc.size))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				resp.Reset()
+				if err := client.Do(req, resp); err != nil {
+					b.Fatalf("request failed: %v", err)
+				}
+				if resp.StatusCode() != fasthttp.StatusOK {
+					b.Fatalf("status = %d, want 200", resp.StatusCode())
+				}
+			}
+		})
+	}
+}
