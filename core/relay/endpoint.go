@@ -424,7 +424,7 @@ func (e *endpoint) doBuffered(ctx *schemas.BifrostContext, req upstreamRequest) 
 	start := time.Now()
 	resp, err := providerUtils.DoHTTPRequest(e.client, httpReq)
 	if err != nil {
-		return nil, transportError(err, time.Since(start))
+		return nil, transportError(err, time.Since(start), e.timeouts().withCaller(ctx))
 	}
 	return e.readBuffered(resp, start, false)
 }
@@ -447,7 +447,7 @@ func (e *endpoint) readBuffered(resp *http.Response, start time.Time, bounded bo
 	body, err := io.ReadAll(resp.Body)
 	latency := time.Since(start)
 	if timedOut.Load() {
-		return nil, transportError(context.DeadlineExceeded, latency)
+		return nil, transportError(context.DeadlineExceeded, latency, e.timeouts())
 	}
 	if err != nil {
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response body", err), latency)
@@ -493,14 +493,14 @@ func (e *endpoint) readOrHandOff(resp *http.Response, start time.Time, threshold
 	if err != nil {
 		_ = resp.Body.Close()
 		if timedOut.Load() {
-			return nil, nil, false, transportError(context.DeadlineExceeded, latency)
+			return nil, nil, false, transportError(context.DeadlineExceeded, latency, e.timeouts())
 		}
 		return nil, nil, false, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError("error reading response body", err), latency)
 	}
 	if int64(len(ahead)) > threshold {
 		if !stopped {
 			// The deadline fired as the read ended and closed the body the stream would forward.
-			return nil, nil, false, transportError(context.DeadlineExceeded, latency)
+			return nil, nil, false, transportError(context.DeadlineExceeded, latency, e.timeouts())
 		}
 		return nil, ahead, true, nil
 	}
@@ -542,14 +542,31 @@ func (e *endpoint) openStream(ctx *schemas.BifrostContext, req upstreamRequest) 
 		// the first read would fail. It is the timeout it is, not a cancellation.
 		_ = resp.Body.Close()
 		release()
-		return nil, start, nil, transportError(context.DeadlineExceeded, time.Since(start))
+		return nil, start, nil, transportError(context.DeadlineExceeded, time.Since(start), e.timeouts())
 	}
 	if err != nil {
 		if errors.Is(context.Cause(httpReq.Context()), context.DeadlineExceeded) {
 			err = context.DeadlineExceeded
 		}
 		release()
-		return nil, start, nil, transportError(err, time.Since(start))
+		return nil, start, nil, transportError(err, time.Since(start), e.timeouts().withCaller(ctx))
 	}
 	return resp, start, release, nil
+}
+
+// timeouts are the relay's own timeouts, for timeout errors.
+func (e *endpoint) timeouts() relayTimeouts {
+	whole := schemas.DefaultEndpointTimeoutSeconds
+	if e.cfg.Network != nil && e.cfg.Network.TimeoutSeconds > 0 {
+		whole = e.cfg.Network.TimeoutSeconds
+	}
+	return relayTimeouts{relay: e.cfg.Name, wholeSeconds: whole, streamSeconds: e.streamIdle}
+}
+
+// streamTimeouts are the relay's timeouts for a streamed reply's body, which timeout_seconds no
+// longer bounds once the stream has started.
+func (e *endpoint) streamTimeouts() relayTimeouts {
+	t := e.timeouts()
+	t.streaming = true
+	return t
 }

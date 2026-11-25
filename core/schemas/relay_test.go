@@ -460,7 +460,9 @@ func TestRelayRedactedMasksLiteralCredentialHeaders(t *testing.T) {
 func TestRelayBodyOverrideSchemasMatchValidator(t *testing.T) {
 	cases := map[string]bool{
 		strings.Repeat("a", 128) + ".depth": true,
-		strings.Repeat("a", 129) + ".depth": false,
+		strings.Repeat("a", 500) + ".depth": true, // no length limit on a key
+		"options..depth":                    false,
+		"":                                  false,
 		"options.-1":                        false,
 		"-1.options":                        false,
 		"options.-1.depth":                  false,
@@ -526,7 +528,7 @@ func bodyOverrideNameRules(node any) []bodyOverrideNameRule {
 					}
 					if p, ok := entry["pattern"].(string); ok {
 						rule.match = append(rule.match, regexp.MustCompile(p))
-						limited = limited || strings.Contains(p, "{1,128}")
+						limited = limited || strings.Contains(p, "[A-Za-z0-9_-]+")
 					}
 					if not, ok := entry["not"].(map[string]any); ok {
 						if p, ok := not["pattern"].(string); ok {

@@ -71,7 +71,10 @@ func applyBodyOverrides(overrides []bodyOverride, method, contentType string, bo
 		return body, false, nil
 	}
 	created := false
-	if len(bytes.TrimSpace(body)) == 0 {
+	// JSON's own whitespace, for both checks: bytes.TrimSpace would also strip Unicode spaces (a
+	// non-breaking space), which no JSON parser accepts, and read such a body as empty.
+	trimmed := bytes.TrimLeft(body, " \t\r\n")
+	if len(trimmed) == 0 {
 		if _, ok := bodylessMethods[strings.ToUpper(method)]; ok {
 			return body, false, nil
 		}
@@ -80,7 +83,7 @@ func applyBodyOverrides(overrides []bodyOverride, method, contentType string, bo
 		return nil, false, errors.New("this route sets fields in the request body, which must be a JSON object sent as Content-Type: application/json")
 	} else if jsonTooDeep(body) {
 		return nil, false, errors.New("the request body nests deeper than 1000 levels")
-	} else if trimmed := bytes.TrimLeft(body, " \t\r\n"); trimmed[0] != '{' || !gjson.ValidBytes(body) {
+	} else if trimmed[0] != '{' || !gjson.ValidBytes(body) {
 		return nil, false, errors.New("this route sets fields in the request body, which must be a JSON object")
 	}
 	for _, o := range overrides {

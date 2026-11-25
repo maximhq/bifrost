@@ -28,7 +28,8 @@ type Stream struct {
 	reader  io.Reader // body behind the idle-timeout guard
 	stop    func()    // stops the idle-timeout guard
 	start   time.Time
-	counted bool // billable route and a 2xx reply
+	counted bool          // billable route and a 2xx reply
+	limits  relayTimeouts // the relay's timeouts, for a timeout error
 
 	framer       *providerUtils.SSEFramer // nil when the reply is not observed per event
 	runes        *providerUtils.RuneCounter
@@ -64,6 +65,7 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 		ctx:        ctx,
 		body:       resp.Body,
 		start:      start,
+		limits:     e.streamTimeouts(),
 		counted:    billable && resp.StatusCode >= 200 && resp.StatusCode < 300,
 		finish:     finish,
 	}
@@ -95,8 +97,12 @@ func newStream(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response, st
 // armIdleTimeout starts the idle guard, a timer, on the stream's way out of newStream: only once the
 // stream is built, so a panic while building it leaves no timer running.
 func (s *Stream) armIdleTimeout(ctx *schemas.BifrostContext, e *endpoint, resp *http.Response) {
+	_, s.limits.streamByCaller = ctx.Value(schemas.BifrostContextKeyStreamIdleTimeout).(time.Duration)
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, e.streamIdle)
-	s.reader, s.stop = providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, providerUtils.GetStreamIdleTimeout(ctx), ctx)
+	idle := providerUtils.GetStreamIdleTimeout(ctx)
+	// A caller may set its own idle timeout; the error names the one actually enforced.
+	s.limits.streamSeconds = max(1, int(idle.Round(time.Second)/time.Second))
+	s.reader, s.stop = providerUtils.NewIdleTimeoutReader(resp.Body, resp.Body, idle, ctx)
 }
 
 // relayContentCaptureEnabled reports whether the logging plugin asked for the streamed reply's
@@ -313,7 +319,7 @@ func (s *Stream) complete(readErr error) {
 				Error:          &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled, Error: readErr},
 			}
 		default:
-			bifrostErr = transportError(readErr, time.Since(s.start))
+			bifrostErr = transportError(readErr, time.Since(s.start), s.limits.withCaller(s.ctx))
 		}
 		s.finish(resp, bifrostErr)
 	})
