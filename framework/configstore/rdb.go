@@ -9182,6 +9182,38 @@ func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(ctx context.Cont
 	return marked, nil
 }
 
+// MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged flips an active row still holding
+// redeemedRefreshToken to 'needs_reauth', under a row lock. The comparison runs on the loaded
+// model because refresh_token is encrypted at rest. A per-user row's discovery is deleted with
+// the flip, as MarkOauthUserTokenNeedsReauthByID does.
+func (s *RDBConfigStore) MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(ctx context.Context, tokenID, redeemedRefreshToken, reason string) (bool, error) {
+	if tokenID == "" {
+		return false, nil
+	}
+	marked := false
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var current tables.TableMCPOauthToken
+		if err := dbForUpdate(tx).Where("id = ?", tokenID).First(&current).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if current.Status != "active" || current.RefreshToken != redeemedRefreshToken {
+			return nil
+		}
+		if err := tx.Model(&tables.TableMCPOauthToken{}).Where("id = ?", tokenID).Updates(needsReauthColumns(reason)).Error; err != nil {
+			return err
+		}
+		marked = true
+		return deleteCredentialDiscovery(tx, current.AuthMode, current.UserID, current.VirtualKeyID, current.MCPClientID)
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to mark oauth token %s needs_reauth: %w", tokenID, err)
+	}
+	return marked, nil
+}
+
 // MarkOauthUserTokenNeedsReauthByID flips status to 'needs_reauth' on a single
 // token row, regardless of auth_mode. Called by the unified refresh function
 // when the upstream credential is permanently rejected: the row stays
