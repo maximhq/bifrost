@@ -308,6 +308,34 @@ func TestPrepareResponsesRequest_FlattensNamespacesASearchLoaded(t *testing.T) {
 
 	plain := request(`[{"type":"function","name":"plain"}]`)
 	assert.Nil(t, prepare(plain).NamespaceToolAliases)
+
+	// A flat name that already stands for another tool is refused: the model's call could not be told apart.
+	named := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: &name, ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
+	}
+	for name, tc := range map[string]struct {
+		loaded   string
+		declared []schemas.ResponsesTool
+		refused  bool
+	}{
+		"a declared function":             {`[` + fx + `]`, []schemas.ResponsesTool{named("fx__convert_currency")}, true},
+		"a loaded function":               {`[` + fx + `,{"type":"function","name":"fx__convert_currency"}]`, nil, true},
+		"a member of another namespace":   {`[{"type":"namespace","name":"a","tools":[{"type":"function","name":"b__c"}]},{"type":"namespace","name":"a__b","tools":[{"type":"function","name":"c"}]}]`, nil, true},
+		"the same tool loaded twice":      {`[` + fx + `,` + fx + `]`, nil, false},
+		"the same namespace, declared":    {`[` + fx + `]`, []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeNamespace, Name: schemas.Ptr("fx"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{named("convert_currency")}}}}, false},
+		"a declared function, not loaded": {`[{"type":"function","name":"plain"}]`, []schemas.ResponsesTool{named("plain")}, false},
+	} {
+		req := request(tc.loaded)
+		req.Params.Tools = append(req.Params.Tools, tc.declared...)
+		_, bifrostErr := prepareResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.ProviderConfig{}, stubProvider{key: schemas.Gemini}, schemas.Key{}, req)
+		if !tc.refused {
+			assert.Nil(t, bifrostErr, name)
+			continue
+		}
+		require.NotNil(t, bifrostErr, name)
+		assert.Equal(t, 400, *bifrostErr.StatusCode, name)
+		assert.Contains(t, bifrostErr.Error.Message, "not unique", name)
+	}
 }
 
 // TestHoistClientToolSearchOutputTools covers the declaration of tools a client-run

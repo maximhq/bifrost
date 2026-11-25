@@ -9198,7 +9198,9 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 		}
 		// Google loads what a client search found from the search's result.
 		if declaresClientToolSearch(r) && schemas.IsGeminiModelFamily(ctx, r.Model) && gemini.ShouldUseGeminiInteractions(ctx, r) {
-			r = providerUtils.FlattenLoadedNamespaceTools(ctx, r)
+			if r, bifrostErr = providerUtils.FlattenLoadedNamespaceTools(ctx, r); bifrostErr != nil {
+				return nil, bifrostErr
+			}
 		}
 	}
 	// Last, so tools hoisted out of additional_tools items and namespaces are normalized too.

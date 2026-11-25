@@ -485,11 +485,11 @@ func realiasNamespacedFunctionCalls(input []schemas.ResponsesMessage, aliases ma
 // FlattenLoadedNamespaceTools flattens the namespaces a client tool search loaded, for a wire that takes the loaded
 // tools from the search's output and knows no namespace. Each output lists its members as functions under the names
 // FlattenResponsesNamespaceTools gives declared ones, function_call history uses the same names, and the aliases are
-// added to the request's, so the response is restored. Copy-on-write; a request no search loaded a namespace for is
-// returned as it is.
-func FlattenLoadedNamespaceTools(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+// added to the request's, so the response is restored. A flat name that stands for another tool already is a 400, as
+// it is for declared namespaces. Copy-on-write; a request no search loaded a namespace for is returned as it is.
+func FlattenLoadedNamespaceTools(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, *schemas.BifrostError) {
 	if req == nil {
-		return req
+		return req, nil
 	}
 	var input []schemas.ResponsesMessage
 	var aliases map[string]schemas.NamespaceToolAlias
@@ -506,11 +506,17 @@ func FlattenLoadedNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bifro
 			limit = ResolveToolNameLimit(ctx, schemas.ResolveBaseProvider(ctx, req.Provider), req.Model)
 		}
 		flat := msg.WithoutPreservedBytes()
-		flat.ToolSearchOutputTools = flattenLoadedTools(msg.ToolSearchOutputTools, aliases, limit)
+		var clash string
+		if flat.ToolSearchOutputTools, clash = flattenLoadedTools(msg.ToolSearchOutputTools, aliases, limit); clash != "" {
+			return nil, loadedNameClash(clash)
+		}
 		input[i] = flat
 	}
 	if len(aliases) == 0 && input == nil {
-		return req
+		return req, nil
+	}
+	if clash := loadedAliasClash(req, aliases); clash != "" {
+		return nil, loadedNameClash(clash)
 	}
 	cp := *req
 	cp.Input = realiasNamespacedFunctionCalls(input, aliases, limit)
@@ -522,12 +528,45 @@ func FlattenLoadedNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bifro
 		maps.Copy(merged, aliases)
 		cp.NamespaceToolAliases = merged
 	}
-	return &cp
+	return &cp, nil
+}
+
+func loadedNameClash(name string) *schemas.BifrostError {
+	return NewBifrostBadRequestError(fmt.Sprintf("tool name %q is not unique after flattening the namespaces a tool search loaded", name))
+}
+
+// loadedAliasClash is the first of aliases that another tool of req holds already, "" when none does: a declared
+// function, unless it is the same namespace's member, or a function a search loaded outside a namespace.
+func loadedAliasClash(req *schemas.BifrostResponsesRequest, aliases map[string]schemas.NamespaceToolAlias) string {
+	if req.Params != nil {
+		for _, tool := range req.Params.Tools {
+			if tool.Name == nil || (tool.Type != schemas.ResponsesToolTypeFunction && tool.Type != schemas.ResponsesToolTypeCustom) {
+				continue
+			}
+			if target, ok := aliases[*tool.Name]; ok && req.NamespaceToolAliases[*tool.Name] != target {
+				return *tool.Name
+			}
+		}
+	}
+	for i := range req.Input {
+		msg := &req.Input[i]
+		if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeToolSearchOutput || !msg.IsClientToolSearchItem() {
+			continue
+		}
+		for _, tool := range gjson.ParseBytes(msg.ToolSearchOutputTools).Array() {
+			name := tool.Get("name").String()
+			if _, ok := aliases[name]; ok && tool.Get("type").String() != string(schemas.ResponsesToolTypeNamespace) {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 // flattenLoadedTools is a tool_search_output's tools with each namespace replaced by its members. Members keep
-// their bytes but for the name, description and type, so a schema's key order is kept.
-func flattenLoadedTools(tools json.RawMessage, aliases map[string]schemas.NamespaceToolAlias, limit ToolNameLimit) json.RawMessage {
+// their bytes but for the name, description and type, so a schema's key order is kept. clash is a flat name two
+// members of different namespaces share, "" when there is none.
+func flattenLoadedTools(tools json.RawMessage, aliases map[string]schemas.NamespaceToolAlias, limit ToolNameLimit) (flat json.RawMessage, clash string) {
 	var out [][]byte
 	for _, tool := range gjson.ParseBytes(tools).Array() {
 		if tool.Get("type").String() != string(schemas.ResponsesToolTypeNamespace) {
@@ -543,7 +582,11 @@ func flattenLoadedTools(tools json.RawMessage, aliases map[string]schemas.Namesp
 			raw := []byte(member.Raw)
 			if namespace != "" && namespace != DefaultToolNamespace {
 				alias := namespaceToolAlias(namespace, name, limit)
-				aliases[alias] = schemas.NamespaceToolAlias{Namespace: namespace, Name: name}
+				target := schemas.NamespaceToolAlias{Namespace: namespace, Name: name}
+				if held, ok := aliases[alias]; ok && held != target {
+					return nil, alias
+				}
+				aliases[alias] = target
 				name = alias
 			}
 			set := func(field, value string) {
@@ -562,7 +605,7 @@ func flattenLoadedTools(tools json.RawMessage, aliases map[string]schemas.Namesp
 			out = append(out, raw)
 		}
 	}
-	return json.RawMessage("[" + string(bytes.Join(out, []byte(","))) + "]")
+	return json.RawMessage("[" + string(bytes.Join(out, []byte(","))) + "]"), ""
 }
 
 // realiasToolChoice resolves a forced or allowed tool name against the flattened
