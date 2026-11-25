@@ -1622,11 +1622,16 @@ func convertMCPToolToBifrostSchema(mcpTool *mcp.Tool, logger schemas.Logger) sch
 		}
 	}
 
+	var description *string
+	if mcpTool.Description != "" {
+		description = schemas.Ptr(mcpTool.Description)
+	}
+
 	return schemas.ChatTool{
 		Type: schemas.ChatToolTypeFunction,
 		Function: &schemas.ChatToolFunction{
 			Name:        mcpTool.Name,
-			Description: schemas.Ptr(mcpTool.Description),
+			Description: description,
 			Parameters: &schemas.ToolFunctionParameters{
 				Type:       mcpTool.InputSchema.Type,
 				Properties: properties,

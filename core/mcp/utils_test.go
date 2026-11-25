@@ -1011,3 +1011,23 @@ func TestRoundTripState(t *testing.T) {
 	assert.Equal(t, RoundTripID("req-2"), CallRoundTripID(ctx), "a first round's id comes from its request")
 	assert.Equal(t, id, CallRoundTripID(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)), "a retry keeps the id it carried")
 }
+
+// TestConvertMCPToolToBifrostSchema_MissingDescription pins that an MCP tool listed without a
+// description converts to a nil description, so providers apply their own fallback instead of
+// forwarding "" (Bedrock Converse rejects an empty toolSpec.description with a 400).
+func TestConvertMCPToolToBifrostSchema_MissingDescription(t *testing.T) {
+	mcpTool := &mcp.Tool{
+		Name:        "web_search",
+		InputSchema: mcp.ToolInputSchema{Type: "object"},
+	}
+
+	bifrostTool := convertMCPToolToBifrostSchema(mcpTool, defaultLogger)
+
+	require.NotNil(t, bifrostTool.Function)
+	assert.Nil(t, bifrostTool.Function.Description, "missing MCP description must not become an empty string")
+
+	mcpTool.Description = "Search the web"
+	bifrostTool = convertMCPToolToBifrostSchema(mcpTool, defaultLogger)
+	require.NotNil(t, bifrostTool.Function.Description)
+	assert.Equal(t, "Search the web", *bifrostTool.Function.Description)
+}
