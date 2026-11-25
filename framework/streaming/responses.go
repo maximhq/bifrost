@@ -723,7 +723,7 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 	}
 	if f := original.ResponsesInputMessageContentBlockFile; f != nil {
 		copy.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{
-			FileContent: slices.Clone(f.FileContent), FileData: copyString(f.FileData), FileURL: copyString(f.FileURL),
+			FileData: copyString(f.FileData), FileURL: copyString(f.FileURL),
 			Filename: copyString(f.Filename), FileType: copyString(f.FileType),
 		}
 	}
@@ -753,7 +753,7 @@ type respMsgAccum struct {
 	cbRefusal   map[int]*strings.Builder // contentIndex -> refusal builder
 	cbSignature map[int]*strings.Builder // contentIndex -> signature builder
 	args        *strings.Builder         // function-call arguments
-	summary     *strings.Builder         // reasoning summary text (Summary[0].Text)
+	summary     map[int]*strings.Builder // summary index -> reasoning summary text builder
 	encrypted   *strings.Builder         // reasoning encrypted content
 }
 
@@ -1081,14 +1081,21 @@ func BuildResponsesMessagesFromChunks(chunks []*ResponsesStreamChunk) []schemas.
 						if targetMessage.ResponsesReasoning == nil {
 							targetMessage.ResponsesReasoning = &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}
 						}
-						if len(targetMessage.ResponsesReasoning.Summary) == 0 {
-							targetMessage.ResponsesReasoning.Summary = append(targetMessage.ResponsesReasoning.Summary, schemas.ResponsesReasoningSummary{
+						// Items stream in order, so an index past the next one starts the next one.
+						reasoning, at := targetMessage.ResponsesReasoning, 0
+						if resp.SummaryIndex != nil && *resp.SummaryIndex > 0 {
+							at = min(*resp.SummaryIndex, len(reasoning.Summary))
+						}
+						if at == len(reasoning.Summary) {
+							reasoning.Summary = append(reasoning.Summary, schemas.ResponsesReasoningSummary{
 								Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
 							})
 						}
 						acc := getAccum(targetIdx)
-						acc.summary = singleBuilder(acc.summary, &targetMessage.ResponsesReasoning.Summary[0].Text)
-						acc.summary.WriteString(*resp.Delta)
+						if acc.summary == nil {
+							acc.summary = map[int]*strings.Builder{}
+						}
+						builderFor(acc.summary, at, &reasoning.Summary[at].Text).WriteString(*resp.Delta)
 					}
 				}
 
@@ -1137,16 +1144,8 @@ func BuildResponsesMessagesFromChunks(chunks []*ResponsesStreamChunk) []schemas.
 			}
 			msg.ResponsesToolMessage.Arguments = &s
 		}
-		if acc.summary != nil {
-			if msg.ResponsesReasoning == nil {
-				msg.ResponsesReasoning = &schemas.ResponsesReasoning{}
-			}
-			if len(msg.ResponsesReasoning.Summary) == 0 {
-				msg.ResponsesReasoning.Summary = append(msg.ResponsesReasoning.Summary, schemas.ResponsesReasoningSummary{
-					Type: schemas.ResponsesReasoningContentBlockTypeSummaryText,
-				})
-			}
-			msg.ResponsesReasoning.Summary[0].Text = acc.summary.String()
+		for at, b := range acc.summary {
+			msg.ResponsesReasoning.Summary[at].Text = b.String()
 		}
 		if acc.encrypted != nil {
 			s := acc.encrypted.String()

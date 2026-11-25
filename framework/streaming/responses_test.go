@@ -913,3 +913,32 @@ func TestBuildResponsesMessageMediaOrder(t *testing.T) {
 	}
 	require.Equal(t, "data:image/png;base64,QQ==", *image.ImageURL)
 }
+
+// TestBuildResponsesMessageSummaryItems pins that summary items that streamed apart stay apart, and that deltas of
+// one item are joined, with or without a summary index.
+func TestBuildResponsesMessageSummaryItems(t *testing.T) {
+	build := func(deltas ...*schemas.BifrostResponsesStreamResponse) []schemas.ResponsesReasoningSummary {
+		zero := 0
+		item := &schemas.ResponsesMessage{ID: schemas.Ptr("rs_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}}
+		chunks := []*ResponsesStreamChunk{{ChunkIndex: 0, StreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &zero, Item: item}}}
+		for i, d := range deltas {
+			d.Type, d.OutputIndex, d.ItemID = schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, &zero, schemas.Ptr("rs_1")
+			chunks = append(chunks, &ResponsesStreamChunk{ChunkIndex: i + 1, StreamResponse: d})
+		}
+		messages := BuildResponsesMessagesFromChunks(chunks)
+		require.Len(t, messages, 1)
+		return messages[0].Summary
+	}
+	at := func(i int, text string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{SummaryIndex: &i, Delta: &text}
+	}
+	got := build(at(0, "on"), at(0, "e"), at(1, "two"))
+	require.Len(t, got, 2)
+	require.Equal(t, "one", got[0].Text)
+	require.Equal(t, "two", got[1].Text)
+	require.Equal(t, schemas.ResponsesReasoningContentBlockTypeSummaryText, got[1].Type)
+
+	got = build(&schemas.BifrostResponsesStreamResponse{Delta: schemas.Ptr("a")}, &schemas.BifrostResponsesStreamResponse{Delta: schemas.Ptr("b")})
+	require.Len(t, got, 1)
+	require.Equal(t, "ab", got[0].Text)
+}

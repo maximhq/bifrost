@@ -3811,6 +3811,57 @@ func TestGeminiInteractionsStreamSummaryItems(t *testing.T) {
 	assert.Equal(t, "sig", *final.Output[0].ResponsesReasoning.EncryptedContent)
 }
 
+// TestGeminiInteractionsStreamTextAroundMedia pins that text before and after media in one step stays two parts,
+// each in its place and with its own citations, as the unary conversion returns them.
+func TestGeminiInteractionsStreamTextAroundMedia(t *testing.T) {
+	s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+	text := func(v string) string {
+		return `{"event_type":"step.delta","index":0,"delta":{"type":"text","text":"` + v + `"}}`
+	}
+	const cite = `{"event_type":"step.delta","index":0,"delta":{"type":"text_annotation_delta","annotations":[{"type":"url_citation","url":"https://%s","start_index":0,"end_index":1}]}}`
+	var added, done []int
+	var texts []string
+	deltas := map[int]string{}
+	annotated := map[int]int{}
+	var final *schemas.BifrostResponsesResponse
+	for _, ev := range interactionsEvents(t, `{"event_type":"step.start","index":0,"step":{"type":"model_output"}}`,
+		text("A"), text("a"), fmt.Sprintf(cite, "one"),
+		`{"event_type":"step.delta","index":0,"delta":{"type":"image","data":"QQ==","mime_type":"image/png"}}`,
+		text("B"), fmt.Sprintf(cite, "two"), `{"event_type":"step.stop","index":0}`,
+		`{"event_type":"interaction.completed","interaction":{"id":"v1_x","status":"completed"}}`) {
+		out, bErr := s.ToBifrostResponsesStream(ev)
+		require.Nil(t, bErr)
+		for _, e := range out {
+			switch e.Type {
+			case schemas.ResponsesStreamResponseTypeContentPartAdded:
+				added = append(added, *e.ContentIndex)
+			case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+				deltas[*e.ContentIndex] += *e.Delta
+			case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+				assert.Zero(t, *e.AnnotationIndex)
+				annotated[*e.ContentIndex]++
+			case schemas.ResponsesStreamResponseTypeOutputTextDone:
+				done, texts = append(done, *e.ContentIndex), append(texts, *e.Text)
+			case schemas.ResponsesStreamResponseTypeCompleted:
+				final = e.Response
+			}
+		}
+	}
+	assert.Equal(t, []int{0, 2}, added)
+	assert.Equal(t, []int{0, 2}, done)
+	assert.Equal(t, []string{"Aa", "B"}, texts)
+	assert.Equal(t, map[int]string{0: "Aa", 2: "B"}, deltas)
+	assert.Equal(t, map[int]int{0: 1, 2: 1}, annotated)
+	require.NotNil(t, final)
+	blocks := final.Output[0].Content.ContentBlocks
+	require.Len(t, blocks, 3)
+	assert.Equal(t, "Aa", *blocks[0].Text)
+	assert.Len(t, blocks[0].Annotations, 1)
+	assert.NotNil(t, blocks[1].ResponsesInputMessageContentBlockImage)
+	assert.Equal(t, "B", *blocks[2].Text)
+	assert.Len(t, blocks[2].Annotations, 1)
+}
+
 // TestGeminiInteractionsLargePayloadRefusedBeforeLookup pins that a continuation that cannot be sent reads
 // nothing for its function results first.
 func TestGeminiInteractionsLargePayloadRefusedBeforeLookup(t *testing.T) {

@@ -2305,17 +2305,21 @@ type geminiInteractionsStreamStep struct {
 	itemID      string
 	callID      string
 	name        string
-	text        strings.Builder
 	arguments   strings.Builder
 	startArgs   string   // arguments the step.start carried, used when no fragment follows
 	summaries   []string // thought summary items, each its own part
 	signature   string
-	held        bool // a function_call named "server:tool", see heldCalls
-	partOpened  bool
-	textIndex   int // content index of the text part, after the media that came before it
+	held        bool                                   // a function_call named "server:tool", see heldCalls
+	blocks      []schemas.ResponsesMessageContentBlock // an answer's parts in arrival order; the open text part's is filled when it closes
+	textPart    *geminiInteractionsTextPart            // the text part written last, kept open for its citations
+	tool        GeminiInteractionsItem                 // a built-in call or result step, filled in by its delta
+}
+
+// geminiInteractionsTextPart is one text part of an answer step. Media between two texts keeps them apart.
+type geminiInteractionsTextPart struct {
+	index       int
+	text        strings.Builder
 	annotations []schemas.ResponsesOutputMessageContentTextAnnotation
-	media       []schemas.ResponsesMessageContentBlock
-	tool        GeminiInteractionsItem // a built-in call or result step, filled in by its delta
 }
 
 // NewGeminiInteractionsStreamState starts a stream state. model is the requested model, used
@@ -2715,11 +2719,11 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 			return nil
 		}
 		var out []*schemas.BifrostResponsesStreamResponse
-		if !st.partOpened {
+		if st.needsTextPart() {
 			out = st.openTextPart(outIdx, itemID)
 		}
-		contentIdx := st.textIndex
-		st.text.WriteString(*delta.Text)
+		contentIdx := st.textPart.index
+		st.textPart.text.WriteString(*delta.Text)
 		text := *delta.Text
 		out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, OutputIndex: &outIdx, ContentIndex: &contentIdx, ItemID: &itemID, Delta: &text, LogProbs: []schemas.ResponsesOutputMessageContentTextLogProb{}})
 		return out
@@ -2731,7 +2735,6 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 		out := st.summaryDone(outIdx, itemID)
 		summaryIdx := len(st.summaries)
 		text := *delta.Content.Text
-		st.partOpened = true
 		st.summaries = append(st.summaries, text)
 		out = append(out, &schemas.BifrostResponsesStreamResponse{
 			Type: schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID,
@@ -2759,13 +2762,13 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 			return nil
 		}
 		var out []*schemas.BifrostResponsesStreamResponse
-		if !st.partOpened {
+		if st.textPart == nil {
 			out = st.openTextPart(outIdx, itemID)
 		}
-		contentIdx := st.textIndex
+		contentIdx := st.textPart.index
 		for _, a := range annotations {
-			annotationIdx := len(st.annotations)
-			st.annotations = append(st.annotations, a)
+			annotationIdx := len(st.textPart.annotations)
+			st.textPart.annotations = append(st.textPart.annotations, a)
 			annotation := a
 			out = append(out, &schemas.BifrostResponsesStreamResponse{
 				Type: schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded, OutputIndex: &outIdx, ContentIndex: &contentIdx, ItemID: &itemID,
@@ -2779,7 +2782,7 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 			return nil
 		}
 		if block, err := geminiInteractionsBlockToResponses(GeminiInteractionsItem{Type: delta.Type, Data: delta.Data, URI: delta.URI, MimeType: delta.MimeType}, false); err == nil {
-			st.media = append(st.media, block)
+			st.blocks = append(st.blocks, block)
 		}
 		return nil
 	}
@@ -2799,18 +2802,43 @@ func (st *geminiInteractionsStreamStep) summaryDone(outIdx int, itemID string) [
 	}
 }
 
-// openTextPart opens the text part of a message item the first time text or a citation arrives.
-// Callers check partOpened first: the parameters escape, so calling it on every delta would
-// allocate them on every delta.
+// openTextPart closes the text part open before, if any, and opens the next one. Callers check needsTextPart
+// first: the parameters escape, so calling it on every delta would allocate them on every delta.
 func (st *geminiInteractionsStreamStep) openTextPart(outIdx int, itemID string) []*schemas.BifrostResponsesStreamResponse {
-	st.partOpened = true
-	st.textIndex = len(st.media)
-	contentIdx := st.textIndex
+	out := st.closeTextPart(outIdx, itemID)
+	contentIdx := len(st.blocks)
+	st.textPart = &geminiInteractionsTextPart{index: contentIdx}
+	st.blocks = append(st.blocks, schemas.ResponsesMessageContentBlock{})
 	empty := ""
-	return []*schemas.BifrostResponsesStreamResponse{{
+	return append(out, &schemas.BifrostResponsesStreamResponse{
 		Type: schemas.ResponsesStreamResponseTypeContentPartAdded, OutputIndex: &outIdx, ContentIndex: &contentIdx, ItemID: &itemID,
 		Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: &empty, ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{}}},
-	}}
+	})
+}
+
+// needsTextPart reports whether text opens a part: none is open, or media came after the one that is.
+func (st *geminiInteractionsStreamStep) needsTextPart() bool {
+	return st.textPart == nil || st.textPart.index != len(st.blocks)-1
+}
+
+// closeTextPart closes the open text part, if any, and puts it in its place among the blocks.
+func (st *geminiInteractionsStreamStep) closeTextPart(outIdx int, itemID string) []*schemas.BifrostResponsesStreamResponse {
+	part := st.textPart
+	if part == nil {
+		return nil
+	}
+	st.textPart = nil
+	contentIdx, text, doneText := part.index, part.text.String(), part.text.String()
+	annotations := part.annotations
+	if annotations == nil {
+		annotations = []schemas.ResponsesOutputMessageContentTextAnnotation{}
+	}
+	block := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: &text, ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{Annotations: annotations}}
+	st.blocks[part.index] = block
+	return []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDone, OutputIndex: &outIdx, ContentIndex: &contentIdx, ItemID: &itemID, Text: &doneText, LogProbs: []schemas.ResponsesOutputMessageContentTextLogProb{}},
+		{Type: schemas.ResponsesStreamResponseTypeContentPartDone, OutputIndex: &outIdx, ContentIndex: &contentIdx, ItemID: &itemID, Part: &block},
+	}
 }
 
 // stopToolStep closes a built-in tool step. A call opens its items now that its arguments are
@@ -2997,30 +3025,12 @@ func (s *GeminiInteractionsStreamState) stopStep(index int) []*schemas.BifrostRe
 	var out []*schemas.BifrostResponsesStreamResponse
 	switch st.stepType {
 	case GeminiInteractionsStepModelOutput:
-		text := st.text.String()
-		annotations := st.annotations
-		if annotations == nil {
-			annotations = []schemas.ResponsesOutputMessageContentTextAnnotation{}
-		}
-		block := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: &text, ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{Annotations: annotations}}
-		if st.partOpened {
-			contentIdx := st.textIndex
-			doneText := text
-			out = append(out,
-				&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDone, OutputIndex: &outIdx, ContentIndex: &contentIdx, ItemID: &itemID, Text: &doneText, LogProbs: []schemas.ResponsesOutputMessageContentTextLogProb{}},
-				&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeContentPartDone, OutputIndex: &outIdx, ContentIndex: &contentIdx, ItemID: &itemID, Part: &block},
-			)
-		}
+		out = append(out, st.closeTextPart(outIdx, itemID)...)
 		msgType := schemas.ResponsesMessageTypeMessage
 		role := schemas.ResponsesInputMessageRoleAssistant
-		// Parts keep their arrival order: media sent before the text stays ahead of it.
-		blocks := make([]schemas.ResponsesMessageContentBlock, 0, len(st.media)+1)
-		if st.partOpened {
-			blocks = append(blocks, st.media[:st.textIndex]...)
-			blocks = append(blocks, block)
-			blocks = append(blocks, st.media[st.textIndex:]...)
-		} else {
-			blocks = append(blocks, st.media...)
+		blocks := st.blocks
+		if blocks == nil {
+			blocks = []schemas.ResponsesMessageContentBlock{}
 		}
 		out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &outIdx, Item: &schemas.ResponsesMessage{ID: &itemID, Type: &msgType, Role: &role, Status: &completed, Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}})
 	case GeminiInteractionsStepThought:
@@ -3029,7 +3039,7 @@ func (s *GeminiInteractionsStreamState) stopStep(index int) []*schemas.BifrostRe
 			sig := st.signature
 			reasoning.EncryptedContent = &sig
 		}
-		if st.partOpened {
+		if len(st.summaries) > 0 {
 			summaryIdx := len(st.summaries) - 1
 			for _, text := range st.summaries {
 				reasoning.Summary = append(reasoning.Summary, schemas.ResponsesReasoningSummary{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: text})
