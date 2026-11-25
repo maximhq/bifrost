@@ -5278,6 +5278,7 @@ func (provider *VertexProvider) PassthroughStream(
 		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 	}
 	var finalize func(*schemas.BifrostPassthroughResponse)
+	usageOnProviderJob := false
 	switch PassthroughWireFormat(req.Path) {
 	case schemas.Anthropic:
 		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
@@ -5298,6 +5299,7 @@ func (provider *VertexProvider) PassthroughStream(
 			observer := gemini.NewInteractionsStreamObserver(req)
 			observe, finalize = observer.Observe, observer.Finalize
 			hasUsage = gemini.HasInteractionsStreamInfo
+			usageOnProviderJob = true
 		}
 	}
 
@@ -5315,6 +5317,7 @@ func (provider *VertexProvider) PassthroughStream(
 			HasUsage:            hasUsage,
 			Observe:             observe,
 			Finalize:            finalize,
+			UsageOnProviderJob:  usageOnProviderJob,
 		},
 	), nil
 }

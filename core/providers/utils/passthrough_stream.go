@@ -47,6 +47,10 @@ type PassthroughStreamParams struct {
 	// Finalize, when set, completes the final response of a successful stream once it ends: it may
 	// name the model the stream reported running, or move the observed usage onto a provider job.
 	Finalize func(resp *schemas.BifrostPassthroughResponse)
+	// UsageOnProviderJob marks a stream whose usage belongs to a provider job (Finalize moves it
+	// there, and the job is settled from a later read), so an interrupted stream bills none of it
+	// on the request.
+	UsageOnProviderJob bool
 }
 
 // StreamPassthrough runs the shared passthrough streaming loop. It forwards each raw upstream
@@ -124,12 +128,14 @@ func streamPassthrough(
 
 		success := params.StatusCode >= 200 && params.StatusCode < 300
 
-		// Register the accumulating usage handle, as the typed streams do, so a mid-stream
-		// cancel/timeout bills the usage observed so far (attachBilledUsageFromContext reads it).
-		// Updated in place below; it stays all zero, and bills nothing, until usage arrives.
-		var billedUsage schemas.BifrostLLMUsage
-		if success && params.Observe != nil {
-			ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, &billedUsage)
+		// Register the accumulating usage handle, as the typed streams do, so a mid-stream cancel,
+		// timeout or read error bills the usage observed so far (attachBilledUsageFromContext reads
+		// it). Only streams that observe request-billable usage allocate it. It is updated in place
+		// below and stays all zero, billing nothing, until usage arrives.
+		var billedUsage *schemas.BifrostLLMUsage
+		if success && params.Observe != nil && !params.UsageOnProviderJob {
+			billedUsage = &schemas.BifrostLLMUsage{}
+			ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, billedUsage)
 		}
 
 		observe := func(payload []byte) (terminal bool) {
@@ -140,8 +146,9 @@ func streamPassthrough(
 			if success && params.Observe != nil && (params.HasUsage == nil || params.HasUsage(payload)) {
 				if u := params.Observe(payload); u != nil {
 					usage = u
-					if u.LLMUsage != nil {
-						billedUsage = *u.LLMUsage
+					if billedUsage != nil && u.LLMUsage != nil {
+						*billedUsage = *u.LLMUsage
+						billedUsage.ImageUsage = u.ImageUsage
 					}
 				}
 			}

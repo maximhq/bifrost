@@ -4593,6 +4593,7 @@ func (provider *GeminiProvider) PassthroughStream(
 		params.HasUsage = HasInteractionsStreamInfo
 		params.Observe = observer.Observe
 		params.Finalize = observer.Finalize
+		params.UsageOnProviderJob = true
 	}
 	return providerUtils.StreamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, resp, bodyStream, params), nil
 }

@@ -226,6 +226,16 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 		Model:                   model,
 		ServerSideFallbackModel: usage.ServerSideFallbackModel,
 	}
+	// An interrupted passthrough stream has no path here, so price it as inferPassthroughRequestType
+	// does for a completed one: image output in image mode, the rest by provider.
+	if requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest {
+		if usage.ImageUsage != nil {
+			requestType = schemas.ImageGenerationRequest
+			input.imageUsage = usage.ImageUsage
+		} else {
+			requestType = detectPassthroughRequestType(provider, "")
+		}
+	}
 	requestType = normalizeStreamRequestType(requestType)
 	cost := s.computeCostFromInput(input, routingInfo, requestType, lookupScopes)
 	// A Responses stream cut after message_delta still owes the advisor passes that delta reported.

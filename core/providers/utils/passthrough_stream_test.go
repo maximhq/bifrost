@@ -199,3 +199,111 @@ func TestStreamPassthrough_StampsChunkIndexes(t *testing.T) {
 		t.Fatalf("chunk indexes = %v, want %v", indexes, want)
 	}
 }
+
+// A passthrough stream the client cuts off after the provider reported usage (Anthropic's message_start)
+// bills that usage on the cancellation error, as the typed streams do, unless the usage belongs to a
+// provider job that is settled from a later read.
+func TestStreamPassthrough_ClientHangupBillsObservedUsage(t *testing.T) {
+	llmUsage := &schemas.BifrostLLMUsage{PromptTokens: 42, CompletionTokens: 1, TotalTokens: 43}
+	imageUsage := &schemas.ImageUsage{InputTokens: 42, OutputTokens: 1, TotalTokens: 43,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1}}
+	cases := []struct {
+		name       string
+		observed   *schemas.BifrostPassthroughUsage
+		onJob      bool
+		wantBilled bool
+	}{
+		{name: "request usage", observed: &schemas.BifrostPassthroughUsage{LLMUsage: llmUsage}, wantBilled: true},
+		{name: "image usage", observed: &schemas.BifrostPassthroughUsage{LLMUsage: llmUsage, ImageUsage: imageUsage}, wantBilled: true},
+		{name: "usage on provider job", observed: &schemas.BifrostPassthroughUsage{LLMUsage: llmUsage}, onJob: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := hangUpAfterFirstEvent(t, PassthroughStreamParams{
+				StatusCode:         200,
+				UsageOnProviderJob: tc.onJob,
+				Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
+					if strings.Contains(string(event), `"usage"`) {
+						return tc.observed
+					}
+					return nil
+				},
+			})
+			if len(errs) != 1 {
+				t.Fatalf("expected one cancellation error, got %d", len(errs))
+			}
+			billed := errs[0].ExtraFields.BilledUsage
+			if !tc.wantBilled {
+				if billed != nil {
+					t.Fatalf("expected no billed usage for usage owned by a provider job, got %+v", billed)
+				}
+				return
+			}
+			if billed == nil || billed.PromptTokens != 42 || billed.CompletionTokens != 1 {
+				t.Fatalf("expected the observed usage (42 prompt, 1 completion) billed on the cancellation error, got %+v", billed)
+			}
+			if tc.observed.ImageUsage == nil {
+				if billed.ImageUsage != nil {
+					t.Fatalf("expected no image usage on text usage, got %+v", billed.ImageUsage)
+				}
+				return
+			}
+			if billed.ImageUsage == nil || billed.ImageUsage.OutputTokensDetails == nil || billed.ImageUsage.OutputTokensDetails.ImageTokens != 1 {
+				t.Fatalf("expected the observed image usage billed on the cancellation error, got %+v", billed.ImageUsage)
+			}
+			if billed.ImageUsage == tc.observed.ImageUsage {
+				t.Fatal("billed image usage must be a copy, not the observer's value")
+			}
+		})
+	}
+}
+
+// hangUpAfterFirstEvent streams an Anthropic message_start event that carries usage, cancels the
+// client once that chunk arrives while the upstream is still open, and returns the errors the post
+// hooks saw.
+func hangUpAfterFirstEvent(t *testing.T, params PassthroughStreamParams) []*schemas.BifrostError {
+	t.Helper()
+	const body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":42,\"output_tokens\":1}}}\n\n"
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+		if !readRequest(br) {
+			return
+		}
+		writeAll(t, conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		writeAll(t, conn, fmt.Sprintf("%x\r\n%s\r\n", len(body), body))
+		<-hold // the provider is still generating when the client leaves
+	})
+
+	goCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := schemas.NewBifrostContext(goCtx, time.Time{})
+	req, resp := streamGet(t, BuildStreamingClient(srv.client(5*time.Second)), "POST")
+	defer fasthttp.ReleaseRequest(req)
+
+	var errs []*schemas.BifrostError
+	runner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if err != nil {
+			errs = append(errs, err)
+		}
+		return r, err
+	}
+	ch := StreamPassthrough(ctx, runner, nil, resp, &hangupBody{Reader: resp.BodyStream()}, params)
+
+	done := make(chan struct{})
+	go func() {
+		for chunk := range ch {
+			if chunk.BifrostPassthroughResponse != nil &&
+				strings.Contains(string(chunk.BifrostPassthroughResponse.Body), "message_start") {
+				cancel() // the client hangs up mid-stream
+			}
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream channel did not close")
+	}
+	return errs
+}
