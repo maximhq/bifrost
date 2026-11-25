@@ -1226,6 +1226,10 @@
                   "type": "string",
                   "description": "Stable public URL advertised as the OAuth2 AS issuer in discovery documents and JWT iss claim. A trailing slash is ignored. Required when mcpServerAuthMode is 'both' or 'oauth', or any client gateway is enabled: the chart fails to render without it and Bifrost exits at startup. Supports env var syntax: \"env.MY_VAR\"."
                 },
+                "browserBaseUrl": {
+                  "type": "string",
+                  "description": "Base URL users' browsers reach Bifrost on, when MCP clients reach it on a hostname browsers cannot resolve. The authorization endpoint, consent page redirect and device sign-in pages use it; the issuer, server-to-server endpoints and token claims stay on issuerUrl. Unset, browsers use issuerUrl. Must include server.base_path when set. Supports env var syntax: \"env.MY_VAR\". Maps to client.oauth2_server_config.browser_base_url."
+                },
                 "authCodeTtl": {
                   "type": "integer",
                   "minimum": 1,
