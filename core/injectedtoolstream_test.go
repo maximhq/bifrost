@@ -355,6 +355,28 @@ func TestInjectedResponsesStream_ClientCallIsReleasedAtTurnEnd(t *testing.T) {
 	assert.Equal(t, "c1", *last.event.Response.Output[0].CallID)
 }
 
+// A call inside a caller's namespace is the caller's tool even when it shares a name
+// with an injected one, so the stream releases it to the client instead of hiding it.
+func TestInjectedResponsesStream_CallerNamespacedCallReachesClient(t *testing.T) {
+	s := newInjectedResponsesStream(testInjectedSet(t))
+	r := &responsesEvents{respID: "resp_1"}
+	call := responsesFunctionCall("c1", "web_search")
+	call.Namespace = schemas.Ptr("mcp__demo")
+	emits := feedResponses(s,
+		r.created(),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemAdded, 0, call),
+		r.argsDelta(0, "fc_c1", `{}`),
+		r.item(schemas.ResponsesStreamResponseTypeOutputItemDone, 0, call),
+		r.completed(5),
+	)
+	assert.False(t, s.continues(), "the gateway does not run the caller's namespaced call")
+	last := emits[len(emits)-1]
+	require.True(t, last.terminal)
+	require.Len(t, last.event.Response.Output, 1, "the caller's call reaches the client")
+	assert.Equal(t, "c1", *last.event.Response.Output[0].CallID)
+	assert.Equal(t, "mcp__demo", *last.event.Response.Output[0].Namespace)
+}
+
 func TestInjectedResponsesStream_ClientCallBeforeInjectedCallIsDropped(t *testing.T) {
 	s := newInjectedResponsesStream(testInjectedSet(t))
 	r := &responsesEvents{respID: "resp_1"}
@@ -688,4 +710,81 @@ func TestResponsesStream_GatewayToolSearch(t *testing.T) {
 	require.NotNil(t, final)
 	require.NotNil(t, final.Usage)
 	assert.Equal(t, 30, final.Usage.InputTokens, "usage summed across turns")
+}
+
+// The streaming loop sends its last allowed turn without the search, as the
+// non-streaming loop does, so a model that keeps searching answers with what it loaded
+// instead of the client receiving a response with no output.
+func TestResponsesStream_GatewayToolSearchLastTurnCannotSearch(t *testing.T) {
+	searchTurn := sseHandler(
+		`{"type":"response.created","sequence_number":0,"response":{"id":"resp_1","object":"response","created_at":1,"status":"in_progress","model":"gpt-4o","output":[]}}`,
+		`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"fc_1","type":"function_call","status":"in_progress","call_id":"call_s1","name":"bifrost_tool_search","arguments":""}}`,
+		`{"type":"response.function_call_arguments.delta","sequence_number":2,"output_index":0,"item_id":"fc_1","delta":"{\"query\":\"weather\"}"}`,
+		`{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_s1","name":"bifrost_tool_search","arguments":"{\"query\":\"weather\"}"}}`,
+		`{"type":"response.completed","sequence_number":4,"response":{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_s1","name":"bifrost_tool_search","arguments":"{\"query\":\"weather\"}"}],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}`,
+	)
+	answerTurn := sseHandler(
+		`{"type":"response.created","sequence_number":0,"response":{"id":"resp_3","object":"response","created_at":3,"status":"in_progress","model":"gpt-4o","output":[]}}`,
+		`{"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_3","type":"message","status":"in_progress","role":"assistant","content":[]}}`,
+		`{"type":"response.output_text.delta","sequence_number":2,"output_index":0,"content_index":0,"item_id":"msg_3","delta":"It is sunny."}`,
+		`{"type":"response.output_item.done","sequence_number":3,"output_index":0,"item":{"id":"msg_3","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"It is sunny.","annotations":[]}]}}`,
+		`{"type":"response.completed","sequence_number":4,"response":{"id":"resp_3","object":"response","created_at":3,"status":"completed","model":"gpt-4o","output":[{"id":"msg_3","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"It is sunny.","annotations":[]}]}],"usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}}`,
+	)
+	recorder := &recordingServer{}
+	recorder.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		recorder.record(string(body))
+		// The model searches whenever it can.
+		if gjson.Get(string(body), `tools.#(name=="bifrost_tool_search")`).Exists() {
+			searchTurn(w, r)
+			return
+		}
+		answerTurn(w, r)
+	}))
+	defer recorder.Close()
+
+	account := NewMockAccount()
+	configureUpstream(account, schemas.OpenAI, "openai-key", recorder.URL, 0)
+	client := newStreamTestClient(t, account)
+
+	req := deferredToolsResponsesRequest(schemas.OpenAI, "gpt-4o").ResponsesRequest
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	stream, bifrostErr := client.ResponsesStreamRequest(ctx, req)
+	require.Nil(t, bifrostErr)
+
+	var text strings.Builder
+	var final *schemas.BifrostResponsesResponse
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError, "unexpected stream error")
+		ev := chunk.BifrostResponsesStreamResponse
+		if ev == nil {
+			continue
+		}
+		switch ev.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextDelta:
+			if ev.Delta != nil {
+				text.WriteString(*ev.Delta)
+			}
+		case schemas.ResponsesStreamResponseTypeCompleted:
+			final = ev.Response
+		}
+	}
+
+	bodies := recorder.snapshot()
+	require.Len(t, bodies, 3, "two search turns, then the last turn")
+	names := func(body string) []string {
+		var out []string
+		for _, tool := range gjson.Get(body, "tools").Array() {
+			out = append(out, tool.Get("name").String())
+		}
+		return out
+	}
+	assert.Equal(t, []string{"lookup_city", "get_weather", "bifrost_tool_search"}, names(bodies[1]), "a turn before the last can still search")
+	assert.Equal(t, []string{"lookup_city", "get_weather"}, names(bodies[2]), "the last turn has only the tools already loaded")
+	assert.False(t, gjson.Get(bodies[2], `input.#(name=="bifrost_tool_search")`).Exists(), "a search call in the last turn's input")
+	assert.False(t, gjson.Get(bodies[2], `input.#(type=="function_call_output")`).Exists(), "a search result in the last turn's input")
+	assert.Contains(t, bodies[2], "Tool searches already run", "the earlier searches reach the last turn as text")
+	assert.Equal(t, "It is sunny.", text.String())
+	require.NotNil(t, final)
+	assert.NotEmpty(t, final.Output, "the client gets the last turn's answer, not an empty completed response")
 }
