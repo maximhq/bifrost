@@ -287,6 +287,11 @@ func NewMCPManager(ctx context.Context, config schemas.MCPConfig, account schema
 	}
 	// Creating new instance
 	discoveryStore := NewDiscoveryStore(config.SharedDiscoveryStore, config.PerUserDiscoveryStore)
+	// Every manager-owned context derives from ctx, so a nil parent is defaulted
+	// once here instead of being checked at each use.
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	managerCtx, cancelManager := context.WithCancel(ctx)
 	connectionCtx, cancelConnections := context.WithCancel(context.WithoutCancel(ctx))
 	manager := &MCPManager{

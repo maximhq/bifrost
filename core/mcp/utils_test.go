@@ -330,6 +330,7 @@ func TestAuthorizeCodeModeToolCall(t *testing.T) {
 
 func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
 	m := &MCPManager{
+		ctx:            context.Background(),
 		logger:         &MockLogger{},
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		account:        newTestAccount(),

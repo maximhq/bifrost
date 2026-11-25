@@ -119,6 +119,7 @@ func TestPerformCheck_PerCall_SuccessfulDiscovery_FiresToolsChangeCallback(t *te
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}}
 	manager := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},

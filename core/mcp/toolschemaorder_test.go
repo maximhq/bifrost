@@ -159,6 +159,7 @@ func TestPerformCheck_RepeatedSyncs_ToolSchemaBytesStable(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	manager := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}},
 		logger:         &MockLogger{},

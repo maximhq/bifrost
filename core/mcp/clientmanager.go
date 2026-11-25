@@ -1052,7 +1052,7 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 	}
 
 	m.mu.Lock()
-	if m.ctx != nil && m.ctx.Err() != nil {
+	if m.ctx.Err() != nil {
 		m.mu.Unlock()
 		return false, m.ctx.Err()
 	}
@@ -1231,7 +1231,7 @@ func (m *MCPManager) addClient(requestCtx context.Context, config *schemas.MCPCl
 				m.SetClientDiscovery(config.ID, discovery)
 			}
 		}
-		if m.ctx != nil && m.ctx.Err() != nil {
+		if m.ctx.Err() != nil {
 			return false, m.ctx.Err()
 		}
 		// Start the connection checker so this client's tools stay current
@@ -1683,18 +1683,16 @@ func (m *MCPManager) verifyHeadersConnection(ctx context.Context, config *schema
 func (m *MCPManager) performAdminToolDiscovery(ctx context.Context, config *schemas.MCPClientConfig, eachList time.Duration) (*schemas.MCPDiscovery, error) {
 	// Discovery also serves caller-owned requests; either owner must be able
 	// to cancel the temporary connection without canceling the other context.
-	if m.ctx != nil {
-		if err := m.ctx.Err(); err != nil {
-			return nil, err
-		}
-		discoveryCtx, cancel := context.WithCancel(ctx)
-		stop := context.AfterFunc(m.ctx, cancel)
-		defer func() {
-			stop()
-			cancel()
-		}()
-		ctx = discoveryCtx
+	if err := m.ctx.Err(); err != nil {
+		return nil, err
 	}
+	discoveryCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(m.ctx, cancel)
+	defer func() {
+		stop()
+		cancel()
+	}()
+	ctx = discoveryCtx
 	headers, err := m.credStore.AdminConnectionHeaders(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve admin credential: %w", err)
@@ -3042,7 +3040,7 @@ func (m *MCPManager) connectToMCPClientWithin(dialCtx, requestCtx context.Contex
 	var entry *clientConn
 
 	m.mu.Lock()
-	if m.ctx != nil && m.ctx.Err() != nil {
+	if m.ctx.Err() != nil {
 		m.mu.Unlock()
 		return m.ctx.Err()
 	}

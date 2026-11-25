@@ -399,6 +399,7 @@ func TestCleanupCancelsPendingDiscoveryLists(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			upstream := server.NewStreamableHTTPServer(newResourcesPromptsUpstream())
 			started, stopped, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			var startedOnce, stoppedOnce sync.Once
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, _ := io.ReadAll(r.Body)
 				r.Body = io.NopCloser(bytes.NewReader(body))
@@ -407,10 +408,10 @@ func TestCleanupCancelsPendingDiscoveryLists(t *testing.T) {
 				}
 				_ = json.Unmarshal(body, &request)
 				if request.Method == method {
-					close(started)
+					startedOnce.Do(func() { close(started) })
 					select {
 					case <-r.Context().Done():
-						close(stopped)
+						stoppedOnce.Do(func() { close(stopped) })
 					case <-release:
 					}
 					return

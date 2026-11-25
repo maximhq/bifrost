@@ -249,6 +249,7 @@ func TestCleanupCancelsPendingMCPConnection(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			upstream := server.NewStreamableHTTPServer(newMatrixUpstream(), server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20260728))
 			listed := make(chan struct{})
+			var listedOnce sync.Once
 			var pendingRequests atomic.Int32
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, _ := io.ReadAll(r.Body)
@@ -256,7 +257,7 @@ func TestCleanupCancelsPendingMCPConnection(t *testing.T) {
 				if bytes.Contains(body, []byte(`"tools/list"`)) {
 					pendingRequests.Add(1)
 					defer pendingRequests.Add(-1)
-					close(listed)
+					listedOnce.Do(func() { close(listed) })
 					<-r.Context().Done()
 					return
 				}
@@ -314,11 +315,12 @@ func TestCleanupCancelsPendingMCPConnection(t *testing.T) {
 // SSE startup has no request deadline, but it must still belong to the manager.
 func TestCleanupCancelsPendingSSEConnection(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
+	var startedOnce sync.Once
 	var pendingRequests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pendingRequests.Add(1)
 		defer pendingRequests.Add(-1)
-		close(started)
+		startedOnce.Do(func() { close(started) })
 		select {
 		case <-r.Context().Done():
 		case <-release:
@@ -350,6 +352,19 @@ func TestCleanupCancelsPendingSSEConnection(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("the SSE candidate did not exit after cleanup")
 	}
+}
+
+// A nil parent is defaulted once, so manager-owned contexts are never nil.
+func TestNewMCPManagerDefaultsNilContext(t *testing.T) {
+	var m *MCPManager
+	require.NotPanics(t, func() {
+		m = NewMCPManager(nil, schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil) //nolint:staticcheck // nil parent is the case under test
+	})
+	require.NoError(t, m.ctx.Err())
+	require.NoError(t, m.connectionCtx.Err())
+	require.NoError(t, m.Cleanup())
+	assert.Error(t, m.ctx.Err(), "cleanup must cancel manager-owned work")
+	assert.Error(t, m.connectionCtx.Err(), "cleanup must cancel SSE/STDIO lifetimes")
 }
 
 // A tool change announced while the connect's first tools/list is in flight is not lost: that list

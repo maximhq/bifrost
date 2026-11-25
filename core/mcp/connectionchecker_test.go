@@ -65,6 +65,7 @@ func storedTools(manager *MCPManager, clientID string) map[string]schemas.ChatTo
 func TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery(t *testing.T) {
 	cred := &fakeAdminCredStore{err: errors.New("admin credential unavailable")}
 	manager := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
@@ -95,6 +96,7 @@ func TestPerformCheck_NilConn_PerUserOAuth_AttemptsAdminDiscovery(t *testing.T) 
 func TestPerformCheck_NilConn_PerUserHeaders_AttemptsAdminDiscovery(t *testing.T) {
 	cred := &fakeAdminCredStore{err: errors.New("admin credential unavailable")}
 	manager := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
@@ -166,6 +168,7 @@ func TestPerformCheck_NilConn_SharedAuthType_PerCall_SuccessUpdatesToolMap(t *te
 
 			cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer shared-token"}}}
 			manager := &MCPManager{
+				ctx:            context.Background(),
 				discoveryStore: NewDiscoveryStore(nil, nil),
 				credStore:      cred,
 				logger:         &MockLogger{},
@@ -238,6 +241,7 @@ func TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap(t *testing.T) {
 
 	cred := &fakeAdminCredStore{headers: http.Header{"Authorization": []string{"Bearer admin-token"}}}
 	manager := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		credStore:      cred,
 		logger:         &MockLogger{},
@@ -271,6 +275,7 @@ func TestPerformCheck_NilConn_PerUserOAuth_SuccessUpdatesToolMap(t *testing.T) {
 // client's current one, mirroring writeBackTools' own guard exactly.
 func TestSetState_StaleGeneration_DoesNotOverwriteState(t *testing.T) {
 	manager := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		logger:         &MockLogger{},
 		account:        newTestAccount(),

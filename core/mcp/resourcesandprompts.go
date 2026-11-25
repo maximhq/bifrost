@@ -25,16 +25,13 @@ func (m *MCPManager) listResourcesAndPrompts(ctx context.Context, each time.Dura
 	// may have spent) but keeping its values and the manager's cancellation.
 	listParent := ctx
 	if each > 0 && (caps.Resources != nil || caps.Prompts != nil) {
-		listParent = context.WithoutCancel(ctx)
-		if m.ctx != nil {
-			var cancel context.CancelFunc
-			listParent, cancel = context.WithCancel(listParent)
-			stop := context.AfterFunc(m.ctx, cancel)
-			defer func() {
-				stop()
-				cancel()
-			}()
-		}
+		var cancel context.CancelFunc
+		listParent, cancel = context.WithCancel(context.WithoutCancel(ctx))
+		stop := context.AfterFunc(m.ctx, cancel)
+		defer func() {
+			stop()
+			cancel()
+		}()
 	}
 	bounded := func() (context.Context, context.CancelFunc) {
 		if each <= 0 {
