@@ -127,7 +127,7 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		return telemetry.Init(telConfig, bifrostConfig.ModelCatalog, logger)
 
 	case prompts.PluginName:
-		return prompts.Init(ctx, bifrostConfig.ConfigStore, logger)
+		return prompts.Init(ctx, bifrostConfig.ConfigStore, bifrostConfig.LiveStore, logger)
 
 	case logging.PluginName:
 		loggingConfig, err := loggingPluginConfig(pluginConfig, bifrostConfig)
@@ -142,10 +142,12 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if err != nil {
 			return nil, fmt.Errorf("failed to marshal governance plugin config: %w", err)
 		}
-		inMemoryStore := &GovernanceInMemoryStore{Config: bifrostConfig}
-		governancePlugin, err := governance.Init(ctx, governanceConfig, logger, bifrostConfig.ConfigStore,
-			bifrostConfig.GovernanceConfig, bifrostConfig.ModelCatalog,
-			bifrostConfig.MCPCatalog, inMemoryStore)
+		// A copy, so the caller's config is left as it was; the log timestamp precision is always
+		// the transport's log store's.
+		withPrecision := *governanceConfig
+		withPrecision.LogTimestampPrecision = GovernanceLogTimestampPrecision(bifrostConfig)
+		governancePlugin, err := governance.Init(ctx, &withPrecision, logger, bifrostConfig.ConfigStore,
+			bifrostConfig.LiveStore, bifrostConfig.ModelCatalog, bifrostConfig.MCPCatalog)
 		if err != nil {
 			return nil, err
 		}
@@ -160,17 +162,19 @@ func loadBuiltinPlugin(ctx context.Context, name string, pluginConfig any, bifro
 		if routingConfig == nil {
 			routingConfig = &routing.Config{}
 		}
-		// Session complexity state uses the same process-wide store as core
-		// session routing. The field is runtime-only and is never persisted in
-		// plugin configuration.
-		routingConfig.KVStore = bifrostConfig.KVStore
+		// Session complexity state uses the same shared session table as
+		// core session routing, and warm coordination its own shared table.
+		// Both fields are runtime-only and never persisted in plugin
+		// configuration.
+		routingConfig.Sessions = bifrostConfig.Shared.Sessions
+		routingConfig.Warm = bifrostConfig.Shared.Warm
 		// Routing rules read the virtual key and its live budget/rate-limit usage, so the
 		// governance plugin must already be registered when this runs.
 		governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](bifrostConfig, governancePluginNameFromContext(ctx))
 		if err != nil {
 			return nil, fmt.Errorf("routing plugin requires the governance plugin: %w", err)
 		}
-		return routing.Init(ctx, routingConfig, logger, bifrostConfig.ConfigStore, governancePlugin)
+		return routing.Init(ctx, routingConfig, logger, bifrostConfig.ConfigStore, bifrostConfig.LiveStore, governancePlugin)
 
 	case maxim.PluginName:
 		maximConfig, err := MarshalPluginConfig[maxim.Config](pluginConfig)
@@ -242,6 +246,12 @@ func (s *BifrostHTTPServer) getPluginConfig(name string) *schemas.PluginConfig {
 		}
 	}
 	return nil
+}
+
+// IsFixedBuiltinPlugin implements handlers.PluginsLoader: the built-in plugins Bifrost configures
+// itself, which the plugins API may not create, change or delete.
+func (s *BifrostHTTPServer) IsFixedBuiltinPlugin(name string) bool {
+	return lib.IsFixedBuiltinPlugin(name)
 }
 
 // loadBuiltinPlugins loads required built-in plugins in specific order

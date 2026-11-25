@@ -193,6 +193,8 @@ clients:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client:
   post:
@@ -295,6 +297,8 @@ client:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-by-id:
   put:
@@ -356,6 +360,8 @@ client-by-id:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: removeMCPClient
@@ -394,6 +400,8 @@ client-by-id:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-reconnect:
   post:
@@ -440,6 +448,8 @@ client-reconnect:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-refresh-tools:
   post:
@@ -516,6 +526,8 @@ client-refresh-tools:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-complete-oauth:
   post:
@@ -596,6 +608,8 @@ client-complete-oauth:
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-initiate-verification:
   post:
@@ -658,6 +672,8 @@ client-initiate-verification:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-reauthorize:
   post:
@@ -934,6 +950,8 @@ client-verify-headers:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-verify-exchange:
   post:
@@ -1026,6 +1044,8 @@ client-verify-exchange:
               $ref: '../../schemas/management/common.yaml#/ErrorResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 # ─── MCP Sessions (per-user credentials + pending flows) ─────────────────────
 
@@ -1134,6 +1154,8 @@ sessions:
         $ref: '../../openapi.yaml#/components/responses/Unauthorized'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 session-by-id:
   delete:
@@ -1187,6 +1209,8 @@ session-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 session-reauth:
   post:
@@ -1243,6 +1267,8 @@ session-reauth:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 session-refresh:
   post:
@@ -1361,6 +1387,8 @@ per-user-headers-flow:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
   put:
     summary: Submit per-user-headers values
     description: |
@@ -1417,6 +1445,8 @@ per-user-headers-flow:
         description: Upstream verification failed with the supplied values
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 per-user-headers-credential:
   delete:
@@ -1459,6 +1489,8 @@ per-user-headers-credential:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-openapi-preview:
   post:
@@ -1512,6 +1544,8 @@ client-openapi-preview:
         description: The document exceeds 5 MiB.
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 client-openapi-spec:
   get:
@@ -1562,6 +1596,8 @@ client-openapi-spec:
         description: No openapi client with this ID, or the client stores no document.
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 library:
   get:
@@ -1579,8 +1615,7 @@ library:
     description: |
       Returns a paginated, searchable, filterable list of the MCP server library catalog,
       with whether an MCP client already installs each entry. Multi-value filters accept a
-      comma-separated list and use OR semantics within a field. Returns an empty page when
-      the config store is disabled.
+      comma-separated list and use OR semantics within a field.
     tags:
       - MCP
     parameters:
@@ -1652,6 +1687,8 @@ library:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
   post:
     operationId: createMCPLibraryEntry
     x-mint:
@@ -1736,6 +1773,8 @@ library-filterdata:
               $ref: '../../schemas/management/mcp.yaml#/MCPLibraryFilterData'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 library-force-sync:
   post:

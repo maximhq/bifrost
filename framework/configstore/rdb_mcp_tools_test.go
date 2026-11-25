@@ -155,10 +155,10 @@ func TestMCPClientConfig_OpenAPIConfigRoundTripsThroughStore(t *testing.T) {
 	assert.Equal(t, "k-1", byID.OpenAPIConfig.SecurityCredentials["ApiKeyAuth"].Value.GetValue())
 	assert.Equal(t, 3, byID.OpenAPIConfig.OperationCount)
 
-	all, err := s.GetMCPConfig(ctx)
+	clients, err := s.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
 	var found *schemas.MCPClientConfig
-	for _, c := range all.ClientConfigs {
+	for _, c := range clients {
 		if c.ID == "openapi-store-1" {
 			found = c
 		}
@@ -225,9 +225,11 @@ func TestMaxProtocolVersion_RoundTripsThroughStore(t *testing.T) {
 
 	mcpConfig, err := s.GetMCPConfig(ctx)
 	require.NoError(t, err)
+	clients, err := s.GetMCPClientConfigs(ctx)
+	require.NoError(t, err)
 	assert.Equal(t, schemas.MCPProtocolVersion20250618, mcpConfig.MaxProtocolVersion)
-	require.Len(t, mcpConfig.ClientConfigs, 1)
-	assert.Equal(t, schemas.MCPMaxProtocolVersionAuto, mcpConfig.ClientConfigs[0].MaxProtocolVersion)
+	require.Len(t, clients, 1)
+	assert.Equal(t, schemas.MCPMaxProtocolVersionAuto, clients[0].MaxProtocolVersion)
 }
 
 // A client's discovered catalog round-trips through the targeted update, GetMCPClientByID and
@@ -256,12 +258,12 @@ func TestUpdateMCPClientDiscovery_ResourcesAndPromptsRoundTrip(t *testing.T) {
 	require.Len(t, row.DiscoveredPrompts, 1)
 	assert.Equal(t, "docs-review", row.DiscoveredPrompts[0].Name)
 
-	mcpConfig, err := s.GetMCPConfig(ctx)
+	clients, err := s.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
-	require.Len(t, mcpConfig.ClientConfigs, 1)
-	assert.Len(t, mcpConfig.ClientConfigs[0].DiscoveredResources, 1)
-	assert.Len(t, mcpConfig.ClientConfigs[0].DiscoveredResourceTemplates, 1)
-	assert.Len(t, mcpConfig.ClientConfigs[0].DiscoveredPrompts, 1)
+	require.Len(t, clients, 1)
+	assert.Len(t, clients[0].DiscoveredResources, 1)
+	assert.Len(t, clients[0].DiscoveredResourceTemplates, 1)
+	assert.Len(t, clients[0].DiscoveredPrompts, 1)
 
 	// A server that stopped offering prompts clears the stored list.
 	discovery.Prompts = nil
@@ -401,11 +403,11 @@ func TestMCPClientExposeLists_RoundTrip(t *testing.T) {
 	require.NotNil(t, config.PromptsToExpose, "[] is kept, not read back as unset")
 	assert.Empty(t, config.PromptsToExpose)
 	assert.Equal(t, schemas.WhiteList{"repo://{owner}/{name}"}, config.ResourcesToExpose)
-	mcpConfig, err := s.GetMCPConfig(ctx)
+	clients, err := s.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
-	require.Len(t, mcpConfig.ClientConfigs, 1)
-	assert.NotNil(t, mcpConfig.ClientConfigs[0].PromptsToExpose)
-	assert.Equal(t, schemas.WhiteList{"repo://{owner}/{name}"}, mcpConfig.ClientConfigs[0].ResourcesToExpose)
+	require.Len(t, clients, 1)
+	assert.NotNil(t, clients[0].PromptsToExpose)
+	assert.Equal(t, schemas.WhiteList{"repo://{owner}/{name}"}, clients[0].ResourcesToExpose)
 
 	row.PromptsToExpose, row.ResourcesToExpose = nil, nil
 	require.NoError(t, s.UpdateMCPClientConfig(ctx, "expose-client", row))

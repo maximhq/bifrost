@@ -725,10 +725,6 @@ func (h *RoutingHandler) addModelRouterPhrases(ctx *fasthttp.RequestCtx) {
 	if !decodeStrictJSON(ctx, &req) {
 		return
 	}
-	if h.configStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
 	var suggestions []logstore.ComplexitySuggestion
 	var store logstore.ComplexitySuggestionStore
 	if ids := uniqueTrimmed(req.SuggestionIDs); len(ids) > 0 {
@@ -855,10 +851,6 @@ func uniqueTrimmed(ids []string) []string {
 // loadModelRouterForPhrases reads a router's saved config, whose phrases an
 // impact check or an add builds on, answering the error otherwise.
 func (h *RoutingHandler) loadModelRouterForPhrases(ctx *fasthttp.RequestCtx, routerID string) (*configstore.ModelRouter, bool) {
-	if h.configStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return nil, false
-	}
 	router, err := h.configStore.GetModelRouter(ctx, routerID)
 	if err != nil {
 		sendModelRouterLoadError(ctx, routerID, err)

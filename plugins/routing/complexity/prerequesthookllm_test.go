@@ -47,9 +47,10 @@ func llmFallbackTestPlugin(t *testing.T, analyzerConfig *complexity.AnalyzerConf
 	provider := "openai"
 	routeModel := "gpt-4o-mini"
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
-	require.NoError(t, ruleStore.UpsertRule(context.Background(), &configstoreTables.TableRoutingRule{
+	t.Cleanup(ruleStore.Close)
+	require.NoError(t, ruleStore.Put(context.Background(), &configstoreTables.TableRoutingRule{
 		ID:            "llm-complex-rule",
 		Name:          "LLM complex route",
 		CelExpression: `complexity_tier == "COMPLEX"`,
@@ -60,7 +61,7 @@ func llmFallbackTestPlugin(t *testing.T, analyzerConfig *complexity.AnalyzerConf
 		Scope:    "global",
 		Priority: 0,
 	}))
-	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore, routing.NewMockGovernance())
+	plugin, err := routing.InitFromStore(context.Background(), nil, logger, nil, ruleStore.Store, routing.NewMockGovernance())
 	require.NoError(t, err)
 	plugin.ReloadComplexityAnalyzerConfig(analyzerConfig)
 	t.Cleanup(func() {

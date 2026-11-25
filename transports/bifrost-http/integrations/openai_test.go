@@ -536,6 +536,21 @@ func (a speechTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schem
 	}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a speechTestAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a speechTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a speechTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // TestOpenAISpeechRoutesReturnRawAudio pins that every OpenAI-integration speech route
 // answers with the audio bytes, as the OpenAI and Azure OpenAI SDKs expect. The Azure-style
 // /openai/deployments/{deployment}/audio/speech route used to serialize the whole
@@ -1225,6 +1240,21 @@ func (a openAISpeechTestAccount) GetConfigForProvider(p schemas.ModelProvider) (
 	network := schemas.DefaultNetworkConfig
 	network.BaseURL = a.baseURL
 	return &schemas.ProviderConfig{NetworkConfig: network, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a openAISpeechTestAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a openAISpeechTestAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a openAISpeechTestAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
 }
 
 // TestOpenAISpeechRouteForwardsExtraParamsOnlyWhenNestedAndOptedIn pins how a provider-specific speech

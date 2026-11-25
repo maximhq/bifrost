@@ -17,7 +17,9 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
 )
 
 func testToken(id, access string, expiresAt *time.Time) cachedUserToken {
@@ -29,7 +31,7 @@ func fillWith(v cachedUserToken) func() (cachedUserToken, error) {
 }
 
 func TestUserTokenCache_HitAndMiss(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 
 	_, ok := c.Get("missing")
 	assert.False(t, ok, "empty cache must miss")
@@ -47,46 +49,20 @@ func TestUserTokenCache_HitAndMiss(t *testing.T) {
 	assert.False(t, ok, "unrelated key must miss")
 }
 
-func TestUserTokenCache_CapacityEviction(t *testing.T) {
-	c := newUserTokenCache(2)
-
-	for i := 1; i <= 3; i++ {
-		_, err := c.Fill(context.Background(), 
-			fmt.Sprintf("k%d", i),
-			fillWith(testToken(fmt.Sprintf("t%d", i), fmt.Sprintf("access-%d", i), nil)),
-		)
-		require.NoError(t, err)
-	}
-
-	assert.Equal(t, 2, c.Len(), "cache must stay at capacity")
-	_, ok := c.Get("k1")
-	assert.False(t, ok, "least recently used entry must be evicted")
-	_, ok = c.Get("k2")
-	assert.True(t, ok)
-	_, ok = c.Get("k3")
-	assert.True(t, ok)
-
-	// The evicted entry's token-ID index mapping must be gone: evicting by
-	// its row ID must not disturb the surviving entries.
-	c.EvictByTokenID("t1")
-	assert.Equal(t, 2, c.Len())
-}
-
 func TestUserTokenCache_ExpiredEntryIsMissAndRemoved(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 	past := time.Now().Add(-1 * time.Minute)
 
 	_, err := c.Fill(context.Background(), "k1", fillWith(testToken("t1", "stale-access", &past)))
 	require.NoError(t, err)
-	require.Equal(t, 1, c.Len())
+	assert.Equal(t, 0, c.Len(), "an expired token is never held")
 
 	_, ok := c.Get("k1")
 	assert.False(t, ok, "expired entry must read as a miss")
-	assert.Equal(t, 0, c.Len(), "expired entry must be removed on read")
 }
 
 func TestUserTokenCache_EvictExactKey(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 	_, err := c.Fill(context.Background(), "k1", fillWith(testToken("t1", "access-1", nil)))
 	require.NoError(t, err)
 
@@ -100,7 +76,7 @@ func TestUserTokenCache_EvictExactKey(t *testing.T) {
 }
 
 func TestUserTokenCache_EvictByTokenID(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 	_, err := c.Fill(context.Background(), "k1", fillWith(testToken("t1", "access-1", nil)))
 	require.NoError(t, err)
 	_, err = c.Fill(context.Background(), "k2", fillWith(testToken("t2", "access-2", nil)))
@@ -118,7 +94,7 @@ func TestUserTokenCache_EvictByTokenID(t *testing.T) {
 }
 
 func TestUserTokenCache_EvictByMCPClient(t *testing.T) {
-	c := newUserTokenCache(8)
+	c := newTestTokenCache(t)
 	keyA1 := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-a", "")
 	keyA2 := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-a", "")
 	keyB := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-b", "")
@@ -143,7 +119,7 @@ func TestUserTokenCache_EvictByMCPClient(t *testing.T) {
 }
 
 func TestUserTokenCache_EvictByVirtualKey(t *testing.T) {
-	c := newUserTokenCache(8)
+	c := newTestTokenCache(t)
 	keyVK1A := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-a", "")
 	keyVK1B := userTokenCacheKey(schemas.MCPAuthModeVK, "vk1", "client-b", "")
 	keyVK2 := userTokenCacheKey(schemas.MCPAuthModeVK, "vk2", "client-a", "")
@@ -172,7 +148,7 @@ func TestUserTokenCache_EvictByVirtualKey(t *testing.T) {
 }
 
 func TestUserTokenCache_EvictByUser(t *testing.T) {
-	c := newUserTokenCache(8)
+	c := newTestTokenCache(t)
 	keyU1A := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-a", "")
 	keyU1B := userTokenCacheKey(schemas.MCPAuthModeUser, "u1", "client-b", "")
 	keyU2 := userTokenCacheKey(schemas.MCPAuthModeUser, "u2", "client-a", "")
@@ -201,7 +177,7 @@ func TestUserTokenCache_EvictByUser(t *testing.T) {
 }
 
 func TestUserTokenCache_Flush(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 	for i := 1; i <= 3; i++ {
 		_, err := c.Fill(context.Background(), fmt.Sprintf("k%d", i), fillWith(testToken(fmt.Sprintf("t%d", i), "access", nil)))
 		require.NoError(t, err)
@@ -216,7 +192,7 @@ func TestUserTokenCache_Flush(t *testing.T) {
 }
 
 func TestUserTokenCache_InflightDedup(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 
 	var calls atomic.Int64
 	release := make(chan struct{})
@@ -269,7 +245,7 @@ func TestUserTokenCache_InflightDedup(t *testing.T) {
 }
 
 func TestUserTokenCache_ErrorSharedNotCached(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 
 	var calls atomic.Int64
 	release := make(chan struct{})
@@ -323,7 +299,7 @@ func TestUserTokenCache_ErrorSharedNotCached(t *testing.T) {
 }
 
 func TestUserTokenCache_GenerationGuardDiscardsStaleFill(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 
 	inFill := make(chan struct{})
 	release := make(chan struct{})
@@ -357,7 +333,7 @@ func TestUserTokenCache_GenerationGuardDiscardsStaleFill(t *testing.T) {
 }
 
 func TestUserTokenCache_UpsertRebindsTokenIDIndex(t *testing.T) {
-	c := newUserTokenCache(4)
+	c := newTestTokenCache(t)
 	_, err := c.Fill(context.Background(), "k1", fillWith(testToken("t-old", "old", nil)))
 	require.NoError(t, err)
 
@@ -374,19 +350,6 @@ func TestUserTokenCache_UpsertRebindsTokenIDIndex(t *testing.T) {
 	c.EvictByTokenID("t-new")
 	_, ok = c.Get("k1")
 	assert.False(t, ok, "current token-ID mapping must evict the entry")
-}
-
-func TestUserTokenCache_NilSafety(t *testing.T) {
-	var c *userTokenCache
-	_, ok := c.Get("k")
-	assert.False(t, ok)
-	c.Evict("k")
-	c.EvictByTokenID("t")
-	c.Flush()
-	assert.Equal(t, 0, c.Len())
-	v, err := c.Fill(context.Background(), "k", fillWith(testToken("t", "pass-through", nil)))
-	require.NoError(t, err)
-	assert.Equal(t, "pass-through", v.accessToken)
 }
 
 // ---------- Integration through GetUserAccessTokenByMode ----------
@@ -428,7 +391,7 @@ func TestGetUserAccessTokenByMode_SecondCallServedFromCache(t *testing.T) {
 	store := newCountingConfigStore()
 	seedUserToken(store.testConfigStore, "tok-1", "cfg-1", "mcp-1", "sess-1", "cached-access", bifrost.Ptr(time.Now().Add(1*time.Hour)))
 
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
 	access, err := provider.GetUserAccessTokenByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -467,7 +430,7 @@ func TestGetUserAccessTokenByMode_ExpiredRefreshesOnceUnderConcurrency(t *testin
 	}
 	seedUserToken(store.testConfigStore, "tok-1", "cfg-1", "mcp-1", "sess-1", "expired-access", bifrost.Ptr(time.Now().Add(-1*time.Minute)))
 
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
 	const callers = 8
@@ -494,7 +457,7 @@ func TestGetUserAccessTokenByMode_EvictByIDAfterDelete(t *testing.T) {
 	store := newCountingConfigStore()
 	seedUserToken(store.testConfigStore, "tok-1", "cfg-1", "mcp-1", "sess-1", "cached-access", bifrost.Ptr(time.Now().Add(1*time.Hour)))
 
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
 	_, err := provider.GetUserAccessTokenByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -516,7 +479,7 @@ func TestGetUserAccessTokenByMode_FlushAfterNeedsReauth(t *testing.T) {
 	store := newCountingConfigStore()
 	seedUserToken(store.testConfigStore, "tok-1", "cfg-1", "mcp-1", "sess-1", "cached-access", bifrost.Ptr(time.Now().Add(1*time.Hour)))
 
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
 	_, err := provider.GetUserAccessTokenByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -536,7 +499,7 @@ func TestGetUserAccessTokenByMode_FlushAfterNeedsReauth(t *testing.T) {
 
 func TestGetUserAccessTokenByMode_NegativeNotCached(t *testing.T) {
 	store := newCountingConfigStore()
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
 	_, err := provider.GetUserAccessTokenByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -570,7 +533,7 @@ func TestGetUserAccessTokenByMode_ForceRefreshEvictsAndServesNewToken(t *testing
 	// refresh's eviction.
 	seedUserToken(store.testConfigStore, "tok-1", "cfg-1", "mcp-1", "sess-1", "rejected-upstream", bifrost.Ptr(time.Now().Add(1*time.Hour)))
 
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
 	access, err := provider.GetUserAccessTokenByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -591,4 +554,120 @@ func TestGetUserAccessTokenByMode_ForceRefreshEvictsAndServesNewToken(t *testing
 	access, err = provider.GetUserAccessTokenByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
 	require.NoError(t, err)
 	assert.Equal(t, "force-refreshed-access", access, "force refresh must evict the cached copy so the next read serves the new token")
+}
+
+// testLiveStore returns a new, empty live store closed when the test ends.
+var testLiveStore = livestoretest.New
+
+// newTestTokenCache returns a token cache in a live store of its own.
+func newTestTokenCache(t testing.TB) *userTokenCache {
+	t.Helper()
+	c, err := newUserTokenCache(testLiveStore(t))
+	if err != nil {
+		t.Fatalf("token cache: %v", err)
+	}
+	return c
+}
+
+// newTestGrantCache returns an ID-JAG grant cache in a live store of its own.
+func newTestGrantCache(t testing.TB) *idjagGrantCache {
+	t.Helper()
+	c, err := newIDJAGGrantCache(testLiveStore(t))
+	if err != nil {
+		t.Fatalf("grant cache: %v", err)
+	}
+	return c
+}
+
+// newCachingProvider returns a provider over store with its caches in a live store of its own, as
+// startup builds it.
+func newCachingProvider(t testing.TB, store configstore.ConfigStore, logger schemas.Logger) *OAuth2Provider {
+	t.Helper()
+	p, err := NewOAuth2Provider(store, testLiveStore(t), logger)
+	if err != nil {
+		t.Fatalf("oauth provider: %v", err)
+	}
+	return p
+}
+
+// sessionTokenStore answers session-mode token lookups from a read-only map keyed by session ID, so
+// a benchmark's misses cost the cache and the load around the lookup, not a locked scan of every
+// seeded row.
+type sessionTokenStore struct {
+	*testConfigStore
+	bySession map[string]*tables.TableMCPOauthToken
+}
+
+// GetOauthUserTokenByMode returns a copy of the session's token, nil when it has none.
+func (s *sessionTokenStore) GetOauthUserTokenByMode(_ context.Context, _ schemas.MCPAuthMode, identity, _ string) (*tables.TableMCPOauthToken, error) {
+	token, ok := s.bySession[identity]
+	if !ok {
+		return nil, nil
+	}
+	return bifrost.Ptr(*token), nil
+}
+
+// BenchmarkGetUserAccessTokenByMode measures the per-request token read over 300 cached session
+// bindings: a hit, hits from every core at once, and concurrent misses, each of which evicts its
+// own binding and reloads it through the cache's fill.
+func BenchmarkGetUserAccessTokenByMode(b *testing.B) {
+	const sessions = 300
+	expiresAt := time.Now().Add(time.Hour)
+	store := &sessionTokenStore{testConfigStore: newTestConfigStore(), bySession: make(map[string]*tables.TableMCPOauthToken, sessions)}
+	ids := make([]string, sessions)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("sess-%03d", i)
+		store.bySession[ids[i]] = &tables.TableMCPOauthToken{
+			ID: fmt.Sprintf("tok-%03d", i), AuthMode: "session", MCPClientID: "mcp-1", OauthConfigID: "cfg-1",
+			SessionID: ids[i], Status: "active", AccessToken: "access-" + ids[i], TokenType: "bearer", ExpiresAt: &expiresAt, Scopes: "[]",
+		}
+	}
+	p := newCachingProvider(b, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	ctx := context.Background()
+	read := func(i int) error {
+		_, err := p.GetUserAccessTokenByMode(ctx, schemas.MCPAuthModeSession, ids[i%sessions], "mcp-1")
+		return err
+	}
+	for i := range ids {
+		if err := read(i); err != nil {
+			b.Fatal(err)
+		}
+	}
+
+	b.Run("hit", func(b *testing.B) {
+		b.ReportAllocs()
+		i := 0
+		for b.Loop() {
+			if err := read(i); err != nil {
+				b.Fatal(err)
+			}
+			i++
+		}
+	})
+	b.Run("hit-parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		var next atomic.Int64
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if err := read(int(next.Add(1))); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
+	b.Run("miss-parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		var next atomic.Int64
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				i := int(next.Add(1)) % sessions
+				p.EvictUserToken(schemas.MCPAuthModeSession, ids[i], "mcp-1")
+				if err := read(i); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
 }

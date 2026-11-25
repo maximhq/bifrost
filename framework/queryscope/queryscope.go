@@ -8,6 +8,7 @@ package queryscope
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -95,31 +96,15 @@ func DimensionFromContext(ctx context.Context) DimensionScope {
 // The Postgres form compares against text[], so the column must be text or varchar
 // (or a text-valued expression). A uuid, integer, or other non-text column fails with
 // "operator does not exist". Cast the column (col::text) only when losing its index
-// is acceptable; otherwise add a typed variant.
+// is acceptable; otherwise use a typed variant (InUints for integer columns).
 func InSet(db *gorm.DB, ids []string) (string, any) {
-	switch dialectName(db) {
-	case "postgres":
-		return "= ANY(?::text[])", postgresTextArray(ids)
-	case "sqlite":
-		if encoded, err := json.Marshal(ids); err == nil {
-			return "IN (SELECT value FROM json_each(?))", string(encoded)
-		}
-	}
-	return "IN ?", ids
+	return bindSet(db, false, "text", func() string { return postgresTextArray(ids) }, ids)
 }
 
 // NotInSet is the negated form of InSet: the right-hand side matches values that
 // are not in ids, binding the whole list as a single argument.
 func NotInSet(db *gorm.DB, ids []string) (string, any) {
-	switch dialectName(db) {
-	case "postgres":
-		return "<> ALL(?::text[])", postgresTextArray(ids)
-	case "sqlite":
-		if encoded, err := json.Marshal(ids); err == nil {
-			return "NOT IN (SELECT value FROM json_each(?))", string(encoded)
-		}
-	}
-	return "NOT IN ?", ids
+	return bindSet(db, true, "text", func() string { return postgresTextArray(ids) }, ids)
 }
 
 // InStrings returns a complete "column <InSet>" WHERE fragment and its argument.
@@ -134,6 +119,48 @@ func InStrings(db *gorm.DB, column string, ids []string) (string, any) {
 func NotInStrings(db *gorm.DB, column string, ids []string) (string, any) {
 	rhs, arg := NotInSet(db, ids)
 	return column + " " + rhs, arg
+}
+
+// InUints returns a complete "column IN ids" WHERE fragment for an integer column and
+// its single argument, the integer counterpart of InStrings: the whole list binds as
+// one parameter, so any number of ids stays within the statement parameter limit.
+//
+//   - postgres: = ANY(?::bigint[]) with a bigint[] literal
+//   - sqlite:   IN (SELECT value FROM json_each(?)) with a JSON array
+//   - others:   IN ? with the slice
+//
+// column is a trusted identifier from the caller's code, never user input, and must
+// be integer-typed on Postgres (smallint, integer or bigint, serial included); a text
+// column fails there with "operator does not exist".
+func InUints(db *gorm.DB, column string, ids []uint) (string, any) {
+	rhs, arg := bindSet(db, false, "bigint", func() string { return postgresUintArray(ids) }, ids)
+	return column + " " + rhs, arg
+}
+
+// bindSet is the dialect switch behind the membership helpers. It returns the
+// right-hand side of a test against list, negated when not is set, and the one
+// argument it binds: on Postgres, ANY (ALL when negated) of an array literal from
+// pgArray cast to pgType[]; on SQLite, the members of list encoded as a JSON array;
+// on any other dialect, or when list does not encode, list itself for GORM to expand.
+func bindSet(db *gorm.DB, not bool, pgType string, pgArray func() string, list any) (string, any) {
+	switch dialectName(db) {
+	case "postgres":
+		if not {
+			return "<> ALL(?::" + pgType + "[])", pgArray()
+		}
+		return "= ANY(?::" + pgType + "[])", pgArray()
+	case "sqlite":
+		if encoded, err := json.Marshal(list); err == nil {
+			if not {
+				return "NOT IN (SELECT value FROM json_each(?))", string(encoded)
+			}
+			return "IN (SELECT value FROM json_each(?))", string(encoded)
+		}
+	}
+	if not {
+		return "NOT IN ?", list
+	}
+	return "IN ?", list
 }
 
 // dialectName returns the active dialect of db, or "" when db has no dialector
@@ -163,6 +190,21 @@ func postgresTextArray(ids []string) string {
 			b.WriteRune(r)
 		}
 		b.WriteByte('"')
+	}
+	b.WriteByte('}')
+	return b.String()
+}
+
+// postgresUintArray encodes ids as a Postgres integer array input literal, such as
+// {1,2,3}; integers need no quoting.
+func postgresUintArray(ids []uint) string {
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, id := range ids {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(strconv.FormatUint(uint64(id), 10))
 	}
 	b.WriteByte('}')
 	return b.String()

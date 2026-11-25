@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,10 +23,13 @@ func routerRouting(scope, scopeID string, priority int, cel string) configstore.
 	return routing
 }
 
-// newTestModelRouterMatcher builds an empty matcher.
-func newTestModelRouterMatcher(t *testing.T) *ModelRouterMatcher {
+// newTestModelRouterMatcher builds an empty matcher over a live store of its own.
+func newTestModelRouterMatcher(t testing.TB) *ModelRouterMatcher {
 	t.Helper()
-	matcher, err := NewModelRouterMatcher()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	matcher, err := NewModelRouterMatcher(live)
 	require.NoError(t, err)
 	return matcher
 }
@@ -86,7 +90,7 @@ func TestModelRouterMatcherSetAndDelete(t *testing.T) {
 	assert.True(t, matcher.HasRoutes())
 	require.NoError(t, matcher.Set("support", "Support", routerRouting("global", "", 0, "")))
 	assert.Equal(t, "support", matchID(t, matcher, &EvaluationContext{Model: "m"}), "the router moved to global")
-	_, inTeam := matcher.routes.Load(scopeKey("team", "team-1"))
+	_, inTeam := matcher.routes.Get(scopeKey("team", "team-1"))
 	assert.False(t, inTeam, "and left the team's scope")
 
 	require.Error(t, matcher.Set("support", "Support", routerRouting("global", "", 0, `model ==`)))
@@ -153,8 +157,7 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 		Headers: map[string]string{"x-app": "helpdesk"},
 	}
 	b.Run("no enabled router", func(b *testing.B) {
-		matcher, err := NewModelRouterMatcher()
-		require.NoError(b, err)
+		matcher := newTestModelRouterMatcher(b)
 		b.ReportAllocs()
 		for b.Loop() {
 			if matcher.HasRoutes() {
@@ -163,8 +166,7 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 		}
 	})
 	b.Run("global router with a condition matches", func(b *testing.B) {
-		matcher, err := NewModelRouterMatcher()
-		require.NoError(b, err)
+		matcher := newTestModelRouterMatcher(b)
 		require.NoError(b, matcher.Set("support", "Support", routerRouting("global", "", 0, `model == "support-assistant"`)))
 		b.ReportAllocs()
 		for b.Loop() {
@@ -177,8 +179,7 @@ func BenchmarkModelRouterMatcher(b *testing.B) {
 		}
 	})
 	b.Run("three scopes, none matches", func(b *testing.B) {
-		matcher, err := NewModelRouterMatcher()
-		require.NoError(b, err)
+		matcher := newTestModelRouterMatcher(b)
 		require.NoError(b, matcher.Set("vk", "VK", routerRouting("virtual_key", "vk-1", 0, `model == "never"`)))
 		require.NoError(b, matcher.Set("team", "Team", routerRouting("team", "team-1", 0, `headers["x-app"] == "other"`)))
 		require.NoError(b, matcher.Set("global", "Global", routerRouting("global", "", 0, `model == "gpt-4o-mini"`)))
@@ -275,8 +276,8 @@ func TestModelRouterMatcherReplacesARoutersRoute(t *testing.T) {
 
 	require.NoError(t, matcher.Set("first", "First", routerRouting("global", "", 9, "")))
 	assert.Equal(t, "second", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o"}), "the router moved behind the other")
-	value, _ := matcher.routes.Load(scopeKey("global", ""))
-	assert.Len(t, value.([]modelRouterRoute), 2, "a router is listed once, whatever was saved for it")
+	group, _ := matcher.routes.Get(scopeKey("global", ""))
+	assert.Len(t, group, 2, "a router is listed once, whatever was saved for it")
 
 	require.NoError(t, matcher.Set("second", "Second", routerRouting("global", "", 1, `model == "gpt-4o-mini"`)))
 	assert.Equal(t, "first", matchID(t, matcher, &EvaluationContext{Model: "gpt-4o"}), "the old condition no longer applies")

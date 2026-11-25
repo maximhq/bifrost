@@ -245,6 +245,10 @@ type notificationListResponse struct {
 	NextCursor    string                 `json:"next_cursor,omitempty"`
 }
 
+// list handles GET /api/notifications: one page of the notifications the caller may see, newest
+// first. It answers 503 while the service's store is nil: the config store does not provide
+// notification storage (it does not implement configstore.NotificationStore), which
+// RequireConfigStoreMiddleware does not catch, since it refuses only a disabled config store.
 func (s *NotificationService) list(ctx *fasthttp.RequestCtx) {
 	if s.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, ErrNotificationsUnavailable.Error())

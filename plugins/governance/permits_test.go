@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,14 +49,29 @@ func vkMCPConfig(clientID, clientName string, tools ...string) configstoreTables
 
 // vkPermit builds the permit a key confers, with the given clients allowed by default. The builder
 // belongs to the store that owns the key data, so tests reach it through one.
-func vkPermit(vk *configstoreTables.TableVirtualKey, openClients map[string]string) *grant.Permit {
-	store := &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{allowedByDefaultClients: openClients}}
-	return store.permitForVirtualKey(emptyCtx(), vk)
+func vkPermit(t testing.TB, vk *configstoreTables.TableVirtualKey, openClients map[string]string) *grant.Permit {
+	t.Helper()
+	store := fixtureStore(t, &liveFixture{allowedByDefaultClients: openClients})
+	return store.permitForVirtualKey(emptyCtx(), virtualKeyRecord(store.live, vk))
+}
+
+// storedKeyPermit writes vk to a store of its own and returns the store and the permit it builds
+// for the stored key, so the store can answer what funds that permit.
+func storedKeyPermit(t testing.TB, vk *configstoreTables.TableVirtualKey) (*LocalGovernanceStore, *grant.Permit) {
+	t.Helper()
+	gs, err := newTestGovernanceStore(t, NewMockLogger(), &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, nil)
+	require.NoError(t, err)
+	rec, ok := gs.GetVirtualKeyByID(context.Background(), vk.ID)
+	require.True(t, ok, "the key is stored")
+	return gs, gs.permitForVirtualKey(emptyCtx(), rec)
 }
 
 // vkAccess is the access a request carrying only vk's permit has.
-func vkAccess(vk *configstoreTables.TableVirtualKey, openClients map[string]string) schemas.Access {
-	return grant.NewAccess([]schemas.Permit{vkPermit(vk, openClients)}, "", nil, "", nil)
+func vkAccess(t testing.TB, vk *configstoreTables.TableVirtualKey, openClients map[string]string) schemas.Access {
+	t.Helper()
+	return grant.NewAccess([]schemas.Permit{vkPermit(t, vk, openClients)}, "", nil, "", nil)
 }
 
 // A key also answers to where it sits in the organization, so its holder limits carry its team's
@@ -63,35 +79,51 @@ func vkAccess(vk *configstoreTables.TableVirtualKey, openClients map[string]stri
 // rather than the key's preloaded relations, which carry only enough to say which team it is.
 func TestPermitForVirtualKey_OrganizationLimits(t *testing.T) {
 	teamRateLimit, customerRateLimit := "rl-team", "rl-customer"
-	team := &configstoreTables.TableTeam{
-		ID: "team-1", Name: "Platform",
-		RateLimitID: &teamRateLimit,
-		Budgets:     []configstoreTables.TableBudget{{ID: "budget-team"}},
-	}
 	customer := &configstoreTables.TableCustomer{
 		ID: "cust-1", Name: "Acme",
 		RateLimitID: &customerRateLimit,
 		Budgets:     []configstoreTables.TableBudget{{ID: "budget-customer"}},
 	}
+	// The team belongs to the customer on its own row: the store walks the team's record to reach
+	// the customer, not the key's preloaded relation.
+	team := &configstoreTables.TableTeam{
+		ID: "team-1", Name: "Platform",
+		CustomerID:  &customer.ID,
+		RateLimitID: &teamRateLimit,
+		Budgets:     []configstoreTables.TableBudget{{ID: "budget-team"}},
+	}
+	// orgConfig is the team and customer above every key here, with vk and any extra customers.
+	orgConfig := func(vk *configstoreTables.TableVirtualKey, extra ...configstoreTables.TableCustomer) *configstore.GovernanceConfig {
+		return &configstore.GovernanceConfig{
+			Customers:   append([]configstoreTables.TableCustomer{*customer}, extra...),
+			Teams:       []configstoreTables.TableTeam{*team},
+			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		}
+	}
+	// holderLimitsOf asks the store holding the key for what funds it.
+	holderLimitsOf := func(t *testing.T, gs *LocalGovernanceStore, vkID string) ([]schemas.Limit, []schemas.Limit) {
+		t.Helper()
+		ctx := emptyCtx()
+		rec, ok := gs.GetVirtualKeyByID(ctx, vkID)
+		require.True(t, ok, "the key is stored")
+		return gs.HolderLimits(ctx, gs.permitForVirtualKey(ctx, rec))
+	}
 
 	// What funds a key across every provider is answered by HolderLimits, keyed by the permit's
 	// identity: none of it can tell one provider from another, so load balancing has no use for it.
-	storeWith := func(vk *configstoreTables.TableVirtualKey) ([]schemas.Limit, []schemas.Limit) {
-		gs := &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{}}
-		gs.teams.Store(team.ID, team)
-		gs.customers.Store(customer.ID, customer)
-		gs.virtualKeysByID.Store(vk.ID, vk)
-		ctx := emptyCtx()
-		return gs.HolderLimits(ctx, gs.permitForVirtualKey(ctx, vk))
+	storeWith := func(t *testing.T, vk *configstoreTables.TableVirtualKey) ([]schemas.Limit, []schemas.Limit) {
+		t.Helper()
+		gs, err := newTestGovernanceStore(t, NewMockLogger(), orgConfig(vk), nil, nil)
+		require.NoError(t, err)
+		return holderLimitsOf(t, gs, vk.ID)
 	}
 
 	t.Run("a customer reached through the key's team", func(t *testing.T) {
 		vk := buildVirtualKey("vk-1", "sk-bf-test", "Key", true)
 		vk.Budgets = []configstoreTables.TableBudget{{ID: "budget-key"}}
 		vk.TeamID = &team.ID
-		vk.Team = &configstoreTables.TableTeam{ID: team.ID, Name: team.Name, CustomerID: &customer.ID}
 
-		budgets, rateLimits := storeWith(vk)
+		budgets, rateLimits := storeWith(t, vk)
 
 		require.Len(t, budgets, 3, "the key's own, its team's, and the customer containing that team")
 		assert.Equal(t, []string{"budget-key", "budget-team", "budget-customer"}, limitIDsOf(budgets))
@@ -111,7 +143,7 @@ func TestPermitForVirtualKey_OrganizationLimits(t *testing.T) {
 		vk := buildVirtualKey("vk-2", "sk-bf-direct", "Direct Key", true)
 		vk.CustomerID = &customer.ID
 
-		budgets, rateLimits := storeWith(vk)
+		budgets, rateLimits := storeWith(t, vk)
 
 		assert.Equal(t, []string{"budget-customer"}, limitIDsOf(budgets), "no team in the chain")
 		assert.Equal(t, []string{"rl-customer"}, limitIDsOf(rateLimits))
@@ -120,18 +152,15 @@ func TestPermitForVirtualKey_OrganizationLimits(t *testing.T) {
 	t.Run("a key's own customer wins over its team's", func(t *testing.T) {
 		other := &configstoreTables.TableCustomer{ID: "cust-2", Name: "Other", Budgets: []configstoreTables.TableBudget{{ID: "budget-other"}}}
 		vk := buildVirtualKey("vk-3", "sk-bf-both", "Both Key", true)
-		vk.CustomerID = &other.ID
 		vk.TeamID = &team.ID
-		vk.Team = &configstoreTables.TableTeam{ID: team.ID, Name: team.Name, CustomerID: &customer.ID}
 
-		gs := &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{}}
-		gs.teams.Store(team.ID, team)
-		gs.customers.Store(customer.ID, customer)
-		gs.customers.Store(other.ID, other)
-
-		gs.virtualKeysByID.Store(vk.ID, vk)
-		ctx := emptyCtx()
-		budgets, _ := gs.HolderLimits(ctx, gs.permitForVirtualKey(ctx, vk))
+		// A key row naming both a team and a customer is refused on save today, so the customer
+		// is set on the stored row directly, the way an older row can still hold it.
+		h := newLiveHarness(t, orgConfig(vk, *other), nil)
+		require.NoError(t, h.db.Model(&configstoreTables.TableVirtualKey{}).Where("id = ?", vk.ID).UpdateColumn("customer_id", other.ID).Error)
+		h.refresh(livestore.Ref{Kind: livestore.KindVirtualKey, ID: vk.ID})
+		gs := h.mustGovernanceStore(NewMockLogger(), nil)
+		budgets, _ := holderLimitsOf(t, gs, vk.ID)
 
 		assert.Equal(t, []string{"budget-team", "budget-other"}, limitIDsOf(budgets),
 			"the customer the key names, not the one its team belongs to")
@@ -141,7 +170,7 @@ func TestPermitForVirtualKey_OrganizationLimits(t *testing.T) {
 		vk := buildVirtualKey("vk-4", "sk-bf-lonely", "Lonely Key", true)
 		vk.Budgets = []configstoreTables.TableBudget{{ID: "budget-key"}}
 
-		budgets, _ := storeWith(vk)
+		budgets, _ := storeWith(t, vk)
 
 		assert.Equal(t, []string{"budget-key"}, limitIDsOf(budgets))
 	})
@@ -151,14 +180,21 @@ func TestPermitForVirtualKey_OrganizationLimits(t *testing.T) {
 		vk := buildVirtualKey("vk-5", "sk-bf-stale", "Stale Key", true)
 		vk.TeamID = &missing
 
-		budgets, rateLimits := storeWith(vk)
+		// The key's row names a team the store does not hold: the team is written so the row can
+		// reference it, then its record alone is dropped.
+		cfg := orgConfig(vk)
+		cfg.Teams = append(cfg.Teams, configstoreTables.TableTeam{ID: missing, Name: "Gone", Budgets: []configstoreTables.TableBudget{{ID: "budget-gone"}}})
+		h := newLiveHarness(t, cfg, nil)
+		h.refresh(livestore.Ref{Kind: livestore.KindTeam, ID: missing, Remove: true})
+		gs := h.mustGovernanceStore(NewMockLogger(), nil)
+		budgets, rateLimits := holderLimitsOf(t, gs, vk.ID)
 
 		assert.Empty(t, budgets)
 		assert.Empty(t, rateLimits)
 	})
 
 	t.Run("a permit that is not a key's is funded by nothing here", func(t *testing.T) {
-		gs := &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{}}
+		gs := fixtureStore(t, nil)
 		budgets, rateLimits := gs.HolderLimits(emptyCtx(), permitWithProviders("other", "o1", "Other", "openai"))
 		assert.Empty(t, budgets)
 		assert.Empty(t, rateLimits)
@@ -173,10 +209,11 @@ func holderKindsOf(limits []schemas.Limit) []string {
 	return kinds
 }
 
+// TestPermitForVirtualKey_Identity checks that a key's permit carries its type, ID, name and state, and that no key gives no permit.
 func TestPermitForVirtualKey_Identity(t *testing.T) {
 	vk := buildVirtualKey("vk-1", "sk-bf-test", "Data Team Key", true)
 
-	permit := vkPermit(vk, nil)
+	permit := vkPermit(t, vk, nil)
 
 	require.NotNil(t, permit)
 	assert.Equal(t, string(grant.PermitVirtualKey), permit.Type())
@@ -185,9 +222,10 @@ func TestPermitForVirtualKey_Identity(t *testing.T) {
 	assert.True(t, permit.IsActive())
 	assert.False(t, permit.IsExpired())
 
-	assert.Nil(t, vkPermit(nil, nil), "no key, no permit")
+	assert.Nil(t, vkPermit(t, nil, nil), "no key, no permit")
 }
 
+// TestPermitForVirtualKey_ProviderPermits checks that each provider config becomes a provider permit carrying its models, keys and weight.
 func TestPermitForVirtualKey_ProviderPermits(t *testing.T) {
 	vk := buildVirtualKey("vk-1", "sk-bf-test", "Key", true)
 	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
@@ -213,7 +251,7 @@ func TestPermitForVirtualKey_ProviderPermits(t *testing.T) {
 		},
 	}
 
-	permit := vkPermit(vk, nil)
+	permit := vkPermit(t, vk, nil)
 	require.Len(t, permit.ProviderPermits(), 3)
 
 	openai := permit.ProviderPermits()[0]
@@ -258,10 +296,8 @@ func TestPermitForVirtualKey_Limits(t *testing.T) {
 		},
 	}
 
-	gs := &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{}}
-	gs.virtualKeysByID.Store(vk.ID, vk)
+	gs, permit := storedKeyPermit(t, vk)
 	ctx := emptyCtx()
-	permit := gs.permitForVirtualKey(ctx, vk)
 
 	// Each config's limits are answered for that provider, so which provider they answer for is
 	// what was asked rather than something to filter on.
@@ -313,10 +349,8 @@ func TestPermitForVirtualKey_LimitsOfTwoConfigsForOneProvider(t *testing.T) {
 		},
 	}
 
-	gs := &LocalGovernanceStore{inMemoryStore: &mockInMemoryStore{}}
-	gs.virtualKeysByID.Store(vk.ID, vk)
+	gs, permit := storedKeyPermit(t, vk)
 	ctx := emptyCtx()
-	permit := gs.permitForVirtualKey(ctx, vk)
 
 	budgets, rateLimits := gs.PermitProviderLimits(ctx, permit, schemas.OpenAI)
 	require.Len(t, budgets, 2, "both configs govern openai traffic")
@@ -328,6 +362,7 @@ func TestPermitForVirtualKey_LimitsOfTwoConfigsForOneProvider(t *testing.T) {
 	assert.Equal(t, []string{"rl-first", "rl-second"}, []string{rateLimits[0].ID, rateLimits[1].ID})
 }
 
+// TestPermitForVirtualKey_MCPPermits checks how a key's MCP configs and the clients open by default become its MCP permits.
 func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 	t.Run("the key's own configs are carried through", func(t *testing.T) {
 		vk := buildVirtualKey("vk-1", "sk-bf-test", "Key", true)
@@ -336,7 +371,7 @@ func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 			vkMCPConfig("slack-id", "slack", "*"),
 		}
 
-		permit := vkPermit(vk, nil)
+		permit := vkPermit(t, vk, nil)
 
 		require.Len(t, permit.MCPPermits(), 2)
 		assert.Equal(t, schemas.MCPPermit{Client: "github-id", ClientName: "github", Tools: []string{"read_file"}}, permit.MCPPermits()[0])
@@ -347,7 +382,7 @@ func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 		vk := buildVirtualKey("vk-1", "sk-bf-test", "Key", true)
 		open := map[string]string{"jira-id": "jira"}
 
-		permit := vkPermit(vk, open)
+		permit := vkPermit(t, vk, open)
 
 		require.Len(t, permit.MCPPermits(), 1)
 		assert.Equal(t, schemas.MCPPermit{Client: "jira-id", ClientName: "jira", Tools: []string{"*"}}, permit.MCPPermits()[0])
@@ -362,7 +397,7 @@ func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 		}
 		open := map[string]string{"github-id": "github", "jira-id": "jira", "slack-id": "slack"}
 
-		permit := vkPermit(vk, open)
+		permit := vkPermit(t, vk, open)
 
 		require.Len(t, permit.MCPPermits(), 2)
 		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools, "not widened to all tools")
@@ -377,7 +412,7 @@ func TestPermitForVirtualKey_MCPPermits(t *testing.T) {
 		open := map[string]string{"c-id": "c", "a-id": "a", "b-id": "b"}
 
 		for range 8 {
-			permit := vkPermit(vk, open)
+			permit := vkPermit(t, vk, open)
 			require.Len(t, permit.MCPPermits(), 3)
 			assert.Equal(t, []string{"a-id", "b-id", "c-id"}, []string{
 				permit.MCPPermits()[0].Client,
@@ -476,26 +511,28 @@ func mcpScenarios() []struct {
 	}
 }
 
+// TestPermitForVirtualKey_MCPToolIncludeList checks the include-tools list a key's access produces for each MCP permit shape.
 func TestPermitForVirtualKey_MCPToolIncludeList(t *testing.T) {
 	// The include-tools list a key produces, across the shapes the MCP permit rules distinguish.
 	// The fold is the only implementation of those rules, so these are the expectations themselves
 	// rather than a comparison against a second one.
 	for _, scenario := range mcpScenarios() {
 		t.Run(scenario.name, func(t *testing.T) {
-			got := vkAccess(scenario.vk, scenario.open).MCPToolIncludeList()
+			got := vkAccess(t, scenario.vk, scenario.open).MCPToolIncludeList()
 
 			assert.ElementsMatch(t, scenario.wantIncludeList, got)
 		})
 	}
 }
 
+// TestPermitForVirtualKey_ToolChecks checks the per-tool decisions a key's access makes for each MCP permit shape.
 func TestPermitForVirtualKey_ToolChecks(t *testing.T) {
 	// Per-tool decisions over the same shapes: an explicit config owns its client and is never
 	// widened by an open client, an unrestricted config grants every tool, an empty one grants
 	// none, and a wildcard pattern asks whether the client is granted anything at all.
 	for _, scenario := range mcpScenarios() {
 		t.Run(scenario.name, func(t *testing.T) {
-			access := vkAccess(scenario.vk, scenario.open)
+			access := vkAccess(t, scenario.vk, scenario.open)
 
 			for pattern, want := range scenario.wantTool {
 				assert.Equal(t, want, access.IsMCPToolAllowed(pattern), "pattern %q", pattern)
@@ -505,6 +542,7 @@ func TestPermitForVirtualKey_ToolChecks(t *testing.T) {
 	}
 }
 
+// TestPermitForVirtualKey_ProviderAndModelRules checks the provider and model rules a key's own permit keeps.
 func TestPermitForVirtualKey_ProviderAndModelRules(t *testing.T) {
 	// The rules the key's own permit must keep: a provider with no config is not permitted, a
 	// configured provider is, a model must be in the allowlist, and a blacklisted model is refused
@@ -515,7 +553,7 @@ func TestPermitForVirtualKey_ProviderAndModelRules(t *testing.T) {
 		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"*"}},
 		{Provider: "bedrock", AllowedModels: schemas.WhiteList{}},
 	}
-	access := vkAccess(vk, nil)
+	access := vkAccess(t, vk, nil)
 
 	assert.True(t, access.IsProviderAllowed("openai"))
 	assert.True(t, access.IsProviderAllowed("anthropic"))
@@ -531,11 +569,12 @@ func TestPermitForVirtualKey_ProviderAndModelRules(t *testing.T) {
 
 	// A key with no provider config at all permits nothing: deny by default.
 	bare := buildVirtualKey("vk-2", "sk-bf-bare", "Bare Key", true)
-	bareAccess := vkAccess(bare, nil)
+	bareAccess := vkAccess(t, bare, nil)
 	assert.False(t, bareAccess.IsProviderAllowed("openai"))
 	assert.False(t, bareAccess.IsModelAllowed("openai", "gpt-4o"))
 }
 
+// TestPermitForVirtualKey_KeysForModel checks that two configs for one provider are read as one when choosing provider keys.
 func TestPermitForVirtualKey_KeysForModel(t *testing.T) {
 	// Two configs for one provider are read as one: a request served by that provider may use any
 	// key either config allows.
@@ -545,7 +584,7 @@ func TestPermitForVirtualKey_KeysForModel(t *testing.T) {
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}, Keys: []configstoreTables.TableKey{{KeyID: "key-us-2"}}},
 		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"*"}, AllowAllKeys: true},
 	}
-	access := vkAccess(vk, nil)
+	access := vkAccess(t, vk, nil)
 
 	keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
 	assert.True(t, restricted)
@@ -601,10 +640,17 @@ func (s *permitStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Per
 // store composes further permits onto every request.
 func newAccessTestPlugin(t testing.TB, vk *configstoreTables.TableVirtualKey, wrap *permitStore) *GovernancePlugin {
 	t.Helper()
+	return newAccessTestPluginWithFixture(t, vk, wrap, &liveFixture{})
+}
+
+// newAccessTestPluginWithFixture is newAccessTestPlugin over a gateway also configured with
+// fixture's providers and MCP clients.
+func newAccessTestPluginWithFixture(t testing.TB, vk *configstoreTables.TableVirtualKey, wrap *permitStore, fixture *liveFixture) *GovernancePlugin {
+	t.Helper()
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{})
+	}, nil, fixture)
 	require.NoError(t, err)
 
 	var store GovernanceStore = local
@@ -614,7 +660,7 @@ func newAccessTestPlugin(t testing.TB, vk *configstoreTables.TableVirtualKey, wr
 	}
 
 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
-		logger, store, nil, nil, nil, nil)
+		logger, store, nil, nil, nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
@@ -801,13 +847,13 @@ func TestResolveAccessCompletesTheIdentity(t *testing.T) {
 	vk.Team = team
 
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Teams:       []configstoreTables.TableTeam{*team},
 		Customers:   []configstoreTables.TableCustomer{*customer},
-	}, nil, &mockInMemoryStore{})
+	}, nil, &liveFixture{})
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -851,11 +897,11 @@ func TestResolveAccessStampsContentLoggingDecision(t *testing.T) {
 			vk.DisableContentLogging = tc.decision
 
 			logger := NewMockLogger()
-			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-			}, nil, &mockInMemoryStore{})
+			}, nil, &liveFixture{})
 			require.NoError(t, err)
-			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, local.live)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -895,11 +941,11 @@ func TestResolveAccessMarksTraceWhenContentLoggingOff(t *testing.T) {
 			vk.DisableContentLogging = tc.decision
 
 			logger := NewMockLogger()
-			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+			local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-			}, nil, &mockInMemoryStore{})
+			}, nil, &liveFixture{})
 			require.NoError(t, err)
-			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, local.live)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -933,30 +979,30 @@ func TestResolveAccessMarksTraceWhenContentLoggingOff(t *testing.T) {
 	}
 }
 
-// A key under a team carries the team's content-logging decision too. The team is read from the
-// store's live team map, not the key's team pointer, so an edit to the team reaches the very next
-// request; and the team outranks the key in both directions.
+// A key under a team carries the team's content-logging decision too. The team is read from its own
+// record, so an edit to the team reaches the very next request once the team is refreshed; and the
+// team outranks the key in both directions.
 func TestResolveAccessStampsTeamContentLogging(t *testing.T) {
 	type setup struct {
 		team *bool
 		vk   *bool
 	}
-	newPlugin := func(t *testing.T, s setup) (*GovernancePlugin, *LocalGovernanceStore, configstoreTables.TableTeam) {
+	newPlugin := func(t *testing.T, s setup) (*GovernancePlugin, *liveHarness, configstoreTables.TableTeam) {
 		t.Helper()
 		team := configstoreTables.TableTeam{ID: "team-dcl", Name: "team-dcl", DisableContentLogging: s.team}
 		vk := buildVKForMCPStamping(nil)
 		vk.TeamID = &team.ID
 		vk.DisableContentLogging = s.vk
 		logger := NewMockLogger()
-		local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		h := newLiveHarness(t, &configstore.GovernanceConfig{
 			VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 			Teams:       []configstoreTables.TableTeam{team},
-		}, nil, &mockInMemoryStore{})
-		require.NoError(t, err)
-		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+		}, &liveFixture{})
+		local := h.mustGovernanceStore(logger, nil)
+		plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, local.live)
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
-		return plugin, local, team
+		return plugin, h, team
 	}
 	resolve := func(t *testing.T, plugin *GovernancePlugin) *schemas.BifrostContext {
 		t.Helper()
@@ -995,14 +1041,14 @@ func TestResolveAccessStampsTeamContentLogging(t *testing.T) {
 	})
 
 	t.Run("a team edit reaches the next request", func(t *testing.T) {
-		plugin, local, team := newPlugin(t, setup{team: nil})
+		plugin, h, team := newPlugin(t, setup{team: nil})
 		ctx := resolve(t, plugin)
 		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging))
 
 		team.DisableContentLogging = new(true)
-		local.UpdateTeamInMemory(context.Background(), &team, nil)
+		h.putTeam(&team)
 		ctx = resolve(t, plugin)
-		assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging), "the edited team must be read live, not off the key's stale team pointer")
+		assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyTeamDisableContentLogging), "the edited team must be read from its refreshed record")
 	})
 }
 
@@ -1013,11 +1059,11 @@ func TestResolveAccessStampsTeamContentLogging(t *testing.T) {
 func TestResolveAccessMarksCallerContentLoggingResolved(t *testing.T) {
 	vk := buildVKForMCPStamping(nil)
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{})
+	}, nil, &liveFixture{})
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1138,21 +1184,23 @@ func benchVK() *configstoreTables.TableVirtualKey {
 	return vk
 }
 
+// benchStore builds a store holding vk with two MCP clients open to every key, for the benchmarks.
 func benchStore(b *testing.B, vk *configstoreTables.TableVirtualKey) *LocalGovernanceStore {
 	b.Helper()
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(b, NewMockLogger(), &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{allowedByDefaultClients: map[string]string{"sentry-id": "sentry", "pager-id": "pager"}})
+	}, nil, &liveFixture{allowedByDefaultClients: map[string]string{"sentry-id": "sentry", "pager-id": "pager"}})
 	if err != nil {
 		b.Fatal(err)
 	}
 	return store
 }
 
+// benchPlugin builds a plugin over store for the benchmarks, cleaned up when the benchmark ends.
 func benchPlugin(b *testing.B, store *LocalGovernanceStore) *GovernancePlugin {
 	b.Helper()
 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
-		NewMockLogger(), store, nil, nil, nil, store.inMemoryStore)
+		NewMockLogger(), store, nil, nil, nil, store.live)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -1425,13 +1473,13 @@ func TestEvaluateRefusesAPresentedCredentialThatGrantsNothing(t *testing.T) {
 func TestMandatoryAuthAcceptsAnAuthenticatedIdentity(t *testing.T) {
 	vk := buildVKForMCPStamping([]string{"read_file"})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{})
+	}, nil, &liveFixture{})
 	require.NoError(t, err)
 
 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(true)},
-		logger, local, nil, nil, nil, nil)
+		logger, local, nil, nil, nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1490,13 +1538,13 @@ func TestMandatoryAuthAcceptsAnAuthenticatedIdentity(t *testing.T) {
 func TestEvaluateAdmitsAnUngrantedUserOnlyWhenAsked(t *testing.T) {
 	vk := buildVKForMCPStamping([]string{"read_file"})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{})
+	}, nil, &liveFixture{})
 	require.NoError(t, err)
 
 	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
-		logger, local, nil, nil, nil, nil)
+		logger, local, nil, nil, nil, local.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -1618,7 +1666,7 @@ func TestPermitFindsItsOwnScopedModelConfigs(t *testing.T) {
 	budget := buildBudget("b-vk-model", 100.0, "1h")
 	modelConfig := buildVKScopedModelConfig("mc-vk", "gpt-4o", nil, vk.ID, budget, nil)
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
@@ -1815,13 +1863,13 @@ func newSettlingErrorTestPlugin(t *testing.T, err error) *GovernancePlugin {
 	t.Helper()
 	vk := buildVKForMCPStamping(nil)
 	logger := NewMockLogger()
-	local, localErr := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, localErr := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{})
+	}, nil, &liveFixture{})
 	require.NoError(t, localErr)
 
 	plugin, initErr := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)},
-		logger, &settlingErrorStore{GovernanceStore: local, err: err}, nil, nil, nil, nil)
+		logger, &settlingErrorStore{GovernanceStore: local, err: err}, nil, nil, nil, local.live)
 	require.NoError(t, initErr)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
