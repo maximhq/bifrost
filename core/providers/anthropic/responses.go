@@ -6651,11 +6651,10 @@ func convertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 					}
 				}
 
-				// Prepend any pending reasoning blocks to ensure they come BEFORE tool blocks
+				// Reasoning stays where it was: a thinking block's signature binds to what
+				// precedes it, so hoisting it before an earlier search 400s on replay (#10451).
 				if len(pendingReasoningContentBlocks) > 0 {
-					copied := make([]AnthropicContentBlock, len(pendingReasoningContentBlocks))
-					copy(copied, pendingReasoningContentBlocks)
-					pendingToolCalls = append(copied, pendingToolCalls...)
+					pendingToolCalls = append(pendingToolCalls, pendingReasoningContentBlocks...)
 					pendingReasoningContentBlocks = nil
 				}
 
