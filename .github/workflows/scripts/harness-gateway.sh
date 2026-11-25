@@ -70,6 +70,8 @@ harness_seed_app_dir() {
 #   HARNESS_GATEWAY_GROUP  run the gateway with this primary group (via sg), so an
 #                          iptables --gid-owner rule can confine its egress.
 harness_start_gateway() {
+  # Fixed, non-secret value the relays-e2e harness reads through an env. extra header and asserts.
+  export RELAY_E2E_HEADER="relay-e2e-header-value"
   local app_dir="$1" port="$2" log_file="$3"
   local base_url="http://localhost:$port"
   local cmd=("$HARNESS_BINARY" --app-dir "$app_dir" --port "$port" --log-level info)

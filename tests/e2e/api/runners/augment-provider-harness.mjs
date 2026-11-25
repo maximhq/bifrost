@@ -10,6 +10,7 @@ import { buildCrossProviderCacheMatrixFolder } from "./lib/crossprovider-cache-m
 import { buildDirectCacheParityFolder } from "./lib/direct-cache-parity.mjs";
 import { injectChainedVarGuards } from "./lib/chained-vars.mjs";
 import { routeScriptCallsThroughSetupToken } from "./lib/setup-token.mjs";
+import { injectRelayHelpers, spliceRelayMatrix } from "./lib/relay-e2e-matrix.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -371,6 +372,13 @@ const CACHING_PREFIX = "Prompt caching hit-verification:";
 cachingFolder.item = (cachingFolder.item || []).filter((entry) => !(entry.name || "").startsWith(CACHING_PREFIX));
 cachingFolder.item.push(...cachingItems);
 
+// Relay e2e (folder 285): the table-shaped cases are spliced into their subfolders, then every
+// relay script that carries the helpers marker gets the shared helpers prepended. Both run before
+// the guards and the setup-token rewrite below, so those passes see the finished scripts.
+// See lib/relay-e2e-matrix.mjs.
+const relayMatrixCount = spliceRelayMatrix(collection);
+const relayHelperScripts = injectRelayHelpers(collection);
+
 // Last pass, over hand-written and generated items alike: any request whose raw body OR URL drops
 // in a variable that an EARLIER request's test script computed gets a pre-request guard. Without
 // it an unset variable leaves the literal "{{var}}" in place - a 400 "Invalid JSON" from a body,
@@ -412,5 +420,5 @@ collection.event.unshift({
 const tokenRoutedScripts = routeScriptCallsThroughSetupToken(collection, SETUP_TOKEN_VAR);
 
 writeFileSync(out, `${JSON.stringify(collection, null, 2)}\n`);
-const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0) + cachingItems.length;
-console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests, ${guardedCount} chained-var guards, ${tokenRoutedScripts} scripts sending the setup token`);
+const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0) + cachingItems.length + relayMatrixCount;
+console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests (${relayMatrixCount} relay matrix rows), ${relayHelperScripts} relay scripts given the shared helpers, ${guardedCount} chained-var guards, ${tokenRoutedScripts} scripts sending the setup token`);

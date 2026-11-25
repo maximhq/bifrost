@@ -14,6 +14,9 @@ VERSION ?= dev-build
 LOCAL ?=
 DEBUG ?=
 COMPAT ?=
+# Fixed, non-secret value the relays-e2e harness reads through an env. extra header and asserts.
+RELAY_E2E_HEADER := relay-e2e-header-value
+export RELAY_E2E_HEADER
 
 # Colors for output
 RED=\033[0;31m

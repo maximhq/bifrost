@@ -422,6 +422,65 @@ test.describe("Relays", () => {
     expect(saved.routes[0].job.reused_id_is_new_job).toBe(true);
   });
 
+  test("usage preview shows a sample that is a job's status check as relayed free", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-job-preview-${Date.now()}`;
+    created.push(name);
+    const res = await request.post(API, {
+      data: {
+        name,
+        base_url: "https://jobs.example.com",
+        auth: { type: "bearer" },
+        credential: { value: { value: "sk-e2e-secret" } },
+        routes: [
+          {
+            method: "POST",
+            path: "/v1/jobs",
+            usage: { cost_per_request: 0.01 },
+            job: { id_path: "id", poll: { method: "GET", path: "/v1/jobs/{{job.id}}" }, status_path: "status", succeeded: ["done"] },
+          },
+        ],
+      },
+    });
+    expect(res.status(), await res.text()).toBe(201);
+
+    await page.goto();
+    await page.select(name);
+    await page.page.getByTestId("relay-preview-toggle").click();
+    await expect(page.page.getByTestId("relay-preview-sheet")).toBeVisible();
+    await fillSelect(page.page, '[data-testid="relay-preview-method"]', "GET");
+    await page.page.getByTestId("relay-preview-path").fill("/v1/jobs/job-123");
+    await page.page.getByTestId("relay-preview-response-body").fill('{"status":"running"}');
+    await page.page.getByTestId("relay-preview-run").click();
+    // No route lists GET /v1/jobs/**, yet the gateway relays the job's status check free.
+    await expect(page.page.getByTestId("relay-preview-status-check")).toBeVisible();
+    // And it is free: no charge, and the billing badge says so.
+    await expect(page.page.getByTestId("relay-preview-cost")).toHaveText("$0");
+    await expect(page.page.getByTestId("relay-preview-result")).toContainText("Not charged");
+  });
+
+  test("route sheet flags a malformed path pattern under the field and saves nothing", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-glob-${Date.now()}`;
+    created.push(name);
+    await page.goto();
+    await page.createEndpoint(name, "https://api.example.com", "sk-e2e-secret");
+    await page.select(name);
+
+    await page.openAddRoute();
+    const path = page.page.getByTestId("relay-route-path");
+    await path.fill("/a/[b");
+    // Flagged as typed, before any save.
+    await expect(path).toHaveAttribute("aria-invalid", "true");
+    await expect(page.routeSheet).toContainText("This path has a malformed pattern");
+    await page.page.getByTestId("relay-route-save").click();
+    await expect(page.routeSheet).toContainText("This path has a malformed pattern");
+    // Fixed as typed, the message goes and the route saves.
+    await path.fill("/a/[b]");
+    await expect(page.routeSheet).not.toContainText("This path has a malformed pattern");
+    await expect(path).toHaveAttribute("aria-invalid", "false");
+    await page.saveRoute();
+    expect((await getRelay(request, name)).routes.map((r: { path: string }) => r.path)).toEqual(["/a/[b]"]);
+  });
+
   test("deleting a job's start route removes only that route", async ({ relaysPage: page, request }) => {
     const name = `e2e-pte-job-delete-${Date.now()}`;
     created.push(name);
