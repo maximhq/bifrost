@@ -1015,6 +1015,87 @@ def test_oauth_key_config_contract_matches_server_validation():
     assert not problems, "OAuthKeyConfig drifts from server validation:\n    " + "\n    ".join(problems)
 
 
+def test_mcp_client_credentials_contract_matches_server_validation():
+    """MCPClientCredentialsConfig.Validate (core/schemas/mcp.go) requires a client_secret or a
+    private_key set but not both, ties auth_method to the secret and the assertion settings to the
+    key, takes one scope per item, and create defaults an omitted auth_type to headers, which refuses a
+    client_credentials block. The published OpenAPI schema must say the same."""
+    import copy
+
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    mcp = load(HERE / "schemas" / "management" / "mcp.yaml")
+    common = load(HERE / "schemas" / "management" / "common.yaml")
+
+    def inline(node):
+        # Replaces the EnvVar and same-file refs the block uses with their definitions.
+        if isinstance(node, dict):
+            ref = node.get("$ref", "")
+            if ref.endswith("common.yaml#/EnvVar"):
+                return inline(copy.deepcopy(common["EnvVar"]))
+            if ref.startswith("#/"):
+                return inline(copy.deepcopy(mcp[ref[2:]]))
+            return {key: inline(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [inline(value) for value in node]
+        return node
+
+    block = inline(mcp["MCPClientCredentialsConfig"])
+    masked_secret = {"value": "****", "type": "plain_text"}
+    masked_key = {"value": "****", "ref": "env.CC_KEY", "type": "env"}
+    # The create body's client_credentials rules, which reference nothing outside themselves.
+    rules = [r for r in mcp["MCPClientCreateRequestBase"]["allOf"] if "client_credentials" in json.dumps(r)]
+    cases = [
+        (block, "no credential", {"client_id": "id"}, False),
+        (block, "both credentials", {"client_id": "id", "client_secret": "s", "private_key": "pem"}, False),
+        (block, "secret only", {"client_id": "id", "client_secret": "s"}, True),
+        (block, "key only", {"client_id": "id", "private_key": "pem"}, True),
+        (block, "secret with signing_algorithm", {"client_id": "id", "client_secret": "s", "signing_algorithm": "RS256"}, False),
+        (block, "secret with key_id", {"client_id": "id", "client_secret": "s", "key_id": "k1"}, False),
+        (block, "key with auth_method", {"client_id": "id", "private_key": "pem", "auth_method": "client_secret_post"}, False),
+        (block, "secret with auth_method", {"client_id": "id", "client_secret": "s", "auth_method": "client_secret_post"}, True),
+        (block, "key with signing_algorithm and key_id", {"client_id": "id", "private_key": "pem", "signing_algorithm": "ES256", "key_id": "k1"}, True),
+        (block, "secret with an empty signing_algorithm", {"client_id": "id", "client_secret": "s", "signing_algorithm": ""}, True),
+        (block, "key with an empty auth_method", {"client_id": "id", "private_key": "pem", "auth_method": ""}, True),
+        # Credentials are secret values: a bare string in, a {value, ref, type} object out, and
+        # "set" means a non-empty value or ref, as SecretVar.IsSet does.
+        (block, "a read secret sent back", {"client_id": {"value": "****", "type": "plain_text"}, "client_secret": masked_secret}, True),
+        (block, "a read key reference sent back", {"client_id": "id", "private_key": masked_key, "signing_algorithm": "ES256"}, True),
+        (block, "an empty secret", {"client_id": "id", "client_secret": ""}, False),
+        (block, "an empty secret object", {"client_id": "id", "client_secret": {"value": ""}}, False),
+        (block, "an empty secret and a key", {"client_id": "id", "client_secret": "", "private_key": "pem"}, True),
+        (block, "a secret and an empty key object", {"client_id": "id", "client_secret": masked_secret, "private_key": {"value": ""}}, True),
+        (block, "an empty key with signing_algorithm", {"client_id": "id", "client_secret": "s", "private_key": "", "signing_algorithm": "RS256"}, False),
+        (block, "auth_method with an empty secret", {"client_id": "id", "client_secret": "", "private_key": "pem", "auth_method": "client_secret_post"}, False),
+        # An object is a reference only with its type (SecretVar.UnmarshalJSON), and a
+        # plain_text value is set by its value alone, whatever ref it carries.
+        (block, "a ref-only client_id", {"client_id": {"ref": "env.MCP_CLIENT_ID"}, "client_secret": "s"}, False),
+        (block, "a ref-only secret", {"client_id": "id", "client_secret": {"ref": "env.CC_SECRET"}}, False),
+        (block, "a plain_text secret with only a ref", {"client_id": "id", "client_secret": {"type": "plain_text", "value": "", "ref": "env.CC_SECRET"}}, False),
+        (block, "a typed env secret", {"client_id": "id", "client_secret": {"type": "env", "ref": "env.CC_SECRET"}}, True),
+        (block, "an untyped value", {"client_id": {"value": "id"}, "client_secret": {"value": "s"}}, True),
+        # Validate takes each scope as one non-empty scope.
+        (block, "separate scopes", {"client_id": "id", "client_secret": "s", "scopes": ["read", "write"]}, True),
+        (block, "no scopes", {"client_id": "id", "client_secret": "s", "scopes": []}, True),
+        (block, "an empty scope", {"client_id": "id", "client_secret": "s", "scopes": [""]}, False),
+        (block, "two scopes in one item", {"client_id": "id", "client_secret": "s", "scopes": ["read write"]}, False),
+        ({"allOf": rules}, "block without auth_type", {"client_credentials": {"client_id": "id"}}, False),
+        ({"allOf": rules}, "neither auth_type nor block", {}, True),
+        ({"allOf": rules}, "block with auth_type client_credentials", {"auth_type": "client_credentials", "client_credentials": {"client_id": "id"}}, True),
+        ({"allOf": rules}, "block with auth_type headers", {"auth_type": "headers", "client_credentials": {"client_id": "id"}}, False),
+        ({"allOf": rules}, "auth_type client_credentials without the block", {"auth_type": "client_credentials"}, False),
+    ]
+    problems = [
+        f"{name}: OpenAPI says {'valid' if jsonschema.Draft202012Validator(schema).is_valid(body) else 'invalid'}, server says {'valid' if want else 'invalid'}"
+        for schema, name, body, want in cases
+        if jsonschema.Draft202012Validator(schema).is_valid(body) != want
+    ]
+    assert not problems, "MCP client_credentials drifts from server validation:\n    " + "\n    ".join(problems)
+
+
 
 def test_oauth_token_url_descriptions_state_the_server_rules():
     """OAuthKeyConfig.Validate accepts plain http for loopback hosts only and rejects a token_url
@@ -1200,6 +1281,7 @@ check("warp config input models its enabled-state contract", test_warp_config_in
 check("every operation declares its own security", test_every_operation_declares_security)
 check("injected_tools schemas match config.schema.json", test_injected_tools_contract_matches_config_schema)
 check("oauth_key_config grant rules match server validation", test_oauth_key_config_contract_matches_server_validation)
+check("mcp client_credentials rules match server validation", test_mcp_client_credentials_contract_matches_server_validation)
 check("oauth token_url descriptions state the loopback and URL-part rules", test_oauth_token_url_descriptions_state_the_server_rules)
 check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
 check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)

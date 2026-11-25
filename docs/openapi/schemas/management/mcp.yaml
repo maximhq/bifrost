@@ -2,7 +2,7 @@
 
 MCPAuthType:
   type: string
-  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange]
+  enum: [none, headers, oauth, per_user_oauth, per_user_headers, token_exchange, client_credentials]
   description: |
     Authentication type for MCP connections:
     - none: No authentication
@@ -13,6 +13,9 @@ MCPAuthType:
     - token_exchange: Delegated token exchange (each caller's own identity-provider token is
       exchanged for a short-lived token scoped to this server on every call; nothing is
       stored per caller). Requires an enabled identity-provider integration (enterprise).
+    - client_credentials: OAuth client_credentials grant with a client registered in advance
+      at the server's authorization server; one token is shared by every caller and no
+      user signs in (MCP OAuth Client Credentials extension).
 
 MCPTokenExchangeConfig:
   type: object
@@ -85,6 +88,149 @@ MCPTokenExchangeConfig:
     deployment's identity-provider integration; this block only says which
     resource the exchanged token must be scoped to and which application
     performs the exchange.
+
+MCPClientCredentialsConfig:
+  type: object
+  required: [client_id]
+  properties:
+    token_url:
+      type: string
+      description: |
+        Token endpoint (https; http only on a loopback host). When empty on
+        create or update, it is discovered from the MCP server's OAuth metadata
+        and stored, and the authorization server must advertise the
+        client_credentials grant. Changing it, or clearing it to discover again,
+        requires a masked plain-text client_secret or private_key to be resent;
+        an env. or vault. reference is kept.
+        A token endpoint on a private network must be on the OAuth Private
+        Network Allowlist in MCP Settings (mcp_oauth_private_allowlist);
+        otherwise the save fails.
+    client_id:
+      allOf:
+        - $ref: ./common.yaml#/EnvVar
+        - $ref: '#/MCPSecretSet'
+      description: |
+        Bifrost's client ID at the authorization server. Supports env.VAR_NAME
+        and vault.path references. Redacted in API responses.
+    client_secret:
+      $ref: ./common.yaml#/EnvVar
+      description: |
+        Client secret. Exactly one of client_secret and private_key is
+        required. Supports env.VAR_NAME and vault.path references. Redacted in
+        API responses.
+    auth_method:
+      type: string
+      enum: ['', client_secret_basic, client_secret_post]
+      description: |
+        How client_secret is sent. Empty: HTTP Basic unless the discovered
+        metadata lists only client_secret_post; the stored value is the one
+        chosen. Requires client_secret.
+    private_key:
+      $ref: ./common.yaml#/EnvVar
+      description: |
+        PEM RSA or EC private key. Bifrost authenticates with private_key_jwt,
+        a client assertion signed with this key, instead of a secret. Supports
+        env.VAR_NAME and vault.path references. Redacted in API responses.
+    key_id:
+      type: string
+      description: kid header of the client assertion. Requires private_key.
+    signing_algorithm:
+      type: string
+      enum: ['', RS256, RS384, RS512, PS256, PS384, PS512, ES256, ES384, ES512]
+      description: |
+        Client assertion signing algorithm. Empty: chosen from the key on save,
+        the ES algorithm for an EC key's curve, or for an RSA key the first RSA
+        algorithm the authorization server advertises, else RS256; the stored
+        value is the one chosen. With an env. or vault. private_key the key is
+        not read on save, so empty means RS256: set it (for example ES256 for an
+        EC key) when the authorization server does not accept RS256. Requires
+        private_key.
+    assertion_audience:
+      type: string
+      description: |
+        aud of the client assertion (https; http only on a loopback host).
+        Empty: the token endpoint.
+        Changing it requires a masked plain-text private_key to be resent; an
+        env. or vault. reference is kept. Requires private_key.
+    scopes:
+      type: array
+      items:
+        type: string
+        minLength: 1
+        pattern: '^\S+$'
+        description: One scope; no spaces.
+      description: Scopes to request, sent space-joined.
+    resource:
+      type: string
+      description: |
+        Resource indicator (RFC 8707) sent on the token request. Omitted: the
+        MCP server URL. Empty string: not sent.
+  allOf:
+    - not:
+        required: [client_secret, private_key]
+        properties:
+          client_secret: {$ref: '#/MCPSecretSet'}
+          private_key: {$ref: '#/MCPSecretSet'}
+      description: Bifrost authenticates with a client secret or a private key, not both.
+    - anyOf:
+        - required: [client_secret]
+          properties:
+            client_secret: {$ref: '#/MCPSecretSet'}
+        - required: [private_key]
+          properties:
+            private_key: {$ref: '#/MCPSecretSet'}
+    - if:
+        anyOf:
+          - required: [key_id]
+            properties: {key_id: {minLength: 1}}
+          - required: [signing_algorithm]
+            properties: {signing_algorithm: {minLength: 1}}
+          - required: [assertion_audience]
+            properties: {assertion_audience: {minLength: 1}}
+      then:
+        required: [private_key]
+        properties:
+          private_key: {$ref: '#/MCPSecretSet'}
+      description: key_id, signing_algorithm and assertion_audience apply to private_key.
+    - if:
+        required: [auth_method]
+        properties: {auth_method: {minLength: 1}}
+      then:
+        required: [client_secret]
+        properties:
+          client_secret: {$ref: '#/MCPSecretSet'}
+      description: auth_method applies to client_secret.
+  additionalProperties: false
+  description: |
+    OAuth client_credentials grant for auth_type "client_credentials". Saving
+    the client discovers what was left empty and requests one token, so
+    credentials the authorization server refuses fail the request with 400.
+
+MCPSecretSet:
+  description: |
+    A secret-capable value that is set, as the server reads one: a non-empty
+    string; a reference object, which needs its type (env or vault) and a
+    non-empty ref; or a literal object with a non-empty value, typed
+    plain_text or untyped without a ref.
+  anyOf:
+    - type: string
+      minLength: 1
+    - type: object
+      required: [type, ref]
+      properties:
+        type: {enum: [env, vault]}
+        ref: {type: string, minLength: 1}
+    - type: object
+      required: [value]
+      properties:
+        value: {type: string, minLength: 1}
+        type: {const: plain_text}
+      if:
+        not:
+          required: [type]
+      then:
+        not:
+          required: [ref]
 
 MCPConnectionType:
   type: string
@@ -228,6 +374,28 @@ MCPClientCreateRequestBase:
         description: |
           A `token_exchange` block only applies to auth_type "token_exchange";
           reject it for every other auth_type instead of silently ignoring it.
+    - if:
+        required: [auth_type]
+        properties:
+          auth_type:
+            const: client_credentials
+      then:
+        required: [client_credentials]
+        description: |
+          When `auth_type` is `client_credentials`, `client_credentials` must
+          carry a `client_id` and a `client_secret` or `private_key`.
+    - if:
+        properties:
+          auth_type:
+            not:
+              const: client_credentials
+      then:
+        not:
+          required: [client_credentials]
+        description: |
+          A `client_credentials` block only applies to auth_type
+          "client_credentials"; reject it for every other auth_type, including
+          an omitted one, which defaults to "headers".
     - if:
         required: [per_user_discovery]
         properties:
@@ -444,6 +612,11 @@ MCPClientCreateRequestBase:
         POST /api/mcp/client/{id}/verify-exchange). A request with neither,
         such as one made with an API key, creates the client in
         pending_verification. There is no sample-token field on this request.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        Required when creating a client with auth_type "client_credentials".
+        Not accepted for connection_type "stdio" or "openapi".
     per_user_discovery:
       type: boolean
       default: false
@@ -502,7 +675,7 @@ MCPClientCreateRequestSSE:
           description: SSE URL (required for SSE connection type)
         auth_type:
           type: string
-          enum: [none, headers, oauth]
+          enum: [none, headers, oauth, client_credentials]
           description: |
             The per-user auth types open a new connection for each call, which an
             SSE stream does not allow, so SSE takes the shared auth types only.
@@ -983,6 +1156,26 @@ MCPClientUpdateRequest:
         from a prior GET is resolved back to the stored value rather than
         overwriting it; any other change re-scopes future exchanges and
         invalidates cached exchanged tokens for this client.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        For `client_credentials` clients only. Omitted preserves the stored
+        configuration; when sent, it replaces the stored block, and when it
+        differs from it, Bifrost discovers what was left empty and requests one
+        token. Round-tripped from a prior GET:
+        - a masked `client_id` keeps the stored value;
+        - a masked plain-text `client_secret` or `private_key` keeps the stored
+          value, except when `token_url` or `assertion_audience` changes, which
+          requires the secret or key itself (400 otherwise);
+        - an `env.` or `vault.` reference is kept as the reference, also when the
+          target changes, since the credential is never sent back.
+        Sending an `env.` or `vault.` reference requires an authenticated admin
+        (403 when dashboard authentication is off); to change other settings,
+        omit `client_credentials` and the stored block is kept.
+        If the token request succeeds but reconnecting the live client fails,
+        the change is saved and the response is 200 with status
+        `partial_success`; the client retries with the new credentials, so do
+        not resend them.
     disabled:
       type: boolean
       default: false
@@ -1175,6 +1368,12 @@ MCPClientConfig:
       description: |
         For `token_exchange` clients only. `client_id` and `client_secret` are
         redacted in this response.
+    client_credentials:
+      $ref: '#/MCPClientCredentialsConfig'
+      description: |
+        For `client_credentials` clients only, including the token_url,
+        auth_method and signing_algorithm chosen on save. `client_id`,
+        `client_secret` and `private_key` are redacted in this response.
     per_user_discovery:
       type: boolean
       default: false
