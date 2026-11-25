@@ -357026,14 +357026,15 @@
                   "var dump = body.slice(0, 800);",
                   "var events = body.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { try { return JSON.parse(l.slice(5)); } catch (e) { return {}; } });",
                   "pm.test('gemini event id: a chunk carries the cursor - interactions server tools', function () {",
-                  "  var withId = events.filter(function (e) { return typeof e.event_id === 'string' && e.event_id.length > 0; });",
+                  "  var withId = events.filter(function (e) { return e.type === 'response.output_text.delta' && typeof e.event_id === 'string' && e.event_id.length > 0; });",
                   "  pm.expect(withId.length, dump).to.be.above(0);",
                   "  // A cursor with deltas after it, so a resume that ignores it can be told from one that does not.",
                   "  var at = events.indexOf(withId[0]);",
                   "  pm.expect(events[at].delta, dump).to.be.a('string').and.not.empty;",
                   "  pm.expect(events.slice(at + 1).some(function (e) { return e.type === 'response.output_text.delta'; }), dump).to.eql(true);",
                   "});",
-                  "var cursor = events.filter(function (e) { return e.event_id; })[0] || {};",
+                  "var cursor = events.filter(function (e) { return e.type === 'response.output_text.delta' && e.event_id; })[0] || {};",
+                  "pm.collectionVariables.set('h382CursorEnded', events.some(function (e) { return e.type === 'response.completed'; }) ? 'yes' : 'no');",
                   "pm.collectionVariables.set('h382CursorId', cursor.event_id);",
                   "pm.collectionVariables.set('h382CursorRest', events.slice(events.indexOf(cursor) + 1).filter(function (e) { return e.type === 'response.output_text.delta'; }).map(function (e) { return e.delta; }).join(''));",
                   "pm.collectionVariables.set('h382CursorRunId', events.filter(function (e) { return e.response && e.response.id; })[0].response.id);"
@@ -357093,7 +357094,9 @@
                   "  pm.expect(done.length, dump).to.eql(1);",
                   "  var resumed = events.filter(function (e) { return e.type === 'response.output_text.delta'; }).map(function (e) { return e.delta; }).join('');",
                   "  pm.expect(pm.collectionVariables.get('h382CursorRest'), dump).to.be.a('string').and.not.empty;",
-                  "  pm.expect(resumed, 'the text after the cursor, and nothing before it: ' + dump).to.eql(pm.collectionVariables.get('h382CursorRest'));",
+                  "  // A first stream that ended while the run went on saw only part of what the resumed one carries.",
+                  "  var rest = pm.collectionVariables.get('h382CursorRest');",
+                  "  pm.expect(pm.collectionVariables.get('h382CursorEnded') === 'yes' ? resumed : resumed.slice(0, rest.length), 'the text after the cursor, and nothing before it: ' + dump).to.eql(rest);",
                   "  pm.expect(done[0].response.id, dump).to.eql(pm.collectionVariables.get('h382CursorRunId'));",
                   "});"
                 ]
@@ -357700,7 +357703,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// The run is a long essay started a moment ago, so it is still running and Google cancels it.",
+                  "// The run is a long essay started a moment ago, so Google cancels it, or returns it as it finished if it won.",
                   "var body = pm.response.text();",
                   "pm.test('gemini cancel running: 200 - genai interactions typed', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 600)).to.eql(200);",
@@ -357710,7 +357713,7 @@
                   "var dump = JSON.stringify(j).slice(0, 400);",
                   "pm.test('gemini cancel running: the run asked for is the run cancelled - genai interactions typed', function () {",
                   "  pm.expect(j.id, dump).to.eql(pm.collectionVariables.get('h384GeminiBgInteractionId'));",
-                  "  pm.expect(j.status, dump).to.eql('cancelled');",
+                  "  pm.expect(j.status, dump).to.be.oneOf(['cancelled', 'completed']);",
                   "});"
                 ]
               }
@@ -358891,7 +358894,7 @@
             "method": "DELETE",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/genai_passthrough/v1beta/agents/{{h384AgentId}}",
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/agents/{{h384AgentName}}",
               "host": [
                 "{{baseUrl}}"
               ],
@@ -358899,7 +358902,7 @@
                 "genai_passthrough",
                 "v1beta",
                 "agents",
-                "{{h384AgentId}}"
+                "{{h384AgentName}}"
               ]
             }
           },
