@@ -185,10 +185,11 @@ func (c *Config) AttachLiveStore(live *livestore.Store) error {
 //  1. Parse and validate its section into its field below (merged with the config store's rows,
 //     where the loader merges).
 //  2. With a config store, sync that content into the database.
-//  3. Never write the live store: loadLiveStore is the one place memory is filled, with LoadAll
-//     from the database when there is a config store, and otherwise with LoadRecords from the
-//     records this struct builds (records). It then drops the struct, so nothing reads it after
-//     boot. Boot steps that run before the load read their content here.
+//  3. Never write a live-store collection: loadLiveStore is the one place collections are filled,
+//     with LoadAll from the database when there is a config store, and otherwise with LoadRecords
+//     from the records this struct builds (records). It then drops the struct, so nothing reads it
+//     after boot. Boot steps that run before the load read their content here. Live-store tables
+//     are filled by their owners instead (initFeatureFlags, loadDatasheetOverridesFromFile).
 //
 // It exists only while LoadConfig runs: a loader called outside it (a test, or a later reload)
 // leaves it alone. Each field says what fills it and whether a gateway without a config store
