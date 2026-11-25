@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"errors"
 	"math"
 	"net/url"
@@ -19,13 +20,52 @@ func isJSONContentType(contentType string) bool {
 	return strings.Contains(strings.ToLower(mediaType), "json")
 }
 
+// maxJSONDepth bounds how deep a body may nest before it is parsed: gjson validates recursively, and
+// a body of millions of [ would overflow the stack and crash the process. It is not a size cap.
+const maxJSONDepth = 1000
+
+var openBracket, openBrace = []byte{'['}, []byte{'{'}
+
+// jsonTooDeep reports a body nesting objects or arrays past maxJSONDepth, in one pass with no recursion.
+// A body with no more brackets than the limit cannot nest past it, so most bodies skip the scan.
+func jsonTooDeep(body []byte) bool {
+	if bytes.Count(body, openBracket)+bytes.Count(body, openBrace) <= maxJSONDepth {
+		return false
+	}
+	depth, inString, escaped := 0, false, false
+	for _, c := range body {
+		switch {
+		case inString:
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+		case c == '"':
+			inString = true
+		case c == '[' || c == '{':
+			if depth++; depth > maxJSONDepth {
+				return true
+			}
+		case c == ']' || c == '}':
+			depth--
+		}
+	}
+	return false
+}
+
+// validJSON is gjson.ValidBytes on a body that is first checked not to nest deep enough to overflow it.
+func validJSON(body []byte) bool { return !jsonTooDeep(body) && gjson.ValidBytes(body) }
+
 // looksJSON reports whether a body is worth scanning as JSON: a JSON media type, or no media type
 // and bytes that parse as JSON.
 func looksJSON(contentType string, body []byte) bool {
 	if isJSONContentType(contentType) {
 		return true
 	}
-	return contentType == "" && gjson.ValidBytes(body)
+	return contentType == "" && validJSON(body)
 }
 
 // tokensConfigured reports whether the mapping names any token path. Once it does, the token
@@ -193,6 +233,9 @@ func (u resolvedUsage) requestBodyError(body []byte) error {
 	if !u.billsUnits() || u.unitsSource != schemas.RelayUnitsFromRequest ||
 		u.unitsMeasure == schemas.RelayUnitsBodyBytes || u.unitsMeasure == schemas.RelayUnitsBodyChars {
 		return nil
+	}
+	if jsonTooDeep(body) {
+		return errors.New("the request body nests deeper than 1000 levels")
 	}
 	if !gjson.ValidBytes(body) {
 		return errors.New("this route bills on " + u.unitsPath + " in the request body, which must be JSON")

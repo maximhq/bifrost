@@ -8,7 +8,6 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/tidwall/gjson"
 )
 
 // UsagePreviewInput is one hypothetical relayed call: what the caller would send and what the
@@ -62,6 +61,13 @@ type PreviewTokens struct {
 // relay applies, so an operator can check a mapping against a sample before saving it. It builds
 // no client and sends nothing. Config-time only, never on the request path. cfg may be unsaved;
 // its extra_headers take part in route matching and its ignore_upstream_cost in pricing, as on
+// gatewayDroppedExtraHeaders are the x-bf-eh-* names the HTTP transport always refuses (its
+// security denylist in transports/bifrost-http/lib/ctx.go), so the preview drops them too.
+var gatewayDroppedExtraHeaders = map[string]struct{}{
+	"proxy-authorization": {}, "cookie": {}, "host": {}, "content-length": {}, "connection": {}, "transfer-encoding": {},
+	"x-api-key": {}, "x-goog-api-key": {}, "xi-api-key": {}, "x-bf-api-key": {}, "x-bf-api-key-id": {}, "x-bf-vk": {}, "x-bf-direct-key": {},
+}
+
 // the relay.
 func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview, error) {
 	if cfg == nil {
@@ -94,7 +100,7 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	if status == 0 {
 		status = 200
 	}
-	if in.ResponseContentType == "" && in.ResponseBody != "" && !gjson.Valid(in.ResponseBody) {
+	if in.ResponseContentType == "" && in.ResponseBody != "" && !validJSON([]byte(in.ResponseBody)) {
 		return nil, errors.New("response_content_type is required when the response body is not JSON")
 	}
 
@@ -109,8 +115,21 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	}
 	e := &endpoint{cfg: cfg, usage: usage, routes: routes, streamGlobs: compileStreamGlobs(cfg), operatorHeaders: lowerHeaderValues(cfg.ExtraHeaders), operatorLogHeaders: loggableHeaderValues(cfg.ExtraHeaders)}
 	headers := make(map[string]string, len(in.Headers))
+	var extra map[string][]string
 	for name, value := range in.Headers {
-		headers[strings.ToLower(strings.TrimSpace(name))] = value
+		name = strings.ToLower(strings.TrimSpace(name))
+		// A sample x-bf-eh-* header reaches the upstream without its prefix, as on a live call.
+		if stripped, ok := strings.CutPrefix(name, "x-bf-eh-"); ok {
+			// The gateway never forwards these, so they cannot select a route on a live call either.
+			if _, dropped := gatewayDroppedExtraHeaders[stripped]; stripped != "" && !dropped {
+				if extra == nil {
+					extra = map[string][]string{}
+				}
+				extra[stripped] = append(extra[stripped], value)
+			}
+			continue
+		}
+		headers[name] = value
 	}
 	// The sample's own content-type and Accept fields are request headers too, as on the wire.
 	if _, set := headers["content-type"]; !set && in.RequestContentType != "" {
@@ -121,12 +140,14 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	}
 	// One content type for the whole preview, the one the upstream receives: the sample's, else the
 	// operator's, as a passthrough call's caller header replaces the extra header.
+	// As in Serve, a header the upstream never receives (a caller's x-amz-* under SigV4) selects no route.
+	headers = e.routeHeaders(headers, extra)
 	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
 	route := e.matchRoute(method, path, headers)
-	usage, billable := e.usage, billableByDefault(method, nil)
+	usage, billable, forced := e.usage, billableByDefault(method, nil), compileBodyOverrides(cfg.BodyOverrides)
 	out := &UsagePreview{RouteAllowed: (cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled)}
 	if route != nil {
-		usage, billable = route.usage, route.billable
+		usage, billable, forced = route.usage, route.billable, route.bodyOverrides
 		for i := range e.routes {
 			if &e.routes[i] == route {
 				out.RouteIndex = schemas.Ptr(i)
@@ -155,6 +176,15 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 			out.Notes = append(out.Notes, "no route matches and skip_route_check is off: the call is refused with 404")
 		}
 		return out, nil
+	}
+	// Forced fields go in first, as in Serve, so the model and request-side units are read off the sent body.
+	reqBody, created, err := applyBodyOverrides(forced, method, contentType, reqBody)
+	if err != nil {
+		out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+		return out, nil
+	}
+	if created && !isJSONBodyType(contentType) {
+		contentType = "application/json"
 	}
 	// The model is read the way the transport reads it, so a body the relay refuses is reported.
 	if out.ModelPath != "" && out.ModelSource == schemas.RelayModelFromQuery {

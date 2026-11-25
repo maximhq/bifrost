@@ -1978,9 +1978,13 @@ bifrost:
   #       value: "env.TAVILY_API_KEY"        # literal, env.VAR_NAME, or a vault reference; supply the env var via envFrom/extraEnv
   #     usage:
   #       cost_per_request: 0.001            # USD added to every billable call
+  #     body_overrides:                      # JSON fields forced into every request body on every route (plain text, not for secrets)
+  #       include_usage: true                # dotted paths of object keys; every call must then send a JSON object body
   #     routes:                              # only listed routes are relayed unless skip_route_check: true
   #       - method: "POST"
   #         path: "/search"
+  #         body_overrides:                  # this route only; replaces the relay's value for the same path
+  #           search_depth: "advanced"
   #         usage:
   #           units_path: "usage.credits"
   #           cost_per_unit: 0.008

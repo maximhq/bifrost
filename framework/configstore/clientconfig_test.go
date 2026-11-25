@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -97,6 +98,12 @@ func TestGenerateRelayHash(t *testing.T) {
 		},
 		"skip_route_check":     func(c *schemas.RelayConfig) { c.SkipRouteCheck = true },
 		"ignore_upstream_cost": func(c *schemas.RelayConfig) { c.IgnoreUpstreamCost = true },
+		"body_overrides": func(c *schemas.RelayConfig) {
+			c.BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+		},
+		"route body_overrides": func(c *schemas.RelayConfig) {
+			c.Routes[0].BodyOverrides = map[string]json.RawMessage{"include_usage": json.RawMessage("true")}
+		},
 	}
 	for name, change := range changes {
 		cfg := testRelay("tavily")
