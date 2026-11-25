@@ -8856,6 +8856,32 @@
               "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
               "default": false
             },
+            "batch_gcs_config": {
+              "type": "object",
+              "description": "Cloud Storage buckets this key serves for Vertex file and batch operations. A key that lists buckets serves only those buckets, and only objects inside an entry's prefix when one is set. A key that lists none accepts whichever bucket the request names.",
+              "properties": {
+                "buckets": {
+                  "type": "array",
+                  "description": "List of GCS bucket configurations",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "bucket_name": {
+                        "type": "string",
+                        "description": "GCS bucket name"
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "description": "GCS object name prefix. Names a folder: \"jobs\" and \"jobs/\" both mean objects under \"jobs/\""
+                      }
+                    },
+                    "required": ["bucket_name"],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
             "aws_workload_identity": {
               "type": "object",
               "description": "GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials; the two must not be combined.",
@@ -10655,6 +10681,32 @@
                     "type": "boolean",
                     "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
                     "default": false
+                  },
+                  "batch_gcs_config": {
+                    "type": "object",
+                    "description": "Cloud Storage buckets this key serves for Vertex file and batch operations. A key that lists buckets serves only those buckets, and only objects inside an entry's prefix when one is set. A key that lists none accepts whichever bucket the request names.",
+                    "properties": {
+                      "buckets": {
+                        "type": "array",
+                        "description": "List of GCS bucket configurations",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "bucket_name": {
+                              "type": "string",
+                              "description": "GCS bucket name"
+                            },
+                            "prefix": {
+                              "type": "string",
+                              "description": "GCS object name prefix. Names a folder: \"jobs\" and \"jobs/\" both mean objects under \"jobs/\""
+                            }
+                          },
+                          "required": ["bucket_name"],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "additionalProperties": false
                   },
                   "aws_workload_identity": {
                     "type": "object",

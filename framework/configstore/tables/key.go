@@ -52,6 +52,7 @@ type TableKey struct {
 	VertexForceSingleRegion       *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
 	VertexUseSessionRouting       *bool              `gorm:"column:vertex_use_session_routing" json:"vertex_use_session_routing,omitempty"`
 	VertexAWSWorkloadIdentityJSON *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.VertexAWSWorkloadIdentityConfig
+	VertexBatchGCSConfigJSON      *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.BatchGCSConfig
 
 	// Bedrock config fields (embedded)
 	BedrockAccessKey         *schemas.SecretVar `gorm:"type:text" json:"bedrock_access_key,omitempty"`
@@ -294,6 +295,11 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 			return err
 		}
 		k.VertexAWSWorkloadIdentityJSON = wif
+		batchGCS, err := MarshalVertexBatchGCSConfigJSON(k.VertexKeyConfig.BatchGCSConfig)
+		if err != nil {
+			return err
+		}
+		k.VertexBatchGCSConfigJSON = batchGCS
 	} else {
 		k.VertexProjectID = nil
 		k.VertexProjectNumber = nil
@@ -302,6 +308,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VertexForceSingleRegion = nil
 		k.VertexUseSessionRouting = nil
 		k.VertexAWSWorkloadIdentityJSON = nil
+		k.VertexBatchGCSConfigJSON = nil
 	}
 	if k.BedrockKeyConfig != nil {
 		if k.BedrockKeyConfig.AccessKey.IsSet() {
@@ -729,6 +736,9 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		if err := encryptString(k.VertexAWSWorkloadIdentityJSON); err != nil {
 			return fmt.Errorf("failed to encrypt vertex aws workload identity: %w", err)
 		}
+		if err := encryptString(k.VertexBatchGCSConfigJSON); err != nil {
+			return fmt.Errorf("failed to encrypt vertex batch gcs config: %w", err)
+		}
 		// Bedrock
 		if err := encryptSecretVarPtr(&k.BedrockAccessKey); err != nil {
 			return fmt.Errorf("failed to encrypt bedrock access key: %w", err)
@@ -911,6 +921,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if err := decryptString(k.VertexAWSWorkloadIdentityJSON); err != nil {
 			return fmt.Errorf("failed to decrypt vertex aws workload identity: %w", err)
+		}
+		if err := decryptString(k.VertexBatchGCSConfigJSON); err != nil {
+			return fmt.Errorf("failed to decrypt vertex batch gcs config: %w", err)
 		}
 		// Bedrock
 		if err := decryptSecretVarPtr(&k.BedrockAccessKey); err != nil {
@@ -1111,7 +1124,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.AzureKeyConfig = azureConfig
 	}
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || k.VertexUseSessionRouting != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || k.VertexUseSessionRouting != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") || (k.VertexBatchGCSConfigJSON != nil && *k.VertexBatchGCSConfigJSON != "") {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
@@ -1140,6 +1153,13 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 				return err
 			}
 			config.AWSWorkloadIdentity = &wif
+		}
+		if k.VertexBatchGCSConfigJSON != nil && *k.VertexBatchGCSConfigJSON != "" {
+			var batchGCSConfig schemas.BatchGCSConfig
+			if err := json.Unmarshal([]byte(*k.VertexBatchGCSConfigJSON), &batchGCSConfig); err != nil {
+				return err
+			}
+			config.BatchGCSConfig = &batchGCSConfig
 		}
 		k.VertexKeyConfig = config
 	}
@@ -1385,6 +1405,19 @@ func secretVarStorageString(sv *schemas.SecretVar) string {
 		return sv.GetRawRef()
 	}
 	return sv.GetValue()
+}
+
+// MarshalVertexBatchGCSConfigJSON serializes a Vertex key's bucket list for the
+// vertex_batch_gcs_config_json column, returning nil when the key has none so the column stays NULL.
+func MarshalVertexBatchGCSConfigJSON(cfg *schemas.BatchGCSConfig) (*string, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	data, err := sonic.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return new(string(data)), nil
 }
 
 // MarshalVertexAWSWorkloadIdentityJSON serializes the Vertex AWS workload identity block for the

@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -549,6 +550,13 @@ func (provider *VertexProvider) resolveURLSource(ctx *schemas.BifrostContext, ke
 	case urlSourceFetchGCS:
 		encoded, err = provider.fetchGCSObjectEncoded(ctx, key, rawURL)
 	default:
+		// A gs:// reference that is forwarded is still read with this key's credentials, by
+		// Vertex instead of by Bifrost, so it follows the key's bucket list like the one Bifrost
+		// reads itself. Any other scheme, and a gs:// URI that does not parse, is not a location
+		// the list speaks for and is left to the provider.
+		if _, refusal := keysAllowingGCSURI([]schemas.Key{key}, rawURL); refusal != nil {
+			return "", "", false, &gcsLocationRefusedError{refusal: refusal}
+		}
 		forward = true
 	}
 	return mediaType, encoded, forward, err
@@ -565,6 +573,10 @@ func (provider *VertexProvider) fetchGCSObjectEncoded(ctx *schemas.BifrostContex
 	}
 	if bucket == "" || objectKey == "" {
 		return "", fmt.Errorf("invalid GCS URI %q: expected gs://bucket/object", providerUtils.RedactURLForError(rawURL))
+	}
+	// The object is read with the key's own credentials, so it follows the key's bucket list.
+	if _, refusal := keysAllowingGCSObject([]schemas.Key{key}, bucket, objectKey); refusal != nil {
+		return "", &gcsLocationRefusedError{refusal: refusal}
 	}
 	authHeader, err := provider.gcsGetAuthHeader(key)
 	if err != nil {
@@ -727,7 +739,7 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
 	// Claude, which accepts base64 sources only. See classifyURLSource.
 	if err := provider.inlineRemoteURLSources(ctx, key, request); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex", err)
+		return nil, inlineURLSourcesError("failed to inline remote URL sources for vertex", err)
 	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr = anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
@@ -1058,7 +1070,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
 	// Claude, which accepts base64 sources only. See classifyURLSource.
 	if err := provider.inlineRemoteURLSources(ctx, key, request); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to inline remote URL sources for vertex", err)
+		return nil, inlineURLSourcesError("failed to inline remote URL sources for vertex", err)
 	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		// Use Anthropic-style streaming for Claude models.
@@ -1309,7 +1321,7 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
 	// Claude, which accepts base64 sources only. See classifyURLSource.
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
+		return nil, inlineURLSourcesError("failed to inline document URLs for vertex", err)
 	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
@@ -1615,7 +1627,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
 	// Claude, which accepts base64 sources only. See classifyURLSource.
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
+		return nil, inlineURLSourcesError("failed to inline document URLs for vertex", err)
 	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		region := resolveVertexRegion(ctx, key)
@@ -3329,6 +3341,17 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			return nil, providerUtils.NewBifrostOperationError("output_folder.url (gs:// prefix) is required for Vertex batch API", nil)
 		}
 
+		// The job reads its input from and writes its output to Cloud Storage on the key's
+		// behalf, so both locations follow the key's bucket list.
+		if _, bucketErr := keysAllowingGCSFolderURI([]schemas.Key{key}, outputURI); bucketErr != nil {
+			return nil, bucketErr
+		}
+		if request.InputFileID != "" {
+			if _, bucketErr := keysAllowingGCSURI([]schemas.Key{key}, request.InputFileID); bucketErr != nil {
+				return nil, bucketErr
+			}
+		}
+
 		jobName = fmt.Sprintf("bifrost-batch-%d", time.Now().Unix())
 		if request.DisplayName != nil && *request.DisplayName != "" {
 			jobName = *request.DisplayName
@@ -3349,16 +3372,7 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 			if parseErr != nil {
 				return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
 			}
-			// Place the input alongside the output directory (sibling, not child) so the
-			// generated JSONL does not live inside the directory Vertex writes results to.
-			inputPrefix := "vertex-batches-input"
-			if trimmed := strings.Trim(outKey, "/"); trimmed != "" {
-				if idx := strings.LastIndexByte(trimmed, '/'); idx >= 0 {
-					inputPrefix = trimmed[:idx] + "/input"
-				} else {
-					inputPrefix = "input"
-				}
-			}
+			inputPrefix := vertexBatchInputPrefix(key, outBucket, outKey)
 			uploadResp, uploadErr := provider.FileUpload(ctx, key, &schemas.BifrostFileUploadRequest{
 				Provider:    schemas.Vertex,
 				File:        jsonlData,
@@ -3385,6 +3399,10 @@ func (provider *VertexProvider) BatchCreate(ctx *schemas.BifrostContext, key sch
 	)
 	if bodyErr != nil {
 		return nil, bodyErr
+	}
+
+	if bucketErr := vertexBatchJobLocationsRefusal(key, jsonData); bucketErr != nil {
+		return nil, bucketErr
 	}
 
 	authHeader, authErr := provider.gcsGetAuthHeader(key)
@@ -3810,41 +3828,62 @@ func (provider *VertexProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 
 	// A job ID is scoped to the project/region of the key that created it, so try each key
 	// until one resolves the job and reads its results; return the last error if all fail.
-	var lastErr *schemas.BifrostError
+	// A key that found the job but may not read its output says more than a later key that
+	// could not find the job at all, so that refusal is what is returned when no key succeeds.
+	var lastErr, refusal *schemas.BifrostError
 	for _, key := range keys {
-		resp, bifrostErr := provider.batchResultsByKey(ctx, key, request)
+		resp, bifrostErr, outsideBucketList := provider.batchResultsByKey(ctx, key, request)
 		if bifrostErr == nil {
 			return resp, nil
 		}
+		if outsideBucketList && refusal == nil {
+			refusal = bifrostErr
+		}
 		lastErr = bifrostErr
+	}
+	if refusal != nil {
+		return nil, refusal
 	}
 	return nil, lastErr
 }
 
-// batchResultsByKey reads a finished job's GCS output using a single Vertex key.
-func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError) {
+// batchResultsByKey reads a finished job's GCS output using a single Vertex key. The last
+// value reports that the key found the job but its bucket list does not cover the output.
+func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchResultsRequest) (*schemas.BifrostBatchResultsResponse, *schemas.BifrostError, bool) {
 	startTime := time.Now()
 	job, _, bifrostErr := provider.vertexGetBatchJob(ctx, key, request.BatchID)
 	if bifrostErr != nil {
-		return nil, bifrostErr
+		return nil, bifrostErr, false
 	}
 	if job.OutputInfo == nil || job.OutputInfo.GcsOutputDirectory == "" {
-		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("batch output is not available yet (job state: %s)", job.State), nil)
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("batch output is not available yet (job state: %s)", job.State), nil), false
 	}
 
 	bucket, dirKey, parseErr := parseGCSURI(job.OutputInfo.GcsOutputDirectory)
 	if parseErr != nil {
-		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil), false
+	}
+	// The results are read with the key's credentials, so the job's output follows the key's
+	// bucket list like any other read. This covers a job created before the list was set, or
+	// outside Bifrost.
+	if _, bucketErr := keysAllowingGCSFolderURI([]schemas.Key{key}, job.OutputInfo.GcsOutputDirectory); bucketErr != nil {
+		return nil, bucketErr, true
 	}
 
 	authHeader, authErr := provider.gcsGetAuthHeader(key)
 	if authErr != nil {
-		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil)
+		return nil, providerUtils.NewBifrostOperationError(authErr.Error(), nil), false
 	}
 
-	objects, listErr := provider.gcsListAllObjects(ctx, authHeader, bucket, strings.Trim(dirKey, "/")+"/")
+	// The listing is asked for under the directory the job reports. Trimming its trailing
+	// separators would widen uploads// to uploads/ and bring in other jobs' output.
+	listPrefix := strings.TrimLeft(dirKey, "/")
+	if !strings.HasSuffix(listPrefix, "/") {
+		listPrefix += "/"
+	}
+	objects, listErr := provider.gcsListAllObjects(ctx, authHeader, bucket, listPrefix)
 	if listErr != nil {
-		return nil, listErr
+		return nil, listErr, false
 	}
 
 	results := []schemas.BatchResultItem{}
@@ -3856,10 +3895,15 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 		if !strings.HasPrefix(name, "predictions") {
 			continue
 		}
+		// The folder check above covered the directory, not what a listing returns under it. Each
+		// object is checked before it is read.
+		if !keyAllowsGCSObject(key, bucket, obj.Name) {
+			continue
+		}
 
 		content, downloadErr := provider.gcsDownloadObject(ctx, authHeader, bucket, obj.Name)
 		if downloadErr != nil {
-			return nil, downloadErr
+			return nil, downloadErr, false
 		}
 
 		for _, rawLine := range bytes.Split(content, []byte("\n")) {
@@ -3901,7 +3945,7 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 		batchResultsResp.ExtraFields.RawResponse = results
 	}
-	return batchResultsResp, nil
+	return batchResultsResp, nil, false
 }
 
 // vertexNormalizeBatchUsage normalizes Vertex usageMetadata into OpenAI-compatible
@@ -4055,6 +4099,212 @@ func parseGCSURI(uri string) (bucket, objectKey string, err error) {
 	return rest[:idx], rest[idx+1:], nil
 }
 
+// keyAllowsGCSObject reports whether key may be used for objectKey in bucket. A key that
+// lists buckets in batch_gcs_config is limited to them: the bucket must be listed, and when
+// the entry carries a prefix the object key must sit inside it. A key that lists no buckets
+// is not limited, which keeps deployments that name the bucket per request working.
+//
+// The Cloud Storage request carries the key's own Google credentials, so the list is what
+// ties a file or batch operation to the buckets the key was set up for.
+func keyAllowsGCSObject(key schemas.Key, bucket, objectKey string) bool {
+	if key.VertexKeyConfig == nil || key.VertexKeyConfig.BatchGCSConfig == nil || len(key.VertexKeyConfig.BatchGCSConfig.Buckets) == 0 {
+		return true
+	}
+	for _, allowed := range key.VertexKeyConfig.BatchGCSConfig.Buckets {
+		if allowed.BucketName != bucket {
+			continue
+		}
+		prefix := strings.TrimPrefix(allowed.Prefix, "/")
+		if prefix == "" {
+			return true
+		}
+		// A prefix names a folder, so "jobs" and "jobs/" both mean keys under "jobs/".
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
+		if !strings.HasPrefix(objectKey, prefix) {
+			continue
+		}
+		// Object names are literal, but a ".." segment can be collapsed on the way to Cloud Storage.
+		if slices.Contains(strings.Split(objectKey, "/"), "..") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// keysAllowingGCSObject returns the keys that may be used for objectKey in bucket, in their
+// original order. When no key may be used the operation is refused with a 403.
+func keysAllowingGCSObject(keys []schemas.Key, bucket, objectKey string) ([]schemas.Key, *schemas.BifrostError) {
+	allowed := make([]schemas.Key, 0, len(keys))
+	for _, key := range keys {
+		if keyAllowsGCSObject(key, bucket, objectKey) {
+			allowed = append(allowed, key)
+		}
+	}
+	if len(allowed) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     new(http.StatusForbidden),
+			Error: &schemas.ErrorField{
+				Message: fmt.Sprintf("gcs location %q is not in the bucket list (batch_gcs_config) of any key available for this request", "gs://"+bucket+"/"+objectKey),
+			},
+		}
+	}
+	return allowed, nil
+}
+
+// keysAllowingGCSURI is keysAllowingGCSObject for a gs:// URI. A URI that does not parse is
+// left to the operation, which reports it as malformed.
+func keysAllowingGCSURI(keys []schemas.Key, uri string) ([]schemas.Key, *schemas.BifrostError) {
+	bucket, objectKey, parseErr := parseGCSURI(uri)
+	if parseErr != nil {
+		return keys, nil
+	}
+	return keysAllowingGCSObject(keys, bucket, objectKey)
+}
+
+// keyListsGCSBuckets reports whether key is limited to a list of buckets.
+func keyListsGCSBuckets(key schemas.Key) bool {
+	return key.VertexKeyConfig != nil && key.VertexKeyConfig.BatchGCSConfig != nil && len(key.VertexKeyConfig.BatchGCSConfig.Buckets) > 0
+}
+
+// keysAllowingGCSFolderURI is keysAllowingGCSURI for a location that names a folder, such as
+// a batch output location. "uploads" and "uploads/" name the same folder, so it is checked
+// with its trailing slash: a key limited to "uploads/" accepts both spellings and still
+// refuses "uploads-archive". The bucket root stays the empty key.
+func keysAllowingGCSFolderURI(keys []schemas.Key, uri string) ([]schemas.Key, *schemas.BifrostError) {
+	bucket, folderKey, parseErr := parseGCSURI(uri)
+	if parseErr != nil {
+		return keys, nil
+	}
+	if folderKey != "" && !strings.HasSuffix(folderKey, "/") {
+		folderKey += "/"
+	}
+	return keysAllowingGCSObject(keys, bucket, folderKey)
+}
+
+// vertexBatchInputFolder holds the input generated for an inline batch when the output's
+// sibling folder is outside the key's bucket list.
+const vertexBatchInputFolder = "bifrost-batch-input"
+
+// vertexBatchInputPrefix returns the folder the input generated for an inline batch is
+// written to. It is a sibling of the output folder, not a child, so the generated JSONL does
+// not live inside the directory Vertex writes results to. A key limited to a prefix cannot
+// write that sibling when the output is the prefix itself; the input then goes into
+// vertexBatchInputFolder inside the prefix. BatchResults reads only predictions files, so an
+// input folder inside the output is never read back as results.
+func vertexBatchInputPrefix(key schemas.Key, outBucket, outKey string) string {
+	inputPrefix := "vertex-batches-input"
+	trimmed := strings.Trim(outKey, "/")
+	if trimmed != "" {
+		if idx := strings.LastIndexByte(trimmed, '/'); idx >= 0 {
+			inputPrefix = trimmed[:idx] + "/input"
+		} else {
+			inputPrefix = "input"
+		}
+	}
+	if !keyListsGCSBuckets(key) || keyAllowsGCSObject(key, outBucket, inputPrefix+"/") {
+		return inputPrefix
+	}
+	folderKey := trimmed + "/"
+	for _, allowed := range key.VertexKeyConfig.BatchGCSConfig.Buckets {
+		if allowed.BucketName != outBucket {
+			continue
+		}
+		prefix := strings.Trim(allowed.Prefix, "/")
+		if prefix != "" && strings.HasPrefix(folderKey, prefix+"/") {
+			return prefix + "/" + vertexBatchInputFolder
+		}
+	}
+	return inputPrefix
+}
+
+// vertexBatchJobLocationsRefusal checks the locations the job body names against key's bucket
+// list and returns the 403 for the first one outside it. The body that is sent is checked
+// because a raw request body or extra_params can name locations the typed fields never see.
+// A key that lists no buckets is not limited, so its body is not read at all.
+func vertexBatchJobLocationsRefusal(key schemas.Key, body []byte) *schemas.BifrostError {
+	if !keyListsGCSBuckets(key) {
+		return nil
+	}
+	inputs, outputs := vertexBatchJobGCSLocations(body)
+	for _, location := range inputs {
+		if _, bucketErr := keysAllowingGCSURI([]schemas.Key{key}, location); bucketErr != nil {
+			return bucketErr
+		}
+	}
+	for _, location := range outputs {
+		if _, bucketErr := keysAllowingGCSFolderURI([]schemas.Key{key}, location); bucketErr != nil {
+			return bucketErr
+		}
+	}
+	return nil
+}
+
+// gcsLocationRefusedError carries a bucket list refusal through the error-returning URL
+// inlining helpers, so the caller still answers with the 403.
+type gcsLocationRefusedError struct {
+	refusal *schemas.BifrostError
+}
+
+func (e *gcsLocationRefusedError) Error() string {
+	return e.refusal.Error.Message
+}
+
+// inlineURLSourcesError turns a URL inlining failure into the operation's error. A bucket
+// list refusal keeps its 403; anything else is reported as an operation error.
+func inlineURLSourcesError(message string, err error) *schemas.BifrostError {
+	var refused *gcsLocationRefusedError
+	if errors.As(err, &refused) {
+		return refused.refusal
+	}
+	return providerUtils.NewBifrostOperationError(message, err)
+}
+
+// vertexBatchJobGCSLocations returns the gs:// locations a BatchPredictionJob body names:
+// every inputConfig.gcsSource.uris entry (objects) and outputConfig.gcsDestination.outputUriPrefix
+// (a folder).
+// Vertex accepts both the camelCase and the snake_case spelling of a field, and a repeated
+// field is read here every time it appears, so the result covers whichever one Vertex uses.
+func vertexBatchJobGCSLocations(body []byte) (inputs, outputs []string) {
+	var locations []string
+	fieldName := func(name string) string {
+		return strings.ToLower(strings.ReplaceAll(name, "_", ""))
+	}
+	var walk func(value gjson.Result, path []string)
+	walk = func(value gjson.Result, path []string) {
+		if len(path) == 0 {
+			if value.IsArray() {
+				value.ForEach(func(_, item gjson.Result) bool {
+					if item.Type == gjson.String {
+						locations = append(locations, item.String())
+					}
+					return true
+				})
+			} else if value.Type == gjson.String {
+				locations = append(locations, value.String())
+			}
+			return
+		}
+		if !value.IsObject() {
+			return
+		}
+		value.ForEach(func(name, child gjson.Result) bool {
+			if fieldName(name.String()) == path[0] {
+				walk(child, path[1:])
+			}
+			return true
+		})
+	}
+	root := gjson.ParseBytes(body)
+	walk(root, []string{"inputconfig", "gcssource", "uris"})
+	inputs, locations = locations, nil
+	walk(root, []string{"outputconfig", "gcsdestination", "outputuriprefix"})
+	return inputs, locations
+}
+
 func gcsParseTime(s string) int64 {
 	if s == "" {
 		return 0
@@ -4140,6 +4390,10 @@ func (provider *VertexProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 
 	objectKey := gcsObjectKey(prefix, filename)
 	gcsURI := "gs://" + bucket + "/" + objectKey
+
+	if _, bucketErr := keysAllowingGCSObject([]schemas.Key{key}, bucket, objectKey); bucketErr != nil {
+		return nil, bucketErr
+	}
 
 	contentType := "application/octet-stream"
 	if request.ContentType != nil && *request.ContentType != "" {
@@ -4350,6 +4604,10 @@ func (provider *VertexProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 	if bucket == "" {
 		return nil, providerUtils.NewBifrostOperationError("gcs_bucket is required for Vertex FileList (provide in storage_config.gcs)", nil)
 	}
+	keys, bucketErr := keysAllowingGCSObject(keys, bucket, prefix)
+	if bucketErr != nil {
+		return nil, bucketErr
+	}
 
 	// Serial pagination across keys: exhaust one key's pages before moving to the next.
 	helper, err := providerUtils.NewSerialListHelper(keys, request.After, provider.logger, true)
@@ -4443,6 +4701,10 @@ func (provider *VertexProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileRetrieve", nil)
 	}
+	keys, bucketErr := keysAllowingGCSURI(keys, request.FileID)
+	if bucketErr != nil {
+		return nil, bucketErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -4530,6 +4792,10 @@ func (provider *VertexProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileDelete", nil)
 	}
+	keys, bucketErr := keysAllowingGCSURI(keys, request.FileID)
+	if bucketErr != nil {
+		return nil, bucketErr
+	}
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
@@ -4595,6 +4861,10 @@ func (provider *VertexProvider) fileDeleteByKey(ctx *schemas.BifrostContext, key
 func (provider *VertexProvider) FileContent(ctx *schemas.BifrostContext, keys []schemas.Key, request *schemas.BifrostFileContentRequest) (*schemas.BifrostFileContentResponse, *schemas.BifrostError) {
 	if len(keys) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("no keys provided for Vertex FileContent", nil)
+	}
+	keys, bucketErr := keysAllowingGCSURI(keys, request.FileID)
+	if bucketErr != nil {
+		return nil, bucketErr
 	}
 
 	var lastErr *schemas.BifrostError
@@ -4713,7 +4983,7 @@ func (provider *VertexProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	// gs:// URI is forwarded to Gemini as fileData.fileUri and read from Cloud Storage for
 	// Claude, which accepts base64 sources only. See classifyURLSource.
 	if err := provider.inlineDocumentURLsResponses(ctx, key, request); err != nil {
-		return nil, providerUtils.NewBifrostOperationError("failed to inline document URLs for vertex", err)
+		return nil, inlineURLSourcesError("failed to inline document URLs for vertex", err)
 	}
 	if schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		jsonBody, bifrostErr = anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{

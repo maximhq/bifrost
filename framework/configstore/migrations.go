@@ -614,6 +614,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
+	{IDs: []string{"add_vertex_batch_gcs_config_column"}, run: migrationAddVertexBatchGCSConfigColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17938,4 +17939,43 @@ func migrationAddGovernanceUsageResetEpochs(ctx context.Context, db *gorm.DB, lo
 		},
 	}})
 	return migration.Migrate()
+}
+
+// migrationAddVertexBatchGCSConfigColumn adds the vertex_batch_gcs_config_json column to the
+// config_keys table. It holds the JSON-serialized batch_gcs_config block of a Vertex key (the
+// Cloud Storage buckets the key serves for file and batch operations), encrypted like the other
+// JSON key columns.
+func migrationAddVertexBatchGCSConfigColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_batch_gcs_config_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableKey{}, "vertex_batch_gcs_config_json"); err != nil {
+				return fmt.Errorf("failed to add vertex_batch_gcs_config_json column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackVertexBatchGCSConfigColumn(ctx, tx, logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("failed to run migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+// rollbackVertexBatchGCSConfigColumn is the down path of add_vertex_batch_gcs_config_column.
+// It refuses: the column holds operator-entered bucket lists, so dropping it would permanently
+// delete them and leave those keys serving every bucket again. The column is additive and older
+// binaries safely ignore it, which is the same contract the other non-rollbackable
+// operator-settings columns use.
+func rollbackVertexBatchGCSConfigColumn(context.Context, *gorm.DB, schemas.Logger) error {
+	return fmt.Errorf("add_vertex_batch_gcs_config_column is non-rollbackable: dropping vertex_batch_gcs_config_json would permanently delete the bucket list of every Vertex key that has one; the column is additive and older binaries safely ignore it")
 }

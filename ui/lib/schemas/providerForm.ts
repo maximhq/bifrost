@@ -102,6 +102,16 @@ const VertexAWSWorkloadIdentitySchema = z.object({
 	aws_role_arn: z.string().optional(),
 });
 
+// Cloud Storage bucket configuration for Vertex file and batch operations
+const GCSBucketConfigSchema = z.object({
+	bucket_name: z.string().min(1, msg("validation.bucketNameIsRequired")),
+	prefix: z.string().optional(),
+});
+
+const BatchGCSConfigSchema = z.object({
+	buckets: z.array(GCSBucketConfigSchema).optional(),
+});
+
 const VertexKeyConfigSchema = z.object({
 	project_id: z.string().min(1, msg("validation.projectIdIsRequiredForVertexKeys")),
 	project_number: z.string().optional(),
@@ -115,6 +125,7 @@ const VertexKeyConfigSchema = z.object({
 	force_single_region: z.boolean().optional(),
 	use_session_routing: z.boolean().optional(),
 	aws_workload_identity: VertexAWSWorkloadIdentitySchema.optional(),
+	batch_gcs_config: BatchGCSConfigSchema.optional(),
 });
 
 // S3 bucket configuration for Bedrock batch operations

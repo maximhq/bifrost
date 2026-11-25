@@ -164,6 +164,16 @@ export const vertexAWSWorkloadIdentitySchema = z.object({
 	aws_role_arn: secretVarSchema.optional(),
 });
 
+// Cloud Storage bucket configuration for Vertex file and batch operations
+export const gcsBucketConfigSchema = z.object({
+	bucket_name: z.string().min(1, msg("validation.bucketNameIsRequired")),
+	prefix: z.string().optional(),
+});
+
+export const batchGCSConfigSchema = z.object({
+	buckets: z.array(gcsBucketConfigSchema).optional(),
+});
+
 // Vertex key config schema
 export const vertexKeyConfigSchema = z
 	.object({
@@ -175,6 +185,7 @@ export const vertexKeyConfigSchema = z
 		force_single_region: z.boolean().optional(),
 		use_session_routing: z.boolean().optional(),
 		aws_workload_identity: vertexAWSWorkloadIdentitySchema.optional(),
+		batch_gcs_config: batchGCSConfigSchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
 		error: () => i18n.t("validation.projectIdIsRequired"),

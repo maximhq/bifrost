@@ -963,6 +963,21 @@ type VertexKeyConfig struct {
 	UseSessionRouting bool `json:"use_session_routing,omitempty"`
 	// AWSWorkloadIdentity federates the workload's AWS identity into GCP; see VertexAWSWorkloadIdentityConfig.
 	AWSWorkloadIdentity *VertexAWSWorkloadIdentityConfig `json:"aws_workload_identity,omitempty"`
+	// BatchGCSConfig lists the Cloud Storage buckets this key serves for file and batch operations.
+	BatchGCSConfig *BatchGCSConfig `json:"batch_gcs_config,omitempty"`
+}
+
+// GCSBucketConfig represents a single Cloud Storage bucket configuration for file and batch operations.
+type GCSBucketConfig struct {
+	BucketName string `json:"bucket_name"`      // GCS bucket name
+	Prefix     string `json:"prefix,omitempty"` // GCS object name prefix for file and batch operations
+}
+
+// BatchGCSConfig holds Cloud Storage bucket configurations for Vertex file and batch operations.
+// A key that lists buckets serves only those buckets, and only objects inside an entry's prefix
+// when one is set. A key that lists none accepts whichever bucket the request names.
+type BatchGCSConfig struct {
+	Buckets []GCSBucketConfig `json:"buckets,omitempty"` // List of GCS bucket configurations
 }
 
 // VertexAWSWorkloadIdentityConfig configures GCP Workload Identity Federation from an AWS identity.
