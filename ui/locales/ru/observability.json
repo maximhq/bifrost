@@ -907,7 +907,7 @@
 			"startsJob": "Запускает задание {{id}}",
 			"jobUnpriced": "Без цены: {{reason}}",
 			"jobFailed": "Ошибка: {{status}}",
-			"jobBadge": "ЗАДАНИЕ",
+			"jobBadge": "Задание",
 			"noRoute": "Нет маршрута",
 			"route": "Маршрут {{route}}",
 			"settled": "Рассчитано: {{status}}",
