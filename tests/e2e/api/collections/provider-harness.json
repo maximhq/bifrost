@@ -350469,6 +350469,64 @@
           }
         }
       ]
+    },
+    {
+      "name": "383. Repeated passthrough request headers (#10434)",
+      "description": "Regression coverage for #10434. The Anthropic passthrough request sends the computer-use and prompt-caching beta values as separate anthropic-beta header lines. Before the fix, the later value overwrote the computer-use beta and Anthropic rejected the computer_20251124 tool. After the fix, both values reach the provider in wire order. Run with FEATURE=\"repeated passthrough request headers\".",
+      "item": [
+        {
+          "name": "anthropic claude-sonnet-4-6 passthrough keeps both repeated anthropic-beta values - #10434",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "computer-use-2025-11-24"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "prompt-caching-2024-07-31"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-sonnet-4-6\",\n  \"max_tokens\": 128,\n  \"tools\": [\n    {\n      \"type\": \"computer_20251124\",\n      \"name\": \"computer\",\n      \"display_width_px\": 1024,\n      \"display_height_px\": 768\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"any\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Take a screenshot of the desktop.\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('repeated beta headers reach Anthropic', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 800)).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('model answered with a computer tool_use', function () { var t = (j.content || []).filter(function (b) { return b.type === 'tool_use' && b.name === 'computer'; })[0]; pm.expect(t, 'no computer tool_use: ' + pm.response.text().slice(0, 800)).to.be.an('object'); });"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

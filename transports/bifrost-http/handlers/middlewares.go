@@ -1455,7 +1455,12 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {
-		req.Headers[string(key)] = string(value)
+		keyStr := string(key)
+		if previousValue, ok := req.Headers[keyStr]; ok {
+			req.Headers[keyStr] = previousValue + ", " + string(value)
+		} else {
+			req.Headers[keyStr] = string(value)
+		}
 	}
 
 	// Copy query params
@@ -1575,6 +1580,12 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	bodyMode := pluginRequestBodyMode(ctx)
 	// Apply headers
 	for key, value := range req.Headers {
+		// Set replaces only the first ordinary header value. Remove all existing values
+		// when conversion combined repeated fields, but preserve the single-value path:
+		// some fasthttp-managed headers (notably Transfer-Encoding) cannot be restored by Set.
+		if len(ctx.Request.Header.PeekAll(key)) > 1 {
+			ctx.Request.Header.Del(key)
+		}
 		ctx.Request.Header.Set(key, value)
 	}
 	// Apply query params

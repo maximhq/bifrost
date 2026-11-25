@@ -2143,6 +2143,140 @@ func TestFasthttpToHTTPRequest(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestHeaderRoundTripPreservesRepeatedHeaders(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.Add("X-Repeated-Header", "first")
+	ctx.Request.Header.Add("x-repeated-header", "second")
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+
+	fasthttpToHTTPRequest(ctx, req)
+
+	assert.Equal(t, "first, second", req.Headers["X-Repeated-Header"])
+	assert.True(t, applyHTTPRequestToCtx(ctx, req))
+
+	var values []string
+	for key, value := range ctx.Request.Header.All() {
+		if strings.EqualFold(string(key), "X-Repeated-Header") {
+			values = append(values, string(value))
+		}
+	}
+	assert.Equal(t, []string{"first, second"}, values)
+
+	roundTripReq := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(roundTripReq)
+	fasthttpToHTTPRequest(ctx, roundTripReq)
+	assert.Equal(t, "first, second", roundTripReq.Headers["X-Repeated-Header"])
+}
+
+func TestHTTPRequestHeaderRoundTripPreservesTransferEncoding(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentLength(-1)
+
+	req := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(req)
+	fasthttpToHTTPRequest(ctx, req)
+
+	assert.Equal(t, "chunked", req.Headers[fasthttp.HeaderTransferEncoding])
+	assert.True(t, applyHTTPRequestToCtx(ctx, req))
+	assert.Equal(t, "chunked", string(ctx.Request.Header.Peek(fasthttp.HeaderTransferEncoding)))
+	assert.Equal(t, -1, ctx.Request.Header.ContentLength())
+
+	roundTripReq := schemas.AcquireHTTPRequest()
+	defer schemas.ReleaseHTTPRequest(roundTripReq)
+	fasthttpToHTTPRequest(ctx, roundTripReq)
+	assert.Equal(t, "chunked", roundTripReq.Headers[fasthttp.HeaderTransferEncoding])
+}
+
+func BenchmarkFasthttpToHTTPRequestHeaders(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		headers [][2]string
+	}{
+		{
+			name: "single values",
+			headers: [][2]string{
+				{"Content-Type", "application/json"},
+				{"Anthropic-Version", "2023-06-01"},
+				{"User-Agent", "bifrost-test"},
+			},
+		},
+		{
+			name: "repeated values",
+			headers: [][2]string{
+				{"Content-Type", "application/json"},
+				{"Anthropic-Beta", "beta-one"},
+				{"anthropic-beta", "beta-two"},
+				{"User-Agent", "bifrost-test"},
+			},
+		},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			var ctx fasthttp.RequestCtx
+			for _, header := range tc.headers {
+				ctx.Request.Header.Add(header[0], header[1])
+			}
+			req := schemas.AcquireHTTPRequest()
+			defer schemas.ReleaseHTTPRequest(req)
+			b.ReportAllocs()
+			for b.Loop() {
+				clear(req.Headers)
+				fasthttpToHTTPRequest(&ctx, req)
+			}
+		})
+	}
+}
+
+func BenchmarkApplyHTTPRequestHeaders(b *testing.B) {
+	for _, tc := range []struct {
+		name    string
+		headers [][2]string
+	}{
+		{
+			name: "single value",
+			headers: [][2]string{
+				{"X-Test-Header", "value"},
+			},
+		},
+		{
+			name: "repeated values",
+			headers: [][2]string{
+				{"X-Test-Header", "first"},
+				{"X-Test-Header", "second"},
+			},
+		},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+			ctx.Request.SetRequestURI("/")
+			req := schemas.AcquireHTTPRequest()
+			defer schemas.ReleaseHTTPRequest(req)
+			req.Method = fasthttp.MethodGet
+			req.Path = "/"
+			for _, header := range tc.headers {
+				ctx.Request.Header.Add(header[0], header[1])
+				req.Headers[header[0]] = header[1]
+			}
+			if len(tc.headers) > 1 {
+				req.Headers[tc.headers[0][0]] = "first, second"
+			}
+
+			b.ReportAllocs()
+			for b.Loop() {
+				if len(tc.headers) > 1 {
+					ctx.Request.Header.Del(tc.headers[0][0])
+					for _, header := range tc.headers {
+						ctx.Request.Header.Add(header[0], header[1])
+					}
+				}
+				applyHTTPRequestToCtx(ctx, req)
+			}
+		})
+	}
+}
+
 // TestCorsMiddleware_DefaultHeaders tests that default CORS headers are set
 func TestCorsMiddleware_DefaultHeaders(t *testing.T) {
 	SetLogger(&mockLogger{})
