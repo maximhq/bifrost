@@ -6,6 +6,7 @@ import { AlertTriangle, CheckCircle2, ExternalLink, KeyRound, Loader2, RefreshCw
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
+import { isHttpUrl } from "@/lib/utils/httpUrl";
 import { IconWrap, InfoBox, StepDots, UiVariant } from "./authorizerUi";
 
 interface OAuth2AuthorizerProps {
@@ -213,6 +214,16 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		isCompletingRef.current = false;
 		cancelledRef.current = false;
 		if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
+
+		// The authorize URL is opened in a browser window, so it has to be a web
+		// address. Anything else is a bad provider configuration, not a sign-in page.
+		if (!isHttpUrl(authorizeUrl)) {
+			if (initialPopup && !initialPopup.closed) initialPopup.close();
+			popupRef.current = null;
+			setErrorMessage(null);
+			setStatus("failed");
+			return;
+		}
 
 		const width = 600;
 		const height = 700;

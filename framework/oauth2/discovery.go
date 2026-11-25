@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -561,8 +562,34 @@ func fetchAuthorizationServerMetadata(ctx context.Context, authServers []string)
 	return nil, fmt.Errorf("failed to fetch metadata from any authorization server")
 }
 
-// hasAuthorizationEndpoint accepts metadata an interactive sign-in can use.
-func hasAuthorizationEndpoint(m *OAuthMetadata) bool { return m.AuthorizationURL != "" }
+// hasAuthorizationEndpoint accepts metadata an interactive sign-in can use: it
+// must publish an authorization endpoint a browser can be sent to.
+func hasAuthorizationEndpoint(m *OAuthMetadata) bool {
+	return ValidateAuthorizeURL(m.AuthorizationURL) == nil
+}
+
+// ValidateAuthorizeURL reports whether raw can be used as an OAuth authorization
+// endpoint. The authorize URL is opened in the user's browser, by the dashboard
+// and by the hosted sign-in pages, so it must be an absolute http or https URL
+// with a host. Anything else (a relative reference, or a scheme a browser would
+// interpret instead of navigating to) is rejected, whether the value was entered
+// by an operator or published in a server's metadata document.
+func ValidateAuthorizeURL(raw string) error {
+	if raw == "" {
+		return errors.New("authorize_url is empty")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("authorize_url is not a valid URL")
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return errors.New("authorize_url must be an http or https URL")
+	}
+	if parsed.Hostname() == "" {
+		return errors.New("authorize_url must include a host")
+	}
+	return nil
+}
 
 // hasTokenEndpoint accepts metadata a token-endpoint-only grant, such as
 // redeeming an ID-JAG, can use: a server that only does that may publish no

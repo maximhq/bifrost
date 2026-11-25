@@ -45,6 +45,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import i18n from "@/lib/i18n";
 import { getCurrentAppPath } from "@/lib/utils/basePath";
+import { isHttpUrl } from "@/lib/utils/httpUrl";
 import { buildLoginHref } from "@/lib/utils/loginGoto";
 import { ToolsPendingNotice } from "../views/toolsPendingNotice";
 
@@ -156,6 +157,15 @@ function OAuthAuthView() {
 	const handleAuthenticate = async () => {
 		try {
 			const res = await startFlow(flowId).unwrap();
+			// The browser is only sent to a web address; anything else is a bad provider configuration.
+			if (!isHttpUrl(res.authorize_url)) {
+				toast({
+					title: t("sessions.auth.startFailed"),
+					description: t("registry.authorizer.oauth.checkProvider"),
+					variant: "destructive",
+				});
+				return;
+			}
 			window.location.href = res.authorize_url;
 		} catch (err) {
 			toast({

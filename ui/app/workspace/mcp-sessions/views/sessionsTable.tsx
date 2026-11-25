@@ -20,6 +20,7 @@
 import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
 import { MCP_CREDENTIAL_STATUS_COLORS } from "@/lib/constants/config";
+import { isHttpUrl } from "@/lib/utils/httpUrl";
 import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Button } from "@/components/ui/button";
 import {
@@ -100,6 +101,15 @@ export default function SessionsTable({
 			const res = await reauth(row.id).unwrap();
 			// Open the upstream authorize URL. User completes there, then
 			// is redirected back to /api/oauth/callback by the provider.
+			if (!isHttpUrl(res.authorize_url)) {
+				setPendingActionRowId(null);
+				toast({
+					title: t("sessions.toast.reauthFailed"),
+					description: t("registry.authorizer.oauth.checkProvider"),
+					variant: "destructive",
+				});
+				return;
+			}
 			window.location.href = res.authorize_url;
 		} catch (err) {
 			setPendingActionRowId(null);
