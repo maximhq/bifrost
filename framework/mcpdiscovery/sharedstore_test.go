@@ -9,6 +9,8 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -59,7 +61,7 @@ func settle(t *testing.T, s *SharedStore, clientID string) {
 
 func TestSharedStore_ServesFromMemoryAndWritesTheRowInTheBackground(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 
 	require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), wikiDiscovery("read")))
 	assert.Contains(t, store.GetDiscovery(userContext("alice"), wikiClient()).GetTools(), "wiki-read", "every caller is served the client's one discovery")
@@ -70,7 +72,7 @@ func TestSharedStore_ServesFromMemoryAndWritesTheRowInTheBackground(t *testing.T
 
 func TestSharedStore_DoesNotWriteARestoredDiscovery(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 
 	require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), restoredWikiDiscovery("read")))
 	settle(t, store, "client-wiki")
@@ -88,7 +90,7 @@ func TestSharedStore_DoesNotWriteARestoredDiscovery(t *testing.T) {
 
 func TestSharedStore_DoesNotWriteAnUnchangedRediscovery(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 
 	for _, tools := range [][]string{{"read"}, {"read"}, {"read", "edit"}, {"read", "edit"}} {
 		require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), wikiDiscovery(tools...)))
@@ -99,7 +101,7 @@ func TestSharedStore_DoesNotWriteAnUnchangedRediscovery(t *testing.T) {
 
 func TestSharedStore_SetNeverWaitsAndTheLatestDiscoveryWins(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 	h := newHold()
 	db.set(func(f *fakeConfigStore) { f.toolsHold = h })
 
@@ -116,7 +118,7 @@ func TestSharedStore_SetNeverWaitsAndTheLatestDiscoveryWins(t *testing.T) {
 
 func TestSharedStore_ARestoreDropsAPendingWrite(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 	h := newHold()
 	db.set(func(f *fakeConfigStore) { f.toolsHold = h })
 
@@ -135,7 +137,7 @@ func TestSharedStore_ARestoreDropsAPendingWrite(t *testing.T) {
 
 func TestSharedStore_AWriteOvertakenByARestoreIsDropped(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 	h := newHold()
 	var asked atomic.Bool
 	store.SetWriteGate(func() bool {
@@ -158,7 +160,7 @@ func TestSharedStore_AWriteOvertakenByARestoreIsDropped(t *testing.T) {
 // again before the client's next sync.
 func TestSharedStore_RetriesAFailedWriteUntilItLands(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 
 	db.set(func(f *fakeConfigStore) { f.toolsFails = 2 })
 	require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), wikiDiscovery("read")))
@@ -175,7 +177,7 @@ func TestSharedStore_RetriesAFailedWriteUntilItLands(t *testing.T) {
 // A client deleted while its write keeps failing stops being retried: it has nothing left to save.
 func TestSharedStore_StopsRetryingADeletedClient(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 
 	db.set(func(f *fakeConfigStore) { f.toolsErr = errors.New("database unavailable") })
 	require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), wikiDiscovery("read")))
@@ -188,7 +190,7 @@ func TestSharedStore_StopsRetryingADeletedClient(t *testing.T) {
 // resources, resource templates and prompts. A change to only those is still a change.
 func TestSharedStore_WritesTheWholeDiscovery(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 
 	require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), wikiDiscovery("read")))
 	settle(t, store, "client-wiki")
@@ -229,7 +231,7 @@ func TestSharedStore_WritesTheWholeDiscovery(t *testing.T) {
 
 func TestSharedStore_APanickingWriteDoesNotStopLaterOnes(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 
 	db.set(func(f *fakeConfigStore) { f.toolsPanic = true })
 	require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), wikiDiscovery("read")))
@@ -242,7 +244,7 @@ func TestSharedStore_APanickingWriteDoesNotStopLaterOnes(t *testing.T) {
 
 func TestSharedStore_WriteGate(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 	var allowed atomic.Bool
 	store.SetWriteGate(allowed.Load)
 
@@ -259,7 +261,7 @@ func TestSharedStore_WriteGate(t *testing.T) {
 
 func TestSharedStore_DeleteForgetsTheClientAndLeavesTheRow(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewSharedStore(db, nil)
+	store := newTestSharedStore(t, db)
 	require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), wikiDiscovery("read")))
 	settle(t, store, "client-wiki")
 
@@ -272,7 +274,7 @@ func TestSharedStore_DeleteForgetsTheClientAndLeavesTheRow(t *testing.T) {
 }
 
 func TestSharedStore_WithoutAConfigStoreKeepsMemoryOnly(t *testing.T) {
-	store := NewSharedStore(nil, nil)
+	store := newTestSharedStore(t, nil)
 	require.NoError(t, store.SetDiscovery(context.Background(), wikiClient(), wikiDiscovery("read")))
 	assert.Contains(t, store.GetDiscovery(context.Background(), wikiClient()).GetTools(), "wiki-read")
 	assert.Empty(t, store.writes)
@@ -288,7 +290,7 @@ func TestSharedStore_NilIsSafe(t *testing.T) {
 
 // A request's read of one shared client.
 func BenchmarkSharedStore_GetDiscovery(b *testing.B) {
-	store := NewSharedStore(newFakeConfigStore(), nil)
+	store := newTestSharedStore(b, newFakeConfigStore())
 	client := wikiClient()
 	if err := store.SetDiscovery(context.Background(), client, restoredWikiDiscovery("read", "edit")); err != nil {
 		b.Fatal(err)
@@ -311,9 +313,9 @@ func BenchmarkSharedStore_SetDiscovery(b *testing.B) {
 		b.Run(bc.name, func(b *testing.B) {
 			var store *SharedStore
 			if bc.db == nil {
-				store = NewSharedStore(nil, nil)
+				store = newTestSharedStore(b, nil)
 			} else {
-				store = NewSharedStore(bc.db, nil)
+				store = newTestSharedStore(b, bc.db)
 			}
 			client := wikiClient()
 			discovery := wikiDiscovery("read", "edit")
@@ -325,4 +327,100 @@ func BenchmarkSharedStore_SetDiscovery(b *testing.B) {
 			}
 		})
 	}
+}
+
+// newTestSharedStore returns a SharedStore writing through configStore, with its discoveries in a
+// state table of a new live store.
+func newTestSharedStore(tb testing.TB, configStore configstore.ConfigStore) *SharedStore {
+	tb.Helper()
+	live, err := livestore.New()
+	require.NoError(tb, err)
+	tb.Cleanup(live.Close)
+	store, err := NewSharedStore(configStore, live, nil)
+	require.NoError(tb, err)
+	return store
+}
+
+// rowsConfigStore is a fakeConfigStore whose MCP client rows are clients.
+type rowsConfigStore struct {
+	*fakeConfigStore
+	clients   []*schemas.MCPClientConfig
+	byIDReads atomic.Int32
+}
+
+// GetMCPClientConfigs returns the fake's client rows.
+func (r *rowsConfigStore) GetMCPClientConfigs(context.Context) ([]*schemas.MCPClientConfig, error) {
+	return r.clients, nil
+}
+
+// GetMCPClientConfigByID returns the fake's client row with this ID, and counts the read.
+func (r *rowsConfigStore) GetMCPClientConfigByID(_ context.Context, id string) (*schemas.MCPClientConfig, error) {
+	r.byIDReads.Add(1)
+	for _, client := range r.clients {
+		if client.ID == id {
+			return client, nil
+		}
+	}
+	return nil, configstore.ErrNotFound
+}
+
+// TestSharedStore_LoadServesTheRowsDiscoveries: a restart serves the discoveries the clients' rows
+// hold before any client is dialed. A client with per_user_discovery on, or with nothing
+// discovered, is left out, and nothing loaded is written back to its row.
+func TestSharedStore_LoadServesTheRowsDiscoveries(t *testing.T) {
+	ctx := context.Background()
+	wiki := wikiDiscovery("search")
+	db := &rowsConfigStore{fakeConfigStore: newFakeConfigStore(), clients: []*schemas.MCPClientConfig{
+		{ID: "client-wiki", Name: "wiki", DiscoveredTools: wiki.Tools, DiscoveredInstructions: "Read before you write."},
+		{ID: "client-notes", Name: "notes", PerUserDiscovery: schemas.Ptr(true), DiscoveredTools: wikiDiscovery("export").Tools},
+		{ID: "client-empty", Name: "empty"},
+	}}
+	store := newTestSharedStore(t, db)
+	require.NoError(t, store.Load(ctx))
+
+	loaded := store.GetDiscovery(ctx, &schemas.MCPClientConfig{ID: "client-wiki"})
+	require.NotNil(t, loaded)
+	assert.Equal(t, wiki.Tools, loaded.Tools)
+	assert.Equal(t, "Read before you write.", loaded.Instructions)
+	assert.True(t, loaded.DiscoveredAt.IsZero(), "restored, not freshly discovered")
+	assert.Nil(t, store.GetDiscovery(ctx, &schemas.MCPClientConfig{ID: "client-notes"}), "a per-caller client keeps no shared discovery")
+	assert.Nil(t, store.GetDiscovery(ctx, &schemas.MCPClientConfig{ID: "client-empty"}))
+	assert.Empty(t, db.writtenTools(), "what the rows hold is not written back")
+}
+
+// TestSharedStore_LoadClientServesTheRowWhenTheStoreHasNone: a client connected while Bifrost runs
+// is served the discovery its row holds, which is not written back. A discovery the store already
+// holds is as new as the row or newer, so it is kept and the row is not read. A client with
+// per_user_discovery on, or with no row, is left out.
+func TestSharedStore_LoadClientServesTheRowWhenTheStoreHasNone(t *testing.T) {
+	ctx := context.Background()
+	wiki := wikiDiscovery("search")
+	db := &rowsConfigStore{fakeConfigStore: newFakeConfigStore(), clients: []*schemas.MCPClientConfig{
+		{ID: "client-wiki", Name: "wiki", DiscoveredTools: wiki.Tools, DiscoveredInstructions: "Read before you write."},
+		{ID: "client-notes", Name: "notes", PerUserDiscovery: schemas.Ptr(true), DiscoveredTools: wikiDiscovery("export").Tools},
+	}}
+	store := newTestSharedStore(t, db)
+
+	require.NoError(t, store.LoadClient(ctx, "client-wiki"))
+	loaded := store.GetDiscovery(ctx, wikiClient())
+	require.NotNil(t, loaded)
+	assert.Equal(t, wiki.Tools, loaded.Tools)
+	assert.Equal(t, "Read before you write.", loaded.Instructions)
+	assert.True(t, loaded.DiscoveredAt.IsZero(), "restored, not freshly discovered")
+	settle(t, store, "client-wiki")
+	assert.Empty(t, db.writtenTools(), "what the row holds is not written back")
+
+	require.NoError(t, store.SetDiscovery(ctx, wikiClient(), wikiDiscovery("search", "edit")))
+	reads := db.byIDReads.Load()
+	require.NoError(t, store.LoadClient(ctx, "client-wiki"))
+	assert.Contains(t, store.GetDiscovery(ctx, wikiClient()).GetTools(), "wiki-edit", "the newer discovery the store holds is kept")
+	assert.Equal(t, reads, db.byIDReads.Load(), "the row is not read while the store holds a discovery")
+
+	require.NoError(t, store.LoadClient(ctx, "client-notes"))
+	assert.Nil(t, store.GetDiscovery(ctx, &schemas.MCPClientConfig{ID: "client-notes"}), "a per-caller client keeps no shared discovery")
+	require.NoError(t, store.LoadClient(ctx, "client-gone"), "a client with no row is not an error")
+	assert.Nil(t, store.GetDiscovery(ctx, &schemas.MCPClientConfig{ID: "client-gone"}))
+
+	var unset *SharedStore
+	assert.NoError(t, unset.LoadClient(ctx, "client-wiki"), "a nil store loads nothing")
 }

@@ -73,7 +73,7 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	*entry = logstore.RelayLog{
 		ID:        uuid.New().String(),
 		RequestID: clampString(requestID, 255),
-		Timestamp: time.Now().UTC(),
+		Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime),
 		RelayName: clampString(req.RelayName, 64),
 		Kind:      logstore.RelayLogKindCall,
 		Method:    clampString(req.Method, 10),
@@ -165,9 +165,9 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 	case evicted:
 		// The update names the output columns only, so the partial row keeps its request side; the
 		// marker carries what the update also writes, so a reply-less finish does not blank it.
-		entry = &logstore.RelayLog{ID: marker.rowID, RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall, Path: marker.path, RelayName: marker.relayName, RoutePath: marker.routePath, Streamed: marker.streamed}
+		entry = &logstore.RelayLog{ID: marker.rowID, RequestID: clampString(requestID, 255), Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime), Kind: logstore.RelayLogKindCall, Path: marker.path, RelayName: marker.relayName, RoutePath: marker.routePath, Streamed: marker.streamed}
 	default:
-		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall}
+		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime), Kind: logstore.RelayLogKindCall}
 	}
 	entry.ApplyGovernanceContext(ctx)
 	applyRelayGrantAttribution(ctx, entry)

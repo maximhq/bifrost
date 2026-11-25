@@ -71,7 +71,8 @@ type liveMeter struct {
 	key      schemas.Key
 	window   float64
 
-	sessionID string                // Bifrost's id: every unit groups under it, from admission on
+	sessionID string // Bifrost's id: every unit groups under it, from admission on
+	startedAt time.Time
 	bind      func(id string) error // called once with OpenAI's id, before any client learns it
 
 	mu                sync.Mutex
@@ -604,6 +605,10 @@ func (m *liveMeter) openUnit(kind, model string, continuation bool) (*liveBillin
 		preCtx.SetValue(schemas.BifrostContextKeyLiveSessionStart, true)
 	}
 	startedAt := time.Now()
+	if m.startedAt.IsZero() {
+		m.startedAt = startedAt
+	}
+	preCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, m.startedAt)
 	setRealtimeTurnStreamContext(preCtx, startedAt, false)
 	req := &schemas.BifrostRequest{
 		RequestType: schemas.LiveRequest,

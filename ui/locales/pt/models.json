@@ -1329,6 +1329,8 @@
 		"rotateGraceNote": "As chaves anteriores continuam válidas até {{date}}.",
 		"rotatedBulkPartial": "{{count}} chaves virtuais rodadas. {{failed}} falharam.{{graceNote}}",
 		"rotatedBulk": "{{count}} chaves virtuais rodadas.{{graceNote}}",
+		"rotatedBulkNotLoaded": "Chaves salvas mas possivelmente não carregadas: {{notLoaded}}. Os valores antigos podem continuar funcionando até você salvar cada chave novamente ou reiniciar o Bifrost.",
+		"rotatedNotLoaded": "Chave virtual rodada, mas o novo valor pode não ter sido carregado. O valor antigo pode continuar funcionando até você salvar a chave novamente ou reiniciar o Bifrost.",
 		"filtersApplied": "Filtros aplicados:",
 		"filterSearch": "pesquisa \"{{query}}\"",
 		"filterCustomer": "filtro de cliente",

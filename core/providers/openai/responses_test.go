@@ -5923,3 +5923,90 @@ func TestToOpenAIResponsesRequest_FunctionCallItemWithEncryptedContent(t *testin
 		})
 	}
 }
+
+// TestToOpenAIResponsesRequest_AccessPrograms_ProviderGating pins OpenAI's
+// Daybreak access_programs selector. It is an OpenAI-only body field, so it must
+// reach api.openai.com (and a custom provider whose base is OpenAI) as sent,
+// including an empty object, and must not reach the other backends that reuse
+// this converter, which do not define it and would reject or ignore it.
+func TestToOpenAIResponsesRequest_AccessPrograms_ProviderGating(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		base     schemas.ModelProvider
+		params   string
+		want     string // expected access_programs JSON on the wire, "" for absent
+	}{
+		{"openai forwards daybreak_blue", schemas.OpenAI, "", `{"access_programs":{"cyber":"daybreak_blue"}}`, `{"cyber":"daybreak_blue"}`},
+		{"openai forwards explicit standard", schemas.OpenAI, "", `{"access_programs":{"cyber":"standard"}}`, `{"cyber":"standard"}`},
+		{"openai forwards empty object", schemas.OpenAI, "", `{"access_programs":{}}`, `{}`},
+		{"custom provider on openai base forwards it", "my-openai", schemas.OpenAI, `{"access_programs":{"cyber":"daybreak_red"}}`, `{"cyber":"daybreak_red"}`},
+		{"openai without it sends nothing", schemas.OpenAI, "", `{}`, ""},
+		{"openai forwards a misspelled member for OpenAI to reject", schemas.OpenAI, "", `{"access_programs":{"cyebr":"daybreak_red"}}`, `{"cyebr":"daybreak_red"}`},
+		{"azure drops it", schemas.Azure, "", `{"access_programs":{"cyber":"daybreak_blue"}}`, ""},
+		{"xai drops it", schemas.XAI, "", `{"access_programs":{"cyber":"daybreak_blue"}}`, ""},
+		{"openrouter drops it", schemas.OpenRouter, "", `{"access_programs":{"cyber":"daybreak_blue"}}`, ""},
+		{"bedrock mantle drops it", schemas.BedrockMantle, "", `{"access_programs":{"cyber":"daybreak_blue"}}`, ""},
+		{"custom provider on azure base drops it", "my-azure", schemas.Azure, `{"access_programs":{"cyber":"daybreak_blue"}}`, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var params schemas.ResponsesParameters
+			require.NoError(t, sonic.Unmarshal([]byte(tc.params), &params))
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    "gpt-6-sol",
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")},
+				}},
+				Params: &params,
+			}
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			if tc.base != "" {
+				ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+				ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, tc.base)
+			}
+
+			out := ToOpenAIResponsesRequest(ctx, req)
+			require.NotNil(t, out)
+			body, err := out.MarshalJSON()
+			require.NoError(t, err)
+
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(body, &fields))
+			got, present := fields["access_programs"]
+			if tc.want == "" {
+				require.False(t, present, "access_programs must not reach %s: %s", tc.provider, body)
+			} else {
+				require.True(t, present, "access_programs missing for %s: %s", tc.provider, body)
+				require.JSONEq(t, tc.want, string(got))
+			}
+			// Dropping it for one provider must not clear the caller's params: a
+			// fallback to OpenAI reuses the same request.
+			if strings.Contains(tc.params, "access_programs") {
+				kept, err := sonic.Marshal(params)
+				require.NoError(t, err)
+				require.Contains(t, string(kept), `"access_programs"`, "converter must not clear the caller's params")
+			}
+		})
+	}
+}
+
+// TestOpenAIResponsesRequest_AccessProgramsNativeRoute pins the /openai/v1/responses
+// ingress: the OpenAI SDK body is decoded into OpenAIResponsesRequest, turned into
+// the neutral request, and must come back out on the OpenAI wire unchanged.
+func TestOpenAIResponsesRequest_AccessProgramsNativeRoute(t *testing.T) {
+	var in OpenAIResponsesRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"openai/gpt-6-cyber","input":"hi","safety_identifier":"user-1","access_programs":{"cyber":"daybreak_red"}}`), &in))
+	bifrostReq := in.ToBifrostResponsesRequest(nil)
+	require.NotNil(t, bifrostReq)
+	require.NotNil(t, bifrostReq.Params.AccessPrograms)
+	require.Equal(t, "daybreak_red", *bifrostReq.Params.AccessPrograms.Cyber)
+
+	body, err := ToOpenAIResponsesRequest(nil, bifrostReq).MarshalJSON()
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"access_programs":{"cyber":"daybreak_red"}`)
+}

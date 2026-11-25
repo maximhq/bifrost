@@ -50,21 +50,15 @@ func TestCodeMode_MultiServer_BasicCalls(t *testing.T) {
 	require.NoError(t, err)
 
 	// Now set the InProcess client as CodeMode-enabled - manual approach
-	clients := manager.GetClients()
-	for _, client := range clients {
-		if client.ExecutionConfig.ID == "bifrostInternal" {
-			config := client.ExecutionConfig
-			config.IsCodeModeClient = true
-			config.ToolsToExecute = []string{"*"}
-			err = manager.UpdateClient(config.ID, config)
-			require.NoError(t, err)
-			t.Logf("Updated InProcess client to CodeMode: ID=%s, Name=%s", config.ID, config.Name)
-			break
-		}
-	}
+	err = editInternalClient(manager, func(config *schemas.MCPClientConfig) {
+		config.IsCodeModeClient = true
+		config.ToolsToExecute = []string{"*"}
+	})
+	require.NoError(t, err)
+	t.Log("Updated InProcess client to CodeMode: ID=bifrostInternal")
 
 	// Verify the InProcess client is now a CodeMode client
-	clients = manager.GetClients()
+	clients := manager.GetClients()
 	var foundCodeModeClient bool
 	for _, client := range clients {
 		if client.ExecutionConfig.ID == "bifrostInternal" {
@@ -137,14 +131,10 @@ func TestCodeMode_NestedToolWaitCountsAsUpstream(t *testing.T) {
 		time.Sleep(toolDelay)
 		return "done", nil
 	}, slow))
-	for _, client := range manager.GetClients() {
-		if client.ExecutionConfig.ID == "bifrostInternal" {
-			config := client.ExecutionConfig
-			config.IsCodeModeClient = true
-			config.ToolsToExecute = []string{"*"}
-			require.NoError(t, manager.UpdateClient(config.ID, config))
-		}
-	}
+	require.NoError(t, editInternalClient(manager, func(config *schemas.MCPClientConfig) {
+		config.IsCodeModeClient = true
+		config.ToolsToExecute = []string{"*"}
+	}))
 	client := setupBifrost(t)
 	client.SetMCPManager(manager)
 
