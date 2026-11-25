@@ -103,7 +103,7 @@ func buildGeminiInteractionsBody(ctx *schemas.BifrostContext, request *schemas.B
 	// input to convert and the body cannot be normalized for this API. Refuse it rather than send
 	// Google a request without its input.
 	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
-		return nil, providerUtils.NewBifrostBadRequestError("large payload requests are not supported on the interactions API; send a smaller body or use generateContent")
+		return nil, errGeminiInteractionsLargePayload()
 	}
 	agent := geminiInteractionsAgent(ctx, request)
 	body, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
@@ -145,6 +145,10 @@ func buildGeminiInteractionsBody(ctx *schemas.BifrostContext, request *schemas.B
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
 	return streamed, nil
+}
+
+func errGeminiInteractionsLargePayload() *schemas.BifrostError {
+	return providerUtils.NewBifrostBadRequestError("large payload requests are not supported on the interactions API; send a smaller body or use generateContent")
 }
 
 // normalizeRawGeminiInteractionsBody fixes up a caller's Interactions body for the upstream: the
@@ -310,6 +314,9 @@ func nameFunctionResults(ctx *schemas.BifrostContext, t *GeminiInteractionsTarge
 		return request, nil
 	}
 	// A request Google would never be sent is refused before anything is read for it.
+	if providerUtils.IsLargePayloadPassthroughEnabled(ctx) {
+		return nil, errGeminiInteractionsLargePayload()
+	}
 	if _, err := toGeminiInteractionsRequest(request, geminiInteractionsAgent(ctx, request)); err != nil {
 		if invalid, ok := providerUtils.AsBifrostBadRequestError(err); ok {
 			return nil, invalid
@@ -644,6 +651,10 @@ func streamGeminiInteractions(ctx *schemas.BifrostContext, t *GeminiInteractions
 			}
 			data, readErr := sseReader.ReadDataLine()
 			if readErr == io.EOF {
+				if marker, ok := sseReader.(providerUtils.SSEStreamTerminator); ok && marker.SawDoneMarker() {
+					// The body may stay open past [DONE]; close the connection rather than drain it.
+					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
+				}
 				break
 			}
 			if readErr != nil {

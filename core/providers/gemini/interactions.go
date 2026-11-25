@@ -654,6 +654,9 @@ func toGeminiInteractionsRequest(request *schemas.BifrostResponsesRequest, agent
 		case "stream":
 			// The operation decides streaming; a merged-in value would contradict it.
 			continue
+		case "model":
+			// Routing chose the model; a merged-in value would replace it unchecked.
+			continue
 		case "agent":
 			// Says whether the model is an agent (geminiInteractionsAgent); never sent as it is, so
 			// it cannot name an agent governance did not check.
@@ -859,6 +862,9 @@ func toGeminiInteractionsTools(tools []schemas.ResponsesTool) ([]GeminiInteracti
 			}
 			out = append(out, GeminiInteractionsTool{Type: "url_context"})
 		case schemas.ResponsesToolTypeCodeInterpreter:
+			if ci := tool.ResponsesToolCodeInterpreter; ci != nil && namesCodeInterpreterContainer(ci.Container) {
+				return nil, providerUtils.InvalidRequestErrorf("the interactions API runs code in a sandbox of its own, with no container id or files; remove them from code_interpreter or route the request to a provider that serves them")
+			}
 			out = append(out, GeminiInteractionsTool{Type: "code_execution"})
 		case schemas.ResponsesToolTypeFileSearch:
 			native := GeminiInteractionsTool{Type: "file_search"}
@@ -1706,7 +1712,8 @@ func geminiInteractionsToolsToResponses(tools []GeminiInteractionsTool) ([]schem
 		case "url_context":
 			out = append(out, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebFetch})
 		case "code_execution":
-			out = append(out, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeCodeInterpreter})
+			out = append(out, schemas.ResponsesTool{Type: schemas.ResponsesToolTypeCodeInterpreter,
+				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Container: map[string]interface{}{"type": "auto"}}}) // OpenAI requires one
 		case "file_search":
 			if len(tool.MetadataFilter) > 0 && !bytes.Equal(tool.MetadataFilter, []byte("null")) {
 				// Dropping the filter would search documents the caller excluded.
@@ -1931,7 +1938,7 @@ func (i *GeminiInteraction) toBifrostResponsesResponse(requestModel string) *sch
 	var nativeSteps []GeminiInteractionsItem
 	var suggestions []string
 	var toolItems map[string][]int // call id -> output indexes; only built when a built-in tool ran
-	for idx, step := range i.Steps {
+	for idx, step := range mcpSteps(i.Steps) {
 		if step.Type == GeminiInteractionsStepUserInput || step.Type == GeminiInteractionsStepFunctionResult {
 			continue
 		}
@@ -2261,9 +2268,11 @@ type GeminiInteractionsStreamState struct {
 	steps     map[int]*geminiInteractionsStreamStep
 	// RawReplay marks a stream whose frames go out as Google sent them.
 	RawReplay   bool
-	lostCalls   map[int]struct{}         // steps of the calls a resumed stream started inside
-	lostResults map[string]struct{}      // calls answered by a built-in result a resumed stream has only the result of
-	nativeSteps []GeminiInteractionsItem // code results a Responses item cannot hold
+	lostCalls   map[int]struct{}                // steps of the calls a resumed stream started inside
+	lostResults map[string]struct{}             // calls answered by a built-in result a resumed stream has only the result of
+	nativeSteps []GeminiInteractionsItem        // code results a Responses item cannot hold
+	heldCalls   []*geminiInteractionsStreamStep // finished calls named "server:tool", until their result tells what they are
+	releasing   bool                            // held calls are streaming as function calls
 	outputIndex int
 	Usage       *GeminiInteractionsUsage
 	Status      string
@@ -2298,9 +2307,10 @@ type geminiInteractionsStreamStep struct {
 	name        string
 	text        strings.Builder
 	arguments   strings.Builder
-	startArgs   string // arguments the step.start carried, used when no fragment follows
-	summary     strings.Builder
+	startArgs   string   // arguments the step.start carried, used when no fragment follows
+	summaries   []string // thought summary items, each its own part
 	signature   string
+	held        bool // a function_call named "server:tool", see heldCalls
 	partOpened  bool
 	textIndex   int // content index of the text part, after the media that came before it
 	annotations []schemas.ResponsesOutputMessageContentTextAnnotation
@@ -2418,7 +2428,7 @@ func (s *GeminiInteractionsStreamState) ToBifrostResponsesStream(event *GeminiIn
 			if full != nil && len(full.Output) > 0 {
 				final.Output = full.Output
 			}
-			s.recoverLost(event.Interaction.Steps)
+			s.recoverLost(mcpSteps(event.Interaction.Steps))
 			if full != nil {
 				final.ProviderExtraFields = full.ProviderExtraFields
 				final.Error = full.Error
@@ -2482,12 +2492,21 @@ func (s *GeminiInteractionsStreamState) recoverLost(steps []GeminiInteractionsIt
 		return
 	}
 	produced := make([]GeminiInteractionsItem, 0, len(steps))
+	var called map[string]struct{}
 	for _, step := range steps {
 		if step.Type != GeminiInteractionsStepUserInput && step.Type != GeminiInteractionsStepFunctionResult {
 			produced = append(produced, step)
 		}
-		if step.ID != nil && isGeminiServerToolCall(step.Type) {
-			delete(s.lostResults, *step.ID)
+		switch {
+		case step.ID != nil && isGeminiServerToolCall(step.Type):
+			if called == nil {
+				called = map[string]struct{}{}
+			}
+			called[*step.ID] = struct{}{}
+		case step.CallID != nil && isGeminiServerToolResult(step.Type):
+			if _, ok := called[*step.CallID]; ok {
+				delete(s.lostResults, *step.CallID)
+			}
 		}
 	}
 	for index := range s.lostCalls {
@@ -2568,6 +2587,12 @@ func (s *GeminiInteractionsStreamState) startStep(index int, step *GeminiInterac
 			st.signature = *step.Signature
 		}
 	case GeminiInteractionsStepFunctionCall:
+		if namesMCPServer(step.Name) && step.ID != nil && !s.releasing {
+			// An MCP server call Google ran, or a function whose name looks like one: its result tells.
+			st.tool, st.held, st.outputIndex = *step, true, -1
+			s.steps[index] = st
+			return nil
+		}
 		msgType := schemas.ResponsesMessageTypeFunctionCall
 		status := "in_progress"
 		if step.ID != nil {
@@ -2653,7 +2678,14 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 		out := s.startStep(index, &GeminiInteractionsItem{Type: stepType})
 		return append(out, s.applyDelta(index, delta)...)
 	}
-	if delta.Type == st.stepType && (isGeminiServerToolCall(st.stepType) || isGeminiServerToolResult(st.stepType)) {
+	if st.held && delta.Type == geminiInteractionsDeltaArguments {
+		var fragment string
+		if sonic.Unmarshal(delta.Arguments, &fragment) == nil {
+			st.arguments.WriteString(fragment)
+		}
+		return nil
+	}
+	if delta.Type == st.stepType && (isGeminiServerToolCall(st.stepType) || isGeminiServerToolResult(st.stepType) || st.stepType == GeminiInteractionsStepFunctionResult) {
 		// The whole call or result arrives in this one delta.
 		if len(delta.Arguments) > 0 {
 			st.tool.Arguments = delta.Arguments
@@ -2695,18 +2727,16 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 		if delta.Content == nil || delta.Content.Text == nil {
 			return nil
 		}
-		var out []*schemas.BifrostResponsesStreamResponse
-		summaryIdx := 0
-		if !st.partOpened {
-			st.partOpened = true
-			out = append(out, &schemas.BifrostResponsesStreamResponse{
-				Type: schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID,
-				Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeSummaryText, Text: new(string)},
-			})
-		}
-		st.summary.WriteString(*delta.Content.Text)
+		// Each delta is a new summary item, whole.
+		out := st.summaryDone(outIdx, itemID)
+		summaryIdx := len(st.summaries)
 		text := *delta.Content.Text
-		out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID, Delta: &text})
+		st.partOpened = true
+		st.summaries = append(st.summaries, text)
+		out = append(out, &schemas.BifrostResponsesStreamResponse{
+			Type: schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID,
+			Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeSummaryText, Text: new(string)},
+		}, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID, Delta: &text})
 		return out
 	case geminiInteractionsDeltaThoughtSignature:
 		if delta.Signature != nil {
@@ -2756,6 +2786,19 @@ func (s *GeminiInteractionsStreamState) applyDelta(index int, delta *GeminiInter
 	return nil
 }
 
+// summaryDone closes the summary item open last, if any.
+func (st *geminiInteractionsStreamStep) summaryDone(outIdx int, itemID string) []*schemas.BifrostResponsesStreamResponse {
+	if len(st.summaries) == 0 {
+		return nil
+	}
+	summaryIdx := len(st.summaries) - 1
+	text := st.summaries[summaryIdx]
+	return []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID, Text: &text},
+		{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryPartDone, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID, Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeSummaryText, Text: &text}},
+	}
+}
+
 // openTextPart opens the text part of a message item the first time text or a citation arrives.
 // Callers check partOpened first: the parameters escape, so calling it on every delta would
 // allocate them on every delta.
@@ -2775,6 +2818,25 @@ func (st *geminiInteractionsStreamStep) openTextPart(outIdx int, itemID string) 
 func (s *GeminiInteractionsStreamState) stopToolStep(st *geminiInteractionsStreamStep) []*schemas.BifrostResponsesStreamResponse {
 	var out []*schemas.BifrostResponsesStreamResponse
 	switch {
+	case st.held:
+		if st.arguments.Len() > 0 {
+			st.tool.Arguments = json.RawMessage(st.arguments.String())
+		}
+		s.heldCalls = append(s.heldCalls, st)
+	case st.stepType == GeminiInteractionsStepFunctionResult:
+		if st.tool.CallID == nil {
+			return nil
+		}
+		at := slices.IndexFunc(s.heldCalls, func(call *geminiInteractionsStreamStep) bool { return *call.tool.ID == *st.tool.CallID })
+		if at < 0 {
+			return nil
+		}
+		call := s.heldCalls[at]
+		s.heldCalls = slices.Delete(s.heldCalls, at, at+1)
+		call.held, st.tool = false, mcpResultStep(st.tool)
+		call.tool = mcpCallStep(call.tool)
+		call.stepType, st.stepType = call.tool.Type, st.tool.Type
+		return append(s.stopToolStep(call), s.stopToolStep(st)...)
 	case isGeminiServerToolCall(st.stepType):
 		items := geminiServerToolCallToResponses(st.tool)
 		callID := ""
@@ -2840,15 +2902,19 @@ func cloneGeminiInteractionsResponsesMessage(item schemas.ResponsesMessage) sche
 	return out
 }
 
-// closeOpenSteps closes what the stream left open as it stands. A run still going may send the rest of a
+// closeOpenSteps closes what the stream left open as it stands, in the order it opened, so a built-in call
+// closes before its result. A run still going may send the rest of a
 // function call's arguments, so that call is left open: reported done, it would be run on half of them.
 func (s *GeminiInteractionsStreamState) closeOpenSteps(stillRunning bool) []*schemas.BifrostResponsesStreamResponse {
 	var out []*schemas.BifrostResponsesStreamResponse
-	for idx, st := range s.steps {
-		if stillRunning && st.stepType == GeminiInteractionsStepFunctionCall {
+	for _, idx := range slices.Sorted(maps.Keys(s.steps)) {
+		if stillRunning && s.steps[idx].stepType == GeminiInteractionsStepFunctionCall {
 			continue
 		}
 		out = append(out, s.stopStep(idx)...)
+	}
+	if !stillRunning {
+		out = append(out, s.releaseHeldCalls()...)
 	}
 	return append(out, s.closeOpenTools()...)
 }
@@ -2877,14 +2943,32 @@ func (s *GeminiInteractionsStreamState) finishTools(items []geminiInteractionsSt
 	return out
 }
 
+// releaseHeldCalls streams the calls no result answered as the function calls they are.
+func (s *GeminiInteractionsStreamState) releaseHeldCalls() []*schemas.BifrostResponsesStreamResponse {
+	if len(s.heldCalls) == 0 {
+		return nil
+	}
+	var out []*schemas.BifrostResponsesStreamResponse
+	held := s.heldCalls
+	s.heldCalls, s.releasing = nil, true
+	for i, call := range held {
+		index := -1 - i // the step's own index is free again and may have been reused
+		out = append(out, s.startStep(index, &call.tool)...)
+		out = append(out, s.stopStep(index)...)
+	}
+	s.releasing = false
+	return out
+}
+
 // closeOpenTools finishes the built-in calls whose result never arrived, as they stand.
 func (s *GeminiInteractionsStreamState) closeOpenTools() []*schemas.BifrostResponsesStreamResponse {
-	var out []*schemas.BifrostResponsesStreamResponse
-	for callID, open := range s.tools {
-		out = append(out, s.finishTools(open)...)
+	var open []geminiInteractionsStreamToolItem
+	for callID, items := range s.tools {
+		open = append(open, items...)
 		delete(s.tools, callID)
 	}
-	return out
+	slices.SortFunc(open, func(a, b geminiInteractionsStreamToolItem) int { return a.outputIndex - b.outputIndex })
+	return s.finishTools(open)
 }
 
 // streamedOutput is the finished items in output order.
@@ -2946,18 +3030,16 @@ func (s *GeminiInteractionsStreamState) stopStep(index int) []*schemas.BifrostRe
 			reasoning.EncryptedContent = &sig
 		}
 		if st.partOpened {
-			summaryIdx := 0
-			text := st.summary.String()
-			reasoning.Summary = append(reasoning.Summary, schemas.ResponsesReasoningSummary{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: text})
+			summaryIdx := len(st.summaries) - 1
+			for _, text := range st.summaries {
+				reasoning.Summary = append(reasoning.Summary, schemas.ResponsesReasoningSummary{Type: schemas.ResponsesReasoningContentBlockTypeSummaryText, Text: text})
+			}
 			if st.signature != "" {
 				// An item built from its deltas (the log accumulator's) takes the signature from one too.
 				sig := st.signature
 				out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID, Signature: &sig})
 			}
-			out = append(out,
-				&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID, Text: &text},
-				&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeReasoningSummaryPartDone, OutputIndex: &outIdx, SummaryIndex: &summaryIdx, ItemID: &itemID, Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeSummaryText, Text: &text}},
-			)
+			out = append(out, st.summaryDone(outIdx, itemID)...)
 		}
 		msgType := schemas.ResponsesMessageTypeReasoning
 		out = append(out, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &outIdx, Item: &schemas.ResponsesMessage{ID: &itemID, Type: &msgType, ResponsesReasoning: reasoning}})
@@ -3035,7 +3117,7 @@ func (s *BifrostToGeminiInteractionsStreamState) identify(item *schemas.Response
 // An omitted tool is put back; items that never streamed keep their order at the end. The provider's
 // response is not modified.
 func (s *BifrostToGeminiInteractionsStreamState) inStepOrder(resp *schemas.BifrostResponsesResponse) *schemas.BifrostResponsesResponse {
-	if resp == nil || len(resp.Output) == 0 {
+	if resp == nil || (len(resp.Output) == 0 && len(s.done) == 0) {
 		return resp
 	}
 	type placed struct {
@@ -3235,7 +3317,7 @@ func (s *BifrostToGeminiInteractionsStreamState) ToGeminiInteractionsStreamEvent
 		out = append(out, &GeminiInteractionsEvent{EventType: GeminiInteractionsEventStepStop, EventID: s.nextEventID(), Index: &idx})
 
 	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete, schemas.ResponsesStreamResponseTypeFailed:
-		for idx := range s.steps {
+		for _, idx := range slices.Sorted(maps.Keys(s.steps)) {
 			i := idx
 			out = append(out, &GeminiInteractionsEvent{EventType: GeminiInteractionsEventStepStop, EventID: s.nextEventID(), Index: &i})
 		}

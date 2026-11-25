@@ -148,10 +148,14 @@ func geminiServerToolCallToResponses(step GeminiInteractionsItem) []schemas.Resp
 		})}
 	case GeminiInteractionsStepCodeExecutionCall:
 		code := args.Code
-		return []schemas.ResponsesMessage{item(schemas.ResponsesMessageTypeCodeInterpreterCall, id, &schemas.ResponsesToolMessage{
+		tool := &schemas.ResponsesToolMessage{
 			CallID:                           schemas.Ptr(id),
 			ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{Code: &code, Outputs: []schemas.ResponsesCodeInterpreterOutput{}},
-		})}
+		}
+		if args.Language == "bash" {
+			tool.ResponsesCodeExecutionCall = &schemas.ResponsesCodeExecutionCall{ToolName: "bash_code_execution"}
+		}
+		return []schemas.ResponsesMessage{item(schemas.ResponsesMessageTypeCodeInterpreterCall, id, tool)}
 	case GeminiInteractionsStepURLContextCall:
 		urls := args.URLs
 		if len(urls) == 0 {
@@ -186,6 +190,73 @@ func geminiServerToolCallToResponses(step GeminiInteractionsItem) []schemas.Resp
 		})}
 	}
 	return nil
+}
+
+// namesMCPServer reports whether a function_call's name is "server:tool", as Google names an MCP server's tool.
+func namesMCPServer(name *string) bool {
+	if name == nil {
+		return false
+	}
+	server, tool, ok := strings.Cut(*name, ":")
+	return ok && server != "" && tool != ""
+}
+
+// mcpCallStep is a function_call named "server:tool" as the MCP call it stands for.
+func mcpCallStep(step GeminiInteractionsItem) GeminiInteractionsItem {
+	server, tool, _ := strings.Cut(*step.Name, ":")
+	step.Type, step.ServerName, step.Name = GeminiInteractionsStepMCPCall, &server, &tool
+	return step
+}
+
+// mcpResultStep is the function_result that answers such a call as the MCP result it stands for.
+func mcpResultStep(step GeminiInteractionsItem) GeminiInteractionsItem {
+	step.Type = GeminiInteractionsStepMCPResult
+	if namesMCPServer(step.Name) {
+		server, tool, _ := strings.Cut(*step.Name, ":")
+		step.ServerName, step.Name = &server, &tool
+	}
+	return step
+}
+
+// mcpSteps is steps with each MCP server call Google ran in its MCP form: Google can report one as a
+// function_call named "server:tool" with the function_result that answers it. A call nothing answers is the
+// caller's. steps is not modified, and is returned as it is when there are none.
+func mcpSteps(steps []GeminiInteractionsItem) []GeminiInteractionsItem {
+	var out []GeminiInteractionsItem
+	for i := range steps {
+		if steps[i].Type != GeminiInteractionsStepFunctionResult || steps[i].CallID == nil {
+			continue
+		}
+		at := slices.IndexFunc(steps[:i], func(call GeminiInteractionsItem) bool {
+			return call.Type == GeminiInteractionsStepFunctionCall && call.ID != nil && *call.ID == *steps[i].CallID && namesMCPServer(call.Name)
+		})
+		if at < 0 {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(steps)
+		}
+		out[at], out[i] = mcpCallStep(steps[at]), mcpResultStep(steps[i])
+	}
+	if out == nil {
+		return steps
+	}
+	return out
+}
+
+// namesCodeInterpreterContainer reports whether a code_interpreter container is one the caller made or put
+// files in, rather than one the provider supplies.
+func namesCodeInterpreterContainer(container interface{}) bool {
+	switch c := container.(type) {
+	case string:
+		return c != "" && c != "auto"
+	case map[string]interface{}:
+		files, _ := c["file_ids"].([]interface{})
+		names, _ := c["file_ids"].([]string)
+		id, _ := c["container_id"].(string)
+		return len(files) > 0 || len(names) > 0 || id != ""
+	}
+	return false
 }
 
 // geminiMCPToolName is an MCP call's tool name without the "server:" prefix Google adds; server_name

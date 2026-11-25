@@ -3111,6 +3111,7 @@ func TestGeminiInteractionsStreamStartArgumentsDelta(t *testing.T) {
 // streams its signature, which the log accumulator takes from deltas only, once and before the summary
 // closes. A thought with no summary keeps its signature on output_item.done alone.
 func TestGeminiInteractionsStreamThoughtSignatureDelta(t *testing.T) {
+	signatureAt := -1
 	run := func(lines ...string) (signatures []string, order []schemas.ResponsesStreamResponseType) {
 		s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
 		for _, ev := range interactionsEvents(t, lines...) {
@@ -3119,6 +3120,7 @@ func TestGeminiInteractionsStreamThoughtSignatureDelta(t *testing.T) {
 			for _, e := range out {
 				order = append(order, e.Type)
 				if e.Signature != nil {
+					signatureAt = len(order) - 1
 					signatures = append(signatures, *e.Signature)
 					require.NotNil(t, e.ItemID)
 				}
@@ -3132,7 +3134,8 @@ func TestGeminiInteractionsStreamThoughtSignatureDelta(t *testing.T) {
 		`{"event_type":"step.delta","index":0,"delta":{"type":"thought_signature","signature":"sig"}}`,
 		`{"event_type":"step.stop","index":0}`)
 	assert.Equal(t, []string{"sig"}, signatures)
-	assert.Less(t, slices.Index(order, schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta), slices.Index(order, schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone))
+	require.GreaterOrEqual(t, signatureAt, 0)
+	assert.Less(t, signatureAt, slices.Index(order, schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone))
 
 	signatures, _ = run(`{"event_type":"step.start","index":0,"step":{"type":"thought","signature":"sig"}}`, `{"event_type":"step.stop","index":0}`)
 	assert.Empty(t, signatures)
@@ -3649,6 +3652,290 @@ func TestBifrostToGeminiInteractionsStreamCompactedOutput(t *testing.T) {
 	_, steps = run(renamed)
 	require.Len(t, steps, 3)
 	assert.Equal(t, GeminiInteractionsStepModelOutput, steps[2].Type)
+}
+
+// TestBifrostToGeminiInteractionsStreamEmptyOutput pins that a final response with no output keeps the tools
+// that finished on the stream.
+func TestBifrostToGeminiInteractionsStreamEmptyOutput(t *testing.T) {
+	var fetch schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`{"type":"web_fetch_call","id":"wf_1","status":"completed","action":{"type":"fetch","url":"https://x"}}`), &fetch))
+	s := NewBifrostToGeminiInteractionsStreamState()
+	var steps []GeminiInteractionsItem
+	for _, ev := range []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0), Item: &fetch},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: schemas.Ptr(0), Item: &fetch},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: &schemas.BifrostResponsesResponse{ID: schemas.Ptr("r"), Status: schemas.Ptr("completed")}},
+	} {
+		for _, out := range s.ToGeminiInteractionsStreamEvents(ev) {
+			if out.EventType == GeminiInteractionsEventCompleted {
+				steps = out.Interaction.Steps
+			}
+		}
+	}
+	require.Len(t, steps, 2)
+	assert.Equal(t, GeminiInteractionsStepURLContextCall, steps[0].Type)
+	assert.Equal(t, GeminiInteractionsStepURLContextResult, steps[1].Type)
+}
+
+// TestToGeminiInteractionsExtraModelReserved pins that an extra parameter cannot replace the model routing chose.
+func TestToGeminiInteractionsExtraModelReserved(t *testing.T) {
+	out, err := ToGeminiInteractionsRequest(&schemas.BifrostResponsesRequest{
+		Model: "gemini-3.8-flash", Input: []schemas.ResponsesMessage{interactionsUserText("hi")},
+		Params: &schemas.ResponsesParameters{ExtraParams: map[string]interface{}{"model": "gemini-3.8-pro", "labels": "kept"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "gemini-3.8-flash", out.Model)
+	assert.NotContains(t, out.ExtraParams, "model")
+	assert.Contains(t, out.ExtraParams, "labels")
+}
+
+// TestGeminiInteractionsCodeInterpreterContainer pins that a code interpreter that depends on a container is
+// refused, since code_execution has none, and that code_execution translates with the container OpenAI requires.
+func TestGeminiInteractionsCodeInterpreterContainer(t *testing.T) {
+	convert := func(container interface{}) error {
+		tool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeCodeInterpreter}
+		if container != nil {
+			tool.ResponsesToolCodeInterpreter = &schemas.ResponsesToolCodeInterpreter{Container: container}
+		}
+		_, err := ToGeminiInteractionsRequest(&schemas.BifrostResponsesRequest{Model: "gemini-3.8-flash", Input: []schemas.ResponsesMessage{interactionsUserText("hi")}, Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool}}})
+		return err
+	}
+	for name, c := range map[string]interface{}{"none": nil, "auto": map[string]interface{}{"type": "auto"}, "no files": map[string]interface{}{"type": "auto", "file_ids": []interface{}{}}} {
+		assert.NoError(t, convert(c), name)
+	}
+	for name, c := range map[string]interface{}{"id": "cntr_1", "files": map[string]interface{}{"type": "auto", "file_ids": []interface{}{"file_1"}}} {
+		err := convert(c)
+		require.Error(t, err, name)
+		_, invalid := providerUtils.AsBifrostBadRequestError(err)
+		assert.True(t, invalid, name)
+	}
+
+	var native GeminiInteractionsRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"openai/gpt-5","input":"hi","tools":[{"type":"code_execution"}]}`), &native))
+	translated, err := native.ToBifrostResponsesRequest()
+	require.NoError(t, err)
+	raw, err := sonic.Marshal(translated.Params.Tools[0])
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"code_interpreter","container":{"type":"auto"}}`, string(raw))
+	_, err = ToGeminiInteractionsRequest(translated)
+	assert.NoError(t, err, "it goes back to Google")
+}
+
+// TestGeminiInteractionsOpenStepsCloseInOrder pins that steps a stream leaves open close in the order they
+// opened, so a built-in call closes before the result that fills it.
+func TestGeminiInteractionsOpenStepsCloseInOrder(t *testing.T) {
+	for range 50 {
+		s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+		var last *schemas.BifrostResponsesResponse
+		for _, ev := range interactionsEvents(t,
+			`{"event_type":"step.start","index":0,"step":{"type":"code_execution_call","id":"ce","arguments":{"code":"x","language":"python"}}}`,
+			`{"event_type":"step.start","index":1,"step":{"type":"code_execution_result","call_id":"ce","result":"42"}}`,
+			`{"event_type":"step.start","index":2,"step":{"type":"code_execution_call","id":"cf","arguments":{"code":"y","language":"python"}}}`,
+			`{"event_type":"step.start","index":3,"step":{"type":"model_output","content":[{"type":"text","text":"a"}]}}`,
+			`{"event_type":"step.start","index":4,"step":{"type":"code_execution_call","id":"cg","arguments":{"code":"z","language":"python"}}}`,
+			`{"event_type":"interaction.completed","interaction":{"id":"v1_x","status":"completed"}}`) {
+			out, bErr := s.ToBifrostResponsesStream(ev)
+			require.Nil(t, bErr)
+			for _, e := range out {
+				if e.Type == schemas.ResponsesStreamResponseTypeCompleted {
+					last = e.Response
+				}
+			}
+		}
+		require.NotNil(t, last)
+		var ids []string
+		for _, item := range last.Output {
+			ids = append(ids, *item.ID)
+			if *item.ID == "ce" {
+				require.Len(t, item.ResponsesCodeInterpreterToolCall.Outputs, 1)
+				assert.Equal(t, "completed", *item.Status)
+			}
+		}
+		require.Len(t, ids, 4)
+		assert.Equal(t, []string{"ce", "cf", "cg"}, slices.DeleteFunc(ids, func(id string) bool { return !strings.HasPrefix(id, "c") || len(id) != 2 }))
+	}
+}
+
+// TestGeminiInteractionsResumedResultNeedsItsSnapshot pins that a completion listing a built-in call without its
+// result does not stand in for the result a resumed stream could not place.
+func TestGeminiInteractionsResumedResultNeedsItsSnapshot(t *testing.T) {
+	run := func(steps string) *schemas.BifrostError {
+		s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+		s.ID = "v1_x"
+		for _, ev := range interactionsEvents(t, `{"event_type":"step.start","index":1,"step":{"type":"file_search_result","call_id":"fs_1","result":[{"text":"x"}]}}`, `{"event_type":"step.stop","index":1}`,
+			`{"event_type":"interaction.completed","interaction":{"id":"v1_x","status":"completed","steps":[`+steps+`]}}`) {
+			if _, bErr := s.ToBifrostResponsesStream(ev); bErr != nil {
+				return bErr
+			}
+		}
+		return nil
+	}
+	assert.NotNil(t, run(`{"type":"file_search_call","id":"fs_1"}`))
+	assert.Nil(t, run(`{"type":"file_search_call","id":"fs_1"},{"type":"file_search_result","call_id":"fs_1","result":[{"text":"x"}]}`))
+}
+
+// TestGeminiInteractionsStreamSummaryItems pins that each thought_summary delta is a summary item of its own, as
+// Google defines it and the unary conversion returns it.
+func TestGeminiInteractionsStreamSummaryItems(t *testing.T) {
+	s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+	var added, done []int
+	var texts []string
+	var final *schemas.BifrostResponsesResponse
+	for _, ev := range interactionsEvents(t,
+		`{"event_type":"step.start","index":0,"step":{"type":"thought"}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"one"}}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"thought_summary","content":{"type":"text","text":"two"}}}`,
+		`{"event_type":"step.delta","index":0,"delta":{"type":"thought_signature","signature":"sig"}}`,
+		`{"event_type":"step.stop","index":0}`,
+		`{"event_type":"interaction.completed","interaction":{"id":"v1_x","status":"completed"}}`) {
+		out, bErr := s.ToBifrostResponsesStream(ev)
+		require.Nil(t, bErr)
+		for _, e := range out {
+			switch e.Type {
+			case schemas.ResponsesStreamResponseTypeReasoningSummaryPartAdded:
+				added = append(added, *e.SummaryIndex)
+			case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDone:
+				done = append(done, *e.SummaryIndex)
+				texts = append(texts, *e.Text)
+			case schemas.ResponsesStreamResponseTypeCompleted:
+				final = e.Response
+			}
+		}
+	}
+	assert.Equal(t, []int{0, 1}, added)
+	assert.Equal(t, []int{0, 1}, done)
+	assert.Equal(t, []string{"one", "two"}, texts)
+	require.NotNil(t, final)
+	require.Len(t, final.Output[0].Summary, 2)
+	assert.Equal(t, "two", final.Output[0].Summary[1].Text)
+	assert.Equal(t, "sig", *final.Output[0].ResponsesReasoning.EncryptedContent)
+}
+
+// TestGeminiInteractionsLargePayloadRefusedBeforeLookup pins that a continuation that cannot be sent reads
+// nothing for its function results first.
+func TestGeminiInteractionsLargePayloadRefusedBeforeLookup(t *testing.T) {
+	server, calls := newInteractionsTestServer(t, "application/json", func(interactionsCall) string {
+		return `{"id":"v1_n","status":"completed","steps":[]}`
+	})
+	provider, key, ctx := interactionsTestProvider(server)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+	ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, io.Reader(strings.NewReader("{}")))
+	_, bErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{
+		Model: "gemini-3.8-flash", Input: []schemas.ResponsesMessage{interactionsFunctionOutput("call_1", "31C")},
+		Params: &schemas.ResponsesParameters{PreviousResponseID: schemas.Ptr("v1_p")},
+	})
+	require.NotNil(t, bErr)
+	assert.Contains(t, bErr.Error.Message, "large payload")
+	assert.Empty(t, *calls)
+}
+
+// TestGeminiInteractionsStreamEndsAtDoneMarker pins that a [DONE] before any completion ends the stream even
+// though the upstream keeps the body open.
+func TestGeminiInteractionsStreamEndsAtDoneMarker(t *testing.T) {
+	chunks := streamHeldOpen(t, "data: {\"event_type\":\"interaction.created\",\"interaction\":{\"id\":\"v1_done\",\"status\":\"in_progress\"}}\n\ndata: [DONE]\n\n")
+	require.NotEmpty(t, chunks)
+	last := chunks[len(chunks)-1].BifrostResponsesStreamResponse
+	require.NotNil(t, last)
+	assert.Equal(t, schemas.ResponsesStreamResponseTypeInProgress, last.Type)
+}
+
+// TestGeminiInteractionsCodeLanguage pins that a shell run keeps its language through a Responses item.
+func TestGeminiInteractionsCodeLanguage(t *testing.T) {
+	for _, language := range []string{"bash", "python", ""} {
+		items := geminiServerToolCallToResponses(GeminiInteractionsItem{Type: GeminiInteractionsStepCodeExecutionCall, ID: schemas.Ptr("ce"), Arguments: json.RawMessage(`{"code":"ls","language":"` + language + `"}`)})
+		require.Len(t, items, 1)
+		want := language
+		if want == "" {
+			want = "python"
+		}
+		steps := responsesServerToolItemToGeminiInteractionSteps(items[0])
+		assert.Equal(t, want, gjson.GetBytes(steps[0].Arguments, "language").String())
+	}
+}
+
+// TestGeminiInteractionsMCPAsFunctionSteps pins the steps Google reports an MCP server call it ran as: a
+// function_call named "server:tool" and the function_result that answers it. They are one mcp_call, never a call
+// for the client to run. A call no result answers stays a function call, whatever its name.
+func TestGeminiInteractionsMCPAsFunctionSteps(t *testing.T) {
+	const call = `{"type":"function_call","id":"call_1","name":"gdocs:search","arguments":{"query":"x"}}`
+	const result = `{"type":"function_result","call_id":"call_1","name":"gdocs:search","result":[{"type":"text","text":"found"}]}`
+	const answer = `{"type":"model_output","content":[{"type":"text","text":"done"}]}`
+	check := func(output []schemas.ResponsesMessage) {
+		t.Helper()
+		require.Len(t, output, 2)
+		require.Equal(t, schemas.ResponsesMessageTypeMCPCall, *output[0].Type)
+		assert.Equal(t, "completed", *output[0].Status)
+		assert.Equal(t, "search", *output[0].Name)
+		assert.Equal(t, "gdocs", *output[0].ServerLabel)
+		assert.JSONEq(t, `{"query":"x"}`, *output[0].Arguments)
+		require.NotNil(t, output[0].Output)
+		assert.Contains(t, *output[0].Output.ResponsesToolCallOutputStr, "found")
+	}
+	unary := func(steps ...string) []schemas.ResponsesMessage {
+		var native GeminiInteraction
+		require.NoError(t, sonic.Unmarshal([]byte(`{"id":"v1_x","status":"completed","steps":[`+strings.Join(steps, ",")+`]}`), &native))
+		before := len(native.Steps)
+		out := native.ToBifrostResponsesResponse().Output
+		assert.Equal(t, GeminiInteractionsStepFunctionCall, native.Steps[0].Type, "the interaction is not modified")
+		assert.Len(t, native.Steps, before)
+		return out
+	}
+	check(unary(call, result, answer))
+	open := unary(call)
+	require.Len(t, open, 1)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *open[0].Type)
+	assert.Equal(t, "gdocs:search", *open[0].Name)
+	plain := unary(strings.ReplaceAll(call, "gdocs:", ""), strings.ReplaceAll(result, "gdocs:", ""))
+	require.Len(t, plain, 1)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *plain[0].Type, "a call without a server in its name is the caller's")
+
+	stream := func(lines ...string) (types []schemas.ResponsesStreamResponseType, output []schemas.ResponsesMessage) {
+		s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+		for _, ev := range interactionsEvents(t, lines...) {
+			out, bErr := s.ToBifrostResponsesStream(ev)
+			require.Nil(t, bErr)
+			for _, e := range out {
+				types = append(types, e.Type)
+				if e.Response != nil && e.Type == schemas.ResponsesStreamResponseTypeCompleted {
+					output = e.Response.Output
+				}
+			}
+		}
+		return types, output
+	}
+	const completed = `{"event_type":"interaction.completed","interaction":{"id":"v1_x","status":"completed"}}`
+	start := func(i, step string) string {
+		return `{"event_type":"step.start","index":` + i + `,"step":` + step + `}`
+	}
+	stop := func(i string) string { return `{"event_type":"step.stop","index":` + i + `}` }
+	for name, lines := range map[string][]string{
+		"whole steps": {start("0", call), stop("0"), start("1", result), stop("1"), start("2", answer), stop("2"), completed},
+		"fragments": {
+			start("0", `{"type":"function_call","id":"call_1","name":"gdocs:search","arguments":{}}`),
+			`{"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":"{\"query\":"}}`,
+			`{"event_type":"step.delta","index":0,"delta":{"type":"arguments_delta","arguments":"\"x\"}"}}`, stop("0"),
+			start("1", `{"type":"function_result","call_id":"call_1","name":"gdocs:search"}`),
+			`{"event_type":"step.delta","index":1,"delta":{"type":"function_result","result":[{"type":"text","text":"found"}]}}`, stop("1"),
+			start("2", answer), stop("2"), completed},
+	} {
+		types, output := stream(lines...)
+		assert.NotContains(t, types, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, name)
+		check(output)
+	}
+	types, output := stream(start("0", call), stop("0"), completed)
+	assert.Contains(t, types, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone)
+	require.Len(t, output, 1)
+	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCall, *output[0].Type)
+	assert.JSONEq(t, `{"query":"x"}`, *output[0].Arguments)
+
+	s := NewGeminiInteractionsStreamState("gemini-3.8-flash")
+	s.ID = "v1_x"
+	for _, ev := range interactionsEvents(t, start("0", call), stop("0")) {
+		_, bErr := s.ToBifrostResponsesStream(ev)
+		require.Nil(t, bErr)
+	}
+	handed := s.Handoff()
+	assert.Empty(t, handed[len(handed)-1].Response.Output, "the result may still come")
 }
 
 // TestGeminiInteractionsHandoffLeavesPartialCallOpen pins that a run handed off between a function call's

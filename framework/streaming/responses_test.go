@@ -865,3 +865,51 @@ func TestBuildResponsesMessageKeepsStreamedMedia(t *testing.T) {
 		t.Errorf("want the text and its image, got %+v", blocks)
 	}
 }
+
+// TestBuildResponsesMessageMediaOrder pins that an answer's media keeps its place among the text that streamed,
+// whichever came first, and is not shared with the chunk it came on.
+func TestBuildResponsesMessageMediaOrder(t *testing.T) {
+	image := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr("data:image/png;base64,QQ==")}}
+	text := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hi")}
+	item := func(status string, blocks ...schemas.ResponsesMessageContentBlock) *schemas.ResponsesMessage {
+		return &schemas.ResponsesMessage{ID: schemas.Ptr("msg_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Status: &status, Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+	}
+	for name, blocks := range map[string][]schemas.ResponsesMessageContentBlock{
+		"image first": {image, text}, "text first": {text, image}, "text between": {image, text, image},
+	} {
+		textAt := 0
+		if blocks[0].Text == nil {
+			textAt = 1
+		}
+		zero := 0
+		var chunks []*ResponsesStreamChunk
+		for i, resp := range []*schemas.BifrostResponsesStreamResponse{
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &zero, Item: item("in_progress")},
+			{Type: schemas.ResponsesStreamResponseTypeContentPartAdded, OutputIndex: &zero, ContentIndex: &textAt, ItemID: schemas.Ptr("msg_1"), Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("")}},
+			{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, OutputIndex: &zero, ContentIndex: &textAt, ItemID: schemas.Ptr("msg_1"), Delta: schemas.Ptr("hi")},
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &zero, Item: item("completed", blocks...)},
+		} {
+			// The accumulator stores its own copy of every chunk.
+			chunks = append(chunks, &ResponsesStreamChunk{ChunkIndex: i, StreamResponse: deepCopyResponsesStreamResponse(resp)})
+		}
+		messages := BuildResponsesMessagesFromChunks(chunks)
+		require.Len(t, messages, 1, name)
+		got := messages[0].Content.ContentBlocks
+		require.Len(t, got, len(blocks), name)
+		for i := range blocks {
+			if blocks[i].Text != nil {
+				require.NotNil(t, got[i].Text, name)
+				require.Equal(t, "hi", *got[i].Text, name)
+				continue
+			}
+			require.NotNil(t, got[i].ResponsesInputMessageContentBlockImage, name)
+			*got[i].ImageURL = "changed"
+		}
+		for _, b := range chunks[3].StreamResponse.Item.Content.ContentBlocks {
+			if b.ResponsesInputMessageContentBlockImage != nil {
+				require.Equal(t, "data:image/png;base64,QQ==", *b.ImageURL, name)
+			}
+		}
+	}
+	require.Equal(t, "data:image/png;base64,QQ==", *image.ImageURL)
+}

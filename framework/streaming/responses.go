@@ -715,7 +715,34 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 		copy.ResponsesOutputMessageContentRefusal = &copyRefusal
 	}
 
+	if original.ResponsesInputMessageContentBlockImage != nil {
+		copy.ResponsesInputMessageContentBlockImage = &schemas.ResponsesInputMessageContentBlockImage{
+			ImageURL: copyString(original.ResponsesInputMessageContentBlockImage.ImageURL),
+			Detail:   copyString(original.ResponsesInputMessageContentBlockImage.Detail),
+		}
+	}
+	if f := original.ResponsesInputMessageContentBlockFile; f != nil {
+		copy.ResponsesInputMessageContentBlockFile = &schemas.ResponsesInputMessageContentBlockFile{
+			FileContent: slices.Clone(f.FileContent), FileData: copyString(f.FileData), FileURL: copyString(f.FileURL),
+			Filename: copyString(f.Filename), FileType: copyString(f.FileType),
+		}
+	}
+	if original.Audio != nil {
+		audio := *original.Audio
+		copy.Audio = &audio
+	}
+	copy.FileID = copyString(original.FileID)
+
 	return copy
+}
+
+// copyString is a copy of s that shares nothing with it.
+func copyString(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	return &c
 }
 
 // respMsgAccum holds strings.Builders for one output message so streamed deltas
@@ -731,20 +758,41 @@ type respMsgAccum struct {
 }
 
 // keepStreamedMedia adds to message, built from its deltas, the media blocks of the finished item, which have
-// no delta event. They go after the blocks the deltas own, whose builders address them by index.
-func keepStreamedMedia(message *schemas.ResponsesMessage, item *schemas.ResponsesMessage) {
+// no delta event. Each goes where the item has it when the blocks the deltas own, whose builders address them by
+// index, are text at the same place in the item, and after them otherwise.
+func keepStreamedMedia(message *schemas.ResponsesMessage, item *schemas.ResponsesMessage, acc *respMsgAccum) {
 	if item.Content == nil || message.Content == nil {
 		return
 	}
 	isMedia := func(b schemas.ResponsesMessageContentBlock) bool {
 		return b.ResponsesInputMessageContentBlockImage != nil || b.ResponsesInputMessageContentBlockFile != nil || b.Audio != nil
 	}
-	if slices.ContainsFunc(message.Content.ContentBlocks, isMedia) {
+	if slices.ContainsFunc(message.Content.ContentBlocks, isMedia) || !slices.ContainsFunc(item.Content.ContentBlocks, isMedia) {
+		return
+	}
+	final := item.Content.ContentBlocks
+	inPlace := true
+	for _, builders := range []map[int]*strings.Builder{acc.cbText, acc.cbRefusal, acc.cbSignature} {
+		for at := range builders {
+			inPlace = inPlace && at < len(final) && !isMedia(final[at])
+		}
+	}
+	if inPlace {
+		streamed := message.Content.ContentBlocks
+		blocks := make([]schemas.ResponsesMessageContentBlock, len(final))
+		for at := range final {
+			if !isMedia(final[at]) && at < len(streamed) && streamed[at].Type != "" {
+				blocks[at] = streamed[at]
+			} else {
+				blocks[at] = deepCopyResponsesMessageContentBlock(final[at])
+			}
+		}
+		message.Content.ContentBlocks = blocks
 		return
 	}
 	for _, block := range item.Content.ContentBlocks {
 		if isMedia(block) {
-			message.Content.ContentBlocks = append(message.Content.ContentBlocks, block)
+			message.Content.ContentBlocks = append(message.Content.ContentBlocks, deepCopyResponsesMessageContentBlock(block))
 		}
 	}
 }
@@ -862,7 +910,7 @@ func BuildResponsesMessagesFromChunks(chunks []*ResponsesStreamChunk) []schemas.
 							status := *resp.Item.Status
 							messages[i].Status = &status
 						}
-						keepStreamedMedia(&messages[i], resp.Item)
+						keepStreamedMedia(&messages[i], resp.Item, accums[i])
 					}
 					matched = true
 					break
