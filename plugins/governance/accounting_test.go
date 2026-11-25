@@ -957,7 +957,7 @@ func TestPostHookWorkerReadOfStoredRunChargesNoTokens(t *testing.T) {
 			fixture := newAccountingFixture(t)
 			plugin := &GovernancePlugin{ctx: context.Background(), tracker: fixture.tracker}
 			settled := settleLimits(fixture.store, "sk-bf-acct", schemas.Gemini, "gemini-3.8-flash", &UsageUpdate{})
-			plugin.postHookWorker(tc.result, nil, schemas.Gemini, "gemini-3.8-flash", tc.requestType, "read-"+name, "", time.Time{}, true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
+			plugin.postHookWorker(tc.result, nil, schemas.Gemini, "gemini-3.8-flash", tc.requestType, "read-"+name, "", true, 0, 0, false, nil, settled.Budgets, settled.RateLimits, nil)
 			assert.EventuallyWithT(t, func(c *assert.CollectT) { assert.Equal(c, int64(1), fixture.requests()) }, time.Second, 10*time.Millisecond)
 			assert.Equal(t, tc.want, fixture.tokens())
 		})

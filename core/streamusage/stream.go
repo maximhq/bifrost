@@ -23,7 +23,8 @@ import (
 // holds the first choice only, so n>1 streams are undercounted.
 func Estimate(ctx *schemas.BifrostContext, request *schemas.BifrostRequest, model string, failure *schemas.BifrostError) {
 	idle, ok := estimable(failure)
-	if !ok {
+	// A stored run goes on without its stream and is settled once, for all of it.
+	if !ok || failure.ExtraFields.ProviderJob != nil {
 		return
 	}
 	estimate(ctx, ctx.GetAccumulatedResponse(), request, model, failure, idle)

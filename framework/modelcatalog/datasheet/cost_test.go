@@ -3899,7 +3899,7 @@ func TestCalculateCost_VideoRetrieveIsNotBilled(t *testing.T) {
 func TestCalculateCost_ResponsesLifecycleReadsAreNotBilled(t *testing.T) {
 	model := chatPricing(0.000002, 0.000012)
 	model.Provider, model.Model = "gemini", "gemini-3.8-flash"
-	store := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+	store := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKeyNormalized(model.Model, model.Provider, model.Mode): model,
 	})
 	priced := func(requestType schemas.RequestType, job *schemas.BifrostPassthroughJob, reported *schemas.BifrostCost) float64 {
