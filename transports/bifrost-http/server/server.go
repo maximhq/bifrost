@@ -3125,7 +3125,10 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	// and every bearer check resolves its virtual key from the live store. The sign-in,
 	// settings and telemetry routes are public by protocol or bearer-authenticated
 	// by the handler itself, so they take no middleware.
-	clientGateways := handlers.NewClientGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
+	clientGateways, err := handlers.NewClientGatewayHandler(s.Config, s.TempTokens, s.OAuth2IdentityResolver)
+	if err != nil {
+		return fmt.Errorf("failed to create the client gateway handler: %w", err)
+	}
 	clientGateways.RegisterRoutes(s.Router)
 	clientGateways.RegisterInferenceRoutes(s.Router, s.Client, s, s.InferenceAuthStart, middlewares...)
 	s.ClientGateways = clientGateways
@@ -3262,7 +3265,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	if s.WarpHandler != nil {
 		s.WarpHandler.Shutdown()
 	}
-	s.WarpHandler = handlers.NewWarpHandler(s.Config.ConfigStore, s.Config.LiveStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
+	warpHandler, err := handlers.NewWarpHandler(s.Config.ConfigStore, s.Config.LiveStore, loggerPlugin, s.Client, s.Config.LogsStore, s.Config.VectorStore, s.SidekiqRunner, s.Config.ModelCatalog, logger, func() bool {
 		return s.Config.FeatureFlags != nil && s.Config.FeatureFlags.IsEnabled(lib.FeatureFlagWarp)
 	}, handlers.WarpResolvers{
 		ExternalQuotaBudgets: s.ExternalQuotaBudgetResolver,
@@ -3270,6 +3273,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		UserGovernance:       s.WarpUserGovernanceReader,
 		CallerRestriction:    s.WarpCallerRestrictionResolver,
 	})
+	if err != nil {
+		return fmt.Errorf("failed to create the warp handler: %w", err)
+	}
+	s.WarpHandler = warpHandler
 	if loggingHandler != nil {
 		loggingHandler.SetTopicLister(s.WarpHandler.Service())
 	}

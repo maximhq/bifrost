@@ -134,8 +134,9 @@ func warpVirtualKeyDecorator(store vkModelConfigReader, resolvers WarpResolvers)
 // enabled is the Warp feature flag. The service is still built when it is off,
 // because the flag can be switched on at runtime and routes are only
 // registered once; what the flag withholds is every route and the indexing of
-// new logs.
-func NewWarpHandler(store configstore.ConfigStore, live *livestore.Store, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool, resolvers WarpResolvers) *WarpHandler {
+// new logs. live, which is required, holds the service's runtime state; Shutdown
+// releases it, so a reload builds the next handler on the same store.
+func NewWarpHandler(store configstore.ConfigStore, live *livestore.Store, loggerPlugin *logging.LoggerPlugin, client *bifrost.Bifrost, logsStore logstore.LogStore, vectors vectorstore.VectorStore, runner *sidekiq.Runner, catalog *modelcatalog.ModelCatalog, logger schemas.Logger, enabled func() bool, resolvers WarpResolvers) (*WarpHandler, error) {
 	opts := []warp.Option{warp.WithLogger(logger), warp.WithModelCatalog(catalog), warp.WithVectorStore(vectors)}
 	if store != nil {
 		opts = append(opts, warp.WithVirtualKeyDecorator(warpVirtualKeyDecorator(store, resolvers)))
@@ -155,7 +156,11 @@ func NewWarpHandler(store configstore.ConfigStore, live *livestore.Store, logger
 	if logsStore != nil {
 		opts = append(opts, warp.WithConversationStore(logsStore))
 	}
-	handler := &WarpHandler{service: warp.NewService(store, opts...), sidekiqRunner: runner, enabled: enabled, live: live}
+	service, err := warp.NewService(store, live, opts...)
+	if err != nil {
+		return nil, err
+	}
+	handler := &WarpHandler{service: service, sidekiqRunner: runner, enabled: enabled, live: live}
 	handler.backfillStore, _ = store.(warpBackfillJobStore)
 	handler.service.RegisterBackfill(runner)
 	if loggerPlugin != nil {
@@ -168,7 +173,7 @@ func NewWarpHandler(store configstore.ConfigStore, live *livestore.Store, logger
 	// store, and Shutdown stops it.
 	handler.service.StartHistoryCleanup()
 	handler.service.StartTopicUpkeep()
-	return handler
+	return handler, nil
 }
 
 // Shutdown stops the service's background work and log subscription.

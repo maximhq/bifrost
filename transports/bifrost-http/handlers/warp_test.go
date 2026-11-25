@@ -100,7 +100,7 @@ func newTopicsTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, logsto
 	}}
 	jobs := newFakeSidekiqStore()
 	runner := sidekiq.New(jobs, &mockLogger{}, 1, "")
-	service := warp.NewService(nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{topics: topics}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	service := warpServiceForTest(t, nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{topics: topics}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}}}}, nil
 	}))
 	service.RegisterBackfill(runner)
@@ -131,8 +131,8 @@ func (s *recordingWarpStore) UpsertWarpConfig(_ context.Context, config *tables.
 	return nil
 }
 
-func newTestWarpHandler(store *recordingWarpStore) *WarpHandler {
-	return &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store))}
+func newTestWarpHandler(t testing.TB, store *recordingWarpStore) *WarpHandler {
+	return &WarpHandler{service: warpServiceForTest(t, nil, warp.WithConfigStore(store))}
 }
 
 const validWarpConfigJSON = `{"enabled":true,"provider":"openai","model":"gpt-4o","embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`
@@ -156,7 +156,7 @@ func adminCtx(body string) *fasthttp.RequestCtx {
 }
 
 func TestWarpConfigPutRequiresLocalAdmin(t *testing.T) {
-	handler := newTestWarpHandler(&recordingWarpStore{})
+	handler := newTestWarpHandler(t, &recordingWarpStore{})
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetBodyString(validWarpConfigJSON)
 	handler.putConfig(ctx)
@@ -167,7 +167,7 @@ func TestWarpConfigPutRequiresLocalAdmin(t *testing.T) {
 func TestWarpConfigPutRejectsMalformedBody(t *testing.T) {
 	store := &recordingWarpStore{}
 	ctx := adminCtx(`{not json`)
-	newTestWarpHandler(store).putConfig(ctx)
+	newTestWarpHandler(t, store).putConfig(ctx)
 
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	require.Empty(t, store.upserted)
@@ -178,7 +178,7 @@ func TestWarpConfigPutRejectsMalformedBody(t *testing.T) {
 func TestWarpConfigPutMapsValidationTo400(t *testing.T) {
 	store := &recordingWarpStore{}
 	ctx := adminCtx(`{"enabled":true,"provider":"","model":"gpt-4o"}`)
-	newTestWarpHandler(store).putConfig(ctx)
+	newTestWarpHandler(t, store).putConfig(ctx)
 
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	require.Contains(t, string(ctx.Response.Body()), "provider is required")
@@ -187,7 +187,7 @@ func TestWarpConfigPutMapsValidationTo400(t *testing.T) {
 
 // A store with no Warp support is a supported deployment: 503, not 500.
 func TestWarpConfigWithoutStoreIs503(t *testing.T) {
-	handler := &WarpHandler{service: warp.NewService(nil)}
+	handler := &WarpHandler{service: warpServiceForTest(t, nil)}
 	ctx := &fasthttp.RequestCtx{}
 	handler.getConfig(ctx)
 	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
@@ -200,7 +200,7 @@ func TestWarpConfigWithoutStoreIs503(t *testing.T) {
 func TestWarpConfigPutWithoutVectorStoreIs503(t *testing.T) {
 	store := &recordingWarpStore{}
 	ctx := adminCtx(validWarpConfigJSON)
-	newTestWarpHandler(store).putConfig(ctx)
+	newTestWarpHandler(t, store).putConfig(ctx)
 	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
 	require.Contains(t, string(ctx.Response.Body()), string(schemas.WarpUnavailableNoVectorStore))
 }
@@ -208,7 +208,7 @@ func TestWarpConfigPutWithoutVectorStoreIs503(t *testing.T) {
 // The wire shape the settings page depends on: a key reference is a plain
 // field, and defaults are resolved rather than sent as zero.
 func TestWarpConfigGetBodyShape(t *testing.T) {
-	handler := newTestWarpHandler(&recordingWarpStore{row: &tables.TableWarpConfig{
+	handler := newTestWarpHandler(t, &recordingWarpStore{row: &tables.TableWarpConfig{
 		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", APIKeyID: "key-abc",
 		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
 		LogVectorStoreNamespace: schemas.WarpDefaultLogVectorStoreNamespace,
@@ -320,7 +320,7 @@ func TestWarpTopicsStartNeedsALogStore(t *testing.T) {
 	jobs := newFakeSidekiqStore()
 	runner := sidekiq.New(jobs, &mockLogger{}, 1, "")
 	defer runner.Shutdown()
-	service := warp.NewService(nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{}), warp.WithVectorStore(handlerVectorStore{}))
+	service := warpServiceForTest(t, nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{}), warp.WithVectorStore(handlerVectorStore{}))
 	defer service.Shutdown()
 	handler := &WarpHandler{service: service, sidekiqRunner: runner, backfillStore: jobs}
 
@@ -854,7 +854,7 @@ func TestWarpSnapshotFailsClosedOnUnusableScope(t *testing.T) {
 // reason the dashboard already branches on, so "present but unusable" and
 // "absent" stay distinguishable without making the state permanent.
 func TestWarpChatRouteIsRegisteredWithoutALogReader(t *testing.T) {
-	handler := newTestWarpHandler(&recordingWarpStore{})
+	handler := newTestWarpHandler(t, &recordingWarpStore{})
 	require.False(t, handler.service.CanChat(), "precondition: no log reader, so Warp cannot answer")
 
 	router := router.New()
@@ -1109,7 +1109,7 @@ func rbacAdminCtx(body string) *fasthttp.RequestCtx {
 func TestWarpAdminRoutesAdmitRBACAuthorizedCaller(t *testing.T) {
 	store := &recordingWarpStore{}
 	putCtx := rbacAdminCtx(validWarpConfigJSON)
-	(&WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}).putConfig(putCtx)
+	(&WarpHandler{service: warpServiceForTest(t, nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}).putConfig(putCtx)
 	require.NotEqual(t, fasthttp.StatusForbidden, putCtx.Response.StatusCode(), string(putCtx.Response.Body()))
 
 	handler, jobs, cleanup := newBackfillTestHandler(t)
@@ -1139,7 +1139,7 @@ func TestWarpAdminRoutesAdmitRBACAuthorizedCaller(t *testing.T) {
 func TestWarpAdminRoutesRejectZeroRoleID(t *testing.T) {
 	handler, _, cleanup := newBackfillTestHandler(t)
 	defer cleanup()
-	calls := []func(*fasthttp.RequestCtx){handler.startBackfill, handler.backfillStatus, handler.cancelBackfill, newTestWarpHandler(&recordingWarpStore{}).putConfig}
+	calls := []func(*fasthttp.RequestCtx){handler.startBackfill, handler.backfillStatus, handler.cancelBackfill, newTestWarpHandler(t, &recordingWarpStore{}).putConfig}
 	for _, call := range calls {
 		ctx := &fasthttp.RequestCtx{}
 		ctx.SetUserValue(schemas.BifrostContextKeyUserID, "someone")
@@ -1184,7 +1184,7 @@ func TestWarpJobMatchesNamespace(t *testing.T) {
 // on takes effect on the next request - routes are registered once at startup,
 // so the flag has to be read per request rather than at registration.
 func TestWarpRoutesAre404WhileFeatureFlagIsOff(t *testing.T) {
-	handler := newTestWarpHandler(&recordingWarpStore{})
+	handler := newTestWarpHandler(t, &recordingWarpStore{})
 	enabled := false
 	handler.enabled = func() bool { return enabled }
 
@@ -1283,7 +1283,7 @@ func int64Ptr(v int64) *int64 { return &v }
 
 // warpModelsHandler serves chat over a config that exposes one model beside the
 // default, and records where each model call was addressed.
-func warpModelsHandler(calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
+func warpModelsHandler(t testing.TB, calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
 	additional := `[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"}]`
 	store := &recordingWarpStore{row: &tables.TableWarpConfig{
 		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o", AdditionalModels: &additional,
@@ -1295,7 +1295,7 @@ func warpModelsHandler(calls *[]schemas.BifrostResponsesRequest) *WarpHandler {
 		// The turn ends on this error; the test only needs to see the address.
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
 	}
-	service := warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat), warp.WithBifrostMCP(true))
+	service := warpServiceForTest(t, nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat), warp.WithBifrostMCP(true))
 	service.SetManagementTools(handlerManagementTools{catalog: warp.NewManagementCatalog([]warp.ManagementTool{
 		{Name: "listRoutingRules", Description: "List routing rules.", InputSchema: `{"type":"object","properties":{}}`},
 	})})
@@ -1316,7 +1316,7 @@ func (handlerManagementTools) Call(context.Context, *warp.ManagementCatalog, str
 // the panel can show the setup state before anyone asks.
 func TestWarpChatRefusedWithoutBifrostMCP(t *testing.T) {
 	var calls []schemas.BifrostResponsesRequest
-	handler := warpModelsHandler(&calls)
+	handler := warpModelsHandler(t, &calls)
 	handler.service.SetManagementTools(handlerManagementTools{})
 
 	ctx := &fasthttp.RequestCtx{}
@@ -1335,7 +1335,7 @@ func TestWarpChatRefusedWithoutBifrostMCP(t *testing.T) {
 	require.Equal(t, gjson.False, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_available").Type, string(configCtx.Response.Body()))
 
 	configCtx = &fasthttp.RequestCtx{}
-	warpModelsHandler(&calls).getConfig(configCtx)
+	warpModelsHandler(t, &calls).getConfig(configCtx)
 	require.True(t, gjson.GetBytes(configCtx.Response.Body(), "bifrost_mcp_available").Bool())
 }
 
@@ -1344,7 +1344,7 @@ func TestWarpChatRefusedWithoutBifrostMCP(t *testing.T) {
 // false, so the dashboard hides the Bifrost MCP setup step.
 func TestWarpChatAnswersWithoutBifrostMCPWhenDecoupled(t *testing.T) {
 	var calls []schemas.BifrostResponsesRequest
-	coupled := warpModelsHandler(&calls)
+	coupled := warpModelsHandler(t, &calls)
 	store := &recordingWarpStore{row: &tables.TableWarpConfig{
 		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
 		EmbeddingProvider: "openai", EmbeddingModel: "text-embedding-3-small", EmbeddingDimension: 1536,
@@ -1354,7 +1354,7 @@ func TestWarpChatAnswersWithoutBifrostMCPWhenDecoupled(t *testing.T) {
 		calls = append(calls, *request)
 		return nil, &schemas.BifrostError{Error: &schemas.ErrorField{Message: "scripted stop"}}
 	}
-	service := warp.NewService(nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))
+	service := warpServiceForTest(t, nil, warp.WithConfigStore(store), warp.WithLogReader(handlerBackfillReader{}), warp.WithChatFunc(chat))
 	service.SetManagementTools(handlerManagementTools{})
 	handler := &WarpHandler{service: service}
 
@@ -1379,7 +1379,7 @@ func TestWarpChatAnswersWithoutBifrostMCPWhenDecoupled(t *testing.T) {
 // page writes the list back whole.
 func TestWarpConfigRoundTripsAdditionalModels(t *testing.T) {
 	store := &recordingWarpStore{}
-	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
+	handler := &WarpHandler{service: warpServiceForTest(t, nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
 	ctx := adminCtx(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"anthropic","model":"claude-sonnet-5","api_key_id":"key-anthropic"},{"provider":"openai","model":"gpt-4o-mini"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
 	handler.putConfig(ctx)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -1412,7 +1412,7 @@ func TestWarpConfigRoundTripsAdditionalModels(t *testing.T) {
 // role cannot change which models Warp offers.
 func TestWarpConfigPutRefusesModelChangesFromNonAdmins(t *testing.T) {
 	store := &recordingWarpStore{}
-	handler := &WarpHandler{service: warp.NewService(nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
+	handler := &WarpHandler{service: warpServiceForTest(t, nil, warp.WithConfigStore(store), warp.WithVectorStore(handlerVectorStore{}))}
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetBodyString(`{"enabled":true,"provider":"openai","model":"gpt-4o","additional_models":[{"provider":"anthropic","model":"claude-sonnet-5"}],"embedding_provider":"openai","embedding_model":"text-embedding-3-small","embedding_dimension":1536,"log_vector_store_namespace":"BifrostWarpLogs"}`)
 	handler.putConfig(ctx)
@@ -1435,7 +1435,7 @@ func TestWarpChatRunsOnTheRequestedModel(t *testing.T) {
 			var calls []schemas.BifrostResponsesRequest
 			ctx := &fasthttp.RequestCtx{}
 			ctx.Request.SetBodyString(test.body)
-			warpModelsHandler(&calls).chat(ctx)
+			warpModelsHandler(t, &calls).chat(ctx)
 			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 			require.NotEmpty(t, calls)
 			require.Equal(t, test.wantProvider, calls[0].Provider)
@@ -1451,7 +1451,7 @@ func TestWarpChatRefusesAModelThatIsNotExposed(t *testing.T) {
 	var calls []schemas.BifrostResponsesRequest
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetBodyString(`{"messages":[{"role":"user","content":"hi"}],"provider":"openai","model":"gpt-5","stream":false}`)
-	warpModelsHandler(&calls).chat(ctx)
+	warpModelsHandler(t, &calls).chat(ctx)
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
 	require.Contains(t, string(ctx.Response.Body()), "model is not available for warp")
 	require.Empty(t, calls)
@@ -1583,4 +1583,15 @@ func TestWarpVirtualKeyWithoutLiveStoreIsNotMissing(t *testing.T) {
 
 	require.ErrorIs(t, err, livestore.ErrNoLiveStore)
 	require.NotErrorIs(t, err, errWarpVirtualKeyMissing, "an unwired live store is not a deleted key")
+}
+
+// warpServiceForTest builds a Warp service over store with a fresh live store, failing the test
+// on an error.
+func warpServiceForTest(t testing.TB, store configstore.ConfigStore, opts ...warp.Option) *warp.Service {
+	t.Helper()
+	service, err := warp.NewService(store, liveStoreForTest(t), opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }
