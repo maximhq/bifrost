@@ -9,6 +9,8 @@ import (
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ClassifyPassthroughPath maps an OpenAI-shaped passthrough request to the Bifrost request type its
@@ -55,6 +57,46 @@ func ClassifyPassthroughPath(method, path string) schemas.RequestType {
 		return schemas.ContainerCreateRequest
 	}
 	return ""
+}
+
+// EnsurePassthroughStreamUsage returns the body to send upstream for a streamed passthrough
+// request, with stream_options.include_usage set to true when the request is a streamed chat or
+// text completion. Those two APIs only emit a usage frame when the request asks for one, and the
+// usage frame is the only place a stream reports what it consumed. The typed routes always ask
+// (see the chat and text completion stream requests); this gives the passthrough route the same
+// behavior, so a streamed call is metered whatever the caller put in the body. The client sees
+// the standard trailing usage chunk it would get by asking for it.
+//
+// Any other request is returned unchanged: a non-POST, a route other than chat or text
+// completions (Responses streams carry usage on their own), a non-streamed body, a chat with
+// data_sources, or a body that is not a JSON object. The input slice is never modified.
+func EnsurePassthroughStreamUsage(method, path string, body []byte) []byte {
+	switch ClassifyPassthroughPath(method, path) {
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest:
+	default:
+		return body
+	}
+	// A JSON object starts with "{" after optional whitespace. Checking that byte keeps a
+	// body that is left unchanged from being copied just to learn its type.
+	if trimmed := bytes.TrimLeft(body, " \t\r\n"); len(trimmed) == 0 || trimmed[0] != '{' || !gjson.ValidBytes(body) {
+		return body
+	}
+	if gjson.GetBytes(body, "stream").Type != gjson.True {
+		return body
+	}
+	if gjson.GetBytes(body, "stream_options.include_usage").Type == gjson.True {
+		return body
+	}
+	// A chat that brings its own data sources (Azure OpenAI On Your Data) is served by a
+	// surface that does not take stream_options, so its body is sent as the caller wrote it.
+	if gjson.GetBytes(body, "data_sources").Exists() {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "stream_options.include_usage", true)
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 // ExtractOpenAIPassthroughUsage extracts usage from a passthrough response payload. method is the

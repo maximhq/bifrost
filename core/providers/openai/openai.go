@@ -8664,6 +8664,28 @@ func (provider *OpenAIProvider) buildPassthroughURL(req *schemas.BifrostPassthro
 	return providerUtils.BuildPassthroughURL(baseURL, "/v1"+path, req.RawQuery)
 }
 
+// withPassthroughStreamUsage returns the request to send upstream for a streamed passthrough
+// call. When EnsurePassthroughStreamUsage changes the body, the result is a copy carrying the new
+// body, so the caller's request (reused across retries and fallbacks) is left as it was.
+func withPassthroughStreamUsage(req *schemas.BifrostPassthroughRequest) *schemas.BifrostPassthroughRequest {
+	if req == nil || req.BodySource != nil || len(req.Body) == 0 {
+		return req
+	}
+	body := EnsurePassthroughStreamUsage(req.Method, req.Path, req.Body)
+	if bytes.Equal(body, req.Body) {
+		return req
+	}
+	upstream := *req
+	upstream.Body = body
+	return &upstream
+}
+
+// WithPassthroughStreamUsage is withPassthroughStreamUsage for providers that speak the OpenAI
+// wire format on their own passthrough route.
+func WithPassthroughStreamUsage(req *schemas.BifrostPassthroughRequest) *schemas.BifrostPassthroughRequest {
+	return withPassthroughStreamUsage(req)
+}
+
 func (provider *OpenAIProvider) PassthroughStream(
 	ctx *schemas.BifrostContext,
 	postHookRunner schemas.PostHookRunner,
@@ -8706,6 +8728,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 		fasthttpReq.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
 
+	req = withPassthroughStreamUsage(req)
 	if err := providerUtils.SetPassthroughRequestBody(fasthttpReq, req); err != nil {
 		return nil, providerUtils.NewBifrostOperationError(err.Error(), err)
 	}

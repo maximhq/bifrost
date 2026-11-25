@@ -200566,6 +200566,400 @@
       ]
     },
     {
+      "name": "383. Passthrough streamed completions report usage without the caller asking (passthrough-stream-usage) (PR #10439)",
+      "description": "A streamed chat or text completion reports its token usage only in a trailing chunk, and the upstream sends that chunk only when the request sets stream_options.include_usage. The typed routes always set it. The catch-all passthrough routes (/openai_passthrough and /azure_passthrough) now set it too on the body they send upstream, so a streamed call ends with the standard usage chunk and is metered even when the caller left the option out. These rows pin: a streamed OpenAI passthrough chat with no stream_options ends with a usage chunk before [DONE]; a caller that already set include_usage gets the same chunk; a streamed Azure deployment chat through /azure_passthrough with no stream_options ends with a usage chunk; and a non-streamed OpenAI passthrough chat is sent as written (the upstream refuses stream_options on a non-streamed request, so a 200 with no mention of it shows the body was left alone). Like folder 9, the requests carry no Authorization header: Bifrost supplies its configured key. A streamed text completion (/v1/completions) with no stream_options is covered too: the same rule fills in include_usage there. Every streaming case fails on an error frame, on a data line that is not valid JSON, and on any data after [DONE].",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini /openai_passthrough/v1/chat/completions streamed with no stream_options ends with a usage chunk - passthrough-stream-usage - #10439",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A streamed completion reports what it consumed only in a trailing chunk that carries a",
+                  "// usage object, sent before the [DONE] line. The passthrough route asks the upstream for that",
+                  "// chunk on every streamed chat or text completion, whatever the caller put in the body.",
+                  "var text = pm.response.text();",
+                  "pm.test('openai passthrough stream, no stream_options: status is 200', function () { pm.expect(pm.response.code, 'failed: ' + text).to.equal(200); });",
+                  "var frames = 0;",
+                  "var doneSeen = false;",
+                  "var usageBeforeDone = null;",
+                  "var usageAfterDone = false;",
+                  "var dataAfterDone = false;",
+                  "var errorFrame = null;",
+                  "var badFrames = 0;",
+                  "var generated = '';",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data) { return; }",
+                  "  // [DONE] is the last data line of the stream: anything after it is a failure.",
+                  "  if (doneSeen) { dataAfterDone = true; }",
+                  "  if (data === '[DONE]') { doneSeen = true; return; }",
+                  "  var frame;",
+                  "  // A data line that is not JSON is corrupted completion data, not something to skip.",
+                  "  try { frame = JSON.parse(data); } catch (e) { badFrames += 1; return; }",
+                  "  frames += 1;",
+                  "  if (frame && frame.error && !errorFrame) { errorFrame = frame.error; }",
+                  "  // The text the model produced: delta.content on a chat stream, text on a text completion stream.",
+                  "  (frame && frame.choices || []).forEach(function (c) { generated += (c && c.delta && typeof c.delta.content === 'string' ? c.delta.content : '') + (c && typeof c.text === 'string' ? c.text : ''); });",
+                  "  if (frame && frame.usage && typeof frame.usage === 'object' && frame.usage.total_tokens > 0) {",
+                  "    if (doneSeen) { usageAfterDone = true; } else { usageBeforeDone = frame.usage; }",
+                  "  }",
+                  "});",
+                  "pm.test('openai passthrough stream, no stream_options: response is an SSE stream that ends with [DONE]', function () {",
+                  "  pm.expect(frames, 'no SSE data chunks: ' + text).to.be.above(0);",
+                  "  pm.expect(doneSeen, 'no [DONE] line: ' + text).to.be.true;",
+                  "  pm.expect(dataAfterDone, 'a data line arrived after [DONE]: ' + text).to.be.false;",
+                  "  pm.expect(errorFrame, 'the stream carried an error frame: ' + text).to.equal(null);",
+                  "  pm.expect(badFrames, badFrames + ' data line(s) were not valid JSON: ' + text).to.equal(0);",
+                  "  pm.expect(generated.length, 'the stream carried no generated text: ' + text).to.be.above(0);",
+                  "});",
+                  "pm.test('openai passthrough stream, no stream_options: a chunk carries usage.total_tokens above 0 before [DONE]', function () {",
+                  "  pm.expect(usageBeforeDone, 'no usage chunk before [DONE]: ' + text).to.be.an('object');",
+                  "  pm.expect(usageBeforeDone.total_tokens, 'usage: ' + JSON.stringify(usageBeforeDone)).to.be.above(0);",
+                  "  pm.expect(usageAfterDone, 'usage chunk arrived after [DONE]: ' + text).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hi.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini /openai_passthrough/v1/chat/completions streamed with include_usage already set ends with a usage chunk - passthrough-stream-usage - #10439",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A streamed completion reports what it consumed only in a trailing chunk that carries a",
+                  "// usage object, sent before the [DONE] line. The passthrough route asks the upstream for that",
+                  "// chunk on every streamed chat or text completion, whatever the caller put in the body.",
+                  "var text = pm.response.text();",
+                  "pm.test('openai passthrough stream, include_usage set by caller: status is 200', function () { pm.expect(pm.response.code, 'failed: ' + text).to.equal(200); });",
+                  "var frames = 0;",
+                  "var doneSeen = false;",
+                  "var usageBeforeDone = null;",
+                  "var usageAfterDone = false;",
+                  "var dataAfterDone = false;",
+                  "var errorFrame = null;",
+                  "var badFrames = 0;",
+                  "var generated = '';",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data) { return; }",
+                  "  // [DONE] is the last data line of the stream: anything after it is a failure.",
+                  "  if (doneSeen) { dataAfterDone = true; }",
+                  "  if (data === '[DONE]') { doneSeen = true; return; }",
+                  "  var frame;",
+                  "  // A data line that is not JSON is corrupted completion data, not something to skip.",
+                  "  try { frame = JSON.parse(data); } catch (e) { badFrames += 1; return; }",
+                  "  frames += 1;",
+                  "  if (frame && frame.error && !errorFrame) { errorFrame = frame.error; }",
+                  "  // The text the model produced: delta.content on a chat stream, text on a text completion stream.",
+                  "  (frame && frame.choices || []).forEach(function (c) { generated += (c && c.delta && typeof c.delta.content === 'string' ? c.delta.content : '') + (c && typeof c.text === 'string' ? c.text : ''); });",
+                  "  if (frame && frame.usage && typeof frame.usage === 'object' && frame.usage.total_tokens > 0) {",
+                  "    if (doneSeen) { usageAfterDone = true; } else { usageBeforeDone = frame.usage; }",
+                  "  }",
+                  "});",
+                  "pm.test('openai passthrough stream, include_usage set by caller: response is an SSE stream that ends with [DONE]', function () {",
+                  "  pm.expect(frames, 'no SSE data chunks: ' + text).to.be.above(0);",
+                  "  pm.expect(doneSeen, 'no [DONE] line: ' + text).to.be.true;",
+                  "  pm.expect(dataAfterDone, 'a data line arrived after [DONE]: ' + text).to.be.false;",
+                  "  pm.expect(errorFrame, 'the stream carried an error frame: ' + text).to.equal(null);",
+                  "  pm.expect(badFrames, badFrames + ' data line(s) were not valid JSON: ' + text).to.equal(0);",
+                  "  pm.expect(generated.length, 'the stream carried no generated text: ' + text).to.be.above(0);",
+                  "});",
+                  "pm.test('openai passthrough stream, include_usage set by caller: a chunk carries usage.total_tokens above 0 before [DONE]', function () {",
+                  "  pm.expect(usageBeforeDone, 'no usage chunk before [DONE]: ' + text).to.be.an('object');",
+                  "  pm.expect(usageBeforeDone.total_tokens, 'usage: ' + JSON.stringify(usageBeforeDone)).to.be.above(0);",
+                  "  pm.expect(usageAfterDone, 'usage chunk arrived after [DONE]: ' + text).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"stream\": true,\n  \"stream_options\": { \"include_usage\": true },\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hi.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-3.5-turbo-instruct /openai_passthrough/v1/completions streamed text completion with no stream_options ends with a usage chunk - passthrough-stream-usage - #10439",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A streamed completion reports what it consumed only in a trailing chunk that carries a",
+                  "// usage object, sent before the [DONE] line. The passthrough route asks the upstream for that",
+                  "// chunk on every streamed chat or text completion, whatever the caller put in the body.",
+                  "var text = pm.response.text();",
+                  "pm.test('openai passthrough text completion stream, no stream_options: status is 200', function () { pm.expect(pm.response.code, 'failed: ' + text).to.equal(200); });",
+                  "var frames = 0;",
+                  "var doneSeen = false;",
+                  "var usageBeforeDone = null;",
+                  "var usageAfterDone = false;",
+                  "var dataAfterDone = false;",
+                  "var errorFrame = null;",
+                  "var badFrames = 0;",
+                  "var generated = '';",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data) { return; }",
+                  "  // [DONE] is the last data line of the stream: anything after it is a failure.",
+                  "  if (doneSeen) { dataAfterDone = true; }",
+                  "  if (data === '[DONE]') { doneSeen = true; return; }",
+                  "  var frame;",
+                  "  // A data line that is not JSON is corrupted completion data, not something to skip.",
+                  "  try { frame = JSON.parse(data); } catch (e) { badFrames += 1; return; }",
+                  "  frames += 1;",
+                  "  if (frame && frame.error && !errorFrame) { errorFrame = frame.error; }",
+                  "  // The text the model produced: delta.content on a chat stream, text on a text completion stream.",
+                  "  (frame && frame.choices || []).forEach(function (c) { generated += (c && c.delta && typeof c.delta.content === 'string' ? c.delta.content : '') + (c && typeof c.text === 'string' ? c.text : ''); });",
+                  "  if (frame && frame.usage && typeof frame.usage === 'object' && frame.usage.total_tokens > 0) {",
+                  "    if (doneSeen) { usageAfterDone = true; } else { usageBeforeDone = frame.usage; }",
+                  "  }",
+                  "});",
+                  "pm.test('openai passthrough text completion stream, no stream_options: response is an SSE stream that ends with [DONE]', function () {",
+                  "  pm.expect(frames, 'no SSE data chunks: ' + text).to.be.above(0);",
+                  "  pm.expect(doneSeen, 'no [DONE] line: ' + text).to.be.true;",
+                  "  pm.expect(dataAfterDone, 'a data line arrived after [DONE]: ' + text).to.be.false;",
+                  "  pm.expect(errorFrame, 'the stream carried an error frame: ' + text).to.equal(null);",
+                  "  pm.expect(badFrames, badFrames + ' data line(s) were not valid JSON: ' + text).to.equal(0);",
+                  "  pm.expect(generated.length, 'the stream carried no generated text: ' + text).to.be.above(0);",
+                  "});",
+                  "pm.test('openai passthrough text completion stream, no stream_options: a chunk carries usage.total_tokens above 0 before [DONE]', function () {",
+                  "  pm.expect(usageBeforeDone, 'no usage chunk before [DONE]: ' + text).to.be.an('object');",
+                  "  pm.expect(usageBeforeDone.total_tokens, 'usage: ' + JSON.stringify(usageBeforeDone)).to.be.above(0);",
+                  "  pm.expect(usageAfterDone, 'usage chunk arrived after [DONE]: ' + text).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-3.5-turbo-instruct\",\n  \"stream\": true,\n  \"max_tokens\": 5,\n  \"prompt\": \"Say hi.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "azure gpt-4o /azure_passthrough/openai/deployments/{deployment}/chat/completions streamed with no stream_options ends with a usage chunk - passthrough-stream-usage - #10439",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A streamed completion reports what it consumed only in a trailing chunk that carries a",
+                  "// usage object, sent before the [DONE] line. The passthrough route asks the upstream for that",
+                  "// chunk on every streamed chat or text completion, whatever the caller put in the body.",
+                  "var text = pm.response.text();",
+                  "pm.test('azure passthrough stream, no stream_options: status is 200', function () { pm.expect(pm.response.code, 'failed: ' + text).to.equal(200); });",
+                  "var frames = 0;",
+                  "var doneSeen = false;",
+                  "var usageBeforeDone = null;",
+                  "var usageAfterDone = false;",
+                  "var dataAfterDone = false;",
+                  "var errorFrame = null;",
+                  "var badFrames = 0;",
+                  "var generated = '';",
+                  "text.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var data = line.slice(5).trim();",
+                  "  if (!data) { return; }",
+                  "  // [DONE] is the last data line of the stream: anything after it is a failure.",
+                  "  if (doneSeen) { dataAfterDone = true; }",
+                  "  if (data === '[DONE]') { doneSeen = true; return; }",
+                  "  var frame;",
+                  "  // A data line that is not JSON is corrupted completion data, not something to skip.",
+                  "  try { frame = JSON.parse(data); } catch (e) { badFrames += 1; return; }",
+                  "  frames += 1;",
+                  "  if (frame && frame.error && !errorFrame) { errorFrame = frame.error; }",
+                  "  // The text the model produced: delta.content on a chat stream, text on a text completion stream.",
+                  "  (frame && frame.choices || []).forEach(function (c) { generated += (c && c.delta && typeof c.delta.content === 'string' ? c.delta.content : '') + (c && typeof c.text === 'string' ? c.text : ''); });",
+                  "  if (frame && frame.usage && typeof frame.usage === 'object' && frame.usage.total_tokens > 0) {",
+                  "    if (doneSeen) { usageAfterDone = true; } else { usageBeforeDone = frame.usage; }",
+                  "  }",
+                  "});",
+                  "pm.test('azure passthrough stream, no stream_options: response is an SSE stream that ends with [DONE]', function () {",
+                  "  pm.expect(frames, 'no SSE data chunks: ' + text).to.be.above(0);",
+                  "  pm.expect(doneSeen, 'no [DONE] line: ' + text).to.be.true;",
+                  "  pm.expect(dataAfterDone, 'a data line arrived after [DONE]: ' + text).to.be.false;",
+                  "  pm.expect(errorFrame, 'the stream carried an error frame: ' + text).to.equal(null);",
+                  "  pm.expect(badFrames, badFrames + ' data line(s) were not valid JSON: ' + text).to.equal(0);",
+                  "  pm.expect(generated.length, 'the stream carried no generated text: ' + text).to.be.above(0);",
+                  "});",
+                  "pm.test('azure passthrough stream, no stream_options: a chunk carries usage.total_tokens above 0 before [DONE]', function () {",
+                  "  pm.expect(usageBeforeDone, 'no usage chunk before [DONE]: ' + text).to.be.an('object');",
+                  "  pm.expect(usageBeforeDone.total_tokens, 'usage: ' + JSON.stringify(usageBeforeDone)).to.be.above(0);",
+                  "  pm.expect(usageAfterDone, 'usage chunk arrived after [DONE]: ' + text).to.be.false;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"stream\": true,\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hi.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/azure_passthrough/openai/deployments/{{azureDeployment}}/chat/completions?api-version={{azureApiVersion}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "azure_passthrough",
+                "openai",
+                "deployments",
+                "{{azureDeployment}}",
+                "chat",
+                "completions"
+              ],
+              "query": [
+                {
+                  "key": "api-version",
+                  "value": "{{azureApiVersion}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-4o-mini /openai_passthrough/v1/chat/completions non-streamed with no stream_options is sent as written - passthrough-stream-usage - #10439",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// stream_options is only valid on a streamed request: the upstream answers a non-streamed",
+                  "// body that carries it with a 400 naming the field. A 200 with a normal completion and no",
+                  "// mention of the field shows the non-streamed body was sent as the caller wrote it.",
+                  "var text = pm.response.text();",
+                  "pm.test('openai passthrough non-streamed: status is 200', function () { pm.expect(pm.response.code, 'failed: ' + text).to.equal(200); });",
+                  "var j = null;",
+                  "try { j = JSON.parse(text); } catch (e) { j = null; }",
+                  "pm.test('openai passthrough non-streamed: body is a JSON chat completion', function () {",
+                  "  pm.expect(j, 'not JSON: ' + text).to.be.an('object');",
+                  "  pm.expect(j.choices, 'no choices: ' + text).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('openai passthrough non-streamed: no error and no mention of stream_options', function () {",
+                  "  pm.expect(j && j.error, 'error returned: ' + text).to.not.exist;",
+                  "  pm.expect(text, 'failed: ' + text).to.not.include('stream_options');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say hi.\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "159. Azure response annotation fidelity (provider response fixture)",
       "description": "Local fixture regression like folder 154: run with providerErrorFixture=1 against the isolated gateway. The fixture answers model azure-filtered with Azure prompt_filter_results and per-choice content_filter_results; the gateway must return both.",
       "item": [
