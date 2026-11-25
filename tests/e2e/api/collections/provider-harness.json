@@ -299439,6 +299439,559 @@
       ]
     },
     {
+      "name": "Relay calls need a caller credential when inference auth is enforced (relay-caller-credential) [SERIAL]",
+      "description": "Wire-level pins for which credentials admit a relay call (/relay/{name}/{path}) when client.enforce_auth_on_inference is on. A relay call runs on the credential stored on the relay; a caller's direct provider key (x-bf-direct-key: true plus a bearer value) is never used for it, so it does not say who is calling. With inference auth on, a relay call is admitted only with a virtual key or an authenticated identity. [SERIAL]: the rows change client config every other row depends on, so the harness runs this folder in its own pass, alone against the gateway. It reads the stored client config, creates a run-scoped virtual key granted harness-relay-pricing, sends the full config back with enforce_auth_on_inference and allow_direct_keys on, and afterwards restores and verifies the original config and deletes the key. Rows: (1) a relay call carrying only a direct key answers 401 virtual_key_required and never reaches the upstream, where it used to be forwarded; (2) the same call with the granted virtual key answers 200 on the relay's own credential; (3) a relay call with no credential at all answers 401 virtual_key_required, as before. The rows name no provider, so no provider fork selects them. The relay is harness-relay-pricing from the shared profile (tests/integrations/python/config.json), which points at the local upstream fixture tests/e2e/api/runners/relay-upstream-fixture.mjs on 127.0.0.1:8783; make run-provider-harness-test starts it before the gateway and no third-party API is called. Each relay request mints its own id and sends it as ?tag=, which the fixture counts. Run with FEATURE=\"relay-caller-credential\".",
+      "item": [
+        {
+          "name": "setup: read current config and save enforce_auth_on_inference and allow_direct_keys - relay-caller-credential",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('relay-caller-credential: read the stored client config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // The folder sends this config back unchanged, and PUT /api/config refuses log_retention_days below 1.",
+                  "  // A row an older build left at 0 is reported here; the folder never writes a retention the profile did not have.",
+                  "  pm.expect(cc.log_retention_days >= 1, 'the saved log_retention_days is ' + cc.log_retention_days + ', which PUT /api/config refuses, so this folder cannot send the config back. Set log_retention_days to 1 or more on this profile and run again').to.equal(true);",
+                  "  pm.collectionVariables.set('relayCallerCredClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('relayCallerCredOriginal', JSON.stringify({ allow_direct_keys: cc.allow_direct_keys === true, enforce_auth_on_inference: cc.enforce_auth_on_inference === true }));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "setup: create a run-scoped virtual key granted harness-relay-pricing - relay-caller-credential",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.collectionVariables.set('relayCallerCredVkId', '');",
+                  "pm.collectionVariables.set('relayCallerCredVkValue', '');",
+                  "pm.test('granted key created: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + text).to.eql(200); });",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var vk = body.virtual_key || {};",
+                  "var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "pm.test('the key has an id and a value', function () {",
+                  "  pm.expect(vk.id, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(value, text).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('relayCallerCredVkId', vk.id || '');",
+                  "pm.collectionVariables.set('relayCallerCredVkValue', value || '');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness-relay-caller-credential-{{$timestamp}}\",\n  \"is_active\": true,\n  \"relay_grants\": [\n    {\n      \"relay_name\": \"harness-relay-pricing\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "setup: turn inference auth and direct keys on - relay-caller-credential",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('relayCallerCredClientConfig') || '{}');",
+                  "cc.allow_direct_keys = true;",
+                  "cc.enforce_auth_on_inference = true;",
+                  "pm.variables.set('relayCallerCredBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('relay-caller-credential: inference auth and direct keys both on', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{relayCallerCredBody}}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] a relay call carrying only a direct key is refused with virtual_key_required and the upstream is never called - relay-caller-credential",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                  "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-c1');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Inference auth and direct keys are both on. The call carries x-bf-direct-key: true and a bearer value, and no virtual key.",
+                  "// A relay runs on its own stored credential, so the direct key admits nothing here; a 200 means the call was forwarded.",
+                  "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                  "var ID = pm.variables.get('relayReqId');",
+                  "// How many requests carrying this case's tag reached the local upstream fixture.",
+                  "function upstreamHits(cb) {",
+                  "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                  "    var ok = !err && res && res.code === 200;",
+                  "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                  "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                  "    });",
+                  "    cb(ok ? res.json().hits : -1);",
+                  "  });",
+                  "}",
+                  "var text = pm.response.text();",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('direct key only: HTTP 401', function () { pm.expect(pm.response.code, 'expected 401, got: ' + text).to.eql(401); });",
+                  "pm.test('direct key only: refusal type virtual_key_required with a message', function () {",
+                  "  pm.expect(j.type, text).to.eql('virtual_key_required');",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.include('is required');",
+                  "});",
+                  "upstreamHits(function (n) {",
+                  "  pm.test('direct key only: the upstream was never called', function () { pm.expect(n, 'upstream hits for ' + ID).to.eql(0); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-request-id",
+                "value": "{{relayReqId}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer not-a-real-provider-key"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/echo?tag={{relayReqId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "relay",
+                "harness-relay-pricing",
+                "v1",
+                "echo"
+              ],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "{{relayReqId}}"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"probe\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "a relay call with the granted virtual key is relayed on the relay credential - relay-caller-credential",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                  "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-c2');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                  "var ID = pm.variables.get('relayReqId');",
+                  "// How many requests carrying this case's tag reached the local upstream fixture.",
+                  "function upstreamHits(cb) {",
+                  "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                  "    var ok = !err && res && res.code === 200;",
+                  "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                  "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                  "    });",
+                  "    cb(ok ? res.json().hits : -1);",
+                  "  });",
+                  "}",
+                  "var text = pm.response.text();",
+                  "pm.test('the setup row produced a virtual key', function () {",
+                  "  pm.expect(pm.collectionVariables.get('relayCallerCredVkValue'), 'no key value from the setup row').to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('granted key: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + text).to.eql(200); });",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var h = j.headers || {};",
+                  "pm.test('granted key: the upstream got the relay credential and the request', function () {",
+                  "  pm.expect(h.authorization, text).to.eql('Bearer sk-harness-relay-upstream');",
+                  "  pm.expect(j.method + ' ' + j.path, text).to.eql('POST /v1/echo');",
+                  "});",
+                  "upstreamHits(function (n) {",
+                  "  pm.test('granted key: the upstream was called once', function () { pm.expect(n, 'upstream hits for ' + ID).to.eql(1); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-request-id",
+                "value": "{{relayReqId}}"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{relayCallerCredVkValue}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/echo?tag={{relayReqId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "relay",
+                "harness-relay-pricing",
+                "v1",
+                "echo"
+              ],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "{{relayReqId}}"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"probe\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-401] a relay call with no credential at all is refused with virtual_key_required and the upstream is never called - relay-caller-credential",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh id per request: sent as x-request-id (the Relay Logs row id) and as ?tag= (the upstream fixture's hit counter).",
+                  "pm.variables.set('relayReqId', 'relay-' + Date.now() + '-' + Math.floor(Math.random() * 1e6) + '-c3');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Unchanged behavior: with inference auth on, a relay call that carries nothing is refused.",
+                  "var UPSTREAM = pm.variables.get('relayUpstreamUrl') || 'http://127.0.0.1:8783';",
+                  "var ID = pm.variables.get('relayReqId');",
+                  "// How many requests carrying this case's tag reached the local upstream fixture.",
+                  "function upstreamHits(cb) {",
+                  "  pm.sendRequest({ url: UPSTREAM + '/__relay/hits?tag=' + encodeURIComponent(ID), method: 'GET' }, function (err, res) {",
+                  "    var ok = !err && res && res.code === 200;",
+                  "    pm.test('the relay upstream fixture answers on ' + UPSTREAM, function () {",
+                  "      pm.expect(ok, 'start it with: node tests/e2e/api/runners/relay-upstream-fixture.mjs (' + (err ? String(err) : res.code) + ')').to.be.true;",
+                  "    });",
+                  "    cb(ok ? res.json().hits : -1);",
+                  "  });",
+                  "}",
+                  "var text = pm.response.text();",
+                  "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "pm.test('no credential: HTTP 401', function () { pm.expect(pm.response.code, 'expected 401, got: ' + text).to.eql(401); });",
+                  "pm.test('no credential: refusal type virtual_key_required with a message', function () {",
+                  "  pm.expect(j.type, text).to.eql('virtual_key_required');",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.include('is required');",
+                  "});",
+                  "upstreamHits(function (n) {",
+                  "  pm.test('no credential: the upstream was never called', function () { pm.expect(n, 'upstream hits for ' + ID).to.eql(0); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-request-id",
+                "value": "{{relayReqId}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/relay/harness-relay-pricing/v1/echo?tag={{relayReqId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "relay",
+                "harness-relay-pricing",
+                "v1",
+                "echo"
+              ],
+              "query": [
+                {
+                  "key": "tag",
+                  "value": "{{relayReqId}}"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"probe\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "cleanup: restore the original config - relay-caller-credential",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('relayCallerCredClientConfig') || '{}');",
+                  "pm.variables.set('relayCallerCredBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('relay-caller-credential: original client config restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{relayCallerCredBody}}"
+            }
+          }
+        },
+        {
+          "name": "cleanup: enforce_auth_on_inference and allow_direct_keys are back to what they were - relay-caller-credential",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('relay-caller-credential: allow_direct_keys and enforce_auth_on_inference are back to what they were', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config || {};",
+                  "  pm.expect({ allow_direct_keys: cc.allow_direct_keys === true, enforce_auth_on_inference: cc.enforce_auth_on_inference === true }, pm.response.text()).to.eql(JSON.parse(pm.collectionVariables.get('relayCallerCredOriginal') || '{}'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "cleanup: delete the run-scoped virtual key - relay-caller-credential",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('granted key deleted: HTTP 200', function () { pm.expect(pm.response.code, 'expected 200, got: ' + pm.response.text()).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/governance/virtual-keys/{{relayCallerCredVkId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "virtual-keys",
+                "{{relayCallerCredVkId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "286. Prometheus overhead latency histogram is emitted for HTTP requests (overhead latency metric) [SERIAL]",
       "description": "The telemetry plugin observes bifrost_overhead_latency_microseconds in HTTPTransportPostHook, but the labels and the upstream-latency counter it needs were set by PostLLMHook on the handler's BifrostContext, a separate context from the transport middleware's. Values never flow back from handler to transport context, so the transport hook always found no labels and returned, and the SDK fallback in PostLLMHook is skipped for HTTP requests. The histogram was never emitted over HTTP, while bifrost_overhead_component_microseconds (keyed by trace ID) worked. Each case scrapes /metrics, sends one request, and polls /metrics until _count grows on the request's own series (provider openai, model gpt-4o-mini, method chat_completion or chat_completion_stream). No request header can make a series unique to one request, so the folder is [SERIAL]: it runs alone against the gateway and no concurrent request can move the count. Red before the fix: the count never moves. The Go-level pin is TestOverheadLatencyRecordedAcrossTransportAndHandlerContexts.",
       "item": [

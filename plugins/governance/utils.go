@@ -317,6 +317,22 @@ func PresentedAnyCredential(ctx *schemas.BifrostContext) bool {
 	return presentedGrantBearingCredential(ctx) || hasDirectKeyAuth(ctx)
 }
 
+// presentedCredentialFor answers Evaluate's first step for one request: did it carry a credential
+// that counts for what it is asking to do? For a model call that is PresentedAnyCredential. A
+// direct key counts there because the caller is supplying the provider credential the call will
+// run on. A relay call is different: it runs on the credential stored on the relay, and the
+// direct key is never used, so it identifies no one. Only a grant-bearing credential (a virtual
+// key or an authenticated identity) answers the question for a relay.
+func presentedCredentialFor(ctx *schemas.BifrostContext, req *EvaluationRequest) bool {
+	if ctx == nil {
+		return false
+	}
+	if req != nil && req.RequestType == schemas.RelayRequest {
+		return presentedGrantBearingCredential(ctx)
+	}
+	return PresentedAnyCredential(ctx)
+}
+
 // PresentedCredentialResolved reports whether the credential the request presented resolved to
 // usable access. It is the second admission question realtime asks after PresentedAnyCredential:
 // not "was something presented" but "did what was presented turn out to exist". It reads the

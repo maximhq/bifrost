@@ -730,7 +730,7 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// grant nothing is a different answer, reported by the identity step below; telling a caller who
 	// supplied a key to supply one is not a useful refusal.
 	p.cfgMutex.RLock()
-	if !PresentedAnyCredential(ctx) && p.isVkMandatory != nil && *p.isVkMandatory {
+	if !presentedCredentialFor(ctx, evaluationRequest) && p.isVkMandatory != nil && *p.isVkMandatory {
 		message := "virtual key is required. Provide a virtual key via the x-bf-vk header."
 		if p.isEnterprise {
 			message = "authentication is required. Provide a virtual key (x-bf-vk), API key, or user token."
