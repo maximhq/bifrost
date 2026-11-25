@@ -848,21 +848,32 @@ func (p *LoggerPlugin) EmitRelaySettlement(ctx context.Context, entry *logstore.
 	setStr(schemas.AttrBifrostRelayName, entry.RelayName)
 	setStr(schemas.AttrBifrostRelayRoutePath, entry.RoutePath)
 	setStrPtr(schemas.AttrBifrostRelayJobID, entry.JobID)
-	// Enrichment dims from the row (no request context at settlement time), so the settled cost
-	// filters like the relay's live calls.
-	setStrPtr(schemas.AttrBifrostVirtualKeyID, entry.VirtualKeyID)
-	setStrPtr(schemas.AttrBifrostVirtualKeyName, entry.VirtualKeyName)
-	setStrPtr(schemas.AttrBifrostTeamID, entry.TeamID)
-	setStrPtr(schemas.AttrBifrostTeamName, entry.TeamName)
-	setStrPtr(schemas.AttrBifrostCustomerID, entry.CustomerID)
-	setStrPtr(schemas.AttrBifrostCustomerName, entry.CustomerName)
-	setStrPtr(schemas.AttrBifrostBusinessUnitID, entry.BusinessUnitID)
-	setStrPtr(schemas.AttrBifrostBusinessUnitName, entry.BusinessUnitName)
-	setStrPtr(schemas.AttrBifrostProjectID, entry.ProjectID)
-	setStrPtr(schemas.AttrBifrostProjectName, entry.ProjectName)
-	setStrPtr(schemas.AttrBifrostUserID, entry.UserID)
-	setStrPtr(schemas.AttrBifrostUserName, entry.UserName)
+	// The same SpanEnrichment a live relay or LLM span carries, read from the row since there is no
+	// request context at settlement time, so the settled cost filters like the relay's live calls.
+	relayRowEnrichment(entry).ApplyToSpan(tracer.SpanFromHandle(handle))
 	tracer.EndSpan(handle, schemas.SpanStatusOk, "")
 	tracer.EndSpan(root, schemas.SpanStatusOk, "")
 	tracer.CompleteAndFlushTrace(traceID)
+}
+
+// relayRowEnrichment is the governance and identity a Relay Logs row recorded, as a SpanEnrichment.
+func relayRowEnrichment(entry *logstore.RelayLog) *schemas.SpanEnrichment {
+	str := func(v *string) string {
+		if v == nil {
+			return ""
+		}
+		return *v
+	}
+	return &schemas.SpanEnrichment{
+		VirtualKeyID: str(entry.VirtualKeyID), VirtualKeyName: str(entry.VirtualKeyName),
+		TeamID: str(entry.TeamID), TeamName: str(entry.TeamName),
+		CustomerID: str(entry.CustomerID), CustomerName: str(entry.CustomerName),
+		BusinessUnitID: str(entry.BusinessUnitID), BusinessUnitName: str(entry.BusinessUnitName),
+		ProjectID: str(entry.ProjectID), ProjectName: str(entry.ProjectName),
+		UserID: str(entry.UserID), UserName: str(entry.UserName), UserEmail: str(entry.UserEmail),
+		App:     str(entry.App),
+		TeamIDs: entry.TeamIDsParsed, TeamNames: entry.TeamNamesParsed,
+		CustomerIDs: entry.CustomerIDsParsed, CustomerNames: entry.CustomerNamesParsed,
+		BusinessUnitIDs: entry.BusinessUnitIDsParsed, BusinessUnitNames: entry.BusinessUnitNamesParsed,
+	}
 }

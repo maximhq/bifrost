@@ -685,7 +685,9 @@ func TestEmitRelaySettlementEmitsAMarkedRelaySpan(t *testing.T) {
 
 	cost := 0.3
 	plugin.EmitRelaySettlement(context.Background(), &logstore.RelayLog{ID: "job-row", RelayName: "textract", RoutePath: "/v1/textract",
-		JobID: schemas.Ptr("j-1"), Cost: &cost, VirtualKeyName: schemas.Ptr("team-key")}, map[string]string{"region": "eu-west"})
+		JobID: schemas.Ptr("j-1"), Cost: &cost, VirtualKeyID: schemas.Ptr("vk-1"), VirtualKeyName: schemas.Ptr("team-key"),
+		UserID: schemas.Ptr("u-1"), UserEmail: schemas.Ptr("ada@example.com"), App: schemas.Ptr("Claude Code"),
+		TeamIDsParsed: []string{"t-1", "t-2"}, TeamNamesParsed: []string{"Search", "Docs"}}, map[string]string{"region": "eu-west"})
 	select {
 	case dims := <-capture.dims:
 		require.Equal(t, map[string]string{"region": "eu-west"}, dims, "the start call's custom labels")
@@ -700,6 +702,11 @@ func TestEmitRelaySettlementEmitsAMarkedRelaySpan(t *testing.T) {
 		require.Equal(t, "/v1/textract", attrs[schemas.AttrBifrostRelayRoutePath])
 		require.Equal(t, "j-1", attrs[schemas.AttrBifrostRelayJobID])
 		require.Equal(t, "team-key", attrs[schemas.AttrBifrostVirtualKeyName])
+		// The same enrichment a live relay or LLM span carries: user, app and every team.
+		require.Equal(t, "u-1", attrs[schemas.AttrBifrostUserID])
+		require.Equal(t, "ada@example.com", attrs[schemas.AttrBifrostUserEmail])
+		require.Equal(t, "Claude Code", attrs[schemas.AttrBifrostApp])
+		require.Equal(t, []string{"t-1", "t-2"}, attrs[schemas.AttrBifrostTeamIDs])
 	case <-time.After(2 * time.Second):
 		t.Fatal("no settlement trace was flushed")
 	}

@@ -139,41 +139,54 @@ func relayErrorType(bifrostErr *schemas.BifrostError) string {
 	return "_OTHER"
 }
 
-// setRelayGovernanceSpanAttrs copies the governance identity onto the span, as the MCP and
-// Agent operation spans carry it, so the metrics derived from the span can be cut by it. The
-// identity is read from the Grant, the settled source, never from the deprecated context copies.
+// setRelayGovernanceSpanAttrs gives the relay span the same SpanEnrichment an LLM call span carries
+// (user, app, every team, customer and business unit), so the connectors read one shape for both.
 func setRelayGovernanceSpanAttrs(tracer schemas.Tracer, handle schemas.SpanHandle, ctx *schemas.BifrostContext) {
 	if tracer == nil || ctx == nil {
 		return
 	}
+	relaySpanEnrichment(ctx).ApplyToSpan(tracer.SpanFromHandle(handle))
+}
+
+// relaySpanEnrichment reads the dimensions an LLM span reads off the context, then takes the
+// governance identity from the Grant, the settled source, wherever it names one.
+func relaySpanEnrichment(ctx *schemas.BifrostContext) *schemas.SpanEnrichment {
+	e := schemas.SpanEnrichmentFromContext(ctx)
+	if e == nil {
+		e = &schemas.SpanEnrichment{}
+	}
 	grant := ctx.Grant()
 	if grant == nil {
-		return
+		return e
 	}
 	identity := grant.Identity()
 	if identity == nil {
+		return e
+	}
+	if vk := identity.VirtualKey(); vk != nil && vk.ID != "" {
+		e.VirtualKeyID, e.VirtualKeyName = vk.ID, vk.Name
+	}
+	if user := identity.User(); user != nil && user.ID != "" {
+		e.UserID, e.UserName, e.UserEmail = user.ID, user.Name, user.Email
+	}
+	if project := identity.Project(); project != nil && project.ID != "" {
+		e.ProjectID, e.ProjectName = project.ID, project.Name
+	}
+	takeRefs(identity.Teams(), &e.TeamID, &e.TeamName, &e.TeamIDs, &e.TeamNames)
+	takeRefs(identity.Customers(), &e.CustomerID, &e.CustomerName, &e.CustomerIDs, &e.CustomerNames)
+	takeRefs(identity.BusinessUnits(), &e.BusinessUnitID, &e.BusinessUnitName, &e.BusinessUnitIDs, &e.BusinessUnitNames)
+	return e
+}
+
+// takeRefs sets the attributed entity (the first) and the full lists, when the identity names any.
+func takeRefs(refs []schemas.EntityRef, id, name *string, ids, names *[]string) {
+	if len(refs) == 0 {
 		return
 	}
-	setRef := func(ref *schemas.EntityRef, idKey, nameKey string) {
-		if ref == nil {
-			return
-		}
-		if ref.ID != "" {
-			tracer.SetAttribute(handle, idKey, ref.ID)
-		}
-		if ref.Name != "" {
-			tracer.SetAttribute(handle, nameKey, ref.Name)
-		}
+	*id, *name = refs[0].ID, refs[0].Name
+	*ids, *names = make([]string, 0, len(refs)), make([]string, 0, len(refs))
+	for _, ref := range refs {
+		*ids = append(*ids, ref.ID)
+		*names = append(*names, ref.Name)
 	}
-	first := func(refs []schemas.EntityRef) *schemas.EntityRef {
-		if len(refs) == 0 {
-			return nil
-		}
-		return &refs[0]
-	}
-	setRef(identity.VirtualKey(), schemas.AttrBifrostVirtualKeyID, schemas.AttrBifrostVirtualKeyName)
-	setRef(first(identity.Teams()), schemas.AttrBifrostTeamID, schemas.AttrBifrostTeamName)
-	setRef(first(identity.Customers()), schemas.AttrBifrostCustomerID, schemas.AttrBifrostCustomerName)
-	setRef(first(identity.BusinessUnits()), schemas.AttrBifrostBusinessUnitID, schemas.AttrBifrostBusinessUnitName)
-	setRef(identity.Project(), schemas.AttrBifrostProjectID, schemas.AttrBifrostProjectName)
 }
