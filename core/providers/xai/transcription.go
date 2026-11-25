@@ -171,14 +171,15 @@ func (g *fileLastGuard) scan(data []byte) {
 		// guardReadHeaders: the bytes after a delimiter, up to the blank line ending the headers.
 		prev := len(g.buf)
 		g.buf = append(g.buf, data[:min(len(data), maxPartHeaderBytes-prev)]...)
-		if len(g.buf) >= 2 && g.buf[0] == '-' && g.buf[1] == '-' {
-			g.state = guardDone // closing delimiter
-			return
+		// A delimiter ends its line: an optional "--" closing marker, optional transport
+		// padding, then CRLF. Anything else means the file body merely contains the
+		// delimiter bytes, so go back to seeking from the bytes that follow them.
+		closing := len(g.buf) >= 2 && g.buf[0] == '-' && g.buf[1] == '-'
+		line := g.buf
+		if closing {
+			line = g.buf[2:]
 		}
-		// A delimiter ends its line: optional transport padding, then CRLF. Anything
-		// else means the file body merely contains the delimiter bytes, so go back to
-		// seeking from the bytes that follow them.
-		rest := bytes.TrimLeft(g.buf, " \t")
+		rest := bytes.TrimLeft(line, " \t")
 		partial := len(rest) == 0 || len(rest) == 1 && (rest[0] == '\r' || rest[0] == '-' && len(g.buf) == 1)
 		if !partial && (rest[0] != '\r' || rest[1] != '\n') {
 			// Bytes from earlier reads can only be padding, '-' or a CR, and a delimiter
@@ -187,6 +188,12 @@ func (g *fileLastGuard) scan(data []byte) {
 			g.buf = append(g.buf[:0], old[len(old)-min(len(old), len(g.delim)-1):]...)
 			g.state = guardSeekDelimiter
 			continue
+		}
+		if closing {
+			if !partial {
+				g.state = guardDone // closing delimiter
+			}
+			return
 		}
 		end := bytes.Index(g.buf, []byte("\r\n\r\n"))
 		if end < 0 {

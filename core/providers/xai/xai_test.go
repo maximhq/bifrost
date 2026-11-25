@@ -273,7 +273,8 @@ func TestXAITranscriptionLargePayloadDecodesXAIResponse(t *testing.T) {
 func TestXAITranscriptionLargePayloadFileMustBeLast(t *testing.T) {
 	t.Parallel()
 
-	audio := "RIFF\x00\x00\x00\x00WAVE" + strings.Repeat("-b\r\n--", 20000)
+	// "\r\n--b--X" inside the audio is not a closing delimiter, so it must not end the scan.
+	audio := "RIFF\x00\x00\x00\x00WAVE" + strings.Repeat("-b\r\n--", 20000) + "\r\n--b--X\r\n"
 	modelPart := "--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-voice-transcribe-2.0\r\n"
 	languagePart := "--b\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nsv\r\n"
 	filePart := "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\n" + audio + "\r\n"
