@@ -351991,6 +351991,262 @@
           }
         }
       ]
+    },
+    {
+      "name": "388. Code mode names nested media under _media outside the MCP gateway (code-mode-media) (#8909 / PR #10278) [SERIAL]",
+      "description": "Agent mode over /v1/chat/completions, /v1/responses and /anthropic/v1/messages runs executeToolCode through the same non-gateway path as /v1/mcp/tool/execute: nothing is attached, but a structured object result names its media under _media, which the script and the Return value the model reads both see. These rows drive that path directly in Chat and Responses format, with no model in the loop so the script and its reply are deterministic. A run-scoped code-mode client on the SSE fixture at localhost:3012 permits only capture_media. No provider requests are made. Serial because registering a code-mode client makes its meta-tools visible gateway-wide. Run with PROVIDER=mcp FEATURE=code-mode-media; rebuild examples/mcps/remote-test-server before reusing a fixture already listening on :3012.",
+      "item": [
+        {
+          "name": "[EXPECT-200] mcp code-mode-media provision a run-scoped code-mode SSE client for /v1/mcp/tool/execute - #8909",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('codeModeMediaDirectClient', 'harness_codemode_media_direct_' + pm.variables.replaceIn('{{$guid}}').replace(/-/g, ''));",
+                  "// The id is chosen here and sent with the create, so cleanup knows it as soon as creation succeeds.",
+                  "pm.collectionVariables.set('codeModeMediaDirectClientNewId', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.unset('codeModeMediaDirectClientId');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Stored before any assertion, so cleanup deletes the client even when a later readiness check fails.",
+                  "if (pm.response.code === 200) { pm.collectionVariables.set('codeModeMediaDirectClientId', pm.collectionVariables.get('codeModeMediaDirectClientNewId')); }",
+                  "pm.collectionVariables.unset('codeModeMediaDirectClientNewId');",
+                  "pm.test('the code-mode SSE client is created', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{codeModeMediaDirectClientNewId}}\",\n  \"name\": \"{{codeModeMediaDirectClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\"capture_media\"],\n  \"tools_to_auto_execute\": [\"capture_media\"]\n}"
+            },
+            "url": "{{baseUrl}}/api/mcp/client"
+          }
+        },
+        {
+          "name": "[EXPECT-200] mcp code-mode-media confirm the /v1/mcp/tool/execute client id and fixture readiness - #8909",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the run-scoped client exposes capture_media and the id it was created with', function () {",
+                  "  pm.expect(pm.response.code, 'listing failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients;",
+                  "  pm.expect(clients, pm.response.text()).to.be.an('array');",
+                  "  var matches = clients.filter(function (c) { return c.config && c.config.name === pm.collectionVariables.get('codeModeMediaDirectClient'); });",
+                  "  pm.expect(matches, 'the run-scoped client is not uniquely listed: ' + pm.response.text()).to.have.lengthOf(1);",
+                  "  var mine = matches[0];",
+                  "  pm.expect(mine.config.client_id, pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(mine.config.client_id, 'the listed client id differs from the one it was created with').to.equal(pm.collectionVariables.get('codeModeMediaDirectClientId'));",
+                  "  pm.expect(mine.config.is_code_mode_client, pm.response.text()).to.equal(true);",
+                  "  pm.expect(mine.config.tools_to_execute, pm.response.text()).to.eql(['capture_media']);",
+                  "  pm.expect(mine.config.tools_to_auto_execute, pm.response.text()).to.eql(['capture_media']);",
+                  "  pm.expect(mine.tools, pm.response.text()).to.be.an('array');",
+                  "  var capture = mine.tools.filter(function (t) { return t.name === 'capture_media'; });",
+                  "  pm.expect(capture, 'capture_media is missing; rebuild the SSE fixture on :3012: ' + pm.response.text()).to.have.lengthOf(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/mcp/clients?search={{codeModeMediaDirectClient}}"
+          }
+        },
+        {
+          "name": "[EXPECT-200] mcp code-mode-media /v1/mcp/tool/execute names nested media under _media without attaching it - #8909",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';",
+                  "var wav = 'UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA==';",
+                  "var imageLabel = '[image/png, ' + (png.length / 4 * 3) + ' bytes returned by the tool, not shown]';",
+                  "var audioLabel = '[audio/wav, ' + (wav.length / 4 * 3) + ' bytes returned by the tool, not shown]';",
+                  "// Outside the MCP gateway (as in agent mode) nothing is attached, but the script and the",
+                  "// Return value the model reads name the media under _media.",
+                  "pm.test('the script reads _media placeholders and the reply attaches no media', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(body.content || '');",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  pm.expect(JSON.parse(content.substring(at + marker.length)), 'the script did not read its structured title and media placeholders: ' + content).to.eql(['Fixture capture', imageLabel, audioLabel]);",
+                  "  var raw = pm.response.text();",
+                  "  pm.expect(raw, 'media was attached outside the gateway: ' + raw).to.not.include('Attached media:');",
+                  "  pm.expect(raw, 'image bytes reached the reply: ' + raw).to.not.include(png);",
+                  "  pm.expect(raw, 'audio bytes reached the reply: ' + raw).to.not.include(wav);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-media-direct\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\": \\\"r = {{codeModeMediaDirectClient}}.capture_media()\\\\nresult = [r[\\\\\\\"title\\\\\\\"], r[\\\\\\\"_media\\\\\\\"][0], r[\\\\\\\"_media\\\\\\\"][1]]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] mcp code-mode-media /v1/mcp/tool/execute?format=responses names nested media under _media without attaching it - #8909",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';",
+                  "var wav = 'UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA==';",
+                  "var imageLabel = '[image/png, ' + (png.length / 4 * 3) + ' bytes returned by the tool, not shown]';",
+                  "var audioLabel = '[audio/wav, ' + (wav.length / 4 * 3) + ' bytes returned by the tool, not shown]';",
+                  "pm.test('the Responses-shaped reply names _media placeholders and attaches no media', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var raw = pm.response.text();",
+                  "  pm.expect(raw, 'the return value lost the structured title: ' + raw).to.include('Fixture capture');",
+                  "  pm.expect(raw, 'the return value does not name the image: ' + raw).to.include(imageLabel);",
+                  "  pm.expect(raw, 'the return value does not name the audio: ' + raw).to.include(audioLabel);",
+                  "  pm.expect(raw, 'media was attached outside the gateway: ' + raw).to.not.include('Attached media:');",
+                  "  pm.expect(raw, 'image bytes reached the reply: ' + raw).to.not.include(png);",
+                  "  pm.expect(raw, 'audio bytes reached the reply: ' + raw).to.not.include(wav);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"type\": \"function_call\",\n  \"call_id\": \"code-mode-media-direct\",\n  \"name\": \"executeToolCode\",\n  \"arguments\": \"{\\\"code\\\": \\\"r = {{codeModeMediaDirectClient}}.capture_media()\\\\nresult = [r[\\\\\\\"title\\\\\\\"], r[\\\\\\\"_media\\\\\\\"][0], r[\\\\\\\"_media\\\\\\\"][1]]\\\"}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute?format=responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ],
+              "query": [
+                {
+                  "key": "format",
+                  "value": "responses"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] mcp code-mode-media delete the /v1/mcp/tool/execute client by its id - #8909",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The id is stored once creation succeeds. Without it (creation never answered 200), find the client by its",
+                  "// run-scoped name so a registered client is still deleted rather than leaked.",
+                  "if (!pm.collectionVariables.get('codeModeMediaDirectClientId')) {",
+                  "  var name = pm.collectionVariables.get('codeModeMediaDirectClient');",
+                  "  if (!name) { pm.execution.skipRequest(); return; }",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({ url: pm.variables.replaceIn('{{baseUrl}}') + '/api/mcp/clients?search=' + encodeURIComponent(name), method: 'GET', header: headers }, function (err, res) {",
+                  "    var clients = null;",
+                  "    if (!err && res && res.code === 200) { try { clients = res.json().clients; } catch (e) { clients = null; } }",
+                  "    pm.test('code-mode-media direct cleanup can list clients to find the run-scoped one', function () {",
+                  "      pm.expect(err, 'client lookup errored: ' + err).to.equal(null);",
+                  "      pm.expect(clients, 'client lookup failed: ' + (res ? res.text() : 'no response')).to.be.an('array');",
+                  "    });",
+                  "    var mine = (clients || []).filter(function (c) { return c && c.config && c.config.name === name && c.config.client_id; });",
+                  "    if (mine.length === 1) { pm.collectionVariables.set('codeModeMediaDirectClientId', mine[0].config.client_id); return; }",
+                  "    // Nothing registered under the run-scoped name, so there is nothing to delete.",
+                  "    pm.collectionVariables.unset('codeModeMediaDirectClient');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the run-scoped code-mode client is removed', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().status, pm.response.text()).to.equal('success');",
+                  "});",
+                  "pm.collectionVariables.unset('codeModeMediaDirectClient');",
+                  "pm.collectionVariables.unset('codeModeMediaDirectClientId');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/mcp/client/{{codeModeMediaDirectClientId}}"
+          }
+        }
+      ]
     }
-  ]
+]
 }

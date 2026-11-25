@@ -25,6 +25,7 @@ type ExecutionResult struct {
 	FailedToolCalls int                  `json:"failed_tool_calls,omitempty"` // nested calls that returned an error result
 	Media           []mcp.Content        `json:"-"`                           // image/audio blocks from nested results
 	DroppedMedia    int                  `json:"-"`                           // media blocks over the forwarding bounds
+	WithheldMedia   int                  `json:"-"`                           // media blocks the script's view of a result could not name
 }
 
 // Media stays out of script values; only a bounded set rides on the gateway reply.
@@ -35,9 +36,14 @@ const (
 
 // A script's nested calls run serially, so the collector needs no lock.
 type mediaCollector struct {
-	blocks  []mcp.Content
-	bytes   int
-	dropped int
+	blocks   []mcp.Content
+	bytes    int
+	dropped  int
+	withheld int
+	// pending is the media the current nested call's placeholders named before post-hooks.
+	// It lives here rather than in a local the pipeline closure assigns, so callMCPTool
+	// allocates nothing extra outside the gateway.
+	pending []mcp.Content
 }
 
 // mediaBlock normalizes image/audio blocks and returns their kind and encoded data.
@@ -81,33 +87,37 @@ func namedMedia(result *mcp.CallToolResult) []mcp.Content {
 	return named
 }
 
-// hookVisibleMedia returns named, the media the placeholders listed before post-hooks ran,
-// only while the post-hook content and native result still match it.
-func hookVisibleMedia(msg *schemas.ChatMessage, named []mcp.Content) []mcp.Content {
+// collect adds the pending media of a successful nested result, read after post-hooks, while
+// the post-hook content and native result still match it. Media beside structuredContent the
+// script's view cannot name it under is counted as withheld, so the reply can say it existed.
+func (c *mediaCollector) collect(msg *schemas.ChatMessage) {
+	named := c.pending
+	c.pending = nil
 	if msg == nil || msg.ChatToolMessage == nil {
-		return nil
+		return
 	}
 	result := msg.MCPResult(msg.Content)
 	if result == nil || result.IsError {
-		return nil
+		return
 	}
 	if result.StructuredContent != nil {
 		if _, ok := structuredMediaObject(result); !ok {
-			return nil
+			c.withheld += len(namedMedia(result))
+			return
 		}
 	}
 	current := namedMedia(result)
 	if len(current) != len(named) {
-		return nil
+		return
 	}
 	for i, block := range current {
 		_, kind, data := mediaBlock(block)
 		_, namedKind, namedData := mediaBlock(named[i])
 		if kind != namedKind || data != namedData {
-			return nil
+			return
 		}
 	}
-	return named
+	c.add(named)
 }
 
 // attachMedia snapshots the reply text so an outer rewrite withholds its media.
@@ -264,7 +274,7 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 		hasLogs := len(result.Logs) > 0
 		hasResult := result.Result != nil
 		// Collected media is output: a script that only captures still produced something.
-		hasMedia := len(result.Media) > 0 || result.DroppedMedia > 0
+		hasMedia := len(result.Media) > 0 || result.DroppedMedia > 0 || result.WithheldMedia > 0
 		s.logger.Debug("%s Formatting success response. Has logs: %v, Has result: %v, Has media: %v", codemcp.CodeModeLogPrefix, hasLogs, hasResult, hasMedia)
 
 		if !hasLogs && !hasResult && !hasMedia {
@@ -305,6 +315,9 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 			}
 			if result.DroppedMedia > 0 {
 				responseText += fmt.Sprintf("\nNote: %d media block(s) from nested tool results exceeded the forwarding limit and were not attached.", result.DroppedMedia)
+			}
+			if result.WithheldMedia > 0 {
+				responseText += fmt.Sprintf("\nNote: %d media block(s) from nested tool results were not attached because the result's structuredContent could not name them under _media.", result.WithheldMedia)
 			}
 			// No environment footer here: the server keys help a failed run recover, while
 			// a successful one would only carry them into every reply.
@@ -361,6 +374,7 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 	if media != nil {
 		result.Media = media.blocks
 		result.DroppedMedia = media.dropped
+		result.WithheldMedia = media.withheld
 	}
 	return result
 }
@@ -501,8 +515,10 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	// Whether the server flagged the result with isError. The message's own flag also covers
 	// text that only opens with "Error: ", so it cannot tell the two apart after the pipeline.
 	wireIsError := false
-	// The media the placeholder text names, copied before post-hooks can touch the native result.
-	var named []mcp.Content
+	if media != nil {
+		// A pre-hook short circuit skips the op below; it must not inherit an earlier call's names.
+		media.pending = nil
+	}
 	finalResp, finalErr := s.clientManager.RunWithPluginPipeline(nestedCtx, mcpRequest, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Honor any pre-hook mutation of tool name + arguments before the wire
 		// call. Mirrors ToolsManager.executeToolInternal (toolmanager.go:648–670):
@@ -586,7 +602,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 
 		message := createToolResponseMessage(toolCallReq, rawResult, isErrorResult)
 		if media != nil {
-			named = namedMedia(toolResponse)
+			media.pending = namedMedia(toolResponse)
 			message.SetMCPResult(toolResponse, message.Content)
 		}
 		return &schemas.BifrostMCPResponse{
@@ -644,7 +660,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		// the script prints or returns. The payload itself is in the MCP tool log.
 		s.logger.Debug("%s Tool returned %d bytes: %s.%s", codemcp.CodeModeLogPrefix, len(text), clientName, logToolName)
 		if media != nil {
-			media.add(hookVisibleMedia(msg, named))
+			media.collect(msg)
 		}
 		return extractResultFromChatMessage(msg), nil
 	}

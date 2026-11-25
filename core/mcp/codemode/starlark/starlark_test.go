@@ -2702,7 +2702,56 @@ func TestExecuteToolCodeWithholdsMediaHiddenByStructuredContent(t *testing.T) {
 			if native := forwardedResult(msg); native != nil {
 				t.Fatalf("media absent from the hook projection was forwarded: %#v", native)
 			}
+			text := mediaResponseText(t, msg)
+			if !strings.Contains(text, "Note: 1 media block(s) from nested tool results were not attached") || strings.Contains(text, "Attached media") || strings.Contains(text, pngData) {
+				t.Fatalf("withheld media was not reported: %s", text)
+			}
 		})
+	}
+}
+
+// An in-process server can hand back a typed struct as structuredContent; the script's
+// projection cannot name media beside it, so the collector counts it as withheld.
+func TestMediaCollectorCountsMediaBesideTypedStructuredContent(t *testing.T) {
+	image := mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"}
+	result := &mcp.CallToolResult{
+		Content:           []mcp.Content{mcp.NewTextContent("page"), image},
+		StructuredContent: struct{ Title string }{Title: "page"},
+	}
+	msg := createToolResponseMessage(schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("typed")}, "page", false)
+	msg.SetMCPResult(result, msg.Content)
+	collector := &mediaCollector{pending: namedMedia(result)}
+	collector.collect(msg)
+	if len(collector.blocks) != 0 || collector.withheld != 1 || collector.pending != nil {
+		t.Fatalf("collector = %+v, want one withheld block and nothing forwarded", collector)
+	}
+}
+
+// A capture whose media cannot be named still produced something: the run succeeds and says so.
+func TestExecuteToolCodeReportsWithheldMediaFromMediaOnlyRun(t *testing.T) {
+	mode, _ := mediaMode(t, &mcp.CallToolResult{
+		Content:           []mcp.Content{mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"}},
+		StructuredContent: []any{"a"},
+	})
+	msg := runMediaCode(t, mode, "shots.capture()")
+	if msg.IsError != nil && *msg.IsError {
+		t.Fatalf("media-only run with withheld media was marked as an error: %s", mediaResponseText(t, msg))
+	}
+	want := "Execution completed successfully.\nNote: 1 media block(s) from nested tool results were not attached because the result's structuredContent could not name them under _media."
+	if text := mediaResponseText(t, msg); text != want {
+		t.Fatalf("reply = %q, want %q", text, want)
+	}
+}
+
+// Outside the gateway nothing is collected, so nothing is reported as withheld either.
+func TestExecuteToolCodeOutsideGatewayReportsNoWithheldMedia(t *testing.T) {
+	mode, _ := mediaMode(t, &mcp.CallToolResult{
+		Content:           []mcp.Content{mcp.ImageContent{Type: "image", Data: pngData, MIMEType: "image/png"}},
+		StructuredContent: []any{"a"},
+	})
+	msg := runMediaCodeIn(t, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), mode, "result = shots.capture()")
+	if text := mediaResponseText(t, msg); strings.Contains(text, "Note:") || strings.Contains(text, "Attached media") {
+		t.Fatalf("non-gateway reply mentions media: %s", text)
 	}
 }
 
