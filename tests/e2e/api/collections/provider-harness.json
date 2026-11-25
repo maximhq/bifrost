@@ -351609,8 +351609,8 @@
                   "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
                   "// reap anything an interrupted run left behind by its prefix.",
                   "pm.collectionVariables.set('codeModeDiscoveryClient', 'harness_codemode_discovery_' + Date.now());",
-                  "pm.collectionVariables.set('codeModeDiscoveryQueue', '[]');",
-                  "pm.collectionVariables.set('codeModeDiscoverySweeps', '0');"
+                  "pm.collectionVariables.set('codeModeDiscoveryClientId', '');",
+                  "pm.collectionVariables.set('codeModeDiscoveryDeleteAttempts', '0');"
                 ]
               }
             },
@@ -351711,7 +351711,7 @@
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-discovery queue this run's client, plus any stale leftovers",
+          "name": "[EXPECT-200] openai code-mode-discovery find this run's client and sweep stale leftovers",
           "event": [
             {
               "listen": "test",
@@ -351723,10 +351723,11 @@
                   "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
                   "// Anything younger than this belongs to a run that may still be executing: never touch it.",
                   "var STALE_MS = 3600000;",
+                  "var stale = [];",
                   "pm.test('this run\\'s code-mode client is listed', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var clients = pm.response.json().clients || [];",
-                  "  var mine = null, stale = [];",
+                  "  var mine = null;",
                   "  for (var i = 0; i < clients.length; i++) {",
                   "    var cfg = clients[i].config;",
                   "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
@@ -351735,9 +351736,22 @@
                   "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
                   "  }",
                   "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
-                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
-                  "  pm.collectionVariables.set('codeModeDiscoveryQueue', JSON.stringify([mine].concat(stale)));",
-                  "});"
+                  "  pm.collectionVariables.set('codeModeDiscoveryClientId', mine);",
+                  "});",
+                  "",
+                  "// Each stale leftover gets one DELETE, however many there are. A 404 means a parallel run removed",
+                  "// it first, which leaves the same state. A leftover that fails here is swept again by the next run.",
+                  "(function sweep() {",
+                  "  if (!stale.length) { return; }",
+                  "  var id = stale.shift();",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(id), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('stale code-mode client ' + id + ' is gone', function () {",
+                  "      pm.expect(err, 'delete failed: ' + err).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.be.oneOf([200, 404]);",
+                  "    });",
+                  "    sweep();",
+                  "  });",
+                  "})();"
                 ]
               }
             }
@@ -351759,17 +351773,15 @@
           }
         },
         {
-          "name": "[EXPECT-200] openai code-mode-discovery remove every queued code-mode client",
+          "name": "[EXPECT-200] openai code-mode-discovery remove this run's code-mode client",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeDiscoveryQueue') || '[]');",
-                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
-                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
-                  "pm.collectionVariables.set('codeModeDiscoveryClientId', queue[0]);"
+                  "// No id means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!pm.collectionVariables.get('codeModeDiscoveryClientId')) { pm.execution.skipRequest(); }"
                 ]
               }
             },
@@ -351778,28 +351790,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "// Only this run created this client, so the delete must remove it: 404 is a failure here.",
+                  "pm.test('cleanup removes this run\\'s code-mode client', function () {",
                   "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
                   "});",
                   "",
-                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeDiscoveryQueue') || '[]');",
-                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
-                  "if (pm.response.code === 200) {",
-                  "  queue.shift();",
-                  "  pm.collectionVariables.set('codeModeDiscoveryQueue', JSON.stringify(queue));",
-                  "}",
-                  "",
-                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
-                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeDiscoverySweeps') || '0', 10) + 1;",
-                  "pm.collectionVariables.set('codeModeDiscoverySweeps', String(sweeps));",
-                  "",
-                  "if (queue.length > 0 && sweeps < 10) {",
+                  "// Bounded self-repeat (the collection's existing idiom): a failed delete is retried, at most three attempts.",
+                  "var attempts = parseInt(pm.collectionVariables.get('codeModeDiscoveryDeleteAttempts') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeDiscoveryDeleteAttempts', String(attempts));",
+                  "if (pm.response.code !== 200 && attempts < 3) {",
                   "  postman.setNextRequest(pm.info.requestName);",
-                  "} else {",
-                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
-                  "  pm.test('the sweep drained every queued client', function () {",
-                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
-                  "  });",
                   "}"
                 ]
               }
