@@ -738,6 +738,12 @@ models:
         schema:
           type: boolean
           default: false
+      - name: include_aliases
+        in: query
+        description: If true together with `unfiltered`, also return the alias names on the provider's enabled keys, where each key's own allow and block lists admit them. Pattern aliases are left out. A listing without `unfiltered` already includes alias names.
+        schema:
+          type: boolean
+          default: false
       - name: include_deprecated
         in: query
         description: If true, include deprecated models when `query` is empty. Without a `query` they are hidden by default; with a `query` they are always included, listed after the live models.
@@ -816,6 +822,12 @@ models-details:
       - name: unfiltered
         in: query
         description: If true, return the provider's whole catalog, including models filtered out by provider-level restrictions or by what the caller's virtual key or access allows
+        schema:
+          type: boolean
+          default: false
+      - name: include_aliases
+        in: query
+        description: If true together with `unfiltered`, also return the alias names on the provider's enabled keys, where each key's own allow and block lists admit them. Pattern aliases are left out. A listing without `unfiltered` already includes alias names.
         schema:
           type: boolean
           default: false
