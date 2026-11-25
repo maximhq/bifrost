@@ -1010,8 +1010,9 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]Cos
 // for a specific cluster node after a stable cursor. The first scan uses the
 // timestamp/log-id lower bound for the ghost's detection point. Once DB-assigned
 // inc_number values are observed, subsequent scans use inc_number so rows flushed
-// late by the async log writer are not skipped.
-func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
+// late by the async log writer are not skipped. Actual-reset windows filter each
+// resource and dimension before aggregation; excluded rows still advance the cursor.
+func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error) {
 	type logRow struct {
 		ID           string    `gorm:"column:id"`
 		Timestamp    time.Time `gorm:"column:timestamp"`
@@ -1085,7 +1086,9 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 				for _, id := range budgetIDs {
 					if _, dup := seen[id]; !dup {
 						seen[id] = struct{}{}
-						budgetCosts[id] += row.Cost
+						if cutoff := windows.Budgets[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							budgetCosts[id] += row.Cost
+						}
 					}
 				}
 			}
@@ -1102,8 +1105,12 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 				for _, id := range rateLimitIDs {
 					if _, dup := seen[id]; !dup {
 						seen[id] = struct{}{}
-						rateLimitRequests[id]++
-						rateLimitTokens[id] += row.TotalTokens
+						if cutoff := windows.Requests[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							rateLimitRequests[id]++
+						}
+						if cutoff := windows.Tokens[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							rateLimitTokens[id] += row.TotalTokens
+						}
 					}
 				}
 			}
@@ -5479,6 +5486,69 @@ func (s *RDBLogStore) stopMaintenance() {
 			s.logger.Warn(fmt.Sprintf("logstore: matview maintenance did not stop within %s; closing the pool anyway", matViewShutdownWait))
 		}
 	}
+}
+
+// ReclaimSpace returns pages freed by retention deletes to the OS on SQLite
+// databases created with auto_vacuum=incremental, maxPages at a time so
+// writers can interleave. It is a no-op on other engines and on SQLite files
+// still in the default auto_vacuum=NONE mode (those need a one-off VACUUM).
+func (s *RDBLogStore) ReclaimSpace(ctx context.Context, maxPages int) (int64, error) {
+	if s.db.Dialector.Name() != "sqlite" || maxPages < 1 {
+		return 0, nil
+	}
+	db := s.db.WithContext(ctx)
+	var mode int
+	if err := db.Raw("PRAGMA auto_vacuum").Scan(&mode).Error; err != nil {
+		return 0, err
+	}
+	if mode != 2 { // 2 = INCREMENTAL
+		return 0, nil
+	}
+	// With nothing on the freelist incremental_vacuum still wants the write
+	// lock, so an empty pass would wait on a writer for the whole busy timeout.
+	var free int64
+	if err := db.Raw("PRAGMA freelist_count").Scan(&free).Error; err != nil || free == 0 {
+		return 0, err
+	}
+	var released int64
+	for ctx.Err() == nil {
+		// incremental_vacuum frees one page per row it returns, so the rows
+		// must be read to the end (or only the first page is released), and
+		// their count, not the freelist, says how many pages this step freed.
+		// A step counts only when the statement finished cleanly.
+		rows, err := db.Raw(fmt.Sprintf("PRAGMA incremental_vacuum(%d)", maxPages)).Rows()
+		if err != nil {
+			return released, err
+		}
+		var step int64
+		for rows.Next() {
+			step++
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return released, err
+		}
+		if err := rows.Close(); err != nil {
+			return released, err
+		}
+		released += step
+		if step < int64(maxPages) { // freelist exhausted
+			break
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return released, err
+	}
+	// In WAL mode the released pages sit in the WAL until a checkpoint copies
+	// them back and truncates the main file, which would otherwise wait for the
+	// WAL to pass _wal_autocheckpoint. PASSIVE never waits for readers or
+	// writers; if one blocks it, the next write's auto-checkpoint finishes.
+	if released > 0 {
+		if err := db.Exec("PRAGMA wal_checkpoint(PASSIVE)").Error; err != nil {
+			return released, err
+		}
+	}
+	return released, nil
 }
 
 // Close stops matview maintenance and closes the log store.

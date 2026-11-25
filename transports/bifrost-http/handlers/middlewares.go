@@ -53,6 +53,23 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 	}
 }
 
+// RequireConfigStoreMiddleware answers 503 on a configuration route when the config store is
+// disabled (store is nil). Configuration then comes only from config.json and changes only on a
+// restart, so every configuration route, reads included, refuses here instead of checking the
+// store itself. The store is fixed at boot, so the choice is made once, when the route is
+// registered. It goes after the auth middlewares, so an unauthenticated caller is refused before
+// it learns whether the store is enabled.
+func RequireConfigStoreMiddleware(store configstore.ConfigStore) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		if store != nil {
+			return next
+		}
+		return func(ctx *fasthttp.RequestCtx) {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		}
+	}
+}
+
 // applySecurityHeaders sets the security headers. RecoveryMiddleware re-applies
 // them after resetting a panicked response.
 func applySecurityHeaders(ctx *fasthttp.RequestCtx) {

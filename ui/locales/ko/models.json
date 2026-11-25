@@ -1329,6 +1329,8 @@
 		"rotateGraceNote": "이전 키는 {{date}}까지 유효합니다.",
 		"rotatedBulkPartial": "회전된 {{count}} 가상 키. {{failed}}가 실패했습니다.{{graceNote}}",
 		"rotatedBulk": "회전된 {{count}} 가상 키.{{graceNote}}",
+		"rotatedBulkNotLoaded": "저장되었지만 로드되지 않았을 수 있는 키: {{notLoaded}}개. 각 키를 다시 저장하거나 Bifrost를 재시작할 때까지 이전 값이 계속 작동할 수 있어요.",
+		"rotatedNotLoaded": "가상 키가 순환되었지만 새 값이 로드되지 않았을 수 있어요. 키를 다시 저장하거나 Bifrost를 재시작할 때까지 이전 값이 계속 작동할 수 있어요.",
 		"filtersApplied": "적용된 필터:",
 		"filterSearch": "\"{{query}}\"를 검색하세요",
 		"filterCustomer": "고객 필터",

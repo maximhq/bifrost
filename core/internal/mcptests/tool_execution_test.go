@@ -724,6 +724,21 @@ func (a *injectedToolsAccount) GetConfigForProvider(provider schemas.ModelProvid
 	}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a *injectedToolsAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a *injectedToolsAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a *injectedToolsAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 func setupInjectedToolsBifrost(t *testing.T, fake *fakeOpenAI, searches *[]string) *bifrost.Bifrost {
 	return setupInjectedToolsBifrostFor(t, schemas.OpenAI, fake, searches)
 }
@@ -1573,6 +1588,21 @@ func (a *retryingInjectedAccount) GetConfigForProvider(provider schemas.ModelPro
 	config.NetworkConfig.RetryBackoffInitial = time.Millisecond
 	config.NetworkConfig.RetryBackoffMax = 5 * time.Millisecond
 	return config, nil
+}
+
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a *retryingInjectedAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a *retryingInjectedAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a *retryingInjectedAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
 }
 
 // TestInjectedWebSearch_RetryDoesNotReplayTools pins that a retryable failure after the

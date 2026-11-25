@@ -17,11 +17,17 @@ type TableRateLimit struct {
 	TokenCurrentUsage  int64     `gorm:"default:0" json:"token_current_usage"`                   // Current token usage
 	TokenLastReset     time.Time `gorm:"index" json:"token_last_reset"`                          // Last time token counter was reset
 
+	// TokenUsageResetEpoch records an actual usage clear, not calendar adoption.
+	TokenUsageResetEpoch int64 `gorm:"type:bigint;not null;default:0" json:"token_usage_reset_epoch"`
+
 	// Request limits with flexible duration
 	RequestMaxLimit      *int64    `gorm:"default:null" json:"request_max_limit,omitempty"`          // Maximum requests allowed
 	RequestResetDuration *string   `gorm:"type:varchar(50)" json:"request_reset_duration,omitempty"` // e.g., "30s", "5m", "1h", "1d", "1w", "1M", "1Y"
 	RequestCurrentUsage  int64     `gorm:"default:0" json:"request_current_usage"`                   // Current request usage
 	RequestLastReset     time.Time `gorm:"index" json:"request_last_reset"`                          // Last time request counter was reset
+
+	// RequestUsageResetEpoch is independent of token resets; zero means unknown.
+	RequestUsageResetEpoch int64 `gorm:"type:bigint;not null;default:0" json:"request_usage_reset_epoch"`
 
 	// Deprecated: set calendar_aligned on the parent access profile / VK / team
 	// instead. Kept for backward compatibility with older config.json files;
