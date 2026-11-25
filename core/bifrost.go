@@ -1746,6 +1746,10 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 // plugin writes it as its own row from the tool call's PostMCPHook.
 func (bifrost *Bifrost) codeModeDecisionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	PrepareContextForInternalRequest(ctx)
+	// An agent loop marks its tool calls with the route that served its first
+	// turn. The ranker call is not a turn of that conversation: left set, it
+	// would be pinned to the conversation's model instead of the ranker's.
+	ctx.ClearValue(schemas.BifrostContextKeyMCPAgentServedRoute)
 	return bifrost.DecisionRequest(ctx, req)
 }
 

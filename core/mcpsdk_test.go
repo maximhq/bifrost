@@ -840,3 +840,41 @@ func TestLazyMCPManagerWiresDecisionRanker(t *testing.T) {
 		t.Fatalf("the decision API was not called, warnings:\n%s", warns)
 	}
 }
+
+// A ranked listToolFiles run by the MCP agent loop carries the route that
+// served the conversation's first turn. The decision ranker call must still
+// go to the configured ranker model, not be pinned to the conversation's.
+func TestDecisionRankerIgnoresAgentServedRoute(t *testing.T) {
+	a := newAlphaServer(t)
+	logger := &warnRecorder{Logger: NewNoOpLogger()}
+	b := newSDKClient(t, schemas.BifrostConfig{Logger: logger})
+	client := alphaClient(a.url)
+	client.IsCodeModeClient = true
+	if err := b.AddMCPClient(context.Background(), client); err != nil {
+		t.Fatalf("AddMCPClient: %v", err)
+	}
+	b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
+		CodeModeDiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "ranker-test-missing/ranker"},
+	})
+
+	ctx := newCtx()
+	ctx.SetValue(schemas.BifrostContextKeyMCPAgentServedRoute, &schemas.RoutingInfo{Provider: "conversation-test-missing", Model: "conversation"})
+	msg, bErr := b.ExecuteChatMCPTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("c1"),
+		Type:     schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("listToolFiles"), Arguments: `{"query":"echo this text back"}`},
+	})
+	if bErr != nil {
+		t.Fatalf("listToolFiles: %s", errorText(bErr))
+	}
+	if !strings.Contains(contentOf(msg), "discovery ranker was not used") {
+		t.Fatalf("expected the lexical fallback after the failing decision call:\n%s", contentOf(msg))
+	}
+	warns := logger.joined()
+	if !strings.Contains(warns, "decision request to ranker-test-missing/ranker failed") || strings.Contains(warns, "conversation-test-missing") {
+		t.Fatalf("the decision call did not go to the configured ranker model, warnings:\n%s", warns)
+	}
+	if route, _ := ctx.Value(schemas.BifrostContextKeyMCPAgentServedRoute).(*schemas.RoutingInfo); route == nil {
+		t.Fatal("the ranker call cleared the agent route on the tool call's own context")
+	}
+}
