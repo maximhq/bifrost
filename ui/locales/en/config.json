@@ -83,7 +83,7 @@
 		"toastSaved": "Client settings updated successfully.",
 		"droppedRequests_one": "Have dropped {{count}} request since last restart.",
 		"droppedRequests_other": "Have dropped {{count}} requests since last restart.",
-		"emptyAllowlist": "<span0>Allowlist empty:</span0> Only  <code1>x-bf-eh-*</code1> prefixed headers are forwarded (default behavior)",
+		"emptyAllowlist": "<span0>Allowlist empty:</span0> Only  <code1>x-bf-eh-*</code1> prefixed headers are forwarded (default behavior). User-Agent is not forwarded; the HTTP stack sends fasthttp unless you allowlist it or set a custom value",
 		"configuredAllowlist": "<span0>Allowlist configured:</span0> Prefixed headers filtered by allowlist, plus any direct header in the allowlist is forwarded",
 		"denylistRules": "<span0>Denylist:</span0> Headers in the denylist are always blocked from forwarding",
 		"wildcardRules": "<span0>Wildcards:</span0> Use  <code1>*</code1> at the end of a pattern to match prefixes (e.g., <code2>anthropic-*</code2> matches all headers starting with <code3>anthropic-</code3>). Use  <code4>*</code4> alone to match all headers.",

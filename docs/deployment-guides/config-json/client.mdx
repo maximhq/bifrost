@@ -149,6 +149,8 @@ Controls which `x-bf-eh-*` extra headers are forwarded to upstream LLM providers
 
 When both `allowlist` and `denylist` are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode - only listed headers are forwarded.
 
+`User-Agent` is not an `x-bf-eh-*` header, so the default configuration does not forward the caller's user agent. The HTTP stack then sends `User-Agent: fasthttp`. To forward the caller's value, allowlist `user-agent` (allowlist entries are written without the `x-bf-eh-` prefix, and an allowlisted name is also accepted directly). To send a fixed value instead, exclude `user-agent` from forwarding and set it in the provider's `network_config.extra_headers`.
+
 ```json
 {
   "client": {
