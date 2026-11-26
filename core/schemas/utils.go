@@ -2339,6 +2339,11 @@ func IsGLMModel(model string) bool {
 	return strings.Contains(model, "glm")
 }
 
+// IsKimiModel checks if the model is a Kimi model.
+func IsKimiModel(model string) bool {
+	return strings.Contains(model, "kimi-")
+}
+
 // IsDeepSeekModel checks if the model is a DeepSeek model. Deployment names are
 // case-sensitive on some providers (Azure ships "DeepSeek-V3.1"), so match case-insensitively.
 func IsDeepSeekModel(model string) bool {

@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -412,18 +413,19 @@ func reasoningFields(t *testing.T, ctx *schemas.BifrostContext, model string, re
 
 // gpt-5.6 accepts only additionalModelRequestFields.reasoning={effort} and
 // rejects Nova's reasoningConfig outright; Grok accepts every shape but honors
-// only this one. Everything else on Converse either rejects the field (DeepSeek
-// R1) or ignores it, so it must be omitted entirely.
+// only this one. GLM needs the flat reasoning_effort field. Models that reject
+// or ignore the effort fields get neither shape.
 func TestConverseReasoningShape(t *testing.T) {
 	effort := func(e string) *schemas.ResponsesParametersReasoning {
 		return &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr(e)}
 	}
+	summaryOnly := &schemas.ResponsesParametersReasoning{Summary: new("auto")}
 	cases := []struct {
 		name      string
 		model     string
 		reasoning *schemas.ResponsesParametersReasoning
 		wantKey   string // "" ⇒ nothing emitted
-		wantValue map[string]any
+		wantValue any
 	}{
 		{"openai effort high", "global.openai.gpt-5.6-luna", effort("high"), "reasoning", map[string]any{"effort": "high"}},
 		{"grok effort high", "us.xai.grok-4.6", effort("high"), "reasoning", map[string]any{"effort": "high"}},
@@ -437,13 +439,17 @@ func TestConverseReasoningShape(t *testing.T) {
 		// so the caller would silently keep getting (and paying for) reasoning.
 		{"openai effort none", "global.openai.gpt-5.6-luna", effort("none"), "reasoning", map[string]any{"effort": "none"}},
 		{"grok effort none", "us.xai.grok-4.6", effort("none"), "reasoning", map[string]any{"effort": "none"}},
+		{"openai effort omitted", "global.openai.gpt-5.6-luna", summaryOnly, "", nil},
+		{"grok effort omitted", "us.xai.grok-4.6", summaryOnly, "", nil},
+		{"kimi effort omitted", "global.moonshotai.kimi-k3.1", summaryOnly, "", nil},
+		{"glm effort omitted", "global.zai.glm-5.3", summaryOnly, "", nil},
+		{"glm effort high", "zai.glm-5", effort("high"), "reasoning_effort", "high"},
+		{"glm effort none", "zai.glm-5", effort("none"), "reasoning_effort", "none"},
 		// Families whose reasoning Converse cannot express get nothing at all.
 		{"deepseek gets nothing", "us.deepseek.r1-v1:0", effort("high"), "", nil},
 		{"qwen gets nothing", "qwen.qwen3-32b-v1:0", effort("high"), "", nil},
-		{"glm gets nothing", "zai.glm-5", effort("high"), "", nil},
 		{"gemma gets nothing", "google.gemma-3-12b-it", effort("high"), "", nil},
 		{"deepseek disable gets nothing", "us.deepseek.r1-v1:0", effort("none"), "", nil},
-		{"glm disable gets nothing", "zai.glm-5", effort("none"), "", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -461,11 +467,8 @@ func TestConverseReasoningShape(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing %q in %v", tc.wantKey, fields)
 			}
-			gotMap, _ := got.(map[string]any)
-			for k, want := range tc.wantValue {
-				if gotMap[k] != want {
-					t.Errorf("%s.%s = %v, want %v", tc.wantKey, k, gotMap[k], want)
-				}
+			if !reflect.DeepEqual(got, tc.wantValue) {
+				t.Errorf("%s = %v, want %v", tc.wantKey, got, tc.wantValue)
 			}
 		})
 	}
