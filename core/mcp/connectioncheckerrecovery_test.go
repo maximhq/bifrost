@@ -434,7 +434,7 @@ func TestConnectionChecker_ClosedTransportIsNotRetried(t *testing.T) {
 			_, err := conn.Initialize(ctx, initRequest)
 			require.NoError(t, err)
 
-			m := NewMCPManager(ctx, schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(ctx, schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 			checker := NewClientConnectionChecker(m, "closing", time.Minute, ping, &MockLogger{})
 
