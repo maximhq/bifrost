@@ -5,12 +5,16 @@ import (
 	"time"
 )
 
-// outOfToolSyncIntervalRange mirrors the bounds check applied to
-// req.ToolSyncInterval in addMCPClient and updateMCPClient: negatives are
-// rejected outright (0 means "use the global setting", there is no disabled
-// state), and anything past the minutes->Duration overflow edge is rejected.
+// outOfToolSyncIntervalRange asks the real request field whether a bare
+// number of minutes would be accepted, rather than restating the rule. It
+// decodes the value the way a handler does and then validates it, so these
+// cases keep testing the shipped path as that path changes.
 func outOfToolSyncIntervalRange(minutes int64) bool {
-	return minutes < 0 || minutes > maxToolSyncIntervalMinutes
+	var field MCPSyncInterval
+	if err := field.UnmarshalJSON([]byte(jsonInt(minutes))); err != nil {
+		return true
+	}
+	return field.Validate() != nil
 }
 
 // TestToolSyncIntervalBoundsRejectNanosecondValues covers issue #5026: GET returns

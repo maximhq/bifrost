@@ -120,7 +120,7 @@ A user's role always follows your IdP. Each time your IdP sends new data for a u
 When a role is removed:
 
 - Access profiles given by that role are removed.
-- If the user is left with no access profile at all, their virtual keys are removed too.
+- If the user is left with no access profile at all, their virtual keys are removed too, unless `client.skip_access_profile_user_virtual_key_deletion` is on: then the keys are kept as ordinary keys, without the profile's access. See [Access Profiles](/enterprise/access-profiles).
 - Access profiles, teams, and business units from other sources are unaffected.
 
 ---

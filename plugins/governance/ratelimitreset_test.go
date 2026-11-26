@@ -3,10 +3,16 @@ package governance
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
 
 const resetBenchmarkVirtualKeys = 5000
@@ -32,8 +38,7 @@ const timingBudgetAttempts = 3
 // regular test so it executes in CI via go test / make test-governance.
 func TestRequestTimeRateLimitResetPerformance(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
-	rateLimitID := seedResetBenchmarkVirtualKeys(ctx, store, resetBenchmarkVirtualKeys)
+	store, rateLimitID := seedResetBenchmarkVirtualKeys(t, resetBenchmarkVirtualKeys)
 
 	const iterations = 1000
 	// Request-time reset must stay O(1). With the reference-refresh regression
@@ -64,30 +69,29 @@ func TestRequestTimeRateLimitResetPerformance(t *testing.T) {
 }
 
 // BenchmarkSingleRequestTimeRateLimitResetDoesNotRefreshReferences runs the same
-// reset path exactly once per benchmark iteration for fixed-count profiles.
+// reset path exactly once per benchmark iteration for fixed-count profiles. The keys
+// are seeded once, since each seeded store lives until the benchmark ends.
 func BenchmarkSingleRequestTimeRateLimitResetDoesNotRefreshReferences(b *testing.B) {
 	ctx := context.Background()
+	store, rateLimitID := seedResetBenchmarkVirtualKeys(b, resetBenchmarkVirtualKeys)
 
 	b.ReportAllocs()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		store := newStandaloneStoreForResetBenchmark()
-		rateLimitID := seedResetBenchmarkVirtualKeys(ctx, store, resetBenchmarkVirtualKeys)
+		b.StopTimer()
 		markRequestRateLimitExpired(store, rateLimitID)
-
 		b.StartTimer()
 		if err := store.BumpRateLimitUsage(ctx, rateLimitID, 0, false, true); err != nil {
 			b.Fatal(err)
 		}
-		b.StopTimer()
 	}
 }
 
 // TestRequestTimeRateLimitResetSkipsReferenceRefresh verifies request-time resets
-// keep canonical side effects without scanning embedded references.
+// keep canonical side effects and leave the keys naming the rate limit as they were.
 func TestRequestTimeRateLimitResetSkipsReferenceRefresh(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
-	rateLimitID := seedResetBenchmarkVirtualKeys(ctx, store, 10)
+	store, rateLimitID := seedResetBenchmarkVirtualKeys(t, 10)
 	staleRateLimit := store.LoadRateLimit(ctx, rateLimitID)
 	markRequestRateLimitExpired(store, rateLimitID)
 
@@ -119,63 +123,55 @@ func TestRequestTimeRateLimitResetSkipsReferenceRefresh(t *testing.T) {
 		t.Fatalf("expected request-time reset hook to fire once, got %d", resetHookCalls)
 	}
 
-	store.LastDBUsagesRateLimitsRequestsMu.RLock()
-	lastDBRequests := store.LastDBUsagesRequestsRateLimits[rateLimitID]
-	store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+	_, lastDBRequests, ok := rateLimitBaselines(store, rateLimitID)
+	if !ok {
+		t.Fatal("expected the rate limit to hold a state")
+	}
 	if lastDBRequests != 0 {
 		t.Fatalf("expected request LastDB baseline to reset to 0, got %d", lastDBRequests)
 	}
 
-	rawVK, ok := store.virtualKeys.Load("sk-bf-reset-00000")
-	if !ok || rawVK == nil {
+	vk, ok := store.GetVirtualKey(ctx, "sk-bf-reset-00000")
+	if !ok || vk == nil {
 		t.Fatal("expected seeded virtual key to remain loaded")
 	}
-	vk, ok := rawVK.(*configstoreTables.TableVirtualKey)
-	if !ok || vk == nil {
-		t.Fatal("expected seeded virtual key to have the correct type")
-	}
-	// Embedded reference should remain stale (not refreshed) after request-time reset.
-	// It may be non-nil because CreateVirtualKeyInMemory keeps embedded references,
-	// but it must NOT point at the freshly reset canonical object.
-	if vk.RateLimit == resetRateLimit {
-		t.Fatal("expected request-time reset NOT to refresh embedded virtual-key rate-limit reference")
-	}
-	if vk.RateLimitID == nil || *vk.RateLimitID != rateLimitID {
+	// The key names its rate limit by ID and holds no copy of it, so a reset has nothing on the
+	// key to refresh: the mapping is all there is, and it must survive.
+	if vk.RateLimitID != rateLimitID {
 		t.Fatal("expected request-time reset to preserve owner-to-rate-limit ID mapping")
 	}
 }
 
-// TestBackgroundRateLimitResetRefreshesReferences verifies non-request resets still hydrate embedded references.
+// TestBackgroundRateLimitResetRefreshesReferences verifies a key reads the canonical reset rate
+// limit after a background reset.
 func TestBackgroundRateLimitResetRefreshesReferences(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
-	rateLimitID := seedResetBenchmarkVirtualKeys(ctx, store, 10)
+	store, rateLimitID := seedResetBenchmarkVirtualKeys(t, 10)
 	staleRateLimit := store.LoadRateLimit(ctx, rateLimitID)
 	markRequestRateLimitExpired(store, rateLimitID)
 
-	resetRateLimits := store.ResetExpiredRateLimitsInMemory(ctx, true, rateLimitID)
+	resetRateLimits := store.ResetExpiredRateLimitsInMemory(ctx, rateLimitID)
 	if len(resetRateLimits) != 1 {
 		t.Fatalf("expected one background reset, got %d", len(resetRateLimits))
 	}
 
-	rawVK, ok := store.virtualKeys.Load("sk-bf-reset-00000")
-	if !ok || rawVK == nil {
+	vk, ok := store.GetVirtualKey(ctx, "sk-bf-reset-00000")
+	if !ok || vk == nil {
 		t.Fatal("expected seeded virtual key to remain loaded")
 	}
-	vk, ok := rawVK.(*configstoreTables.TableVirtualKey)
-	if !ok || vk == nil {
-		t.Fatal("expected seeded virtual key to have the correct type")
+	keyRateLimit := store.LoadRateLimit(ctx, vk.RateLimitID)
+	if keyRateLimit == nil {
+		t.Fatal("expected the key's rate limit to resolve after a background reset")
 	}
-	if vk.RateLimit == nil {
-		t.Fatal("expected background reset to refresh virtual-key rate-limit reference")
+	// Reads hand out copies, so the key resolving to the reset rate limit means reading back what
+	// the reset stored.
+	if !reflect.DeepEqual(*keyRateLimit, *resetRateLimits[0].TableRateLimit) {
+		t.Fatal("expected the key to resolve to the canonical reset object")
 	}
-	if vk.RateLimit != resetRateLimits[0] {
-		t.Fatal("expected background reset to point virtual-key reference at canonical reset object")
-	}
-	if vk.RateLimitID == nil || *vk.RateLimitID != rateLimitID {
+	if vk.RateLimitID != rateLimitID {
 		t.Fatal("expected background reset to preserve owner-to-rate-limit ID mapping")
 	}
-	if resetRateLimits[0] == staleRateLimit {
+	if reflect.DeepEqual(*resetRateLimits[0].TableRateLimit, *staleRateLimit) {
 		t.Fatal("expected canonical reset to replace stale rate-limit snapshot")
 	}
 }
@@ -192,19 +188,19 @@ func TestBackgroundRateLimitResetRefreshesReferences(t *testing.T) {
 // reset, the reset target must no longer be due.
 func TestRateLimitResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	rateLimitID := "calendar-aligned-subday-converge-rate-limit"
 	rateLimit := buildRateLimit(rateLimitID, 1_000_000, 1_000_000) // "1m" durations
 	rateLimit.IsCalendarAligned = true
 	rateLimit.TokenLastReset = time.Now().Add(-2 * time.Minute)
 	rateLimit.RequestLastReset = time.Now().Add(-2 * time.Minute)
-	store.rateLimits.Store(rateLimitID, rateLimit)
+	putRateLimit(t, store, rateLimitID, rateLimit)
 
 	tokenTarget, requestTarget := store.rateLimitResetTargets(rateLimit, time.Now())
 	if tokenTarget == nil && requestTarget == nil {
 		t.Fatal("expected expired rate limit to be due for reset before the first reset")
 	}
-	if reset := store.ResetExpiredRateLimitsInMemory(ctx, false, rateLimitID); len(reset) != 1 {
+	if reset := store.ResetExpiredRateLimitsInMemory(ctx, rateLimitID); len(reset) != 1 {
 		t.Fatalf("expected one rate limit reset, got %d", len(reset))
 	}
 
@@ -220,17 +216,17 @@ func TestRateLimitResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
 // resetting, or BumpBudgetUsage spins forever.
 func TestBudgetResetConvergesForCalendarAlignedSubDayDuration(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	budgetID := "calendar-aligned-subday-converge-budget"
 	budget := buildBudgetWithUsage(budgetID, 100, 42, "5h")
 	budget.IsCalendarAligned = true
 	budget.LastReset = time.Now().Add(-6 * time.Hour)
-	store.budgets.Store(budgetID, budget)
+	putBudget(t, store, budgetID, budget)
 
 	if store.budgetResetTarget(budget, time.Now()) == nil {
 		t.Fatal("expected expired budget to be due for reset before the first reset")
 	}
-	if reset := store.ResetExpiredBudgetsInMemory(ctx, false, budgetID); len(reset) != 1 {
+	if reset := store.ResetExpiredBudgetsInMemory(ctx, budgetID); len(reset) != 1 {
 		t.Fatalf("expected one budget reset, got %d", len(reset))
 	}
 
@@ -249,7 +245,7 @@ func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
 	ctx := context.Background()
 	for _, duration := range []string{"0s", "-5m"} {
 		t.Run(duration, func(t *testing.T) {
-			store := newStandaloneStoreForResetBenchmark()
+			store := newStandaloneStore(t)
 			d := duration
 
 			rateLimitID := "non-positive-duration-rate-limit-" + duration
@@ -258,7 +254,7 @@ func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
 			rateLimit.RequestResetDuration = &d
 			rateLimit.TokenLastReset = time.Now().Add(-time.Hour)
 			rateLimit.RequestLastReset = time.Now().Add(-time.Hour)
-			store.rateLimits.Store(rateLimitID, rateLimit)
+			putRateLimit(t, store, rateLimitID, rateLimit)
 
 			tokenTarget, requestTarget := store.rateLimitResetTargets(rateLimit, time.Now())
 			if tokenTarget != nil || requestTarget != nil {
@@ -275,7 +271,7 @@ func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
 			budgetID := "non-positive-duration-budget-" + duration
 			budget := buildBudgetWithUsage(budgetID, 100, 5, duration)
 			budget.LastReset = time.Now().Add(-time.Hour)
-			store.budgets.Store(budgetID, budget)
+			putBudget(t, store, budgetID, budget)
 
 			if target := store.budgetResetTarget(budget, time.Now()); target != nil {
 				t.Fatalf("non-positive duration %q must never be due (%v): a due target here spins BumpBudgetUsage forever (issue #4851)", duration, target)
@@ -298,11 +294,11 @@ func TestNonPositiveDurationsAreNeverDue(t *testing.T) {
 // this one catches the hang on nanosecond-resolution clocks (Linux CI).
 func TestBumpRateLimitUsageCalendarAlignedSubDayDurationTerminates(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	rateLimitID := "calendar-aligned-subday-rate-limit"
 	rateLimit := buildRateLimit(rateLimitID, 1_000_000, 1_000_000) // "1m" durations
 	rateLimit.IsCalendarAligned = true
-	store.rateLimits.Store(rateLimitID, rateLimit)
+	putRateLimit(t, store, rateLimitID, rateLimit)
 
 	done := make(chan error, 1)
 	go func() {
@@ -334,11 +330,11 @@ func TestBumpRateLimitUsageCalendarAlignedSubDayDurationTerminates(t *testing.T)
 // reset duration ("5h") must not spin BumpBudgetUsage forever.
 func TestBumpBudgetUsageCalendarAlignedSubDayDurationTerminates(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	store := newStandaloneStore(t)
 	budgetID := "calendar-aligned-subday-budget"
 	budget := buildBudgetWithUsage(budgetID, 100, 0, "5h")
 	budget.IsCalendarAligned = true
-	store.budgets.Store(budgetID, budget)
+	putBudget(t, store, budgetID, budget)
 
 	done := make(chan error, 1)
 	go func() {
@@ -362,13 +358,13 @@ func TestBumpBudgetUsageCalendarAlignedSubDayDurationTerminates(t *testing.T) {
 	}
 }
 
-// TestBackgroundBudgetResetRefreshesReferences verifies the batched budget
-// reference refresh: one background sweep must update embedded budget copies
-// on every owner type (VK, team, customer), replace only the budgets that
-// actually reset, and leave unexpired sibling budgets untouched.
+// TestBackgroundBudgetResetRefreshesReferences verifies a background sweep as every owner type (VK,
+// team, customer) reads it: one sweep must reset the budgets each owner names, only the budgets
+// that actually reset, and leave unexpired sibling budgets untouched.
 func TestBackgroundBudgetResetRefreshesReferences(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
+	h := newLiveHarness(t, &configstore.GovernanceConfig{}, nil)
+	store := h.mustGovernanceStore(NewMockLogger(), nil)
 	now := time.Now()
 
 	expired := buildBudgetWithUsage("bg-budget-expired", 100, 42, "1h")
@@ -377,37 +373,36 @@ func TestBackgroundBudgetResetRefreshesReferences(t *testing.T) {
 	fresh.LastReset = now.Add(-10 * time.Minute)
 	vk := buildVirtualKey("bg-vk", "sk-bf-bg-refresh", "Budget refresh VK", true)
 	vk.Budgets = []configstoreTables.TableBudget{*expired, *fresh}
-	store.CreateVirtualKeyInMemory(ctx, vk)
+	h.putVirtualKey(vk)
 
 	teamBudget := buildBudgetWithUsage("bg-team-budget", 200, 33, "1h")
 	teamBudget.LastReset = now.Add(-2 * time.Hour)
-	store.CreateTeamInMemory(ctx, buildTeam("bg-team", "Budget refresh team", teamBudget))
+	h.putTeam(buildTeam("bg-team", "Budget refresh team", teamBudget))
 
 	customerBudget := buildBudgetWithUsage("bg-customer-budget", 300, 21, "1h")
 	customerBudget.LastReset = now.Add(-2 * time.Hour)
-	store.CreateCustomerInMemory(ctx, buildCustomer("bg-customer", "Budget refresh customer", customerBudget))
+	h.putCustomer(buildCustomer("bg-customer", "Budget refresh customer", customerBudget))
 
-	reset := store.ResetExpiredBudgetsInMemory(ctx, true)
+	reset := store.ResetExpiredBudgetsInMemory(ctx)
 	if len(reset) != 3 {
 		t.Fatalf("expected 3 expired budgets to reset (vk, team, customer), got %d", len(reset))
 	}
 
-	rawVK, ok := store.virtualKeys.Load("sk-bf-bg-refresh")
-	if !ok || rawVK == nil {
+	gotVK, ok := store.GetVirtualKey(ctx, "sk-bf-bg-refresh")
+	if !ok || gotVK == nil {
 		t.Fatal("expected virtual key to remain loaded")
 	}
-	gotVK := rawVK.(*configstoreTables.TableVirtualKey)
 	var gotExpired, gotFresh *configstoreTables.TableBudget
-	for i := range gotVK.Budgets {
-		switch gotVK.Budgets[i].ID {
+	for _, id := range gotVK.BudgetIDs {
+		switch id {
 		case "bg-budget-expired":
-			gotExpired = &gotVK.Budgets[i]
+			gotExpired = store.LoadBudget(ctx, id)
 		case "bg-budget-fresh":
-			gotFresh = &gotVK.Budgets[i]
+			gotFresh = store.LoadBudget(ctx, id)
 		}
 	}
 	if gotExpired == nil || gotFresh == nil {
-		t.Fatal("expected both embedded VK budgets to survive the refresh")
+		t.Fatal("expected both VK budgets to survive the sweep")
 	}
 	if gotExpired.CurrentUsage != 0 {
 		t.Fatalf("expected embedded expired VK budget zeroed after background refresh, got %f", gotExpired.CurrentUsage)
@@ -419,22 +414,20 @@ func TestBackgroundBudgetResetRefreshesReferences(t *testing.T) {
 		t.Fatalf("expected unexpired sibling budget untouched at 7, got %f", gotFresh.CurrentUsage)
 	}
 
-	rawTeam, ok := store.teams.Load("bg-team")
-	if !ok || rawTeam == nil {
+	gotTeam, ok := store.live.Collections.Teams.Get("bg-team")
+	if !ok || gotTeam == nil {
 		t.Fatal("expected team to remain loaded")
 	}
-	gotTeam := rawTeam.(*configstoreTables.TableTeam)
-	if len(gotTeam.Budgets) != 1 || gotTeam.Budgets[0].CurrentUsage != 0 {
-		t.Fatalf("expected embedded team budget zeroed after background refresh, got %+v", gotTeam.Budgets)
+	if teamBudgets := store.CollectTeamBudgets(ctx, gotTeam.ID); len(teamBudgets) != 1 || teamBudgets[0].CurrentUsage != 0 {
+		t.Fatalf("expected team budget zeroed after background reset, got %+v", teamBudgets)
 	}
 
-	rawCustomer, ok := store.customers.Load("bg-customer")
-	if !ok || rawCustomer == nil {
+	gotCustomer, ok := store.live.Collections.Customers.Get("bg-customer")
+	if !ok || gotCustomer == nil {
 		t.Fatal("expected customer to remain loaded")
 	}
-	gotCustomer := rawCustomer.(*configstoreTables.TableCustomer)
-	if len(gotCustomer.Budgets) != 1 || gotCustomer.Budgets[0].CurrentUsage != 0 {
-		t.Fatalf("expected embedded customer budget zeroed after background refresh, got %+v", gotCustomer.Budgets)
+	if customerBudgets := store.CollectCustomerBudgets(ctx, gotCustomer.ID); len(customerBudgets) != 1 || customerBudgets[0].CurrentUsage != 0 {
+		t.Fatalf("expected customer budget zeroed after background reset, got %+v", customerBudgets)
 	}
 }
 
@@ -446,7 +439,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	now := time.Now()
 
 	t.Run("mixed expiry resets only the expired counter", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		tokenDuration, requestDuration := "1m", "1h"
 		rl := buildRateLimit("mixed-expiry", 1_000_000, 1_000_000)
 		rl.TokenResetDuration = &tokenDuration
@@ -455,7 +448,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 		rl.TokenLastReset = now.Add(-2 * time.Minute) // expired
 		rl.RequestCurrentUsage = 7
 		rl.RequestLastReset = now.Add(-30 * time.Minute) // NOT expired
-		store.rateLimits.Store(rl.ID, rl)
+		putRateLimit(t, store, rl.ID, rl)
 
 		if err := store.BumpRateLimitUsage(ctx, rl.ID, 10, true, true); err != nil {
 			t.Fatal(err)
@@ -470,7 +463,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("exact rolling boundary is due", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		rl := buildRateLimit("exact-boundary", 1_000_000, 1_000_000)
 		probe := time.Now()
 		rl.TokenLastReset = probe.Add(-time.Minute) // exactly one window ago
@@ -481,7 +474,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("one nanosecond before the boundary is not due", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		rl := buildRateLimit("pre-boundary", 1_000_000, 1_000_000)
 		probe := time.Now()
 		rl.TokenLastReset = probe.Add(-time.Minute + time.Nanosecond)
@@ -493,7 +486,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("calendar day snaps LastReset to period start not now", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		duration := "1d"
 		rl := buildRateLimit("calendar-day", 1_000_000, 1_000_000)
 		rl.TokenResetDuration = &duration
@@ -501,9 +494,9 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 		rl.IsCalendarAligned = true
 		rl.TokenLastReset = now.Add(-26 * time.Hour) // last reset yesterday
 		rl.RequestLastReset = now.Add(-26 * time.Hour)
-		store.rateLimits.Store(rl.ID, rl)
+		putRateLimit(t, store, rl.ID, rl)
 
-		if reset := store.ResetExpiredRateLimitsInMemory(ctx, false, rl.ID); len(reset) != 1 {
+		if reset := store.ResetExpiredRateLimitsInMemory(ctx, rl.ID); len(reset) != 1 {
 			t.Fatalf("expected one reset, got %d", len(reset))
 		}
 		wantPeriodStart := configstoreTables.GetCalendarPeriodStart(duration, now, configstoreTables.QuarterStartNotApplicable)
@@ -514,7 +507,7 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("calendar aligned within current period is not due", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		duration := "1d"
 		rl := buildRateLimit("calendar-current-period", 1_000_000, 1_000_000)
 		rl.TokenResetDuration = &duration
@@ -530,12 +523,12 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 
 	t.Run("future LastReset from clock skew is not due and does not spin", func(t *testing.T) {
-		store := newStandaloneStoreForResetBenchmark()
+		store := newStandaloneStore(t)
 		rl := buildRateLimit("future-last-reset", 1_000_000, 1_000_000)
 		rl.TokenCurrentUsage = 3
 		rl.TokenLastReset = now.Add(time.Hour) // another node's clock ahead
 		rl.RequestLastReset = now.Add(time.Hour)
-		store.rateLimits.Store(rl.ID, rl)
+		putRateLimit(t, store, rl.ID, rl)
 
 		if err := store.BumpRateLimitUsage(ctx, rl.ID, 4, true, true); err != nil {
 			t.Fatal(err)
@@ -547,35 +540,149 @@ func TestRateLimitResetAccuracyEdgeCases(t *testing.T) {
 	})
 }
 
-// TestBackgroundResetReferenceRefreshScales demonstrates the background-sweep
-// scale problem: ResetExpiredRateLimitsInMemory(ctx, true) calls
-// updateRateLimitReferences once per reset rate limit, and each call Ranges
-// over EVERY virtual key (cloning each VK before even checking for a match).
-// With per-VK rate limits the tick cost is O(dueLimits x totalVKs): quadratic
-// in key count. The per-reset budget below is what an O(owners) refresh
-// (reverse index or one batched pass per tick) sustains; the current
-// implementation exceeds it by orders of magnitude, and since per-reset cost
-// grows linearly with VK count, at 100k keys a single 10s tick becomes
-// minutes of CPU - permanent 100% CPU without any infinite loop.
+// TestCheckRateLimitEnforcesCalendarAlignedPeriodToItsLastDay pins that
+// checkRateLimit decides "window closed" with the same predicate the reset path
+// uses. It used to test time.Since(LastReset) >= ParseDuration(...), which
+// treats 1M/1Q/1Y as 30/90/365 days: on the last day of a 31-day month, a
+// 91-day quarter or a leap year the check skipped enforcement while
+// rateLimitResetTargets still returned nil, so the limit was not enforced
+// until the calendar boundary. synctest's clock starts at 2000-01-01 UTC (a
+// leap year), so every case below lands on such a day.
+func TestCheckRateLimitEnforcesCalendarAlignedPeriodToItsLastDay(t *testing.T) {
+	cases := []struct {
+		name     string
+		duration string
+		lastDay  time.Duration // offset from the period start to noon on its last day
+	}{
+		{"1M on Jan 31", "1M", 30*24*time.Hour + 12*time.Hour},
+		{"1Q on Mar 31", "1Q", 90*24*time.Hour + 12*time.Hour},
+		{"1Y on Dec 31 of a leap year", "1Y", 365*24*time.Hour + 12*time.Hour},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				store := newStandaloneStore(t)
+				rl := buildRateLimit("calendar-last-day-"+tc.duration, 1_000, 100)
+				rl.TokenResetDuration = &tc.duration
+				rl.RequestResetDuration = &tc.duration
+				rl.IsCalendarAligned = true
+				rl.TokenLastReset = time.Now()
+				rl.RequestLastReset = time.Now()
+				rl.CreatedAt = time.Now()
+				rl.TokenCurrentUsage = 5_000
+				rl.RequestCurrentUsage = 500
+				putRateLimit(t, store, rl.ID, rl)
+				limits := []schemas.Limit{{ID: rl.ID}}
+
+				time.Sleep(tc.lastDay)
+				if tok, req := store.rateLimitResetTargets(store.LoadRateLimit(ctx, rl.ID), time.Now()); tok != nil || req != nil {
+					t.Fatalf("precondition: %s window must still be open at %s", tc.duration, time.Now().UTC())
+				}
+				// Both caps are exceeded, so both must be enforced: a decision
+				// for only one of them would hide the other staying broken.
+				decision, _ := store.CheckRateLimits(ctx, limits, nil, nil)
+				if decision != DecisionRateLimited {
+					t.Fatalf("%s rate limit over both caps was not fully enforced at %s, the last day of its calendar period: got %s, want %s", tc.duration, time.Now().UTC(), decision, DecisionRateLimited)
+				}
+
+				// Past the boundary the window is closed but unswept: the check
+				// is skipped, as before, until the sweep or usage bump resets it.
+				time.Sleep(24 * time.Hour)
+				decision, _ = store.CheckRateLimits(ctx, limits, nil, nil)
+				if decision != DecisionAllow {
+					t.Fatalf("expected the closed-but-unswept %s window to be skipped at %s, got %s", tc.duration, time.Now().UTC(), decision)
+				}
+			})
+		})
+	}
+}
+
+// TestCheckRateLimitEnforcesNonPositiveResetDuration pins the second
+// disagreement the shared predicate removes: time.Since(LastReset) >= 0 is
+// always true, so a non-positive duration used to skip enforcement forever,
+// while the reset path treats it as invalid and never resets the counter.
+func TestCheckRateLimitEnforcesNonPositiveResetDuration(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	duration := "0m"
+	rl := buildRateLimit("non-positive-check", 1_000, 100)
+	rl.TokenResetDuration = &duration
+	rl.RequestResetDuration = &duration
+	rl.TokenCurrentUsage = 5_000
+	rl.RequestCurrentUsage = 500
+	putRateLimit(t, store, rl.ID, rl)
+
+	decision, _ := store.CheckRateLimits(ctx, []schemas.Limit{{ID: rl.ID}}, nil, nil)
+	if decision != DecisionRateLimited {
+		t.Fatalf("rate limit over both caps with a non-positive reset duration was not fully enforced: got %s, want %s", decision, DecisionRateLimited)
+	}
+	// checkRateLimit runs on every request; the misconfiguration is reported
+	// by the reset path, not once per check.
+	if logger := store.logger.(*MockLogger); len(logger.errors) != 0 {
+		t.Fatalf("checkRateLimit logged %d errors for a non-positive reset duration, want 0: %v", len(logger.errors), logger.errors)
+	}
+}
+
+// BenchmarkCheckRateLimit measures the per-request cost of the window-closed
+// predicate in checkRateLimit for a rolling and a calendar-aligned limit that
+// are both within their window and under their caps.
+func BenchmarkCheckRateLimit(b *testing.B) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name            string
+		calendarAligned bool
+	}{{"rolling", false}, {"calendar_aligned", true}} {
+		b.Run(tc.name, func(b *testing.B) {
+			store := newStandaloneStore(b)
+			duration := "1M"
+			rl := buildRateLimit("check-rate-limit-bench", 1_000_000, 1_000_000)
+			rl.TokenResetDuration = &duration
+			rl.RequestResetDuration = &duration
+			rl.IsCalendarAligned = tc.calendarAligned
+			now := time.Now()
+			if tc.calendarAligned {
+				now = configstoreTables.GetCalendarPeriodStart(duration, now, configstoreTables.QuarterStartNotApplicable)
+			}
+			rl.TokenLastReset = now
+			rl.RequestLastReset = now
+			putRateLimit(b, store, rl.ID, rl)
+			limits := []schemas.Limit{{ID: rl.ID}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if decision, _ := store.CheckRateLimits(ctx, limits, nil, nil); decision != DecisionAllow {
+					b.Fatalf("expected allow, got %s", decision)
+				}
+			}
+		})
+	}
+}
+
+// TestBackgroundResetReferenceRefreshScales guards the background-sweep scale
+// problem: a sweep that does work per virtual key for each reset rate limit
+// costs O(dueLimits x totalVKs) per tick, quadratic in key count. The per-reset
+// budget below is what a sweep touching only the due limits sustains; since
+// per-reset cost would grow linearly with VK count, at 100k keys a single 10s
+// tick would become minutes of CPU - permanent 100% CPU without any infinite loop.
 func TestBackgroundResetReferenceRefreshScales(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
 	const vkCount = 3000
 
+	cfg := &configstore.GovernanceConfig{}
 	for i := 0; i < vkCount; i++ {
 		rl := buildRateLimit(fmt.Sprintf("scale-rl-%06d", i), 1_000_000, 1_000_000)
 		rl.RequestCurrentUsage = 9
 		rl.RequestLastReset = time.Now().Add(-2 * time.Minute) // "1m" window: expired
 		rl.TokenLastReset = time.Now().Add(-2 * time.Minute)
-		store.rateLimits.Store(rl.ID, rl)
 		vk := buildVirtualKeyWithRateLimit(
 			fmt.Sprintf("scale-vk-%06d", i),
 			fmt.Sprintf("sk-bf-scale-%06d", i),
 			fmt.Sprintf("Scale VK %06d", i),
 			rl,
 		)
-		store.CreateVirtualKeyInMemory(ctx, vk)
+		cfg.VirtualKeys = append(cfg.VirtualKeys, *vk)
 	}
+	store := resetTestRecordsStore(t, cfg)
 
 	// Best of timingBudgetAttempts sweeps; each retry re-expires every rate
 	// limit so the sweep does full work again, filtering host noise without
@@ -589,7 +696,7 @@ func TestBackgroundResetReferenceRefreshScales(t *testing.T) {
 			}
 		}
 		start := time.Now()
-		reset := store.ResetExpiredRateLimitsInMemory(ctx, true) // background/ticker path
+		reset := store.ResetExpiredRateLimitsInMemory(ctx) // background/ticker path
 		elapsed := time.Since(start)
 
 		if len(reset) != vkCount {
@@ -619,9 +726,9 @@ func TestBackgroundResetReferenceRefreshScales(t *testing.T) {
 	t.Logf("background reset: %v per reset for %d per-VK rate limits", bestPerReset, vkCount)
 }
 
-// seed100kBudgetVK creates one VK owning one budget with the given duration,
+// seed100kBudgetVK adds to cfg one VK owning one budget with the given duration,
 // alignment and last-reset, returning the budget ID.
-func seed100kBudgetVK(ctx context.Context, store *LocalGovernanceStore, i int, duration string, calendarAligned bool, lastReset time.Time, usage float64) string {
+func seed100kBudgetVK(cfg *configstore.GovernanceConfig, i int, duration string, calendarAligned bool, lastReset time.Time, usage float64) string {
 	budgetID := fmt.Sprintf("acc-budget-%06d", i)
 	budget := buildBudgetWithUsage(budgetID, 1_000_000, usage, duration)
 	budget.LastReset = lastReset
@@ -631,12 +738,12 @@ func seed100kBudgetVK(ctx context.Context, store *LocalGovernanceStore, i int, d
 		fmt.Sprintf("Accuracy VK %06d", i),
 		true,
 	)
-	// Alignment lives on the OWNER: CreateVirtualKeyInMemory stamps
-	// IsCalendarAligned onto stored budgets from vk.CalendarAligned, exactly
-	// like production config loading. Setting it on the budget alone is lost.
+	// Alignment lives on the OWNER: loading stamps IsCalendarAligned onto
+	// stored budgets from vk.CalendarAligned, exactly like production config
+	// loading. Setting it on the budget alone is lost.
 	vk.CalendarAligned = calendarAligned
 	vk.Budgets = []configstoreTables.TableBudget{*budget}
-	store.CreateVirtualKeyInMemory(ctx, vk)
+	cfg.VirtualKeys = append(cfg.VirtualKeys, *vk)
 	return budgetID
 }
 
@@ -645,10 +752,9 @@ func seed100kBudgetVK(ctx context.Context, store *LocalGovernanceStore, i int, d
 // and calendar-aligned), all expired, then runs ONE background sweep and
 // verifies reset accuracy on every single key: usage zeroed, rolling
 // LastReset advanced past the stale value, calendar LastReset snapped exactly
-// to the period start, and the embedded VK reference refreshed.
+// to the period start, and every key still naming its budget.
 func TestBudgetResetAccuracyAt100kKeysAllDue(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
 	const keyCount = 100_000
 	durations := []string{"1d", "1w", "1M"}
 	// Stale offsets guaranteed expired for both rolling and calendar semantics.
@@ -660,12 +766,14 @@ func TestBudgetResetAccuracyAt100kKeysAllDue(t *testing.T) {
 
 	seedNow := time.Now()
 	staleResets := make([]time.Time, keyCount)
+	cfg := &configstore.GovernanceConfig{}
 	for i := 0; i < keyCount; i++ {
 		duration := durations[i%3]
 		stale := seedNow.Add(staleOffsets[duration])
 		staleResets[i] = stale
-		seed100kBudgetVK(ctx, store, i, duration, i%2 == 0, stale, float64(i%997)+1)
+		seed100kBudgetVK(cfg, i, duration, i%2 == 0, stale, float64(i%997)+1)
 	}
+	store := resetTestRecordsStore(t, cfg)
 
 	// Best of timingBudgetAttempts sweeps; each retry re-stales every budget so
 	// the sweep does full work again, filtering host noise on slow runners.
@@ -676,18 +784,17 @@ func TestBudgetResetAccuracyAt100kKeysAllDue(t *testing.T) {
 		if attempt > 0 {
 			for i := 0; i < keyCount; i++ {
 				id := fmt.Sprintf("acc-budget-%06d", i)
-				raw, ok := store.budgets.Load(id)
-				if !ok || raw == nil {
+				if !store.UpdateBudgetState(id, func(s LimitState) (LimitState, bool) {
+					s.setLastReset(BudgetSlot, staleResets[i])
+					s.Usage[BudgetSlot] = DollarCount(float64(i%997) + 1)
+					return s, true
+				}) {
 					t.Fatalf("budget %06d missing before retry", i)
 				}
-				clone := *(raw.(*configstoreTables.TableBudget))
-				clone.LastReset = staleResets[i]
-				clone.CurrentUsage = float64(i%997) + 1
-				store.budgets.Store(id, &clone)
 			}
 		}
 		beforeSweep = time.Now()
-		reset := store.ResetExpiredBudgetsInMemory(ctx, true)
+		reset := store.ResetExpiredBudgetsInMemory(ctx)
 		elapsed := time.Since(beforeSweep)
 		afterSweep = time.Now()
 
@@ -722,13 +829,12 @@ func TestBudgetResetAccuracyAt100kKeysAllDue(t *testing.T) {
 		} else if !budget.LastReset.After(staleResets[i]) {
 			t.Fatalf("budget %06d (%s, rolling) LastReset did not advance: %v", i, duration, budget.LastReset)
 		}
-		rawVK, ok := store.virtualKeys.Load(fmt.Sprintf("sk-bf-acc-%06d", i))
-		if !ok || rawVK == nil {
+		vk, ok := store.GetVirtualKey(ctx, fmt.Sprintf("sk-bf-acc-%06d", i))
+		if !ok || vk == nil {
 			t.Fatalf("vk %06d missing after sweep", i)
 		}
-		vk := rawVK.(*configstoreTables.TableVirtualKey)
-		if len(vk.Budgets) != 1 || vk.Budgets[0].CurrentUsage != 0 {
-			t.Fatalf("vk %06d embedded budget not refreshed: %+v", i, vk.Budgets)
+		if len(vk.BudgetIDs) != 1 || vk.BudgetIDs[0] != fmt.Sprintf("acc-budget-%06d", i) {
+			t.Fatalf("vk %06d no longer names its budget: %+v", i, vk.BudgetIDs)
 		}
 	}
 	t.Logf("dense sweep: %d budgets reset in %v (%v per reset)", keyCount, bestElapsed, bestElapsed/keyCount)
@@ -743,13 +849,13 @@ func TestBudgetResetAccuracyAt100kKeysAllDue(t *testing.T) {
 // untouched budget byte-identical in usage and LastReset, and stay fast.
 func TestBudgetResetAccuracyAt100kKeysSparse(t *testing.T) {
 	ctx := context.Background()
-	store := newStandaloneStoreForResetBenchmark()
 	const keyCount = 100_000
 
 	seedNow := time.Now()
 	staleWeek := seedNow.Add(-8 * 24 * time.Hour)
 	freshResets := make([]time.Time, keyCount)
 	dueCount := 0
+	cfg := &configstore.GovernanceConfig{}
 	for i := 0; i < keyCount; i++ {
 		if i%10 == 7 { // sparse ownership: every 10th key has no budget
 			vk := buildVirtualKey(
@@ -758,19 +864,20 @@ func TestBudgetResetAccuracyAt100kKeysSparse(t *testing.T) {
 				fmt.Sprintf("Accuracy VK %06d", i),
 				true,
 			)
-			store.CreateVirtualKeyInMemory(ctx, vk)
+			cfg.VirtualKeys = append(cfg.VirtualKeys, *vk)
 			continue
 		}
 		if i%100 == 0 { // ~1% due: rolling weekly, expired
-			seed100kBudgetVK(ctx, store, i, "1w", false, staleWeek, 500)
+			seed100kBudgetVK(cfg, i, "1w", false, staleWeek, 500)
 			dueCount++
 			continue
 		}
 		// Not due: rolling weekly, reset recently, distinct usage per key.
 		fresh := seedNow.Add(-time.Duration(i%5000+1) * time.Minute)
 		freshResets[i] = fresh
-		seed100kBudgetVK(ctx, store, i, "1w", false, fresh, float64(i%997)+1)
+		seed100kBudgetVK(cfg, i, "1w", false, fresh, float64(i%997)+1)
 	}
+	store := resetTestRecordsStore(t, cfg)
 
 	// Best of timingBudgetAttempts sweeps; each retry re-stales only the due
 	// set so the sweep does the same work again, filtering host noise.
@@ -780,18 +887,17 @@ func TestBudgetResetAccuracyAt100kKeysSparse(t *testing.T) {
 		if attempt > 0 {
 			for i := 0; i < keyCount; i += 100 {
 				id := fmt.Sprintf("acc-budget-%06d", i)
-				raw, ok := store.budgets.Load(id)
-				if !ok || raw == nil {
+				if !store.UpdateBudgetState(id, func(s LimitState) (LimitState, bool) {
+					s.setLastReset(BudgetSlot, staleWeek)
+					s.Usage[BudgetSlot] = DollarCount(500)
+					return s, true
+				}) {
 					t.Fatalf("budget %06d missing before retry", i)
 				}
-				clone := *(raw.(*configstoreTables.TableBudget))
-				clone.LastReset = staleWeek
-				clone.CurrentUsage = 500
-				store.budgets.Store(id, &clone)
 			}
 		}
 		start := time.Now()
-		reset := store.ResetExpiredBudgetsInMemory(ctx, true)
+		reset := store.ResetExpiredBudgetsInMemory(ctx)
 		elapsed := time.Since(start)
 
 		if len(reset) != dueCount {
@@ -831,24 +937,15 @@ func TestBudgetResetAccuracyAt100kKeysSparse(t *testing.T) {
 	}
 }
 
-// newStandaloneStoreForResetBenchmark creates an in-memory-only store so benchmark
-// profiles isolate sync.Map/reference-update CPU rather than DB IO.
-func newStandaloneStoreForResetBenchmark() *LocalGovernanceStore {
-	return &LocalGovernanceStore{
-		logger:                         NewMockLogger(),
-		LastDBUsagesBudgets:            map[string]float64{},
-		LastDBUsagesTokensRateLimits:   map[string]int64{},
-		LastDBUsagesRequestsRateLimits: map[string]int64{},
-	}
-}
-
-// seedResetBenchmarkVirtualKeys creates many VK owner mappings to one rate limit so
-// the benchmark guards against reintroducing global owner scans.
-func seedResetBenchmarkVirtualKeys(ctx context.Context, store *LocalGovernanceStore, virtualKeys int) string {
+// seedResetBenchmarkVirtualKeys builds a store holding many VKs that name one rate limit, so
+// the benchmark guards against reintroducing global owner scans, and returns it with the
+// rate limit's ID.
+func seedResetBenchmarkVirtualKeys(tb testing.TB, virtualKeys int) (*LocalGovernanceStore, string) {
+	tb.Helper()
 	rateLimitID := "request-reset-rate-limit"
 	rateLimit := buildRateLimit(rateLimitID, 1_000_000_000, 1_000_000_000)
-	store.rateLimits.Store(rateLimitID, rateLimit)
 
+	cfg := &configstore.GovernanceConfig{RateLimits: []configstoreTables.TableRateLimit{*rateLimit}}
 	for i := 0; i < virtualKeys; i++ {
 		vk := buildVirtualKeyWithRateLimit(
 			fmt.Sprintf("reset-vk-%05d", i),
@@ -856,25 +953,41 @@ func seedResetBenchmarkVirtualKeys(ctx context.Context, store *LocalGovernanceSt
 			fmt.Sprintf("Reset VK %05d", i),
 			rateLimit,
 		)
-		store.CreateVirtualKeyInMemory(ctx, vk)
+		cfg.VirtualKeys = append(cfg.VirtualKeys, *vk)
 	}
 
-	return rateLimitID
+	return resetTestRecordsStore(tb, cfg), rateLimitID
+}
+
+// resetTestRecordsStore is a governance store over a live store loaded from the records cfg
+// declares, the way a gateway without a config store loads config.json, so tests seeding many
+// thousands of keys skip the database. Both stores close when the test ends.
+func resetTestRecordsStore(tb testing.TB, cfg *configstore.GovernanceConfig) *LocalGovernanceStore {
+	tb.Helper()
+	ctx := context.Background()
+	live, err := livestore.New()
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(live.Close)
+	recs := live.Collections.FileRecords(registry.FromConfig(registry.FileInput{Governance: cfg}))
+	if err := live.LoadRecords(ctx, recs); err != nil {
+		tb.Fatal(err)
+	}
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, live, nil)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(store.Close)
+	return store
 }
 
 // markRequestRateLimitExpired forces BumpRateLimitUsage down the request-time
 // reset path on the next call.
 func markRequestRateLimitExpired(store *LocalGovernanceStore, rateLimitID string) {
-	raw, ok := store.rateLimits.Load(rateLimitID)
-	if !ok || raw == nil {
-		return
-	}
-	rateLimit, ok := raw.(*configstoreTables.TableRateLimit)
-	if !ok || rateLimit == nil {
-		return
-	}
-	clone := *rateLimit
-	clone.RequestCurrentUsage = 123
-	clone.RequestLastReset = time.Now().Add(-2 * time.Minute)
-	store.rateLimits.Store(rateLimitID, &clone)
+	store.UpdateRateLimitState(rateLimitID, func(s LimitState) (LimitState, bool) {
+		s.Usage[RequestSlot] = WholeCount(123)
+		s.setLastReset(RequestSlot, time.Now().Add(-2*time.Minute))
+		return s, true
+	})
 }

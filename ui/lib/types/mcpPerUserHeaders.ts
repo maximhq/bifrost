@@ -25,6 +25,9 @@ export interface MCPPerUserHeadersSubmitResponse {
 	status: "success";
 	credential_id: string;
 	updated_at: string;
+	// Set when the credential was stored but the client's tools could not be
+	// loaded with it; connecting to the client again retries.
+	discovery_error?: string;
 }
 
 // Flow detail for GET /api/mcp/per-user-headers/flows/{id}. Mirrors

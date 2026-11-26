@@ -65,6 +65,25 @@ func TestLoadProxyConfig_AppliesTheDeclaration(t *testing.T) {
 	assert.Equal(t, "http://proxy.corp:8080", inMemory.URL)
 }
 
+// TestLoadProxyConfig_AppliesASOCKS5Declaration: the file can declare a SOCKS5 proxy, as the
+// settings endpoint can, and it is stored with its type.
+func TestLoadProxyConfig_AppliesASOCKS5Declaration(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	declared := proxyFileConfig("socks5://proxy.corp:1080")
+	declared.Type = network.GlobalProxyTypeSOCKS5
+	configData.ProxyConfig = declared
+	createConfigFile(t, tempDir, configData)
+
+	stored, inMemory := bootProxy(t, tempDir, nil)
+	require.NotNil(t, stored, "an enabled socks5 declaration must be applied")
+	assert.Equal(t, network.GlobalProxyTypeSOCKS5, stored.Type)
+	assert.Equal(t, "socks5://proxy.corp:1080", stored.URL)
+	require.NotNil(t, inMemory)
+	assert.Equal(t, network.GlobalProxyTypeSOCKS5, inMemory.Type)
+}
+
 // TestLoadProxyConfig_SplitKeepsADashboardEditUntilTheFileChanges: the hash lives in its own row, so
 // a dashboard save does not wipe it, and an unchanged file leaves the edit alone.
 func TestLoadProxyConfig_SplitKeepsADashboardEditUntilTheFileChanges(t *testing.T) {
@@ -127,12 +146,44 @@ func TestLoadProxyConfig_AbsentOrInvalidLeavesTheStoredProxy(t *testing.T) {
 	stored, _ = bootProxy(t, tempDir, nil)
 	assert.Equal(t, "http://dashboard.corp:3128", stored.URL, "an enabled proxy without a url is not applied")
 
-	configData.ProxyConfig = &GlobalProxyFileConfig{Enabled: true, Type: network.GlobalProxyTypeSOCKS5, URL: schemas.NewSecretVar("socks5://p:1080")}
+	configData.ProxyConfig = &GlobalProxyFileConfig{Enabled: true, Type: network.GlobalProxyTypeTCP, URL: schemas.NewSecretVar("tcp://p:9000")}
 	createConfigFile(t, tempDir, configData)
 	stored, inMemory = bootProxy(t, tempDir, nil)
 	assert.Equal(t, "http://dashboard.corp:3128", stored.URL, "an unsupported type is not applied")
 	require.NotNil(t, inMemory, "and the config carries the stored proxy")
 	assert.Equal(t, "http://dashboard.corp:3128", inMemory.URL)
+}
+
+// TestLoadProxyConfig_MalformedURLLeavesTheStoredProxy: the file is held to the settings page's URL
+// rules. The client factory reads a URL it cannot parse as no proxy, so applying one would send
+// traffic direct while the proxy reads as enabled.
+func TestLoadProxyConfig_MalformedURLLeavesTheStoredProxy(t *testing.T) {
+	cases := []struct {
+		name      string
+		proxyType network.GlobalProxyType
+		url       string
+	}{
+		{"socks5 with a non-numeric port", network.GlobalProxyTypeSOCKS5, "socks5://proxy.corp:bad"},
+		{"socks5 named by an http url", network.GlobalProxyTypeSOCKS5, "http://proxy.corp:1080"},
+		{"http named by a socks5 url", network.GlobalProxyTypeHTTP, "socks5://proxy.corp:1080"},
+		{"http with an out-of-range port", network.GlobalProxyTypeHTTP, "http://proxy.corp:70000"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestLogger()
+			tempDir := createTempDir(t)
+			configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+			createConfigFile(t, tempDir, configData)
+			bootProxy(t, tempDir, &configstoreTables.GlobalProxyConfig{Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://dashboard.corp:3128"})
+
+			configData.ProxyConfig = &GlobalProxyFileConfig{Enabled: true, Type: tc.proxyType, URL: schemas.NewSecretVar(tc.url)}
+			createConfigFile(t, tempDir, configData)
+			stored, inMemory := bootProxy(t, tempDir, nil)
+			assert.Equal(t, "http://dashboard.corp:3128", stored.URL, "a malformed url is not applied")
+			require.NotNil(t, inMemory, "and the config carries the stored proxy")
+			assert.Equal(t, "http://dashboard.corp:3128", inMemory.URL)
+		})
+	}
 }
 
 // TestLoadProxyConfig_ResolvesEnvReferences: credentials can come from the environment, and the
@@ -173,4 +224,46 @@ func TestLoadProxyConfig_ClearedHashReappliesTheFile(t *testing.T) {
 
 	stored, _ := bootProxy(t, tempDir, nil)
 	assert.Equal(t, "http://proxy.corp:8080", stored.URL)
+}
+
+// TestProxyURLPasswordRedaction pins which part of a proxy URL GET masks and how a save of
+// the masked URL gets the stored password back. Only the userinfo password is a secret; an
+// "@" past the authority is not userinfo.
+func TestProxyURLPasswordRedaction(t *testing.T) {
+	for _, tc := range []struct{ raw, redacted string }{
+		{"socks5://svc:s3cret@10.0.0.5:1080", "socks5://svc:<redacted>@10.0.0.5:1080"},
+		{"svc:s3cret@10.0.0.5:1080", "svc:<redacted>@10.0.0.5:1080"},
+		{"http://svc:p@ss@10.0.0.5:3128", "http://svc:<redacted>@10.0.0.5:3128"},
+		{"http://svc@10.0.0.5:3128", "http://svc@10.0.0.5:3128"},
+		{"http://svc:@10.0.0.5:3128", "http://svc:@10.0.0.5:3128"},
+		{"http://10.0.0.5:3128/a@b", "http://10.0.0.5:3128/a@b"},
+		{"10.0.0.5:1080", "10.0.0.5:1080"},
+	} {
+		assert.Equal(t, tc.redacted, RedactProxyURLPassword(tc.raw), tc.raw)
+		assert.Equal(t, tc.raw, RestoreProxyURLPassword(RedactProxyURLPassword(tc.raw), tc.raw), "round trip of %s", tc.raw)
+	}
+	assert.Equal(t, "socks5://svc@10.0.0.5:1080", RestoreProxyURLPassword("socks5://svc:<redacted>@10.0.0.5:1080", "socks5://10.0.0.5:1080"),
+		"with no stored password the placeholder is dropped")
+	assert.Equal(t, "socks5://svc:typed@10.0.0.5:1080", RestoreProxyURLPassword("socks5://svc:typed@10.0.0.5:1080", "socks5://svc:s3cret@10.0.0.5:1080"),
+		"a password the admin typed is kept")
+}
+
+// TestValidateGlobalProxyURL_ErrorsDoNotQuotePassword pins that a refused proxy URL's error
+// never carries its userinfo password: the API returns it in a 400 and the config.json load
+// logs it.
+func TestValidateGlobalProxyURL_ErrorsDoNotQuotePassword(t *testing.T) {
+	for _, raw := range []string{
+		"socks5://svc:s3cret@10.0.0.5:bad",
+		"socks5://svc:s3cret@10.0.0.5:0",
+		"socks5://svc:s3cret@:1080",
+		"socks5://svc:s3cret@[::1:1080",
+		"svc:s3cret@10.0.0.5:bad",
+	} {
+		_, err := ValidateGlobalProxyURL(network.GlobalProxyTypeSOCKS5, raw)
+		require.Error(t, err, raw)
+		assert.NotContains(t, err.Error(), "s3cret", raw)
+	}
+	err := validateGlobalProxyConfig(configstoreTables.GlobalProxyConfig{Enabled: true, Type: network.GlobalProxyTypeSOCKS5, URL: "socks5://svc:s3cret@10.0.0.5:bad"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "s3cret", "the config.json load logs this error")
 }

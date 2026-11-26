@@ -147,7 +147,7 @@ const chatStream = (prompt, extra = {}) => chat(prompt, { max_tokens: 12, stream
 const responses = (input, extra = {}) => ({ model: MODEL, input, max_output_tokens: 16, temperature: 0, ...extra });
 const text = (prompt, extra = {}) => ({ model: TEXT_MODEL, prompt, max_tokens: 8, temperature: 0, ...extra });
 const embedding = (input, extra = {}) => ({ model: `openai/${EMBED_MODEL}`, input, ...extra });
-const image = (prompt) => ({ model: "openai/gpt-image-1", prompt, size: "1024x1024", quality: "low", n: 1 });
+const image = (prompt) => ({ model: "openai/gpt-image-1.5", prompt, size: "1024x1024", quality: "low", n: 1 });
 
 // Two tiny solid-color PNGs as data URLs, so the image-attachment rows never depend on a remote
 // fetch by the provider.
@@ -1008,6 +1008,31 @@ function folderS() {
     // Similarity is cosine on every store. This pair scores about 0.62, under the plugin's default
     // threshold of 0.8 on any store that compares cosine; Weaviate's certainty, (1 + cosine) / 2,
     // puts the same pair at about 0.81, which would serve France's answer to Germany's question.
+    // S30: a follow-up turn is matched on its exact earlier messages and only its newest message by
+    // meaning. The follow-up repeats the first question in other words, so embedding the whole
+    // conversation scored it against turn 1 and replayed turn 1's answer.
+    ...["chat", "responses"].flatMap((r) => {
+      const k = `s30${r}`;
+      const turns = (reply, newest) => {
+        const messages = [
+          { role: "user", content: p3.canonical },
+          { role: "assistant", content: reply },
+          { role: "user", content: newest },
+        ];
+        return r === "chat" ? chatMessages(messages) : responses(messages);
+      };
+      const first = r === "chat" ? chat(p3.canonical) : responses(p3.canonical);
+      const REPLY = "Whisk three parts oil into one part vinegar.";
+      return [
+        write(`S30 ${r} turn 1 write`, r, first, [H.key(k)], { save: `${k}a`, ...embedded }),
+        hit(`S30 ${r} turn 1 hits`, r, first, [H.key(k)], { same: `${k}a` }),
+        miss(`S30 ${r} follow-up does not replay turn 1`, r, turns(REPLY, p3.paraphrase), [H.key(k)], { distinct: [`${k}a`] }),
+        write(`S30 ${r} follow-up write`, r, turns(REPLY, p3.paraphrase), [H.key(k)], { save: `${k}b`, distinct: [`${k}a`], ...embedded }),
+        hit(`S30 ${r} the same follow-up hits`, r, turns(REPLY, p3.paraphrase), [H.key(k)], { same: `${k}b` }),
+        hit(`S30 ${r} reworded follow-up after the same history is a semantic hit`, r, turns(REPLY, p3.canonical), [H.key(k)], semanticHit(`${k}b`)),
+        miss(`S30 ${r} the same follow-up after a different reply misses`, r, turns("Use lemon juice and olive oil.", p3.paraphrase), [H.key(k)], { distinct: [`${k}a`, `${k}b`] }),
+      ];
+    }),
     putPlugin("S29 plugin default threshold", SEMANTIC({ threshold: null })),
     write("S29 write", "chat", chat(p1.canonical), [H.key("s29")], { save: "s29", ...embedded }),
     hit("S29 hits", "chat", chat(p1.canonical), [H.key("s29")], { same: "s29" }),

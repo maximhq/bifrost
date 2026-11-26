@@ -44,9 +44,9 @@ type OAuth2Provider interface {
 	InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode MCPAuthMode) (*OAuth2FlowInitiation, string, error)
 
 	// CompleteUserOAuthFlow handles the OAuth callback for a per-user flow.
-	// Returns the SessionID stored on the flow row (populated for session-mode,
-	// empty otherwise).
-	CompleteUserOAuthFlow(ctx context.Context, state string, code string) (string, error)
+	// Returns the caller and MCP client the new token was stored for, as the
+	// flow row recorded them.
+	CompleteUserOAuthFlow(ctx context.Context, state string, code string) (*UserOAuthCompletion, error)
 
 	// RefreshAccessToken refreshes any MCP OAuth token — the single shared
 	// client credential or a per-identity credential alike — looked up by the
@@ -186,6 +186,32 @@ type TokenExchangeIdPResolver interface {
 	StoredSubjectToken(ctx context.Context, userID string, rejected bool) (string, error)
 }
 
+// Subject token types for the id_jag profile's identity-provider exchange.
+const (
+	TokenTypeIDToken      = "urn:ietf:params:oauth:token-type:id_token"
+	TokenTypeRefreshToken = "urn:ietf:params:oauth:token-type:refresh_token"
+)
+
+// IDJAGSubjectToken is the user's identity-provider credential an ID-JAG is
+// requested with. Identity providers accept only an ID token or a refresh
+// token issued to the requesting (SSO) application, never an access token.
+// SECURITY: live credential - never log Token.
+type IDJAGSubjectToken struct {
+	Token     string
+	TokenType string // TokenTypeIDToken or TokenTypeRefreshToken
+}
+
+// IDJAGSubjectResolver is optionally implemented by a TokenExchangeIdPResolver
+// to supply a user's ID-JAG subject for the id_jag profile from their stored
+// SSO session. IDJAGSubjectForUser returns ErrExchangeSubjectTokenMissing when
+// the user has no usable session; IsIDJAGUserActive reports whether the user
+// is still an active Bifrost user, checked before a retained admin credential
+// is renewed in their name.
+type IDJAGSubjectResolver interface {
+	IDJAGSubjectForUser(ctx context.Context, userID string) (*IDJAGSubjectToken, error)
+	IsIDJAGUserActive(ctx context.Context, userID string) (bool, error)
+}
+
 // OauthConfig represents OAuth client configuration
 type OAuth2Config struct {
 	ID              string     `json:"id"`
@@ -200,7 +226,10 @@ type OAuth2Config struct {
 	Resource        string     `json:"resource,omitempty"`         // Optional OAuth resource indicator (RFC 8707); omitted when empty
 	UseDiscovery    bool       `json:"use_discovery,omitempty"`    // Deprecated: Discovery now happens automatically when URLs are missing
 
-	RequirePublicTarget bool `json:"-"` // Server-set from the owning MCP client: OAuth requests may reach only public addresses
+	UseClientMetadataDocument bool `json:"use_client_metadata_document,omitempty"` // Register with Bifrost's Client ID Metadata Document even if the server does not advertise support
+
+	RequirePublicTarget bool   `json:"-"` // Server-set from the owning MCP client: OAuth requests may reach only public addresses
+	ClientMetadataURL   string `json:"-"` // Server-set: Bifrost's Client ID Metadata Document URL
 }
 
 // OauthToken represents OAuth access and refresh tokens
@@ -212,6 +241,14 @@ type OAuth2Token struct {
 	ExpiresAt       time.Time  `json:"expires_at"`
 	Scopes          []string   `json:"scopes"`
 	LastRefreshedAt *time.Time `json:"last_refreshed_at,omitempty"`
+}
+
+// UserOAuthCompletion is what completing a per-user OAuth flow established: the
+// caller the new token belongs to and the MCP client it is for.
+type UserOAuthCompletion struct {
+	AuthMode    MCPAuthMode // the flow's mode, naming which identity keys the token
+	Identity    string      // the user ID, the virtual key ID or the session ID, per AuthMode
+	MCPClientID string
 }
 
 // OauthFlowInitiation represents the response when initiating an OAuth flow
@@ -241,4 +278,6 @@ type OAuth2TokenExchangeResponse struct {
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope,omitempty"`
+	// IssuedTokenType is set by RFC 8693 responses (e.g. the ID-JAG token type).
+	IssuedTokenType string `json:"issued_token_type,omitempty"`
 }

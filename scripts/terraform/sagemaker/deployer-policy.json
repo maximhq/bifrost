@@ -1,0 +1,42 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["sagemaker:*Model", "sagemaker:*EndpointConfig", "sagemaker:*Endpoint", "sagemaker:*InferenceComponent", "sagemaker:*Tags", "sagemaker:InvokeEndpoint*"],
+      "Resource": ["arn:*:sagemaker:*:*:model/bifrost-*", "arn:*:sagemaker:*:*:endpoint-config/bifrost-*", "arn:*:sagemaker:*:*:endpoint/bifrost-*", "arn:*:sagemaker:*:*:inference-component/bifrost-*"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["sagemaker:List*", "sagemaker:CallWithBearerToken", "servicequotas:Get*", "servicequotas:List*", "logs:DescribeLogGroups"],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:*:iam::*:role/bifrost-sagemaker-exec",
+      "Condition": {"StringEquals": {"iam:PassedToService": "sagemaker.amazonaws.com"}}
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:*:iam::*:role/bifrost-sagemaker-teardown",
+      "Condition": {"StringEquals": {"iam:PassedToService": "scheduler.amazonaws.com"}}
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["scheduler:*Schedule"],
+      "Resource": "arn:*:scheduler:*:*:schedule/default/bifrost-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["logs:DescribeLogStreams", "logs:GetLogEvents", "logs:FilterLogEvents", "logs:StartLiveTail"],
+      "Resource": "arn:*:logs:*:*:log-group:/aws/sagemaker/Endpoints/bifrost-*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["signin:AuthorizeOAuth2Access", "signin:CreateOAuth2Token"],
+      "Resource": "arn:*:signin:*:*:oauth2/public-client/*"
+    }
+  ]
+}

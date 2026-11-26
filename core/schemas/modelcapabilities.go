@@ -50,6 +50,7 @@ type ModelCapabilities struct {
 	SupportsSamplingParams          *bool `json:"supports_sampling_params,omitempty"` // false ⇒ temperature/top_p/top_k rejected (adaptive-only models)
 	SupportsRedactThinking          *bool `json:"supports_redact_thinking,omitempty"`
 	SupportsTaskBudgets             *bool `json:"supports_task_budgets,omitempty"`
+	SupportsReasoningBudget         *bool `json:"supports_reasoning_budget,omitempty"` // false ⇒ token thinking budget rejected, effort level only (Gemini 4)
 	SupportsEagerInputStreaming     *bool `json:"supports_eager_input_streaming,omitempty"`
 	SupportsAdvancedToolUse         *bool `json:"supports_advanced_tool_use,omitempty"`
 	SupportsInputExamples           *bool `json:"supports_input_examples,omitempty"`
@@ -61,12 +62,20 @@ type ModelCapabilities struct {
 	SupportsPromptCacheBreakpoint   *bool `json:"supports_prompt_cache_breakpoint,omitempty"` // accepts OpenAI prompt_cache_breakpoint + prompt_cache_options
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
+	SupportsVision                  *bool `json:"supports_vision,omitempty"` // accepts image inputs in user content
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
+	SupportsNativeStructuredOutput  *bool `json:"supports_native_structured_output,omitempty"` // Bedrock Converse accepts outputConfig.textFormat; false ⇒ synthetic bf_so_* tool
 	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
 	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
 	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
 	SupportsCustomTools             *bool `json:"supports_custom_tools,omitempty"`             // accepts OpenAI custom (freeform) tools; false ⇒ rewritten as function tools
 	SupportsDecisions               *bool `json:"supports_decisions,omitempty"`                // served on the provider's native decisions endpoint (OpenAI POST /v1/decisions); absent ⇒ DefaultSupportsDecisions
+
+	// Model drops trailing whitespace from the text ending a user turn but keeps it mid-turn (Claude 5); absent ⇒ name detection.
+	StripsUserTurnTrailingWhitespace *bool `json:"strips_user_turn_trailing_whitespace,omitempty"`
+
+	// Anthropic converter: send mid-conversation system messages as native role:"system"; released gateways ignore it.
+	SupportsNativeMidConversationSystem *bool `json:"supports_native_mid_conversation_system,omitempty"`
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are
@@ -77,6 +86,7 @@ type ModelCapabilities struct {
 	// is the scope sub-feature.
 	SupportsAssistantPrefill         *bool `json:"supports_assistant_prefill,omitempty"`
 	SupportsSystemMessages           *bool `json:"supports_system_messages,omitempty"`
+	SupportsDeveloperRole            *bool `json:"supports_developer_role,omitempty"` // false ⇒ developer messages are sent as system
 	SupportsFunctionCalling          *bool `json:"supports_function_calling,omitempty"`
 	SupportsParallelFunctionCalling  *bool `json:"supports_parallel_function_calling,omitempty"`
 	SupportsToolChoice               *bool `json:"supports_tool_choice,omitempty"`
@@ -198,6 +208,10 @@ type ModelCapabilities struct {
 	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
 	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`
 
+	// Model accepts thinking.display:"updates" (beta thinking-display-updates). Per model, not per surface:
+	// Bedrock rejects it on Opus 4.6 and the 4.5 generation.
+	SupportsThinkingDisplayUpdates *bool `json:"supports_thinking_display_updates,omitempty"`
+
 	// Model accepts a self-managed thinking budget (Gemini thinkingBudget: -1).
 	SupportsDynamicReasoningBudget *bool `json:"supports_dynamic_reasoning_budget,omitempty"`
 
@@ -278,6 +292,9 @@ type ModelCapabilities struct {
 
 	// Tool-schema `pattern` accepts the `\0` escape; false ⇒ it is rewritten to `\x00` before dispatch.
 	SupportsRegexNULEscape *bool `json:"supports_regex_nul_escape,omitempty"`
+
+	// Tool-schema `pattern` is accepted at all; false ⇒ the keyword is dropped before dispatch.
+	SupportsSchemaPattern *bool `json:"supports_schema_pattern,omitempty"`
 
 	// String `format` values tool schemas may carry; any other is dropped before dispatch.
 	SupportedSchemaFormats []string `json:"supported_schema_formats,omitempty"`

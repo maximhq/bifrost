@@ -20,7 +20,7 @@ Bifrost stores runtime configuration in a config database by default, so setting
 |------|------|-----------|
 | **Web UI / database** | No `config.json` | Bifrost creates a default SQLite config store and runtime changes are saved through the UI or API |
 | **DB-backed `config.json`** | `config.json` exists and `config_store` is omitted or enabled | File-backed sections seed or reconcile the config store at startup; UI/API edits remain available |
-| **File-only `config.json`** | `config_store.enabled` is `false` | Config is loaded from file into memory at startup; config-backed UI/API changes are unavailable and file changes require restart |
+| **File-only `config.json`** | `config_store.enabled` is `false` | Config is loaded from file into memory at startup; configuration UI/API routes answer 503, reads included, and file changes require restart |
 
 <Note>
 By default, DB-backed `config.json` uses `source_of_truth: "split"`: unchanged file-backed rows preserve UI/API edits, while changed file-backed rows are applied on the next startup. Use `source_of_truth: "config.json"` only when explicitly present file sections should replace matching DB state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full rules, including missing-vs-empty section behavior.
@@ -323,6 +323,7 @@ Ready-to-use reference configurations from the [examples/configs](https://github
 | [withlogstore](https://github.com/maximhq/bifrost/blob/main/examples/configs/withlogstore/config.json) | SQLite logs store |
 | [withobjectstorages3](https://github.com/maximhq/bifrost/blob/main/examples/configs/withobjectstorages3/config.json) | S3 object storage offload for logs |
 | [withobjectstoragegcs](https://github.com/maximhq/bifrost/blob/main/examples/configs/withobjectstoragegcs/config.json) | GCS object storage offload for logs |
+| [withobjectstorageazure](https://github.com/maximhq/bifrost/blob/main/examples/configs/withobjectstorageazure/config.json) | Azure Blob Storage offload for logs using a connection string |
 | [withvectorstoreweaviate](https://github.com/maximhq/bifrost/blob/main/examples/configs/withvectorstoreweaviate/config.json) | Weaviate vector store (with [docker-compose](https://github.com/maximhq/bifrost/blob/main/examples/configs/withvectorstoreweaviate/docker-compose.yml)) |
 
 </Accordion>

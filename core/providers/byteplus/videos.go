@@ -217,6 +217,10 @@ func ToBifrostVideoGenerationResponse(task *BytePlusVideoTask) (*schemas.Bifrost
 	if task.Duration > 0 {
 		resp.Seconds = schemas.Ptr(strconv.Itoa(task.Duration))
 	}
+	// Seedance bills on completion_tokens (any minimum already applied by Ark), so it is the pricing basis.
+	if task.Usage != nil && task.Usage.CompletionTokens > 0 {
+		resp.Usage = &schemas.VideoUsage{OutputTokens: task.Usage.CompletionTokens}
+	}
 	switch resp.Status {
 	case schemas.VideoStatusCompleted:
 		if task.UpdatedAt > 0 {

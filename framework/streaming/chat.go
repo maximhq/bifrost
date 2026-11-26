@@ -3,6 +3,8 @@ package streaming
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -94,6 +96,14 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 				copyName := *tc.Function.Name
 				copyTc.Function.Name = &copyName
 			}
+			if tc.Custom != nil {
+				copyCustom := *tc.Custom
+				if tc.Custom.Name != nil {
+					copyName := *tc.Custom.Name
+					copyCustom.Name = &copyName
+				}
+				copyTc.Custom = &copyCustom
+			}
 			// Deep copy ExtraContent (json.RawMessage is a []byte)
 			if len(tc.ExtraContent) > 0 {
 				copyTc.ExtraContent = append(json.RawMessage(nil), tc.ExtraContent...)
@@ -133,6 +143,23 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 		}
 	}
 
+	// Deep copy Images slice
+	if original.Images != nil {
+		copy.Images = make([]schemas.ChatAssistantMessageImage, len(original.Images))
+		for i, image := range original.Images {
+			copyImage := image
+			if image.ImageURL.FileID != nil {
+				copyFileID := *image.ImageURL.FileID
+				copyImage.ImageURL.FileID = &copyFileID
+			}
+			if image.ImageURL.Detail != nil {
+				copyDetail := *image.ImageURL.Detail
+				copyImage.ImageURL.Detail = &copyDetail
+			}
+			copy.Images[i] = copyImage
+		}
+	}
+
 	return copy
 }
 
@@ -141,8 +168,91 @@ func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStr
 	return BuildChatMessageFromChunks(chunks)
 }
 
+// recordChoice stores one choice of a stream event on the chunk. The first choice goes on the chunk itself and any
+// further ones (an event carrying several choices) go in ExtraChoices, so the event stays a single chunk and its
+// event-level fields such as usage and raw response are recorded once.
+func (c *ChatStreamChunk) recordChoice(hasChoice bool, index int, delta *schemas.ChatStreamResponseChoiceDelta, finishReason *string, logProbs *schemas.BifrostLogProbs) {
+	if !hasChoice {
+		c.ChoiceIndex, c.Delta, c.FinishReason, c.LogProbs = index, delta, finishReason, logProbs
+		return
+	}
+	c.ExtraChoices = append(c.ExtraChoices, ChatStreamChunk{
+		ChunkIndex:   c.ChunkIndex,
+		ChoiceIndex:  index,
+		Delta:        delta,
+		FinishReason: finishReason,
+		LogProbs:     logProbs,
+	})
+}
+
+// hasMultipleChoices reports whether a stream carries more than choice 0, which only happens when n>1.
+func hasMultipleChoices(chunks []*ChatStreamChunk) bool {
+	for _, chunk := range chunks {
+		if chunk.ChoiceIndex != 0 || len(chunk.ExtraChoices) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// buildChatChoiceOutputs assembles every choice of an n>1 stream on its own, in index order, so the content, tool
+// calls, finish reason and logprobs of one choice never mix with another's.
+func buildChatChoiceOutputs(chunks []*ChatStreamChunk) []schemas.StreamChoiceOutput {
+	chunksByChoice := make(map[int][]*ChatStreamChunk)
+	for _, chunk := range chunks {
+		chunksByChoice[chunk.ChoiceIndex] = append(chunksByChoice[chunk.ChoiceIndex], chunk)
+		for i := range chunk.ExtraChoices {
+			extra := &chunk.ExtraChoices[i]
+			chunksByChoice[extra.ChoiceIndex] = append(chunksByChoice[extra.ChoiceIndex], extra)
+		}
+	}
+	outputs := make([]schemas.StreamChoiceOutput, 0, len(chunksByChoice))
+	for _, index := range slices.Sorted(maps.Keys(chunksByChoice)) {
+		choiceChunks := chunksByChoice[index]
+		message := BuildChatMessageFromChunks(choiceChunks) // sorts choiceChunks by ChunkIndex
+		outputs = append(outputs, schemas.StreamChoiceOutput{
+			Index:        index,
+			Message:      message,
+			FinishReason: latestChatFinishReason(choiceChunks),
+			LogProbs:     mergeChatLogProbs(choiceChunks),
+		})
+	}
+	return outputs
+}
+
+// choiceZeroOutput returns the output of choice 0 from outputs sorted by index. When the stream has no choice 0 yet
+// (a paused snapshot taken before it emitted anything) it returns an empty assistant message with no finish reason
+// or logprobs, so the top-level output never borrows another choice's content.
+func choiceZeroOutput(outputs []schemas.StreamChoiceOutput) schemas.StreamChoiceOutput {
+	for _, output := range outputs {
+		if output.Index == 0 {
+			return output
+		}
+	}
+	return schemas.StreamChoiceOutput{Message: BuildChatMessageFromChunks(nil)}
+}
+
+// mergeChatLogProbs joins the logprobs of the given chunks in order, or returns nil when none carry any.
+func mergeChatLogProbs(chunks []*ChatStreamChunk) *schemas.BifrostLogProbs {
+	var merged *schemas.BifrostLogProbs
+	for _, chunk := range chunks {
+		if chunk.LogProbs == nil {
+			continue
+		}
+		if merged == nil {
+			merged = &schemas.BifrostLogProbs{}
+		}
+		merged.Content = append(merged.Content, chunk.LogProbs.Content...)
+		merged.Refusal = append(merged.Refusal, chunk.LogProbs.Refusal...)
+		if chunk.LogProbs.TextCompletionLogProb != nil {
+			merged.TextCompletionLogProb = chunk.LogProbs.TextCompletionLogProb
+		}
+	}
+	return merged
+}
+
 // BuildChatMessageFromChunks assembles the complete assistant message from a stream's chat chunks
-// (content, refusal, reasoning, reasoning details, audio, annotations and tool calls). It sorts
+// (content, refusal, reasoning, reasoning details, audio, images, annotations and tool calls). It sorts
 // chunks in place by ChunkIndex and holds no state, so callers that rebuild a stream outside the
 // Accumulator (e.g. from a recorded passthrough body) get the same result the live path produces.
 // Uses strings.Builder for O(n) accumulation instead of O(n²) string concatenation.
@@ -163,6 +273,7 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 	var audioTranscriptBuilder strings.Builder
 	hasContent, hasRefusal, hasReasoning := false, false, false
 	var annotations []schemas.ChatAssistantMessageAnnotation
+	var images []schemas.ChatAssistantMessageImage
 
 	// Reasoning details builders keyed by detail index
 	type rdAccum struct {
@@ -179,6 +290,7 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 		typ          *string
 		name         *string
 		args         strings.Builder
+		custom       *strings.Builder // input of a custom tool call
 		extraContent json.RawMessage
 	}
 	var tcAccums map[uint16]*tcAccum
@@ -240,8 +352,9 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 				acc.id = &idCopy
 			}
 		}
-		// Collect annotations (arrive whole per chunk, not incrementally)
+		// Collect annotations and images (arrive whole per chunk, not incrementally)
 		annotations = append(annotations, chunk.Delta.Annotations...)
+		images = append(images, chunk.Delta.Images...)
 		// Handle audio data
 		if chunk.Delta.Audio != nil {
 			if completeMessage.ChatAssistantMessage == nil {
@@ -288,6 +401,16 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 			}
 			if args := deltaToolCall.Function.Arguments; args != "" {
 				acc.args.WriteString(args)
+			}
+			if custom := deltaToolCall.Custom; custom != nil {
+				if acc.custom == nil {
+					acc.custom = &strings.Builder{}
+				}
+				if custom.Name != nil {
+					n := *custom.Name
+					acc.name = &n
+				}
+				acc.custom.WriteString(custom.Input)
 			}
 			if len(deltaToolCall.ExtraContent) > 0 {
 				acc.extraContent = make(json.RawMessage, len(deltaToolCall.ExtraContent))
@@ -364,6 +487,14 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 		completeMessage.ChatAssistantMessage.Annotations = annotations
 	}
 
+	// Finalize images
+	if len(images) > 0 {
+		if completeMessage.ChatAssistantMessage == nil {
+			completeMessage.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+		}
+		completeMessage.ChatAssistantMessage.Images = images
+	}
+
 	// Finalize audio
 	if completeMessage.ChatAssistantMessage != nil && completeMessage.ChatAssistantMessage.Audio != nil {
 		completeMessage.ChatAssistantMessage.Audio.Data = audioDataBuilder.String()
@@ -391,6 +522,10 @@ func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage 
 					Name:      acc.name,
 					Arguments: acc.args.String(),
 				},
+			}
+			if acc.custom != nil {
+				tc.Function = schemas.ChatAssistantMessageToolCallFunction{}
+				tc.Custom = &schemas.ChatAssistantMessageToolCallCustom{Name: acc.name, Input: acc.custom.String()}
 			}
 			if len(acc.extraContent) > 0 {
 				tc.ExtraContent = acc.extraContent
@@ -434,8 +569,18 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 		CacheDebug:       nil,
 		Cost:             nil,
 	}
-	// Build complete message from accumulated chunks
-	completeMessage := a.buildCompleteMessageFromChatStreamChunks(accumulator.ChatStreamChunks)
+	// Build complete message from accumulated chunks. With n>1 every choice is built on its own and the
+	// top-level output describes choice 0 (empty while choice 0 has not emitted), the same way a non-streamed
+	// response is logged.
+	var completeMessage *schemas.ChatMessage
+	var choiceZero schemas.StreamChoiceOutput
+	if hasMultipleChoices(accumulator.ChatStreamChunks) {
+		data.OutputChoices = buildChatChoiceOutputs(accumulator.ChatStreamChunks)
+		choiceZero = choiceZeroOutput(data.OutputChoices)
+		completeMessage = choiceZero.Message
+	} else {
+		completeMessage = a.buildCompleteMessageFromChatStreamChunks(accumulator.ChatStreamChunks)
+	}
 	if !isFinalChunk {
 		data.OutputMessage = completeMessage
 		return data, nil
@@ -490,22 +635,12 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 	if data.FinishReason == nil {
 		data.FinishReason = accumulator.getChatFinishReasonLocked()
 	}
-	// Merge LogProbs from all chunks
-	if len(accumulator.ChatStreamChunks) > 0 {
-		var mergedLogProbs *schemas.BifrostLogProbs
-		for _, chunk := range accumulator.ChatStreamChunks {
-			if chunk.LogProbs != nil {
-				if mergedLogProbs == nil {
-					mergedLogProbs = &schemas.BifrostLogProbs{}
-				}
-				mergedLogProbs.Content = append(mergedLogProbs.Content, chunk.LogProbs.Content...)
-				mergedLogProbs.Refusal = append(mergedLogProbs.Refusal, chunk.LogProbs.Refusal...)
-				if chunk.LogProbs.TextCompletionLogProb != nil {
-					mergedLogProbs.TextCompletionLogProb = chunk.LogProbs.TextCompletionLogProb
-				}
-			}
-		}
-		data.LogProbs = mergedLogProbs
+	if len(data.OutputChoices) > 0 {
+		// The highest-index chunk may belong to any choice, so take choice 0's own values.
+		data.FinishReason = choiceZero.FinishReason
+		data.LogProbs = choiceZero.LogProbs
+	} else {
+		data.LogProbs = mergeChatLogProbs(accumulator.ChatStreamChunks)
 	}
 	// Accumulate raw response using strings.Builder to avoid O(n^2) string concatenation
 	if len(accumulator.ChatStreamChunks) > 0 {
@@ -520,6 +655,10 @@ func (a *Accumulator) processAccumulatedChatStreamingChunks(requestID string, re
 					rawBuilder.WriteString("\n\n")
 				}
 				rawBuilder.WriteString(*chunk.RawResponse)
+				// Every frame comes from one provider stream, so the first declared format describes them all.
+				if data.RawResponseFormat == "" {
+					data.RawResponseFormat = chunk.RawResponseFormat
+				}
 			}
 		}
 		if rawBuilder.Len() > 0 {
@@ -553,26 +692,24 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 	if bifrostErr != nil {
 		chunk.FinishReason = bifrost.Ptr("error")
 	} else if result != nil && result.TextCompletionResponse != nil {
+		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
 		// Handle text completion response directly
-		if len(result.TextCompletionResponse.Choices) > 0 {
-			choice := result.TextCompletionResponse.Choices[0]
-
-			if choice.TextCompletionResponseChoice != nil {
-				deltaCopy := choice.TextCompletionResponseChoice.Text
-				chunk.Delta = &schemas.ChatStreamResponseChoiceDelta{
-					Content: deltaCopy,
-				}
-				chunk.FinishReason = choice.FinishReason
-				chunk.LogProbs = choice.LogProbs
+		hasChoice := false
+		for _, choice := range result.TextCompletionResponse.Choices {
+			if choice.TextCompletionResponseChoice == nil {
+				continue
 			}
+			delta := &schemas.ChatStreamResponseChoiceDelta{Content: choice.TextCompletionResponseChoice.Text}
+			chunk.recordChoice(hasChoice, choice.Index, delta, choice.FinishReason, choice.LogProbs)
+			hasChoice = true
 		}
 		// Extract token usage
 		if result.TextCompletionResponse.Usage != nil && result.TextCompletionResponse.Usage.TotalTokens > 0 {
 			chunk.TokenUsage = result.TextCompletionResponse.Usage
 		}
-		chunk.ChunkIndex = result.TextCompletionResponse.ExtraFields.ChunkIndex
 		if result.TextCompletionResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.TextCompletionResponse.ExtraFields.RawResponse))
+			chunk.RawResponseFormat = result.TextCompletionResponse.ExtraFields.RawResponseFormat
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {
@@ -583,15 +720,17 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 			chunk.GuardrailDebug = result.GetExtraFields().GuardrailDebug
 		}
 	} else if result != nil && result.ChatResponse != nil {
+		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		// Extract delta and other information
-		if len(result.ChatResponse.Choices) > 0 {
-			choice := result.ChatResponse.Choices[0]
-			if choice.ChatStreamResponseChoice != nil {
-				// Deep copy delta to prevent shared data mutation between chunks
-				chunk.Delta = deepCopyChatStreamDelta(choice.ChatStreamResponseChoice.Delta)
-				chunk.FinishReason = choice.FinishReason
-				chunk.LogProbs = choice.LogProbs
+		hasChoice := false
+		for _, choice := range result.ChatResponse.Choices {
+			if choice.ChatStreamResponseChoice == nil {
+				continue
 			}
+			// Deep copy delta to prevent shared data mutation between chunks
+			delta := deepCopyChatStreamDelta(choice.ChatStreamResponseChoice.Delta)
+			chunk.recordChoice(hasChoice, choice.Index, delta, choice.FinishReason, choice.LogProbs)
+			hasChoice = true
 		}
 		// Extract token usage
 		if result.ChatResponse.Usage != nil && result.ChatResponse.Usage.TotalTokens > 0 {
@@ -600,9 +739,9 @@ func (a *Accumulator) processChatStreamingResponse(ctx *schemas.BifrostContext, 
 		if result.ChatResponse.ServiceTier != nil {
 			chunk.ServiceTier = new(schemas.BifrostServiceTier(*result.ChatResponse.ServiceTier))
 		}
-		chunk.ChunkIndex = result.ChatResponse.ExtraFields.ChunkIndex
 		if result.ChatResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ChatResponse.ExtraFields.RawResponse))
+			chunk.RawResponseFormat = result.ChatResponse.ExtraFields.RawResponseFormat
 		}
 		if isFinalChunk {
 			if a.pricingManager != nil {

@@ -1,11 +1,12 @@
 package configstore
 
 import (
-	"github.com/maximhq/bifrost/core/schemas"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
-
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -138,6 +139,43 @@ func TestGenerateKeyHash_OAuthSecretsHashByReference(t *testing.T) {
 	require.NotEqual(t, viaRef, viaLiteral, "switching between a reference and a literal is an edit")
 }
 
+// TestGenerateKeyHash_AnthropicWorkloadIdentityHashesByReference pins that a rotated env-backed
+// identity token, which short-lived OIDC tokens always are, leaves an unchanged config.json key's
+// hash alone, while a real edit to the block still moves it.
+func TestGenerateKeyHash_AnthropicWorkloadIdentityHashesByReference(t *testing.T) {
+	build := func(token, workspace string) schemas.Key {
+		wif := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+			OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+			IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(token)},
+		}
+		if workspace != "" {
+			wif.WorkspaceID = schemas.NewSecretVar(workspace)
+		}
+		return schemas.Key{ID: "k1", Name: "anthropic-wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: wif}}
+	}
+	t.Setenv("HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "jwt-v1")
+	before, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", ""))
+	require.NoError(t, err)
+	t.Setenv("HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "jwt-v2")
+	after, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", ""))
+	require.NoError(t, err)
+	require.Equal(t, before, after, "rotating the env-backed identity token changed the hash of an unchanged file")
+
+	withWorkspace, err := GenerateKeyHash(build("env.HASH_TEST_ANTHROPIC_IDENTITY_TOKEN", "wrkspc_01ghi"))
+	require.NoError(t, err)
+	require.NotEqual(t, before, withWorkspace, "adding a workspace is an edit")
+
+	literal, err := GenerateKeyHash(build("jwt-v2", ""))
+	require.NoError(t, err)
+	require.NotEqual(t, after, literal, "switching between a reference and a literal is an edit")
+
+	plain, err := GenerateKeyHash(schemas.Key{ID: "k1", Name: "anthropic-wif"})
+	require.NoError(t, err)
+	require.NotEqual(t, plain, before, "adding the block is an edit")
+}
+
 // TestGenerateKeyHash_AliasesIsOrderIndependent pins the same property for aliases, which is
 // also a map: a key whose only change is the encoder's walk order must not be treated as edited.
 func TestGenerateKeyHash_AliasesIsOrderIndependent(t *testing.T) {
@@ -231,7 +269,166 @@ func TestKeyHashMatchesLegacyAliasOrder(t *testing.T) {
 	require.NoError(t, err)
 	ok, err = KeyHashMatchesLegacyAliasOrder(many, manyLegacy)
 	require.NoError(t, err)
-	require.False(t, ok, "above maxLegacyAliasPermutations the search is skipped and the file wins")
+	require.False(t, ok, "above maxLegacyMapPermutations the search is skipped and the file wins")
+}
+
+// TestGenerateConfigHash_SortedOverridesMarker pins which providers carry the sorted-overrides
+// marker: only custom providers with two or more overrides, whose encoding changed. Every
+// other provider keeps the hash older builds stored, so upgrading does not look like an edit.
+func TestGenerateConfigHash_SortedOverridesMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cfg    *ProviderConfig
+		marked bool
+	}{
+		{"not custom", &ProviderConfig{}, false},
+		{"no overrides", customProviderWithOverrides(), false},
+		{"one override", customProviderWithOverrides("a"), false},
+		{"two overrides", customProviderWithOverrides("a", "b"), true},
+		{"above the search bound", customProviderWithOverrides("a", "b", "c", "d", "e", "f", "g", "h"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, err := tc.cfg.GenerateConfigHash("custom")
+			require.NoError(t, err)
+			require.Equal(t, tc.marked, strings.HasSuffix(h, SortedOverridesConfigHashMarker))
+			if !tc.marked && tc.cfg.CustomProviderConfig != nil {
+				legacy, err := tc.cfg.LegacyOverrideOrderConfigHash("custom", sortedOverrideNames(tc.cfg))
+				require.NoError(t, err)
+				require.Equal(t, legacy, h, "a provider whose encoding did not change keeps its stored hash")
+			}
+		})
+	}
+}
+
+func sortedOverrideNames(p *ProviderConfig) []schemas.RequestType {
+	names := make([]schemas.RequestType, 0, len(p.CustomProviderConfig.RequestPathOverrides))
+	for name := range p.CustomProviderConfig.RequestPathOverrides {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
+}
+
+// customProviderWithOverrides builds a custom provider config whose request_path_overrides
+// holds one entry per named request type.
+func customProviderWithOverrides(names ...schemas.RequestType) *ProviderConfig {
+	overrides := map[schemas.RequestType]string{}
+	for _, name := range names {
+		overrides[name] = "/custom/" + string(name)
+	}
+	return &ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{
+		BaseProviderType:     schemas.OpenAI,
+		AllowedRequests:      &schemas.AllowedRequests{ChatCompletion: true},
+		RequestPathOverrides: overrides,
+	}}
+}
+
+// TestGenerateConfigHash_RequestPathOverridesOrderIndependent pins that the provider hash
+// does not depend on map iteration order: an unchanged custom provider with several
+// overrides must hash the same on every call, or reconciliation sees a file edit.
+func TestGenerateConfigHash_RequestPathOverridesOrderIndependent(t *testing.T) {
+	p := customProviderWithOverrides("a", "b", "c", "d", "e", "f")
+	want, err := p.GenerateConfigHash("custom")
+	require.NoError(t, err)
+	for i := 0; i < 40; i++ {
+		got, err := p.GenerateConfigHash("custom")
+		require.NoError(t, err)
+		require.Equal(t, want, got, "iteration %d: the hash must not depend on map iteration order", i)
+	}
+}
+
+// TestLegacyOverrideOrderConfigHash_ReproducesTheUnsortedEncoding pins that the legacy hash
+// is rebuilt from the exact bytes sonic.Marshal used to feed the hasher before overrides were
+// sorted: for two overrides sonic emits one of two orders, and one of them must be ours.
+func TestLegacyOverrideOrderConfigHash_ReproducesTheUnsortedEncoding(t *testing.T) {
+	cfg := customProviderWithOverrides("chat_completion", "embedding").CustomProviderConfig
+	unsorted, err := sonic.Marshal(cfg)
+	require.NoError(t, err)
+	matched := false
+	for _, order := range [][]schemas.RequestType{{"chat_completion", "embedding"}, {"embedding", "chat_completion"}} {
+		legacy, err := legacyCustomProviderConfigBytes(cfg, order)
+		require.NoError(t, err)
+		if string(legacy) == string(unsorted) {
+			matched = true
+		}
+	}
+	require.True(t, matched, "no legacy ordering reproduces sonic's unsorted bytes %s", unsorted)
+}
+
+// TestConfigHashMatchesLegacyOverrideOrder pins the upgrade path for custom providers stored
+// before request_path_overrides hashing was sorted, mirroring the alias one: a config_hash
+// produced under any override order is recognised as this unchanged provider, a real edit is
+// not, a single override needs no search, and the search is bounded.
+func TestConfigHashMatchesLegacyOverrideOrder(t *testing.T) {
+	p := customProviderWithOverrides("a", "b", "c", "d")
+	sorted, err := p.GenerateConfigHash("custom")
+	require.NoError(t, err)
+
+	identity, err := p.LegacyOverrideOrderConfigHash("custom", []schemas.RequestType{"a", "b", "c", "d"})
+	require.NoError(t, err)
+	require.Equal(t, identity+SortedOverridesConfigHashMarker, sorted, "the sorted order is one of the legacy orders; the sorted hash only adds the marker")
+
+	for _, order := range [][]schemas.RequestType{{"d", "c", "b", "a"}, {"b", "d", "a", "c"}} {
+		legacy, err := p.LegacyOverrideOrderConfigHash("custom", order)
+		require.NoError(t, err)
+		require.NotEqual(t, sorted, legacy, "order %v must hash differently from the sorted form", order)
+		ok, err := p.ConfigHashMatchesLegacyOverrideOrder("custom", legacy)
+		require.NoError(t, err)
+		require.True(t, ok, "legacy hash for order %v must be recognised", order)
+	}
+
+	ok, err := p.ConfigHashMatchesLegacyOverrideOrder("custom", mustLegacyConfigHash(t, p, "other", "d", "c", "b", "a"))
+	require.NoError(t, err)
+	require.False(t, ok, "another provider's hash must not match")
+
+	edited := customProviderWithOverrides("a", "b", "c", "d")
+	edited.CustomProviderConfig.IsKeyLess = true
+	ok, err = p.ConfigHashMatchesLegacyOverrideOrder("custom", mustLegacyConfigHash(t, edited, "custom", "d", "c", "b", "a"))
+	require.NoError(t, err)
+	require.False(t, ok, "a real file edit must still be detected under every legacy order")
+
+	ok, err = customProviderWithOverrides("a").ConfigHashMatchesLegacyOverrideOrder("custom", "not-a-hash")
+	require.NoError(t, err)
+	require.False(t, ok, "a single override has one encoding, so a mismatch is a real change")
+
+	ok, err = (&ProviderConfig{}).ConfigHashMatchesLegacyOverrideOrder("custom", "not-a-hash")
+	require.NoError(t, err)
+	require.False(t, ok, "a provider that is not custom has nothing to search")
+
+	many := customProviderWithOverrides("a", "b", "c", "d", "e", "f", "g", "h")
+	ok, err = many.ConfigHashMatchesLegacyOverrideOrder("custom", mustLegacyConfigHash(t, many, "custom", "h", "g", "f", "e", "d", "c", "b", "a"))
+	require.NoError(t, err)
+	require.False(t, ok, "above maxLegacyMapPermutations the search is skipped and the file wins")
+
+	ok, err = p.ConfigHashMatchesLegacyOverrideOrder("custom", "deadbeef"+SortedOverridesConfigHashMarker)
+	require.NoError(t, err)
+	require.False(t, ok, "a stored hash carrying the sorted marker is never a legacy hash")
+}
+
+// TestConfigHashLegacyOverrideOrderUnverifiable pins when reconciliation must stop trusting a
+// hash mismatch: only for a stored hash on a custom provider with more overrides than the
+// legacy search covers. Within the bound the search decides, and a provider without overrides
+// never had an unsorted encoding.
+func TestConfigHashLegacyOverrideOrderUnverifiable(t *testing.T) {
+	names := func(n int) []schemas.RequestType {
+		out := make([]schemas.RequestType, n)
+		for i := range out {
+			out[i] = schemas.RequestType(string(rune('a' + i)))
+		}
+		return out
+	}
+	require.False(t, customProviderWithOverrides(names(maxLegacyMapPermutations)...).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "the search covers up to the bound")
+	require.True(t, customProviderWithOverrides(names(maxLegacyMapPermutations+1)...).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "above the bound the stored hash cannot be verified")
+	require.False(t, customProviderWithOverrides(names(maxLegacyMapPermutations+1)...).ConfigHashLegacyOverrideOrderUnverifiable(""), "a provider with no stored hash has nothing to verify")
+	require.False(t, customProviderWithOverrides(names(maxLegacyMapPermutations+1)...).ConfigHashLegacyOverrideOrderUnverifiable("stored"+SortedOverridesConfigHashMarker), "a sorted-era hash is verified by direct compare, so a mismatch is a real edit")
+	require.False(t, (&ProviderConfig{}).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "a provider that is not custom has no overrides")
+}
+
+func mustLegacyConfigHash(t *testing.T, p *ProviderConfig, providerName string, order ...schemas.RequestType) string {
+	t.Helper()
+	h, err := p.LegacyOverrideOrderConfigHash(providerName, order)
+	require.NoError(t, err)
+	return h
 }
 
 // TestGenerateMCPClientHash_OpenAPIConfig pins which openapi_config fields take
@@ -317,4 +514,172 @@ func TestGenerateMCPClientHash_OpenAPIConfig(t *testing.T) {
 	after, err := GenerateMCPClientHash(plain)
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
+}
+
+// TestGenerateMCPClientHash_MaxProtocolVersion: an omitted cap leaves stored hashes as they were,
+// a declared one drifts the hash so a config.json edit is synced.
+func TestGenerateMCPClientHash_MaxProtocolVersion(t *testing.T) {
+	hash := func(version string) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", MaxProtocolVersion: version})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+	assert.Equal(t, before, hash(""))
+	assert.NotEqual(t, before, hash(schemas.MCPProtocolVersion20250618))
+	assert.NotEqual(t, hash(schemas.MCPProtocolVersion20250618), hash(schemas.MCPMaxProtocolVersionAuto))
+}
+
+// Unset allow-lists leave the hash as it was; [] and a list each drift it, so editing them in
+// config.json is reconciled.
+func TestGenerateMCPClientHash_ExposeLists(t *testing.T) {
+	hash := func(prompts, resources schemas.WhiteList) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", PromptsToExpose: prompts, ResourcesToExpose: resources})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+	assert.Equal(t, before, hash(nil, nil))
+	assert.NotEqual(t, before, hash(schemas.WhiteList{}, nil))
+	assert.NotEqual(t, hash(schemas.WhiteList{}, nil), hash(schemas.WhiteList{"review"}, nil))
+	assert.NotEqual(t, hash(schemas.WhiteList{"review"}, nil), hash(nil, schemas.WhiteList{"review"}), "the two lists hash apart")
+	assert.NotEqual(t, hash(schemas.WhiteList{"review,approve"}, nil), hash(schemas.WhiteList{"review", "approve"}, nil), "entry boundaries count")
+}
+
+// TestGenerateMCPClientHash_PerUserDiscovery pins the flag's hash contract:
+// unset and false contribute nothing (a stored hash from before the field
+// existed must keep matching a file entry that still omits it), and true
+// drifts the hash so flipping per_user_discovery in config.json triggers
+// reconciliation.
+func TestGenerateMCPClientHash_PerUserDiscovery(t *testing.T) {
+	base := func(perUserDiscovery *bool) tables.TableMCPClient {
+		return tables.TableMCPClient{
+			Name:             "client",
+			ConnectionType:   "http",
+			AuthType:         "per_user_headers",
+			PerUserDiscovery: perUserDiscovery,
+		}
+	}
+
+	unsetHash, err := GenerateMCPClientHash(base(nil))
+	require.NoError(t, err)
+	offHash, err := GenerateMCPClientHash(base(schemas.Ptr(false)))
+	require.NoError(t, err)
+	onHash, err := GenerateMCPClientHash(base(schemas.Ptr(true)))
+	require.NoError(t, err)
+
+	assert.Equal(t, unsetHash, offHash, "an omitted per_user_discovery must hash like false")
+	assert.NotEqual(t, offHash, onHash, "flipping per_user_discovery must drift the hash")
+}
+
+// TestGenerateMCPClientHash_CodeMode: is_code_mode_client false and an inherited server_type_on_slug leave
+// stored hashes as they were; turning code mode on, or overriding it on the slug, drifts the hash so a
+// config.json edit is synced.
+func TestGenerateMCPClientHash_CodeMode(t *testing.T) {
+	hash := func(codeMode bool, slug schemas.MCPServerTypeOnSlug) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", IsCodeModeClient: codeMode, ServerTypeOnSlug: slug})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+
+	inherit, enabled, disabled := schemas.MCPServerTypeOnSlugInherit, schemas.MCPServerTypeOnSlugEnabled, schemas.MCPServerTypeOnSlugDisabled
+	assert.Equal(t, before, hash(false, inherit), "code mode off and inherited must not move existing stored hashes")
+	assert.NotEqual(t, before, hash(true, inherit), "turning is_code_mode_client on must drift the hash")
+	assert.NotEqual(t, before, hash(false, enabled), "an enabled override must drift the hash")
+	assert.NotEqual(t, before, hash(false, disabled), "a disabled override must drift the hash")
+	assert.NotEqual(t, hash(false, enabled), hash(false, disabled), "enabled and disabled hash apart")
+	assert.NotEqual(t, hash(true, inherit), hash(false, enabled), "code mode everywhere and only on the slug hash apart")
+}
+
+// TestMCPClientHashMatchesLegacy: a hash stored by a build that did not hash is_code_mode_client, or
+// tool_pricing, is recognised for the same client, and nothing else is, so a real config.json edit is never
+// mistaken for it. Every older formula left the prices out, so a code-mode client stored before code mode
+// was hashed matches with neither.
+func TestMCPClientHashMatchesLegacy(t *testing.T) {
+	hash := func(m tables.TableMCPClient) string {
+		t.Helper()
+		h, err := GenerateMCPClientHash(m)
+		require.NoError(t, err)
+		return h
+	}
+	match := func(m tables.TableMCPClient, stored string, storedCodeMode bool) bool {
+		t.Helper()
+		ok, err := MCPClientHashMatchesLegacy(m, stored, storedCodeMode)
+		require.NoError(t, err)
+		return ok
+	}
+	row := tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", IsCodeModeClient: true, ToolsToExecute: []string{"*"}}
+	without := func(codeMode bool, prices map[string]float64) tables.TableMCPClient {
+		m := row
+		m.IsCodeModeClient = codeMode
+		m.ToolPricing = prices
+		return m
+	}
+	prices := map[string]float64{"search": 0.25}
+	priced := without(true, prices)
+	preCodeMode := hash(without(false, nil))
+	prePricing := hash(without(true, nil))
+	require.NotEqual(t, preCodeMode, hash(row), "fixture check: the formula changed for a code-mode client")
+	require.NotEqual(t, prePricing, hash(priced), "fixture check: the formula changed for a priced client")
+
+	// Code mode alone, as before tool_pricing joined the hash.
+	assert.True(t, match(row, preCodeMode, true), "the same code-mode client under the old formula")
+	assert.False(t, match(row, hash(row), true), "a current hash is not a legacy one")
+	assert.False(t, match(row, "", true), "no stored hash")
+	assert.False(t, match(without(false, nil), preCodeMode, false), "a client without code mode hashes the same under both formulas")
+	assert.False(t, match(row, preCodeMode, false), "config.json turning code mode on for a stored client without it is a file edit")
+	edited := row
+	edited.ToolsToExecute = []string{"echo"}
+	assert.False(t, match(edited, preCodeMode, true), "a real config.json edit is not a legacy hash")
+
+	// Tool pricing, alone and with code mode.
+	assert.True(t, match(priced, prePricing, true), "a priced code-mode client hashed without its prices")
+	assert.True(t, match(without(false, prices), hash(without(false, nil)), false), "a priced client without code mode hashed without its prices")
+	assert.True(t, match(priced, preCodeMode, true), "a priced code-mode client hashed without prices or code mode")
+	assert.False(t, match(priced, preCodeMode, false), "config.json turning code mode on is a file edit, priced or not")
+	assert.False(t, match(priced, hash(without(false, prices)), true), "no build hashed prices without code mode")
+	assert.False(t, match(priced, hash(priced), true), "a current priced hash is not a legacy one")
+	pricedEdit := without(true, prices)
+	pricedEdit.ToolsToExecute = []string{"echo"}
+	assert.False(t, match(pricedEdit, prePricing, true), "adding prices together with another edit is a file edit")
+	assert.Equal(t, prices, priced.ToolPricing, "the caller's row keeps its prices")
+}
+
+// TestGenerateMCPClientHash_ToolPricing: tool prices drift the hash, so a price edited in config.json is a
+// config change, while a client without prices keeps the hash it had before prices were hashed. Prices hash
+// in tool order, so the same prices hash alike however their map was built.
+func TestGenerateMCPClientHash_ToolPricing(t *testing.T) {
+	hash := func(prices map[string]float64) string {
+		t.Helper()
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", ToolPricing: prices})
+		require.NoError(t, err)
+		return h
+	}
+	unpriced := hash(nil)
+	assert.Equal(t, unpriced, hash(map[string]float64{}), "an empty price list hashes as none")
+	priced := hash(map[string]float64{"search": 0.25})
+	assert.NotEqual(t, unpriced, priced, "adding a price is a change")
+	assert.NotEqual(t, priced, hash(map[string]float64{"search": 0.5}), "changing only a price is a change")
+	assert.NotEqual(t, priced, hash(map[string]float64{"fetch": 0.25}), "pricing another tool is a change")
+	assert.NotEqual(t, hash(map[string]float64{"a": 1, "b": 2}), hash(map[string]float64{"a": 2, "b": 1}), "a price stays tied to its tool")
+
+	tools := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"}
+	want := ""
+	for round := range 20 {
+		// Each round inserts the tools from a different start; maps also iterate in random order.
+		prices := make(map[string]float64, len(tools))
+		for i := range tools {
+			tool := tools[(round+i)%len(tools)]
+			prices[tool] = float64(len(tool)) / 100
+		}
+		got := hash(prices)
+		if want == "" {
+			want = got
+		}
+		require.Equal(t, want, got, "the same prices hash alike whatever order their map was built in")
+	}
 }

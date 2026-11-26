@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
 )
 
 func newFeedServer(t *testing.T, hits *atomic.Int32, body func() (int, string)) *httptest.Server {
@@ -31,7 +33,8 @@ func TestManagerCachesAndCoalesces(t *testing.T) {
 		<-release
 		return http.StatusOK, rss2Fixture
 	})
-	m := NewManagerWithClient(srv.Client())
+	m := managerForTest(t, srv.Client())
+	m.ttl = 300 * time.Millisecond
 
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -57,8 +60,7 @@ func TestManagerCachesAndCoalesces(t *testing.T) {
 		t.Fatalf("fresh entry should be served from cache, got %d fetches", got)
 	}
 
-	now := time.Now()
-	m.now = func() time.Time { return now.Add(DefaultTTL + time.Second) }
+	time.Sleep(m.ttl + 100*time.Millisecond)
 	if _, err := m.Get(context.Background(), srv.URL); err != nil {
 		t.Fatalf("expired Get: %v", err)
 	}
@@ -67,7 +69,6 @@ func TestManagerCachesAndCoalesces(t *testing.T) {
 	}
 
 	m.Forget(srv.URL)
-	m.now = time.Now
 	if _, err := m.Get(context.Background(), srv.URL); err != nil {
 		t.Fatalf("Get after Forget: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestManagerCachesAndCoalesces(t *testing.T) {
 func TestManagerSharedFetchIgnoresCallerCancellation(t *testing.T) {
 	var hits atomic.Int32
 	srv := newFeedServer(t, &hits, func() (int, string) { return http.StatusOK, rss2Fixture })
-	m := NewManagerWithClient(srv.Client())
+	m := managerForTest(t, srv.Client())
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -108,7 +109,7 @@ func TestManagerForgetDuringFetchDropsResult(t *testing.T) {
 		}
 		return http.StatusOK, rss2Fixture
 	})
-	m := NewManagerWithClient(srv.Client())
+	m := managerForTest(t, srv.Client())
 
 	done := make(chan struct{})
 	go func() {
@@ -122,10 +123,7 @@ func TestManagerForgetDuringFetchDropsResult(t *testing.T) {
 	close(release)
 	<-done
 
-	m.mu.RLock()
-	_, cached := m.cache[srv.URL]
-	m.mu.RUnlock()
-	if cached {
+	if _, cached := m.cache.Get(srv.URL); cached {
 		t.Fatal("a fetch that was in flight when Forget ran must not repopulate the cache")
 	}
 	if _, err := m.Get(context.Background(), srv.URL); err != nil {
@@ -140,7 +138,7 @@ func TestManagerFetchErrors(t *testing.T) {
 	var hits atomic.Int32
 	status, payload := http.StatusOK, ""
 	srv := newFeedServer(t, &hits, func() (int, string) { return status, payload })
-	m := NewManagerWithClient(srv.Client())
+	m := managerForTest(t, srv.Client())
 
 	status, payload = http.StatusNotFound, "missing"
 	if _, err := m.Fetch(context.Background(), srv.URL); err == nil || !strings.Contains(err.Error(), "404") {
@@ -161,7 +159,8 @@ func TestManagerFetchErrors(t *testing.T) {
 func TestManagerCachesErrorsBriefly(t *testing.T) {
 	var hits atomic.Int32
 	srv := newFeedServer(t, &hits, func() (int, string) { return http.StatusInternalServerError, "" })
-	m := NewManagerWithClient(srv.Client())
+	m := managerForTest(t, srv.Client())
+	m.errTTL = 200 * time.Millisecond
 	if _, err := m.Get(context.Background(), srv.URL); err == nil {
 		t.Fatal("expected error")
 	}
@@ -171,8 +170,7 @@ func TestManagerCachesErrorsBriefly(t *testing.T) {
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("error should be cached, got %d fetches", got)
 	}
-	now := time.Now()
-	m.now = func() time.Time { return now.Add(errorTTL + time.Second) }
+	time.Sleep(m.errTTL + 100*time.Millisecond)
 	_, _ = m.Get(context.Background(), srv.URL)
 	if got := hits.Load(); got != 2 {
 		t.Fatalf("error entry should expire after errorTTL, got %d fetches", got)
@@ -180,7 +178,10 @@ func TestManagerCachesErrorsBriefly(t *testing.T) {
 }
 
 func TestNewManagerRefusesPrivateTargets(t *testing.T) {
-	m := NewManager()
+	m, err := NewManager(liveStoreForTest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, target := range []string{"http://127.0.0.1:1/feed", "http://169.254.169.254/latest/meta-data", "file:///etc/passwd"} {
 		// Loopback can clear URL validation (it permits local development
 		// hosts) but must still be refused by the dial-time guard.
@@ -189,4 +190,17 @@ func TestNewManagerRefusesPrivateTargets(t *testing.T) {
 			t.Errorf("%s: expected the target to be refused, got %v", target, err)
 		}
 	}
+}
+
+// liveStoreForTest returns a new, empty live store closed when the test ends.
+var liveStoreForTest = livestoretest.New
+
+// managerForTest returns a manager over a new live store that fetches through client.
+func managerForTest(t *testing.T, client *http.Client) *Manager {
+	t.Helper()
+	m, err := NewManagerWithClient(liveStoreForTest(t), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
 }

@@ -14,8 +14,8 @@ describe("isRedacted", () => {
 
 describe("getPasswordPolicyFailures", () => {
 	it.each([
-		["<redacted>", ["at least 12 characters", "one uppercase letter", "one number"]],
-		["[REDACTED]", ["at least 12 characters", "one lowercase letter", "one number"]],
+		["<redacted>", ["minLength", "uppercase", "number"]],
+		["[REDACTED]", ["minLength", "lowercase", "number"]],
 	])("validates a newly entered sentinel %s", (password, expectedFailures) => {
 		expect(getPasswordPolicyFailures(password, false)).toEqual(expectedFailures);
 	});
@@ -92,5 +92,14 @@ describe("isRequestTypeDisabled", () => {
 
 	it("allows everything when no base format is picked", () => {
 		expect(isRequestTypeDisabled(undefined, "decisions")).toBe(false);
+	});
+
+	it("offers passthrough only on bases whose passthrough route a custom provider can use", () => {
+		for (const base of ["openai", "anthropic", "gemini"] as const) {
+			expect(isRequestTypeDisabled(base, "passthrough")).toBe(false);
+			expect(isRequestTypeDisabled(base, "passthrough_stream")).toBe(false);
+		}
+		expect(isRequestTypeDisabled("cohere", "passthrough")).toBe(true);
+		expect(isRequestTypeDisabled("bedrock", "passthrough_stream")).toBe(true);
 	});
 });

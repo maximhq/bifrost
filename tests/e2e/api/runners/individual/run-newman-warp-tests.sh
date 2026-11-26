@@ -59,6 +59,9 @@ WARP_DB="${WARP_DB:-bifrost_warp_e2e}"
 # never forwards a caller's key unless allow_direct_keys is on and the request
 # sends x-bf-direct-key, which this server does not.
 WARP_UPSTREAM_BIFROST="${WARP_UPSTREAM_BIFROST%/}"
+# OSS locks /api behind the setup token while dashboard auth is not active, and
+# every Warp route lives under /api/warp. The server and newman share one value.
+SETUP_TOKEN="${BIFROST_E2E_SETUP_TOKEN:-${BIFROST_SETUP_TOKEN:-bifrost-e2e-setup-token}}"
 REPORTERS="cli"
 VERBOSE=""
 BAIL=""
@@ -213,7 +216,7 @@ EOF
 start_bifrost() {
     write_config "$WORK_DIR"
     local log="$WORK_DIR/server.log"
-    "$BIFROST_BINARY" --app-dir "$WORK_DIR" --port "$PORT" --log-level info > "$log" 2>&1 &
+    BIFROST_SETUP_TOKEN="$SETUP_TOKEN" "$BIFROST_BINARY" --app-dir "$WORK_DIR" --port "$PORT" --log-level info > "$log" 2>&1 &
     SERVER_PID=$!
     local elapsed=0
     while [ $elapsed -lt 90 ]; do
@@ -238,8 +241,12 @@ echo -e "${YELLOW}Seeding logs...${NC}"
     echo -e "${RED}Error: seeding failed${NC}"; cat "$WORK_DIR/seed.log"; exit 1; }
 grep -E "^(inserted|refreshed|incident window)" "$WORK_DIR/seed.log" || true
 
-cmd=(newman run "$COLLECTION"
+SETUP_COLLECTION="$WORK_DIR/$(basename "$COLLECTION" .postman_collection.json)-setup-token.postman_collection.json"
+node "$SCRIPT_DIR/../add-setup-token-header.mjs" "$COLLECTION" "$SETUP_COLLECTION"
+
+cmd=(newman run "$SETUP_COLLECTION"
     --env-var "base_url=http://localhost:$PORT"
+    --env-var "setup_token=$SETUP_TOKEN"
     --env-var "warp_model=$WARP_MODEL"
     --env-var "warp_embedding_model=$WARP_EMBEDDING_MODEL"
     --env-var "warp_namespace=$WARP_NAMESPACE"

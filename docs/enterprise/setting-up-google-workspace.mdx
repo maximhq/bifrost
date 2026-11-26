@@ -18,7 +18,7 @@ You can run login-only (no service account) or full provisioning (with service a
 - A Google Workspace domain with **Super Admin** access to the Admin console
 - A Google Cloud project where you can create OAuth clients and service accounts
 - Bifrost Enterprise deployed and accessible
-- The redirect URI for your Bifrost instance (e.g. `https://your-bifrost-domain.com/login`)
+- The redirect URI for your Bifrost instance (e.g. `https://your-bifrost-domain.com/login`, or `https://your-bifrost-domain.com/<prefix>/login` under a `server.base_path`)
 - Bifrost [roles](./rbac) created for the roles you plan to map
 
 ---
@@ -53,7 +53,7 @@ You can run login-only (no service account) or full provisioning (with service a
 | **Application type** | Web application |
 | **Name** | Bifrost Enterprise |
 | **Authorized JavaScript origins** | `https://your-bifrost-domain.com` |
-| **Authorized redirect URIs** | `https://your-bifrost-domain.com/login` |
+| **Authorized redirect URIs** | `https://your-bifrost-domain.com/login` (or `https://your-bifrost-domain.com/<prefix>/login` under a `server.base_path`) |
 
 3. Save and copy the **Client ID** and **Client Secret**.
 
