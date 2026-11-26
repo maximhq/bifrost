@@ -533,6 +533,11 @@ func (s *streamBody) drainForReuse(ctx context.Context, timeout time.Duration, m
 	return nil
 }
 
+// testHookGenericDrainGuardStart runs at the start of drainStreamingBody's
+// generic timeout/cancel callback before its ownership CAS. Nil outside tests;
+// lets a test pause an already-dispatched callback while io.Copy finishes.
+var testHookGenericDrainGuardStart func()
+
 // drainStreamingBody bounds the post-stream body drain by both wall-clock time
 // and byte count while honoring ctx cancellation. Returns abandoned=true when a
 // non-streamBody reader had to be force-closed with an error so the caller skips
@@ -545,9 +550,22 @@ func drainStreamingBody(ctx context.Context, timeout time.Duration, bodyStream i
 		return false, sb.drainForReuse(ctx, timeout, maxStreamDrainBytes)
 	}
 
-	var closedByGuard atomic.Bool
+	const (
+		drainRunning   = 0
+		drainCompleted = 1 // io.Copy returned first; caller owns close/release
+		drainAborted   = 2 // guard won; callback owns closeBodyStream
+	)
+	var state atomic.Int32
+	guardDone := make(chan struct{})
+	hook := testHookGenericDrainGuardStart
 	closeOnce := sync.OnceFunc(func() {
-		closedByGuard.Store(true)
+		defer close(guardDone)
+		if hook != nil {
+			hook()
+		}
+		if !state.CompareAndSwap(drainRunning, drainAborted) {
+			return
+		}
 		closeErr := errStreamDrainIncomplete
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			closeErr = ctxErr
@@ -555,20 +573,21 @@ func drainStreamingBody(ctx context.Context, timeout time.Duration, bodyStream i
 		closeBodyStream(bodyStream, closeErr)
 	})
 	timer := time.AfterFunc(timeout, closeOnce)
-	defer timer.Stop()
 	var stopCancel func() bool
 	if ctx.Done() != nil {
 		stopCancel = context.AfterFunc(ctx, closeOnce)
-		defer func() { _ = stopCancel() }()
 	}
 
 	n, copyErr := io.Copy(io.Discard, io.LimitReader(bodyStream, maxStreamDrainBytes+1))
-	timer.Stop()
-	if stopCancel != nil {
-		stopCancel()
-	}
-	if closedByGuard.Load() {
+	timerStopped := timer.Stop()
+	cancelStopped := stopCancel == nil || stopCancel()
+
+	if !state.CompareAndSwap(drainRunning, drainCompleted) {
+		<-guardDone
 		return true, errStreamDrainIncomplete
+	}
+	if !timerStopped || !cancelStopped {
+		<-guardDone
 	}
 	if copyErr != nil {
 		closeBodyStream(bodyStream, copyErr)

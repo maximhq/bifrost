@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -650,4 +651,128 @@ func TestReleaseStreamingResponse_OpenBodyAfterMarkerIsBoundedAndDiscarded(t *te
 			t.Fatalf("open connections = %d, want 0 after cancelled drain", got)
 		}
 	})
+}
+
+type synchronizedGenericBody struct {
+	onRead     func() (int, error)
+	onClose    func(error)
+	closeCount atomic.Int32
+}
+
+func (b *synchronizedGenericBody) Read([]byte) (int, error) {
+	return b.onRead()
+}
+
+func (b *synchronizedGenericBody) CloseWithError(err error) error {
+	b.closeCount.Add(1)
+	if b.onClose != nil {
+		b.onClose(err)
+	}
+	return nil
+}
+
+// TestReleaseStreamingResponse_GenericBodyGuardCallbackSynchronized forces the
+// race between io.Copy returning on a generic (non-*streamBody) reader and an
+// already-dispatched timer/cancel callback, confirming ReleaseStreamingResponse
+// waits for the callback and never double-closes the stream.
+func TestReleaseStreamingResponse_GenericBodyGuardCallbackSynchronized(t *testing.T) {
+	for _, viaTimer := range []bool{false, true} {
+		mode := "cancel_callback"
+		if viaTimer {
+			mode = "timer_callback"
+		}
+		t.Run(mode+"_drain_finishes_before_callback_claims", func(t *testing.T) {
+			guardStarted := make(chan struct{})
+			releaseGuard := make(chan struct{})
+			var startedOnce sync.Once
+			testHookGenericDrainGuardStart = func() {
+				startedOnce.Do(func() { close(guardStarted) })
+				<-releaseGuard
+			}
+			t.Cleanup(func() { testHookGenericDrainGuardStart = nil })
+
+			inRead := make(chan struct{})
+			var readOnce sync.Once
+			body := &synchronizedGenericBody{
+				onRead: func() (int, error) {
+					readOnce.Do(func() { close(inRead) })
+					<-guardStarted
+					go func() {
+						time.Sleep(15 * time.Millisecond)
+						close(releaseGuard)
+					}()
+					return 0, io.EOF
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if viaTimer {
+				ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 5*time.Millisecond)
+			} else {
+				go func() {
+					<-inRead
+					cancel()
+				}()
+			}
+
+			resp := fasthttp.AcquireResponse()
+			resp.SetBodyStream(body, -1)
+
+			// Note: when viaTimer is false, cancel() sets ctx.Err()!=nil before
+			// ReleaseStreamingResponse if called too early, so only cancel once Read is active.
+			ReleaseStreamingResponse(ctx, resp)
+
+			if got := body.closeCount.Load(); got != 1 {
+				t.Fatalf("closeCount immediately after ReleaseStreamingResponse = %d, want 1", got)
+			}
+			time.Sleep(25 * time.Millisecond)
+			if got := body.closeCount.Load(); got != 1 {
+				t.Fatalf("closeCount after delayed callback window = %d, want 1 (late double-close)", got)
+			}
+		})
+
+		t.Run(mode+"_callback_claims_while_close_in_flight", func(t *testing.T) {
+			inRead := make(chan struct{})
+			unblockRead := make(chan struct{})
+			var readOnce, unblockOnce sync.Once
+			var closeFinished atomic.Bool
+
+			body := &synchronizedGenericBody{
+				onRead: func() (int, error) {
+					readOnce.Do(func() { close(inRead) })
+					<-unblockRead
+					return 0, io.EOF
+				},
+				onClose: func(error) {
+					unblockOnce.Do(func() { close(unblockRead) })
+					time.Sleep(20 * time.Millisecond)
+					closeFinished.Store(true)
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if viaTimer {
+				ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 5*time.Millisecond)
+			} else {
+				go func() {
+					<-inRead
+					cancel()
+				}()
+			}
+
+			resp := fasthttp.AcquireResponse()
+			resp.SetBodyStream(body, -1)
+
+			ReleaseStreamingResponse(ctx, resp)
+
+			if !closeFinished.Load() {
+				t.Fatal("ReleaseStreamingResponse returned before in-flight guard CloseWithError finished")
+			}
+			if got := body.closeCount.Load(); got != 1 {
+				t.Fatalf("closeCount = %d, want 1", got)
+			}
+		})
+	}
 }
