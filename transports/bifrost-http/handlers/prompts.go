@@ -347,14 +347,14 @@ func (h *PromptsHandler) deleteFolder(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !h.refreshPrompts(ctx, "Folder", "deleted", promptIDs, true) {
-		return
-	}
 	name := id
 	if existing != nil {
 		name = existing.Name
 	}
 	lib.RecordAuditChange(ctx, "prompt_folder.deleted", "prompt_folder", id, name, auditPromptFolder(existing), nil)
+	if !h.refreshPrompts(ctx, "Folder", "deleted", promptIDs, true) {
+		return
+	}
 	SendJSON(ctx, map[string]any{
 		"message": "folder deleted successfully",
 	})
@@ -453,10 +453,10 @@ func (h *PromptsHandler) createPrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "prompt.created", "prompt", prompt.ID, prompt.Name, nil, auditPrompt(prompt))
 	if !h.refreshPrompts(ctx, "Prompt", "created", []string{prompt.ID}, false) {
 		return
 	}
-	lib.RecordAuditChange(ctx, "prompt.created", "prompt", prompt.ID, prompt.Name, nil, auditPrompt(prompt))
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -531,10 +531,10 @@ func (h *PromptsHandler) updatePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "prompt.updated", "prompt", prompt.ID, prompt.Name, before, auditPrompt(prompt))
 	if !h.refreshPrompts(ctx, "Prompt", "updated", []string{prompt.ID}, false) {
 		return
 	}
-	lib.RecordAuditChange(ctx, "prompt.updated", "prompt", prompt.ID, prompt.Name, before, auditPrompt(prompt))
 	SendJSON(ctx, map[string]any{
 		"prompt": prompt,
 	})
@@ -564,14 +564,14 @@ func (h *PromptsHandler) deletePrompt(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !h.refreshPrompts(ctx, "Prompt", "deleted", []string{id}, true) {
-		return
-	}
 	name := id
 	if existing != nil {
 		name = existing.Name
 	}
 	lib.RecordAuditChange(ctx, "prompt.deleted", "prompt", id, name, auditPrompt(existing), nil)
+	if !h.refreshPrompts(ctx, "Prompt", "deleted", []string{id}, true) {
+		return
+	}
 	SendJSON(ctx, map[string]any{
 		"message": "prompt deleted successfully",
 	})
@@ -709,10 +709,10 @@ func (h *PromptsHandler) createVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "prompt_version.created", "prompt_version", strconv.FormatUint(uint64(version.ID), 10), promptVersionAuditName(prompt.Name, version), nil, auditPromptVersion(version))
 	if !h.refreshPrompts(ctx, "Prompt version", "created", []string{version.PromptID}, false) {
 		return
 	}
-	lib.RecordAuditChange(ctx, "prompt_version.created", "prompt_version", strconv.FormatUint(uint64(version.ID), 10), promptVersionAuditName(prompt.Name, version), nil, auditPromptVersion(version))
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})
@@ -757,9 +757,6 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !h.refreshPrompts(ctx, "Prompt version", "deleted", []string{existing.PromptID}, false) {
-		return
-	}
 	name := idStr
 	if existing != nil {
 		promptName := existing.PromptID
@@ -769,6 +766,9 @@ func (h *PromptsHandler) deleteVersion(ctx *fasthttp.RequestCtx) {
 		name = promptVersionAuditName(promptName, existing)
 	}
 	lib.RecordAuditChange(ctx, "prompt_version.deleted", "prompt_version", idStr, name, auditPromptVersion(existing), nil)
+	if !h.refreshPrompts(ctx, "Prompt version", "deleted", []string{existing.PromptID}, false) {
+		return
+	}
 	SendJSON(ctx, map[string]any{
 		"message": "version deleted successfully",
 	})
@@ -939,10 +939,10 @@ func (h *PromptsHandler) createSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "prompt_session.created", "prompt_session", strconv.FormatUint(uint64(session.ID), 10), promptSessionAuditName(session), nil, auditPromptSession(session))
 	if !h.refreshPrompts(ctx, "Prompt session", "created", nil, false) {
 		return
 	}
-	lib.RecordAuditChange(ctx, "prompt_session.created", "prompt_session", strconv.FormatUint(uint64(session.ID), 10), promptSessionAuditName(session), nil, auditPromptSession(session))
 
 	SendJSON(ctx, map[string]any{
 		"session": session,
@@ -1011,10 +1011,10 @@ func (h *PromptsHandler) updateSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "prompt_session.updated", "prompt_session", idStr, promptSessionAuditName(session), before, auditPromptSession(session))
 	if !h.refreshPrompts(ctx, "Prompt session", "updated", nil, false) {
 		return
 	}
-	lib.RecordAuditChange(ctx, "prompt_session.updated", "prompt_session", idStr, promptSessionAuditName(session), before, auditPromptSession(session))
 
 	SendJSON(ctx, map[string]any{
 		"session": session,
@@ -1050,15 +1050,14 @@ func (h *PromptsHandler) deleteSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !h.refreshPrompts(ctx, "Prompt session", "deleted", nil, false) {
-		return
-	}
-
 	name := idStr
 	if existing != nil {
 		name = promptSessionAuditName(existing)
 	}
 	lib.RecordAuditChange(ctx, "prompt_session.deleted", "prompt_session", idStr, name, auditPromptSession(existing), nil)
+	if !h.refreshPrompts(ctx, "Prompt session", "deleted", nil, false) {
+		return
+	}
 	SendJSON(ctx, map[string]any{
 		"message": "session deleted successfully",
 	})
@@ -1105,13 +1104,12 @@ func (h *PromptsHandler) renameSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !h.refreshPrompts(ctx, "Prompt session", "renamed", nil, false) {
-		return
-	}
-
 	before := auditPromptSession(session)
 	session.Name = req.Name
 	lib.RecordAuditChange(ctx, "prompt_session.renamed", "prompt_session", idStr, promptSessionAuditName(session), before, auditPromptSession(session))
+	if !h.refreshPrompts(ctx, "Prompt session", "renamed", nil, false) {
+		return
+	}
 	SendJSON(ctx, map[string]any{
 		"session": session,
 	})
@@ -1216,9 +1214,6 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !h.refreshPrompts(ctx, "Prompt version", "committed", []string{version.PromptID}, false) {
-		return
-	}
 	lib.RecordAuditChange(ctx, "prompt_session.committed", "prompt_session", idStr, promptSessionAuditName(session), nil, map[string]any{
 		"session_id":     session.ID,
 		"prompt_id":      session.PromptID,
@@ -1229,6 +1224,9 @@ func (h *PromptsHandler) commitSession(ctx *fasthttp.RequestCtx) {
 		"model":          version.Model,
 		"message_count":  len(version.Messages),
 	})
+	if !h.refreshPrompts(ctx, "Prompt version", "committed", []string{version.PromptID}, false) {
+		return
+	}
 	SendJSON(ctx, map[string]any{
 		"version": version,
 	})

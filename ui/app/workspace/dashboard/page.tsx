@@ -1,17 +1,21 @@
 import { LogsFilterSidebar } from "@/components/filters/logsFilterSidebar";
+import { Button } from "@/components/ui/button";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
-import { useGetMCPAvailableFilterDataQuery } from "@/lib/store";
+import { useAppDispatch, useAppSelector, useGetMCPAvailableFilterDataQuery } from "@/lib/store";
+import { baseApi } from "@/lib/store/apis/baseApi";
 import type { LogFilters, MCPToolLogFilters } from "@/lib/types/logs";
 import { dateUtils } from "@/lib/types/logs";
 import { parseMetadataFiltersParam } from "@/lib/utils/metadataFilters";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { useLocation } from "@tanstack/react-router";
+import { RefreshCw } from "lucide-react";
 import { parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
-import { type RefObject, useCallback, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { type ChartType } from "./components/charts/chartTypeToggle";
 import { ModelFilterSelect } from "./components/charts/modelFilterSelect";
@@ -290,6 +294,9 @@ export default function DashboardPage() {
 	// Which scope the in-flight export covers; null when not exporting.
 	// "all" force-mounts every tab, a single tab exports only what is open.
 	const [exportScope, setExportScope] = useState<ExportTab | null>(null);
+	// Set when the export menu starts, before exportScope: the PDF flow awaits a frame and a module import first.
+	const [exportBusy, setExportBusy] = useState(false);
+	const handleExportStart = useCallback(() => setExportBusy(true), []);
 	const exportingAll = exportScope === "all";
 	/** True while this tab is part of the running export, so rankings render their uncapped snapshot. */
 	const isExportingTab = (tab: DashboardTab) => exportingAll || exportScope === tab;
@@ -504,7 +511,23 @@ export default function DashboardPage() {
 		hiddenTabsRef.current = [];
 
 		setExportScope(null);
+		setExportBusy(false);
 	}, []);
+
+	const dispatch = useAppDispatch();
+	const queriesPending = useAppSelector((state) => Object.values(state[baseApi.reducerPath].queries).some((q) => q?.status === "pending"));
+	const [refreshing, setRefreshing] = useState(false);
+	// Spins from the click until the refetches settle, with a short floor so a fast reply still shows feedback.
+	useEffect(() => {
+		if (!refreshing || queriesPending) return;
+		const id = setTimeout(() => setRefreshing(false), 400);
+		return () => clearTimeout(id);
+	}, [refreshing, queriesPending]);
+
+	const handleRefresh = useCallback(() => {
+		setRefreshing(true);
+		dispatch(baseApi.util.invalidateTags(["Logs", "MCPLogs"]));
+	}, [dispatch]);
 
 	const activeTab = (urlState.tab || "overview") as DashboardTab;
 
@@ -565,11 +588,28 @@ export default function DashboardPage() {
 								</TabsList>
 							</div>
 							<div className="flex shrink-0 flex-wrap items-center gap-2 lg:ml-auto">
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											variant="outline"
+											size="icon"
+											className="size-7.5"
+											onClick={handleRefresh}
+											disabled={refreshing || exportBusy || exportScope !== null}
+											data-testid="dashboard-refresh-btn"
+											aria-label={t("labels.refresh")}
+										>
+											<RefreshCw className={refreshing ? "h-4 w-4 animate-spin" : "h-4 w-4"} />
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent side="bottom">{t("labels.refresh")}</TooltipContent>
+								</Tooltip>
 								<ExportPopover
 									getData={getDashboardData}
 									activeTab={activeTab}
 									onPreloadData={handlePreloadData}
 									onPdfExport={handlePdfExport}
+									onExportStart={handleExportStart}
 									onExportDone={handleExportDone}
 								/>
 								{activeTab === "mcp" && mcpFilterData && (

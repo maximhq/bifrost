@@ -1230,7 +1230,7 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 					createReq.Provider = schemas.Gemini
 				}
 				if len(createReq.RawRequestBody) > 0 {
-					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+					enableGenAIRawRequestBodyRedaction(ctx)
 				}
 				return &CachedContentRequest{Type: schemas.CachedContentCreateRequest, CreateRequest: createReq}, nil
 			},
@@ -1584,6 +1584,65 @@ func enableGenAIRawRequestBodyRedaction(bifrostCtx *schemas.BifrostContext) {
 // Keeping the allowlist here preserves configuration and other native fields Guardrails did not inspect.
 func rewriteGenAIRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
 	return rewriteRawRequestTextFields(rawBody, replacements, collectGenAIRawRequestTextPaths)
+}
+
+// rewriteGeminiInteractionsRawRequestBody applies runtime replacements to the texts a Gemini Interactions create is read
+// for.
+func rewriteGeminiInteractionsRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectGeminiInteractionsRawRequestTextPaths)
+}
+
+// collectGeminiInteractionsRawRequestTextPaths selects the texts of an Interactions create that passthroughparse reads:
+// the system instruction, and the input as a string, a text part, a user or model step's text parts, or a function
+// result given as a string, a content list of text parts, or a free-form object (its string values, as for a Gemini
+// function response), alone or in a list.
+func collectGeminiInteractionsRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	var collectErr error
+	appendRawRequestTextPath(&paths, root.Get("system_instruction"), "system_instruction")
+	collectTextParts := func(parts gjson.Result, path string) {
+		parts.ForEach(func(index, part gjson.Result) bool {
+			if part.Get("type").String() == "text" {
+				appendRawRequestTextPath(&paths, part.Get("text"), rawRequestObjectPath(rawRequestArrayPath(path, int(index.Int())), "text"))
+			}
+			return true
+		})
+	}
+	collectItem := func(item gjson.Result, path string) {
+		switch item.Get("type").String() {
+		case "text":
+			appendRawRequestTextPath(&paths, item.Get("text"), rawRequestObjectPath(path, "text"))
+		case "user_input", "model_output":
+			collectTextParts(item.Get("content"), rawRequestObjectPath(path, "content"))
+		case "function_call":
+			// Only string values are collected, so it cannot fail.
+			_ = collectRawRequestArgumentStringPaths(&paths, item.Get("arguments"), rawRequestObjectPath(path, "arguments"))
+		case "function_result":
+			result, resultPath := item.Get("result"), rawRequestObjectPath(path, "result")
+			switch {
+			case result.Type == gjson.String:
+				paths = append(paths, resultPath)
+			case result.IsObject():
+				if err := appendRawRequestJSONLeafPaths(&paths, result, resultPath, replacements); err != nil && collectErr == nil {
+					collectErr = err
+				}
+			default:
+				collectTextParts(result, resultPath)
+			}
+		}
+	}
+	switch input := root.Get("input"); {
+	case input.Type == gjson.String:
+		paths = append(paths, "input")
+	case input.IsObject():
+		collectItem(input, "input")
+	case input.IsArray():
+		input.ForEach(func(index, item gjson.Result) bool {
+			collectItem(item, rawRequestArrayPath("input", int(index.Int())))
+			return true
+		})
+	}
+	return paths, collectErr
 }
 
 // collectGenAIRawRequestTextPaths enumerates flat and countTokens-enveloped Gemini content fields.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -324,4 +325,109 @@ func TestSQLiteReclaimSpace_EmptyFreelistDoesNotWaitForWriter(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, released)
 	require.Less(t, time.Since(start), time.Second)
+}
+
+// TestSQLiteReclaimSpace_WALShrinksAfterBusyReclaim pins that a reclaim run
+// while readers and writers are busy does not leave logs.db-wal at its peak:
+// the pages it moves can grow the WAL far past its usual size, and once a later
+// checkpoint resets it the file must be cut back to the journal size limit
+// instead of staying that large until the store is closed.
+func TestSQLiteReclaimSpace_WALShrinksAfterBusyReclaim(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "logs.db")
+	walPath := path + "-wal"
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: path}, testLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+
+	var limit int64
+	require.NoError(t, store.db.Raw("PRAGMA journal_size_limit").Scan(&limit).Error)
+	require.EqualValues(t, sqliteJournalSizeLimit, limit, "every pooled connection must carry the journal size limit")
+
+	seedExpiredLogs(t, store, 60000, 3)
+	drainRetention(t, store)
+
+	insert := func(id string) error {
+		now := time.Now().UTC()
+		return store.Create(ctx, &Log{ID: id, Timestamp: now, CreatedAt: now, Provider: "openai", Model: "gpt-4o", Status: "success", Object: "chat.completion", InputHistory: strings.Repeat("y", 2000)})
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var writerErr, readerErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if err := insert(fmt.Sprintf("during-%d", i)); err != nil {
+				writerErr = err
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			var n int64
+			if err := store.db.Raw("SELECT count(*) FROM logs").Scan(&n).Error; err != nil {
+				readerErr = err
+				return
+			}
+		}
+	}()
+	// A read that stays open across the reclaim, like a slow dashboard query,
+	// keeps every checkpoint from resetting the WAL until it ends.
+	snapshot := store.db.Begin()
+	require.NoError(t, snapshot.Error)
+	var seen int64
+	require.NoError(t, snapshot.Raw("SELECT count(*) FROM logs").Scan(&seen).Error)
+	released, err := store.ReclaimSpace(ctx, 500)
+	walPeak, statErr := os.Stat(walPath)
+	snapshot.Rollback()
+	close(stop)
+	wg.Wait()
+	require.NoError(t, err)
+	require.NoError(t, writerErr)
+	require.NoError(t, readerErr)
+	require.Positive(t, released)
+	require.NoError(t, statErr)
+	require.Greater(t, walPeak.Size(), int64(sqliteJournalSizeLimit), "the reclaim must push the WAL past the limit for this test to mean anything")
+
+	// Later traffic checkpoints the WAL through the auto-checkpoint and starts
+	// writing it from the top again; that reset is where the file is cut back.
+	for i := 0; i < 100; i++ {
+		require.NoError(t, insert(fmt.Sprintf("after-%d", i)))
+	}
+	st, err := os.Stat(walPath)
+	require.NoError(t, err)
+	t.Logf("logs.db-wal: %d bytes at the reclaim, %d after", walPeak.Size(), st.Size())
+	require.LessOrEqual(t, st.Size(), int64(sqliteJournalSizeLimit), "logs.db-wal stayed at %d bytes after the reclaim (peak %d)", st.Size(), walPeak.Size())
+}
+
+// BenchmarkSQLiteLogInsert measures one log insert on a pooled SQLite
+// connection, the write path every request's log takes.
+func BenchmarkSQLiteLogInsert(b *testing.B) {
+	ctx := context.Background()
+	store, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(b.TempDir(), "logs.db")}, testLogger{})
+	require.NoError(b, err)
+	b.Cleanup(func() { _ = store.Close(ctx) })
+	payload := strings.Repeat("x", 1000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		now := time.Now().UTC()
+		if err := store.Create(ctx, &Log{ID: fmt.Sprintf("bench-%d", i), Timestamp: now, CreatedAt: now, Provider: "openai", Model: "gpt-4o", Status: "success", Object: "chat.completion", InputHistory: payload}); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
