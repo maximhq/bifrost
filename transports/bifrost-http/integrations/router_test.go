@@ -2355,6 +2355,7 @@ type codexPassthroughReceipt struct {
 	skipKeySelection bool
 	skipModelCheck   bool
 	modelListFilter  schemas.PassthroughModelListFilter
+	literalModel     bool
 }
 
 // GetName identifies the isolated test plugin.
@@ -2375,6 +2376,7 @@ func (p *codexPassthroughReceipt) PreLLMHook(ctx *schemas.BifrostContext, req *s
 	p.skipKeySelection, _ = ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
 	p.skipModelCheck, _ = ctx.Value(schemas.BifrostContextKeySkipModelCheck).(bool)
 	p.modelListFilter, _ = ctx.Value(schemas.BifrostContextKeyPassthroughModelListFilter).(schemas.PassthroughModelListFilter)
+	p.literalModel, _ = ctx.Value(schemas.BifrostContextKeyPassthroughLiteralModel).(bool)
 	status := 403
 	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "synthetic policy denial"}}}, nil
 }

@@ -1568,6 +1568,7 @@ func TestBedrockControlPlaneOperationsReachCoreGoverned(t *testing.T) {
 				require.Equal(t, tc.wantModel, pt.Model)
 				require.Equal(t, tc.list, plugin.skipModelCheck, "only a list skips model allowlists")
 				require.Equal(t, tc.list, plugin.modelListFilter != nil, "only a list is trimmed to the caller's access")
+				require.True(t, plugin.literalModel, "the ids are forwarded as written, so key aliases must not widen the check")
 			})
 		}
 	}
@@ -1591,6 +1592,14 @@ func TestBedrockControlPlaneListFilterKeepsAllowedEntries(t *testing.T) {
 	got, err = models([]byte(`{"modelSummaries":[{"modelId":"amazon.titan-text-express-v1"},{"modelId":"anthropic.claude-3-haiku-20240307-v1:0"}]}`), allowed)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"modelSummaries":[{"modelId":"anthropic.claude-3-haiku-20240307-v1:0"}]}`, string(got))
+
+	// An allowlist may name a profile by its ARN: the entry is kept when either name is allowed.
+	byARN := func(model string) bool {
+		return model == "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc"
+	}
+	got, err = profiles([]byte(`{"inferenceProfileSummaries":[{"inferenceProfileId":"abc","inferenceProfileArn":"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc"},{"inferenceProfileId":"def","inferenceProfileArn":"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/def"}]}`), byARN)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"inferenceProfileSummaries":[{"inferenceProfileId":"abc","inferenceProfileArn":"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc"}]}`, string(got))
 
 	require.Nil(t, bedrock.ControlPlaneListFilter(fasthttp.MethodGet, "/foundation-models/anthropic.claude-v2"), "a get is checked against the allowlist, not trimmed")
 	require.Nil(t, bedrock.ControlPlaneListFilter(fasthttp.MethodPost, "/knowledgebases/KB12345678/retrieve"))

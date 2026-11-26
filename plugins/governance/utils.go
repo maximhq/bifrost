@@ -157,6 +157,11 @@ func (p *GovernancePlugin) filterPassthroughModelList(ctx *schemas.BifrostContex
 	if !ok || filter == nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return
 	}
+	// Ids a listing returns are used as written (a Bedrock inference profile id is never resolved
+	// through a key alias), so they are matched against the literal access when the route says so.
+	if access != nil && bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeyPassthroughLiteralModel) {
+		access = literalAccessFor(access, p.modelCatalog, p.inMemoryStore)
+	}
 	body, err := filter(resp.Body, func(model string) bool {
 		return access != nil && access.IsModelAllowed(provider, model)
 	})

@@ -260,7 +260,10 @@ func NewBedrockControlPlaneRouter(client *bifrost.Bifrost, handlerStore lib.Hand
 //     application inference profile, with the gateway's account id in its ARNs);
 //   - a get addresses one profile or model by id, which becomes the request's model, so it is checked
 //     against the allowlist like an invocation of it would be;
-//   - neither names a model in a "models/{x}" segment or a body, so the path is not parsed for one.
+//   - neither names a model in a "models/{x}" segment or a body, so the path is not parsed for one;
+//   - the ids are forwarded to AWS as written, never resolved through a key alias, so governance checks
+//     them against the literal access (LiteralModels): an alias of an allowed model does not let a key
+//     describe or list the aliased resource.
 //
 // A list names no model, so each page selects a key on its own. With Bedrock keys in more than one
 // account or region, a nextToken from one page may be presented with a different key on the next.
@@ -269,6 +272,7 @@ func withBedrockControlPlaneAccess(cfg *PassthroughConfig) *PassthroughConfig {
 	cfg.ModelList = bedrock.ControlPlaneListFilter
 	cfg.ResourceModel = bedrock.ControlPlaneResourceModel
 	cfg.NoPathModel = bedrock.IsControlPlaneListingPath
+	cfg.LiteralModels = true
 	return cfg
 }
 

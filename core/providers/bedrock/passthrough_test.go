@@ -73,6 +73,18 @@ func (p *passthroughTarget) key(apiKey string) schemas.Key {
 	return k
 }
 
+// controlPlaneOnly points the key's runtime and agent-runtime endpoints at a closed port, so a request sent
+// to any service but the control plane fails instead of reaching the target.
+func controlPlaneOnly(k schemas.Key) schemas.Key {
+	endpoints := *k.BedrockKeyConfig.Endpoints
+	endpoints.Runtime = schemas.NewSecretVar("127.0.0.1:1")
+	endpoints.AgentRuntime = schemas.NewSecretVar("127.0.0.1:1")
+	config := *k.BedrockKeyConfig
+	config.Endpoints = &endpoints
+	k.BedrockKeyConfig = &config
+	return k
+}
+
 func passthroughCtx(t *testing.T) *schemas.BifrostContext {
 	t.Helper()
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -559,7 +571,8 @@ func (l *passthroughTestLogger) LogHTTPRequest(level schemas.LogLevel, msg strin
 
 // AWS SDK clients pointed at the /bedrock integration call the read-only control-plane listings on the
 // same base URL as the runtime APIs (Claude Code calls ListInferenceProfiles at startup). They are
-// forwarded to the control-plane host, query string included, and AWS's JSON comes back untouched.
+// forwarded to the control-plane host and no other (the key's runtime endpoints are closed), query
+// string included, and AWS's JSON comes back untouched.
 func TestBedrockPassthroughForwardsControlPlaneListings(t *testing.T) {
 	cases := []struct {
 		name, path, query string
@@ -573,7 +586,7 @@ func TestBedrockPassthroughForwardsControlPlaneListings(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			body := `{"inferenceProfileSummaries":[{"inferenceProfileId":"us.anthropic.claude-sonnet-4-6","status":"ACTIVE"}],"nextToken":"t"}`
 			target := newPassthroughTarget(t, http.StatusOK, body, map[string]string{"Content-Type": "application/json"})
-			resp, bifrostErr := target.provider.Passthrough(passthroughCtx(t), target.key(""), &schemas.BifrostPassthroughRequest{
+			resp, bifrostErr := target.provider.Passthrough(passthroughCtx(t), controlPlaneOnly(target.key("")), &schemas.BifrostPassthroughRequest{
 				Method:   http.MethodGet,
 				Path:     tc.path,
 				RawQuery: tc.query,
@@ -605,7 +618,7 @@ func TestBedrockPassthroughForwardsControlPlaneListings(t *testing.T) {
 // call already does.
 func TestBedrockPassthroughUsesBearerForAPIKeysOnControlPlaneListings(t *testing.T) {
 	target := newPassthroughTarget(t, http.StatusOK, `{}`, nil)
-	_, bifrostErr := target.provider.Passthrough(passthroughCtx(t), target.apiKeyOnlyKey("bedrock-api-key-123"), &schemas.BifrostPassthroughRequest{Method: http.MethodGet, Path: "/inference-profiles"})
+	_, bifrostErr := target.provider.Passthrough(passthroughCtx(t), controlPlaneOnly(target.apiKeyOnlyKey("bedrock-api-key-123")), &schemas.BifrostPassthroughRequest{Method: http.MethodGet, Path: "/inference-profiles"})
 	require.Nil(t, bifrostErr)
 	got := target.requests()
 	require.Len(t, got, 1)
@@ -616,7 +629,7 @@ func TestBedrockPassthroughUsesBearerForAPIKeysOnControlPlaneListings(t *testing
 // reaches the caller as AWS sent it, so SDKs raise the right exception.
 func TestBedrockPassthroughForwardsControlPlaneErrorsVerbatim(t *testing.T) {
 	target := newPassthroughTarget(t, http.StatusForbidden, `{"message":"not authorized"}`, map[string]string{"X-Amzn-Errortype": "AccessDeniedException", "Content-Type": "application/json"})
-	resp, bifrostErr := target.provider.Passthrough(passthroughCtx(t), target.key(""), &schemas.BifrostPassthroughRequest{Method: http.MethodGet, Path: "/inference-profiles"})
+	resp, bifrostErr := target.provider.Passthrough(passthroughCtx(t), controlPlaneOnly(target.key("")), &schemas.BifrostPassthroughRequest{Method: http.MethodGet, Path: "/inference-profiles"})
 	require.Nil(t, bifrostErr)
 	require.NotNil(t, resp)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)

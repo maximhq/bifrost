@@ -1317,6 +1317,9 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 				bodyModels = passthroughBodyModels(req)
 			}
 			evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+			// A resource the path names (a Bedrock inference profile id) reaches the provider as written,
+			// never resolved through a key alias, so it is held to its literal name.
+			evaluationRequest.LiteralModel = bifrost.GetBoolFromContext(ctx, schemas.BifrostContextKeyPassthroughLiteralModel)
 		}
 		for _, toolModel := range toolModels {
 			if !slices.Contains(bodyModels, toolModel) {

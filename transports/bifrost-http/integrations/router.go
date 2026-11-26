@@ -575,6 +575,9 @@ type PassthroughConfig struct {
 	// ResourceModel, when it returns a name, is the model a request addresses by an identifier in its path
 	// (a Bedrock GetFoundationModel id): it replaces the resolved model for key selection and governance.
 	ResourceModel func(method, path string) string
+	// LiteralModels marks the ResourceModel and the ModelList ids as forwarded as written, so governance
+	// checks them without widening by key aliases.
+	LiteralModels bool
 
 	BodyModelKeyOnly bool // the BodyModelKey is the only body field that names the model, for an upstream that ignores "model"
 	// ModelList, when it returns a filter, is a model-list request whose response governance trims to the caller's access.
@@ -3890,9 +3893,11 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	if cfg.PathModel != nil {
 		resolvedModel = cfg.PathModel(path)
 	}
+	literalModel := false
 	if cfg.ResourceModel != nil {
 		if model := cfg.ResourceModel(string(ctx.Method()), path); model != "" {
 			resolvedModel = model
+			literalModel = cfg.LiteralModels
 		}
 	}
 	provider := cfg.Provider
@@ -3920,9 +3925,13 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	if cfg.ModelList != nil {
 		if filter := cfg.ModelList(string(ctx.Method()), path); filter != nil {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughModelListFilter, filter)
+			literalModel = literalModel || cfg.LiteralModels
 			// A 304 would leave the client on a list filtered under an older access.
 			delete(safeHeaders, "if-none-match")
 		}
+	}
+	if literalModel {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughLiteralModel, true)
 	}
 	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 

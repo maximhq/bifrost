@@ -179,8 +179,9 @@ func ControlPlaneResourceModel(method, path string) string {
 }
 
 // ControlPlaneListFilter returns the filter that trims a ListInferenceProfiles or ListFoundationModels
-// response to the entries the caller's access allows, and nil for any other request. A profile is kept
-// by its inferenceProfileId and a foundation model by its modelId, the names a caller invokes them by.
+// response to the entries the caller's access allows, and nil for any other request. An entry is kept
+// when the access allows either name a caller can invoke it by: a profile's inferenceProfileId or
+// inferenceProfileArn, a foundation model's modelId or modelArn.
 func ControlPlaneListFilter(method, path string) schemas.PassthroughModelListFilter {
 	route, ok := matchBedrockPassthroughRoute(method, path)
 	if !ok {
@@ -189,19 +190,19 @@ func ControlPlaneListFilter(method, path string) schemas.PassthroughModelListFil
 	switch route.operation {
 	case "ListInferenceProfiles":
 		return func(body []byte, keep func(model string) bool) ([]byte, error) {
-			return filterBedrockListing(body, "inferenceProfileSummaries", "inferenceProfileId", keep)
+			return filterBedrockListing(body, "inferenceProfileSummaries", "inferenceProfileId", "inferenceProfileArn", keep)
 		}
 	case "ListFoundationModels":
 		return func(body []byte, keep func(model string) bool) ([]byte, error) {
-			return filterBedrockListing(body, "modelSummaries", "modelId", keep)
+			return filterBedrockListing(body, "modelSummaries", "modelId", "modelArn", keep)
 		}
 	}
 	return nil
 }
 
-// filterBedrockListing keeps the entries of the array field listField whose idField keep accepts. The rest
-// of the body (nextToken included) is left as AWS sent it, so pagination keeps working.
-func filterBedrockListing(body []byte, listField, idField string, keep func(model string) bool) ([]byte, error) {
+// filterBedrockListing keeps the entries of the array field listField whose idField or arnField keep
+// accepts. The rest of the body (nextToken included) is left as AWS sent it, so pagination keeps working.
+func filterBedrockListing(body []byte, listField, idField, arnField string, keep func(model string) bool) ([]byte, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, fmt.Errorf("bedrock %s listing is not valid JSON", listField)
 	}
@@ -214,7 +215,9 @@ func filterBedrockListing(body []byte, listField, idField string, keep func(mode
 	n := 0
 	for _, entry := range entries.Array() {
 		if !keep(entry.Get(idField).String()) {
-			continue
+			if arn := entry.Get(arnField).String(); arn == "" || !keep(arn) {
+				continue
+			}
 		}
 		if n > 0 {
 			kept.WriteByte(',')

@@ -1621,6 +1621,76 @@ func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
 	}
 }
 
+// A Bedrock control-plane passthrough forwards the profile id it names as written, so when the transport
+// marks it literal, an alias of an allowed model does not let the key describe the aliased profile,
+// and a listing the route trims keeps only the ids the literal access allows.
+func TestPassthroughLiteralModelIsNotWidenedByKeyAliases(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Bedrock: {Keys: []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"us.other.secret-profile": {ModelID: "us.anthropic.claude-sonnet-4-6"}}}}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-cp", mcpTestVKValue, "cp-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		withAllKeys(buildProviderConfig("bedrock", []string{"us.anthropic.claude-sonnet-4-6"})),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	for _, tc := range []struct {
+		model   string
+		literal bool
+		blocked bool
+	}{
+		{"us.anthropic.claude-sonnet-4-6", true, false},
+		{"us.other.secret-profile", true, true},   // forwarded as written: the alias must not admit it
+		{"us.other.secret-profile", false, false}, // a route that resolves aliases keeps today's behavior
+	} {
+		t.Run(fmt.Sprintf("%s/literal=%v", tc.model, tc.literal), func(t *testing.T) {
+			ctx := presentCtx(mcpTestVKValue)
+			if tc.literal {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughLiteralModel, true)
+			}
+			req := &schemas.BifrostRequest{RequestType: schemas.PassthroughRequest, PassthroughRequest: &schemas.BifrostPassthroughRequest{
+				Provider: schemas.Bedrock, Model: tc.model, Method: "GET", Path: "/inference-profiles/" + tc.model,
+			}}
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+			require.NoError(t, err)
+			if tc.blocked {
+				require.NotNil(t, shortCircuit, "%q is only an alias of an allowed model", tc.model)
+				return
+			}
+			require.Nil(t, shortCircuit, "%q should be admitted", tc.model)
+		})
+	}
+
+	list := `us.anthropic.claude-sonnet-4-6,us.other.secret-profile`
+	for _, tc := range []struct {
+		literal bool
+		want    string
+	}{
+		{true, "us.anthropic.claude-sonnet-4-6"},
+		{false, list},
+	} {
+		t.Run(fmt.Sprintf("listing/literal=%v", tc.literal), func(t *testing.T) {
+			ctx := presentCtx(mcpTestVKValue)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughModelListFilter, schemas.PassthroughModelListFilter(csvModelListFilter))
+			if tc.literal {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughLiteralModel, true)
+			}
+			access, err := plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+			resp := &schemas.BifrostPassthroughResponse{StatusCode: 200, Body: []byte(list)}
+			plugin.filterPassthroughModelList(ctx, access, "bedrock", resp)
+			assert.Equal(t, tc.want, string(resp.Body))
+		})
+	}
+}
+
 // withAllKeys lets a test virtual key's provider config use every key of the provider, as a key
 // alias can only be resolved on a key the virtual key may use.
 func withAllKeys(pc configstoreTables.TableVirtualKeyProviderConfig) configstoreTables.TableVirtualKeyProviderConfig {
