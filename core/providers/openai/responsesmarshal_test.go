@@ -2672,9 +2672,10 @@ func TestToOpenAIResponsesRequest_PromptCacheOptionsCatalogRow(t *testing.T) {
 }
 
 // TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode pins that OpenRouter's
-// Responses endpoint, which accepts only mode "explicit" (live 400 "expected
-// \"explicit\""), never receives mode "implicit". Implicit is OpenAI's default when
-// mode is absent, so omitting it is lossless; ttl and explicit mode still pass through.
+// Responses endpoint, which accepts prompt_cache_options only with mode "explicit" (live
+// 400 "expected \"explicit\"" for implicit, for no mode with ttl or prewarm, 2026-11-26),
+// receives the object only in explicit mode. Implicit caching is what OpenRouter does when
+// the object is absent, so dropping it degrades the request instead of failing it.
 func TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -2682,10 +2683,13 @@ func TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode(t *testing.T)
 		want string
 	}{
 		{"implicit only", &schemas.PromptCacheOptions{Mode: new("implicit")}, ""},
-		{"implicit with ttl", &schemas.PromptCacheOptions{Mode: new("implicit"), TTL: new("30m")}, `{"ttl":"30m"}`},
-		{"implicit with prewarm", &schemas.PromptCacheOptions{Mode: new("implicit"), Prewarm: new(true)}, `{"prewarm":true}`},
-		{"implicit with comparison id", &schemas.PromptCacheOptions{Mode: new("implicit"), ComparisonResponseID: new("resp_1")}, `{"comparison_response_id":"resp_1"}`},
+		{"implicit with ttl", &schemas.PromptCacheOptions{Mode: new("implicit"), TTL: new("30m")}, ""},
+		{"implicit with prewarm", &schemas.PromptCacheOptions{Mode: new("implicit"), Prewarm: new(true)}, ""},
+		{"implicit with comparison id", &schemas.PromptCacheOptions{Mode: new("implicit"), ComparisonResponseID: new("resp_1")}, ""},
+		{"no mode with ttl", &schemas.PromptCacheOptions{TTL: new("5m")}, ""},
+		{"no mode with prewarm", &schemas.PromptCacheOptions{Prewarm: new(true)}, ""},
 		{"explicit", &schemas.PromptCacheOptions{Mode: new("explicit")}, `{"mode":"explicit"}`},
+		{"explicit with prewarm and ttl", &schemas.PromptCacheOptions{Mode: new("explicit"), TTL: new("5m"), Prewarm: new(true)}, `{"mode":"explicit","ttl":"5m","prewarm":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			req := &schemas.BifrostResponsesRequest{
@@ -2694,12 +2698,20 @@ func TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode(t *testing.T)
 				Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
 				Params:   &schemas.ResponsesParameters{PromptCacheOptions: tc.opts},
 			}
+			before, err := json.Marshal(tc.opts)
+			if err != nil {
+				t.Fatal(err)
+			}
 			_, raw := marshalResponses(t, req)
 			if got := gjson.Get(raw, "prompt_cache_options").Raw; got != tc.want {
 				t.Errorf("prompt_cache_options = %s, want %s; raw=%s", got, tc.want, raw)
 			}
-			if req.Params.PromptCacheOptions != tc.opts || tc.opts.Mode == nil {
-				t.Error("caller PromptCacheOptions must not be mutated")
+			after, err := json.Marshal(req.Params.PromptCacheOptions)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if req.Params.PromptCacheOptions != tc.opts || string(after) != string(before) {
+				t.Errorf("caller PromptCacheOptions must not be mutated: before %s, after %s", before, after)
 			}
 		})
 	}

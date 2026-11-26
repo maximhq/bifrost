@@ -2236,16 +2236,18 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 		shape := converseReasoningShape(model)
 		for _, detail := range msg.ChatAssistantMessage.ReasoningDetails {
 			if shape == schemas.BedrockReasoningShapeRedacted {
-				// These models reject reasoningText in every form -- with a
-				// signature, without one, empty or not -- with an opaque 500. The
-				// encrypted blob is the only replayable detail, and dropping the
-				// rest beats sending a shape that cannot be accepted.
+				// The encrypted blob replays as redactedContent. A model that also
+				// verifies signatures (Grok) answers with signed reasoningText too, which
+				// takes the text path below; the rest replays nothing.
 				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil && isConverseBlob(*detail.Data) {
 					contentBlocks = append(contentBlocks, BedrockContentBlock{
 						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
 					})
+					continue
 				}
-				continue
+				if !converseRequiresSignedReasoning(model) {
+					continue
+				}
 			}
 			if detail.Type == schemas.BifrostReasoningDetailsTypeText {
 				// Claude verifies the signature on every thinking block it is
@@ -3561,13 +3563,17 @@ func converseReasoningShape(model string) schemas.BedrockReasoningShape {
 
 // converseRequiresSignedReasoning reports whether the model verifies reasoning
 // signatures on Converse, in which case a reasoningText block with no signature
-// must be dropped from the replay rather than sent (#6624). Claude does; Nova,
-// MiniMax and DeepSeek accept an unsigned block with the field omitted.
+// must be dropped from the replay rather than sent (#6624). Claude does. Grok
+// (4.6, 4.7) verifies a signature when present, since it carries the encrypted
+// reasoning (a tampered one is a 400 "invalid encrypted reasoning"); unsigned text
+// adds nothing it can verify, so it is dropped as it always was. Nova, MiniMax and
+// DeepSeek accept an unsigned block with the field omitted, and Bedrock's OpenAI
+// models accept unsigned text.
 //
 // Same resolution as converseReasoningShape: the datasheet row wins when it
 // says anything, the model family answers otherwise.
 func converseRequiresSignedReasoning(model string) bool {
-	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
+	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model) || schemas.IsGrokModel(model))
 }
 
 // converseAcceptsStopSequences reports whether Converse accepts inferenceConfig.stopSequences for model

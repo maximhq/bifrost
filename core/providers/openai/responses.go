@@ -1093,16 +1093,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			optsCopy.TTL = nil
 			req.PromptCacheOptions = &optsCopy
 		}
-		// OpenRouter Responses accepts only mode "explicit"; "implicit" is the default, so omit it.
-		if opts := req.PromptCacheOptions; opts != nil && opts.Mode != nil && *opts.Mode == "implicit" &&
+		// OpenRouter Responses accepts prompt_cache_options only with mode "explicit" and 400s
+		// on anything else; implicit caching is its default without the object, so drop it.
+		if opts := req.PromptCacheOptions; opts != nil && (opts.Mode == nil || *opts.Mode != "explicit") &&
 			cachePromptProvider == schemas.OpenRouter {
-			optsCopy := *opts
-			optsCopy.Mode = nil
-			if optsCopy == (schemas.PromptCacheOptions{}) {
-				req.PromptCacheOptions = nil
-			} else {
-				req.PromptCacheOptions = &optsCopy
-			}
+			req.PromptCacheOptions = nil
 		}
 		if req.BackgroundOptions != nil && caps.FieldUnsupported(schemas.FieldBackgroundOptions, false) {
 			req.BackgroundOptions = nil

@@ -5665,19 +5665,30 @@ func dropNonBlobRedactedContent(blocks []BedrockContentBlock) []BedrockContentBl
 
 func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, shape schemas.BedrockReasoningShape, requireSigned, stripBlockSignatures bool) []BedrockContentBlock {
 	if shape == schemas.BedrockReasoningShapeRedacted {
-		// These models reject reasoningText in every form -- with a signature,
-		// without one, empty or not -- with an opaque 500. Only the blob carried
-		// on EncryptedContent is replayable; emitting nothing beats emitting a
-		// shape the model cannot accept.
-		if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil ||
-			*msg.ResponsesReasoning.EncryptedContent == "" {
-			return nil
+		var encrypted *string
+		if msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
+			encrypted = msg.ResponsesReasoning.EncryptedContent
 		}
-		return []BedrockContentBlock{{
-			ReasoningContent: &BedrockReasoningContent{
-				RedactedContent: msg.ResponsesReasoning.EncryptedContent,
-			},
-		}}
+		isBlob := encrypted != nil && isConverseBlob(*encrypted)
+		var reasoningBlocks []BedrockContentBlock
+		if requireSigned {
+			// A model that also verifies signatures (Grok) answers with signed reasoningText,
+			// on Content or, when streamed, as Summary plus the signature in EncryptedContent.
+			// The text path replays it verbatim; a blob on the same item is not a signature.
+			textMsg := *msg
+			if isBlob {
+				textMsg.ResponsesReasoning = nil
+			}
+			reasoningBlocks = convertBifrostReasoningToBedrockReasoning(&textMsg, schemas.BedrockReasoningShapeText, true, false)
+		}
+		// Unsigned text carries nothing these models can use. The blob replays as
+		// redactedContent; a non-blob token too, unless it was read as a signature above.
+		if encrypted != nil && (isBlob || !requireSigned) {
+			reasoningBlocks = append(reasoningBlocks, BedrockContentBlock{
+				ReasoningContent: &BedrockReasoningContent{RedactedContent: encrypted},
+			})
+		}
+		return reasoningBlocks
 	}
 
 	var reasoningBlocks []BedrockContentBlock
@@ -5818,9 +5829,11 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					}
 				}
 			case schemas.ResponsesOutputMessageContentTypeReasoning:
-				// Redacted-shape models carry their blob on the reasoning message,
-				// never on a content block, so there is nothing here to replay.
-				if !isConverseResponseRendering(ctx) && converseReasoningShape(model) == schemas.BedrockReasoningShapeRedacted {
+				// Redacted-shape models carry their blob on the reasoning message, so a
+				// content block replays only to one that also verifies signatures (Grok),
+				// through the signed-text handling below.
+				if !isConverseResponseRendering(ctx) && converseReasoningShape(model) == schemas.BedrockReasoningShapeRedacted &&
+					!converseRequiresSignedReasoning(model) {
 					continue
 				}
 				if block.Text != nil {

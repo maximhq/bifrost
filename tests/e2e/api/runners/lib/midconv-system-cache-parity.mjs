@@ -298,6 +298,10 @@ export function buildMidConvGrowingTurnItems() {
 //
 // The "kept in history" shape keeps every turn's nudge, so turn 2 sends turn 1's block unmarked and
 // still followed by a reminder. It must carry the same bytes it had when it held the breakpoint.
+//
+// On InvokeModel, Claude 5 takes the nudge as a native role:system message (#10164), so the block
+// already ends its user turn with or without the nudge and nothing joins it to trim: those cells
+// expect it as sent and still pin the breakpoint and the cache read.
 // ---------------------------------------------------------------------------------------------
 const INVOKE_MODEL = "bedrock/global.anthropic.claude-sonnet-4-6";
 const TRAILER_CELLS = [
@@ -311,6 +315,7 @@ const TRAILER_NUDGE = "Keep working on the task and verify results before report
 const trailerBudget = (turn) => `<total_tokens>${15000000 - turn * 1000} tokens left</total_tokens>`;
 const trailerUserReminder = (turn) => `<system-reminder>\nTurn ${turn} context: the user opened src/app.ts.\n</system-reminder>\n`;
 const CLAUDE5_MODEL = "bedrock/us.anthropic.claude-haiku-5-5";
+const claude5Cell = (c) => ({ ...c, model: CLAUDE5_MODEL, keepsWhitespace: c.invoke });
 const TRAILER_SHAPES = [
   { key: "", label: "trailing reminder", anchor: trailerBudget, anchorName: "budget block", cells: TRAILER_CELLS },
   {
@@ -319,7 +324,7 @@ const TRAILER_SHAPES = [
     anchor: trailerUserReminder,
     anchorName: "user reminder block",
     cells: [
-      ...TRAILER_CELLS.map((c) => ({ ...c, model: CLAUDE5_MODEL })),
+      ...TRAILER_CELLS.map(claude5Cell),
       { key: "messages_converse_claude4", route: "messages", model: BIFROST_MODEL, invoke: false, keepsWhitespace: true },
     ],
   },
@@ -329,7 +334,7 @@ const TRAILER_SHAPES = [
     anchor: trailerUserReminder,
     anchorName: "user reminder block",
     keepNudge: true,
-    cells: TRAILER_CELLS.map((c) => ({ ...c, model: CLAUDE5_MODEL })),
+    cells: TRAILER_CELLS.map(claude5Cell),
   },
 ];
 const TRAILER_PATH = {
@@ -498,7 +503,9 @@ if (pm.response.code < 400) {
   pm.test(${J(`Cache anchor [${label}] breakpoint stays on the ${shape.anchorName}, ${cell.keepsWhitespace ? "sent as the client wrote it" : "which has no trailing whitespace"}`)}, function () {
     pm.expect(found, 'no raw_request block carries the turn-2 ${shape.anchorName}').to.be.a('string');
 ${cell.keepsWhitespace
-  ? `    pm.expect(found, 'Claude 4 keeps trailing whitespace at the end of a user turn, so a trimmed block stops matching its own history next turn').to.equal(${J(shape.anchor(2))});`
+  ? `    pm.expect(found, ${J(cell.invoke
+      ? "the nudge goes native on InvokeModel, so nothing joins this turn and the block must go out as the client wrote it"
+      : "Claude 4 keeps trailing whitespace at the end of a user turn, so a trimmed block stops matching its own history next turn")}).to.equal(${J(shape.anchor(2))});`
   : `    pm.expect(/\\s$/.test(found), 'the ${shape.anchorName} ends in whitespace: ' + JSON.stringify(found) + ' - a cached block ending in "\\\\n" stops matching once the trailer after it is dropped').to.equal(false);`}
     pm.expect(anchored, 'the breakpoint is not on the ${shape.anchorName} - it moved onto the trailing nudge, which the next turn drops').to.equal(true);
   });
