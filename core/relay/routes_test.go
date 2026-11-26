@@ -335,7 +335,7 @@ func TestCompareRoutePathsSharedCases(t *testing.T) {
 		} `json:"match_order"`
 	}
 	require.NoError(t, json.Unmarshal(raw, &file))
-	// The UI copies these, so the file pins both sides.
+	// The gateway's own constant must match the file's.
 	assert.Equal(t, maxGapSegments, file.MaxGapSegments)
 	require.NotEmpty(t, file.Cases)
 	for _, c := range file.Cases {
