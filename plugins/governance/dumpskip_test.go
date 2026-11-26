@@ -211,3 +211,38 @@ func TestDumpRewritesEveryRowEachCycle(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 10.0, b.CurrentUsage, "the next dump restores this node's budget usage")
 }
+
+// TestRateLimitResetPreservesCalendarAdoptedRequests checks that a token-only
+// reset persists only the token dimension. Calendar adoption advanced the
+// request boundary in memory without clearing usage; writing that boundary in
+// the reset batch would zero the persisted request counter.
+func TestRateLimitResetPreservesCalendarAdoptedRequests(t *testing.T) {
+	ctx := context.Background()
+	fixture := newDumpSkipFixture(t)
+	store := fixture.store
+	adoption := time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC)
+	old := adoption.Add(-24 * time.Hour)
+	hour, day := "1h", "1d"
+	rate := buildRateLimitWithUsage("adopted-requests", 1000, 17, 100, 19)
+	rate.CreatedAt, rate.TokenLastReset, rate.RequestLastReset = old, old, old
+	rate.TokenResetDuration, rate.RequestResetDuration = &hour, &day
+	require.NoError(t, fixture.configStore.CreateRateLimit(ctx, rate))
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+
+	require.True(t, store.AdoptRateLimitCalendarAlignmentInMemory(ctx, rate.ID, adoption))
+	adopted := store.LoadRateLimit(ctx, rate.ID)
+	require.True(t, adopted.RequestLastReset.After(old))
+	require.Equal(t, int64(19), adopted.RequestCurrentUsage)
+	reset := store.resetExpiredRateLimitFromSnapshot(ctx, adopted, adoption.Add(time.Hour))
+	require.NotNil(t, reset)
+	require.Zero(t, reset.TokenCurrentUsage)
+	require.Equal(t, int64(19), reset.RequestCurrentUsage)
+	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*RateLimitReset{reset}))
+
+	persisted, err := fixture.configStore.GetRateLimit(ctx, rate.ID)
+	require.NoError(t, err)
+	require.Zero(t, persisted.TokenCurrentUsage)
+	require.True(t, persisted.TokenLastReset.Equal(reset.TokenLastReset))
+	require.Equal(t, int64(19), persisted.RequestCurrentUsage, "token-only reset zeroed the request counter")
+	require.True(t, persisted.RequestLastReset.Equal(old))
+}

@@ -3000,7 +3000,7 @@ func TestGatewayGovernanceRefusalDropsTheBinding(t *testing.T) {
 	}
 
 	raised := limit(100)
-	store.UpsertRateLimitConfig(t.Context(), raised.ID, &raised)
+	store.UpsertRateLimitConfig(t.Context(), raised.ID, &raised, false)
 	r = g.send(gwCall{model: "m", headers: vkHeaders("vk1", "s")})
 	requireServedBy(t, r, gwB)
 	if r.info.IsFallback {
