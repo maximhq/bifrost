@@ -515,8 +515,7 @@
 			"guardrailActions": {
 				"allowed": "허용된",
 				"blocked": "막힌",
-				"redacted": "수정됨",
-				"transformed": "변형됨",
+				"redacted": "마스킹됨",
 				"monitored": "모니터링됨",
 				"detected": "감지됨"
 			},
@@ -572,11 +571,9 @@
 			"toolTypeCount_other": "{{type}} · 도구 {{count}}개",
 			"guardrailHints": {
 				"blocked": "규칙이 요청을 차단했어요.",
-				"redacted": "규칙이 일치한 콘텐츠를 제거했고 요청은 계속 진행되었어요.",
-				"transformed": "규칙이 일치한 콘텐츠를 다시 작성했고 요청은 계속 진행되었어요.",
+				"redacted": "규칙이 일치한 콘텐츠를 마스킹하거나 다시 작성했고 요청은 계속 진행되었어요.",
 				"monitoredWouldBlock": "이 규칙은 모니터링만 해요. 차단했을 요청이지만 변경 없이 계속 진행되었어요.",
 				"monitoredWouldRedact": "이 규칙은 모니터링만 해요. 내용을 제거했을 요청이지만 변경 없이 계속 진행되었어요.",
-				"monitoredWouldTransform": "이 규칙은 모니터링만 해요. 내용을 변환했을 요청이지만 변경 없이 계속 진행되었어요.",
 				"monitored": "이 규칙은 모니터링만 해요. 요청은 변경 없이 계속 진행되었어요.",
 				"detected": "규칙이 요청을 플래그로 표시했고, 변경 없이 계속 진행하도록 했어요."
 			},

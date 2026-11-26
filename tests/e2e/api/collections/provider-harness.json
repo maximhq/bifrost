@@ -351595,6 +351595,670 @@
       ]
     },
     {
+      "name": "388. Streamed chat with n>1 logs choice 0 alone (stream n choices)",
+      "description": "A streamed chat completion with n>1 interleaves events for different choices. The stream accumulator (framework/streaming/chat.go) used to read only Choices[0] of each event and keep no choice index, so it merged every choice's tokens into one message: the log stored the choices interleaved, guardrails evaluating the paused-stream snapshot saw the same mixed text, and the finish reason came from whichever choice sent the last event. The accumulator now builds each choice on its own; the logged output_message and stop_reason describe choice 0, the same as a non-streamed n>1 request is logged. Each case streams n=2 from openai/gpt-4o-mini, rebuilds every choice from the SSE events by index, then polls /api/logs/<x-bifrost-request-id> and asserts output_message equals choice 0's text exactly. Red before the fix: the logged content is both choices mixed, so the exact-equality assertion fails. The per-choice snapshot guardrails read, tool calls and the text-completion path are pinned by Go tests in framework/streaming (accumulator_test.go, gate_test.go).",
+      "item": [
+        {
+          "name": "388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2 logs choice 0 alone (stream n choices)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// Rebuild each choice from the SSE events the client received, keyed by choice index.",
+                  "var texts = {};",
+                  "var finishReasons = {};",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  line = line.trim();",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var event;",
+                  "  try { event = JSON.parse(payload); } catch (e) { return; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var index = choice.index || 0;",
+                  "    if (texts[index] === undefined) { texts[index] = ''; }",
+                  "    if (choice.delta && typeof choice.delta.content === 'string') { texts[index] += choice.delta.content; }",
+                  "    if (choice.finish_reason) { finishReasons[index] = choice.finish_reason; }",
+                  "  });",
+                  "});",
+                  "pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: client received two separate choices', function () {",
+                  "  pm.expect(Object.keys(texts).sort(), pm.response.text()).to.eql(['0', '1']);",
+                  "  pm.expect(texts[0], 'choice 0 text').to.not.eql('');",
+                  "  pm.expect(texts[1], 'choice 1 text').to.not.eql('');",
+                  "});",
+                  "pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: each choice received its own finish_reason', function () {",
+                  "  pm.expect(finishReasons[0], 'choice 0 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(finishReasons[1], 'choice 1 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "function contentText(content) {",
+                  "  if (typeof content === 'string') { return content; }",
+                  "  if (Array.isArray(content)) { return content.map(function (block) { return block.text || ''; }).join(''); }",
+                  "  return '';",
+                  "}",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err) {",
+                  "      pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: log read succeeded', function () { pm.expect.fail('GET /api/logs/' + reqId + ' failed: ' + String(err)); });",
+                  "      return;",
+                  "    }",
+                  "    // The batch writer writes the row asynchronously, so 404 means not yet; any other non-200 is a real failure.",
+                  "    if (res.code !== 200 && res.code !== 404) {",
+                  "      pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: log read returned 200', function () { pm.expect.fail('GET /api/logs/' + reqId + ' returned ' + res.code + ': ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.code === 200 ? res.json() : null;",
+                  "    if (j && j.status === 'success' && j.output_message) {",
+                  "      pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: logged output_message is choice 0 alone, not the choices interleaved', function () { pm.expect(contentText(j.output_message.content), JSON.stringify(j.output_message)).to.eql(texts[0]); });",
+                  "      pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: logged stop_reason is choice 0\\'s', function () {",
+                  "        pm.expect(finishReasons[0], 'choice 0 finish_reason missing from the stream: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "        pm.expect(j.stop_reason, JSON.stringify(j)).to.eql(finishReasons[0]);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: log row completed with an output_message', function () { pm.expect.fail('log ' + reqId + ' not complete after 10 reads: ' + res.code + ' ' + res.text()); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"n\": 2,\n  \"temperature\": 1,\n  \"max_tokens\": 24,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one random fruit and give one short reason to eat it.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2 logs choice 0 alone (stream n choices)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// Rebuild each choice from the SSE events the client received, keyed by choice index.",
+                  "var texts = {};",
+                  "var finishReasons = {};",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  line = line.trim();",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var event;",
+                  "  try { event = JSON.parse(payload); } catch (e) { return; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var index = choice.index || 0;",
+                  "    if (texts[index] === undefined) { texts[index] = ''; }",
+                  "    if (choice.delta && typeof choice.delta.content === 'string') { texts[index] += choice.delta.content; }",
+                  "    if (choice.finish_reason) { finishReasons[index] = choice.finish_reason; }",
+                  "  });",
+                  "});",
+                  "pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: client received two separate choices', function () {",
+                  "  pm.expect(Object.keys(texts).sort(), pm.response.text()).to.eql(['0', '1']);",
+                  "  pm.expect(texts[0], 'choice 0 text').to.not.eql('');",
+                  "  pm.expect(texts[1], 'choice 1 text').to.not.eql('');",
+                  "});",
+                  "pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: each choice received its own finish_reason', function () {",
+                  "  pm.expect(finishReasons[0], 'choice 0 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(finishReasons[1], 'choice 1 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "function contentText(content) {",
+                  "  if (typeof content === 'string') { return content; }",
+                  "  if (Array.isArray(content)) { return content.map(function (block) { return block.text || ''; }).join(''); }",
+                  "  return '';",
+                  "}",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err) {",
+                  "      pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: log read succeeded', function () { pm.expect.fail('GET /api/logs/' + reqId + ' failed: ' + String(err)); });",
+                  "      return;",
+                  "    }",
+                  "    // The batch writer writes the row asynchronously, so 404 means not yet; any other non-200 is a real failure.",
+                  "    if (res.code !== 200 && res.code !== 404) {",
+                  "      pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: log read returned 200', function () { pm.expect.fail('GET /api/logs/' + reqId + ' returned ' + res.code + ': ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.code === 200 ? res.json() : null;",
+                  "    if (j && j.status === 'success' && j.output_message) {",
+                  "      pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: logged output_message is choice 0 alone, not the choices interleaved', function () { pm.expect(contentText(j.output_message.content), JSON.stringify(j.output_message)).to.eql(texts[0]); });",
+                  "      pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: logged stop_reason is choice 0\\'s', function () {",
+                  "        pm.expect(finishReasons[0], 'choice 0 finish_reason missing from the stream: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "        pm.expect(j.stop_reason, JSON.stringify(j)).to.eql(finishReasons[0]);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: log row completed with an output_message', function () { pm.expect.fail('log ' + reqId + ' not complete after 10 reads: ' + res.code + ' ' + res.text()); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"n\": 2,\n  \"temperature\": 1,\n  \"max_tokens\": 24,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one random fruit and give one short reason to eat it.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2 keeps each choice and its finish_reason (stream n choices)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "// Rebuild each choice from the SSE events the client received, keyed by choice index.",
+                  "var texts = {};",
+                  "var finishReasons = {};",
+                  "var errorEvents = [];",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  line = line.trim();",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var event;",
+                  "  try { event = JSON.parse(payload); } catch (e) { return; }",
+                  "  if (event.error) { errorEvents.push(payload); }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var index = choice.index || 0;",
+                  "    if (texts[index] === undefined) { texts[index] = ''; }",
+                  "    if (typeof choice.text === 'string') { texts[index] += choice.text; }",
+                  "    if (choice.finish_reason) { finishReasons[index] = choice.finish_reason; }",
+                  "  });",
+                  "});",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: stream carried no error event', function () { pm.expect(errorEvents, pm.response.text()).to.eql([]); });",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: client received two separate choices', function () {",
+                  "  pm.expect(Object.keys(texts).sort(), pm.response.text()).to.eql(['0', '1']);",
+                  "  pm.expect(texts[0], 'choice 0 text').to.not.eql('');",
+                  "  pm.expect(texts[1], 'choice 1 text').to.not.eql('');",
+                  "});",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: each choice received its own finish_reason', function () {",
+                  "  pm.expect(finishReasons[0], 'choice 0 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(finishReasons[1], 'choice 1 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"n\": 2,\n  \"temperature\": 1,\n  \"max_tokens\": 24,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"prompt\": \"Name one random fruit and give one short reason to eat it.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "389. Bedrock Invoke Cache TTL Usage (#9198)",
+      "description": "Regression for #9198: Invoke responses dropped the cache_creation five-minute/one-hour breakdown even when Bifrost tracked it internally. Each request uses a fresh prefix to force a cache write. The streaming case decodes InvokeModel event payloads and checks the authoritative usage. Requires Bedrock access to Opus 5.5 with prompt caching; unexpected errors fail the assertions.",
+      "item": [
+        {
+          "name": "Bedrock Opus 5.5 cache TTL usage - 5m invoke - #9198",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('invokeCacheTTLPrefix', pm.variables.replaceIn('{{$guid}}')); "
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text();",
+                  "pm.test('cache TTL usage: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText).to.equal(200);",
+                  "});",
+                  "var usages = [pm.response.json().usage];",
+                  "pm.test('cache TTL usage: cache write carries the requested TTL breakdown', function () {",
+                  "  pm.expect(usages.length, 'no cache write usage: ' + rawText).to.be.above(0);",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, rawText).to.be.an('object');",
+                  "    pm.expect(usage.cache_creation, rawText).to.be.an('object');",
+                  "    var details = usage.cache_creation;",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.be.above(0);",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.equal(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens + details.ephemeral_1h_input_tokens, rawText).to.equal(usage.cache_creation_input_tokens);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{invokeCacheTTLPrefix}} {{cachePrefix}}\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\",\n        \"ttl\": \"5m\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us.anthropic.claude-opus-5-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us.anthropic.claude-opus-5-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock Opus 5.5 cache TTL usage - 1h invoke - #9198",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('invokeCacheTTLPrefix', pm.variables.replaceIn('{{$guid}}')); "
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text();",
+                  "pm.test('cache TTL usage: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText).to.equal(200);",
+                  "});",
+                  "var usages = [pm.response.json().usage];",
+                  "pm.test('cache TTL usage: cache write carries the requested TTL breakdown', function () {",
+                  "  pm.expect(usages.length, 'no cache write usage: ' + rawText).to.be.above(0);",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, rawText).to.be.an('object');",
+                  "    pm.expect(usage.cache_creation, rawText).to.be.an('object');",
+                  "    var details = usage.cache_creation;",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.above(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.equal(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens + details.ephemeral_1h_input_tokens, rawText).to.equal(usage.cache_creation_input_tokens);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{invokeCacheTTLPrefix}} {{cachePrefix}}\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\",\n        \"ttl\": \"1h\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us.anthropic.claude-opus-5-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us.anthropic.claude-opus-5-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock Opus 5.5 cache TTL usage - 1h streaming - #9198",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('invokeCacheTTLPrefix', pm.variables.replaceIn('{{$guid}}')); "
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var rawText = pm.response.text();",
+                  "pm.test('cache TTL usage: HTTP 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + rawText).to.equal(200);",
+                  "});",
+                  "var matches = rawText.match(/\"bytes\"\\s*:\\s*\"([A-Za-z0-9+\\/=]+)\"/g) || [];",
+                  "var events = matches.map(function (m) {",
+                  "  var b64 = m.match(/:\\s*\"([^\"]+)\"/)[1];",
+                  "  return JSON.parse(Buffer.from(b64, 'base64').toString('utf8'));",
+                  "});",
+                  "pm.test('cache TTL usage: complete Invoke stream', function () {",
+                  "  pm.expect(events.some(function (e) { return e.type === 'message_start'; }), rawText).to.equal(true);",
+                  "  pm.expect(events.some(function (e) { return e.type === 'message_stop'; }), rawText).to.equal(true);",
+                  "});",
+                  "var start = events.filter(function (e) { return e.type === 'message_start'; })[0];",
+                  "var terminal = events.filter(function (e) { return e.type === 'message_delta'; })[0];",
+                  "var usages = [terminal && terminal.usage];",
+                  "var startUsage = start && start.message && start.message.usage;",
+                  "if (startUsage && startUsage.cache_creation_input_tokens > 0) { usages.push(startUsage); }",
+                  "pm.test('cache TTL usage: cache write carries the requested TTL breakdown', function () {",
+                  "  pm.expect(usages.length, 'no cache write usage: ' + rawText).to.be.above(0);",
+                  "  usages.forEach(function (usage) {",
+                  "    pm.expect(usage, rawText).to.be.an('object');",
+                  "    pm.expect(usage.cache_creation, rawText).to.be.an('object');",
+                  "    var details = usage.cache_creation;",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.a('number');",
+                  "    pm.expect(details.ephemeral_1h_input_tokens, rawText).to.be.above(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens, rawText).to.equal(0);",
+                  "    pm.expect(details.ephemeral_5m_input_tokens + details.ephemeral_1h_input_tokens, rawText).to.equal(usage.cache_creation_input_tokens);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 16,\n  \"system\": [\n    {\n      \"type\": \"text\",\n      \"text\": \"{{invokeCacheTTLPrefix}} {{cachePrefix}}\",\n      \"cache_control\": {\n        \"type\": \"ephemeral\",\n        \"ttl\": \"1h\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us.anthropic.claude-opus-5-5/invoke-with-response-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us.anthropic.claude-opus-5-5",
+                "invoke-with-response-stream"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "391. Provider-reported zero cost keeps total_cost (zero provider cost) (#9000 / PR #9006)",
+      "description": "Local fixture regression for #9000, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture model upstream-zero-cost answers like upstream-ok and reports usage.cost as a bare 0, as OpenCode Zen does for a request inside a plan. BifrostCost decodes that into TotalCost 0, and before the fix every BifrostCost field was omitempty, so the native routes returned \"cost\": {} and a client could not tell a free request from one with no reported cost. 391.1 and 391.2 pin cost {\"total_cost\": 0} on the native /v1/chat/completions route, non-streaming and on the streamed usage chunk. 391.3 pins that the OpenAI SDK route, which flattens cost to the bare total, still answers cost 0 (green before and after). Setup and scoped run commands are in tests/e2e/api/README.md under Provider-reported zero cost.",
+      "item": [
+        {
+          "name": "391.1 openai openai/upstream-zero-cost keeps a zero usage.cost as total_cost 0 (zero provider cost) - #9000",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('a provider-reported zero cost comes back as total_cost 0, not {}', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.usage, 'usage missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.usage.cost, 'cost: ' + JSON.stringify(body.usage)).to.eql({ total_cost: 0 });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-zero-cost\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "391.2 openai openai/upstream-zero-cost stream usage chunk keeps a zero cost as total_cost 0 (zero provider cost) - #9000",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var usage = null;",
+                  "raw.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: {') !== 0) { return; }",
+                  "  var chunk = JSON.parse(line.slice(6));",
+                  "  if (chunk.usage) { usage = chunk.usage; }",
+                  "});",
+                  "pm.test('stream completes', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + raw).to.equal(200);",
+                  "  pm.expect(raw, 'completion missing: ' + raw).to.include('[DONE]');",
+                  "});",
+                  "pm.test('the usage chunk carries the zero cost as total_cost 0, not {}', function () {",
+                  "  pm.expect(usage, 'no usage chunk: ' + raw).to.be.an('object');",
+                  "  pm.expect(usage.cost, 'cost: ' + JSON.stringify(usage)).to.eql({ total_cost: 0 });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-zero-cost\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "391.3 openai upstream-zero-cost keeps a zero cost on the OpenAI SDK route (zero provider cost) - #9000",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'unexpected status: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('the OpenAI SDK route keeps the zero cost as a bare 0', function () {",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.usage, 'usage missing: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(body.usage.cost, 'cost: ' + JSON.stringify(body.usage)).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"upstream-zero-cost\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "375. Code mode listToolFiles(query=...) returns a ranked shortlist (code-mode-discovery) [SERIAL]",
       "description": "listToolFiles takes an optional query and returns a ranked shortlist of the caller visible tool files instead of the complete listing. Before the change the query was ignored and the complete listing came back. Uses the SSE fixture as a code mode client; no upstream provider requests.",
       "item": [

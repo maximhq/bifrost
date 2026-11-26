@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -115,17 +116,6 @@ func (fixedAgentRegistrationManager) DeleteAgentRegistration(context.Context, st
 	return nil
 }
 
-// recordingVirtualKeyReloader records the virtual keys it is asked to reload.
-type recordingVirtualKeyReloader struct {
-	ids []string
-}
-
-// ReloadVirtualKey records the key and succeeds.
-func (r *recordingVirtualKeyReloader) ReloadVirtualKey(_ context.Context, id string) (*tables.TableVirtualKey, error) {
-	r.ids = append(r.ids, id)
-	return nil, nil
-}
-
 // TestAgentRefreshFailureStillReloadsGrantedKeys checks that an agent create, update or delete whose
 // own refresh fails still reloads the virtual keys that gained or lost the agent's grant before
 // answering 500. Otherwise a key the write revoked keeps the grant, and a retry cannot repair it:
@@ -146,7 +136,7 @@ func TestAgentRefreshFailureStillReloadsGrantedKeys(t *testing.T) {
 		created: schemas.AgentRegistrationView{Name: "beta", VirtualKeyIDs: []string{"vk-w"}},
 		updated: schemas.AgentRegistrationView{Name: "alpha"},
 	}
-	reloader := &recordingVirtualKeyReloader{}
+	reloader := &reloadCountingGovernanceManager{}
 	h := NewAgentGatewayHandler(manager, registrations, &lib.Config{LiveStore: live}, reloader)
 
 	createCtx := &fasthttp.RequestCtx{}
@@ -154,22 +144,83 @@ func TestAgentRefreshFailureStillReloadsGrantedKeys(t *testing.T) {
 	h.create(createCtx)
 	require.Equal(t, fasthttp.StatusInternalServerError, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
 	require.Contains(t, string(createCtx.Response.Body()), "Agent created in database but failed to reload in-memory state")
-	require.Equal(t, []string{"vk-w"}, reloader.ids, "the key the new agent granted is reloaded")
+	requireSingleAuditChange(t, createCtx, "agent.created")
+	require.Equal(t, [][]string{{"vk-w"}}, reloader.reloadedBatches, "the key the new agent granted is reloaded")
 
-	reloader.ids = nil
+	reloader.reloadedBatches = nil
 	updateCtx := &fasthttp.RequestCtx{}
 	updateCtx.SetUserValue("name", "alpha")
 	updateCtx.Request.SetBodyString(`{}`)
 	h.update(updateCtx)
 	require.Equal(t, fasthttp.StatusInternalServerError, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
 	require.Contains(t, string(updateCtx.Response.Body()), "Agent updated in database but failed to reload in-memory state")
-	require.Equal(t, []string{"vk-v"}, reloader.ids, "the key the update dropped is reloaded")
+	requireSingleAuditChange(t, updateCtx, "agent.updated")
+	require.Equal(t, [][]string{{"vk-v"}}, reloader.reloadedBatches, "the key the update dropped is reloaded")
 
-	reloader.ids = nil
+	reloader.reloadedBatches = nil
 	deleteCtx := &fasthttp.RequestCtx{}
 	deleteCtx.SetUserValue("name", "alpha")
 	h.delete(deleteCtx)
 	require.Equal(t, fasthttp.StatusInternalServerError, deleteCtx.Response.StatusCode(), string(deleteCtx.Response.Body()))
 	require.Contains(t, string(deleteCtx.Response.Body()), "Agent deleted in database but failed to reload in-memory state")
-	require.Equal(t, []string{"vk-v"}, reloader.ids, "the key the deleted agent granted is reloaded")
+	requireSingleAuditChange(t, deleteCtx, "agent.deleted")
+	require.Equal(t, [][]string{{"vk-v"}}, reloader.reloadedBatches, "the key the deleted agent granted is reloaded")
+}
+
+// deleteResultRegistrations answers every delete with err, as a deployment's registration manager
+// does when the delete is saved but a follow-up of its own fails, or when the delete itself fails.
+type deleteResultRegistrations struct {
+	err error
+}
+
+// CreateAgentRegistration is not reached by the delete route.
+func (deleteResultRegistrations) CreateAgentRegistration(context.Context, agent.CreateRequest) (schemas.AgentRegistrationView, error) {
+	return schemas.AgentRegistrationView{}, nil
+}
+
+// UpdateAgentRegistration is not reached by the delete route.
+func (deleteResultRegistrations) UpdateAgentRegistration(context.Context, string, agent.UpdateRequest) (schemas.AgentRegistrationView, error) {
+	return schemas.AgentRegistrationView{}, nil
+}
+
+// DeleteAgentRegistration answers with the configured result.
+func (m deleteResultRegistrations) DeleteAgentRegistration(context.Context, string) error {
+	return m.err
+}
+
+// TestAgentDeleteAnswersASavedButStaleDelete checks the delete route against a registration manager
+// whose delete is saved but whose own in-memory follow-up failed: the route still drops the agent's
+// record and answers the 500 that says the delete is saved, while a delete that failed outright
+// keeps the record and is answered as a failed delete.
+func TestAgentDeleteAnswersASavedButStaleDelete(t *testing.T) {
+	ctx := context.Background()
+	config := libtest.Config(t, nil, nil)
+	db := config.ConfigStore.DB()
+	agents := config.LiveStore.Collections.Agents
+	store := &agentAuthStore{registrations: map[string]schemas.AgentRegistration{"alpha": {Name: "alpha", AgentCardURL: "https://alpha.example/card", Enabled: true}}}
+	manager, err := agent.NewManager(ctx, store, nil, "", http.DefaultClient, agent.ManagerConfig{})
+	require.NoError(t, err)
+	defer manager.Close()
+	require.NoError(t, db.Create(&tables.TableAgentRegistration{Name: "alpha", AgentCardURL: "https://alpha.example/card", Enabled: true}).Error)
+
+	failed := NewAgentGatewayHandler(manager, deleteResultRegistrations{err: errors.New("delete failed")}, config, nil)
+	require.NoError(t, failed.refreshAgent(ctx, "alpha", false))
+	reqCtx := &fasthttp.RequestCtx{}
+	reqCtx.SetUserValue("name", "alpha")
+	failed.delete(reqCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode())
+	require.NotContains(t, string(reqCtx.Response.Body()), "deleted in database", "a failed delete is not answered as saved")
+	require.Empty(t, liveAuditChanges(reqCtx), "a failed delete records nothing")
+	_, ok := agents.Get("alpha")
+	require.True(t, ok, "a failed delete keeps the record")
+
+	saved := NewAgentGatewayHandler(manager, deleteResultRegistrations{err: fmt.Errorf("%w: holders", ErrSavedButNotReloaded)}, config, nil)
+	reqCtx = &fasthttp.RequestCtx{}
+	reqCtx.SetUserValue("name", "alpha")
+	saved.delete(reqCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode())
+	require.Contains(t, string(reqCtx.Response.Body()), "Agent deleted in database but failed to reload in-memory state")
+	requireSingleAuditChange(t, reqCtx, "agent.deleted")
+	_, ok = agents.Get("alpha")
+	require.False(t, ok, "a saved delete still drops the record")
 }

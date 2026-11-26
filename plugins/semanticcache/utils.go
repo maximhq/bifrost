@@ -349,7 +349,64 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		delete(metadata, "identity_scope")
 	}
 
+	// conversation_history pins a follow-up turn to its exact earlier messages. Semantic search
+	// filters on this hash, so a follow-up can only match an entry written after the same history,
+	// never an earlier turn of the conversation, and only the newest message is compared by meaning
+	// (see extractTextForEmbedding). One-message requests carry no key, so their entries are unchanged.
+	// Like identity_scope it is set after the params, so a request field cannot supply it.
+	delete(metadata, "conversation_history")
+	history, err := plugin.conversationHistoryHash(req)
+	if err != nil {
+		return nil, err
+	}
+	if history != "" {
+		metadata["conversation_history"] = history
+	}
+
 	return metadata, nil
+}
+
+// conversationHistoryHash returns a hash of every normalized input message before the newest one, or
+// "" when the request has at most one message or is not a conversation (chat or responses) request.
+func (plugin *Plugin) conversationHistoryHash(req *schemas.BifrostRequest) (string, error) {
+	// Only a chat or Responses request with two or more messages has a history. Check before
+	// normalizing, so every other request (one message, embeddings, speech, images) pays nothing.
+	switch {
+	case req.ChatRequest != nil && len(req.ChatRequest.Input) >= 2:
+	case req.ResponsesRequest != nil && len(req.ResponsesRequest.Input) >= 2:
+	default:
+		return "", nil
+	}
+	var history any
+	switch input := plugin.getNormalizedInputForCaching(req).(type) {
+	case []schemas.ChatMessage:
+		if len(input) < 2 {
+			return "", nil
+		}
+		history = input[:len(input)-1]
+	case []schemas.ResponsesMessage:
+		if len(input) < 2 {
+			return "", nil
+		}
+		history = input[:len(input)-1]
+	default:
+		return "", nil
+	}
+	data, err := schemas.MarshalDeeplySorted(history)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal conversation history for hashing: %w", err)
+	}
+	return fmt.Sprintf("%x", xxhash.Sum64(data)), nil
+}
+
+// newestMessage returns only the last message of a conversation. Earlier messages are matched exactly
+// through the conversation_history filter, so embedding them would let a long shared history hide a
+// different newest question.
+func newestMessage[T any](messages []T) []T {
+	if len(messages) > 1 {
+		return messages[len(messages)-1:]
+	}
+	return messages
 }
 
 // responseHasToolCalls reports whether a response (or stream chunk) carries a
@@ -483,7 +540,7 @@ func extractChatMessageContent(msg schemas.ChatMessage) string {
 // single string, mirroring extractChatMessageContent but for the Responses API.
 func extractResponsesMessageContent(msg schemas.ResponsesMessage) string {
 	if msg.Content == nil {
-		return ""
+		return extractResponsesToolOutputText(msg)
 	}
 	if msg.Content.ContentStr != nil {
 		return *msg.Content.ContentStr
@@ -498,6 +555,34 @@ func extractResponsesMessageContent(msg schemas.ResponsesMessage) string {
 		return strings.Join(parts, " ")
 	}
 	return ""
+}
+
+// extractResponsesToolOutputText returns the text of a tool output item (function, custom, shell),
+// which carries its result in Output, not Content. Outputs with no text, such as a computer
+// screenshot, return "".
+func extractResponsesToolOutputText(msg schemas.ResponsesMessage) string {
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Output == nil {
+		return ""
+	}
+	output := msg.ResponsesToolMessage.Output
+	if output.ResponsesToolCallOutputStr != nil {
+		return *output.ResponsesToolCallOutputStr
+	}
+	var parts []string
+	for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
+		if block.Text != nil {
+			parts = append(parts, *block.Text)
+		}
+	}
+	for _, shell := range output.ResponsesShellCallOutput {
+		if shell.Stdout != "" {
+			parts = append(parts, shell.Stdout)
+		}
+		if shell.Stderr != "" {
+			parts = append(parts, shell.Stderr)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // extractTextForEmbedding flattens the request input into a single string
@@ -526,7 +611,7 @@ func (plugin *Plugin) extractTextForEmbedding(state *cacheState, req *schemas.Bi
 			return "", fmt.Errorf("failed to cast request input to chat messages")
 		}
 		var textParts []string
-		for _, msg := range reqInput {
+		for _, msg := range newestMessage(reqInput) {
 			content := extractChatMessageContent(msg)
 			if content == "" {
 				continue
@@ -544,7 +629,7 @@ func (plugin *Plugin) extractTextForEmbedding(state *cacheState, req *schemas.Bi
 			return "", fmt.Errorf("failed to cast request input to responses messages")
 		}
 		var textParts []string
-		for _, msg := range reqInput {
+		for _, msg := range newestMessage(reqInput) {
 			content := extractResponsesMessageContent(msg)
 			if content == "" {
 				continue

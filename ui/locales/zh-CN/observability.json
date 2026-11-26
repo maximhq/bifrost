@@ -516,7 +516,6 @@
 				"allowed": "已允许",
 				"blocked": "已拦截",
 				"redacted": "已隐藏",
-				"transformed": "已转换",
 				"monitored": "已监控",
 				"detected": "已检测"
 			},
@@ -572,11 +571,9 @@
 			"toolTypeCount_other": "{{type}} · {{count}} 个工具",
 			"guardrailHints": {
 				"blocked": "该规则已拦截此请求。",
-				"redacted": "该规则已移除匹配的内容，请求继续执行。",
-				"transformed": "该规则已改写匹配的内容，请求继续执行。",
+				"redacted": "该规则已遮盖或改写匹配的内容，请求继续执行。",
 				"monitoredWouldBlock": "该规则仅作监控：本应拦截此请求，但请求原样继续执行。",
 				"monitoredWouldRedact": "该规则仅作监控：本应对此内容进行脱敏，但请求原样继续执行。",
-				"monitoredWouldTransform": "该规则仅作监控：本应对此内容进行改写，但请求原样继续执行。",
 				"monitored": "该规则仅作监控：请求原样继续执行。",
 				"detected": "该规则已标记此请求，并让其原样继续执行。"
 			},
