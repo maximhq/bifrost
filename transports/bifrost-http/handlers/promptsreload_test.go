@@ -262,3 +262,36 @@ func TestPromptMutationsNameTheirPrompts(t *testing.T) {
 		})
 	}
 }
+
+// promptMutationEvents is the typed audit event each write endpoint records.
+var promptMutationEvents = map[string]string{
+	"deleteFolder":  "prompt_folder.deleted",
+	"createPrompt":  "prompt.created",
+	"updatePrompt":  "prompt.updated",
+	"deletePrompt":  "prompt.deleted",
+	"createVersion": "prompt_version.created",
+	"deleteVersion": "prompt_version.deleted",
+	"createSession": "prompt_session.created",
+	"updateSession": "prompt_session.updated",
+	"deleteSession": "prompt_session.deleted",
+	"renameSession": "prompt_session.renamed",
+	"commitSession": "prompt_session.committed",
+}
+
+// A write that is saved before the reload fails keeps its typed event; a write that fails records none.
+func TestPromptMutationsRecordTheSavedWriteWhenReloadFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, m := range promptMutations() {
+		t.Run(m.name, func(t *testing.T) {
+			handler := NewPromptsHandler(&promptReloadStore{}, &countingPromptReloader{err: errors.New("database unavailable")})
+			ctx := promptRequestCtx(t, m)
+			m.invoke(handler, ctx)
+			require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			requireSingleAuditChange(t, ctx, promptMutationEvents[m.name])
+
+			failed := promptRequestCtx(t, m)
+			m.invoke(NewPromptsHandler(&promptReloadStore{writeErr: errors.New("database unavailable")}, &countingPromptReloader{}), failed)
+			require.Empty(t, liveAuditChanges(failed), "a write that did not land records nothing")
+		})
+	}
+}
