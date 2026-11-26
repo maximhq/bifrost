@@ -14,6 +14,30 @@ This is NOT the Go test harness in `core/internal/llmtests/` (that one is run vi
 `make test-core PROVIDER=...`). If the user seems to want Go-level scenario tests,
 confirm before proceeding.
 
+It is not the MCP harness either. MCP behaviour (MCP clients and their auth, `/mcp`, tool
+execution, MCP tools in inference, filtering, Virtual MCPs, per-user discovery, MCP logs)
+is tested in `tests/e2e/api/runners/build-mcp-harness.mjs`: use
+`.claude/skills/mcp-harness/SKILL.md` for those cases. Only a change to how a provider
+converts tool definitions or tool calls belongs here.
+
+Nor is it the semantic cache wiring suite. Semantic cache behaviour (what a request writes,
+hits or misses and what a hit replays, `cache_debug` and the `x-bifrost-cache-*` headers,
+the `x-bf-cache-*` request headers, identity scoping, the cache clear endpoints, the
+plugin's config, the vector stores) is tested in
+`tests/e2e/api/runners/build-semantic-cache-wiring.mjs`: use
+`.claude/skills/semantic-cache-wiring/SKILL.md` for those cases. Only a change to what a
+provider receives or returns on a request the cache does not answer belongs here.
+
+Nor is it the routing harness. Routing behaviour (routing rules, model routers and the
+complexity router, the model catalog and key aliases, virtual key routing and governance
+load balancing, key selection, key pins and direct keys, session affinity, fallbacks and
+retries, `routing_info` and the routing log) is tested in
+`tests/e2e/api/runners/build-routing-wiring.mjs` and `build-model-catalog-wiring.mjs`: use
+`.claude/skills/routing-harness/SKILL.md` for those cases. The routing folders already in
+`provider-harness.json` stay, and a change that alters what one of them pins updates it
+here; add no new routing folders. Only a change to how a provider converts the request it
+was routed to, or the response it returns, belongs here.
+
 ## Step 1 - Resolve the reference
 
 The argument may be a PR number, an issue number, or a GitHub URL.
