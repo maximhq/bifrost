@@ -1,7 +1,6 @@
 package routing
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,7 +8,6 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 )
 
@@ -27,42 +25,35 @@ const (
 
 var errInvalidComplexitySessionTier = errors.New("invalid stored complexity session tier")
 
-// complexitySessionStore retains one effective complexity tier per agent of a
-// scoped session (see complexityStateKey). It stores no request content,
-// classifier scores, model choices, provider-cache information, or turn
-// history. The router calculates the highest tier before refreshing the
-// entry's TTL. Because KVStore exposes the read and write as separate
-// operations, overlapping requests for the same agent are best-effort and
-// resolve by last writer wins.
-type complexitySessionStore struct {
-	store schemas.KVStore
-	ttl   time.Duration
+type complexitySessionResolution struct {
+	PreviousTier  string
+	EffectiveTier string
+	Existed       bool
+	Escalated     bool
 }
 
-// complexityTurnTierStore keeps the latest effective tier for tool continuations.
-type complexityTurnTierStore struct {
-	store schemas.KVStore
-}
+// The session table keeps one effective complexity tier per agent of a scoped session (see
+// complexityStateKey), and the latest effective tier of its tool continuations. It holds no
+// request content, classifier scores, model choices, provider-cache information or turn history.
+// Reads and writes are separate operations, so overlapping requests for the same agent are
+// best-effort and the last writer wins.
 
-// load returns a valid tier cached for the current session, without refreshing its TTL.
-func (s *complexityTurnTierStore) load(key string) (string, bool, error) {
-	if s == nil || s.store == nil {
+// loadTurnTier returns a valid tier cached for the current session, without refreshing its TTL.
+func (p *RoutingPlugin) loadTurnTier(key string) (string, bool, error) {
+	if p.sessions == nil {
 		return "", false, nil
 	}
-	value, err := s.store.Get(key)
-	if errors.Is(err, kvstore.ErrNotFound) {
+	value, ok := p.sessions.Get(key)
+	if !ok {
 		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
 	}
 	tier, err := decodeStoredComplexityTier(value)
 	return tier, true, err
 }
 
-// save stores the served tier using the request's session-sticky inactivity TTL.
-func (s *complexityTurnTierStore) save(key, tier string, ttl time.Duration) error {
-	if s == nil || s.store == nil {
+// saveTurnTier stores the served tier using the request's session-sticky inactivity TTL.
+func (p *RoutingPlugin) saveTurnTier(key, tier string, ttl time.Duration) error {
+	if p.sessions == nil {
 		return nil
 	}
 	if _, ok := complexityTierRank(tier); !ok {
@@ -71,33 +62,19 @@ func (s *complexityTurnTierStore) save(key, tier string, ttl time.Duration) erro
 	if ttl <= 0 {
 		ttl = schemas.DefaultSessionStickyTTL
 	}
-	return s.store.SetWithTTL(key, tier, ttl)
+	p.sessions.PutWithTTL(key, tier, ttl)
+	return nil
 }
 
-type complexitySessionResolution struct {
-	PreviousTier  string
-	EffectiveTier string
-	Existed       bool
-	Escalated     bool
-}
-
-// newComplexitySessionStore creates monotonic session-tier storage.
-func newComplexitySessionStore(store schemas.KVStore, ttl time.Duration) *complexitySessionStore {
-	return &complexitySessionStore{store: store, ttl: ttl}
-}
-
-// load returns the current unexpired tier. When refresh is true, an existing
+// loadSessionTier returns the current unexpired tier under key. When refresh is true, an existing
 // entry receives a fresh inactivity TTL. It never creates an entry.
-func (s *complexitySessionStore) load(key string, refresh bool) (string, bool, error) {
-	if s == nil || s.store == nil {
+func (p *RoutingPlugin) loadSessionTier(key string, refresh bool) (string, bool, error) {
+	if p.sessions == nil {
 		return "", false, nil
 	}
-	value, err := s.store.Get(key)
-	if errors.Is(err, kvstore.ErrNotFound) {
+	value, ok := p.sessions.Get(key)
+	if !ok {
 		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
 	}
 
 	tier, err := decodeStoredComplexityTier(value)
@@ -105,19 +82,17 @@ func (s *complexitySessionStore) load(key string, refresh bool) (string, bool, e
 		return "", true, err
 	}
 	if refresh {
-		if err := s.store.SetWithTTL(key, tier, s.ttl); err != nil {
-			return "", true, err
-		}
+		p.sessions.PutWithTTL(key, tier, complexitySessionInactivityTTL)
 	}
 	return tier, true, nil
 }
 
-// resolve stores max(current, proposed) and refreshes the inactivity TTL. An
-// empty proposal refreshes an existing entry but never creates one. The tier
-// comparison belongs here rather than in the generic KV store; Get and
-// SetWithTTL are intentionally a best-effort read-modify-write sequence.
-func (s *complexitySessionStore) resolve(key, proposed string) (complexitySessionResolution, error) {
-	if s == nil || s.store == nil {
+// resolveSessionTier stores max(current, proposed) under key and refreshes the inactivity TTL. An
+// empty proposal refreshes an existing entry but never creates one. The tier comparison belongs
+// here rather than in the table; Get and PutWithTTL are intentionally a best-effort
+// read-modify-write sequence.
+func (p *RoutingPlugin) resolveSessionTier(key, proposed string) (complexitySessionResolution, error) {
+	if p.sessions == nil {
 		return complexitySessionResolution{EffectiveTier: proposed}, nil
 	}
 	if proposed != "" {
@@ -126,7 +101,7 @@ func (s *complexitySessionStore) resolve(key, proposed string) (complexitySessio
 		}
 	}
 
-	previous, existed, err := s.load(key, false)
+	previous, existed, err := p.loadSessionTier(key, false)
 	if err != nil {
 		return complexitySessionResolution{}, err
 	}
@@ -138,9 +113,7 @@ func (s *complexitySessionStore) resolve(key, proposed string) (complexitySessio
 	if existed && (effective == "" || complexityTierAtLeast(previous, effective)) {
 		effective = previous
 	}
-	if err := s.store.SetWithTTL(key, effective, s.ttl); err != nil {
-		return complexitySessionResolution{}, err
-	}
+	p.sessions.PutWithTTL(key, effective, complexitySessionInactivityTTL)
 	return complexitySessionResolution{
 		PreviousTier:  previous,
 		EffectiveTier: effective,
@@ -170,19 +143,8 @@ func complexityTierAtLeast(left, right string) bool {
 	return leftOK && rightOK && leftRank >= rightRank
 }
 
-// decodeStoredComplexityTier validates and canonicalizes a tier read from KV storage.
-func decodeStoredComplexityTier(value any) (string, error) {
-	var tier string
-	switch typed := value.(type) {
-	case string:
-		tier = typed
-	case []byte:
-		if err := json.Unmarshal(typed, &tier); err != nil {
-			tier = string(typed)
-		}
-	default:
-		return "", fmt.Errorf("%w: value has type %T", errInvalidComplexitySessionTier, value)
-	}
+// decodeStoredComplexityTier validates a tier read from the session table.
+func decodeStoredComplexityTier(tier string) (string, error) {
 	if _, ok := complexityTierRank(tier); !ok {
 		return "", fmt.Errorf("%w: %q", errInvalidComplexitySessionTier, tier)
 	}
@@ -193,13 +155,34 @@ func decodeStoredComplexityTier(value any) (string, error) {
 // session state key, scoped to the virtual key and user the request is attributed to, under
 // the complexity kind. See complexityStateKey for the agent scoping.
 func complexitySessionKey(ctx *schemas.BifrostContext) string {
-	return complexityStateKey(ctx, complexitySessionKind)
+	return complexitySessionKeyFor(ctx, "")
+}
+
+// complexitySessionKeyFor is complexitySessionKey for one model router, so routers never
+// raise each other's session tiers.
+func complexitySessionKeyFor(ctx *schemas.BifrostContext, routerID string) string {
+	return complexityStateKey(ctx, complexityRouterKind(complexitySessionKind, routerID))
 }
 
 // complexityTurnTierKey scopes continuation tier state to the request's session, caller and
 // agent, so a subagent's tool loop never resumes on a tier its parent served, or the reverse.
 func complexityTurnTierKey(ctx *schemas.BifrostContext) string {
-	return complexityStateKey(ctx, complexityTurnTierKind)
+	return complexityTurnTierKeyFor(ctx, "")
+}
+
+// complexityTurnTierKeyFor is complexityTurnTierKey for one model router.
+func complexityTurnTierKeyFor(ctx *schemas.BifrostContext, routerID string) string {
+	return complexityStateKey(ctx, complexityRouterKind(complexityTurnTierKind, routerID))
+}
+
+// complexityRouterKind scopes a state kind to a model router. The Complexity Router page's
+// config, which has no router id, keeps the kinds written before routers existed, so its
+// session state is unchanged.
+func complexityRouterKind(kind, routerID string) string {
+	if routerID == "" {
+		return kind
+	}
+	return kind + ":" + routerID
 }
 
 // complexityStateKey keys complexity state per agent rather than per session. Harnesses run

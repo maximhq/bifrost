@@ -81,3 +81,41 @@ func TestListModelsPipelineBackfillsRegexAllowedAliases(t *testing.T) {
 		t.Fatalf("listed %v, want %v", got, want)
 	}
 }
+
+func TestListModelsPipelineSkipsPatternAliases(t *testing.T) {
+	aliases := schemas.KeyAliases{
+		"regex:(claude-.*)": {ModelID: "global.anthropic.$1"},
+		"my-sonnet":         {ModelID: "anthropic.claude-sonnet-5"},
+	}
+	for label, allowed := range map[string]schemas.WhiteList{
+		"wildcard":   {"*"},
+		"restricted": {"claude-fable-5", "regex:my-.*"},
+	} {
+		p := &ListModelsPipeline{
+			AllowedModels: allowed,
+			Aliases:       aliases,
+			ProviderKey:   schemas.Bedrock,
+			MatchFns:      DefaultMatchFns(),
+		}
+		var ids []string
+		for _, r := range p.FilterModel("global.anthropic.$1") {
+			ids = append(ids, r.ResolvedID)
+		}
+		backfill := p.BackfillModels(map[string]bool{})
+		aliasFor := map[string]string{}
+		for _, m := range backfill {
+			ids = append(ids, m.ID)
+			if m.Alias != nil {
+				aliasFor[m.ID] = *m.Alias
+			}
+		}
+		for _, id := range ids {
+			if strings.Contains(id, "regex:") {
+				t.Errorf("%s: pattern alias key listed as model %q", label, id)
+			}
+		}
+		if label == "restricted" && aliasFor["bedrock/claude-fable-5"] != "global.anthropic.claude-fable-5" {
+			t.Errorf("restricted: allowlist entry alias = %q, want global.anthropic.claude-fable-5", aliasFor["bedrock/claude-fable-5"])
+		}
+	}
+}

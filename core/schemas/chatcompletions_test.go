@@ -422,3 +422,152 @@ func BenchmarkChatMessageUnmarshalAssistant(b *testing.B) {
 		})
 	}
 }
+
+func TestBifrostCostZeroTotalSurvivesRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"bare zero", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0}`, `{"total_cost":0}`},
+		{"nested zero total", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":{"total_cost":0}}`, `{"total_cost":0}`},
+		{"nested zero split", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":{"input_cost":0,"output_cost":0,"total_cost":0}}`, `{"total_cost":0}`},
+		{"bare nonzero", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":0.25}`, `{"total_cost":0.25}`},
+		{"nested split", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":{"input_cost":0.1,"output_cost":0.15,"total_cost":0.25}}`, `{"input_cost":0.1,"output_cost":0.15,"total_cost":0.25}`},
+		{"absent", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}`, ""},
+		{"null", `{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4,"cost":null}`, ""},
+	}
+	marshalers := map[string]func(any) ([]byte, error){
+		"sonic":         Marshal,
+		"encoding/json": json.Marshal,
+	}
+	for _, tc := range cases {
+		for mName, marshal := range marshalers {
+			t.Run(tc.name+"/"+mName, func(t *testing.T) {
+				var u BifrostLLMUsage
+				if err := Unmarshal([]byte(tc.in), &u); err != nil {
+					t.Fatal(err)
+				}
+				out, err := marshal(&u)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var got map[string]json.RawMessage
+				if err := json.Unmarshal(out, &got); err != nil {
+					t.Fatal(err)
+				}
+				cost, ok := got["cost"]
+				if tc.want == "" {
+					if ok {
+						t.Fatalf("cost must stay absent, got %s in %s", cost, out)
+					}
+					return
+				}
+				if !ok || string(cost) != tc.want {
+					t.Fatalf("cost = %s, want %s (usage %s)", cost, tc.want, out)
+				}
+			})
+		}
+	}
+}
+
+// A custom tool call keeps its name and input through a JSON round trip, and is not
+// sent with an empty function object, on both the message and the stream delta.
+func TestChatAssistantMessageToolCall_CustomRoundTrip(t *testing.T) {
+	custom := `{"index":0,"type":"custom","id":"call_1","custom":{"name":"code_exec","input":"print(1)"}}`
+	function := `{"index":1,"type":"function","id":"call_2","function":{"name":"f","arguments":""}}`
+	body := `{"role":"assistant","content":null,"tool_calls":[` + custom + `,` + function + `]}`
+	var msg ChatMessage
+	if err := Unmarshal([]byte(body), &msg); err != nil {
+		t.Fatal(err)
+	}
+	tc := msg.ChatAssistantMessage.ToolCalls[0]
+	if tc.Custom == nil || tc.Custom.Name == nil || *tc.Custom.Name != "code_exec" || tc.Custom.Input != "print(1)" {
+		t.Fatalf("custom call not decoded: %+v", tc.Custom)
+	}
+	out, err := Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"role":"assistant","content":null,"refusal":null,"tool_calls":[` + custom + `,` + function + `]}`; string(out) != want {
+		t.Fatalf("message: got %s, want %s", out, want)
+	}
+
+	delta := ChatStreamResponseChoiceDelta{ToolCalls: msg.ChatAssistantMessage.ToolCalls[:1]}
+	out, err = Marshal(delta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"tool_calls":[` + custom + `]}`; string(out) != want {
+		t.Fatalf("delta: got %s, want %s", out, want)
+	}
+
+	// Calls without a custom entry keep their shape, empty function object included.
+	plain := ChatStreamResponseChoiceDelta{ToolCalls: []ChatAssistantMessageToolCall{{Index: 0}}}
+	out, err = Marshal(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"tool_calls":[{"index":0,"function":{"arguments":""}}]}`; string(out) != want {
+		t.Fatalf("function delta changed shape: got %s, want %s", out, want)
+	}
+}
+
+func BenchmarkChatStreamDeltaToolCallMarshal(b *testing.B) {
+	delta := ChatStreamResponseChoiceDelta{ToolCalls: []ChatAssistantMessageToolCall{{
+		Type: Ptr("function"), ID: Ptr("call_1"), Function: ChatAssistantMessageToolCallFunction{Name: Ptr("get_weather"), Arguments: `{"city":"Paris"}`},
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := Marshal(delta); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestResponsesUsageZeroCostSurvivesRoundTrip(t *testing.T) {
+	var u ResponsesResponseUsage
+	if err := Unmarshal([]byte(`{"input_tokens":3,"output_tokens":1,"total_tokens":4,"cost":0}`), &u); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Marshal(&u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"cost":{"total_cost":0}`) {
+		t.Fatalf("zero cost lost on the responses usage: %s", out)
+	}
+}
+
+func BenchmarkBifrostLLMUsageMarshalCost(b *testing.B) {
+	cases := map[string]*BifrostLLMUsage{
+		"zero":  {PromptTokens: 1200, CompletionTokens: 300, TotalTokens: 1500, Cost: &BifrostCost{}},
+		"total": {PromptTokens: 1200, CompletionTokens: 300, TotalTokens: 1500, Cost: &BifrostCost{TotalCost: 0.0042}},
+		"split": {PromptTokens: 1200, CompletionTokens: 300, TotalTokens: 1500, Cost: &BifrostCost{InputCost: 0.003, OutputCost: 0.0012, TotalCost: 0.0042}},
+	}
+	for name, u := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := Marshal(u); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestChatToolChoiceAllowedTools_CustomEntryRoundTrip(t *testing.T) {
+	in := `{"type":"allowed_tools","allowed_tools":{"mode":"required","tools":[{"type":"custom","custom":{"name":"exec"}},{"type":"function","function":{"name":"get_weather"}}]}}`
+	var choice ChatToolChoice
+	if err := json.Unmarshal([]byte(in), &choice); err != nil {
+		t.Fatal(err)
+	}
+	out, err := json.Marshal(choice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in {
+		t.Fatalf("got  %s\nwant %s", out, in)
+	}
+}

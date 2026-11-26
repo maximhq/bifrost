@@ -35,6 +35,15 @@
           "weight": 1,
           "models": ["*"],
           "use_for_batch_api": true
+        },
+        {
+          "id": "openai-key-nocontent",
+          "name": "OpenAI API Key (content logging off)",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["bf-nocontent-gpt-4o-mini"],
+          "aliases": { "bf-nocontent-gpt-4o-mini": { "model_id": "gpt-4o-mini" } },
+          "disable_content_logging": true
         }
       ],
       "network_config": {
@@ -466,6 +475,22 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "soniox": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Soniox API Key",
+          "value": "env.SONIOX_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "byteplus": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -496,6 +521,22 @@
         {
           "name": "Baseten API Key",
           "value": "env.BASETEN_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "kimchi": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Kimchi API Key",
+          "value": "env.KIMCHI_API_KEY",
           "weight": 1,
           "models": ["*"]
         }
@@ -709,6 +750,22 @@
         {
           "name": "Runware API Key",
           "value": "env.RUNWARE_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "machgen": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "MachGen API Key",
+          "value": "env.MACHGEN_API_KEY",
           "weight": 1,
           "models": ["*"]
         }
@@ -1582,6 +1639,13 @@
         "virtual_key_id": "vk-harness-relay-budget"
       }
     ],
+    "teams": [
+      {
+        "id": "team-nocontent",
+        "name": "Test Team (content logging off)",
+        "disable_content_logging": true
+      }
+    ],
     "virtual_keys": [
       {
         "name": "Harness config.json budget key",
@@ -1713,6 +1777,12 @@
             "weight": 1.0
           },
           {
+            "provider": "kimchi",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
             "provider": "openrouter",
             "allowed_models": ["*"],
             "key_ids": ["*"],
@@ -1801,6 +1871,22 @@
         "relay_grants": [
           {
             "relay_name": "harness-relay-pricing"
+          }
+        ]
+      },
+      {
+        "name": "Test Key (content logging on, team off)",
+        "id": "vk-test-teamoff",
+        "value": "sk-bf-test-key-teamoff",
+        "is_active": true,
+        "team_id": "team-nocontent",
+        "disable_content_logging": false,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
           }
         ]
       }
@@ -1973,6 +2059,7 @@
     "read_buffer_size": 65536
   },
   "client": {
+    "bifrost_url": "http://localhost:8080",
     "allow_per_request_raw_override": true,
     "allow_direct_keys": true,
     "drop_excess_requests": false,
@@ -1983,7 +2070,17 @@
     "max_request_body_size_mb": 100,
     "mcp_server_auth_mode": "both",
     "oauth2_server_config": {
-      "issuer_url": "http://localhost:8080"
+      "issuer_url": "http://localhost:8080",
+      "gateways": {
+        "claude_code": {
+          "enabled": true,
+          "managed_settings": {
+            "env": {
+              "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1"
+            }
+          }
+        }
+      }
     }
   },
   "vector_store": {

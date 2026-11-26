@@ -1,3 +1,4 @@
+import { validatePatternAlias } from "@/components/modelAccess/utils";
 import { KnownProvidersNames } from "@/lib/constants/logs";
 import { MCP_MAX_PROTOCOL_VERSIONS } from "@/lib/constants/mcp";
 import i18n from "@/lib/i18n";
@@ -734,6 +735,7 @@ export const databricksKeyConfigSchema = z
 		client_id: secretVarSchema.optional(),
 		client_secret: secretVarSchema.optional(),
 		forward_gateway_tags: z.boolean().optional(),
+		scopes: z.array(z.string()).optional(),
 		// UI-only discriminator, mirroring the azure/vertex/bedrock key forms.
 		_auth_type: z.enum(["pat", "oauth_m2m"]).optional(),
 	})
@@ -841,7 +843,13 @@ export const modelProviderKeySchema = z
 			.pipe(
 				z.number().min(0, msg("validation.weightMustBeEqualToOrGreaterThan0")).max(1, msg("validation.weightMustBeEqualToOrLessThan1")),
 			),
-		aliases: z.record(z.string(), aliasConfigSchema).optional(),
+		aliases: z
+			.record(z.string(), aliasConfigSchema)
+			.optional()
+			.refine(
+				(value) => !value || Object.entries(value).every(([name, cfg]) => !validatePatternAlias(name, cfg.model_id, cfg.model_name)),
+				msg("validation.deploymentPatternInvalid"),
+			),
 		azure_key_config: azureKeyConfigSchema.optional(),
 		vertex_key_config: vertexKeyConfigSchema.optional(),
 		bedrock_key_config: bedrockKeyConfigSchema.optional(),
@@ -856,6 +864,8 @@ export const modelProviderKeySchema = z
 		oauth_key_config: oauthKeyConfigSchema.optional(),
 		anthropic_key_config: anthropicKeyConfigSchema.optional(),
 		use_for_batch_api: z.boolean().optional(),
+		// Tri-state: null/absent inherits, true forces content off, false forces it on.
+		disable_content_logging: z.boolean().nullable().optional(),
 		use_anthropic_endpoints: z.boolean().optional(),
 		use_openai_endpoints: z.boolean().optional(),
 		enabled: z.boolean().optional(),
@@ -1522,6 +1532,97 @@ const providerBackedCacheConfigSchema = baseCacheConfigSchema
 export const cacheConfigSchema = z.union([directCacheConfigSchema, providerBackedCacheConfigSchema]);
 
 // Core config schema
+// Mirrors configstore.MaxPublicURLLength: bifrost_url is stored in a varchar(512) column.
+export const MAX_PUBLIC_URL_LENGTH = 512;
+// Mirrors configstore.MaxOpenAPIURLLength.
+export const MAX_OPENAPI_URL_LENGTH = 2048;
+
+// Go measures these limits with len(), in UTF-8 bytes, not UTF-16 code units.
+const utf8Length = (value: string) => new TextEncoder().encode(value).length;
+
+// The browser's URL parser normalizes what Go's url.Parse refuses (it drops tabs and
+// newlines, empty userinfo, missing or extra slashes after the scheme, and treats "\"
+// as "/"), so the raw text is checked first. urlAuthority returns the authority as
+// written, or null when the value has no "scheme://" or contains a control character.
+function urlAuthority(value: string): string | null {
+	if (/[\x00-\x1f\x7f]/.test(value)) return null;
+	const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(value);
+	return match ? match[1] : null;
+}
+
+// publicBaseUrlError mirrors configstore.ValidatePublicBaseURL: empty, or an absolute
+// http(s) URL without userinfo, a query or a fragment. The server checks the value as
+// sent, so surrounding whitespace is an error here too (the URL parser would drop it).
+export function publicBaseUrlError(value: string): string | null {
+	if (value === "") return null;
+	if (utf8Length(value) > MAX_PUBLIC_URL_LENGTH) return i18n.t("validation.maxChars", { maximum: String(MAX_PUBLIC_URL_LENGTH) });
+	const authority = urlAuthority(value);
+	if (authority === null || authority === "" || authority.includes("\\")) return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	let parsed: URL;
+	try {
+		parsed = new URL(value);
+	} catch {
+		return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	}
+	if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname) {
+		return i18n.t("validation.mustBeAValidHttpOrHttpsUrl");
+	}
+	// Go keeps an empty userinfo ("https://@host"), which the browser drops.
+	if (authority.includes("@") || value.includes("?") || value.includes("#")) {
+		return i18n.t("validation.publicUrlNoUserinfoQueryOrFragment");
+	}
+	return null;
+}
+
+// openAPIUrlError mirrors configstore.ValidateOpenAPIURL: empty (the build's default
+// spec), an absolute http(s) URL, or a relative path that stays inside the app directory.
+export function openAPIUrlError(raw: string): string | null {
+	const value = raw.trim();
+	if (value === "") return null;
+	if (utf8Length(value) > MAX_OPENAPI_URL_LENGTH) return i18n.t("validation.maxChars", { maximum: String(MAX_OPENAPI_URL_LENGTH) });
+	if (value.startsWith("http://") || value.startsWith("https://")) {
+		// Go takes the host after any userinfo, so "https://@host" is fine but "https:///x" is not.
+		const authority = urlAuthority(value);
+		const host = authority?.slice(authority.lastIndexOf("@") + 1);
+		if (host && !host.includes("\\")) {
+			try {
+				if (new URL(value).hostname) return null;
+			} catch {
+				// falls through to the error below
+			}
+		}
+		return i18n.t("validation.openapiUrlMustBeHttpUrlOrRelativePath");
+	}
+	if (value.includes("://")) return i18n.t("validation.openapiUrlMustBeHttpUrlOrRelativePath");
+	if (value.startsWith("/")) return i18n.t("validation.openapiUrlMustStayInAppDir");
+	// filepath.Clean, then refuse a path whose first segment is "..".
+	let depth = 0;
+	for (const segment of value.split("/")) {
+		if (segment === "" || segment === ".") continue;
+		if (segment === "..") {
+			if (depth === 0) return i18n.t("validation.openapiUrlMustStayInAppDir");
+			depth--;
+		} else {
+			depth++;
+		}
+	}
+	return null;
+}
+
+// bifrost_url as the client settings form edits it. An env or vault reference resolves
+// on the server, so only a literal value is checked here.
+export const bifrostUrlSchema = secretVarSchema.superRefine((secret, ctx) => {
+	if (secret.ref?.trim() || secret.type === "env" || secret.type === "vault") return;
+	const error = publicBaseUrlError(secret.value ?? "");
+	if (error) ctx.addIssue({ code: "custom", message: error });
+});
+
+// framework_config.openapi_url as the client settings form edits it.
+export const openAPIUrlSchema = z.string().superRefine((value, ctx) => {
+	const error = openAPIUrlError(value);
+	if (error) ctx.addIssue({ code: "custom", message: error });
+});
+
 export const coreConfigSchema = z.object({
 	drop_excess_requests: z.boolean().default(false),
 	initial_pool_size: z.number().min(1).default(10),
@@ -1534,6 +1635,7 @@ export const coreConfigSchema = z.object({
 	enforce_vk_object_ownership: z.boolean().default(true),
 	skip_access_profile_user_virtual_key_creation: z.boolean().default(false),
 	skip_access_profile_user_virtual_key_deletion: z.boolean().default(false),
+	entity_access_profile_mode: z.enum(["union", "intersect"]).default("union"),
 	extra_fields_placement: z.enum(["body", "headers"]).default("body"),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
@@ -1544,6 +1646,9 @@ export const coreConfigSchema = z.object({
 	mcp_disable_auto_tool_inject: z.boolean().default(false),
 	mcp_max_instructions_per_client: z.number().int().min(0).default(0),
 	mcp_max_instructions_total: z.number().int().min(0).default(0),
+	mcp_openapi_max_spec_mb: z.number().int().min(0).max(256).default(0),
+	bifrost_url: bifrostUrlSchema.optional(),
+	bifrost_mcp_allow_writes: z.boolean().optional(),
 	mcp_code_mode_limits: z
 		.object({
 			max_source_bytes: z.number().int().min(0).optional(),
@@ -1671,6 +1776,7 @@ export const otelConfigSchema = z
 		metrics_push_interval: z.number().int().min(1).max(300).default(15),
 		request_headers: z.array(z.string()).default([]),
 		disable_content_logging: z.boolean().default(false),
+		apply_trace_dimensions_to_child_spans: z.boolean().default(false),
 		export_raw_payloads: z.boolean().default(false),
 		group_traces_by_session: z.boolean().default(false),
 		disable_root_span_content: z.boolean().default(false),
@@ -1924,6 +2030,7 @@ export type MCPOpenAPIConfigSchema = z.infer<typeof mcpOpenAPIConfigSchema>;
 export const mcpClientUpdateSchema = z
 	.object({
 		is_code_mode_client: z.boolean().optional(),
+		server_type_on_slug: z.enum(["inherit", "enabled", "disabled"]).optional(),
 		is_ping_available: z.boolean().optional(),
 		needs_session_stickiness: z.boolean().optional(),
 		per_user_discovery: z.boolean().optional(),
@@ -2645,3 +2752,50 @@ export const datasheetOverrideFormSchema = z
 	});
 
 export type DatasheetOverrideFormSchema = z.infer<typeof datasheetOverrideFormSchema>;
+// modelRouterIdentitySchema is a model router's name and description, as the
+// creation wizard and the router sheet ask for them.
+export const modelRouterIdentitySchema = z.object({
+	name: z.string().trim().min(1, msg("validation.nameIsRequired")),
+	description: z.string().trim(),
+});
+
+export type ModelRouterIdentityFormSchema = z.infer<typeof modelRouterIdentitySchema>;
+
+// The entity a non-global routing scope points at, named for its missing-entity message.
+function modelRouterScopeNoun(scope: string): string {
+	if (scope === "team") return i18n.t("routing.team", { ns: "models" });
+	if (scope === "customer") return i18n.t("routing.customer", { ns: "models" });
+	if (scope === "user") return i18n.t("routing.user", { ns: "models" });
+	return i18n.t("routing.scopeVirtualKey", { ns: "models" });
+}
+
+// modelRouterSheetSchema is the router sheet's form: the router's name and
+// description, whether it is on, and where it takes requests. The priority is
+// kept as typed so a bad entry shows under its field; the condition is edited
+// by the condition builder beside the form.
+export const modelRouterSheetSchema = modelRouterIdentitySchema
+	.extend({
+		enabled: z.boolean(),
+		scope: z.string(),
+		scope_id: z.string(),
+		priority: z.string(),
+	})
+	.superRefine((data, ctx) => {
+		if (data.scope !== "global" && !data.scope_id.trim()) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["scope_id"],
+				message: i18n.t("routing.scopeRequired", { ns: "models", scope: modelRouterScopeNoun(data.scope) }),
+			});
+		}
+		const priority = Number(data.priority);
+		if (data.priority.trim() === "" || !Number.isInteger(priority) || priority < 0 || priority > 1000) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["priority"],
+				message: i18n.t("routing.modelRouters.routing.priorityInvalid", { ns: "models" }),
+			});
+		}
+	});
+
+export type ModelRouterSheetFormSchema = z.infer<typeof modelRouterSheetSchema>;

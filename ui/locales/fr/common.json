@@ -77,7 +77,8 @@
 		"modelLimits": "limites de modèle",
 		"agent": "agent",
 		"relay": "relais",
-		"relays": "relais"
+		"relays": "relais",
+		"modelRouters": "routeurs"
 	},
 	"aboutField": "À propos de {{field}}",
 	"thisField": "ce champ",
@@ -121,7 +122,8 @@
 		"searching": "Recherche…",
 		"loadingMore": "Chargement…",
 		"useModel": "Utiliser <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqué(s)"
+		"grantSummaryBlocked": "{{allowed}} · {{blocked}} bloqué(s)",
+		"templateUnknownGroup": "Fait référence au groupe de capture {{group}}, que le motif ne définit pas"
 	},
 	"providerSelect": {
 		"select": "Sélectionner un fournisseur",
@@ -189,8 +191,7 @@
 		"toggle": "Afficher/masquer la barre latérale"
 	},
 	"sheet": {
-		"collapse": "Réduire",
-		"expand": "Développer"
+		"resizeHandle": "Redimensionner le panneau"
 	},
 	"tabs": {
 		"showMore_one": "Afficher {{count}} onglet de plus",
@@ -261,7 +262,8 @@
 	"budgetDisplay": {
 		"usageAria": "Utilisation du budget",
 		"override": "remplacement",
-		"baseTooltip": "Base {{base}} + remplacement {{override}}"
+		"baseTooltip": "Base {{base}} + remplacement {{override}}",
+		"sharedTag": "partagé"
 	},
 	"rateLimit": {
 		"tokens": "jetons",
@@ -300,6 +302,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Cette configuration est synchronisée depuis <code0>config.json</code0>. Toute mise à jour future de config.json écrasera les modifications faites dans l’interface. Si vous utilisez config.json pour initialiser la configuration, vous pouvez ignorer cette alerte."
+	},
+	"configIssuesAlert": {
+		"title": "Une partie de la déclaration config.json n'a pas été appliquée",
+		"badge": "Problèmes de configuration",
+		"hint": "Le reste de la déclaration est appliqué. Chaque élément ci-dessus disparaît de lui-même dès que ce qu'il nomme existe, par exemple quand le client MCP manquant est enregistré."
 	},
 	"breadcrumb": {
 		"label": "fil d’Ariane",
@@ -507,6 +514,9 @@
 		"maxNumber": "Doit être au plus {{maximum}}",
 		"maxChars": "Doit comporter au plus {{maximum}} caractères",
 		"validUrl": "Doit être une URL valide",
+		"publicUrlNoUserinfoQueryOrFragment": "Ne doit contenir ni informations utilisateur, ni requête, ni fragment",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Doit être une URL http(s) ou un chemin relatif au répertoire de l'application",
+		"openapiUrlMustStayInAppDir": "Doit être un chemin relatif au répertoire de l'application qui reste à l'intérieur",
 		"validEmail": "Doit être une adresse e-mail valide",
 		"grpcHostPortFormat": "Doit être au format <host>:<port> pour gRPC (par ex. {{example}})",
 		"invalidInput": "Saisie invalide",
@@ -581,7 +591,8 @@
 		"baseUrlIsRequiredForThisProvider": "L’URL de base est obligatoire pour ce fournisseur",
 		"baseUrlMustStartWithHttpOrHttps": "L’URL de base doit commencer par http:// ou https://",
 		"atLeastOneApiKeyIsRequired": "Au moins une clé API est obligatoire",
-		"apiKeyValueCannotBeEmpty": "La valeur de la clé API ne peut pas être vide"
+		"apiKeyValueCannotBeEmpty": "La valeur de la clé API ne peut pas être vide",
+		"deploymentPatternInvalid": "Un motif de déploiement est invalide ou son ID de modèle utilise un groupe de capture que le motif ne définit pas"
 	},
 	"permissionDenied": {
 		"create": "Vous n’avez pas la permission de créer {{entity}}.",

@@ -1645,6 +1645,7 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 	var responses []*schemas.BifrostResponsesStreamResponse
 
 	// First event: Emit response.created and response.in_progress
+	startEventCount := 0
 	if !state.HasEmittedCreated {
 		// Set model and response ID from Gemini
 		if response.ModelVersion != "" && state.Model == nil {
@@ -1654,12 +1655,22 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 			state.ResponseID = &response.ResponseID
 		}
 		responses = append(responses, state.startEvents(sequenceNumber)...)
+		startEventCount = len(responses)
 	}
 
 	// A blocked prompt arrives as one candidate-less chunk; close the stream on it.
 	if blockErr := response.promptBlockError(); blockErr != nil {
 		state.PromptBlockError = blockErr
 		return append(responses, closeGeminiOpenItems(state, nil, response.UsageMetadata, sequenceNumber+len(responses), "", "")...), nil
+	}
+
+	// A malformed turn that has produced no output items yet can still fail cleanly,
+	// so the caller retries instead of receiving an empty completed response. Once
+	// items have been streamed it closes like any other error finish reason.
+	if len(state.ItemIDs) == 0 {
+		if malformedErr := response.MalformedOutputError(); malformedErr != nil {
+			return nil, malformedErr
+		}
 	}
 
 	// Process candidates
@@ -1718,6 +1729,17 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 			closeResponses := closeGeminiOpenItems(state, candidate.GroundingMetadata, response.UsageMetadata, sequenceNumber+len(responses), candidate.FinishReason, candidate.FinishMessage)
 			responses = append(responses, closeResponses...)
 		}
+	}
+
+	// Hold response.created / response.in_progress back until a chunk emits something
+	// after them. The retry loop commits a stream on its first successful chunk, so a
+	// lifecycle-only first chunk would commit the attempt and leave a later malformed
+	// chunk with no retry or fallback. The next chunk, or FinalizeGeminiResponsesStream,
+	// emits them at the same sequence number.
+	if startEventCount > 0 && len(responses) == startEventCount {
+		state.HasEmittedCreated = false
+		state.HasEmittedInProgress = false
+		return nil, nil
 	}
 
 	return responses, nil
@@ -3021,10 +3043,135 @@ func stripFunctionResponseMediaRefs(response json.RawMessage) string {
 	return string(cleaned)
 }
 
+// geminiCallIDPairer gives every functionCall a unique ID and pairs each functionResponse with its call.
+// Gemini pairs by name and order; Claude and OpenAI pair only by ID.
+type geminiCallIDPairer struct {
+	contents []Content
+	track    bool                // some call or response omits its ID; otherwise nothing is queued
+	minted   int                 // counter behind bf_call_N
+	reserved map[string]struct{} // client-supplied IDs a minted ID must skip; built on first mint
+	answered map[string]struct{} // IDs some response names explicitly; those calls never join pending
+	pending  map[string][]string // unanswered call IDs per function name, oldest first
+	last     map[string]string   // most recent call ID per function name, fallback once pending is empty
+}
+
+func newGeminiCallIDPairer(contents []Content) geminiCallIDPairer {
+	p := geminiCallIDPairer{contents: contents, track: geminiContentsMissCallIDs(contents)}
+	if p.track {
+		p.answered = collectGeminiResponseIDs(contents)
+	}
+	return p
+}
+
+// callID returns the call's own ID, or mints bf_call_N (no tool name, so never a _ts_ separator).
+func (p *geminiCallIDPairer) callID(fc *FunctionCall) string {
+	id := fc.ID
+	if id == "" {
+		id = p.mint()
+	}
+	if !p.track {
+		return id
+	}
+	if p.last == nil {
+		p.last = make(map[string]string)
+	}
+	p.last[fc.Name] = id
+	if _, ok := p.answered[id]; !ok {
+		if p.pending == nil {
+			p.pending = make(map[string][]string)
+		}
+		p.pending[fc.Name] = append(p.pending[fc.Name], id)
+	}
+	return id
+}
+
+// responseID returns the response's own ID, else the oldest unanswered call of the same name, else
+// that name's last call. A willContinue response leaves its call pending for the responses that follow.
+func (p *geminiCallIDPairer) responseID(fr *FunctionResponse) string {
+	if !p.track || fr.ID != "" {
+		return fr.ID
+	}
+	queue := p.pending[fr.Name]
+	if len(queue) == 0 {
+		if id, ok := p.last[fr.Name]; ok {
+			return id
+		}
+		return fr.Name // no call of this name at all (malformed history)
+	}
+	if fr.WillContinue == nil || !*fr.WillContinue {
+		p.pending[fr.Name] = queue[1:]
+	}
+	return queue[0]
+}
+
+func (p *geminiCallIDPairer) mint() string {
+	if p.reserved == nil {
+		p.reserved = collectGeminiSuppliedCallIDs(p.contents)
+	}
+	for {
+		p.minted++
+		id := "bf_call_" + strconv.Itoa(p.minted)
+		if _, taken := p.reserved[id]; !taken {
+			return id
+		}
+	}
+}
+
+// collectGeminiSuppliedCallIDs returns every non-empty functionCall/functionResponse ID in contents.
+func collectGeminiSuppliedCallIDs(contents []Content) map[string]struct{} {
+	ids := make(map[string]struct{})
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
+			if part.FunctionCall != nil && part.FunctionCall.ID != "" {
+				ids[part.FunctionCall.ID] = struct{}{}
+			}
+			if part.FunctionResponse != nil && part.FunctionResponse.ID != "" {
+				ids[part.FunctionResponse.ID] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+// collectGeminiResponseIDs returns every non-empty functionResponse ID in contents, or nil if none.
+func collectGeminiResponseIDs(contents []Content) map[string]struct{} {
+	var ids map[string]struct{}
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part != nil && part.FunctionResponse != nil && part.FunctionResponse.ID != "" {
+				if ids == nil {
+					ids = make(map[string]struct{})
+				}
+				ids[part.FunctionResponse.ID] = struct{}{}
+			}
+		}
+	}
+	return ids
+}
+
+// geminiContentsMissCallIDs reports whether any functionCall or functionResponse omits its ID.
+func geminiContentsMissCallIDs(contents []Content) bool {
+	for _, content := range contents {
+		for _, part := range content.Parts {
+			if part == nil {
+				continue
+			}
+			if (part.FunctionCall != nil && part.FunctionCall.ID == "") ||
+				(part.FunctionResponse != nil && part.FunctionResponse.ID == "") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
-	// Track function call IDs by name to match with responses
-	functionCallIDs := make(map[string]string)
+
+	pairer := newGeminiCallIDPairer(contents)
 
 	for _, content := range contents {
 		// Determine the role for all messages from this Content
@@ -3052,13 +3199,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 					argsJSON = string(part.FunctionCall.Args)
 				}
 
-				callID := part.FunctionCall.ID
-				if callID == "" {
-					callID = part.FunctionCall.Name
-				}
-
-				// Track this function call ID by name for later matching with responses
-				functionCallIDs[part.FunctionCall.Name] = callID
+				callID := pairer.callID(part.FunctionCall)
 
 				msg := schemas.ResponsesMessage{
 					Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
@@ -3086,16 +3227,7 @@ func convertGeminiContentsToResponsesMessages(contents []Content) []schemas.Resp
 
 			case part.FunctionResponse != nil:
 				// Function response message
-				responseID := part.FunctionResponse.ID
-				if responseID == "" {
-					// Try to find the matching function call ID by name
-					if callID, ok := functionCallIDs[part.FunctionResponse.Name]; ok {
-						responseID = callID
-					} else {
-						// Fallback to function name if no matching call found
-						responseID = part.FunctionResponse.Name
-					}
-				}
+				responseID := pairer.responseID(part.FunctionResponse)
 
 				// Convert response to string: unwrap a sole "output" key, keep sibling fields otherwise
 				responseStr := extractFunctionResponseOutput(part.FunctionResponse)

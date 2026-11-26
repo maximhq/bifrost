@@ -24,11 +24,16 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	bifrost "github.com/maximhq/bifrost/core"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/livestore/livestoretest"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -120,7 +125,7 @@ func callToolResult(t *testing.T, tm MCPToolManager) map[string]any {
 	t.Helper()
 	h := &MCPServerHandler{
 		toolManager: tm,
-		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+		config:      &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}},
 	}
 	h.mcpServer = h.buildServer()
 	tools, _ := h.serverTools([]schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "alpha-echo"}}})
@@ -203,7 +208,7 @@ func TestSyncMCPServer_ReadsToolsWithoutTheTriggersIdentity(t *testing.T) {
 	h := &MCPServerHandler{
 		toolManager: tm,
 		served:      served,
-		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+		config:      &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}},
 	}
 	h.mcpServer = h.buildServer()
 	admin := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -225,7 +230,7 @@ func initializeResult(t *testing.T, tm MCPToolManager, ctx context.Context) map[
 	t.Helper()
 	h := &MCPServerHandler{
 		toolManager: tm,
-		config:      &lib.Config{ClientConfig: &configstore.ClientConfig{}},
+		config:      &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}},
 	}
 	h.mcpServer = h.buildServer()
 
@@ -331,9 +336,10 @@ func TestAdmitBySlug(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			cfg := &lib.Config{LiveStore: liveStoreForTest(t), MCPConfig: &schemas.MCPConfig{}}
+			libtest.MCPClients(t, cfg, []*schemas.MCPClientConfig{
 				{ID: "c7", Name: "context7", EndpointSlug: "context7"},
-			}}}
+			}...)
 			h := &MCPServerHandler{admitter: tc.admitter, config: cfg}
 			bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			refusal := h.admitBySlug(bctx, tc.slug, nil)
@@ -391,10 +397,11 @@ func startGateway(t testing.TB, h *MCPServerHandler) string {
 	return "http://" + ln.Addr().String()
 }
 
+// newGatewayHandler is a gateway handler over an echo tool manager that reports instructions.
 func newGatewayHandler(t testing.TB) *MCPServerHandler {
 	t.Helper()
 	tm := &echoToolManager{fakeInstructionsToolManager{instructions: "gateway instructions"}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 	require.NoError(t, err)
 	return h
 }
@@ -495,6 +502,74 @@ func TestMCPGateway_TransportRules(t *testing.T) {
 	}
 }
 
+// The server-side version cap applies to both eras and changes without rebuilding the handler.
+func TestMCPGateway_ServerMaxProtocolVersion(t *testing.T) {
+	h := newGatewayHandler(t)
+	baseURL := startGateway(t, h)
+	modernList := `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"raw","version":"0"}}}}`
+	legacyList := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"raw","version":"0"}}}`
+	post := func(t *testing.T, body string, headers map[string]string) (int, string) {
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		resp, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		out, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(out)
+	}
+	modern := map[string]string{"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/list"}
+	legacy := func(version string) map[string]string { return map[string]string{"MCP-Protocol-Version": version} }
+	negotiated := func(t *testing.T, version string) string {
+		tr, err := transport.NewStreamableHTTP(baseURL + "/mcp")
+		require.NoError(t, err)
+		c := client.NewClient(tr, client.WithProtocolVersion(version))
+		require.NoError(t, c.Start(context.Background()))
+		t.Cleanup(func() { _ = c.Close() })
+		init := mcp.InitializeRequest{}
+		init.Params.ProtocolVersion = version
+		init.Params.ClientInfo = mcp.Implementation{Name: "cap", Version: "0.0.1"}
+		result, err := c.Initialize(context.Background(), init)
+		require.NoError(t, err)
+		return result.ProtocolVersion
+	}
+
+	h.UpdateServerMaxProtocolVersion(schemas.MCPProtocolVersion20250618)
+	status, body := post(t, modernList, modern)
+	assert.Equal(t, http.StatusBadRequest, status, body)
+	assert.Equal(t, int64(-32022), gjson.Get(body, "error.code").Int(), body)
+	assert.Equal(t, int64(1), gjson.Get(body, "id").Int(), "the refusal answers the request's id: %s", body)
+	assert.Equal(t, `["2025-06-18","2025-03-26","2024-11-05"]`, gjson.Get(body, "error.data.supported").Raw, "the client falls back from this list: %s", body)
+	assert.Equal(t, mcp.ProtocolVersion20250618, negotiated(t, mcp.ProtocolVersion20251125))
+	assert.Equal(t, mcp.ProtocolVersion20250326, negotiated(t, mcp.ProtocolVersion20250326))
+
+	// A legacy request declaring a version above the cap is refused; versions under it, and no header, are served.
+	status, body = post(t, legacyList, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusBadRequest, status, body)
+	assert.Equal(t, "Unsupported protocol version: 2025-11-25\n", body)
+	for _, headers := range []map[string]string{legacy(mcp.ProtocolVersion20250618), legacy(mcp.ProtocolVersion20250326), nil} {
+		status, body = post(t, legacyList, headers)
+		assert.Equal(t, http.StatusOK, status, "headers %v: %s", headers, body)
+		assert.Contains(t, body, "gw-echo")
+	}
+	// initialize carrying the header is lowered, not refused.
+	status, body = post(t, initialize, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusOK, status, body)
+	assert.Contains(t, body, `"protocolVersion":"2025-06-18"`)
+
+	h.UpdateServerMaxProtocolVersion(schemas.MCPMaxProtocolVersionAuto)
+	status, body = post(t, modernList, modern)
+	assert.Equal(t, http.StatusOK, status, body)
+	assert.Equal(t, mcp.ProtocolVersion20251125, negotiated(t, mcp.ProtocolVersion20251125))
+	status, body = post(t, legacyList, legacy(mcp.ProtocolVersion20251125))
+	assert.Equal(t, http.StatusOK, status, "uncapped: %s", body)
+}
+
 // Browser requests to /mcp are refused with 403 when their Origin may not reach it (Streamable
 // HTTP "Security Warning"). While /mcp accepts unauthenticated calls the bare "*" does not count and
 // same-origin is not exempt; with auth enforced allowed_origins applies as configured. Requests
@@ -524,8 +599,8 @@ func TestMCPGateway_OriginValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			tm := &echoToolManager{fakeInstructionsToolManager{instructions: "gateway instructions"}}
-			cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: tc.enforce, AllowedOrigins: tc.allowed}}
-			h, err := NewMCPServerHandler(context.Background(), cfg, tm, nil, nil, nil)
+			cfg := &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: tc.enforce, AllowedOrigins: tc.allowed}}
+			h, err := NewMCPServerHandler(context.Background(), cfg, tm, nil, nil)
 			require.NoError(t, err)
 			baseURL := startGateway(t, h)
 
@@ -569,7 +644,7 @@ func BenchmarkMCPGateway_RefuseOrigin(b *testing.B) {
 		{"listed origin", "https://app.example.com"},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
-			h := &MCPServerHandler{config: &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"*", "https://app.example.com"}}}}
+			h := &MCPServerHandler{config: &lib.Config{LiveStore: liveStoreForTest(b), ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"*", "https://app.example.com"}}}}
 			ctx := &fasthttp.RequestCtx{}
 			if tc.origin != "" {
 				ctx.Request.Header.Set("Origin", tc.origin)
@@ -640,6 +715,40 @@ func TestMCPGateway_GetStreamCommitsHeadersPromptly(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+}
+
+// A legacy session opened before a cap change still opens its notification stream after it: the session is
+// registered on the shared server at initialize, so the cap must not be applied by replacing the transport.
+func TestMCPGateway_ServerCapChangeKeepsSessions(t *testing.T) {
+	h := newGatewayHandler(t)
+	baseURL := startGateway(t, h)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"raw","version":"0"}}}`))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	sessionID := resp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+
+	for _, cap := range []string{schemas.MCPProtocolVersion20251125, schemas.MCPMaxProtocolVersionAuto} {
+		h.UpdateServerMaxProtocolVersion(cap)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		get, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/mcp", nil)
+		require.NoError(t, err)
+		get.Header.Set("Accept", "text/event-stream")
+		get.Header.Set("MCP-Protocol-Version", mcp.ProtocolVersion20251125)
+		get.Header.Set("Mcp-Session-Id", sessionID)
+		resp, err := http.DefaultClient.Do(get)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, "cap %s", cap)
+		assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"), "cap %s", cap)
+		resp.Body.Close()
+		cancel()
+	}
 }
 
 // A client that hangs up ends its stream on the server, legacy GET and subscriptions/listen alike.
@@ -716,7 +825,7 @@ func (r *refusingToolManager) ExecuteChatMCPTool(ctx context.Context, call *sche
 // (governance, logging) run and the refusal says why, instead of mcp-go answering "not found".
 func TestMCPGateway_NarrowedToolCallReachesBifrost(t *testing.T) {
 	tm := &refusingToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 	require.NoError(t, err)
 	h.admitter = slugAdmitter{vmcps: map[string][]string{"nothing": {"other-tool"}}}
 	baseURL := startGateway(t, h)
@@ -795,10 +904,11 @@ func (s *servingToolManager) CompleteMCPArgument(ctx context.Context, params mcp
 	return &mcp.CompleteResult{Completion: mcp.Completion{Values: []string{ref.Name + ":" + params.Argument.Value}}}, nil
 }
 
+// newServingGatewayHandler is a gateway handler over a tool manager that also serves resources and prompts.
 func newServingGatewayHandler(t testing.TB) *MCPServerHandler {
 	t.Helper()
 	tm := &servingToolManager{echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 	require.NoError(t, err)
 	return h
 }
@@ -900,7 +1010,7 @@ func TestMCPGateway_RecordsCallerCapabilities(t *testing.T) {
 				servingToolManager: servingToolManager{echoToolManager{fakeInstructionsToolManager{}}},
 				seen:               map[string]*mcp.ClientCapabilities{},
 			}
-			h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+			h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 			require.NoError(t, err)
 			baseURL := startGateway(t, h)
 
@@ -983,7 +1093,7 @@ func (m *inputRequiringToolManager) ExecuteChatMCPTool(ctx context.Context, _ *s
 // with the call across rounds while a separate call gets its own.
 func TestMCPGateway_PassesInputRequiredThrough(t *testing.T) {
 	tm := &inputRequiringToolManager{echoToolManager: echoToolManager{fakeInstructionsToolManager{}}}
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, tm, nil, nil)
 	require.NoError(t, err)
 	baseURL := startGateway(t, h)
 
@@ -1135,7 +1245,7 @@ func (c *chartToolManager) ExecuteChatMCPTool(_ context.Context, call *schemas.C
 // (images and structured content included); a result a plugin rewrote is rebuilt from the message
 // instead, and isError follows the message either way.
 func TestMCPGateway_ToolMetadataAndResultFidelity(t *testing.T) {
-	h, err := NewMCPServerHandler(context.Background(), &lib.Config{ClientConfig: &configstore.ClientConfig{}}, &chartToolManager{}, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}}, &chartToolManager{}, nil, nil)
 	require.NoError(t, err)
 	baseURL := startGateway(t, h)
 	for _, version := range []string{mcp.ProtocolVersion20250618, mcp.ProtocolVersion20251125, mcp.ProtocolVersion20260728} {
@@ -1357,6 +1467,8 @@ type perCallerToolManager struct {
 	calls []string // "<tool> as <caller>", for every call that reached Bifrost
 	// bobArchives says bob has since discovered notes-archive.
 	bobArchives atomic.Bool
+	// gwSlugOnlyCodeMode says gw runs in code mode on its own /mcp/gw only, so the gateway's sync installs the code-mode tools.
+	gwSlugOnlyCodeMode bool
 }
 
 func callerOf(ctx context.Context) string {
@@ -1383,6 +1495,11 @@ func (p *perCallerToolManager) GetAvailableMCPTools(ctx context.Context) []schem
 			tool.MCP = &schemas.MCPToolMetadata{OutputSchema: json.RawMessage(`{"type":"object"}`)}
 		}
 		tools = append(tools, tool)
+	}
+	if p.gwSlugOnlyCodeMode && ctx.Value(schemas.BifrostContextKeyMCPToolListing) == "gateway" {
+		for _, name := range codeModeToolNames {
+			tools = append(tools, schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: name}})
+		}
 	}
 	switch callerOf(ctx) {
 	case "alice":
@@ -1529,21 +1646,41 @@ func (s *perCallerNamesStore) setErr(err error) {
 	s.err = err
 }
 
+// editLoadedMCPClient changes the MCP client with this ID in cfg's live store. The store was loaded
+// without a database, so it is loaded again with the edited copy.
+func editLoadedMCPClient(t testing.TB, cfg *lib.Config, id string, edit func(*schemas.MCPClientConfig)) {
+	t.Helper()
+	var clients []*schemas.MCPClientConfig
+	cfg.LiveStore.Collections.MCPClients.Range(func(record *registry.MCPClient) bool {
+		client := record.Config
+		if client.ID == id {
+			edit(&client)
+		}
+		clients = append(clients, &client)
+		return true
+	})
+	libtest.MCPClients(t, cfg, clients...)
+}
+
+// newPerCallerGatewayHandler is a gateway handler whose clients discover per caller, with the tool
+// manager and the per-user discovery names it reads.
 func newPerCallerGatewayHandler(t testing.TB) (*MCPServerHandler, *perCallerToolManager, *perCallerNamesStore) {
 	t.Helper()
 	store := &perCallerNamesStore{names: map[string]configstore.MCPPerUserDiscoveryNames{
 		"notes-id": {Tools: []string{"export", "search"}, Prompts: []string{"review"}, Resources: []string{"file:///alice.md", "file:///bob.md"}},
 	}}
 	config := &lib.Config{
+		LiveStore:    liveStoreForTest(t),
 		ClientConfig: &configstore.ClientConfig{},
 		ConfigStore:  store,
-		MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-			{ID: "gw-id", Name: "gw"},
-			{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
-		}},
+		MCPConfig:    &schemas.MCPConfig{},
 	}
+	libtest.MCPClients(t, config, []*schemas.MCPClientConfig{
+		{ID: "gw-id", Name: "gw"},
+		{ID: "notes-id", Name: "notes", PerUserDiscovery: schemas.Ptr(true)},
+	}...)
 	tm := &perCallerToolManager{}
-	h, err := NewMCPServerHandler(context.Background(), config, tm, nil, nil, nil)
+	h, err := NewMCPServerHandler(context.Background(), config, tm, nil, nil)
 	require.NoError(t, err)
 	return h, tm, store
 }
@@ -1835,7 +1972,7 @@ func TestMCPGateway_AFailedNamesReadKeepsTheInstalledPlaceholders(t *testing.T) 
 // connected caller lists and calls them, and a caller who has not connected is offered connect only.
 func TestMCPGateway_ServesTheCodeModeToolsOfAPerCallerClient(t *testing.T) {
 	h, tm, _ := newPerCallerGatewayHandler(t)
-	h.config.MCPConfig.ClientConfigs[1].IsCodeModeClient = true
+	editLoadedMCPClient(t, h.config, "notes-id", func(c *schemas.MCPClientConfig) { c.IsCodeModeClient = true })
 	require.NoError(t, h.SyncMCPServer(context.Background()))
 
 	assert.Contains(t, toolNamesOf(listedTools(t, h, callerContext("dave"))), "executeToolCode")
@@ -1843,6 +1980,20 @@ func TestMCPGateway_ServesTheCodeModeToolsOfAPerCallerClient(t *testing.T) {
 	require.Nil(t, rpcErr)
 	assert.Contains(t, tm.reachedBifrost(), "executeToolCode as dave")
 	assert.NotContains(t, toolNamesOf(listedTools(t, h, callerContext("carol"))), "executeToolCode")
+
+	// gw's server_type_on_slug installs the shared code-mode tools, which take the placeholders' names: on
+	// /mcp they still answer only a caller who holds them.
+	editLoadedMCPClient(t, h.config, "gw-id", func(c *schemas.MCPClientConfig) { c.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugEnabled })
+	tm.gwSlugOnlyCodeMode = true
+	require.NoError(t, h.SyncMCPServer(context.Background()))
+	assert.Contains(t, toolNamesOf(listedTools(t, h, callerContext("dave"))), "executeToolCode")
+	_, rpcErr = gatewayRequest(t, h, callerContext("dave"), "tools/call", map[string]any{"name": "executeToolCode", "arguments": map[string]any{}})
+	require.Nil(t, rpcErr)
+	assert.NotContains(t, toolNamesOf(listedTools(t, h, callerContext("carol"))), "executeToolCode")
+	_, rpcErr = gatewayRequest(t, h, callerContext("carol"), "tools/call", map[string]any{"name": "executeToolCode", "arguments": map[string]any{}})
+	require.NotNil(t, rpcErr, "a caller who does not hold executeToolCode calls it as an unknown tool")
+	assert.Contains(t, rpcErr.Message, "not found")
+	assert.NotContains(t, tm.reachedBifrost(), "executeToolCode as carol")
 }
 
 // BenchmarkMCPGatewayToolsList measures tools/list through the shared server: the common case (no
@@ -1867,6 +2018,25 @@ func BenchmarkMCPGatewayToolsList(b *testing.B) {
 	b.Run("per-caller", func(b *testing.B) {
 		h, _, _ := newPerCallerGatewayHandler(b)
 		run(b, h, callerContext("alice"))
+	})
+	// Code mode without and with a slug override, on /mcp and on the overriding client's slug.
+	onGithubSlug := func() context.Context {
+		ctx := callerContext("alice")
+		ctx.SetValue(schemas.MCPContextKeyIncludeTools, []string{"github-*"})
+		ctx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, "github")
+		return ctx
+	}
+	b.Run("code-mode/aggregate", func(b *testing.B) {
+		run(b, newCodeModeGateway(b, true, schemas.MCPServerTypeOnSlugInherit), callerContext("alice"))
+	})
+	b.Run("code-mode/slug", func(b *testing.B) {
+		run(b, newCodeModeGateway(b, true, schemas.MCPServerTypeOnSlugInherit), onGithubSlug())
+	})
+	b.Run("slug-code-mode/aggregate", func(b *testing.B) {
+		run(b, newCodeModeGateway(b, true, schemas.MCPServerTypeOnSlugDisabled), callerContext("alice"))
+	})
+	b.Run("slug-code-mode/slug", func(b *testing.B) {
+		run(b, newCodeModeGateway(b, true, schemas.MCPServerTypeOnSlugDisabled), onGithubSlug())
 	})
 }
 
@@ -1937,19 +2107,173 @@ func newAppsGateway(tb testing.TB) *MCPServerHandler {
 	tb.Cleanup(ts.Close)
 
 	ctx := context.Background()
-	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
-	tb.Cleanup(func() { _ = m.Cleanup() })
-	require.NoError(tb, m.AddClient(ctx, &schemas.MCPClientConfig{
+	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
+	libtest.MCPClients(tb, cfg, &schemas.MCPClientConfig{
 		ID: "apps", Name: "apps", EndpointSlug: "apps", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
-	}))
-	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-		{ID: "apps", Name: "apps", EndpointSlug: "apps"},
-	}}}
+	})
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, lib.NewBaseAccount(cfg), nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
+	tb.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(tb, m.AddClient(ctx, "apps"))
 	admitter := slugAdmitter{vmcps: map[string][]string{"bundle": {"apps-view", "apps-refresh", "apps-item"}}, clients: map[string][]string{"apps": {"apps-*"}}}
-	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil, nil)
+	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil)
 	require.NoError(tb, err)
 	return h
+}
+
+// newCodeModeGateway serves two upstream servers through a real core manager with Starlark code mode, on
+// /mcp, both client slugs and the Virtual MCP slug "bundle": github (is_code_mode_client codeMode,
+// server_type_on_slug slug) and slack (direct).
+func newCodeModeGateway(tb testing.TB, codeMode bool, slug schemas.MCPServerTypeOnSlug) *MCPServerHandler {
+	tb.Helper()
+	upstream := func(tool string) string {
+		srv := server.NewMCPServer(tool+"-upstream", "1.0.0", server.WithToolCapabilities(true))
+		srv.AddTool(mcp.NewTool(tool), func(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return mcp.NewToolResultText(tool + " ran"), nil
+		})
+		ts := httptest.NewServer(server.NewStreamableHTTPServer(srv))
+		tb.Cleanup(ts.Close)
+		return ts.URL
+	}
+	github := &schemas.MCPClientConfig{
+		ID: "github", Name: "github", EndpointSlug: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(upstream("create_issue")), ToolsToExecute: []string{"*"},
+		IsCodeModeClient: codeMode, ServerTypeOnSlug: slug,
+	}
+	slack := &schemas.MCPClientConfig{
+		ID: "slack", Name: "slack", EndpointSlug: "slack", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar(upstream("post")), ToolsToExecute: []string{"*"},
+	}
+
+	ctx := context.Background()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	cfg := &lib.Config{LiveStore: liveStoreForTest(tb), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
+	libtest.MCPClients(tb, cfg, github, slack)
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, lib.NewBaseAccount(cfg), nil, logger, starlark.NewStarlarkCodeMode(nil, logger))
+	tb.Cleanup(func() { _ = m.Cleanup() })
+	require.NoError(tb, m.AddClient(ctx, github.ID))
+	require.NoError(tb, m.AddClient(ctx, slack.ID))
+	admitter := slugAdmitter{
+		vmcps:   map[string][]string{"bundle": {"github-create_issue", "slack-post"}},
+		clients: map[string][]string{"github": {"github-*"}, "slack": {"slack-*"}},
+	}
+	h, err := NewMCPServerHandler(ctx, cfg, coreGatewayManager{m}, admitter, nil)
+	require.NoError(tb, err)
+	return h
+}
+
+// server_type_on_slug on the gateway: the override decides what github's own /mcp/github lists and runs, while
+// /mcp, other slugs and Virtual MCPs keep following is_code_mode_client. A tool hidden from an endpoint
+// answers a call there exactly as an unknown tool does, by its full name or its server-given one. A
+// code-mode tool on a narrowed endpoint with no code-mode client is refused by core, as before.
+func TestMCPGateway_ServerTypeOnSlug(t *testing.T) {
+	ctx := context.Background()
+	codeModeTools := []string{"executeToolCode", "getToolDocs", "listToolFiles", "readToolFile"}
+	with := func(names ...string) []string { return slices.Sorted(slices.Values(names)) }
+
+	cases := []struct {
+		name     string
+		codeMode bool
+		slug     schemas.MCPServerTypeOnSlug
+		listed   map[string][]string // path -> sorted tool names
+		runs     map[string][]string // path -> tool names a call runs; every other listed-elsewhere tool is unknown there
+		exec     map[string]string   // path -> what executeToolCode does there: "runs", "not permitted" or "not found"
+	}{
+		{
+			name: "code mode, slug disabled", codeMode: true, slug: schemas.MCPServerTypeOnSlugDisabled,
+			listed: map[string][]string{
+				"/mcp":        with(append([]string{"slack-post"}, codeModeTools...)...),
+				"/mcp/github": {"github-create_issue"},
+				"/mcp/slack":  {"slack-post"},
+				"/mcp/bundle": with(append([]string{"slack-post"}, codeModeTools...)...),
+			},
+			runs: map[string][]string{"/mcp": {"slack-post"}, "/mcp/github": {"github-create_issue", "create_issue"}, "/mcp/bundle": {"slack-post"}},
+			exec: map[string]string{"/mcp": "runs", "/mcp/github": "not permitted", "/mcp/slack": "not permitted", "/mcp/bundle": "runs"},
+		},
+		{
+			name: "direct, slug enabled", codeMode: false, slug: schemas.MCPServerTypeOnSlugEnabled,
+			listed: map[string][]string{
+				"/mcp":        {"github-create_issue", "slack-post"},
+				"/mcp/github": codeModeTools,
+				"/mcp/slack":  {"slack-post"},
+				"/mcp/bundle": {"github-create_issue", "slack-post"},
+			},
+			runs: map[string][]string{"/mcp": {"github-create_issue", "create_issue", "slack-post"}, "/mcp/github": {}, "/mcp/bundle": {"github-create_issue", "create_issue", "slack-post"}},
+			exec: map[string]string{"/mcp": "not found", "/mcp/github": "runs", "/mcp/slack": "not permitted", "/mcp/bundle": "not found"},
+		},
+		{
+			name: "code mode, inherit", codeMode: true,
+			listed: map[string][]string{
+				"/mcp":        with(append([]string{"slack-post"}, codeModeTools...)...),
+				"/mcp/github": codeModeTools,
+				"/mcp/bundle": with(append([]string{"slack-post"}, codeModeTools...)...),
+			},
+			runs: map[string][]string{"/mcp": {"slack-post"}, "/mcp/github": {}},
+			exec: map[string]string{"/mcp": "runs", "/mcp/github": "runs", "/mcp/slack": "not permitted"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			baseURL := startGateway(t, newCodeModeGateway(t, tc.codeMode, tc.slug))
+			connect := func(path string) *client.Client {
+				tr, err := transport.NewStreamableHTTP(baseURL + path)
+				require.NoError(t, err)
+				c := client.NewClient(tr)
+				require.NoError(t, c.Start(ctx))
+				t.Cleanup(func() { _ = c.Close() })
+				init := mcp.InitializeRequest{}
+				init.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+				_, err = c.Initialize(ctx, init)
+				require.NoError(t, err)
+				return c
+			}
+			for path, want := range tc.listed {
+				tools, err := connect(path).ListTools(ctx, mcp.ListToolsRequest{})
+				require.NoError(t, err, path)
+				got := []string{}
+				for _, tool := range tools.Tools {
+					got = append(got, tool.Name)
+				}
+				assert.Equal(t, want, with(got...), "tools/list on %s", path)
+			}
+			for path, runs := range tc.runs {
+				c := connect(path)
+				for _, name := range []string{"github-create_issue", "create_issue", "slack-post"} {
+					if path == "/mcp/github" && name == "slack-post" {
+						continue // outside the slug's grant either way
+					}
+					request := mcp.CallToolRequest{}
+					request.Params.Name = name
+					result, err := c.CallTool(ctx, request)
+					if slices.Contains(runs, name) {
+						require.NoError(t, err, "%s on %s", name, path)
+						require.False(t, result.IsError, "%s on %s: %+v", name, path, result.Content)
+						continue
+					}
+					require.Error(t, err, "%s on %s must answer as an unknown tool", name, path)
+					assert.Contains(t, err.Error(), "not found", "%s on %s", name, path)
+				}
+			}
+			for path, want := range tc.exec {
+				request := mcp.CallToolRequest{}
+				request.Params.Name = "executeToolCode"
+				request.Params.Arguments = map[string]any{"code": "result = 1"}
+				result, err := connect(path).CallTool(ctx, request)
+				switch want {
+				case "runs":
+					require.NoError(t, err, "executeToolCode on %s", path)
+					assert.False(t, result.IsError, "executeToolCode on %s: %+v", path, result.Content)
+				case "not permitted":
+					require.NoError(t, err, "executeToolCode on %s", path)
+					require.True(t, result.IsError, "executeToolCode on %s must be refused", path)
+					assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "not permitted", "executeToolCode on %s", path)
+				default:
+					require.Error(t, err, "executeToolCode on %s must answer as an unknown tool", path)
+					assert.Contains(t, err.Error(), "not found", "executeToolCode on %s", path)
+				}
+			}
+		})
+	}
 }
 
 // MCP Apps on the gateway: /mcp/<slug> for one server serves its tools' _meta and ui:// URIs as the
@@ -2161,23 +2485,27 @@ func TestMCPGateway_ServerGivenToolNames(t *testing.T) {
 	// other's "apps-view" is installed as other-apps-view; the name apps-view stays apps's view.
 	otherURL := startNamedUpstream(t, "other", mcp.NewTool("status"), mcp.NewTool("apps-view"))
 
-	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
-	t.Cleanup(func() { _ = m.Cleanup() })
-	for name, url := range map[string]string{"apps": appsURL, "other": otherURL} {
-		require.NoError(t, m.AddClient(ctx, &schemas.MCPClientConfig{
+	var clients []*schemas.MCPClientConfig
+	for _, name := range []string{"apps", "other"} {
+		url := map[string]string{"apps": appsURL, "other": otherURL}[name]
+		clients = append(clients, &schemas.MCPClientConfig{
 			ID: name, Name: name, EndpointSlug: name, ConnectionType: schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar(url), ToolsToExecute: []string{"*"},
-		}))
+		})
 	}
-	cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-		{ID: "apps", Name: "apps", EndpointSlug: "apps"}, {ID: "other", Name: "other", EndpointSlug: "other"},
-	}}}
+	cfg := &lib.Config{LiveStore: liveStoreForTest(t), ClientConfig: &configstore.ClientConfig{}, MCPConfig: &schemas.MCPConfig{}}
+	libtest.MCPClients(t, cfg, clients...)
+	m := coremcp.NewMCPManager(ctx, schemas.MCPConfig{}, lib.NewBaseAccount(cfg), nil, bifrost.NewDefaultLogger(schemas.LogLevelError), nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	for _, client := range clients {
+		require.NoError(t, m.AddClient(ctx, client.ID))
+	}
 	admitter := slugAdmitter{
 		vmcps:   map[string][]string{"bundle": {"apps-status", "apps-view"}, "withrefresh": {"apps-view", "apps-refresh"}},
 		clients: map[string][]string{"apps": {"apps-*"}, "other": {"other-*"}},
 	}
 	tm := &recordingGatewayManager{coreGatewayManager: coreGatewayManager{m}}
-	h, err := NewMCPServerHandler(ctx, cfg, tm, admitter, nil, nil)
+	h, err := NewMCPServerHandler(ctx, cfg, tm, admitter, nil)
 	require.NoError(t, err)
 	baseURL := startGateway(t, h)
 
@@ -2358,3 +2686,59 @@ func TestMCPGateway_ServerGivenNamesForPerCallerClients(t *testing.T) {
 		assert.NotEqual(t, "", coremcp.ToolClientName(name), "tools/list carries no server-given name: %q", name)
 	}
 }
+
+// TestMCPGateway_DisabledClientSlugIsNotServed pins that a disabled MCP client's endpoint slug does
+// not resolve, so /mcp/<slug> is not served (admit returns 403) for a disabled direct client.
+func TestMCPGateway_DisabledClientSlugIsNotServed(t *testing.T) {
+	h := &MCPServerHandler{config: libtest.MCPClients(t, &lib.Config{},
+		&schemas.MCPClientConfig{ID: "enabled-id", Name: "Enabled", EndpointSlug: "live-slug"},
+		&schemas.MCPClientConfig{ID: "disabled-id", Name: "Disabled", EndpointSlug: "dead-slug", Disabled: true},
+	)}
+
+	client, ok := h.enabledMCPClientBySlug("live-slug")
+	require.True(t, ok)
+	require.Equal(t, "enabled-id", client.Config.ID)
+	require.Equal(t, "Enabled", client.Config.Name)
+
+	_, ok = h.enabledMCPClientBySlug("dead-slug")
+	require.False(t, ok, "a disabled client's slug must not resolve")
+}
+
+// TestMCPGateway_ServerTypesOnSlug: the gateway learns every enabled client with an override, and
+// nothing else; a per-user discovery client counts as code mode when either /mcp or its slug runs it
+// in code mode.
+func TestMCPGateway_ServerTypesOnSlug(t *testing.T) {
+	perUser := func(name string, codeMode bool, slug schemas.MCPServerTypeOnSlug) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID: name + "-id", Name: name, AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserDiscovery: schemas.Ptr(true),
+			IsCodeModeClient: codeMode, ServerTypeOnSlug: slug,
+		}
+	}
+	h := &MCPServerHandler{config: libtest.MCPClients(t, &lib.Config{},
+		&schemas.MCPClientConfig{ID: "plain-id", Name: "plain", IsCodeModeClient: true},
+		&schemas.MCPClientConfig{ID: "slug_direct-id", Name: "slug_direct", IsCodeModeClient: true, ServerTypeOnSlug: schemas.MCPServerTypeOnSlugDisabled},
+		&schemas.MCPClientConfig{ID: "slug_code-id", Name: "slug_code", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+		&schemas.MCPClientConfig{ID: "off-id", Name: "off", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled, Disabled: true},
+		perUser("per_user_direct", false, schemas.MCPServerTypeOnSlugInherit),
+		perUser("per_user_slug_code", false, schemas.MCPServerTypeOnSlugEnabled),
+		perUser("per_user_code", true, schemas.MCPServerTypeOnSlugDisabled),
+	)}
+
+	assert.Equal(t, map[string]mcpClientCodeModes{
+		"slug_direct":        {Global: true, OnSlug: false},
+		"slug_code":          {Global: false, OnSlug: true},
+		"per_user_slug_code": {Global: false, OnSlug: true},
+		"per_user_code":      {Global: true, OnSlug: false},
+	}, h.serverTypesOnSlug(), "only enabled clients with an override are listed")
+
+	perUserClients := h.perUserDiscoveryClients()
+	assert.False(t, perUserClients["per_user_direct-id"].CodeMode)
+	assert.True(t, perUserClients["per_user_slug_code-id"].CodeMode, "code mode on its slug only still needs the code-mode placeholders")
+	assert.True(t, perUserClients["per_user_code-id"].CodeMode)
+
+	plainOnly := &MCPServerHandler{config: libtest.MCPClients(t, &lib.Config{}, &schemas.MCPClientConfig{ID: "plain-id", Name: "plain"})}
+	assert.Nil(t, plainOnly.serverTypesOnSlug(), "no override anywhere leaves the gateway nothing to check")
+}
+
+// liveStoreForTest returns a new, empty live store closed when the test ends.
+var liveStoreForTest = livestoretest.New

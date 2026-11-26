@@ -598,3 +598,113 @@ func TestGenerateMCPClientHash_PerUserDiscovery(t *testing.T) {
 	assert.Equal(t, unsetHash, offHash, "an omitted per_user_discovery must hash like false")
 	assert.NotEqual(t, offHash, onHash, "flipping per_user_discovery must drift the hash")
 }
+
+// TestGenerateMCPClientHash_CodeMode: is_code_mode_client false and an inherited server_type_on_slug leave
+// stored hashes as they were; turning code mode on, or overriding it on the slug, drifts the hash so a
+// config.json edit is synced.
+func TestGenerateMCPClientHash_CodeMode(t *testing.T) {
+	hash := func(codeMode bool, slug schemas.MCPServerTypeOnSlug) string {
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", IsCodeModeClient: codeMode, ServerTypeOnSlug: slug})
+		require.NoError(t, err)
+		return h
+	}
+	before, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers"})
+	require.NoError(t, err)
+
+	inherit, enabled, disabled := schemas.MCPServerTypeOnSlugInherit, schemas.MCPServerTypeOnSlugEnabled, schemas.MCPServerTypeOnSlugDisabled
+	assert.Equal(t, before, hash(false, inherit), "code mode off and inherited must not move existing stored hashes")
+	assert.NotEqual(t, before, hash(true, inherit), "turning is_code_mode_client on must drift the hash")
+	assert.NotEqual(t, before, hash(false, enabled), "an enabled override must drift the hash")
+	assert.NotEqual(t, before, hash(false, disabled), "a disabled override must drift the hash")
+	assert.NotEqual(t, hash(false, enabled), hash(false, disabled), "enabled and disabled hash apart")
+	assert.NotEqual(t, hash(true, inherit), hash(false, enabled), "code mode everywhere and only on the slug hash apart")
+}
+
+// TestMCPClientHashMatchesLegacy: a hash stored by a build that did not hash is_code_mode_client, or
+// tool_pricing, is recognised for the same client, and nothing else is, so a real config.json edit is never
+// mistaken for it. Every older formula left the prices out, so a code-mode client stored before code mode
+// was hashed matches with neither.
+func TestMCPClientHashMatchesLegacy(t *testing.T) {
+	hash := func(m tables.TableMCPClient) string {
+		t.Helper()
+		h, err := GenerateMCPClientHash(m)
+		require.NoError(t, err)
+		return h
+	}
+	match := func(m tables.TableMCPClient, stored string, storedCodeMode bool) bool {
+		t.Helper()
+		ok, err := MCPClientHashMatchesLegacy(m, stored, storedCodeMode)
+		require.NoError(t, err)
+		return ok
+	}
+	row := tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", IsCodeModeClient: true, ToolsToExecute: []string{"*"}}
+	without := func(codeMode bool, prices map[string]float64) tables.TableMCPClient {
+		m := row
+		m.IsCodeModeClient = codeMode
+		m.ToolPricing = prices
+		return m
+	}
+	prices := map[string]float64{"search": 0.25}
+	priced := without(true, prices)
+	preCodeMode := hash(without(false, nil))
+	prePricing := hash(without(true, nil))
+	require.NotEqual(t, preCodeMode, hash(row), "fixture check: the formula changed for a code-mode client")
+	require.NotEqual(t, prePricing, hash(priced), "fixture check: the formula changed for a priced client")
+
+	// Code mode alone, as before tool_pricing joined the hash.
+	assert.True(t, match(row, preCodeMode, true), "the same code-mode client under the old formula")
+	assert.False(t, match(row, hash(row), true), "a current hash is not a legacy one")
+	assert.False(t, match(row, "", true), "no stored hash")
+	assert.False(t, match(without(false, nil), preCodeMode, false), "a client without code mode hashes the same under both formulas")
+	assert.False(t, match(row, preCodeMode, false), "config.json turning code mode on for a stored client without it is a file edit")
+	edited := row
+	edited.ToolsToExecute = []string{"echo"}
+	assert.False(t, match(edited, preCodeMode, true), "a real config.json edit is not a legacy hash")
+
+	// Tool pricing, alone and with code mode.
+	assert.True(t, match(priced, prePricing, true), "a priced code-mode client hashed without its prices")
+	assert.True(t, match(without(false, prices), hash(without(false, nil)), false), "a priced client without code mode hashed without its prices")
+	assert.True(t, match(priced, preCodeMode, true), "a priced code-mode client hashed without prices or code mode")
+	assert.False(t, match(priced, preCodeMode, false), "config.json turning code mode on is a file edit, priced or not")
+	assert.False(t, match(priced, hash(without(false, prices)), true), "no build hashed prices without code mode")
+	assert.False(t, match(priced, hash(priced), true), "a current priced hash is not a legacy one")
+	pricedEdit := without(true, prices)
+	pricedEdit.ToolsToExecute = []string{"echo"}
+	assert.False(t, match(pricedEdit, prePricing, true), "adding prices together with another edit is a file edit")
+	assert.Equal(t, prices, priced.ToolPricing, "the caller's row keeps its prices")
+}
+
+// TestGenerateMCPClientHash_ToolPricing: tool prices drift the hash, so a price edited in config.json is a
+// config change, while a client without prices keeps the hash it had before prices were hashed. Prices hash
+// in tool order, so the same prices hash alike however their map was built.
+func TestGenerateMCPClientHash_ToolPricing(t *testing.T) {
+	hash := func(prices map[string]float64) string {
+		t.Helper()
+		h, err := GenerateMCPClientHash(tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", ToolPricing: prices})
+		require.NoError(t, err)
+		return h
+	}
+	unpriced := hash(nil)
+	assert.Equal(t, unpriced, hash(map[string]float64{}), "an empty price list hashes as none")
+	priced := hash(map[string]float64{"search": 0.25})
+	assert.NotEqual(t, unpriced, priced, "adding a price is a change")
+	assert.NotEqual(t, priced, hash(map[string]float64{"search": 0.5}), "changing only a price is a change")
+	assert.NotEqual(t, priced, hash(map[string]float64{"fetch": 0.25}), "pricing another tool is a change")
+	assert.NotEqual(t, hash(map[string]float64{"a": 1, "b": 2}), hash(map[string]float64{"a": 2, "b": 1}), "a price stays tied to its tool")
+
+	tools := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"}
+	want := ""
+	for round := range 20 {
+		// Each round inserts the tools from a different start; maps also iterate in random order.
+		prices := make(map[string]float64, len(tools))
+		for i := range tools {
+			tool := tools[(round+i)%len(tools)]
+			prices[tool] = float64(len(tool)) / 100
+		}
+		got := hash(prices)
+		if want == "" {
+			want = got
+		}
+		require.Equal(t, want, got, "the same prices hash alike whatever order their map was built in")
+	}
+}

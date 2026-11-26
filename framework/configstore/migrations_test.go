@@ -1363,20 +1363,20 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 	store, db := setupFullMigrationDB(t)
 	ctx := context.Background()
 
-	config := ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     "key-uuid-1",
-				Name:   "openai-primary",
-				Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			},
+	keys := []schemas.Key{
+		{
+			ID:     "key-uuid-1",
+			Name:   "openai-primary",
+			Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
+			Models: schemas.WhiteList{"*"},
+			Weight: 1.0,
 		},
 	}
 
-	err := store.AddProvider(ctx, "openai", config)
-	require.NoError(t, err)
+	require.NoError(t, store.AddProvider(ctx, "openai", ProviderConfig{}))
+	for _, key := range keys {
+		require.NoError(t, store.CreateProviderKey(ctx, "openai", key))
+	}
 
 	// Read back through store (AfterFind hooks decrypt)
 	result, err := store.GetProvidersConfig(ctx)
@@ -1384,10 +1384,11 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 	require.Len(t, result, 1)
 	require.Contains(t, result, schemas.ModelProvider("openai"))
 
-	openai := result[schemas.ModelProvider("openai")]
-	require.Len(t, openai.Keys, 1)
-	assert.Equal(t, "openai-primary", openai.Keys[0].Name)
-	assert.Equal(t, "sk-test-secret-key-12345", openai.Keys[0].Value.GetValue())
+	openaiKeys, err := store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	require.Len(t, openaiKeys, 1)
+	assert.Equal(t, "openai-primary", openaiKeys[0].Name)
+	assert.Equal(t, "sk-test-secret-key-12345", openaiKeys[0].Value.GetValue())
 
 	// Verify encryption at the raw DB level
 	var rawValue string
@@ -1581,16 +1582,14 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		{"openai", "key-oa-1", "openai-key", "sk-openai-secret"},
 		{"anthropic", "key-ant-1", "anthropic-key", "sk-anthropic-secret"},
 	} {
-		err := store.AddProvider(ctx, schemas.ModelProvider(p.provider), ProviderConfig{
-			Keys: []schemas.Key{{
-				ID:     p.keyID,
-				Name:   p.keyName,
-				Value:  *schemas.NewSecretVar(p.keyValue),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			}},
-		})
-		require.NoError(t, err, "AddProvider %s", p.provider)
+		require.NoError(t, store.AddProvider(ctx, schemas.ModelProvider(p.provider), ProviderConfig{}), "AddProvider %s", p.provider)
+		require.NoError(t, store.CreateProviderKey(ctx, schemas.ModelProvider(p.provider), schemas.Key{
+			ID:     p.keyID,
+			Name:   p.keyName,
+			Value:  *schemas.NewSecretVar(p.keyValue),
+			Models: schemas.WhiteList{"*"},
+			Weight: 1.0,
+		}), "CreateProviderKey %s", p.provider)
 	}
 
 	// Add virtual keys
@@ -1623,8 +1622,14 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 	assert.Len(t, providers, 2)
 	assert.Contains(t, providers, schemas.ModelProvider("openai"))
 	assert.Contains(t, providers, schemas.ModelProvider("anthropic"))
-	assert.Equal(t, "sk-openai-secret", providers["openai"].Keys[0].Value.GetValue())
-	assert.Equal(t, "sk-anthropic-secret", providers["anthropic"].Keys[0].Value.GetValue())
+	openaiKeys, err := store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	require.NotEmpty(t, openaiKeys)
+	assert.Equal(t, "sk-openai-secret", openaiKeys[0].Value.GetValue())
+	anthropicKeys, err := store.GetProviderKeys(ctx, "anthropic")
+	require.NoError(t, err)
+	require.NotEmpty(t, anthropicKeys)
+	assert.Equal(t, "sk-anthropic-secret", anthropicKeys[0].Value.GetValue())
 
 	// Verify virtual keys
 	vks, err := store.GetVirtualKeys(ctx)
@@ -2530,6 +2535,41 @@ func TestMigrationAddMCPClientPendingVerificationColumn(t *testing.T) {
 	// Idempotent: a re-run on an already-migrated schema is a no-op.
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_pending_verification_column").Error)
 	require.NoError(t, migrationAddMCPClientPendingVerificationColumn(ctx, db, testMigrationLogger))
+}
+
+// TestMigrationAddMCPClientServerTypeOnSlugColumn adds the column with the empty default, so every existing
+// client inherits is_code_mode_client on its slug exactly as before, and re-runs cleanly.
+func TestMigrationAddMCPClientServerTypeOnSlugColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, db.AutoMigrate(&tables.TableMCPClient{}))
+	require.NoError(t, mg.DropColumn(&tables.TableMCPClient{}, "server_type_on_slug"))
+	now := time.Now()
+	for _, name := range []string{"code_mode", "direct"} {
+		require.NoError(t, db.Exec(
+			`INSERT INTO config_mcp_clients (client_id, name, endpoint_slug, connection_type, auth_type, is_code_mode_client, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			name, name, name, "http", "headers", name == "code_mode", now, now).Error)
+	}
+
+	require.NoError(t, migrationAddMCPClientServerTypeOnSlugColumn(ctx, db, testMigrationLogger))
+
+	require.True(t, mg.HasColumn(&tables.TableMCPClient{}, "server_type_on_slug"))
+	var rows []tables.TableMCPClient
+	require.NoError(t, db.Find(&rows).Error)
+	require.Len(t, rows, 2)
+	for _, row := range rows {
+		assert.Equal(t, schemas.MCPServerTypeOnSlugInherit, row.ServerTypeOnSlug, "%s: existing rows must inherit", row.Name)
+	}
+
+	// Idempotent: a re-run on an already-migrated schema is a no-op.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_mcp_client_server_type_on_slug_column").Error)
+	require.NoError(t, migrationAddMCPClientServerTypeOnSlugColumn(ctx, db, testMigrationLogger))
 }
 
 // TestMigrationAddMCPClientPendingVerificationColumnBoundsLockWait pins that on postgres the
@@ -4920,6 +4960,29 @@ func TestMigrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns
 	require.NoError(t, migrationAddClientConfigSkipAccessProfileUserVirtualKeyLifecycleColumns(ctx, db, testMigrationLogger))
 }
 
+// TestMigrationAddClientConfigEntityAccessProfileModeColumn pins that the migration adds the
+// entity access profile mode column, that existing rows read back as union so an upgrade keeps entity access
+// profiles adding to a caller's access, and that a re-run is harmless.
+func TestMigrationAddClientConfigEntityAccessProfileModeColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+
+	require.NoError(t, migrationAddClientConfigEntityAccessProfileModeColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "entity_access_profile_mode"))
+
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Equal(t, tables.EntityAccessProfileModeUnion, cfg.EntityAccessProfileMode)
+
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_entity_access_profile_mode_column").Error)
+	require.NoError(t, migrationAddClientConfigEntityAccessProfileModeColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
@@ -4940,6 +5003,78 @@ func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	// Idempotent: a re-run with the column already present must not fail.
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_enforce_vk_object_ownership_column").Error)
 	require.NoError(t, migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx, db, testMigrationLogger))
+}
+
+func TestMigrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+	mg := db.Migrator()
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+
+	require.NoError(t, migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "mcp_openapi_max_spec_mb"))
+
+	// Existing rows read back as 0: the built-in limit.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Zero(t, cfg.MCPOpenAPIMaxSpecMB)
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_mcp_openapi_max_spec_mb_column").Error)
+	require.NoError(t, migrationAddClientConfigMCPOpenAPIMaxSpecMBColumn(ctx, db, testMigrationLogger))
+}
+
+func TestMigrationAddClientConfigBifrostURLAndBifrostMCPColumns(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	columns := []string{"bifrost_url", "bifrost_mcp_allow_writes"}
+	mg := db.Migrator()
+	for _, column := range columns {
+		require.NoError(t, mg.DropColumn(&tables.TableClientConfig{}, column))
+		require.False(t, mg.HasColumn(&tables.TableClientConfig{}, column))
+	}
+
+	require.NoError(t, migrationAddClientConfigBifrostURLAndBifrostMCPColumns(ctx, db, testMigrationLogger))
+	for _, column := range columns {
+		assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, column), column)
+	}
+
+	// Existing rows read back unset: no Bifrost URL, writes on.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Empty(t, cfg.BifrostURL)
+	assert.Nil(t, cfg.BifrostMCPAllowWrites)
+
+	// Idempotent: a re-run with the columns already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_bifrost_url_and_bifrost_mcp_columns").Error)
+	require.NoError(t, migrationAddClientConfigBifrostURLAndBifrostMCPColumns(ctx, db, testMigrationLogger))
+}
+
+func TestMigrationAddFrameworkConfigOpenAPIURLColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableFrameworkConfig{}))
+	require.NoError(t, db.Create(&tables.TableFrameworkConfig{}).Error)
+	mg := db.Migrator()
+	require.NoError(t, mg.DropColumn(&tables.TableFrameworkConfig{}, "openapi_url"))
+	require.False(t, mg.HasColumn(&tables.TableFrameworkConfig{}, "openapi_url"))
+
+	require.NoError(t, migrationAddFrameworkConfigOpenAPIURLColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableFrameworkConfig{}, "openapi_url"))
+
+	// Existing rows read back unset: the build's default spec.
+	var cfg tables.TableFrameworkConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.Nil(t, cfg.OpenAPIURL)
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_framework_config_openapi_url_column").Error)
+	require.NoError(t, migrationAddFrameworkConfigOpenAPIURLColumn(ctx, db, testMigrationLogger))
 }
 
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
@@ -5416,6 +5551,59 @@ func TestMigrationAddOAuthIssuerBindingColumns(t *testing.T) {
 	assert.True(t, issuer == nil || *issuer == "", "an existing config stays unbound")
 }
 
+// TestMigrationAddMCPClientMetadataURLColumns adds both columns, keeps existing rows unmarked, and is a
+// no-op on a re-run.
+func TestMigrationAddMCPClientMetadataURLColumns(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE oauth_configs (id VARCHAR(255) PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO oauth_configs (id) VALUES ('existing')").Error)
+	for range 2 {
+		require.NoError(t, migrationAddMCPClientMetadataURLColumns(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "mcp_client_metadata_url"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableOauthConfig{}, "client_metadata_document"))
+	var marked *bool
+	require.NoError(t, db.Table("oauth_configs").Select("client_metadata_document").Where("id = ?", "existing").Scan(&marked).Error)
+	assert.True(t, marked == nil || !*marked, "an existing config stays unmarked")
+}
+
+// TestMigrationAddMCPClientMetadataURLColumnsBoundsLockWait pins that on postgres the migration gives up on
+// a held oauth_configs lock (lock_not_available, which the startup retry handles) instead of queueing every
+// later OAuth query behind it.
+func TestMigrationAddMCPClientMetadataURLColumnsBoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE oauth_configs (id VARCHAR(255) PRIMARY KEY)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	_, err = reader.ExecContext(ctx, "SELECT * FROM oauth_configs")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddMCPClientMetadataURLColumns(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
 // TestMigrationAddOAuthIssuerBindingColumnsBoundsLockWait pins that on postgres the migration gives up
 // on a held oauth_configs lock (lock_not_available, which the startup retry handles) instead of
 // queueing every later OAuth query behind it.
@@ -5852,4 +6040,336 @@ func TestMigrationAddDatasheetOverridesTable(t *testing.T) {
 	require.True(t, db.Migrator().HasTable(&tables.TableDatasheetOverride{}))
 	require.True(t, db.Migrator().HasIndex(&tables.TableDatasheetOverride{}, "idx_datasheet_override_target"))
 	require.NoError(t, migrationAddDatasheetOverridesTable(ctx, db, testMigrationLogger))
+}
+
+// TestMigrationAddBudgetBusinessUnitIDColumn pins the owner column a business unit's budgets name
+// it from: added where it is missing, left alone where it is there, and never tied to a business
+// unit row by a constraint, since the config loader may write the budget first. The column's index
+// is its own migration (TestMigrationAddBudgetBusinessUnitIDIndex).
+func TestMigrationAddBudgetBusinessUnitIDColumn(t *testing.T) {
+	ctx := context.Background()
+	db := setupCalendarAlignedPreMigrationDB(t)
+	mig := db.Migrator()
+	require.NoError(t, mig.AutoMigrate(&tables.TableBudget{}))
+	require.NoError(t, mig.DropColumn(&tables.TableBudget{}, "BusinessUnitID"))
+	require.False(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mig.HasColumn(&tables.TableBudget{}, "business_unit_id"))
+	assert.False(t, mig.HasConstraint(&tables.TableBudget{}, "fk_governance_budgets_business_unit"), "no constraint ties the owner column to a business unit row")
+
+	// A budget naming a unit that this store has no row for is accepted: the owner lives elsewhere.
+	buID := "bu-elsewhere"
+	require.NoError(t, db.Create(&tables.TableBudget{ID: "bud-bu", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID}).Error)
+
+	require.NoError(t, migrationAddBudgetBusinessUnitIDColumn(ctx, db, testMigrationLogger), "running again is a no-op")
+}
+
+// TestMigrationAddModelRoutersTable pins that the migration creates the
+// model_routers table and is safe to run again.
+func TestMigrationAddModelRoutersTable(t *testing.T) {
+	db := setupComplexityExemplarMigrationDB(t)
+	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger))
+	require.NoError(t, migrationAddModelRoutersTable(context.Background(), db, testMigrationLogger), "it runs once")
+	require.True(t, db.Migrator().HasTable(&tables.TableModelRouter{}))
+}
+
+// setupContentLoggingColumnsTestDB creates an in-memory SQLite database holding every table that
+// carries a disable_content_logging column, each in its shape before the column existed. Built by
+// hand because GORM's SQLite DropColumn reports success without dropping anything.
+func setupContentLoggingColumnsTestDB(t *testing.T) *gorm.DB {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE governance_teams (
+			id VARCHAR(255) PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			config_hash VARCHAR(255),
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)
+	`).Error, "Failed to create governance_teams table")
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_keys (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name VARCHAR(255) NOT NULL,
+			provider_id INTEGER NOT NULL,
+			key_id VARCHAR(255) NOT NULL,
+			value TEXT NOT NULL,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL
+		)
+	`).Error, "Failed to create config_keys table")
+	return db
+}
+
+// TestMigrationAddTeamDisableContentLoggingColumn pins the team's tri-state column the way the
+// virtual key's is pinned: the migration adds it and is idempotent, NULL survives a round trip as
+// inherit, and the config hash moves only when the team actually says something.
+func TestMigrationAddTeamDisableContentLoggingColumn(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableTeam{}, "disable_content_logging"),
+		"disable_content_logging column must not exist before migration")
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableTeam{}, "disable_content_logging"))
+
+	require.NoError(t, db.AutoMigrate(&tables.TableTeam{}))
+	inherit := tables.TableTeam{ID: "team-dcl-inherit", Name: "team-dcl-inherit"}
+	off := tables.TableTeam{ID: "team-dcl-off", Name: "team-dcl-off", DisableContentLogging: new(true)}
+	on := tables.TableTeam{ID: "team-dcl-on", Name: "team-dcl-on", DisableContentLogging: new(false)}
+	for _, team := range []*tables.TableTeam{&inherit, &off, &on} {
+		hash, err := GenerateTeamHash(*team)
+		require.NoError(t, err)
+		team.ConfigHash = hash
+		require.NoError(t, db.Create(team).Error)
+	}
+	read := func(id string) tables.TableTeam {
+		var stored tables.TableTeam
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(inherit.ID).DisableContentLogging, "a team that never said anything must read back as inherit, not false")
+	storedOff := read(off.ID)
+	require.NotNil(t, storedOff.DisableContentLogging)
+	assert.True(t, *storedOff.DisableContentLogging)
+	storedOn := read(on.ID)
+	require.NotNil(t, storedOn.DisableContentLogging)
+	assert.False(t, *storedOn.DisableContentLogging, "an explicit false is a decision, not an absence")
+
+	same := tables.TableTeam{ID: inherit.ID, Name: inherit.Name}
+	hashWith := func(decision *bool) string {
+		same.DisableContentLogging = decision
+		hash, err := GenerateTeamHash(same)
+		require.NoError(t, err)
+		return hash
+	}
+	inheritHash, offHash, onHash := hashWith(nil), hashWith(new(true)), hashWith(new(false))
+	assert.Equal(t, inheritHash, inherit.ConfigHash, "inherit must hash exactly like a team from before the column existed")
+	assert.NotEqual(t, inheritHash, offHash, "forcing content off must change the hash")
+	assert.NotEqual(t, inheritHash, onHash, "forcing content on must change the hash")
+	assert.NotEqual(t, offHash, onHash, "off and on must not collide")
+}
+
+// TestMigrationAddDisableContentLoggingColumns_NonRollbackable pins that rolling the columns back is
+// refused rather than performed. Each column is the only home for its layer's content-logging
+// decision, and a nil reads as "inherit": dropping one would not merely lose data, it would silently
+// start logging content for every row that had turned it off.
+func TestMigrationAddDisableContentLoggingColumns_NonRollbackable(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
+	require.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "disable_content_logging"))
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+
+	// A key that turned content off is exactly the state a rollback would strand.
+	seed := tables.TableVirtualKey{ID: "vk-dcl-rollback", Name: "vk-dcl-rollback", Value: *schemas.NewSecretVar("sk-bf-vk-dcl-rollback"), DisableContentLogging: new(true)}
+	require.NoError(t, db.Create(&seed).Error)
+
+	err := rollbackDisableContentLoggingColumns(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rolling the columns back must be refused")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+
+	for _, table := range disableContentLoggingTables {
+		assert.True(t, mg.HasColumn(table, "disable_content_logging"), "a refused rollback must leave %T's column in place", table)
+	}
+
+	var got tables.TableVirtualKey
+	require.NoError(t, db.First(&got, "id = ?", seed.ID).Error)
+	require.NotNil(t, got.DisableContentLogging)
+	assert.True(t, *got.DisableContentLogging, "the surviving decision must be untouched")
+}
+
+// TestMigrationAddDisableContentLoggingColumns_BoundsLockWait pins that the column step fails fast on
+// a held table lock on postgres instead of queueing every query on that table behind its ALTER. The
+// lock sits on the second table, so the bound has to cover the whole loop, not just its first ALTER.
+func TestMigrationAddDisableContentLoggingColumns_BoundsLockWait(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec("CREATE TABLE governance_virtual_keys (id VARCHAR(255) PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("CREATE TABLE governance_teams (id VARCHAR(255) PRIMARY KEY)").Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	reader, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer reader.Close()
+	_, err = reader.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	defer reader.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+	// A long reader's ACCESS SHARE lock conflicts with the ACCESS EXCLUSIVE lock ALTER TABLE needs.
+	_, err = reader.ExecContext(ctx, "SELECT * FROM governance_teams")
+	require.NoError(t, err)
+
+	migrateCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	err = migrationAddDisableContentLoggingColumns(migrateCtx, db, testMigrationLogger)
+	require.Error(t, err)
+	assert.True(t, postgresconn.IsLockNotAvailableError(err), "expected lock_not_available, got: %v", err)
+}
+
+// TestMigrationAddDisableContentLoggingColumns_AfterVirtualKeyStep pins why the combined step has an
+// ID of its own: a database that already ran the shipped add_virtual_key_disable_content_logging_column
+// step, and so has the virtual key's column, still runs this step and gains every other column.
+func TestMigrationAddDisableContentLoggingColumns_AfterVirtualKeyStep(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+	require.NoError(t, db.Exec(`ALTER TABLE governance_virtual_keys ADD COLUMN disable_content_logging BOOLEAN`).Error)
+	require.NoError(t, db.Exec("INSERT INTO migrations (id) VALUES (?)", "add_virtual_key_disable_content_logging_column").Error)
+
+	require.NoError(t, migrationAddDisableContentLoggingColumns(ctx, db, testMigrationLogger))
+	for _, table := range disableContentLoggingTables {
+		assert.True(t, mg.HasColumn(table, "disable_content_logging"), "every content-logging column must exist after the step")
+	}
+}
+
+// TestMigrationAddKeyDisableContentLoggingColumn_AfterCombinedStep pins why the provider key's column
+// has a migration ID of its own: a database that already recorded add_disable_content_logging_columns
+// skips that step's body, so a table added to it later would never gain its column there. Running
+// every content-logging step in registry order must still leave config_keys with the column.
+func TestMigrationAddKeyDisableContentLoggingColumn_AfterCombinedStep(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+	require.NoError(t, db.Exec(`ALTER TABLE governance_virtual_keys ADD COLUMN disable_content_logging BOOLEAN`).Error)
+	require.NoError(t, db.Exec(`ALTER TABLE governance_teams ADD COLUMN disable_content_logging BOOLEAN`).Error)
+	for _, id := range []string{"add_virtual_key_disable_content_logging_column", "add_disable_content_logging_columns"} {
+		require.NoError(t, db.Exec("INSERT INTO migrations (id) VALUES (?)", id).Error)
+	}
+	require.False(t, mg.HasColumn(&tables.TableKey{}, "disable_content_logging"))
+
+	ran := 0
+	for _, step := range configstoreMigrationSteps {
+		for _, id := range step.IDs {
+			// The client-config column (add_disable_content_logging_column) is not a layer column.
+			if strings.Contains(id, "disable_content_logging") && id != "add_disable_content_logging_column" {
+				require.NoError(t, step.run(ctx, db, testMigrationLogger), "step %s", id)
+				ran++
+				break
+			}
+		}
+	}
+	require.NotZero(t, ran)
+	assert.True(t, mg.HasColumn(&tables.TableKey{}, "disable_content_logging"), "config_keys must gain the column on a database that already ran the combined step")
+}
+
+// TestMigrationAddOllamaSGLConfigColumns_BackfillBeforeLaterKeyColumns pins that the ollama/sgl URL
+// backfill inserts only the columns that existed when it ran. On an upgrade that still needs this
+// step, config_keys lacks every column a later step adds (disable_content_logging,
+// vertex_aws_workload_identity_json, ...), so a full-struct insert would name them and fail the boot.
+func TestMigrationAddOllamaSGLConfigColumns_BackfillBeforeLaterKeyColumns(t *testing.T) {
+	for _, laterColumn := range []string{"disable_content_logging", "vertex_aws_workload_identity_json"} {
+		t.Run(laterColumn, func(t *testing.T) {
+			db, err := gorm.Open(sqlite.Open(t.TempDir()+"/ollama.db"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+			require.NoError(t, err)
+			require.NoError(t, db.AutoMigrate(&tables.TableProvider{}, &tables.TableKey{}))
+			require.NoError(t, db.Exec("ALTER TABLE config_keys DROP COLUMN "+laterColumn).Error)
+			require.NoError(t, db.Create(&tables.TableProvider{Name: "ollama"}).Error)
+			require.NoError(t, db.Exec(`UPDATE config_providers SET network_config_json = ? WHERE name = 'ollama'`, `{"base_url":"http://127.0.0.1:11434"}`).Error)
+
+			require.NoError(t, migrationAddOllamaSGLConfigColumns(context.Background(), db, testMigrationLogger))
+
+			var row struct {
+				ModelsJSON string
+				Weight     *float64
+				Enabled    *bool
+				OllamaURL  string `gorm:"column:ollama_url"`
+				ConfigHash string
+				KeyID      string
+			}
+			require.NoError(t, db.Table("config_keys").Where("name = ?", "Default Ollama Key").Take(&row).Error, "the backfill must create the provider's key")
+			assert.Equal(t, `["*"]`, row.ModelsJSON)
+			require.NotNil(t, row.Weight)
+			assert.Equal(t, 1.0, *row.Weight)
+			require.NotNil(t, row.Enabled)
+			assert.True(t, *row.Enabled)
+			assert.NotEmpty(t, row.OllamaURL)
+			var key tables.TableKey
+			require.NoError(t, db.Where("name = ?", "Default Ollama Key").First(&key).Error)
+			require.NotNil(t, key.OllamaKeyConfig, "the provider's base_url must move onto the key")
+			assert.Equal(t, "http://127.0.0.1:11434", key.OllamaKeyConfig.URL.GetValue())
+			assert.NotEmpty(t, row.ConfigHash)
+			assert.NotEmpty(t, row.KeyID)
+		})
+	}
+}
+
+// TestMigrationAddKeyDisableContentLoggingColumn pins the provider key's tri-state column: the
+// key's own step adds it, and the key hash moves only when the key actually says something, so
+// config.json keys from before the field see no drift.
+func TestMigrationAddKeyDisableContentLoggingColumn(t *testing.T) {
+	db := setupContentLoggingColumnsTestDB(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableKey{}, "disable_content_logging"))
+	require.NoError(t, migrationAddKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableKey{}, "disable_content_logging"))
+	require.NoError(t, migrationAddKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger), "re-running is a no-op")
+
+	err := rollbackKeyDisableContentLoggingColumn(ctx, db, testMigrationLogger)
+	require.Error(t, err, "rolling the column back must be refused")
+	assert.Contains(t, err.Error(), "non-rollbackable")
+	assert.True(t, mg.HasColumn(&tables.TableKey{}, "disable_content_logging"), "a refused rollback must leave the column in place")
+
+	hashWith := func(decision *bool) string {
+		hash, err := GenerateKeyHash(schemas.Key{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-k1"), DisableContentLogging: decision})
+		require.NoError(t, err)
+		return hash
+	}
+	// GenerateKeyHash for this key as it was before the field existed (dev at 14bdcd288f). A
+	// config.json key that inherits must keep exactly this hash, or every such key would look changed.
+	const hashBeforeTheField = "247515337962d71075e71701cd272888e3a5b7c34ede1d0f6a3fb435d36d3497"
+	inheritHash, offHash, onHash := hashWith(nil), hashWith(new(true)), hashWith(new(false))
+	assert.Equal(t, hashBeforeTheField, inheritHash, "inherit must hash exactly like a key from before the field existed")
+	assert.NotEqual(t, inheritHash, offHash, "forcing content off must change the hash")
+	assert.NotEqual(t, inheritHash, onHash, "forcing content on must change the hash")
+	assert.NotEqual(t, offHash, onHash, "off and on must not collide")
+}
+
+// TestUsageResetEpochMigrationLeavesUnknown proves legacy boundaries are not
+// promoted into evidence, including nonzero calendar-adoption boundaries.
+func TestUsageResetEpochMigrationLeavesUnknown(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}, &tables.TableRateLimit{}))
+	boundary := time.Now().UTC().Truncate(time.Second)
+	budget := tables.TableBudget{ID: "legacy-budget", MaxLimit: 100, ResetDuration: "1h", CurrentUsage: 7, LastReset: boundary}
+	rate := tables.TableRateLimit{ID: "legacy-rate", TokenCurrentUsage: 9, RequestCurrentUsage: 3, TokenLastReset: boundary, RequestLastReset: boundary.Add(-time.Hour)}
+	require.NoError(t, db.Create(&budget).Error)
+	require.NoError(t, db.Create(&rate).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.NoError(t, migrationAddGovernanceUsageResetEpochs(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.NoError(t, migrationAddGovernanceUsageResetEpochs(ctx, db, testMigrationLogger))
+	require.NoError(t, db.First(&budget, "id = ?", budget.ID).Error)
+	require.NoError(t, db.First(&rate, "id = ?", rate.ID).Error)
+	require.Zero(t, budget.UsageResetEpoch)
+	require.Zero(t, rate.TokenUsageResetEpoch)
+	require.Zero(t, rate.RequestUsageResetEpoch)
+	require.Equal(t, 7.0, budget.CurrentUsage)
+	require.Equal(t, int64(9), rate.TokenCurrentUsage)
+	require.Equal(t, int64(3), rate.RequestCurrentUsage)
+	require.True(t, budget.LastReset.Equal(boundary))
+	require.True(t, rate.TokenLastReset.Equal(boundary))
+	require.True(t, rate.RequestLastReset.Equal(boundary.Add(-time.Hour)))
 }

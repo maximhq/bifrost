@@ -51,6 +51,17 @@ export function mergeEntityPage(prev: EntityPages, page: EntityPage): EntityPage
 	};
 }
 
+/** What the picker has loaded after this render: the page that just landed, if any, merged into the rest. */
+export function accumulatePages(
+	prev: EntityPages,
+	s: { open: boolean; search: string; offset: number; entries: EntityPageEntry[] | undefined; total: number | undefined },
+): EntityPages {
+	// Closed means the next opening starts over; otherwise a failed first page would show the last opening's rows.
+	if (!s.open) return EMPTY_ENTITY_PAGES;
+	if (!s.entries) return prev;
+	return mergeEntityPage(prev, { search: s.search, offset: s.offset, entries: s.entries, total: s.total ?? s.offset + s.entries.length });
+}
+
 export function hasMoreEntities(pages: EntityPages): boolean {
 	return pages.nextOffset < pages.total;
 }
@@ -76,4 +87,39 @@ export function shouldAutoLoadMore(state: {
  */
 export function loadMoreNeedsRefetch(pages: EntityPages, offset: number, isError: boolean): boolean {
 	return isError && offset === pages.nextOffset;
+}
+/** An earlier search's rows stay up while the new one loads, but not once its first page has failed. */
+export function showsLoadedRows(s: { rowsAreCurrent: boolean; isBusy: boolean; isError: boolean }): boolean {
+	return s.rowsAreCurrent || s.isBusy || !s.isError;
+}
+
+/**
+ * What the multi picker's list shows besides its rows. `pinnedCount` is the
+ * selected entities outside the loaded page, shown above it so they can be
+ * unticked; they are not search results.
+ */
+export function multiListState(s: {
+	isError: boolean;
+	isBusy: boolean;
+	rowCount: number;
+	pinnedCount: number;
+	/** False while the loaded rows still belong to an earlier search. */
+	rowsAreCurrent: boolean;
+}): { body: "rows" | "loading" | "empty" | "firstPageError"; laterPageRetry: boolean; showRows: boolean; rowsSelectable: boolean } {
+	const showRows = showsLoadedRows(s);
+	const rowCount = showRows ? s.rowCount : 0;
+	const navigable = s.pinnedCount + rowCount;
+	let body: "rows" | "loading" | "empty" | "firstPageError" = "rows";
+	// Checked on rows, not navigable: pinned selections must not hide a failed first page.
+	if (!s.isBusy && s.isError && rowCount === 0) body = "firstPageError";
+	else if (!s.isBusy && navigable === 0) body = "empty";
+	else if (s.isBusy && navigable === 0) body = "loading";
+	// An earlier search's rows only hold the list's place; picking one would add an entity the input does not match.
+	return { body, laterPageRetry: s.isError && rowCount > 0, showRows, rowsSelectable: s.rowsAreCurrent };
+}
+
+/** Backspace on an empty search drops the last chip, like a tag input. Null leaves the key to the input. */
+export function chipsAfterBackspace(selectedIds: string[], search: string): string[] | null {
+	if (search.length > 0 || selectedIds.length === 0) return null;
+	return selectedIds.slice(0, -1);
 }

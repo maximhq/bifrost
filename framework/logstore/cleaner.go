@@ -36,8 +36,16 @@ const (
 	cleanupLogsShareNum = 5
 	cleanupLogsShareDen = 6
 
+	// reclaimStepPages is how many freed pages one incremental_vacuum step
+	// returns to the OS. Steps are separate statements so writers can run
+	// between them.
+	reclaimStepPages = 2000
+
 	// cleanupProgressEvery is how many batches pass between Debug progress lines.
 	cleanupProgressEvery = 100
+
+	// cleanupGrowAfter is how many batches in a row must succeed before a shrunk batch size doubles again.
+	cleanupGrowAfter = 20
 )
 
 // LogRetentionManager defines the interface for managing log retention and deletion
@@ -68,6 +76,17 @@ type WarpTopicRetentionManager interface {
 	DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
 }
 
+// SpaceReclaimer is implemented by stores whose engine keeps deleted pages in
+// the file until told to release them (SQLite). Optional for the same reason
+// MCPToolLogRetentionManager is. The cleaner calls it after a retention pass.
+type SpaceReclaimer interface {
+	// ReclaimSpace returns up to maxPages freed pages to the filesystem per
+	// step, repeating until nothing is left to free or ctx ends. It returns
+	// the number of pages released and is a no-op where the engine does not
+	// need it.
+	ReclaimSpace(ctx context.Context, maxPages int) (int64, error)
+}
+
 // RetentionScheduler is how the cleaner reads a store's retention interval; every LogStore implements it.
 type RetentionScheduler interface {
 	RetentionInterval() time.Duration
@@ -85,6 +104,8 @@ type LogsCleaner struct {
 	logger      schemas.Logger
 	stopCleanup chan struct{}
 	mu          sync.Mutex
+	// batchSizes keeps each table's batch size after a statement timeout shrank it, so later passes start there.
+	batchSizes map[string]int
 }
 
 // NewLogsCleaner creates a new LogsCleaner instance
@@ -196,6 +217,10 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	// Calculate cutoff time
 	cutoff := time.Now().UTC().AddDate(0, 0, -retentionDays)
 	c.logger.Info("starting log cleanup: deleting logs older than %s (retention: %d days)", cutoff.Format(time.RFC3339), retentionDays)
+	// Reclaim runs even when this pass deleted nothing: an earlier pass may have
+	// stopped at its time ceiling or on an error with freed pages still waiting,
+	// and with an empty freelist the call returns without taking the write lock.
+	defer c.reclaimSpace(ctx)
 
 	mcp, hasMCP := c.manager.(MCPToolLogRetentionManager)
 	topics, hasTopics := c.manager.(WarpTopicRetentionManager)
@@ -246,11 +271,30 @@ func (c *LogsCleaner) cleanupOldLogs(ctx context.Context) {
 	}
 }
 
+// reclaimSpace hands pages freed by the retention pass back to the filesystem
+// when the store supports it. A failure is logged and never fails the pass.
+func (c *LogsCleaner) reclaimSpace(ctx context.Context) {
+	reclaimer, ok := c.manager.(SpaceReclaimer)
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	pages, err := reclaimer.ReclaimSpace(ctx, reclaimStepPages)
+	if err != nil {
+		c.logger.Warn("log store space reclaim failed after %d pages: %v", pages, err)
+		return
+	}
+	if pages > 0 {
+		c.logger.Info("log store space reclaim released %d pages", pages)
+	}
+}
+
 // drainExpired calls deleteBatch until it deletes nothing, another replica holds the table, or ctx ends.
 // It returns false when the table stopped early (cancellation or an error).
 func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff time.Time, deleteBatch func(context.Context, time.Time, int) (int64, error)) bool {
 	totalDeleted := int64(0)
 	batchCount := 0
+	size := c.batchSizeFor(label)
+	streak := 0
 
 	for {
 		// Check if context is cancelled
@@ -268,10 +312,18 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 			return false
 		}
 
-		deleted, err := deleteBatch(ctx, cutoff, batchSize)
+		deleted, err := deleteBatch(ctx, cutoff, size)
 		if errors.Is(err, ErrRetentionBusy) {
 			c.logger.Debug("%s cleanup yielded to another replica after %d rows in %d batches", label, totalDeleted, batchCount)
 			return true
+		}
+		// A timed-out batch rolls back whole and the next pass picks the same rows, so retry those rows in a smaller batch.
+		if err != nil && ctx.Err() == nil && size > 1 && IsPostgresStatementTimeoutError(err) {
+			size = max(size/2, 1)
+			streak = 0
+			c.setBatchSize(label, size)
+			c.logger.Warn("%s cleanup batch hit the statement timeout; retrying with %d rows per batch", label, size)
+			continue
 		}
 		if err != nil {
 			c.logger.Error("failed to delete old %s: %v", label, err)
@@ -291,8 +343,16 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 
 		// A short batch can mean another session took some of the picked rows, so only an empty batch ends the drain.
 		// ClickHouse deletes the whole expired range in one statement and returns a count above batchSize (#7098).
-		if deleted > int64(batchSize) {
+		if deleted > int64(size) {
 			break
+		}
+
+		if size < batchSize {
+			if streak++; streak >= cleanupGrowAfter {
+				size = min(size*2, batchSize)
+				streak = 0
+				c.setBatchSize(label, size)
+			}
 		}
 	}
 
@@ -302,6 +362,25 @@ func (c *LogsCleaner) drainExpired(ctx context.Context, label string, cutoff tim
 		c.logger.Debug("%s cleanup completed: nothing older than the cutoff", label)
 	}
 	return true
+}
+
+// batchSizeFor is label's batch size: batchSize unless a statement timeout shrank it.
+func (c *LogsCleaner) batchSizeFor(label string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if size, ok := c.batchSizes[label]; ok {
+		return size
+	}
+	return batchSize
+}
+
+func (c *LogsCleaner) setBatchSize(label string, size int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.batchSizes == nil {
+		c.batchSizes = make(map[string]int)
+	}
+	c.batchSizes[label] = size
 }
 
 // cleanupMigrationPollInterval is how often a paused retention pass re-checks

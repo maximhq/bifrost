@@ -46,7 +46,7 @@ func (stubConfigManager) ReloadHeaderFilterConfig(context.Context, *configtables
 func TestUpdateConfig_PersistsVKRotationCooldown(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
 
 	save := func(t *testing.T, cooldownJSON string) {
@@ -93,7 +93,7 @@ func TestUpdateConfig_PersistsVKRotationCooldown(t *testing.T) {
 func TestUpdateConfig_MCPMaxProtocolVersion(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
 	save := func(t *testing.T, body string) int {
 		t.Helper()
@@ -119,6 +119,41 @@ func TestUpdateConfig_MCPMaxProtocolVersion(t *testing.T) {
 
 	require.Equal(t, fasthttp.StatusOK, save(t, `"mcp_max_protocol_version":"auto",`))
 	assert.Equal(t, "auto", stored(t))
+
+	// The /mcp cap is a separate field with the same rules.
+	storedServer := func(t *testing.T) string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.MCPServerMaxProtocolVersion
+	}
+	require.Equal(t, fasthttp.StatusOK, save(t, `"mcp_server_max_protocol_version":"2025-06-18",`))
+	assert.Equal(t, "2025-06-18", storedServer(t))
+	assert.Equal(t, "auto", stored(t), "the upstream cap is untouched")
+	require.Equal(t, fasthttp.StatusOK, save(t, ``))
+	assert.Equal(t, "2025-06-18", storedServer(t), "omitted keeps the cap")
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"mcp_server_max_protocol_version":"latest",`))
+	require.Equal(t, fasthttp.StatusOK, save(t, `"mcp_server_max_protocol_version":"auto",`))
+	assert.Equal(t, "auto", storedServer(t))
+
+	// A refused cap changes nothing live: drop_excess_requests in the same request is not applied.
+	recorder := &dropExcessRecorder{}
+	h.configManager = recorder
+	require.Equal(t, fasthttp.StatusBadRequest, save(t, `"drop_excess_requests":true,"mcp_server_max_protocol_version":"latest",`))
+	assert.Empty(t, recorder.applied, "drop_excess_requests was applied before the cap was refused")
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	assert.False(t, persisted.DropExcessRequests)
+}
+
+// dropExcessRecorder records the drop_excess_requests values a config save applies live.
+type dropExcessRecorder struct {
+	stubConfigManager
+	applied []bool
+}
+
+func (r *dropExcessRecorder) UpdateDropExcessRequests(_ context.Context, value bool) {
+	r.applied = append(r.applied, value)
 }
 
 // tokenizerRecorder records the tokenizer families each post-save reload hands to the
@@ -140,7 +175,7 @@ func (r *tokenizerRecorder) ReloadClientConfigFromConfigStore(context.Context) e
 func TestUpdateConfig_UsageEstimationTokenizers(t *testing.T) {
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
 	recorder := &tokenizerRecorder{}
 	h := &ConfigHandler{store: cfg, configManager: recorder}
 	recorder.stored = func() []string {

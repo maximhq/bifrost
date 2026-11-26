@@ -33,6 +33,17 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	}
 }
 
+// chatToolImagesSupported reports whether a tool's images may move into user
+// content for this destination. The datasheet's supports_vision decides when the
+// model has a record. Without one, only OpenAI and Azure OpenAI (and custom
+// providers built on them) default to yes: every other OpenAI-compatible host
+// serves text-only models that reject an image_url part with a 400, so they keep
+// the placeholder.
+func chatToolImagesSupported(ctx *schemas.BifrostContext, caps schemas.ModelCaps, provider schemas.ModelProvider) bool {
+	base := schemas.ResolveBaseProvider(ctx, provider)
+	return caps.SupportsVision(base == schemas.OpenAI || base == schemas.Azure)
+}
+
 // ToOpenAIChatRequest converts a Bifrost chat completion request to OpenAI format
 func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) *OpenAIChatRequest {
 	if bifrostReq == nil || bifrostReq.Input == nil {
@@ -44,7 +55,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
-		Messages: ConvertBifrostMessagesToOpenAIMessages(bifrostReq.Input),
+		Messages: convertBifrostMessagesToOpenAIMessages(bifrostReq.Input, chatToolImagesSupported(ctx, caps, bifrostReq.Provider)),
 		Provider: bifrostReq.Provider,
 	}
 
@@ -88,21 +99,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
-		// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'",
-		// so each one is sent as a function tool. Chat has no custom tool call shape,
-		// so the model's call reaches the client as a function call.
-		customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
-		if customToolsAsFunctions {
-			openaiReq.ChatParameters.ToolChoice = chatCustomToolChoiceAsFunction(openaiReq.ChatParameters.ToolChoice)
-		}
-
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
 		if len(openaiReq.ChatParameters.Tools) > 0 {
 			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
 			for i, tool := range openaiReq.ChatParameters.Tools {
-				if customToolsAsFunctions && tool.Type == schemas.ChatToolTypeCustom {
-					tool = chatCustomToolAsFunction(tool)
-				}
 				normalizedTools[i] = tool
 				if tool.Function != nil && tool.Function.Parameters != nil {
 					funcCopy := *tool.Function
@@ -150,6 +150,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
 	}
 
+	// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
+	if !caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(capModel)) ||
+		caps.FieldUnsupported(schemas.FieldPromptCacheOptions, false) {
+		openaiReq.ChatParameters.PromptCacheOptions = nil
+	}
+
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
@@ -158,6 +164,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
 		// ResolveChatFileURLs after conversion, where the error can propagate; see its doc comment.
+		return openaiReq
+	case schemas.BedrockMantle, schemas.Bedrock:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		if !isGPTOSS(capModel) {
+			openaiReq.stripUnsupportedSamplingParams(caps)
+		}
 		return openaiReq
 	case schemas.DeepSeek:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -189,7 +201,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return openaiReq
 	case schemas.Mistral:
 		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.applyMistralCompatibility()
+		openaiReq.applyMistralCompatibility(caps)
 		return openaiReq
 	case schemas.MiniMax:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -241,7 +253,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 		// Apply Mistral-specific transformations for Vertex Mistral models
 		if schemas.IsMistralModel(bifrostReq.Model) {
-			openaiReq.applyMistralCompatibility()
+			openaiReq.applyMistralCompatibility(caps)
 		} else if openaiReq.Reasoning != nil && openaiReq.Reasoning.Effort != nil &&
 			*openaiReq.Reasoning.Effort == "none" {
 			// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking,
@@ -317,9 +329,6 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelC
 	if caps.FieldUnsupported(schemas.FieldPromptCacheRetention, true) {
 		req.ChatParameters.PromptCacheRetention = nil
 	}
-	if caps.FieldUnsupported(schemas.FieldPromptCacheOptions, true) {
-		req.ChatParameters.PromptCacheOptions = nil
-	}
 	if caps.FieldUnsupported(schemas.FieldVerbosity, true) {
 		req.ChatParameters.Verbosity = nil
 	}
@@ -382,8 +391,14 @@ func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(caps schemas.ModelC
 	}
 }
 
-// applyMistralCompatibility applies Mistral-specific transformations to the request
-func (req *OpenAIChatRequest) applyMistralCompatibility() {
+// mistralLegacyEffortControl is the ladder used when the datasheet publishes none for a
+// Mistral model: older Mistral reasoning models accept only "none" and "high".
+var mistralLegacyEffortControl = &schemas.EffortControl{Levels: []string{schemas.ReasoningEffortNone, schemas.ReasoningEffortHigh}}
+
+// applyMistralCompatibility applies Mistral-specific transformations to the request.
+// Reasoning effort follows the model's datasheet ladder (per-model on Mistral today, e.g.
+// low/high/max on GLM 5.3), falling back to the legacy none/high clamp without one.
+func (req *OpenAIChatRequest) applyMistralCompatibility(caps schemas.ModelCaps) {
 	// Mistral uses max_tokens instead of max_completion_tokens
 	if req.MaxCompletionTokens != nil {
 		req.MaxTokens = req.MaxCompletionTokens
@@ -396,11 +411,8 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 		req.ToolChoice.ChatToolChoiceStruct = nil
 	}
 
-	// Mistral only support reasoning effort "none" and "high"
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
-		if *req.Reasoning.Effort != "none" && *req.Reasoning.Effort != "high" {
-			req.Reasoning.Effort = schemas.Ptr("high")
-		}
+		req.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(*req.Reasoning.Effort, mistralLegacyEffortControl))
 	}
 
 	// Mistral rejects unknown assistant fields with 422 extra_forbidden, reasoning_content included

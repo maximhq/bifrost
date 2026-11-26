@@ -70,7 +70,8 @@
 			"decision": "Modelo de decisión",
 			"llm": "LLM",
 			"skipped": "Omitido"
-		}
+		},
+		"modelRouter": "Enrutador"
 	},
 	"dashboard": {
 		"tabs": {
@@ -370,6 +371,7 @@
 			"outputCost": "Costo de producción",
 			"additionalCost": "Costo adicional",
 			"guardrailCost": "Costo de la guardia",
+			"externalGuardrailCostNote": "Incluye {{cost}} de costo estimado de guardrails externos, no contabilizado en el costo total ni en los presupuestos.",
 			"semanticCacheCost": "Costo de la caché semántica",
 			"routingCost": "Costo de rutina",
 			"inputTextTokens": "Tokens de texto de entrada",
@@ -403,6 +405,9 @@
 			"judgeProvider": "Magistrado Proveedor",
 			"judgeModel": "Modelo juez",
 			"promptTokens": "Tokens de prompt",
+			"usageUnits": "Unidades de uso",
+			"estimatedCost": "Costo estimado",
+			"estimatedCostTooltip": "Estimado según el precio de lista del proveedor del guardrail. No se contabiliza en el costo total ni en los presupuestos.",
 			"reason": "Razón",
 			"routingClassificationDetails": "Detalles de la Clasificación de Ruidos",
 			"mechanism": "Mecanismo",
@@ -516,7 +521,6 @@
 				"allowed": "Permitido",
 				"blocked": "Bloqueado",
 				"redacted": "Redactado",
-				"transformed": "Transformado",
 				"monitored": "Supervisado",
 				"detected": "Detectado"
 			},
@@ -572,11 +576,9 @@
 			"toolTypeCount_other": "{{type}} · {{count}} herramientas",
 			"guardrailHints": {
 				"blocked": "La regla detuvo la solicitud.",
-				"redacted": "La regla eliminó el contenido coincidente y la solicitud continuó.",
-				"transformed": "La regla reescribió el contenido coincidente y la solicitud continuó.",
+				"redacted": "La regla enmascaró o reescribió el contenido coincidente y la solicitud continuó.",
 				"monitoredWouldBlock": "La regla solo monitorea: habría bloqueado esto, pero la solicitud continuó sin cambios.",
 				"monitoredWouldRedact": "La regla solo monitorea: habría eliminado este contenido, pero la solicitud continuó sin cambios.",
-				"monitoredWouldTransform": "La regla solo monitorea: habría transformado esto, pero la solicitud continuó sin cambios.",
 				"monitored": "La regla solo monitorea: la solicitud continuó sin cambios.",
 				"detected": "La regla marcó la solicitud y la dejó continuar sin cambios."
 			},
@@ -1120,6 +1122,8 @@
 			"groupTracesBySessionHelp": "Cuando está habilitado, las solicitudes que comparten el mismo encabezado x-bf-session-id se agrupan en un solo trazo, cada solicitud aparece como un tamiz de hermano de alto nivel. Una solicitud que lleva un marcador W3C inbound permanece en su propio trazo distribuido y no se ve afectada.",
 			"disableRootSpanContent": "Desactivar el contenido de la hoja de baño",
 			"disableRootSpanContentHelp": "Cuando está habilitado, el contenido de mensaje de entrada/salida se deja caer del lazo raíz solamente; el lapso de generación subyacente (llm.call) mantiene el contenido completo.",
+			"applyTraceDimensionsToChildSpans": "Aplicar dimensiones a los spans hijos",
+			"applyTraceDimensionsToChildSpansHelp": "Cuando está habilitado, las dimensiones de la solicitud (encabezados x-bf-dim-*) se combinan en cada span exportado, no solo en el span raíz, para que los spans hijos se puedan filtrar o agrupar por dimensión. Se omiten path, method y los espacios de nombres reservados como gen_ai.*. Cada dimensión se añade a todos los spans, por lo que los valores de alta cardinalidad aumentan el coste de ingesta del collector.",
 			"enableMetricsExport": "Exportación de parámetros de acceso",
 			"enableMetricsExportHelp": "Empuje métricas a un coleccionista OTEL para una correcta agregación en despliegues de grupos",
 			"overheadBreakdown": "Desglose de los gastos generales",
@@ -1233,7 +1237,10 @@
 		"exactRoundTripID": "ID de ida y vuelta exacto",
 		"nothingRecorded": "No hay nada registrado en este intervalo de tiempo",
 		"topics": "Temas",
-		"searchTopics": "Buscar temas"
+		"searchTopics": "Buscar temas",
+		"modelRouters": "Enrutadores",
+		"searchModelRouters": "Buscar enrutadores",
+		"loadFailed": "No se pudo cargar esta lista."
 	},
 	"requestTypes": {
 		"chat_completion": "Conversación",
@@ -1262,6 +1269,7 @@
 		"decisions": "Decisiones",
 		"speech": "Discurso",
 		"speech_stream": "Voz en streaming",
+		"speech_session": "Sesión de voz",
 		"transcription": "Transcripción",
 		"transcription_stream": "Transcripción Stream",
 		"image_generation": "Generación de imagen",
@@ -1632,6 +1640,70 @@
 				"publicAgentCardFetched": "Tarjeta de agente pública obtenida",
 				"extendedAgentCardFetched": "Tarjeta de agente extendida obtenida"
 			}
+		},
+		"trace": {
+			"title": "Traza del agente",
+			"loading": "Cargando traza…",
+			"partial": "No se pudieron cargar algunos logs vinculados, así que esta traza puede estar incompleta.",
+			"timeline": "Línea de tiempo",
+			"findSpan": "Buscar span",
+			"treeLabel": "Spans de la traza",
+			"noMatches": "Ningún span coincide.",
+			"artifacts": "Artefactos",
+			"latency": "Latencia",
+			"tokens": "Tokens",
+			"cost": "Costo",
+			"agents": "Agentes",
+			"llmCalls": "Llamadas LLM",
+			"mcpCalls": "Llamadas MCP",
+			"errors": "Errores",
+			"tokensShort": "{{value}} tok",
+			"errorsShort": "{{value}} errores",
+			"followUps": "+{{value}} llamadas de seguimiento",
+			"producedBy": "Producido por {{agent}}",
+			"artifactKind": {
+				"data": "datos",
+				"text": "texto"
+			},
+			"expand": "Expandir {{name}}",
+			"collapse": "Contraer {{name}}",
+			"openInLLMLogs": "Abrir en logs de LLM",
+			"openInMCPLogs": "Abrir en logs de MCP",
+			"a2a": "A2A",
+			"error": "Error",
+			"scopeTrace": "Traza",
+			"scopeSession": "Sesión",
+			"sessionName": "Sesión {{value}}",
+			"turn": "Turno {{value}}",
+			"turnCount": "Turnos {{value}}",
+			"turns": "Turnos",
+			"sessionId": "Sesión",
+			"taskId": "Tarea",
+			"copyLink": "Copiar enlace",
+			"linkCopied": "Enlace copiado",
+			"guardrails": "Guardrails",
+			"guard": {
+				"guardrail": "Guardrail",
+				"rule": "Regla",
+				"provider": "Proveedor",
+				"phase": "Fase",
+				"outcome": "Resultado",
+				"reason": "Motivo",
+				"judgeModel": "Modelo evaluador",
+				"assessments": "Evaluaciones"
+			},
+			"turnsLoaded": "{{loaded}} de {{total}} turnos cargados",
+			"loadMoreTurns": "Cargar más turnos",
+			"userMessage": "Usuario",
+			"viewSpans": "Ver spans",
+			"noReply": "No se registró respuesta.",
+			"spansTab": "Spans",
+			"threadTab": "Hilo",
+			"llmShort": "{{value}} LLM",
+			"mcpShort": "{{value}} MCP",
+			"guardShort": "{{value}} guardrails",
+			"agentSpan": "Span de agente",
+			"conversationEnd": "Fin"
 		},
 		"logSheet": {
 			"localOperationNote": "Bifrost gestiona esta operación sin una solicitud upstream. Los payloads de protocolo que se muestran abajo son datos serializados, no capturas de transporte.",

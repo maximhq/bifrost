@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+	accumulatePages,
+	chipsAfterBackspace,
 	EMPTY_ENTITY_PAGES,
 	hasMoreEntities,
 	loadMoreNeedsRefetch,
 	mergeEntityPage,
+	multiListState,
 	shouldAutoLoadMore,
 	type EntityPageEntry,
 } from "./entitySelectorPaging";
@@ -84,5 +87,121 @@ describe("loadMoreNeedsRefetch", () => {
 	it("advances normally when the last page loaded", () => {
 		const pages = mergeEntityPage(EMPTY_ENTITY_PAGES, { search: "", offset: 0, entries: rows(0, 20), total: 40 });
 		expect(loadMoreNeedsRefetch(pages, 0, false)).toBe(false);
+	});
+});
+
+describe("multiListState", () => {
+	const idle = { isError: false, isBusy: false, rowCount: 0, pinnedCount: 0, rowsAreCurrent: true };
+
+	it("shows the empty message when nothing loaded and nothing is selected", () => {
+		expect(multiListState(idle)).toEqual({ body: "empty", laterPageRetry: false, showRows: true, rowsSelectable: true });
+	});
+
+	it("shows the spinner while the first page loads", () => {
+		expect(multiListState({ ...idle, isBusy: true })).toEqual({
+			body: "loading",
+			laterPageRetry: false,
+			showRows: true,
+			rowsSelectable: true,
+		});
+	});
+
+	it("shows the first-page error when the first request fails", () => {
+		expect(multiListState({ ...idle, isError: true })).toEqual({
+			body: "firstPageError",
+			laterPageRetry: false,
+			showRows: true,
+			rowsSelectable: true,
+		});
+	});
+
+	// Selected entities outside the page are pinned above the list; they must not hide the failure or its retry.
+	it("still shows the first-page error when selected entities are pinned", () => {
+		expect(multiListState({ ...idle, isError: true, pinnedCount: 1 })).toEqual({
+			body: "firstPageError",
+			laterPageRetry: false,
+			showRows: true,
+			rowsSelectable: true,
+		});
+	});
+
+	it("keeps loaded rows and offers a retry under them when a later page fails", () => {
+		expect(multiListState({ ...idle, isError: true, rowCount: 20, pinnedCount: 1 })).toEqual({
+			body: "rows",
+			laterPageRetry: true,
+			showRows: true,
+			rowsSelectable: true,
+		});
+	});
+
+	// The rows still on screen belong to the previous search; the new search never loaded a page.
+	it("drops the previous search's rows when the new search's first page fails", () => {
+		expect(multiListState({ ...idle, isError: true, rowCount: 20, rowsAreCurrent: false })).toEqual({
+			body: "firstPageError",
+			laterPageRetry: false,
+			showRows: false,
+			rowsSelectable: false,
+		});
+	});
+
+	it("keeps the previous search's rows on screen while the new search loads", () => {
+		expect(multiListState({ ...idle, isBusy: true, rowCount: 20, rowsAreCurrent: false })).toEqual({
+			body: "rows",
+			laterPageRetry: false,
+			showRows: true,
+			rowsSelectable: false,
+		});
+	});
+
+	it("keeps rows selectable while a later page of the same search loads", () => {
+		expect(multiListState({ ...idle, isBusy: true, rowCount: 20 })).toEqual({
+			body: "rows",
+			laterPageRetry: false,
+			showRows: true,
+			rowsSelectable: true,
+		});
+	});
+
+	it("lists pinned selections while the first page is still loading", () => {
+		expect(multiListState({ ...idle, isBusy: true, pinnedCount: 2 })).toEqual({
+			body: "rows",
+			laterPageRetry: false,
+			showRows: true,
+			rowsSelectable: true,
+		});
+	});
+});
+
+describe("chipsAfterBackspace", () => {
+	it("drops only the last chip when the search is empty", () => {
+		expect(chipsAfterBackspace(["a", "b", "c"], "")).toEqual(["a", "b"]);
+	});
+
+	it("leaves chips alone while the search has text, so Backspace edits it", () => {
+		expect(chipsAfterBackspace(["a", "b"], "te")).toBeNull();
+	});
+
+	it("does nothing with no chips", () => {
+		expect(chipsAfterBackspace([], "")).toBeNull();
+	});
+});
+
+describe("accumulatePages", () => {
+	const loaded = mergeEntityPage(EMPTY_ENTITY_PAGES, { search: "", offset: 0, entries: rows(0, 20), total: 40 });
+
+	it("merges the page that just landed", () => {
+		const pages = accumulatePages(EMPTY_ENTITY_PAGES, { open: true, search: "", offset: 0, entries: rows(0, 20), total: 40 });
+		expect(pages).toEqual(loaded);
+	});
+
+	it("keeps what was loaded while the next page is in flight", () => {
+		expect(accumulatePages(loaded, { open: true, search: "", offset: 20, entries: undefined, total: undefined })).toBe(loaded);
+	});
+
+	// Otherwise a reopened picker whose first request fails shows the last opening's rows as a later-page failure.
+	it("forgets the rows once the picker closes", () => {
+		expect(accumulatePages(loaded, { open: false, search: "", offset: 0, entries: undefined, total: undefined })).toEqual(
+			EMPTY_ENTITY_PAGES,
+		);
 	});
 });

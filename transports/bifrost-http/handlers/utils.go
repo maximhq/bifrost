@@ -5,6 +5,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -209,6 +210,14 @@ type badRequestError struct{ err error }
 
 func (e *badRequestError) Error() string { return e.err.Error() }
 func (e *badRequestError) Unwrap() error { return e.err }
+
+// IsBadRequestError reports whether err is a validation failure the caller should answer with 400,
+// as opposed to a store failure. Exported so builds that reuse this package's reconcilers can map
+// their errors the same way its own handlers do.
+func IsBadRequestError(err error) bool {
+	var bad *badRequestError
+	return errors.As(err, &bad)
+}
 
 // IsUniqueConstraintError reports whether err looks like a DB unique-constraint violation.
 func IsUniqueConstraintError(err error, identifiers ...string) bool {
@@ -552,4 +561,37 @@ const RequestWorkTimeout = 30 * time.Second
 // request values stay readable for the handler's lifetime.
 func RequestWorkContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
+}
+
+// ErrSavedButNotReloaded marks an error a manager returns when its write is saved but a follow-up
+// that brings memory up to it failed: the handler answers it as a saved write whose in-memory state
+// is stale (a 500 that says so), not as a failed write.
+var ErrSavedButNotReloaded = errors.New("saved but not reloaded into memory")
+
+// reloadGrantingVirtualKeys refreshes, in one batched reload, the virtual keys holding a grant that a
+// change to what they grant (an MCP client, an agent, a relay, a Virtual MCP) just touched. Each id
+// is reloaded once and empty ids are skipped. The change itself is already saved, so the reload's
+// error is returned for the caller to answer: the keys keep their previous records until it succeeds.
+func reloadGrantingVirtualKeys(ctx context.Context, governanceManager GovernanceManager, idSets ...[]string) error {
+	if governanceManager == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var ids []string
+	for _, set := range idSets {
+		for _, id := range set {
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return governanceManager.ReloadVirtualKeys(ctx, ids)
 }

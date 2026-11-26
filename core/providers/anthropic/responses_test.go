@@ -14,6 +14,60 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// file_content takes precedence over file_data / file_url / file_id when converting to Anthropic,
+// on both the Chat and the Responses converter.
+func TestCustomDocumentContentTakesPrecedence(t *testing.T) {
+	content := json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`)
+	chatBlock := ConvertToAnthropicDocumentBlock(schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{
+		FileContent: content, FileData: schemas.Ptr("aGVsbG8="), FileURL: schemas.Ptr("https://example.com/a.pdf"), FileID: schemas.Ptr("file_1"),
+	}})
+	responsesBlock := ConvertResponsesFileBlockToAnthropic(&schemas.ResponsesInputMessageContentBlockFile{
+		FileContent: content, FileData: schemas.Ptr("aGVsbG8="), FileURL: schemas.Ptr("https://example.com/a.pdf"),
+	}, schemas.Ptr("file_1"), nil, nil)
+	for name, block := range map[string]AnthropicContentBlock{"chat": chatBlock, "responses": responsesBlock} {
+		src := block.Source.SourceObj
+		if src == nil || src.Type != "content" || string(src.Content) != string(content) || src.Data != nil || src.URL != nil || src.FileID != nil {
+			t.Fatalf("%s: file_content must be the only source, got %+v", name, src)
+		}
+	}
+}
+
+func TestCustomDocumentContentRoundTrip(t *testing.T) {
+	for _, sourceType := range []string{"content", "content_block"} {
+		for _, content := range []string{`"Budget: $4.2M."`, `[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]`} {
+			// content_block is retained only as Bifrost's compatibility spelling;
+			// current Anthropic requests and the rendered output use content.
+			body := `{"model":"claude-haiku-5-5","max_tokens":128,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":[{"type":"document","title":"pack","source":{"type":"` + sourceType + `","content":` + content + `},"citations":{"enabled":true}}]}]}`
+			var in AnthropicMessageRequest
+			if err := sonic.Unmarshal([]byte(body), &in); err != nil {
+				t.Fatal(err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := in.ToBifrostResponsesRequest(ctx)
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := out.Messages[0].Content.ContentBlocks[0].Source.SourceObj; got.Type != "content" || string(got.Content) != content {
+				t.Fatalf("custom document chunks changed: %+v", got)
+			}
+			chat, err := ToAnthropicChatRequest(ctx, req.ToChatRequest())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var block AnthropicContentBlock
+			for _, candidate := range chat.Messages[0].Content.ContentBlocks {
+				if candidate.Type == AnthropicContentBlockTypeDocument {
+					block = candidate
+				}
+			}
+			if block.Source == nil || block.Source.SourceObj == nil || block.Source.SourceObj.Type != "content" || string(block.Source.SourceObj.Content) != content || block.Title == nil || *block.Title != "pack" || block.Citations == nil || block.Citations.Config == nil || block.Citations.Config.Enabled == nil || !*block.Citations.Config.Enabled {
+				t.Fatalf("chat conversion lost custom content, title or citation setting: %+v", block)
+			}
+		}
+	}
+}
+
 func TestWebSearchStreamQueryVariants(t *testing.T) {
 	for _, passthrough := range []bool{false, true} {
 		for _, prepopulated := range []bool{false, true} {
@@ -39,6 +93,14 @@ func TestWebSearchStreamQueryVariants(t *testing.T) {
 					events = append(events, ToAnthropicResponsesStreamResponse(ctx, &schemas.BifrostResponsesStreamResponse{
 						Type: schemas.ResponsesStreamResponseTypeOutputItemDone, Item: item, OutputIndex: &i,
 					})...)
+					// A finished search is followed by its web_search_tool_result, also when it
+					// found nothing (Anthropic sends one for every finished search).
+					if n := len(events); n < 2 || events[n-2].Type != AnthropicStreamEventTypeContentBlockStart ||
+						events[n-2].ContentBlock.Type != AnthropicContentBlockTypeWebSearchToolResult ||
+						events[n-1].Type != AnthropicStreamEventTypeContentBlockStop {
+						t.Fatalf("finished search must end with a web_search_tool_result start and stop, got %d events", n)
+					}
+					events = events[:len(events)-2]
 					var input strings.Builder
 					index, stops := -1, 0
 					for _, event := range events {
@@ -4020,6 +4082,46 @@ func BenchmarkToAnthropicResponsesRequest_TextMessages(b *testing.B) {
 	}
 }
 
+// BenchmarkToAnthropicResponsesRequest_MidConvReminders measures a Claude Code-shaped request:
+// ten turns that each end in a system reminder, followed by a tool_use-led reply. "native" is a
+// model that takes role:"system" (the placement pass runs), "inline" one that does not.
+func BenchmarkToAnthropicResponsesRequest_MidConvReminders(b *testing.B) {
+	user := schemas.ResponsesInputMessageRoleUser
+	system := schemas.ResponsesInputMessageRoleSystem
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	functionCallOutput := schemas.ResponsesMessageTypeFunctionCallOutput
+	input := make([]schemas.ResponsesMessage, 0, 40)
+	for i := 0; i < 10; i++ {
+		callID := fmt.Sprintf("toolu_%d", i)
+		input = append(input,
+			schemas.ResponsesMessage{Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Read the file.")}},
+			schemas.ResponsesMessage{Role: &system, Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("The date is 2026-11-18.")},
+			}}},
+			schemas.ResponsesMessage{Type: &functionCall, ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr(callID), Name: schemas.Ptr("read"), Arguments: schemas.Ptr("{}"),
+			}},
+			schemas.ResponsesMessage{Type: &functionCallOutput, ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr(callID), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("ok")},
+			}},
+		)
+	}
+	for name, req := range map[string]*schemas.BifrostResponsesRequest{
+		"native": {Provider: schemas.Bedrock, Model: "us.anthropic.claude-opus-5-5", Input: input},
+		"inline": {Provider: schemas.Anthropic, Model: "claude-opus-4-6", Input: input},
+	} {
+		b.Run(name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := ToAnthropicResponsesRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func TestSearchToolVersionRoundTrip(t *testing.T) {
 	for _, version := range []AnthropicToolType{
 		AnthropicToolTypeWebSearch20250305, AnthropicToolTypeWebSearch20260209,
@@ -4454,5 +4556,106 @@ func TestMCPToolBlocksDroppedOnChatFallback(t *testing.T) {
 		if msg.Content == nil || msg.Content.ContentStr == nil || *msg.Content.ContentStr != want[i] {
 			t.Fatalf("chat message %d content = %+v, want %q", i, msg.Content, want[i])
 		}
+	}
+}
+
+// allowed_tools on /v1/responses has to reach Anthropic the way the chat path sends it: the
+// declarations narrowed to the allowed names, and the mode mapped onto auto/any. It used to
+// leave tool_choice.type empty, which Anthropic rejects with a 400.
+func TestToAnthropicResponsesRequest_AllowedTools(t *testing.T) {
+	allowed := func(mode string, tools ...schemas.ResponsesToolChoiceAllowedToolDef) *schemas.ResponsesToolChoice {
+		return &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+			Type:  schemas.ResponsesToolChoiceTypeAllowedTools,
+			Mode:  schemas.Ptr(mode),
+			Tools: tools,
+		}}
+	}
+	function := func(name string) schemas.ResponsesToolChoiceAllowedToolDef {
+		return schemas.ResponsesToolChoiceAllowedToolDef{Type: "function", Name: schemas.Ptr(name)}
+	}
+	custom := func(name string) schemas.ResponsesToolChoiceAllowedToolDef {
+		return schemas.ResponsesToolChoiceAllowedToolDef{Type: "custom", Name: schemas.Ptr(name)}
+	}
+	mcp := func(label string, name *string) schemas.ResponsesToolChoiceAllowedToolDef {
+		return schemas.ResponsesToolChoiceAllowedToolDef{Type: "mcp", ServerLabel: schemas.Ptr(label), Name: name}
+	}
+	mcpTool := schemas.ResponsesTool{Type: schemas.ResponsesToolTypeMCP, ResponsesToolMCP: &schemas.ResponsesToolMCP{
+		ServerLabel: "docs", ServerURL: schemas.Ptr("https://mcp.example.com/sse"),
+	}}
+	cases := []struct {
+		name       string
+		provider   schemas.ModelProvider
+		model      string
+		text       *schemas.ResponsesTextConfig
+		withMCP    bool
+		toolChoice *schemas.ResponsesToolChoice
+		wantType   string // "" means no tool_choice is sent
+		wantTools  []string
+	}{
+		{name: "required narrows to the allowed function", toolChoice: allowed("required", function("tool_a")), wantType: "any", wantTools: []string{"tool_a"}},
+		{name: "auto does not force a call", toolChoice: allowed("auto", function("tool_a")), wantType: "auto", wantTools: []string{"tool_a"}},
+		{name: "a custom tool is matched by name", toolChoice: allowed("required", custom("code_exec")), wantType: "any", wantTools: []string{"code_exec"}},
+		{name: "unknown names permit nothing", toolChoice: allowed("required", function("not_declared")), wantType: "none", wantTools: []string{}},
+		{name: "a model rejecting forced choices still gets the narrowed tools", model: "claude-fable-5-1",
+			toolChoice: allowed("required", function("tool_a")), wantType: "", wantTools: []string{"tool_a"}},
+		{name: "a model rejecting forced choices still gets none when nothing is allowed", model: "claude-fable-5-1",
+			toolChoice: allowed("required", function("not_declared")), wantType: "none", wantTools: []string{}},
+		{name: "an mcp-only selection drops every function tool", withMCP: true,
+			toolChoice: allowed("required", mcp("docs", nil)), wantType: "any", wantTools: []string{"mcp:docs"}},
+		{name: "an mcp selector naming one of its tools is not read as a function name", withMCP: true,
+			toolChoice: allowed("auto", mcp("docs", schemas.Ptr("search"))), wantType: "auto", wantTools: []string{"mcp:docs"}},
+		{name: "the synthetic structured-output tool survives the narrowing", provider: schemas.Vertex, model: "claude-sonnet-4-6",
+			text: makeResponsesTextFormat("pick"), toolChoice: allowed("required", function("tool_a")), wantType: "any",
+			wantTools: []string{"bf_so_pick", "tool_a"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, model := tc.provider, tc.model
+			if provider == "" {
+				provider = schemas.Anthropic
+			}
+			if model == "" {
+				model = "claude-haiku-4-5"
+			}
+			tools := []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("tool_a")},
+				{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("tool_b")},
+				{Type: schemas.ResponsesToolTypeCustom, Name: schemas.Ptr("code_exec")},
+			}
+			if tc.withMCP {
+				tools = append(tools, mcpTool)
+			}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: provider,
+				Model:    model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Run the code.")},
+				}},
+				Params: &schemas.ResponsesParameters{ToolChoice: tc.toolChoice, Tools: tools, Text: tc.text},
+			}
+			result, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(nil, time.Time{}), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			gotType := ""
+			if result.ToolChoice != nil {
+				gotType = result.ToolChoice.Type
+			}
+			if gotType != tc.wantType {
+				t.Fatalf("tool_choice = %+v, want type %q", result.ToolChoice, tc.wantType)
+			}
+			got := []string{}
+			for _, tool := range result.Tools {
+				if tool.MCPToolset != nil {
+					got = append(got, "mcp:"+tool.MCPToolset.MCPServerName)
+					continue
+				}
+				got = append(got, tool.Name)
+			}
+			if !slices.Equal(got, tc.wantTools) {
+				t.Fatalf("tools = %v, want %v", got, tc.wantTools)
+			}
+		})
 	}
 }

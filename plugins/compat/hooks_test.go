@@ -8,8 +8,6 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
 // newTestPlugin builds a drop-params-enabled plugin backed by an in-memory
@@ -17,9 +15,9 @@ import (
 // PreLLMHook/PostLLMHook pair without a datasheet sync.
 func newTestPlugin(t *testing.T, supported map[string][]string) *CompatPlugin {
 	t.Helper()
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetSupportedParamsForTest(supported)
-	p, err := Init(Config{ShouldDropParams: true, AzureDeepseek: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	p, err := Init(Config{ShouldDropParams: true, AzureDeepseek: true}, bifrost.NewNoOpLogger(), catalogWithDatasheetForTest(t, ds))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -180,12 +178,12 @@ func TestPluginDroppedParamsClearedBetweenAttempts(t *testing.T) {
 func TestReasoningWithToolsResponsesRouting(t *testing.T) {
 	newPlugin := func(t *testing.T, enabled bool) *CompatPlugin {
 		t.Helper()
-		ds := datasheet.NewTestStore(nil)
+		ds := testDatasheet(t, nil)
 		ds.SetSupportedParamsForTest(map[string][]string{
 			"no-reasoning-with-tools": {"reasoning", "tools"},
 			"reasoning-with-tools":    {"reasoning", "tools", "reasoning_with_tool_calls"},
 		})
-		mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+		mc := catalogWithDatasheetForTest(t, ds)
 		mc.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{{ID: "openai-key", Aliases: schemas.KeyAliases{"team-reasoner": {ModelID: "no-reasoning-with-tools"}}}})
 		p, err := Init(Config{ShouldDropParams: true, ForceReasoningOnlyModelsToResponses: enabled}, bifrost.NewNoOpLogger(), mc)
 		if err != nil {
@@ -315,6 +313,12 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "false row overrides the clef name", enabled: true, req: decision(schemas.Cloudflare, "clef"), wantConverted: true},
 		{name: "decider on perplexity is native", enabled: true, req: decision(schemas.Perplexity, "pplx-decider-v1.1-27b")},
 		{name: "dated decider on perplexity is native", enabled: true, req: decision(schemas.Perplexity, "pplx-decider-v1.1-27b-20261006")},
+		{name: "decision model on baseten is native", enabled: true, req: decision(schemas.Baseten, "decision-models/baseten-joey-2b-latest")},
+		{name: "chat model on baseten marked", enabled: true, req: decision(schemas.Baseten, "zai-org/GLM-5.3"), wantConverted: true},
+		{name: "baseten decision model on openai marked", enabled: true, req: decision(schemas.OpenAI, "decision-models/baseten-joey-2b-latest"), wantConverted: true},
+		{name: "decision model on gemini is native", enabled: true, req: decision(schemas.Gemini, "gemini-decision-1")},
+		{name: "chat model on gemini marked", enabled: true, req: decision(schemas.Gemini, "gemini-3-flash"), wantConverted: true},
+		{name: "gemini decision model on vertex marked", enabled: true, req: decision(schemas.Vertex, "gemini-decision-1"), wantConverted: true},
 		{name: "chat model on perplexity marked", enabled: true, req: decision(schemas.Perplexity, "sonar-pro"), wantConverted: true},
 		{name: "decider on openai marked", enabled: true, req: decision(schemas.OpenAI, "pplx-decider-v1.1-27b"), wantConverted: true},
 		{name: "system one model on ollama is native", enabled: true, req: decision(schemas.Ollama, "nimble")},
@@ -382,9 +386,9 @@ func TestConfigConvertDecisionToResponsesDefaultsOff(t *testing.T) {
 // key-level aliases onto models that carry a supported-parameter list.
 func newAliasDropTestPlugin(t *testing.T, supported map[string][]string, aliases schemas.KeyAliases) *CompatPlugin {
 	t.Helper()
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetSupportedParamsForTest(supported)
-	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: aliases}})
 	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
 	if err != nil {
@@ -487,9 +491,9 @@ func TestPluginDropParamsAliasOnOtherProvider(t *testing.T) {
 // BenchmarkPreLLMHookDropParams measures the drop-params PreLLMHook for a plain
 // model and for a key alias, which adds one alias-index lookup.
 func BenchmarkPreLLMHookDropParams(b *testing.B) {
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(b, nil)
 	ds.SetSupportedParamsForTest(map[string][]string{"deepseek.v3.2": {"temperature"}})
-	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(b, ds)
 	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}}}})
 	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
 	if err != nil {

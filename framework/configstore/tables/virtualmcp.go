@@ -30,6 +30,11 @@ type TableVirtualMCP struct {
 	Tools       *string       `gorm:"type:text" json:"-"` // JSON of ParsedTools stored in DB
 	ParsedTools []MCPToolSpec `gorm:"-" json:"tools"`     // decoded tool specs
 	ConfigHash  string        `gorm:"type:varchar(255);null" json:"config_hash,omitempty"`
+	// ConfigIssues lists, one per line, the parts of this Virtual MCP's config.json declaration that
+	// could not be applied (for example a tool spec naming an MCP client that is not registered).
+	// Written only by config.json reconciliation, never by a dashboard save, and nil when the whole
+	// declaration applied. It is not part of ConfigHash.
+	ConfigIssues *string `gorm:"type:text" json:"config_issues,omitempty"`
 
 	// CreatedByUserID records the creator, like TableVirtualKey. It is populated in enterprise (where
 	// DAC scopes rows by it) and left null in pure OSS; the DAC scoping logic lives in enterprise.

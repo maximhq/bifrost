@@ -77,7 +77,8 @@
 		"modelLimits": "ограничения модели",
 		"agent": "агент",
 		"relay": "ретранслятор",
-		"relays": "ретрансляторы"
+		"relays": "ретрансляторы",
+		"modelRouters": "маршрутизаторов"
 	},
 	"aboutField": "О поле {{field}}",
 	"thisField": "это поле",
@@ -125,7 +126,8 @@
 		"searching": "Поиск…",
 		"loadingMore": "Загрузка ещё…",
 		"useModel": "Использовать <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · заблокировано: {{blocked}}"
+		"grantSummaryBlocked": "{{allowed}} · заблокировано: {{blocked}}",
+		"templateUnknownGroup": "Ссылается на группу захвата {{group}}, которой нет в шаблоне"
 	},
 	"providerSelect": {
 		"select": "Выберите провайдер",
@@ -201,8 +203,7 @@
 		"toggle": "Свернуть/развернуть боковую панель"
 	},
 	"sheet": {
-		"collapse": "Свернуть",
-		"expand": "Развернуть"
+		"resizeHandle": "Изменить размер панели"
 	},
 	"tabs": {
 		"showMore_one": "Показать ещё {{count}} вкладку",
@@ -279,7 +280,8 @@
 	"budgetDisplay": {
 		"usageAria": "Использование бюджета",
 		"override": "переопределение",
-		"baseTooltip": "Базовый {{base}} + переопределение {{override}}"
+		"baseTooltip": "Базовый {{base}} + переопределение {{override}}",
+		"sharedTag": "общий"
 	},
 	"rateLimit": {
 		"tokens": "токенов",
@@ -318,6 +320,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Эта конфигурация синхронизируется из <code0>config.json</code0>. Все последующие изменения в config.json перезапишут изменения в интерфейсе. Если вы используете config.json для первоначальной настройки, это предупреждение можно проигнорировать."
+	},
+	"configIssuesAlert": {
+		"title": "Часть объявления из config.json не применена",
+		"badge": "Проблемы конфигурации",
+		"hint": "Остальная часть объявления применена. Каждый пункт выше исчезнет сам, когда появится то, на что он ссылается, например после регистрации недостающего MCP-клиента."
 	},
 	"breadcrumb": {
 		"label": "навигационная цепочка",
@@ -525,6 +532,9 @@
 		"maxNumber": "Значение должно быть не больше {{maximum}}",
 		"maxChars": "Допускается не более {{maximum}} символов",
 		"validUrl": "Укажите корректный URL",
+		"publicUrlNoUserinfoQueryOrFragment": "Не должен содержать данные пользователя, строку запроса или фрагмент",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "Должен быть URL http(s) или путем относительно каталога приложения",
+		"openapiUrlMustStayInAppDir": "Должен быть путем относительно каталога приложения, не выходящим за его пределы",
 		"validEmail": "Укажите корректный адрес электронной почты",
 		"grpcHostPortFormat": "Для gRPC укажите в формате <host>:<port> (например, {{example}})",
 		"invalidInput": "Некорректные данные",
@@ -599,7 +609,8 @@
 		"baseUrlIsRequiredForThisProvider": "Для этого провайдера необходимо указать базовый URL",
 		"baseUrlMustStartWithHttpOrHttps": "Базовый URL должен начинаться с http:// или https://",
 		"atLeastOneApiKeyIsRequired": "Необходимо указать хотя бы один API-ключ",
-		"apiKeyValueCannotBeEmpty": "Значение API-ключа не может быть пустым"
+		"apiKeyValueCannotBeEmpty": "Значение API-ключа не может быть пустым",
+		"deploymentPatternInvalid": "Шаблон развёртывания недействителен или ID модели использует группу захвата, которой нет в шаблоне"
 	},
 	"permissionDenied": {
 		"create": "У вас нет разрешения на создание: {{entity}}.",

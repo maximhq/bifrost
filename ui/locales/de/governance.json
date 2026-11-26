@@ -50,7 +50,8 @@
 			"budgetLimits": "Budgetlimits",
 			"updateAction": "Kunde aktualisieren",
 			"createAction": "Kunde erstellen",
-			"calendarAlignHelp": "Das Aktivieren der Kalenderausrichtung setzt die Budgetnutzung für diesen Kunden auf <bold0>$0.00</bold0> und die Token-/Anfrage-Ratenlimit-Zähler auf <bold1>0</bold1> zurück. Anschließend wird jedes Rücksetzdatum an den Beginn des aktuellen Zeitraums angepasst (z. B. Beginn des Tages, der Woche, des Monats oder des Jahres). Das Zurücksetzen der Nutzung kann nicht rückgängig gemacht werden, die Kalenderausrichtung kann jedoch später deaktiviert werden. Dies wird wirksam, sobald du speicherst."
+			"calendarAlignHelp": "Das Aktivieren der Kalenderausrichtung setzt die Budgetnutzung für diesen Kunden auf <bold0>$0.00</bold0> und die Token-/Anfrage-Ratenlimit-Zähler auf <bold1>0</bold1> zurück. Anschließend wird jedes Rücksetzdatum an den Beginn des aktuellen Zeitraums angepasst (z. B. Beginn des Tages, der Woche, des Monats oder des Jahres). Das Zurücksetzen der Nutzung kann nicht rückgängig gemacht werden, die Kalenderausrichtung kann jedoch später deaktiviert werden. Dies wird wirksam, sobald du speicherst.",
+			"limitsCheckFailed": "Es konnte nicht geprüft werden, was die Ausgaben dieses Kunden regelt. Budget und Ratenlimit können daher noch nicht angezeigt werden."
 		},
 		"detail": {
 			"title": "Kundendetails",
@@ -409,6 +410,24 @@
 		"unlockTitle": "Projekte für bereichsbezogenen Zugriff und Ausgabenkontrolle freischalten",
 		"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Ein Projekt ist etwas, für das sich eine Anfrage entscheidet: Es gewährt Zugriff zusätzlich zu dem, was der Aufrufer bereits besitzt, und bestimmt, auf wessen Konto die Ausgaben verbucht werden."
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "KI-Ausgaben aller Anbieter an einem Ort sehen",
+			"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. FinOps liest die in Rechnung gestellten Kosten aus deinen Anbieterkonten und zeigt, wie viel davon über Bifrost lief."
+		},
+		"connections": {
+			"unlockTitle": "Abrechnungskonten der Anbieter verbinden",
+			"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Verbinde die Abrechnung von OpenAI, Anthropic, AWS Bedrock, Vertex AI und Azure OpenAI mit Lesezugriff."
+		},
+		"explorer": {
+			"unlockTitle": "KI-Ausgaben nach Modell und Konto aufschlüsseln",
+			"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Vergleiche die in Rechnung gestellten Ausgaben Modell für Modell mit dem, was Bifrost protokolliert hat."
+		},
+		"forecast": {
+			"unlockTitle": "KI-Ausgaben prognostizieren und Anomalien erkennen",
+			"unlockDescription": "Diese Funktion ist Teil der Bifrost-Enterprise-Lizenz. Prognostiziere den Monat anhand deiner Budgets und werde benachrichtigt, wenn die Ausgaben sprunghaft steigen."
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "Nutzer-Rankings für bessere Übersicht freischalten"
 	},
@@ -475,7 +494,12 @@
 		"maximumSpend": "Höchstausgaben (USD)",
 		"noBudgetLimits": "Keine Budgetgrenzen konfiguriert.",
 		"removeBudgetAria": "Budget {{number}} entfernen",
-		"duplicateResetPeriod": "Doppelter Reset-Zeitraum; jede Budgetzeile muss ein anderes Intervall verwenden."
+		"duplicateResetPeriod": "Doppelter Reset-Zeitraum; jede Budgetzeile muss ein anderes Intervall verwenden.",
+		"contentLogging": "Inhaltsprotokollierung",
+		"contentLoggingInherit": "Übernehmen",
+		"contentLoggingOff": "Für dieses Team aus",
+		"contentLoggingOn": "Für dieses Team an",
+		"contentLoggingHelp": "Ob Anfrage- und Antwortinhalt für den Verkehr dieses Teams in Protokollen gespeichert wird. Das Team hat Vorrang vor seinen virtuellen Schlüsseln und Provider-Schlüsseln, daher kann ein Schlüssel Inhalt, den das Team ausgeschaltet hat, nicht wieder einschalten. „Aus“ entfernt den Inhalt auch aus den Connector-Exporten. Der Header pro Anfrage gilt weiter, wenn Überschreibungen pro Anfrage erlaubt sind."
 	},
 	"filters": {
 		"filters": "Filter",
