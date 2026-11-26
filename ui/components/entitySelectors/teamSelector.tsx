@@ -52,8 +52,7 @@ export function TeamSelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, filters, ...pr
 		{ skip: search.skip },
 	);
 
-	// Memoized because multi mode hands the merged list to react-select as
-	// defaultOptions, which re-syncs on identity change.
+	// Memoized so EntitySelector's effects don't re-run every render.
 	const entries = useMemo(
 		() =>
 			currentData?.teams?.map((team) => ({

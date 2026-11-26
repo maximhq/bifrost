@@ -761,6 +761,73 @@ func TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead(t *testing.T) {
 	assert.Empty(t, mgr.removed, "the runtime client is untouched")
 }
 
+// TestUpdateMCPClient_VKConfigsReloadTheAffectedKeysOnce pins that an update with vk_configs reloads
+// every key it affects (those granting the client before and those granting it after) in one batch,
+// after the assignments are saved, and answers from that batch alone. It used to reload the keys
+// already assigned first and then the whole set again, keeping the first batch's error, so an update
+// whose full reload succeeded could still answer 500.
+func TestUpdateMCPClient_VKConfigsReloadTheAffectedKeysOnce(t *testing.T) {
+	ctx := context.Background()
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	existing := mgr.added[0]
+	row, err := h.store.ConfigStore.GetMCPClientByID(ctx, existing.ID)
+	require.NoError(t, err)
+	active := true
+	for _, id := range []string{"vk-keep", "vk-drop", "vk-add"} {
+		require.NoError(t, h.store.ConfigStore.CreateVirtualKey(ctx, &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-bf-" + id), IsActive: &active}))
+	}
+	for _, id := range []string{"vk-keep", "vk-drop"} {
+		require.NoError(t, h.store.ConfigStore.CreateVirtualKeyMCPConfig(ctx, &configtables.TableVirtualKeyMCPConfig{VirtualKeyID: id, MCPClientID: row.ID, ToolsToExecute: []string{"*"}}))
+	}
+	governance := &reloadCountingGovernanceManager{}
+	h.governanceManager = governance
+	h.mcpCredentialCacheManager = &evictionLog{}
+
+	update := `{"name":"petstore_renamed","vk_configs":[{"virtual_key_id":"vk-keep","tools_to_execute":["*"]},{"virtual_key_id":"vk-add","tools_to_execute":["listPets"]}]}`
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, update, existing.ID, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Equal(t, [][]string{{"vk-add", "vk-drop", "vk-keep"}}, governance.reloadedBatches, "one batch, holding every key the update affects")
+	assert.Empty(t, governance.reloaded, "no per-key reloads")
+	granting, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, row.ID)
+	require.NoError(t, err)
+	var grantingIDs []string
+	for _, g := range granting {
+		grantingIDs = append(grantingIDs, g.VirtualKeyID)
+	}
+	sort.Strings(grantingIDs)
+	assert.Equal(t, []string{"vk-add", "vk-keep"}, grantingIDs, "the assignments were saved before the reload")
+
+	// A batch that fails still answers 500: the update is saved but the keys are stale.
+	governance.batchErr = errors.New("database unreachable")
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"vk_configs":[{"virtual_key_id":"vk-keep","tools_to_execute":["*"]}]}`, existing.ID, false)
+	assert.Equal(t, fasthttp.StatusInternalServerError, status, respBody)
+	assert.Contains(t, respBody, "failed to reload in-memory state")
+
+	// When the assignments cannot be saved, the keys still assigned the client reload to see its
+	// saved row before the 500, as after an update without vk_configs.
+	governance.batchErr, governance.reloadedBatches = nil, nil
+	h.store.ConfigStore = vkAssignmentFailingStore{h.store.ConfigStore}
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"vk_configs":[{"virtual_key_id":"vk-keep","tools_to_execute":["*"]},{"virtual_key_id":"vk-drop","tools_to_execute":["*"]}]}`, existing.ID, false)
+	assert.Equal(t, fasthttp.StatusInternalServerError, status, respBody)
+	assert.Contains(t, respBody, "VK assignment update failed")
+	assert.Equal(t, [][]string{{"vk-keep"}}, governance.reloadedBatches, "the keys still assigned the client reload once")
+}
+
+// vkAssignmentFailingStore is a config store that cannot create a virtual key's MCP assignment.
+type vkAssignmentFailingStore struct{ configstore.ConfigStore }
+
+// CreateVirtualKeyMCPConfig always fails.
+func (vkAssignmentFailingStore) CreateVirtualKeyMCPConfig(context.Context, *configtables.TableVirtualKeyMCPConfig, ...*gorm.DB) error {
+	return errors.New("database unavailable")
+}
+
 // =============================================================================
 // GET /api/mcp/library installed flag
 // =============================================================================
@@ -3186,6 +3253,7 @@ func TestAdminVerification_ARecordNotReloadedStillActivatesTheClient(t *testing.
 
 				assert.Equal(t, fasthttp.StatusInternalServerError, status, body)
 				assert.Contains(t, body, "failed to reload in-memory state", "the failed reload is reported, not a retry that can no longer run")
+				requireSingleAuditChange(t, rctx, map[string]string{"verify-headers": "mcp_client.headers_verified", "verify-exchange": "mcp_client.exchange_verified"}[route])
 				stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
 				require.NoError(t, err)
 				assert.False(t, stored.PendingVerification, "the step is recorded")
@@ -3197,6 +3265,33 @@ func TestAdminVerification_ARecordNotReloadedStillActivatesTheClient(t *testing.
 			})
 		}
 	}
+}
+
+// TestAdminVerification_AFailedRecordStillAuditsTheStoredTools: with per_user_discovery on, a
+// failed verification record answers 500, but the tools write before it is saved, so the
+// verification is still recorded in the audit log.
+func TestAdminVerification_AFailedRecordStillAuditsTheStoredTools(t *testing.T) {
+	ctx := context.Background()
+	client := &schemas.MCPClientConfig{
+		ID: "client-notes", Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders,
+		PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: []string{"*"}, PendingVerification: true, PerUserDiscovery: schemas.Ptr(true),
+	}
+	h, _ := newVerificationHandler(t, newVerificationRuntime(t, client))
+	require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, client))
+	h.store.ConfigStore = recordFailingStore{ConfigStore: h.store.ConfigStore}
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"user_headers":{"x-api-key":"sample"}}`)
+	rctx := initCtx(&req)
+	rctx.SetUserValue("id", client.ID)
+	h.verifyMCPClientHeaders(rctx)
+
+	assert.Equal(t, fasthttp.StatusInternalServerError, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+	assert.Contains(t, string(rctx.Response.Body()), "recording the verification failed")
+	requireSingleAuditChange(t, rctx, "mcp_client.headers_verified")
 }
 
 // toolsReloadFailingStore is the real store with every read of the MCP client rows failing once a
@@ -3280,6 +3375,7 @@ func TestAdminVerification_ToolsNotReloadedStillActivatesTheClient(t *testing.T)
 
 			assert.Equal(t, fasthttp.StatusInternalServerError, status, body)
 			assert.Contains(t, body, "failed to reload in-memory state", "the failed reload is reported, not a retry that can no longer run")
+			requireSingleAuditChange(t, rctx, map[string]string{"verify-headers": "mcp_client.headers_verified", "verify-exchange": "mcp_client.exchange_verified"}[route])
 			stored, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, client.ID)
 			require.NoError(t, err)
 			assert.False(t, stored.PendingVerification, "the stored tools record the step")
@@ -3443,7 +3539,14 @@ func TestCompleteMCPClientOAuth_AnAdminRepairNotReloadedStillHandsTheRuntimeItsD
 			}))
 			h.store.ConfigStore = reloadFailingToolListStore{ConfigStore: h.store.ConfigStore, readsFail: readsFail}
 
-			status, body := doMCPRequest(t, h.completeMCPClientOAuth, fasthttp.MethodPost, "", "oauth-wiki", false)
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			rctx := initCtx(&req)
+			rctx.SetUserValue("id", "oauth-wiki")
+			h.completeMCPClientOAuth(rctx)
+			status, body := rctx.Response.StatusCode(), string(rctx.Response.Body())
+			requireSingleAuditChange(t, rctx, "mcp_client.oauth_completed")
 			failedRead := !tc.failOnce || !readsFail.Load()
 			readsFail.Store(false)
 			require.True(t, failedRead, "the reload's first read failed")
@@ -3565,4 +3668,183 @@ func TestAddMCPClient_WithPerUserDiscoveryKeepsNothingFromVerification(t *testin
 		assert.Contains(t, body, "per_user_discovery is only valid for per-user auth types")
 		assert.Empty(t, recorder.added)
 	})
+}
+
+// oauthLinkReadFailingStore links a client to its OAuth config, then fails every read after it,
+// as a database that drops out right after that commit.
+type oauthLinkReadFailingStore struct {
+	configstore.ConfigStore
+	readsFail *atomic.Bool
+}
+
+func (s oauthLinkReadFailingStore) UpdateMCPClientOAuthConfigID(ctx context.Context, id string, oauthConfigID *string) error {
+	if err := s.ConfigStore.UpdateMCPClientOAuthConfigID(ctx, id, oauthConfigID); err != nil {
+		return err
+	}
+	s.readsFail.Store(true)
+	return nil
+}
+
+// TestInitiateMCPClientVerification_RecordedWhenTheReloadAfterTheLinkFails: a bootstrapped
+// client's verification links it to a new OAuth config; when the read back into memory then
+// fails, the route answers 500 and the saved link is still recorded.
+func TestInitiateMCPClientVerification_RecordedWhenTheReloadAfterTheLinkFails(t *testing.T) {
+	f := newReregisterFixture(t)
+	ctx := context.Background()
+	stash, err := json.Marshal(&schemas.OAuth2Config{
+		AuthorizeURL:    f.as.server.URL + "/authorize",
+		TokenURL:        f.as.server.URL + "/token",
+		RegistrationURL: bifrost.Ptr(f.as.server.URL + "/register"),
+		RedirectURI:     "http://localhost:8080/api/oauth/callback",
+		ServerURL:       f.as.server.URL,
+		Scopes:          []string{"openid"},
+	})
+	require.NoError(t, err)
+	row, err := f.store.GetMCPClientByID(ctx, reregisterMCPClientID)
+	require.NoError(t, err)
+	require.NoError(t, f.store.DB().Model(row).Updates(map[string]any{"pending_oauth_config_json": string(stash), "pending_verification": true}).Error)
+	f.handler.store = libtest.FromStore(t, f.handler.store)
+	f.handler.oauthHandler = NewOAuthHandler(f.handler.store.OAuthProvider, nil, f.handler.store, nil)
+	readsFail := &atomic.Bool{}
+	failReadsWhile(t, f.store.DB(), readsFail)
+	f.handler.store.ConfigStore = oauthLinkReadFailingStore{ConfigStore: f.store, readsFail: readsFail}
+
+	status, _, raw := f.call(t, f.handler.initiateMCPClientVerification)
+	linked := readsFail.Load()
+	readsFail.Store(false)
+
+	require.True(t, linked, "fixture check: the link was written: %s", raw)
+	require.Equal(t, fasthttp.StatusInternalServerError, status, raw)
+	requireSingleAuditChange(t, f.lastCtx, "mcp_client.verification_initiated")
+}
+
+// TestCompleteMCPClientOAuth_BootstrapCompletionRecordedWhenALaterStepFails: completing the
+// admin sign-in of a client bootstrapped from config.json saves the verification, then clears
+// the bootstrap record and reads the client back. Either step failing answers 500 with the
+// completion still recorded once; bootstrap_verified is claimed only when the clear committed.
+func TestCompleteMCPClientOAuth_BootstrapCompletionRecordedWhenALaterStepFails(t *testing.T) {
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeOauth} {
+		for _, tc := range []struct {
+			step    string
+			outcome string
+		}{
+			{step: "clear", outcome: "credentials_updated"},
+			{step: "read after clear", outcome: "bootstrap_verified"},
+		} {
+			t.Run(fmt.Sprintf("%s/%s fails", authType, tc.step), func(t *testing.T) {
+				ctx := context.Background()
+				h, _ := newVerificationHandler(t, newVerificationRuntime(t))
+				require.NoError(t, h.store.ConfigStore.CreateOauthConfig(ctx, &configtables.TableOauthConfig{
+					ID: "oauth-wiki", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+					AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+				}))
+				require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+					ID: "client-wiki", Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP,
+					ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: authType,
+					OauthConfigID: schemas.Ptr("oauth-wiki"), PendingOAuthConfig: &schemas.OAuth2Config{}, ToolsToExecute: []string{"*"},
+					PendingVerification: true, PerUserDiscovery: schemas.Ptr(false),
+				}))
+				require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+					ID: "token-admin", AuthMode: "shared", OauthConfigID: "oauth-wiki", Status: "active", AccessToken: "admin-token", TokenType: "Bearer",
+				}))
+				readsFail := &atomic.Bool{}
+				if tc.step == "clear" {
+					h.store.ConfigStore = recordFailingStore{h.store.ConfigStore}
+				} else {
+					failReadsWhile(t, h.store.ConfigStore.DB(), readsFail)
+					h.store.ConfigStore = reloadFailingRecordStore{ConfigStore: h.store.ConfigStore, readsFail: readsFail}
+				}
+
+				var req fasthttp.Request
+				req.Header.SetMethod(fasthttp.MethodPost)
+				rctx := initCtx(&req)
+				rctx.SetUserValue("id", "oauth-wiki")
+				h.completeMCPClientOAuth(rctx)
+				readsFail.Store(false)
+
+				require.Equal(t, fasthttp.StatusInternalServerError, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+				if tc.step == "clear" {
+					assert.Contains(t, string(rctx.Response.Body()), "clearing the pending bootstrap config failed")
+				} else {
+					assert.Contains(t, string(rctx.Response.Body()), "failed to reload in-memory state")
+				}
+				change := requireSingleAuditChange(t, rctx, "mcp_client.oauth_completed")
+				var after map[string]any
+				require.NoError(t, json.Unmarshal(change.After, &after))
+				assert.Equal(t, tc.outcome, after["outcome"], string(change.After))
+			})
+		}
+	}
+}
+
+// runtimeUpdateFailingManager fails every runtime update of an MCP client and sets failed, so a
+// store can refuse the rollback that follows.
+type runtimeUpdateFailingManager struct {
+	*verificationRecorder
+	failed *atomic.Bool
+}
+
+func (m runtimeUpdateFailingManager) UpdateMCPClient(context.Context, string, *schemas.MCPClientConfig) error {
+	m.failed.Store(true)
+	return errors.New("runtime refused the update")
+}
+
+func (m runtimeUpdateFailingManager) UpdateMCPClientCredentials(context.Context, string, *schemas.MCPClientConfig) error {
+	m.failed.Store(true)
+	return errors.New("runtime refused the update")
+}
+
+// rollbackFailingStore is the real store whose MCP client writes fail once the runtime update failed.
+type rollbackFailingStore struct {
+	configstore.ConfigStore
+	failed *atomic.Bool
+}
+
+func (s rollbackFailingStore) UpdateMCPClientConfig(ctx context.Context, id string, client *configtables.TableMCPClient) error {
+	if s.failed.Load() {
+		return errors.New("database is locked")
+	}
+	return s.ConfigStore.UpdateMCPClientConfig(ctx, id, client)
+}
+
+// TestCompleteMCPClientOAuth_BootstrapRollbackFailureIsNotRecordedAsBootstrapVerified: when the
+// runtime refuses a bootstrapped client's update and the rollback of the saved row fails too, the
+// update stays saved and is recorded, but the bootstrap record was never cleared, so the event
+// must not claim bootstrap_verified.
+func TestCompleteMCPClientOAuth_BootstrapRollbackFailureIsNotRecordedAsBootstrapVerified(t *testing.T) {
+	for _, authType := range []schemas.MCPAuthType{schemas.MCPAuthTypePerUserOauth, schemas.MCPAuthTypeOauth} {
+		t.Run(string(authType), func(t *testing.T) {
+			ctx := context.Background()
+			h, recorder := newVerificationHandler(t, newVerificationRuntime(t))
+			require.NoError(t, h.store.ConfigStore.CreateOauthConfig(ctx, &configtables.TableOauthConfig{
+				ID: "oauth-wiki", ClientID: schemas.NewSecretVar("bifrost"), TokenURL: "https://idp.invalid/token",
+				AuthorizeURL: "https://idp.invalid/authorize", RedirectURI: "http://localhost/api/oauth/callback", Status: "authorized",
+			}))
+			require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+				ID: "client-wiki", Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP,
+				ConnectionString: schemas.NewSecretVar("http://upstream.invalid/mcp"), AuthType: authType,
+				OauthConfigID: schemas.Ptr("oauth-wiki"), PendingOAuthConfig: &schemas.OAuth2Config{}, ToolsToExecute: []string{"*"},
+				PendingVerification: true, PerUserDiscovery: schemas.Ptr(false),
+			}))
+			require.NoError(t, h.store.ConfigStore.CreateOauthToken(ctx, &configtables.TableMCPOauthToken{
+				ID: "token-admin", AuthMode: "shared", OauthConfigID: "oauth-wiki", Status: "active", AccessToken: "admin-token", TokenType: "Bearer",
+			}))
+			failed := &atomic.Bool{}
+			h.mcpManager = runtimeUpdateFailingManager{verificationRecorder: recorder, failed: failed}
+			h.store.ConfigStore = rollbackFailingStore{ConfigStore: h.store.ConfigStore, failed: failed}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			rctx := initCtx(&req)
+			rctx.SetUserValue("id", "oauth-wiki")
+			h.completeMCPClientOAuth(rctx)
+
+			require.True(t, failed.Load(), "fixture check: the runtime update ran and failed: %s", rctx.Response.Body())
+			require.Equal(t, fasthttp.StatusInternalServerError, rctx.Response.StatusCode(), string(rctx.Response.Body()))
+			change := requireSingleAuditChange(t, rctx, "mcp_client.oauth_completed")
+			var after map[string]any
+			require.NoError(t, json.Unmarshal(change.After, &after))
+			assert.Equal(t, "credentials_updated", after["outcome"], string(change.After))
+		})
+	}
 }

@@ -48,13 +48,29 @@ describe("Warp embedding configuration", () => {
 		expect(
 			supportsWarpEmbedding({
 				name: "my-provider",
-				custom_provider_config: { allowed_requests: { embedding: true } },
+				custom_provider_config: { base_provider_type: "openai", allowed_requests: { embedding: true } },
 			} as ModelProvider),
 		).toBe(true);
 		expect(
 			supportsWarpEmbedding({
 				name: "my-chat-provider",
-				custom_provider_config: { allowed_requests: { chat_completion: true } },
+				custom_provider_config: { base_provider_type: "openai", allowed_requests: { chat_completion: true } },
+			} as ModelProvider),
+		).toBe(false);
+	});
+
+	it("treats a custom provider without allowed_requests as unrestricted, within what its base serves", () => {
+		expect(
+			supportsWarpEmbedding({
+				name: "my-unrestricted-provider",
+				custom_provider_config: { base_provider_type: "openai" },
+			} as ModelProvider),
+		).toBe(true);
+		// Anthropic serves no embeddings, so neither does a custom provider built on it.
+		expect(
+			supportsWarpEmbedding({
+				name: "my-anthropic-provider",
+				custom_provider_config: { base_provider_type: "anthropic", allowed_requests: { embedding: true } },
 			} as ModelProvider),
 		).toBe(false);
 	});
