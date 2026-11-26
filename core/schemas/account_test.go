@@ -62,11 +62,12 @@ func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 		"metadata": {
 			ModelID: "model", ModelName: Ptr("canonical"), ModelFamily: Ptr(ModelFamilyAnthropic),
 			Description: "alias description", UseAnthropicEndpoints: Ptr(true), UseOpenAIEndpoints: Ptr(false),
-			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version"), UseSpeechEndpoints: Ptr(true)},
-			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
-			BedrockAliasCfg:   &BedrockAliasCfg{},
-			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
-			BasetenAliasCfg:   &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")},
+			ForceFixedBudgetThinking: Ptr(true),
+			AzureAliasCfg:            &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version"), UseSpeechEndpoints: Ptr(true)},
+			VertexAliasCfg:           &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
+			BedrockAliasCfg:          &BedrockAliasCfg{},
+			ReplicateAliasCfg:        &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
+			BasetenAliasCfg:          &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -371,11 +372,12 @@ func TestKeyAliasesMarshalRichShapeWhenAnyExtraFieldSet(t *testing.T) {
 		wantKey   string
 		wantValue any
 	}{
-		"with_model_name":   {AliasConfig{ModelID: "x", ModelName: Ptr("canonical")}, "model_name", "canonical"},
-		"with_model_family": {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
-		"with_description":  {AliasConfig{ModelID: "x", Description: "prod"}, "description", "prod"},
-		"with_azure_subcfg": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}}, "api_version", "2024-08-01-preview"},
-		"with_azure_speech": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{UseSpeechEndpoints: Ptr(true)}}, "use_speech_endpoints", true},
+		"with_model_name":                  {AliasConfig{ModelID: "x", ModelName: Ptr("canonical")}, "model_name", "canonical"},
+		"with_model_family":                {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
+		"with_description":                 {AliasConfig{ModelID: "x", Description: "prod"}, "description", "prod"},
+		"with_azure_subcfg":                {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}}, "api_version", "2024-08-01-preview"},
+		"with_azure_speech":                {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{UseSpeechEndpoints: Ptr(true)}}, "use_speech_endpoints", true},
+		"with_force_fixed_budget_thinking": {AliasConfig{ModelID: "x", ForceFixedBudgetThinking: Ptr(true)}, "force_fixed_budget_thinking", true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

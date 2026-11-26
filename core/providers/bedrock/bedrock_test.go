@@ -4186,6 +4186,32 @@ func TestAnthropicForceFixedBudgetThinkingOverride(t *testing.T) {
 			// output_config.effort; the budget_tokens branch must not emit it.
 			_, hasOutputConfig := result.AdditionalModelRequestFields.Get("output_config")
 			assert.Equal(t, tt.expectedType == "adaptive", hasOutputConfig, "output_config presence should track adaptive shape")
+
+			// The Responses converter takes the same adaptive-vs-budget branch.
+			responsesReq := &schemas.BifrostResponsesRequest{
+				Model: wireModelID,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")},
+				},
+			}
+			respResult, err := bedrock.ToBedrockResponsesRequest(ctx, responsesReq)
+			require.NoError(t, err)
+			require.NotNil(t, respResult)
+			require.NotNil(t, respResult.AdditionalModelRequestFields)
+
+			respThinking, hasRespThinking := respResult.AdditionalModelRequestFields.Get("thinking")
+			require.True(t, hasRespThinking, "responses: expected thinking field in AdditionalModelRequestFields")
+			respMap, ok := respThinking.(map[string]any)
+			require.True(t, ok, "responses: thinking config should be map[string]any, got %T", respThinking)
+			assert.Equal(t, tt.expectedType, respMap["type"], "responses: thinking.type mismatch")
+			_, respHasBudget := respMap["budget_tokens"]
+			assert.Equal(t, tt.expectBudgetTokens, respHasBudget, "responses: budget_tokens presence mismatch")
+			_, respHasOutputConfig := respResult.AdditionalModelRequestFields.Get("output_config")
+			assert.Equal(t, tt.expectedType == "adaptive", respHasOutputConfig, "responses: output_config presence should track adaptive shape")
 		})
 	}
 }
