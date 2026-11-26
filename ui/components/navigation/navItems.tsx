@@ -405,7 +405,6 @@ export function useNavItems(): NavItem[] {
 				icon: Bot,
 				description: t("navDesc.agents"),
 				hasAccess: hasAgentGatewayAccess,
-				new: true,
 				subItems: [
 					{
 						id: "agents.catalog",

@@ -936,7 +936,6 @@
 			"tokensNotPricedValue": "{{input}} ein / {{output}} aus",
 			"matchedRoute": "Zugeordnete Route",
 			"parentLog": "Übergeordnetes Protokoll",
-			"jobPolls": "Versuche der Statusabfrage",
 			"jobLastStatus": "Letzter Job-Status",
 			"jobLastHttpStatus": "HTTP-Status der letzten Abfrage",
 			"jobSettledAt": "Abgerechnet am",

@@ -256,10 +256,10 @@ test.describe("Relay Logs", () => {
       await page.goto({ relay_names: jobRelay, kinds: ["job"] });
       await page.openRow(jobRelay, { logId: jobRow!.id });
       await page.openMoreDetails();
-      // One status check found this one-step job done.
+      // One status check found this one-step job done. The count stays in the data but is not shown,
+      // as batch and video jobs show none.
       expect(jobRow!.job_debug?.polls, JSON.stringify(jobRow)).toBe(1);
-      await expect(page.sheet.getByTestId("relay-log-job-polls")).toContainText(/status check attempts/i);
-      await expect(page.sheet.getByTestId("relay-log-job-polls")).toContainText(/\b1\b/);
+      await expect(page.sheet.getByTestId("relay-log-job-polls")).toHaveCount(0);
       await expect(page.sheet.getByTestId("relay-log-job-last-status")).toContainText("SUCCEEDED");
       // The settled time as the browser shows it, in its own time zone.
       const settled = await page.page.evaluate((iso) => {

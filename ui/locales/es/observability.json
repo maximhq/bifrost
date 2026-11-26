@@ -936,7 +936,6 @@
 			"tokensNotPricedValue": "{{input}} de entrada / {{output}} de salida",
 			"matchedRoute": "Ruta coincidente",
 			"parentLog": "Log principal",
-			"jobPolls": "Intentos de consulta de estado",
 			"jobLastStatus": "Último estado del job",
 			"jobLastHttpStatus": "Estado HTTP del último sondeo",
 			"jobSettledAt": "Liquidado el",
