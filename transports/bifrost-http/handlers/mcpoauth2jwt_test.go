@@ -150,8 +150,9 @@ func newTestSigningKey(t *testing.T) (*configtables.OAuth2SigningKey, *rsa.Priva
 
 // newTestOAuth2Config builds a lib.Config wired to the given store with a stable
 // issuer, for the requested /mcp auth mode and auth-enforcement setting.
-func newTestOAuth2Config(store configstore.ConfigStore, authMode configtables.MCPServerAuthMode, enforceAuth bool) *lib.Config {
-	return &lib.Config{
+func newTestOAuth2Config(t testing.TB, store configstore.ConfigStore, authMode configtables.MCPServerAuthMode, enforceAuth bool) *lib.Config {
+	t.Helper()
+	config := &lib.Config{
 		ConfigStore: store,
 		ClientConfig: &configstore.ClientConfig{
 			MCPServerAuthMode:      authMode,
@@ -163,6 +164,8 @@ func newTestOAuth2Config(store configstore.ConfigStore, authMode configtables.MC
 			},
 		},
 	}
+	require.NoError(t, config.AttachLiveStore(liveStoreForTest(t)))
+	return config
 }
 
 // mintTestToken signs a token with valid defaults (vk mode), applying mutate to
@@ -218,7 +221,7 @@ func TestExtractBearerJWT(t *testing.T) {
 func TestVerifyMCPJWT_ValidEachMode(t *testing.T) {
 	key, priv := newTestSigningKey(t)
 	store := &mockOAuth2Store{signingKey: key}
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeBoth, false)
 
 	modes := []struct {
 		mode schemas.MCPAuthMode
@@ -248,7 +251,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 	key, priv := newTestSigningKey(t)
 	_, otherPriv := newTestSigningKey(t)
 	store := &mockOAuth2Store{signingKey: key}
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeBoth, false)
 
 	cases := []struct {
 		name string
@@ -377,7 +380,7 @@ func TestVerifyMCPJWT_Rejections(t *testing.T) {
 func TestVerifyMCPJWT_NilSigningKeyNotLabeledInvalidToken(t *testing.T) {
 	key, priv := newTestSigningKey(t)
 	raw := mintTestToken(t, priv, key.KID, nil)
-	cfg := newTestOAuth2Config(&mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeBoth, false)
+	cfg := newTestOAuth2Config(t, &mockOAuth2Store{signingKey: key}, configtables.MCPServerAuthModeBoth, false)
 
 	ctx := &fasthttp.RequestCtx{}
 	_, err := verifyMCPJWT(ctx, raw, cfg, nil)
@@ -392,7 +395,7 @@ func TestVerifyMCPJWT_NilSigningKeyNotLabeledInvalidToken(t *testing.T) {
 // infrastructure faults distinctly, never as the caller's token being invalid.
 func TestCachedSigningKey_ConfigFaults(t *testing.T) {
 	t.Run("nil config store", func(t *testing.T) {
-		cfg := newTestOAuth2Config(nil, configtables.MCPServerAuthModeBoth, false)
+		cfg := newTestOAuth2Config(t, nil, configtables.MCPServerAuthModeBoth, false)
 		cfg.ConfigStore = nil
 		h := &MCPServerHandler{config: cfg}
 		_, err := h.config.GetOAuth2SigningKey(bgCtx())
@@ -403,7 +406,7 @@ func TestCachedSigningKey_ConfigFaults(t *testing.T) {
 
 	t.Run("signing key load error", func(t *testing.T) {
 		store := &mockOAuth2Store{signingErr: configstore.ErrNotFound}
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeBoth, false)
 		h := &MCPServerHandler{config: cfg}
 		_, err := h.config.GetOAuth2SigningKey(bgCtx())
 		require.Error(t, err)
@@ -411,14 +414,16 @@ func TestCachedSigningKey_ConfigFaults(t *testing.T) {
 	})
 }
 
+// TestInjectJWTContext checks what each bf_mode of a verified token puts on the request: the user,
+// the value of the key a vk-mode token names, or the session, and the errors for a vk-mode token
+// without a key, a token without a subject and an unknown mode.
 func TestInjectJWTContext(t *testing.T) {
-	activeVK := &configtables.TableVirtualKey{ID: "vk-row-1", Value: *schemas.NewSecretVar("sk-bf-active")}
 
 	t.Run("user mode sets user id", func(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "user-1"}, BfMode: "user",
-		}, nil)
+		}, "")
 		require.NoError(t, err)
 		assert.Equal(t, "user-1", bc.Value(schemas.BifrostContextKeyUserID))
 		identity := bc.Grant().Identity()
@@ -432,7 +437,7 @@ func TestInjectJWTContext(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "vk-row-1"}, BfMode: "vk",
-		}, activeVK)
+		}, "sk-bf-active")
 		require.NoError(t, err)
 		assert.Equal(t, "sk-bf-active", bc.Value(schemas.BifrostContextKeyVirtualKey))
 		// The VK row ID is resolved later by governance's PreMCPConnectionHook from
@@ -449,7 +454,7 @@ func TestInjectJWTContext(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "vk-row-1"}, BfMode: "vk",
-		}, nil)
+		}, "")
 		require.Error(t, err)
 	})
 
@@ -457,7 +462,7 @@ func TestInjectJWTContext(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "session-abc"}, BfMode: "session",
-		}, nil)
+		}, "")
 		require.NoError(t, err)
 		assert.Equal(t, "session-abc", bc.Value(schemas.BifrostContextKeyMCPSessionID))
 		// Nothing verified, nothing recorded: the request is admitted as anonymous.
@@ -466,7 +471,7 @@ func TestInjectJWTContext(t *testing.T) {
 
 	t.Run("missing sub errors", func(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
-		err := injectJWTContext(bc, &jwtMCPClaims{BfMode: "user"}, nil)
+		err := injectJWTContext(bc, &jwtMCPClaims{BfMode: "user"}, "")
 		require.Error(t, err)
 	})
 
@@ -474,7 +479,7 @@ func TestInjectJWTContext(t *testing.T) {
 		bc := schemas.NewBifrostContext(context.Background(), time.Time{})
 		err := injectJWTContext(bc, &jwtMCPClaims{
 			RegisteredClaims: jwt.RegisteredClaims{Subject: "x"}, BfMode: "bogus",
-		}, nil)
+		}, "")
 		require.Error(t, err)
 		assert.True(t, strings.Contains(err.Error(), "bf_mode"))
 	})

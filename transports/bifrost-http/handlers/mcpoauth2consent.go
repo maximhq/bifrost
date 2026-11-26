@@ -111,10 +111,6 @@ type loggedInUser struct {
 
 // GET /api/oauth2/consent/flows/{id}
 func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store unavailable")
-		return
-	}
 	flowID, ok := ctx.UserValue("id").(string)
 	if !ok || flowID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid flow id")
@@ -193,10 +189,6 @@ type consentFlowSubmitResponse struct {
 
 // PUT /api/oauth2/consent/flows/{id}
 func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store unavailable")
-		return
-	}
 	flowID, ok := ctx.UserValue("id").(string)
 	if !ok || flowID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid flow id")
@@ -321,6 +313,7 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceApprovedURL(issuer)})
 		return
 	}
+	lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 	redirectURL, err := buildRedirectURL(req.RedirectURI, map[string]string{
 		"code":  code,
 		"state": req.State,
@@ -331,7 +324,6 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: redirectURL})
 }
 

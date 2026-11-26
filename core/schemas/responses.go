@@ -2402,23 +2402,64 @@ func (m *ResponsesMessage) ToolSearchOutputToolNames() []string {
 	return names
 }
 
+// DefersLoading reports whether tool holds a tool back until it is searched for: a
+// namespace when any member is deferred (IsDeferredNamespaceMember), any other tool
+// when its own defer_loading is true.
+func DefersLoading(tool *ResponsesTool) bool {
+	if tool.Type != ResponsesToolTypeNamespace || tool.ResponsesToolNamespace == nil {
+		return tool.DeferLoading != nil && *tool.DeferLoading
+	}
+	for i := range tool.ResponsesToolNamespace.Tools {
+		if IsDeferredNamespaceMember(tool, &tool.ResponsesToolNamespace.Tools[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDeferredNamespaceMember reports whether a namespace member is deferred: its own
+// defer_loading when set, otherwise the namespace's.
+func IsDeferredNamespaceMember(namespace, member *ResponsesTool) bool {
+	if member.DeferLoading != nil {
+		return *member.DeferLoading
+	}
+	return namespace.DeferLoading != nil && *namespace.DeferLoading
+}
+
+// defaultToolNamespace is the namespace whose members are top-level functions under
+// another spelling (providerUtils.DefaultToolNamespace, which schemas cannot import).
+const defaultToolNamespace = "functions"
+
 // clientToolSearchNames are the function names clients give their own tool search
 // (Claude Code registers ToolSearch; the Anthropic docs example uses tool_search).
 var clientToolSearchNames = []string{"tool_search", "ToolSearch"}
 
 // ClientToolSearchFunctionName returns the name of the function tool the caller runs
 // as its own tool search, or "" when there is none. It only looks when some tool is
-// deferred. A non-deferred function named tool_search or ToolSearch qualifies, as
-// does a function whose earlier result in input carried tool_reference blocks.
+// deferred (DefersLoading). A non-deferred function named tool_search or ToolSearch
+// qualifies, as does a function whose earlier result in input carried tool_reference
+// blocks; a member of the default "functions" namespace counts as a function.
 func ClientToolSearchFunctionName(tools []ResponsesTool, input []ResponsesMessage) string {
-	if !slices.ContainsFunc(tools, func(t ResponsesTool) bool { return t.DeferLoading != nil && *t.DeferLoading }) {
+	if !slices.ContainsFunc(tools, func(t ResponsesTool) bool { return DefersLoading(&t) }) {
 		return ""
 	}
+	isFunction := func(t *ResponsesTool, name string) bool {
+		return t.Type == ResponsesToolTypeFunction && t.Name != nil && *t.Name == name
+	}
 	isEagerFunction := func(name string) bool {
-		return slices.ContainsFunc(tools, func(t ResponsesTool) bool {
-			return t.Type == ResponsesToolTypeFunction && t.Name != nil && *t.Name == name &&
-				(t.DeferLoading == nil || !*t.DeferLoading)
-		})
+		for i := range tools {
+			t := &tools[i]
+			if isFunction(t, name) && !DefersLoading(t) {
+				return true
+			}
+			if t.Type == ResponsesToolTypeNamespace && t.Name != nil && *t.Name == defaultToolNamespace && t.ResponsesToolNamespace != nil &&
+				slices.ContainsFunc(t.ResponsesToolNamespace.Tools, func(m ResponsesTool) bool {
+					return isFunction(&m, name) && !IsDeferredNamespaceMember(t, &m)
+				}) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, name := range clientToolSearchNames {
 		if isEagerFunction(name) {

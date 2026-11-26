@@ -1329,6 +1329,8 @@
 		"rotateGraceNote": "Le chiavi precedenti restano valide fino al {{date}}.",
 		"rotatedBulkPartial": "Ruotate {{count}} chiavi virtuali. {{failed}} non riuscite.{{graceNote}}",
 		"rotatedBulk": "Ruotate {{count}} chiavi virtuali.{{graceNote}}",
+		"rotatedBulkNotLoaded": "Chiavi salvate ma forse non caricate: {{notLoaded}}. I vecchi valori potrebbero funzionare ancora finché non salvi di nuovo ogni chiave o riavvii Bifrost.",
+		"rotatedNotLoaded": "Chiave virtuale ruotata, ma il nuovo valore potrebbe non essere caricato. Il vecchio valore potrebbe funzionare ancora finché non salvi di nuovo la chiave o riavvii Bifrost.",
 		"filtersApplied": "Filtri applicati:",
 		"filterSearch": "ricerca \"{{query}}\"",
 		"filterCustomer": "filtro cliente",

@@ -39715,6 +39715,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -40029,6 +40039,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -43643,6 +43663,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -43717,6 +43747,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -43784,6 +43824,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -43866,6 +43916,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -43931,6 +43991,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -44096,6 +44166,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -44191,6 +44271,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -44267,6 +44357,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -44368,6 +44468,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -44442,6 +44552,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -44674,6 +44794,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -44814,6 +44944,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -45016,6 +45156,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45074,6 +45224,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -45355,6 +45515,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45628,6 +45798,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45793,6 +45973,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45861,6 +46051,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -45916,6 +46116,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -46035,6 +46245,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -46116,6 +46336,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -46159,6 +46389,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -46168,7 +46408,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Plugins:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Create a new plugin",
-        "description": "Creates a new plugin with the specified configuration.\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
+        "description": "Creates a new plugin with the specified configuration.\nThe built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,\n`prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request\nnaming one is refused with 400.\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
         "tags": [
           "Plugins"
         ],
@@ -46242,6 +46482,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -46253,7 +46503,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Plugins:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List built-in plugin names",
-        "description": "Returns the canonical list of built-in plugin names available in this Bifrost build.\nUse this to discover which plugins can be enabled without supplying a custom binary.\n",
+        "description": "Returns the canonical list of built-in plugin names available in this Bifrost build.\nUse this to discover which plugins can be enabled without supplying a custom binary.\nOf these, `governance`, `routing`, `logging`, `prompts`, `compat` and `model-catalog-resolver` are configured by\nBifrost itself and cannot be created, changed or deleted through the plugins API.\n",
         "tags": [
           "Plugins"
         ],
@@ -46287,6 +46537,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -46420,6 +46680,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -46429,7 +46699,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Plugins:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Update a plugin",
-        "description": "Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.\nThe response `actualName` field shows the plugin name from GetName() (used as the map key),\nwhich may differ from the display name (`name`).\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
+        "description": "Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.\nThe built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,\n`prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request\nnaming one is refused with 400.\nThe response `actualName` field shows the plugin name from GetName() (used as the map key),\nwhich may differ from the display name (`name`).\nSetting `path` on a non-builtin plugin loads native code (a .so, via dlopen) into the\ngateway process and requires genuine admin authentication - it is refused with 403 if\ndashboard authentication is disabled or unconfigured, even though other management\nendpoints remain reachable in that state. Only `http`/`https` URLs are fetched for\nremote paths, and by default only ones resolving to a public address; private,\nloopback, link-local, and CGNAT addresses are additionally allowed if explicitly\nlisted in the deploy-time `server.plugin_download_private_allowlist` config. Local\nfilesystem paths are unaffected.\n",
         "tags": [
           "Plugins"
         ],
@@ -46514,6 +46784,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -46523,7 +46803,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Plugins:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Delete a plugin",
-        "description": "Removes a plugin from the configuration and stops it if running.\n",
+        "description": "Removes a plugin from the configuration and stops it if running.\nThe built-in plugins Bifrost configures itself (`governance`, `routing`, `logging`,\n`prompts`, `compat` and `model-catalog-resolver`) cannot be created, changed or deleted through this API; a request\nnaming one is refused with 400.\n",
         "tags": [
           "Plugins"
         ],
@@ -46579,6 +46859,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -47372,6 +47662,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -49060,6 +49360,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -49383,6 +49693,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -49438,6 +49758,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -49512,6 +49842,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -49595,6 +49935,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -49687,6 +50037,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -49755,6 +50115,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50052,6 +50422,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -50151,6 +50531,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -50206,6 +50596,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50270,6 +50670,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50429,6 +50839,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -50489,6 +50909,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50566,6 +50996,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -50705,7 +51145,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `MCPGateway:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List MCP library servers",
-        "description": "Returns a paginated, searchable, filterable list of the MCP server library catalog,\nwith whether an MCP client already installs each entry. Multi-value filters accept a\ncomma-separated list and use OR semantics within a field. Returns an empty page when\nthe config store is disabled.\n",
+        "description": "Returns a paginated, searchable, filterable list of the MCP server library catalog,\nwith whether an MCP client already installs each entry. Multi-value filters accept a\ncomma-separated list and use OR semantics within a field.\n",
         "tags": [
           "MCP"
         ],
@@ -50982,6 +51422,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -51350,6 +51800,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -51562,6 +52022,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -51660,6 +52130,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -51720,6 +52200,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -51794,6 +52284,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -51978,6 +52478,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -52044,6 +52554,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -52118,6 +52638,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -52846,6 +53376,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -52900,6 +53440,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -52989,6 +53539,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -53063,6 +53623,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -53152,6 +53722,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -53214,6 +53794,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -53269,6 +53859,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -53369,6 +53969,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -53433,6 +54043,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -53902,6 +54522,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -53984,6 +54614,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -54038,6 +54678,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54107,6 +54757,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54196,6 +54856,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -54251,6 +54921,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54510,6 +55190,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -54564,6 +55254,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54633,6 +55333,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -54722,6 +55432,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -54777,6 +55497,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -56417,6 +57147,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -56453,6 +57193,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -56687,6 +57437,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -56758,6 +57518,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -56820,6 +57590,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -56909,6 +57689,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -56971,6 +57761,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -57018,6 +57818,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -57109,6 +57919,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -57164,6 +57984,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -57285,6 +58115,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -57339,6 +58179,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -57430,6 +58280,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -57475,6 +58335,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -76303,6 +77173,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/governance/teams",
@@ -76371,6 +77251,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -76466,6 +77356,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/governance/teams/{team_id}",
@@ -76527,6 +77427,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -84747,6 +85657,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -84951,6 +85871,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -85095,6 +86025,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -85324,6 +86264,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -85390,6 +86340,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -85490,6 +86450,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -85564,6 +86534,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -88080,6 +89060,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -88151,6 +89141,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -88213,6 +89213,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -88312,6 +89322,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -88367,6 +89387,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93246,6 +94276,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -93317,6 +94357,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -93347,6 +94397,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ModelRouterDefaults"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
                 }
               }
             }
@@ -93417,6 +94477,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93505,6 +94575,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -93549,6 +94629,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93613,6 +94703,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93697,6 +94797,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -93833,6 +94943,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -94709,6 +95829,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/routing/rules",
@@ -94786,6 +95916,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/routing/rules",
@@ -94854,6 +95994,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -94959,6 +96109,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "x-bifrost-successor": "/api/routing/rules/{rule_id}",
@@ -95020,6 +96180,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -97279,6 +98449,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -98758,6 +99960,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -99165,6 +100399,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -99605,6 +100871,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -100035,6 +101333,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -100489,6 +101819,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -100935,6 +102297,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -101395,6 +102789,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -101829,6 +103255,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -102280,6 +103738,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -102760,6 +104250,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -103228,6 +104750,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -103712,6 +105266,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -104360,6 +105946,38 @@
             }
           },
           {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "metadata_<key>",
             "in": "query",
             "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
@@ -104787,6 +106405,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -105235,6 +106885,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -105745,6 +107427,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -106531,6 +108245,38 @@
             "name": "guardrail_outcomes",
             "in": "query",
             "description": "Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a guardrail intervened on; `detected` matches detect-only guardrail matches. Several values are OR-ed together.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_actions",
+            "in": "query",
+            "description": "Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on the same recorded match.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_rule_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail rule IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_profile_ids",
+            "in": "query",
+            "description": "Comma-separated list of guardrail profile IDs a recorded guardrail match must name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "guardrail_phases",
+            "in": "query",
+            "description": "Comma-separated list of phases (input, output) a recorded guardrail match must be in",
             "schema": {
               "type": "string"
             }
@@ -110656,6 +112402,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -110759,6 +112515,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -110846,6 +112612,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -110974,6 +112750,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -111028,6 +112814,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -111320,6 +113116,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -111635,6 +113441,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -111927,6 +113743,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112250,6 +114076,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -112304,6 +114140,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112420,6 +114266,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112588,6 +114444,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -112711,6 +114577,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -112766,6 +114642,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -112885,6 +114771,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113060,6 +114956,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -113179,6 +115085,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113350,6 +115266,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -113405,6 +115331,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113549,6 +115485,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113705,6 +115651,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -113768,6 +115724,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -113822,6 +115788,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -113858,6 +115834,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -113919,6 +115905,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -114027,6 +116023,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -114081,6 +116087,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -114171,6 +116187,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -114253,6 +116279,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       },
@@ -114308,6 +116344,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -114434,6 +116480,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -114518,6 +116574,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -114557,6 +116623,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available, or the skills marketplace is disabled because `skills_external_client_url` is not set.",
             "content": {
               "application/json": {
                 "schema": {
@@ -114610,6 +116686,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available, or the skills marketplace is disabled because `skills_external_client_url` is not set.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         }
       }
@@ -114640,6 +116726,24 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available, or skills serving is busy (retry after the seconds in `Retry-After`).",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                },
+                "description": "Seconds to wait before retrying; sent when skills serving is busy."
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -114698,6 +116802,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -114765,6 +116879,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -116099,6 +118223,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -116160,6 +118294,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -116210,6 +118354,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -116293,6 +118447,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -116341,6 +118505,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -116400,6 +118574,16 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -116485,6 +118669,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Config store not available, or webhook delivery is not available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -116558,7 +118752,7 @@
             }
           },
           "503": {
-            "description": "Logs store is not available.",
+            "description": "Config store not available, or logs store not available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -116738,7 +118932,7 @@
             }
           },
           "503": {
-            "description": "Logs store is not available.",
+            "description": "Config store not available, or logs store not available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -116810,6 +119004,16 @@
           },
           "409": {
             "description": "This delivery is already in flight.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Config store not available, or logs store not available.",
             "content": {
               "application/json": {
                 "schema": {
@@ -159841,6 +162045,41 @@
                       "enum": [
                         "blocked",
                         "detected"
+                      ]
+                    }
+                  },
+                  "guardrail_actions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "blocked",
+                        "redacted",
+                        "detected",
+                        "monitored"
+                      ]
+                    },
+                    "description": "What a guardrail did on one recorded match; the guardrail rule, profile and phase filters must hold on that same match"
+                  },
+                  "guardrail_rule_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "guardrail_profile_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "guardrail_phases": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "input",
+                        "output"
                       ]
                     }
                   },

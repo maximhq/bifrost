@@ -41,8 +41,7 @@ type BifrostConfig struct {
 	MCPConfig                *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
 	KeySelector              KeySelector     // Custom key selector function
 	KeyPoolFilter            KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
-	KVStore                  KVStore         // shared KV store for clustering/session stickiness; nil = disabled
-	SessionAffinity          SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
+	SessionAffinity          SessionAffinity // Decides which route and key a session stays on; nil = Bifrost's default affinity with no store, which binds nothing
 	ModelCatalog             ModelInfoProvider
 	MCPSharedDiscoveryStore  MCPDiscoveryStore
 	MCPPerUserDiscoveryStore MCPDiscoveryStore
@@ -371,7 +370,8 @@ const (
 	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
 	BifrostContextKeyParentSpanID                        BifrostContextKey = "bifrost-parent-span-id"                           // string (parent span ID from W3C traceparent header - set by tracing middleware)
 	BifrostContextKeyStreamStartTime                     BifrostContextKey = "bifrost-stream-start-time"                        // time.Time (start time for streaming TTFT calculation - set by bifrost)
-	BifrostContextKeyRequestStartTime                    BifrostContextKey = "bifrost-request-start-time"                       // time.Time (whole-request start for overhead - set by bifrost)
+	BifrostContextKeyMCPRequestStartTime                 BifrostContextKey = "bifrost-mcp-request-start-time"                   // time.Time (MCP request start for logs and usage)
+	BifrostContextKeyRequestStartTime                    BifrostContextKey = "bifrost-request-start-time"                       // time.Time (whole-request start for overhead, logs, and usage)
 	BifrostContextKeyTracer                              BifrostContextKey = "bifrost-tracer"                                   // Tracer (tracer instance for completing deferred spans - set by bifrost)
 	BifrostContextKeyModelCatalog                        BifrostContextKey = "bifrost-model-catalog"                            // ModelInfoProvider (model pricing/capability catalog backing ctx.GetModelInfo, ctx.CalculateCost and ctx.CalculateCostBreakdown - set by bifrost)
 	BifrostContextKeyDeferTraceCompletion                BifrostContextKey = "bifrost-defer-trace-completion"                   // bool (signals trace completion should be deferred for streaming - set by streaming handlers)

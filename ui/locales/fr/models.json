@@ -1327,6 +1327,8 @@
 		"rotateGraceNote": "Les anciennes clés restent valides jusqu’au {{date}}.",
 		"rotatedBulkPartial": "{{count}} clés virtuelles renouvelées. {{failed}} échec(s).{{graceNote}}",
 		"rotatedBulk": "{{count}} clés virtuelles renouvelées.{{graceNote}}",
+		"rotatedBulkNotLoaded": "Clés enregistrées mais peut-être non chargées : {{notLoaded}}. Les anciennes valeurs peuvent encore fonctionner jusqu’à ce que vous enregistriez à nouveau chaque clé ou redémarriez Bifrost.",
+		"rotatedNotLoaded": "Clé virtuelle renouvelée, mais la nouvelle valeur n’est peut-être pas chargée. L’ancienne valeur peut encore fonctionner jusqu’à ce que vous enregistriez à nouveau la clé ou redémarriez Bifrost.",
 		"filtersApplied": "Filtres appliqués :",
 		"filterSearch": "recherche « {{query}} »",
 		"filterCustomer": "filtre client",
