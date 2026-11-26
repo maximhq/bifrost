@@ -61,6 +61,18 @@
       "rule": "E2E API payloads must be constructed directly as object literals. Do not serialize through maps, Records, Object.fromEntries, or JSON round trips because field order matters.",
       "scope": ["tests/e2e/**"],
       "severity": "medium"
+    },
+    {
+      "id": "live-store-data",
+      "rule": "Data a process keeps longer than one request (configuration, runtime state, caches) lives in framework/livestore: a collection, cache or table chosen by what a miss means. Flag a new map, sync.Map or slice of records a component keeps as a cache, index or state, unless tests/rawmaps/allowlist.txt lists it with a reason. In-flight working state (one request, stream or run, keyed by its ID and removed when it ends, such as stream accumulators, pending log entries and traces being built) may stay in a map with an inflight allowlist entry; flag one whose entry is not removed on every ending path, errors and cancellation included. Store.Collections holds config-store collections only and Store.Views holds derived tables rebuilt by a subscriber. Request-path reads go through typed handles and never modify a value read from the store. Review only code the PR adds or changes.",
+      "scope": ["core/**", "framework/**", "plugins/**", "transports/**"],
+      "severity": "high"
+    },
+    {
+      "id": "live-store-writes",
+      "rule": "Configuration writes reach memory the same way for every entity. A delete reads its holders inside its transaction, removes the record with a Remove ref and no read, evicts bound caches and re-reads the holders with lib.AdminRetry(); a create or update re-reads the written rows with lib.AdminRetry(); on a failed re-read memory keeps the previous record and the handler answers 500, with no rollback of the committed write. A partial update merges onto a database read, never onto the live record. Only an explicit delete removes without reading; a reconcile re-reads held records its list does not name. A change another process made is applied with lib.DBLookupRetry(). A write path that re-reads needs a test where the re-read fails. Review only write paths the PR adds or changes.",
+      "scope": ["transports/bifrost-http/**", "plugins/**"],
+      "severity": "high"
     }
   ]
 }

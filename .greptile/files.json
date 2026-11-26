@@ -13,6 +13,11 @@
       "path": "go.work",
       "description": "Go workspace module layout.",
       "scope": ["core/**", "framework/**", "plugins/**", "transports/**", "go.work", "go.work.sum"]
+    },
+    {
+      "path": ".claude/skills/live-store/SKILL.md",
+      "description": "How to add or change data the live store holds and the write paths that change configuration.",
+      "scope": ["core/**", "framework/**", "plugins/**", "transports/**"]
     }
   ]
 }
