@@ -2378,6 +2378,24 @@
         "structured-data"
       ],
       "icon_url": "https://avatars.githubusercontent.com/u/287127998?v=4"
+    },
+    {
+      "name": "Databuddy",
+      "description": "Connect AI tools to Databuddy to query web and product analytics: traffic, funnels, goals, errors, Web Vitals, session replays, and why a metric moved. Can also manage feature flags, short links, and annotations. Hosted remotely by Databuddy.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://api.databuddy.cc/v1/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.databuddy.cc/docs/api/mcp",
+      "publisher": "Databuddy",
+      "tags": [
+        "databuddy",
+        "analytics",
+        "product-analytics",
+        "web-analytics",
+        "feature-flags"
+      ],
+      "icon_url": "https://raw.githubusercontent.com/databuddy-analytics/skills/main/assets/logo.png"
     }
   ]
 }
