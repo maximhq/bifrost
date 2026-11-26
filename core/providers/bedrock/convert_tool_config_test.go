@@ -2240,3 +2240,142 @@ func TestConvertToolConfigFromFiltered_FilteredOnlySubmittedPinSilentDrop(t *tes
 		t.Fatalf("expected nil ToolConfig when all tools filtered and pin dropped, got %+v", toolConfig)
 	}
 }
+
+// TestBedrockConverseIngress_UnknownPinRejected covers the native Bedrock
+// Converse route (/bedrock/model/{modelId}/converse): a toolConfig.toolChoice.tool
+// naming a tool absent from toolConfig.tools must be rejected with a 400 that
+// names the raw pin, after the Converse ingress is converted to the neutral
+// Responses request and back out through ToBedrockResponsesRequest (the egress
+// that runs validateResponsesToolChoicePin).
+func TestBedrockConverseIngress_UnknownPinRejected(t *testing.T) {
+	body := `{
+		"messages": [{"role": "user", "content": [{"text": "What's the weather?"}]}],
+		"toolConfig": {
+			"tools": [{"toolSpec": {"name": "get_weather", "description": "Get weather", "inputSchema": {"json": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}}],
+			"toolChoice": {"tool": {"name": "nonexistent_tool"}}
+		},
+		"inferenceConfig": {"maxTokens": 500}
+	}`
+	var converseReq BedrockConverseRequest
+	if err := json.Unmarshal([]byte(body), &converseReq); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	converseReq.ModelID = "bedrock/global.anthropic.claude-sonnet-4-6"
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	if err != nil {
+		t.Fatalf("ingress: %v", err)
+	}
+	// The ingress must carry the raw pin through to the neutral request so the
+	// egress validator sees the exact name the client sent.
+	if bifrostReq.Params == nil || bifrostReq.Params.ToolChoice == nil ||
+		bifrostReq.Params.ToolChoice.ResponsesToolChoiceStruct == nil ||
+		bifrostReq.Params.ToolChoice.ResponsesToolChoiceStruct.Name == nil ||
+		*bifrostReq.Params.ToolChoice.ResponsesToolChoiceStruct.Name != "nonexistent_tool" {
+		t.Fatalf("expected the raw pin to survive ingress, got %+v", bifrostReq.Params)
+	}
+
+	bifrostReq.Provider = schemas.Bedrock
+	_, err = ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin on the Converse route, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent_tool") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
+	}
+}
+
+// BenchmarkToolChoicePinValidation measures the request-path cost of the
+// tool_choice pin validation on both Bedrock egress converters, pinned (a named
+// pin that passes validation, so the validator runs its full loop) and unpinned
+// (no tool_choice, the common case where the validator is never reached). Run
+// with -benchmem; the pinned case is the one the plain-loop rewrite makes
+// cheaper than the previous map + per-tool aliasing.
+func BenchmarkToolChoicePinValidation(b *testing.B) {
+	chatTools := []schemas.ChatTool{{
+		Type:     schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+	}}
+	chatPinned := &schemas.ChatToolChoice{
+		ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
+			Type:     schemas.ChatToolChoiceTypeFunction,
+			Function: &schemas.ChatToolChoiceFunction{Name: "get_weather"},
+		},
+	}
+	responsesTools := []schemas.ResponsesTool{{
+		Type:                  schemas.ResponsesToolTypeFunction,
+		Name:                  schemas.Ptr("get_weather"),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+	}}
+	responsesPinned := &schemas.ResponsesToolChoice{
+		ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+			Type: schemas.ResponsesToolChoiceTypeFunction,
+			Name: schemas.Ptr("get_weather"),
+		},
+	}
+
+	b.Run("chat_pinned", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "global.anthropic.claude-sonnet-4-6",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather?")}}},
+				Params:   &schemas.ChatParameters{Tools: chatTools, ToolChoice: chatPinned},
+			}
+			if _, err := ToBedrockChatCompletionRequest(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("chat_unpinned", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "global.anthropic.claude-sonnet-4-6",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("What's the weather?")}}},
+				Params:   &schemas.ChatParameters{Tools: chatTools},
+			}
+			if _, err := ToBedrockChatCompletionRequest(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("responses_pinned", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "global.anthropic.claude-sonnet-4-6",
+				Input:    []schemas.ResponsesMessage{glmUserMessage("What's the weather?")},
+				Params:   &schemas.ResponsesParameters{Tools: responsesTools, ToolChoice: responsesPinned},
+			}
+			if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("responses_unpinned", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    "global.anthropic.claude-sonnet-4-6",
+				Input:    []schemas.ResponsesMessage{glmUserMessage("What's the weather?")},
+				Params:   &schemas.ResponsesParameters{Tools: responsesTools},
+			}
+			if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}

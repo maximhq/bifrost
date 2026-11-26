@@ -20396,6 +20396,53 @@
               }
             },
             {
+              "name": "[EXPECT-400] Bedrock Chat Completions unknown tool_choice pin - pin names tool never sent",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Regression for #9797/#9811: a tool_choice pin naming a tool the client never",
+                      "// sent must be rejected with 400 before any provider dispatch. The error must",
+                      "// name the raw pin (not an aliased name) so the caller can match it to their",
+                      "// request. The route is in the case name; the body shape and headers match a",
+                      "// real client on that route.",
+                      "pm.test('unknown tool_choice pin rejected with 400', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                      "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('nonexistent_tool');",
+                      "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('is not defined in tools');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\n  \"tool_choice\": {\"type\":\"function\",\"name\":\"nonexistent_tool\"}\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/chat/completions",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "chat",
+                    "completions"
+                  ]
+                }
+              }
+            },
+            {
               "name": "Cross-cut: tool_choice forced (Bedrock)",
               "request": {
                 "method": "POST",
@@ -20462,6 +20509,57 @@
                   "path": [
                     "v1",
                     "responses"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] Bedrock Anthropic messages unknown tool_choice pin - pin names tool never sent",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Regression for #9797/#9811: a tool_choice pin naming a tool the client never",
+                      "// sent must be rejected with 400 before any provider dispatch. The error must",
+                      "// name the raw pin (not an aliased name) so the caller can match it to their",
+                      "// request. The route is in the case name; the body shape and headers match a",
+                      "// real client on that route.",
+                      "pm.test('unknown tool_choice pin rejected with 400', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                      "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('nonexistent_tool');",
+                      "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('is not defined in tools');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "anthropic-version",
+                    "value": "2023-06-01"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 500,\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather?\"}],\n  \"tools\": [{\"name\":\"get_weather\",\"description\":\"Get weather\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\n  \"tool_choice\": {\"type\":\"tool\",\"name\":\"nonexistent_tool\"}\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/anthropic/v1/messages",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "anthropic",
+                    "v1",
+                    "messages"
                   ]
                 }
               }
@@ -20538,6 +20636,54 @@
                     "v1",
                     "chat",
                     "completions"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "[EXPECT-400] Bedrock Converse unknown tool_choice pin - pin names tool never sent",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Regression for #9797/#9811: a tool_choice pin naming a tool the client never",
+                      "// sent must be rejected with 400 before any provider dispatch. The error must",
+                      "// name the raw pin (not an aliased name) so the caller can match it to their",
+                      "// request. The route is in the case name; the body shape and headers match a",
+                      "// real client on that route.",
+                      "pm.test('unknown tool_choice pin rejected with 400', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                      "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('nonexistent_tool');",
+                      "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('is not defined in tools');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"messages\": [{\"role\":\"user\",\"content\":[{\"text\":\"What's the weather?\"}]}],\n  \"toolConfig\": {\n    \"tools\": [{\"toolSpec\":{\"name\":\"get_weather\",\"description\":\"Get weather\",\"inputSchema\":{\"json\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}}],\n    \"toolChoice\": {\"tool\":{\"name\":\"nonexistent_tool\"}}\n  },\n  \"inferenceConfig\": {\"maxTokens\": 500}\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "bedrock",
+                    "model",
+                    "{{bedrockModel}}",
+                    "converse"
                   ]
                 }
               }
