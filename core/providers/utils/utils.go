@@ -4860,27 +4860,6 @@ func ProviderIsResponsesAPINative(providerName schemas.ModelProvider) bool {
 	}
 }
 
-// AbandonStreamingResponse closes an incomplete response after a terminal event.
-// No drain is attempted: an upstream may keep its body open after reporting an
-// error. Call before processing the terminal error, so slow hooks cannot retain
-// an upstream connection that will no longer be read.
-func AbandonStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
-	if resp == nil || resp.BodyStream() == nil {
-		return
-	}
-	if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
-		return
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			getLogger().Debug("stream already closed in AbandonStreamingResponse: %v", r)
-		}
-	}()
-	// A non-nil error discards fasthttp's half-read connection. Leave resp to GC:
-	// ReleaseResponse would invoke the pooled body's close callback a second time.
-	closeBodyStream(resp.BodyStream(), ErrStreamClosed)
-}
-
 // ReleaseStreamingResponse releases a streaming response by draining the body stream and releasing the response.
 func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Response) {
 	if resp == nil {
@@ -4891,31 +4870,20 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		fasthttp.ReleaseResponse(resp)
 		return
 	}
-	// Atomically claim the close. If a cancel/timeout owner already closed the
-	// stream, skip drain + ReleaseResponse: fasthttp.ReleaseResponse would
-	// re-Close and double-release the pooled requestStream/conn (poisoning
-	// another request, or nil-derefing the TCP conn). Leaking to GC is the
-	// intentional trade-off, so keep the defer below this check. GetAndSetValue
-	// is a single locked compare-and-swap, closing the race the previous
-	// Value-only check left open against a concurrent timer/cancellation close.
+	// Keep response release, cancellation and the read timer mutually exclusive.
+	// A prior owner is responsible for closing the body and releasing its transport resources.
 	if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 		return
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
+			getLogger().Debug("recovered panic releasing streaming response: %v", r)
 		}
 	}()
-	// Cancelled or timed out: abandon the connection instead of draining it.
-	// Draining here would read the rest of an upstream response nobody wants,
-	// holding the connection for the remainder of the stream. Closing with a
-	// non-nil error makes fasthttp's callback take CloseConn rather than
-	// ReleaseConn (client.go:3176), so a half-read connection is never returned
-	// to the idle pool. The response itself is left to GC for the same reason as
-	// the early return above: fasthttp.ReleaseResponse would Reset and fire the
-	// close callback a second time.
-	if ctx.Err() != nil {
-		closeBodyStream(bodyStream, ctx.Err())
+	// A canceled request no longer needs the remaining bytes. Close with an
+	// error so the transport discards the connection.
+	if err := ctx.Err(); err != nil {
+		closeBodyStream(bodyStream, err)
 		return
 	}
 	// Drain any remaining data from the body stream before releasing.
@@ -4939,24 +4907,48 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
 			return
 		}
-		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		closed, err := drainStreamingResponse(ctx, bodyStream)
+		if closed {
+			return // The drain watchdog has already discarded the connection.
+		}
+		if err != nil {
+			getLogger().Warn("failed to drain streaming response body before release: %v", err)
+			closeBodyStream(bodyStream, err)
+			return
 		}
 	}
-	// Close the body-stream wrapper exactly once HERE and detach it from resp
-	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close
-	// callback releases the pooled *bufio.Reader and *requestStream with NO
-	// idempotency guard (client.go: hc.ReleaseReader(br) + releaseRequestStream
-	// are bare sync.Pool.Put). Without detaching, the fasthttp.ReleaseResponse
-	// below runs Reset -> closeBodyStream and fires that callback a SECOND time,
-	// double-Putting the reader; two later requests then acquire and Reset the
-	// same *bufio.Reader and race on it, producing the
-	// "slice bounds out of range [:N] with capacity 4096" panic in
-	// mustPeekBuffered. Detaching makes ReleaseResponse's Reset a no-op
-	// (closeBodyStream short-circuits on nil). The CAS above already serializes
-	// this against the cancellation / idle-timeout closers.
+	// Detach the body so returning the response to its pool does not close it again.
 	resp.CloseBodyStream()
 	fasthttp.ReleaseResponse(resp)
+}
+
+// drainStreamingResponse bounds the entire cleanup read, including upstreams
+// that keep writing after a terminal event. The release caller already owns
+// the body, so the callback closes it directly rather than claiming it again.
+func drainStreamingResponse(ctx *schemas.BifrostContext, body io.Reader) (closed bool, err error) {
+	drainCtx, cancel := context.WithTimeout(ctx, GetStreamIdleTimeout(ctx))
+	defer cancel()
+
+	closeDone := make(chan struct{})
+	stopClose := context.AfterFunc(drainCtx, func() {
+		defer close(closeDone)
+		defer func() {
+			if rec := recover(); rec != nil {
+				getLogger().Debug("recovered panic closing stream during drain: %v", rec)
+			}
+		}()
+		closeBodyStream(body, drainCtx.Err())
+	})
+	defer func() {
+		if !stopClose() {
+			// A Close can unblock Copy before it finishes releasing transport
+			// resources. Wait before the caller returns or reuses the response.
+			<-closeDone
+			closed = true
+		}
+	}()
+	_, err = io.Copy(io.Discard, body)
+	return closed, err
 }
 
 // GetBifrostResponseForStreamResponse converts the provided responses to a bifrost response.

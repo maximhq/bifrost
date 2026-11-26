@@ -6,6 +6,7 @@ import {
 	extractAssetUrl,
 	getSkewMode,
 	getSkewState,
+	installVersionSkewListeners,
 	isSkewError,
 	MAX_AUTO_RELOADS,
 	MISSING_ASSET_BODY_PREFIX,
@@ -234,6 +235,62 @@ describe("skew store", () => {
 		subscribeSkew(onChange)();
 		reportSkew("soft");
 		expect(onChange).not.toHaveBeenCalled();
+	});
+});
+
+describe("installVersionSkewListeners", () => {
+	class FakeScript {
+		constructor(public src: string) {}
+	}
+	class FakeLink {
+		constructor(
+			public href: string,
+			public rel: string,
+		) {}
+	}
+
+	// Installs the listeners on a stub window and returns the capture-phase error handler.
+	function installErrorListener() {
+		const handlers = new Map<string, (event: unknown) => void>();
+		vi.stubGlobal("window", {
+			location: { href: `${ORIGIN}/workspace/logs`, origin: ORIGIN },
+			addEventListener: (type: string, handler: (event: unknown) => void) => handlers.set(type, handler),
+		});
+		vi.stubGlobal("HTMLScriptElement", FakeScript);
+		vi.stubGlobal("HTMLLinkElement", FakeLink);
+		installVersionSkewListeners();
+		return handlers.get("error")!;
+	}
+
+	beforeEach(() => __resetSkewForTests());
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("ignores the error Firefox fires on a modulepreload link for an already-loaded chunk", () => {
+		const fetchMock = stubFetch(async () => textResponse(200, "export {}"));
+		const onError = installErrorListener();
+
+		onError({ target: new FakeLink(`${ORIGIN}/assets/index-ZA__1Kjj.js`, "modulepreload") });
+
+		expect(getSkewState()).toEqual({ mode: "none", cause: null });
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("still reports a failed stylesheet link", () => {
+		stubFetch(async () => bifrostMissing("/assets/index-1.css"));
+		const onError = installErrorListener();
+
+		onError({ target: new FakeLink(`${ORIGIN}/assets/index-1.css`, "stylesheet") });
+
+		expect(getSkewMode()).toBe("soft");
+	});
+
+	it("still reports a failed module script", () => {
+		stubFetch(async () => bifrostMissing("/assets/logs-1.js"));
+		const onError = installErrorListener();
+
+		onError({ target: new FakeScript(`${ORIGIN}/assets/logs-1.js`) });
+
+		expect(getSkewMode()).toBe("soft");
 	});
 });
 

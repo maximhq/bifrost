@@ -1204,27 +1204,94 @@ func TestIdleTimeoutReader_CleanupPreventsRearming(t *testing.T) {
 	})
 }
 
-// Abandonment must claim the same ownership as cancellation and release, and
-// must never attempt to drain a terminal error's potentially unending body.
-func TestAbandonStreamingResponseDoesNotDrainOrCloseTwice(t *testing.T) {
-	for _, alreadyClosed := range []bool{false, true} {
-		t.Run(fmt.Sprint(alreadyClosed), func(t *testing.T) {
-			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+// The body remains open until CloseWithError interrupts its read. unblock lets
+// a failing test release the reader without counting it as a close.
+type parkedDrainBody struct {
+	started    chan struct{}
+	closed     chan struct{}
+	unblock    chan struct{}
+	closeCount int
+	closeErr   error
+}
+
+func (b *parkedDrainBody) Read([]byte) (int, error) {
+	close(b.started)
+	select {
+	case <-b.closed:
+		return 0, io.ErrClosedPipe
+	case <-b.unblock:
+		return 0, io.EOF
+	}
+}
+
+func (b *parkedDrainBody) CloseWithError(err error) error {
+	b.closeCount++
+	if b.closeCount == 1 {
+		b.closeErr = err
+		close(b.closed)
+	}
+	return nil
+}
+
+func TestReleaseStreamingResponseBoundsDrain(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cancel bool
+		want   error
+	}{
+		{name: "timeout", want: context.DeadlineExceeded},
+		{name: "cancellation", cancel: true, want: context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				parent, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 100*time.Millisecond)
+				body := &parkedDrainBody{started: make(chan struct{}), closed: make(chan struct{}), unblock: make(chan struct{})}
+				response := fasthttp.AcquireResponse()
+				response.SetBodyStream(body, -1)
+				released := make(chan struct{})
+				go func() {
+					ReleaseStreamingResponse(ctx, response)
+					close(released)
+				}()
+				<-body.started
+				if tc.cancel {
+					cancel()
+				}
+				limit := 200 * time.Millisecond
+				if tc.cancel {
+					limit = 50 * time.Millisecond
+				}
+				select {
+				case <-released:
+				case <-time.After(limit):
+					close(body.unblock)
+					<-released
+					t.Fatal("release did not interrupt the parked drain")
+				}
+				if body.closeCount != 1 || !errors.Is(body.closeErr, tc.want) {
+					t.Fatalf("close count=%d error=%v, want one close with %v", body.closeCount, body.closeErr, tc.want)
+				}
+			})
+		})
+	}
+}
+
+func BenchmarkReleaseStreamingResponse(b *testing.B) {
+	for _, exhausted := range []bool{true, false} {
+		b.Run(fmt.Sprintf("exhausted=%t", exhausted), func(b *testing.B) {
+			b.ReportAllocs()
 			body := &countingStreamCloser{}
-			resp := fasthttp.AcquireResponse()
-			resp.SetBodyStream(body, -1)
-			if alreadyClosed {
-				ctx.SetValue(schemas.BifrostContextKeyConnectionClosed, true)
-				body.CloseWithError(context.Canceled)
-			}
-			AbandonStreamingResponse(ctx, resp)
-			AbandonStreamingResponse(ctx, resp)
-			ReleaseStreamingResponse(ctx, resp)
-			if got := body.closeCount.Load(); got != 1 {
-				t.Errorf("closed %d times, want 1", got)
-			}
-			if got := body.readCount.Load(); got != 0 {
-				t.Errorf("drained %d times, want 0", got)
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if exhausted {
+					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
+				}
+				resp := fasthttp.AcquireResponse()
+				resp.SetBodyStream(body, -1)
+				ReleaseStreamingResponse(ctx, resp)
 			}
 		})
 	}

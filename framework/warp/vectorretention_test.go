@@ -17,7 +17,7 @@ import (
 func retentionTestService(t *testing.T) (*Service, *fakeWarpVectorStore) {
 	t.Helper()
 	vectors := newFakeWarpVectorStore()
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: assignTestRow()}), WithLogReader(topicTestReader(t, map[string]logstore.Log{})),
 		WithVectorStore(vectors), WithEmbeddingExecutor(assignTestEmbedding),
 	)
@@ -103,7 +103,7 @@ func TestWarpSweepsExpiredVectorsWhileWarpIsDisabled(t *testing.T) {
 	service.topicUpkeepTick(context.Background())
 	require.Equal(t, []string{"fresh"}, retentionTestIDs(vectors))
 
-	never := NewService(nil, WithConfigStore(&recordingStore{}), WithVectorStore(newFakeWarpVectorStore()))
+	never := serviceForTest(t, nil, WithConfigStore(&recordingStore{}), WithVectorStore(newFakeWarpVectorStore()))
 	t.Cleanup(never.Shutdown)
 	never.SetLogRetention(func() int { return 30 })
 	swept, err := never.sweepExpiredVectors(context.Background(), time.Now().UTC())

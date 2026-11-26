@@ -187,11 +187,11 @@ func TestTokenExtractionParityWithLogging(t *testing.T) {
 // governance already bill on a mid-stream cancel: a terminal error with no result must still
 // add its tokens, cache tokens and cost, not just the error count.
 func TestCancelledStreamRecordsBilledUsage(t *testing.T) {
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 		{Model: "claude-test", Provider: string(schemas.Anthropic), Mode: "chat", InputCostPerToken: new(3e-6), OutputCostPerToken: new(15e-6)},
 	})
-	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc := catalogWithDatasheetForTest(t, ds)
 	p, err := Init(&Config{}, mc, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
@@ -250,11 +250,11 @@ func TestCancelledStreamPricesResolvedModel(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ds := datasheet.NewTestStore(nil)
+			ds := testDatasheet(t, nil)
 			ds.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
 				{Model: "claude-test", Provider: string(schemas.Anthropic), Mode: "chat", InputCostPerToken: new(3e-6), OutputCostPerToken: new(15e-6)},
 			})
-			mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+			mc := catalogWithDatasheetForTest(t, ds)
 			p, err := Init(&Config{}, mc, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			if err != nil {
 				t.Fatalf("Init: %v", err)
@@ -1485,4 +1485,27 @@ func BenchmarkPostLLMHook(b *testing.B) {
 	for recorded() < uint64(b.N) {
 		time.Sleep(time.Millisecond)
 	}
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// testDatasheet returns a test datasheet over a live store of its own, closed when the test ends.
+func testDatasheet(t testing.TB, baseModelIndex map[string]string) *datasheet.Store {
+	t.Helper()
+	ds, err := datasheet.NewTestStore(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ds.Close)
+	return ds
 }

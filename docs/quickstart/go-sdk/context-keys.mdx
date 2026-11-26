@@ -103,7 +103,7 @@ Keep a session on what served it before: the provider that last served it, when 
 Bindings are written when a request is served, never when it fails. A later request with the same session ID puts the bound provider first among the routes the hooks produced and uses the bound key while it remains eligible; a key that is no longer in the supported set (disabled, removed, or model support changed) is dropped and the next served request rebinds. A fallback that serves becomes the session's new home. Decisions the session made are recorded in the request's routing logs under the `session-affinity` engine.
 
 <Note>
-The policy that picks and keeps the key is `BifrostConfig.SessionAffinity`. When it is unset, Bifrost's own default applies: it needs a `KVStore` in `BifrostConfig`, binds the session to the key selected for its first request, and scopes bindings to the virtual key and user the request's grant identity is attributed to, so a session id reused by another caller does not share them. A custom `SessionAffinity` may keep its state elsewhere and scope it differently.
+The policy that picks and keeps the key is `BifrostConfig.SessionAffinity`. Bifrost's own policy is `bifrost.NewSessionAffinity(store, logger)` over a `bifrost.SessionAffinityStore`; when `SessionAffinity` is unset, session affinity is off and Bifrost logs a warning at startup. The shipped policy binds the session to the key selected for its first request, and scopes bindings to the virtual key and user the request's grant identity is attributed to, so a session id reused by another caller does not share them. A custom `SessionAffinity` may keep its state elsewhere and scope it differently.
 </Note>
 
 ```go
@@ -387,7 +387,7 @@ func makeRequest(client *bifrost.Bifrost) {
 | `BifrostContextKeyRequestID` | `string` | Set | Custom request ID for tracking |
 | `BifrostContextKeyFallbackRequestID` | `string` | Read | Request ID used for fallback attempt |
 | `BifrostContextKeySkipKeySelection` | `bool` | Set | Skip key selection entirely |
-| `BifrostContextKeySessionID` | `string` | Set | Session ID for provider and key session affinity (requires KV store) |
+| `BifrostContextKeySessionID` | `string` | Set | Session ID for provider and key session affinity (requires a session store) |
 | `BifrostContextKeySessionTTL` | `time.Duration` | Set | TTL for session bindings (default: 1 hour) |
 | `BifrostContextKeySessionAffinity` | `bool` | Set | Whether the session decides routing for the request (default: true) |
 | `BifrostContextKeyExtraHeaders` | `map[string][]string` | Set | Custom headers forwarded to the provider |

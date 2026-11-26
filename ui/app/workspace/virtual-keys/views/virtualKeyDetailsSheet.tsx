@@ -165,7 +165,7 @@ export default function VirtualKeyDetailSheet({
 
 	return (
 		<Sheet open onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
+			<SheetContent resizeKey="virtual-key-details" className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
 				<SheetHeader
 					className="flex flex-row items-center justify-between px-0 py-4"
 					headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8"

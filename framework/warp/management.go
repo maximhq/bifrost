@@ -604,14 +604,17 @@ func (s *Service) confirmTurn(ctx context.Context, turn *Turn, agent *Agent) []s
 // when the card has expired anyway, so the set holds at most the confirmations
 // of the last few minutes.
 func (s *Service) claimConfirmation(token string, now time.Time) bool {
-	s.usedConfirmations.Range(func(key, value any) bool {
-		if used, _ := value.(time.Time); now.Sub(used) > PendingCallTTL {
-			s.usedConfirmations.Delete(key)
+	var stale []string
+	s.usedConfirmations.Range(func(key string, used time.Time) bool {
+		if now.Sub(used) > PendingCallTTL {
+			stale = append(stale, key)
 		}
 		return true
 	})
-	_, used := s.usedConfirmations.LoadOrStore(token, now)
-	return !used
+	for _, key := range stale {
+		s.usedConfirmations.Delete(key)
+	}
+	return s.usedConfirmations.PutIfAbsent(token, now, 0)
 }
 
 // releaseConfirmation forgets a token whose durable claim failed, so the person

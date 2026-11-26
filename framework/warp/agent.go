@@ -1255,6 +1255,10 @@ func governanceRefusal(err *schemas.BifrostError) (code, message string, refused
 		if err.Type != nil && *err.Type == "access_not_found" {
 			return ErrAccessDenied, "Your account has no model access on this deployment, so Warp could not call its model for you. Ask an administrator to give you access, such as an access profile that allows Warp's model. Governance said: " + errorMessage(err), true
 		}
+		// Its reason asks for an x-bf-vk header, which nobody in the dashboard can send.
+		if err.Type != nil && *err.Type == "virtual_key_required" {
+			return ErrAccessDenied, "This deployment enforces inference authentication, and Warp's model call carried no credential: your dashboard sign-in does not identify a user, and Warp has no virtual key of its own. An administrator can choose one under Virtual key in Settings > Warp. Governance said: " + errorMessage(err), true
+		}
 		code = ErrAccessDenied
 	case schemas.ErrorTypePolicyBudgetExceeded:
 		code = ErrBudgetExceeded

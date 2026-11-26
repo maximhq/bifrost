@@ -240,7 +240,7 @@ func TestExtraHeadersHealthCheckPingReachWire(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := httpExtraHeaderConfig("hc_ping", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	// Drive fast health-check pings (the AddClient-owned monitor ticks far too
 	// slowly for a test).
@@ -268,7 +268,7 @@ func TestExtraHeadersHealthCheckListToolsReachWire(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := httpExtraHeaderConfig("hc_list", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	// isPingAvailable=false → health check uses list_tools as the probe.
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
@@ -292,7 +292,7 @@ func TestExtraHeadersToolCallReachWire(t *testing.T) {
 	manager, bf := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := httpExtraHeaderConfig("call_extra", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	toolCall := schemas.ChatAssistantMessageToolCall{
 		ID: schemas.Ptr("call-1"),
@@ -321,7 +321,7 @@ func TestExtraHeadersSSEHealthCheckPingReachWire(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_hc_ping", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
@@ -347,7 +347,7 @@ func TestExtraHeadersSSEHealthCheckListToolsReachWire(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_hc_list", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
@@ -370,7 +370,7 @@ func TestExtraHeadersSSEToolCallReachWire(t *testing.T) {
 	manager, bf := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_call_extra", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	toolCall := schemas.ChatAssistantMessageToolCall{
 		ID: schemas.Ptr("sse-call-1"),

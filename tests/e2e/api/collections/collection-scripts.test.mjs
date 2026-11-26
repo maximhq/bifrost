@@ -1184,10 +1184,10 @@ function streamExpect(actual, message) {
 const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
 const idleFolder = providerHarness.item.find((f) => f.name.includes("Stream idle timeout excludes consumer processing"));
 assert.ok(idleFolder, "stream idle regression folder missing");
-function runStreamAssertion(index, responseBody, responseCode = 200, responseTime = 3000) {
+function runStreamAssertion(index, responseBody, responseCode = 200, responseTime = 3000, contentType = "text/event-stream") {
   const ctx = sandbox({ responseBody, responseCode });
   ctx.pm.expect = streamExpect;
-  ctx.pm.response.headers = { get: () => "text/event-stream" };
+  ctx.pm.response.headers = { get: (name) => name.toLowerCase() === "content-type" ? contentType : null };
   ctx.pm.response.responseTime = responseTime;
   new Function("pm", listenScript(idleFolder.item[index], "test"))(ctx.pm);
   assert.ok(ctx.state.tests.length > 0, "script registered no assertions");
@@ -1195,11 +1195,20 @@ function runStreamAssertion(index, responseBody, responseCode = 200, responseTim
 }
 
 const idleChunk = (content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
-const idleReceipt = ': bifrost-idle-pause-fixture {"version":1,"pending_reads_during_pause":0,"idle_timeout_ms":1000,"pause_ms":3000,"second_chunk_ready_before_resume":true}\n\n';
-const beforePause = idleChunk("before-pause");
+const idleReceipt = {
+  version: 1,
+  paused_in_provider_post_hook: true,
+  idle_timeout_ms: 1000,
+  pause_ms: 3000,
+  second_chunk_ready_before_resume: true,
+};
+const beforePause = `data: ${JSON.stringify({
+  choices: [{ delta: { content: "before-pause" } }],
+  extra_fields: { raw_response: { stream_idle_pause_fixture: idleReceipt } },
+})}\n\n`;
 const afterPause = idleChunk("after-pause");
 const doneMarker = "data: [DONE]\n\n";
-const completePauseStream = beforePause + afterPause + idleReceipt + doneMarker;
+const completePauseStream = beforePause + afterPause + doneMarker;
 
 test("idle harness accepts both chunks followed by completion", () => {
   for (const separator of ["\n", "\r\n", "\r"]) {
@@ -1212,7 +1221,7 @@ test("idle harness accepts multiline data in a complete content frame", () => {
 });
 test("idle harness rejects an unterminated completion frame", () => {
   for (const tail of ["data: [DONE]", "data: [DONE]\n"]) {
-    assert.strictEqual(runStreamAssertion(0, beforePause + afterPause + idleReceipt + tail), false);
+    assert.strictEqual(runStreamAssertion(0, beforePause + afterPause + tail), false);
   }
 });
 test("idle harness rejects a shortened fixture idle window", () => {
@@ -1222,10 +1231,10 @@ test("idle harness rejects a shortened fixture idle window", () => {
   }
 });
 for (const [name, body] of [
-  ["completion before the second chunk", beforePause + doneMarker + afterPause + idleReceipt],
+  ["completion before the second chunk", beforePause + doneMarker + afterPause],
   ["data after completion", completePauseStream + idleChunk("")],
   ["duplicate completion", completePauseStream + doneMarker],
-  ["missing completion", beforePause + afterPause + idleReceipt],
+  ["missing completion", beforePause + afterPause],
 ]) {
   test(`idle harness rejects ${name}`, () => assert.strictEqual(runStreamAssertion(0, body), false));
 }
@@ -1410,6 +1419,37 @@ test("provider-prefix-registration: wrong provider, unexpected status, and non-J
     assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 3);
   }
 });
+
+// The opt-in Go fixture supplies this URL after starting the gateway and mock
+// provider. Exercise the exact test scripts with the resulting HTTP responses.
+const streamIdleFixtureURL = process.env.BIFROST_STREAM_IDLE_FIXTURE_URL;
+if (streamIdleFixtureURL) {
+  const fixture = new URL(streamIdleFixtureURL);
+  assert.equal(fixture.protocol, "http:");
+  assert.equal(fixture.hostname, "127.0.0.1");
+  for (const [index, row] of idleFolder.item.entries()) {
+    const request = row.request;
+    const url = new URL(request.url.replace("{{baseUrl}}", fixture.origin));
+    assert.equal(url.origin, fixture.origin);
+    const start = performance.now();
+    try {
+      const response = await fetch(url, {
+        method: request.method,
+        headers: request.header.map(({ key, value }) => [key, value]),
+        body: request.body?.raw,
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = await response.text();
+      const elapsed = performance.now() - start;
+      test(`loopback HTTP fixture runs ${row.name}`, () => {
+        assert.ok(runStreamAssertion(index, body, response.status, elapsed, response.headers.get("content-type")), body);
+      });
+    } catch (error) {
+      test(`loopback HTTP fixture runs ${row.name}`, () => { throw error; });
+    }
+  }
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

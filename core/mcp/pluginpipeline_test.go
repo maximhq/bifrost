@@ -57,7 +57,7 @@ func TestRunWithPluginPipeline_ErrorsNameTheClientAndTool(t *testing.T) {
 				config.PluginPipelineProvider = func() interface{} { return tc.pipeline }
 				config.ReleasePluginPipeline = func(interface{}) {}
 			}
-			m := NewMCPManager(context.Background(), config, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), config, newTestAccount(), nil, &MockLogger{}, nil)
 			name := "notes-search"
 			req := &schemas.BifrostMCPRequest{
 				RequestType:                  schemas.MCPRequestTypeChatToolCall,

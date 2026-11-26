@@ -21,6 +21,7 @@ type BifrostGuardrailIntervention struct {
 	Phase             string   `json:"phase,omitempty"`
 	RuleID            *uint    `json:"rule_id,omitempty"`
 	RuleName          string   `json:"rule_name,omitempty"`
+	ProfileID         *uint    `json:"profile_id,omitempty"` // Guardrail profile that matched; GuardrailName is its name.
 	GuardrailName     string   `json:"guardrail_name,omitempty"`
 	GuardrailProvider string   `json:"guardrail_provider,omitempty"`
 	Reason            string   `json:"reason,omitempty"`
@@ -33,6 +34,7 @@ type BifrostGuardrailDetection struct {
 	Phase             string   `json:"phase,omitempty"`
 	RuleID            *uint    `json:"rule_id,omitempty"`
 	RuleName          string   `json:"rule_name,omitempty"`
+	ProfileID         *uint    `json:"profile_id,omitempty"` // Guardrail profile that matched; GuardrailName is its name.
 	GuardrailName     string   `json:"guardrail_name,omitempty"`
 	GuardrailProvider string   `json:"guardrail_provider,omitempty"`
 	Reason            string   `json:"reason,omitempty"`
@@ -57,6 +59,7 @@ type BifrostGuardrailJudgeCall struct {
 	Phase                   string                       `json:"phase,omitempty"`
 	RuleID                  *uint                        `json:"rule_id,omitempty"`
 	RuleName                string                       `json:"rule_name,omitempty"`
+	ProfileID               *uint                        `json:"profile_id,omitempty"` // Guardrail profile that was called; GuardrailName is its name.
 	GuardrailName           string                       `json:"guardrail_name,omitempty"`
 	GuardrailProvider       string                       `json:"guardrail_provider,omitempty"`
 	Action                  string                       `json:"action,omitempty"`
@@ -94,6 +97,7 @@ func (d *BifrostGuardrailMetadata) Clone() *BifrostGuardrailMetadata {
 		for index, call := range d.JudgeCalls {
 			clone.JudgeCalls[index] = call
 			clone.JudgeCalls[index].RuleID = cloneUint(call.RuleID)
+			clone.JudgeCalls[index].ProfileID = cloneUint(call.ProfileID)
 			clone.JudgeCalls[index].PromptTokensDetails = cloneChatPromptTokensDetails(call.PromptTokensDetails)
 			clone.JudgeCalls[index].CompletionTokensDetails = cloneChatCompletionTokensDetails(call.CompletionTokensDetails)
 			clone.JudgeCalls[index].UsageUnits = maps.Clone(call.UsageUnits)
@@ -104,6 +108,7 @@ func (d *BifrostGuardrailMetadata) Clone() *BifrostGuardrailMetadata {
 		for index, detection := range d.Detections {
 			clone.Detections[index] = detection
 			clone.Detections[index].RuleID = cloneUint(detection.RuleID)
+			clone.Detections[index].ProfileID = cloneUint(detection.ProfileID)
 			clone.Detections[index].Assessments = append([]string(nil), detection.Assessments...)
 			if detection.Enforced != nil {
 				clone.Detections[index].Enforced = Ptr(*detection.Enforced)
@@ -115,6 +120,7 @@ func (d *BifrostGuardrailMetadata) Clone() *BifrostGuardrailMetadata {
 		for index, intervention := range d.Interventions {
 			clone.Interventions[index] = intervention
 			clone.Interventions[index].RuleID = cloneUint(intervention.RuleID)
+			clone.Interventions[index].ProfileID = cloneUint(intervention.ProfileID)
 			clone.Interventions[index].Assessments = append([]string(nil), intervention.Assessments...)
 		}
 	}
