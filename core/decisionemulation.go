@@ -16,6 +16,19 @@ import (
 // emit_decision function call nor a JSON-object message body.
 var errDecisionNoContent = errors.New("model returned no decision function call or structured output")
 
+// decisionPathContextKey keys core-internal decision path state on the context.
+type decisionPathContextKey string
+
+// codeModeRankerDecisionKey marks a code mode discovery ranker call. Its path is
+// chosen per attempt in the dispatch, and an emulated answer that does not fit
+// the questions is rejected without echoing it, since the ranker logs the
+// error on a row that must not hold the query or candidate ids.
+const codeModeRankerDecisionKey decisionPathContextKey = "code-mode-ranker-decision"
+
+// rankerUnfitAnswerMessage replaces the parser's error for a ranker call: the
+// parser quotes the model's choices and probability keys.
+const rankerUnfitAnswerMessage = "decision answer was rejected: the answer does not fit the questions"
+
 // decisionSystemPrompt frames the judgment task for an emulating LLM.
 const decisionSystemPrompt = "You are a judgment engine. Read the given state and answer every question by " +
 	"calling the provided function exactly once. For each question emit the requested value and your " +
@@ -50,6 +63,7 @@ func (bifrost *Bifrost) decisionServedNatively(provider schemas.ModelProvider, m
 		(provider == schemas.Azure && (schemas.IsMicrosoftDecisionModel(model) || schemas.DefaultSupportsDecisions(model))) ||
 		(provider == schemas.Databricks && schemas.IsDatabricksDecisionModel(model)) ||
 		(provider == schemas.Baseten && schemas.IsBasetenDecisionModel(model)) ||
+		(provider == schemas.Sarvam && schemas.IsSarvamDecisionModel(model)) ||
 		(provider == schemas.Gemini && schemas.IsGeminiDecisionModel(model))
 	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
 }
@@ -133,12 +147,18 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 
 	argsJSON, extractErr := extractDecisionToolArguments(resp)
 	if extractErr != nil {
-		return nil, providerUtils.NewBifrostOperationError(extractErr.Error(), nil)
+		return nil, unusableDecisionAnswer(extractErr.Error(), resp)
 	}
 
 	answers, parseErr := providerUtils.ParseDecisionAnswers([]byte(argsJSON), req.Questions, names)
 	if parseErr != nil {
-		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
+		message := parseErr.Error()
+		if ctx != nil {
+			if rankerCall, _ := ctx.Value(codeModeRankerDecisionKey).(bool); rankerCall {
+				message = rankerUnfitAnswerMessage
+			}
+		}
+		return nil, unusableDecisionAnswer(message, resp)
 	}
 
 	decision := &schemas.BifrostDecisionResponse{
@@ -163,6 +183,17 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 	decision.ExtraFields.Provider = req.Provider
 	decision.ExtraFields.OriginalModelRequested = req.Model
 	return decision, nil
+}
+
+// unusableDecisionAnswer is the error for an emulating response that answered
+// but cannot be used. The provider billed the call, so its usage rides on the
+// error for governance and the log row.
+func unusableDecisionAnswer(message string, resp *schemas.BifrostResponsesResponse) *schemas.BifrostError {
+	bifrostErr := providerUtils.NewBifrostOperationError(message, nil)
+	if resp != nil && resp.Usage != nil {
+		bifrostErr.ExtraFields.BilledUsage = resp.Usage.ToBifrostLLMUsage()
+	}
+	return bifrostErr
 }
 
 // decisionToolChoice picks the tool_choice that forces the emit_decision call.

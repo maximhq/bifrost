@@ -430,3 +430,64 @@ func TestEmulateDecisionRejectsNonTextInput(t *testing.T) {
 		}
 	}
 }
+
+// An emulating model that answered with something unusable was still billed:
+// the error carries the response's usage, so governance and the log row see
+// the cost of the call.
+func TestEmulateDecisionUnusableAnswerKeepsBilledUsage(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 120, OutputTokens: 30, TotalTokens: 150}
+	refusal := &schemas.BifrostResponsesResponse{Model: "gpt-4o-mini", Usage: usage, Output: []schemas.ResponsesMessage{{
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("I cannot help with that.")},
+	}}}
+	malformed := emulationFunctionCallResponse(`{"approve": {"value": 7, "confidence": 0.8}}`)
+	malformed.Usage = usage
+	for name, resp := range map[string]*schemas.BifrostResponsesResponse{"refusal": refusal, "malformed answer": malformed} {
+		t.Run(name, func(t *testing.T) {
+			provider := &decisionEmulationProvider{response: resp}
+			req := &schemas.BifrostDecisionRequest{
+				Provider:  schemas.OpenAI,
+				Model:     "gpt-4o-mini",
+				Input:     schemas.DecisionInput{Text: schemas.Ptr("Approve the refund?")},
+				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("approve"), Instructions: schemas.NewDecisionText("Approve?")}},
+			}
+			var b Bifrost
+			_, bifrostErr := b.emulateDecisionViaResponses(nil, provider, schemas.Key{}, req)
+			if bifrostErr == nil {
+				t.Fatal("expected the unusable answer to fail")
+			}
+			billed := bifrostErr.ExtraFields.BilledUsage
+			if billed == nil || billed.PromptTokens != 120 || billed.CompletionTokens != 30 || billed.TotalTokens != 150 {
+				t.Fatalf("billed usage = %+v, want the response's 120/30/150 tokens", billed)
+			}
+		})
+	}
+}
+
+// The parser quotes the model's choice in its error. A code mode ranker call
+// logs the error on a row that must not hold anything from the answer, so the
+// ranker gets a fixed reason; any other decision keeps the parser's message.
+func TestEmulateDecisionRankerCallRedactsAnswerErrors(t *testing.T) {
+	args := `{
+		"approve":  {"value": 0.9, "confidence": 0.8},
+		"category": {"choice": "servers/secret/tool.pyi", "confidence": 0.7, "probabilities": {"billing": 0.7, "bug": 0.1, "support": 0.1, "other": 0.1}},
+		"urgency":  {"value": 1, "confidence": 0.6, "probabilities": {"0": 0.1, "1": 0.8, "2": 0.1}}
+	}`
+	var b Bifrost
+	provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(args)}
+
+	ranker := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ranker.SetValue(codeModeRankerDecisionKey, true)
+	_, bifrostErr := b.emulateDecisionViaResponses(ranker, provider, schemas.Key{}, structuredDecisionRequest())
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Message != rankerUnfitAnswerMessage {
+		t.Fatalf("ranker error = %+v, want %q", bifrostErr, rankerUnfitAnswerMessage)
+	}
+	if strings.Contains(bifrostErr.Error.Message, "secret") {
+		t.Fatalf("the ranker error echoes the answer: %q", bifrostErr.Error.Message)
+	}
+
+	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr = b.emulateDecisionViaResponses(plain, provider, schemas.Key{}, structuredDecisionRequest())
+	if bifrostErr == nil || bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "not an allowed option") {
+		t.Fatalf("a non-ranker decision lost the parser's message: %+v", bifrostErr)
+	}
+}

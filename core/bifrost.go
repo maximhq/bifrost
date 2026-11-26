@@ -1744,23 +1744,21 @@ func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schema
 // plugin writes it as its own row from the tool call's PostMCPHook.
 //
 // With the plugin pipeline skipped, the compat plugin cannot mark a model that
-// has no native decisions endpoint for emulation, so the path is chosen here
-// for every call: a native decisions model goes to the provider's decision
-// API, any other model is answered through its Responses API. Configuring a
-// general model as the ranker's decision model is the operator's opt-in.
+// has no native decisions endpoint for emulation, so the path is chosen in the
+// dispatch for every attempt, on the model the attempt's key alias resolved
+// to: a native decisions model goes to the provider's decision API, any other
+// model is answered through its Responses API. Configuring a general model as
+// the ranker's decision model is the operator's opt-in.
 func (bifrost *Bifrost) codeModeDecisionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	PrepareContextForInternalRequest(ctx)
 	// An agent loop marks its tool calls with the route that served its first
 	// turn. The ranker call is not a turn of that conversation: left set, it
 	// would be pinned to the conversation's model instead of the ranker's.
 	ctx.ClearValue(schemas.BifrostContextKeyMCPAgentServedRoute)
-	// Set or cleared on every call: a conversion the caller's own request was
-	// marked with must not decide the ranker call's path.
-	if bifrost.decisionServedNatively(req.Provider, req.Model) {
-		ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
-	} else {
-		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
-	}
+	// The path is chosen per attempt in the dispatch; a conversion the caller's
+	// own request was marked with must not decide it.
+	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
+	ctx.SetValue(codeModeRankerDecisionKey, true)
 	return bifrost.DecisionRequest(ctx, req)
 }
 
@@ -9699,7 +9697,14 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 	case schemas.DecisionRequest:
 		var decisionResponse *schemas.BifrostDecisionResponse
 		var bifrostError *schemas.BifrostError
-		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ResponsesRequest {
+		changeType, _ := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType)
+		emulate := changeType == schemas.ResponsesRequest
+		if rankerCall, _ := req.Context.Value(codeModeRankerDecisionKey).(bool); rankerCall {
+			// The code mode ranker's call skips the compat plugin, so its path is
+			// chosen here, on the model this attempt's key alias resolved to.
+			emulate = !bifrost.decisionServedNatively(provider.GetProviderKey(), schemas.ResolveCanonicalModel(req.Context, req.BifrostRequest.DecisionRequest.Model))
+		}
+		if emulate {
 			// The compat plugin (convert_decision_to_responses) marked this decision for
 			// emulation because the model catalog does not list the model as a native
 			// decisions model: answer it through the model's Responses API (tool calling /

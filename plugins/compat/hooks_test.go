@@ -316,6 +316,8 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "decision model on baseten is native", enabled: true, req: decision(schemas.Baseten, "decision-models/baseten-joey-2b-latest")},
 		{name: "chat model on baseten marked", enabled: true, req: decision(schemas.Baseten, "zai-org/GLM-5.3"), wantConverted: true},
 		{name: "baseten decision model on openai marked", enabled: true, req: decision(schemas.OpenAI, "decision-models/baseten-joey-2b-latest"), wantConverted: true},
+		{name: "prism on sarvam is native", enabled: true, req: decision(schemas.Sarvam, "sarvam-prism")},
+		{name: "chat model on sarvam marked", enabled: true, req: decision(schemas.Sarvam, "sarvam-105b"), wantConverted: true},
 		{name: "decision model on gemini is native", enabled: true, req: decision(schemas.Gemini, "gemini-decision-1")},
 		{name: "chat model on gemini marked", enabled: true, req: decision(schemas.Gemini, "gemini-3-flash"), wantConverted: true},
 		{name: "gemini decision model on vertex marked", enabled: true, req: decision(schemas.Vertex, "gemini-decision-1"), wantConverted: true},

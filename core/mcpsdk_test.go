@@ -947,6 +947,10 @@ func TestDecisionRankerChoosesDecisionPath(t *testing.T) {
 
 	for _, tc := range []struct {
 		name, model string
+		// provider defaults to OpenAI.
+		provider schemas.ModelProvider
+		// aliases are the key's model aliases.
+		aliases schemas.KeyAliases
 		// callerMarked marks the tool call's own request for conversion to Responses.
 		callerMarked bool
 		wantPath     string
@@ -956,16 +960,24 @@ func TestDecisionRankerChoosesDecisionPath(t *testing.T) {
 		{name: "general model is emulated under a marked caller", model: "gpt-5-nano", callerMarked: true, wantPath: "/v1/responses", wantRanked: true},
 		{name: "native decisions model stays native", model: "gpt-6-luna", wantPath: "/v1/decisions"},
 		{name: "native decisions model stays native under a marked caller", model: "gpt-6-luna", callerMarked: true, wantPath: "/v1/decisions"},
+		// The path follows the model the key's alias resolves to, not the alias name.
+		{name: "alias of a native decisions model stays native", model: "ranker", aliases: schemas.KeyAliases{"ranker": {ModelID: "gpt-6-luna"}}, wantPath: "/v1/decisions"},
+		{name: "alias of a general model is emulated", model: "luna", aliases: schemas.KeyAliases{"luna": {ModelID: "gpt-5-nano"}}, wantPath: "/v1/responses", wantRanked: true},
+		{name: "sarvam prism stays native", provider: schemas.Sarvam, model: "sarvam-prism", wantPath: "/v2/systemone"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			mu.Lock()
 			paths = nil
 			mu.Unlock()
+			provider := tc.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
 			account := NewMockAccount()
-			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, upstream.URL)
-			account.configs[schemas.OpenAI].NetworkConfig.AllowPrivateNetwork = true
-			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
-			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1}})
+			account.AddProviderWithBaseURL(provider, 1, 10, upstream.URL)
+			account.configs[provider].NetworkConfig.AllowPrivateNetwork = true
+			account.configs[provider].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(provider, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1, Aliases: tc.aliases}})
 			a := newAlphaServer(t)
 			logger := &warnRecorder{Logger: NewNoOpLogger()}
 			b := newSDKClient(t, schemas.BifrostConfig{Account: account, Logger: logger})
@@ -975,7 +987,7 @@ func TestDecisionRankerChoosesDecisionPath(t *testing.T) {
 				t.Fatalf("AddMCPClient: %v", err)
 			}
 			b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
-				CodeModeDiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "openai/" + tc.model},
+				CodeModeDiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{DecisionModel: string(provider) + "/" + tc.model},
 			})
 
 			ctx := newCtx()
