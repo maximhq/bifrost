@@ -1364,6 +1364,16 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			continue
 		}
 
+		// Claude's client tools (computer, bash, text editor) carry no input_schema:
+		// Bedrock adds the built-in schema itself, and only through InvokeModel. A
+		// ToolSpec built from them reaches the model as a same-named custom tool with
+		// no schema (#9522), so carry them on a marker the same way as tool search.
+		// The marker keeps the whole tool, cache_control included.
+		if clientTool := anthropicClientToolFromMap(toolMap); clientTool != nil {
+			bedrockTools = append(bedrockTools, BedrockTool{AnthropicClientTool: clientTool})
+			continue
+		}
+
 		spec := &BedrockToolSpec{}
 		if name, ok := toolMap["name"].(string); ok {
 			spec.Name = name
@@ -1418,6 +1428,31 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 	}
 
 	return toolConfig
+}
+
+// anthropicClientToolFromMap decodes an inbound tool whose type is one of the
+// Claude client-tool versions the Anthropic converters map to a typed neutral
+// tool. Any other type, or a tool that does not decode, returns nil and keeps
+// the custom-tool conversion.
+func anthropicClientToolFromMap(toolMap map[string]interface{}) *anthropic.AnthropicTool {
+	typeStr, _ := toolMap["type"].(string)
+	switch anthropic.AnthropicToolType(typeStr) {
+	case anthropic.AnthropicToolTypeComputer20250124, anthropic.AnthropicToolTypeComputer20251124,
+		anthropic.AnthropicToolTypeComputerToolset20260801, anthropic.AnthropicToolTypeBash20250124,
+		anthropic.AnthropicToolTypeTextEditor20250124, anthropic.AnthropicToolTypeTextEditor20250429,
+		anthropic.AnthropicToolTypeTextEditor20250728:
+	default:
+		return nil
+	}
+	data, err := providerUtils.MarshalSorted(toolMap)
+	if err != nil {
+		return nil
+	}
+	var tool anthropic.AnthropicTool
+	if err := sonic.Unmarshal(data, &tool); err != nil {
+		return nil
+	}
+	return &tool
 }
 
 // hasAnthropicBetaPrefix reports whether the body's anthropic_beta (a string
@@ -1819,6 +1854,12 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 			result.Content = append(result.Content, res)
 			continue
 		}
+		// The Anthropic decoder turns a computer tool_use into a computer_call, which
+		// carries its input as a typed action rather than Name/Arguments (#9522).
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeComputerCall {
+			result.Content = append(result.Content, invokeComputerToolUseBlocks(&item)...)
+			continue
+		}
 		// Tool use content
 		if item.ResponsesToolMessage != nil {
 			var input interface{}
@@ -1953,6 +1994,27 @@ func invokeThinkingTokens(usage *schemas.ResponsesResponseUsage) (int, bool) {
 		return 0, false
 	}
 	return details.ReasoningTokens, true
+}
+
+// invokeComputerToolUseBlocks rebuilds the computer tool_use blocks, name and
+// input included, from a computer_call output item.
+func invokeComputerToolUseBlocks(item *schemas.ResponsesMessage) []BedrockInvokeMessagesContentBlock {
+	toolUses := anthropic.ConvertBifrostComputerCallToAnthropicToolUse(item)
+	blocks := make([]BedrockInvokeMessagesContentBlock, 0, len(toolUses))
+	for _, toolUse := range toolUses {
+		block := BedrockInvokeMessagesContentBlock{Type: "tool_use", Input: map[string]interface{}{}}
+		if toolUse.ID != nil {
+			block.ID = *toolUse.ID
+		}
+		if toolUse.Name != nil {
+			block.Name = *toolUse.Name
+		}
+		if len(toolUse.Input) > 0 {
+			block.Input = toolUse.Input
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
 }
 
 // toBedrockInvokeAI21Response converts BifrostResponsesResponse to AI21 Jamba format.
@@ -2220,6 +2282,38 @@ func invokeGuardrailIntervened(resp *schemas.BifrostResponsesResponse) bool {
 // the Anthropic Messages API streaming event JSON, suitable for wrapping in InvokeModelRawChunks.
 // Returns a slice of byte slices since some Bifrost events map to multiple Anthropic events
 // (e.g., Completed → message_delta + message_stop).
+// invokeComputerToolUseStreamEvents emits a finished computer_call as the
+// content_block_start / input_json_delta / content_block_stop sequence Anthropic
+// streams for a computer tool_use, at the block index the call arrived on.
+func invokeComputerToolUseStreamEvents(ctx *schemas.BifrostContext, item *schemas.ResponsesMessage, idx int) ([][]byte, error) {
+	blocks := invokeComputerToolUseBlocks(item)
+	if len(blocks) == 0 {
+		return nil, nil
+	}
+	getOrCreateBedrockInvokeStreamState(ctx).markToolUse()
+	events := make([][]byte, 0, 3*len(blocks))
+	for i, block := range blocks {
+		input := block.Input
+		block.Input = map[string]interface{}{}
+		partial, err := providerUtils.MarshalSorted(input)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal computer tool input: %w", err)
+		}
+		for _, event := range []map[string]interface{}{
+			{"type": "content_block_start", "index": idx + i, "content_block": block},
+			{"type": "content_block_delta", "index": idx + i, "delta": map[string]interface{}{"type": "input_json_delta", "partial_json": string(partial)}},
+			{"type": "content_block_stop", "index": idx + i},
+		} {
+			eventBytes, err := providerUtils.MarshalSorted(event)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal computer tool event: %w", err)
+			}
+			events = append(events, eventBytes)
+		}
+	}
+	return events, nil
+}
+
 func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) ([][]byte, error) {
 	var event interface{}
 
@@ -2284,6 +2378,11 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 		return nil, nil
 
 	case schemas.ResponsesStreamResponseTypeOutputItemAdded:
+		if resp.Item != nil && resp.Item.Type != nil && *resp.Item.Type == schemas.ResponsesMessageTypeComputerCall {
+			// A computer call's action only arrives on output_item.done; its whole
+			// tool_use block is emitted there.
+			return nil, nil
+		}
 		if resp.Item != nil && resp.Item.ResponsesToolMessage != nil {
 			// content_block_start for tool_use
 			idx := 0
@@ -2432,6 +2531,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 		idx := 0
 		if resp.ContentIndex != nil {
 			idx = *resp.ContentIndex
+		}
+		if resp.Item != nil && resp.Item.Type != nil && *resp.Item.Type == schemas.ResponsesMessageTypeComputerCall {
+			return invokeComputerToolUseStreamEvents(ctx, resp.Item, idx)
 		}
 		// A tool_search_call's done event carries the tool_search_tool_result index, one
 		// past the server_tool_use its added event opened, so close the opened block.

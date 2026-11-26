@@ -1411,12 +1411,14 @@ func isMantleGPTOSSResponses(ctx *schemas.BifrostContext, provider schemas.Model
 // as input_text. Mantle /v1 strips id, status and annotations from assistant items before
 // validating, so output_text history matches no input variant and the turn fails (#7074).
 // openAIComputerAction replaces what OpenAI's computer actions lack: zoom becomes a
-// screenshot and the region goes. It reports whether anything changed.
+// screenshot, and the region and Anthropic's wait duration go. It reports whether
+// anything changed.
 func openAIComputerAction(action schemas.ResponsesComputerToolCallAction) (schemas.ResponsesComputerToolCallAction, bool) {
-	if action.Type != "zoom" && action.Region == nil {
+	if action.Type != "zoom" && action.Region == nil && action.Duration == nil {
 		return action, false
 	}
 	action.Region = nil
+	action.Duration = nil
 	if action.Type == "zoom" {
 		action.Type = "screenshot"
 	}
@@ -1564,13 +1566,14 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 			strings.HasPrefix(string(tool.Type), schemas.ResponsesToolTypeOpenRouterPrefix)
 		if isOpenAISupportedToolType(tool.Type, baseProvider) || isOpenRouterServerTool {
 			// check for computer use preview
-			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil && tool.ResponsesToolComputerUsePreview.EnableZoom != nil {
+			if tool.Type == schemas.ResponsesToolTypeComputerUsePreview && tool.ResponsesToolComputerUsePreview != nil &&
+				(tool.ResponsesToolComputerUsePreview.EnableZoom != nil || tool.ResponsesToolComputerUsePreview.DisplayNumber != nil) {
 				newTool := *tool
 				newComputerUse := &schemas.ResponsesToolComputerUsePreview{
 					DisplayHeight: tool.ResponsesToolComputerUsePreview.DisplayHeight,
 					DisplayWidth:  tool.ResponsesToolComputerUsePreview.DisplayWidth,
 					Environment:   tool.ResponsesToolComputerUsePreview.Environment,
-					// EnableZoom is intentionally omitted (nil) - OpenAI doesn't support it
+					// EnableZoom and DisplayNumber are intentionally omitted (nil) - OpenAI doesn't support them
 				}
 				newTool.ResponsesToolComputerUsePreview = newComputerUse
 				filteredTools = append(filteredTools, newTool)

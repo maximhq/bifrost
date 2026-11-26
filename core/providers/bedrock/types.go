@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -455,6 +456,7 @@ type BedrockTool struct {
 	// InvokeModel — so this is json:"-" and never reaches a Converse request body.
 	// It exists purely so the egress predicate can see the signal (#7155).
 	AnthropicToolSearch *BedrockAnthropicToolSearch `json:"-"`
+	AnthropicClientTool *anthropic.AnthropicTool    `json:"-"` // invoke-ingress computer/bash/text_editor tool (#9522), InvokeModel-only like AnthropicToolSearch
 }
 
 // BedrockAnthropicToolSearch is the inbound tool_search_tool_* entry, preserved

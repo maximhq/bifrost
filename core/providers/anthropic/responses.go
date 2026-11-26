@@ -8982,6 +8982,13 @@ func convertBifrostItemReferenceToAnthropicMessage(msg *schemas.ResponsesMessage
 
 // convertBifrostComputerCallToAnthropicToolUse converts a Bifrost computer call to Anthropic tool use blocks, one per action.
 // Earlier actions of a batched call get suffixed ids; the last keeps the call id so the screenshot output pairs with it.
+// ConvertBifrostComputerCallToAnthropicToolUse rebuilds the computer tool_use
+// blocks of a computer_call, for Anthropic-shaped egresses outside this package
+// (the Bedrock InvokeModel egress).
+func ConvertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
+	return convertBifrostComputerCallToAnthropicToolUse(msg)
+}
+
 func convertBifrostComputerCallToAnthropicToolUse(msg *schemas.ResponsesMessage) []AnthropicContentBlock {
 	if msg.ResponsesToolMessage == nil {
 		return nil
@@ -10222,6 +10229,15 @@ func convertBifrostToolOutputToAnthropicMessage(msg *schemas.ResponsesMessage) *
 		}
 	}
 	return nil
+}
+
+// ConvertAnthropicToolToBifrost maps one Anthropic tool definition, flags
+// included, to the neutral Responses tool the way the /v1/messages ingress does,
+// for ingresses outside this package (the Bedrock InvokeModel ingress).
+func ConvertAnthropicToolToBifrost(tool *AnthropicTool) *schemas.ResponsesTool {
+	bifrostTool := convertAnthropicToolToBifrost(tool)
+	applyAnthropicToolFlagsToResponsesTool(tool, bifrostTool)
+	return bifrostTool
 }
 
 // convertAnthropicToolToBifrost converts AnthropicTool to schemas.Tool
@@ -11576,13 +11592,17 @@ func convertResponsesToAnthropicComputerTool(caps schemas.ModelCaps, tool *schem
 	if generation == ComputerUseGen20251124 {
 		computerToolType = AnthropicToolTypeComputer20251124
 	}
+	displayNumber := schemas.Ptr(1)
+	if preview.DisplayNumber != nil {
+		displayNumber = preview.DisplayNumber
+	}
 	return &AnthropicTool{
 		Type: schemas.Ptr(computerToolType),
 		Name: string(AnthropicToolNameComputer),
 		AnthropicToolComputerUse: &AnthropicToolComputerUse{
 			DisplayWidthPx:  schemas.Ptr(preview.DisplayWidth),
 			DisplayHeightPx: schemas.Ptr(preview.DisplayHeight),
-			DisplayNumber:   schemas.Ptr(1),
+			DisplayNumber:   displayNumber,
 			EnableZoom:      preview.EnableZoom,
 		},
 	}
@@ -11609,6 +11629,7 @@ func convertAnthropicToResponsesComputerTool(tool *AnthropicTool) *schemas.Respo
 		if tool.AnthropicToolComputerUse.EnableZoom != nil {
 			bifrostTool.ResponsesToolComputerUsePreview.EnableZoom = tool.AnthropicToolComputerUse.EnableZoom
 		}
+		bifrostTool.ResponsesToolComputerUsePreview.DisplayNumber = tool.AnthropicToolComputerUse.DisplayNumber
 	}
 	return bifrostTool
 }
@@ -11722,6 +11743,9 @@ func convertResponsesToAnthropicComputerAction(action *schemas.ResponsesComputer
 	case "wait":
 		actionStr = "wait"
 		input["duration"] = 2
+		if action.Duration != nil {
+			input["duration"] = *action.Duration
+		}
 
 	case "zoom":
 		actionStr = "zoom"
@@ -11832,6 +11856,9 @@ func convertAnthropicToResponsesComputerAction(inputMap map[string]interface{}) 
 
 	case "wait":
 		action.Type = "wait"
+		if duration, ok := inputMap["duration"].(float64); ok {
+			action.Duration = schemas.Ptr(duration)
+		}
 
 	case "zoom":
 		action.Type = "zoom"
