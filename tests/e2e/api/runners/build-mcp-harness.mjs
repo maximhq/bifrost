@@ -2940,6 +2940,44 @@ const INF52 = folder("INF-52 getToolDocs", `Setup: ${CM_TEXT}.`, [
   cmTeardown("INF-52"),
 ]);
 
+// INF-83: readToolFile and getToolDocs accept the spellings a model writes, a miss names the servers only,
+// and a tool path names its server. cm2 serves the same tools as cm, so a lookup that dropped the server
+// from a tool path would answer with a same-named tool's docs.
+const INF83_MISS = (binding) => A.custom("the miss lists cm and cm2 as servers and no tool file", [
+  "var c = pm.response.json().content;",
+  "var line = c.split('\\n')[0];",
+  "pm.expect(line, 'body: ' + pm.response.text()).to.match(/^No server found matching 'nope'\\. Available servers: /);",
+  "var names = line.replace(/^No server found matching 'nope'\\. Available servers: /, '').split(', ');",
+  "pm.expect(names).to.include('cm');",
+  "pm.expect(names).to.include('cm2');",
+  `pm.expect(c.split('\\n')[1]).to.equal(${lit(binding === "tool" ? "Use servers/<server>/<tool>.pyi as listed by listToolFiles." : "Use servers/<server>.pyi as listed by listToolFiles.")});`,
+  "pm.expect(c).to.not.include('echo');",
+  "pm.expect(c).to.not.include('def ');",
+]);
+const INF83 = folder("INF-83 Code mode VFS path spellings", `Setup: ${CM_TEXT}; cm2 (echo, add) registered as a second code-mode client the same way. The tool spellings are then read again with mcp_code_mode_binding_level "tool".`, [
+  ...cmSetup("INF-83"),
+  ...freshServer("INF-83", "cm2", ["echo", "add"]),
+  createClient("INF-83", httpClient("inf-83-cm2", "cm2", "cm2", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register cm2 as a code-mode client"),
+  ...["cm.echo()", "cm.echo", "/servers/cm/echo.pyi", "./Servers/cm/echo.pyi", "SERVERS/cm/echo.py", "servers/cm/echo.pyi()"].map((fileName) =>
+    meta("INF-83", `readToolFile ${fileName}`, "readToolFile", { fileName }, [A.status(200), noIsError(), contentHas("# cm.echo tool"), contentHas("def echo(")])),
+  ...["/servers/cm.pyi", "./Servers/cm.py", "cm"].map((fileName) =>
+    meta("INF-83", `readToolFile ${fileName}`, "readToolFile", { fileName }, [A.status(200), noIsError(), contentHas("# cm server tools")])),
+  meta("INF-83", "readToolFile servers/nope.pyi", "readToolFile", { fileName: "servers/nope.pyi" }, [A.status(200), isError(), INF83_MISS("server")]),
+  meta("INF-83", "getToolDocs servers/cm.pyi, servers/cm/echo.pyi", "getToolDocs", { server: "servers/cm.pyi", tool: "servers/cm/echo.pyi" }, [A.status(200), noIsError(), contentHas("# Documentation for cm.echo tool"), contentHas("def echo(")]),
+  meta("INF-83", "getToolDocs cm, cm.echo()", "getToolDocs", { server: "cm", tool: "cm.echo()" }, [A.status(200), noIsError(), contentHas("# Documentation for cm.echo tool")]),
+  meta("INF-83", "getToolDocs cm, echo.pyi", "getToolDocs", { server: "cm", tool: "echo.pyi" }, [A.status(200), noIsError(), contentHas("# Documentation for cm.echo tool")]),
+  meta("INF-83", "getToolDocs cm, servers/cm2/echo.pyi", "getToolDocs", { server: "cm", tool: "servers/cm2/echo.pyi" }, [A.status(200), isError(), contentHas("Tool 'servers/cm2/echo.pyi' not found in server 'cm'"), A.custom("no docs from cm2", ["pm.expect(pm.response.json().content, 'body: ' + pm.response.text()).to.not.include('# Documentation for');"])]),
+  meta("INF-83", "control: getToolDocs cm2, servers/cm2/echo.pyi", "getToolDocs", { server: "cm2", tool: "servers/cm2/echo.pyi" }, [A.status(200), noIsError(), contentHas("# Documentation for cm2.echo tool")]),
+  readConfig("INF-83"),
+  putConfig("INF-83", "setup: set mcp_code_mode_binding_level \"tool\"", ["cc.mcp_code_mode_binding_level = 'tool';"], [A.status(200)]),
+  ...["cm.echo()", "servers/cm/echo.py", "/Servers/cm/echo.pyi"].map((fileName) =>
+    meta("INF-83", `tool binding: readToolFile ${fileName}`, "readToolFile", { fileName }, [A.status(200), noIsError(), contentHas("# cm.echo tool"), contentHas("def echo(")])),
+  meta("INF-83", "tool binding: readToolFile servers/nope/echo.pyi", "readToolFile", { fileName: "servers/nope/echo.pyi" }, [A.status(200), isError(), INF83_MISS("tool")]),
+  restoreConfig("INF-83"),
+  deleteClient("INF-83", "inf-83-cm2"),
+  cmTeardown("INF-83"),
+]);
+
 const INF53 = folder("INF-53 executeToolCode reply shapes", `Setup: ${CM_TEXT}.`, [
   ...cmSetup("INF-53"),
   code("INF-53", "result = 6*7", "result = 6*7", [A.status(200), contentEquals("Execution completed successfully.\nReturn value: 42"), noIsError()]),
@@ -13589,7 +13627,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF83, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
