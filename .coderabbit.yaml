@@ -247,6 +247,64 @@ reviews:
         miss or replay, cache_debug or the x-bifrost-cache-* headers. It belongs in
         tests/e2e/api/runners/build-semantic-cache-wiring.mjs. A case that only names cache_debug among other log fields is
         not a cache case.
+    - path: "{plugins/routing/**,framework/routing/**,framework/modelcatalog/**,plugins/modelcatalogresolver/**,plugins/governance/{main,resolver,store,permitview}.go,core/keyselectors/**,core/sessionaffinity.go,core/bifrost.go,core/utils.go,core/failureclass.go,core/schemas/account.go,framework/configstore/{complexity*,modelrouter*}.go,framework/configstore/tables/{routingrules,modelrouter,modelroutertarget}.go,framework/livestore/registry/{routingrules,modelrouters}.go,transports/bifrost-http/handlers/{routing,modelrouters,modelrouterclassify,complexitysuggestions,providers,provider_keys,governance}.go,transports/bifrost-http/lib/{ctx,responseheaders,config}.go}"
+      instructions: |
+        Rule: Every routing change ships with routing harness cases (AGENTS.md "Every routing change ships with routing
+        harness cases", skill .claude/skills/routing-harness/SKILL.md).
+
+        Review only behaviour the PR adds or changes, and only when it changes how a request is routed in a way a client can
+        observe (routing rules, model routers and the complexity router, the model catalog and key aliases, a model named
+        without a provider, virtual key provider configs and governance load balancing, key selection and key pins, direct
+        keys, session affinity, fallbacks and retries, extra_fields.routing_info, the x-bifrost-routing-info-* headers, the
+        routing log trail). Check that the PR adds or updates scenarios in tests/e2e/api/runners/build-routing-wiring.mjs
+        (and build-model-catalog-wiring.mjs for catalog reads) covering what the skill's section 3 lists for that kind of
+        change:
+        - Routing rule: a match and a no-match for each CEL input it reads; each scope that can hold it and the order between
+          scopes; priority; each target shape (provider and model, model only, a key pin, weights, a first-token cutoff);
+          its fallbacks replacing the caller's, one the virtual key refuses and one whose provider was deleted; chains;
+          created, edited, disabled and deleted between requests; an invalid CEL refused with 400.
+        - Model router or complexity router: each classifier picking each tier and its fallback chain; tier targets and
+          fallbacks; a router after a rule; complexity_tier in a rule; the request types that classify.
+        - Catalog and aliases: provider and key mutations reaching /api/models and /api/models/details and the next route;
+          exact, case-insensitive and regex aliases; a bare model resolved through the catalog, with its inferred fallbacks.
+        - Virtual key routing: weighted, zero and allow-list-only configs; allowed and blacklisted models; a candidate that
+          cannot serve skipped at any weight; a caller-named provider skipping the balancing; budgets and rate limits; each
+          refusal's exact status and message.
+        - Key selection, pins and direct keys: a pool of keys and each error when none is left; pins by ID and by name; a
+          rule's pin over the caller's; a direct key with the server setting on and off.
+        - Session affinity: the session headers and TTL; the route and key bindings; a caller-named provider or caller key
+          pin blocking the move; what binds and what is dropped.
+        - Fallbacks and retries: every fallback source; tried in order; an exhausted chain returning the primary's error and
+          headers; a 429, a 5xx, a dropped connection and a refused key.
+        Flag:
+        - New routing cases added to tests/e2e/api/collections/provider-harness.json instead of the routing harness. Updates
+          to its existing routing folders are fine.
+        - Scenarios that cover one scope, config, fallback source or entry point when the change reaches more, unless the PR
+          says why the others are out of reach.
+        - A case left out because the generator has no step for it: the generator is extended in the same PR.
+        - Missing Go unit tests for the logic itself.
+        - A new value on an axis (an entry point, routing header, rule scope, CEL input, target field, fallback source,
+          classifier, key field, routing_info field, provider) whose scenarios were added without also adding it to the
+          existing scenarios that enumerate that axis, or without updating the skill's sections 2 and 3 (skill section 6).
+        Exempt: changes with no observable effect (comments, renames, log lines); the PR should say so.
+    - path: "tests/e2e/api/{runners/build-routing-wiring.mjs,runners/build-model-catalog-wiring.mjs,runners/lib/collection-builder.mjs,runners/individual/run-newman-routing-wiring-tests.sh,runners/individual/run-newman-model-catalog-wiring-tests.sh,collections/bifrost-routing-wiring.postman_collection.json,collections/bifrost-model-catalog-wiring.postman_collection.json}"
+      instructions: |
+        Routing harness conventions (.claude/skills/routing-harness/SKILL.md section 4):
+        - The collections are generated by runners/build-routing-wiring.mjs and runners/build-model-catalog-wiring.mjs. Flag
+          a change to a collection JSON without the matching generator change, and a generator change whose regenerated
+          collection is not committed.
+        - A scenario has a unique kebab-case id and a title that names what it proves; renaming a title that
+          collections/collection-scripts.test.mjs looks up needs that test updated.
+        - Routing requests are sent once and judged once; only catalog, log, trail and pricing reads poll. A new step that
+          sends inference joins inferenceSteps, and a new step that creates something adds its delete to the generated
+          teardown.
+        - Everything a scenario creates is run-scoped through {{run_id}}, except a standard provider (Azure, Bedrock and Vertex
+          always, or providerKind "standard"), which keeps its fixed name on the clean server the runner boots. A model a
+          rule's CEL matches is a run-scoped alias. Keys stay env.<NAME> references.
+        - Assertions are exact: status, message, error type, provider and key. Distributions assert membership, never exact
+          splits. Flag a script that returns early on an error status, and a case that expects a 500.
+        - A new step type comes with a test in collections/collection-scripts.test.mjs when its script logic is easy to get
+          wrong.
     - path: "core/**"
       instructions: |
         Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
@@ -303,6 +361,7 @@ knowledge_base:
       - ".claude/skills/live-store/SKILL.md"
       - ".claude/skills/mcp-harness/SKILL.md"
       - ".claude/skills/semantic-cache-wiring/SKILL.md"
+      - ".claude/skills/routing-harness/SKILL.md"
 
 chat:
   auto_reply: true
