@@ -1533,6 +1533,9 @@ false
 {{- end }}
 {{- end }}
 {{- $_ := set $vectorStore "config" $chromemConfig }}
+{{- else if eq .Values.vectorStore.type "pgvector" }}
+{{- /* pgvector has no settings: it keeps its tables in the logs store's Postgres database */ -}}
+{{- $_ := set $vectorStore "config" dict }}
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
 {{- end }}
@@ -2814,6 +2817,14 @@ Call this template at the beginning of deployment/stateful templates
 {{- if not .Values.vectorStore.qdrant.external.host }}
 {{- fail "ERROR: vectorStore.qdrant.external.host is required when using external Qdrant." }}
 {{- end }}
+{{- end }}
+{{- end }}
+
+{{/* pgvector keeps its vectors in the logs store's database, so that store must be Postgres */}}
+{{- if and .Values.vectorStore.enabled (eq .Values.vectorStore.type "pgvector") }}
+{{- $logsStoreType := .Values.storage.logsStore.type | default .Values.storage.mode }}
+{{- if or (not .Values.storage.logsStore.enabled) (ne $logsStoreType "postgres") }}
+{{- fail "ERROR: vectorStore.type pgvector keeps its vectors in the logs store's database, so it requires storage.logsStore.enabled=true with a postgres logs store (storage.logsStore.type or storage.mode set to postgres)." }}
 {{- end }}
 {{- end }}
 

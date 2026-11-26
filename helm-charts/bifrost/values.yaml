@@ -1420,7 +1420,7 @@ bifrost:
       #                                      #                   and one pod embeds on a config change while the rest adopt what it wrote.
       #                                      #                   Falls back to embedded when no vectorStore is configured (reported as
       #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
-      #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
+      #                                      #                   Qdrant, Weaviate, Redis, Pinecone and pgvector are all supported here; chromem is
       #                                      #                   node-local even with a path, so it is private per pod.
       #   fallback: "none"                 # none (default) | llm (requires llm below) | decision (uses the decision block); runs when semantic produces no tier
       # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
@@ -2358,6 +2358,14 @@ postgresql:
     passwordKey: "password"
 
   # PostgreSQL image configuration
+  # The default postgres:16-alpine image does not include pgvector. To use vectorStore.type
+  # pgvector with the bundled PostgreSQL, set repository: pgvector/pgvector and
+  # tag: "0.8.0-pg16" on a NEW install. Switching an existing install changes the C library
+  # (alpine musl -> debian glibc) and with it text collation, which silently corrupts existing
+  # text indexes. Stop Bifrost and every other database client before the switch, run
+  # REINDEX DATABASE, and start them only after it succeeds; a helm upgrade restores
+  # replicaCount, so switch with kubectl first (see "pgvector" in the README). Or use an
+  # external PostgreSQL.
   image:
     repository: postgres
     tag: "16-alpine"
@@ -2415,7 +2423,7 @@ postgresql:
 vectorStore:
   # Enable vector store for semantic caching and semantic complexity routing
   enabled: false
-  type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem
+  type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem, pgvector
 
   # Weaviate configuration
   weaviate:
@@ -2647,6 +2655,13 @@ vectorStore:
   chromem:
     path: ""       # Directory for file persistence; empty keeps an in-memory store that re-populates on restart
     compress: false # Gzip-compress persisted documents (only used when path is set)
+
+  # pgvector (type: pgvector) has no settings of its own. It keeps its tables in the logs
+  # store's Postgres database and shares that connection pool, so it requires
+  # storage.logsStore.enabled=true with a postgres logs store. The database needs the pgvector
+  # extension, 0.8.0 or later; Bifrost runs CREATE EXTENSION when its user may.
+  # Managed Postgres (RDS, Cloud SQL, Azure, Supabase, ...) ships the extension. The bundled
+  # postgres:16-alpine image does not; see postgresql.image below to opt in.
 
 # Environment variables
 env: []
