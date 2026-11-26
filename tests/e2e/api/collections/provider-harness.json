@@ -20423,6 +20423,50 @@
               }
             },
             {
+              "name": "[EXPECT-400] Bedrock Responses unknown tool_choice pin - pin names tool never sent",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// Regression for #9797/#9811: a tool_choice pin naming a tool the client never",
+                      "// sent must be rejected with 400 before any provider dispatch. The error must",
+                      "// name the raw pin (not an aliased name) so the caller can match it.",
+                      "pm.test('unknown tool_choice pin rejected with 400', function () {",
+                      "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                      "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('nonexistent_tool');",
+                      "  pm.expect(pm.response.text(), 'failed: ' + pm.response.text()).to.include('is not defined in tools');",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": [{\"role\":\"user\",\"content\":\"What's the weather?\"}],\n  \"tools\": [{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\n  \"tool_choice\": {\"type\":\"function\",\"name\":\"nonexistent_tool\"},\n  \"max_output_tokens\": 500\n}"
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/v1/responses",
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "v1",
+                    "responses"
+                  ]
+                }
+              }
+            },
+            {
               "name": "Cross-cut: structured output Anthropic",
               "event": [
                 {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -1293,6 +1294,148 @@ func TestToBedrockResponsesRequest_ValidPinHonoured(t *testing.T) {
 	}
 	if bedrockReq.ToolConfig.ToolChoice.Tool.Name != "get_weather" {
 		t.Errorf("expected ToolChoice.Tool.Name=get_weather, got %q", bedrockReq.ToolConfig.ToolChoice.Tool.Name)
+	}
+}
+
+// TestToBedrockResponsesRequest_AnthropicRoute_WebSearchPinSilentDrop tests
+// the Anthropic /v1/messages route where web_search_20250305 arrives without
+// a Name field. The pin on "web_search" must be silently dropped (not 400).
+func TestToBedrockResponsesRequest_AnthropicRoute_WebSearchPinSilentDrop(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	webSearchType := anthropic.AnthropicToolTypeWebSearch20250305
+	toolType := anthropic.AnthropicToolTypeCustom
+	toolChoiceType := "tool"
+
+	anthropicReq := &anthropic.AnthropicMessageRequest{
+		Model: "global.anthropic.claude-sonnet-4-6",
+		Messages: []anthropic.AnthropicMessage{
+			{Role: "user", Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("What's the weather?")}},
+		},
+		Tools: []anthropic.AnthropicTool{
+			{Type: &toolType, Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			{Type: &webSearchType, Name: "web_search"},
+		},
+		ToolChoice: &anthropic.AnthropicToolChoice{
+			Type: toolChoiceType,
+			Name: "web_search",
+		},
+		MaxTokens: 1024,
+	}
+
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	// Verify the Anthropic converter drops the Name for web_search
+	foundWebSearch := false
+	for _, tool := range bifrostReq.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeWebSearch {
+			foundWebSearch = true
+			if tool.Name != nil {
+				t.Fatalf("expected web_search tool to have nil Name from Anthropic converter, got %q", *tool.Name)
+			}
+		}
+	}
+	if !foundWebSearch {
+		t.Fatalf("expected web_search tool in converted request")
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("expected no error for web_search pin (silent drop), got %v", err)
+	}
+	if bedrockReq.ToolConfig != nil && bedrockReq.ToolConfig.ToolChoice != nil {
+		t.Errorf("expected silent drop of web_search pin, got ToolChoice=%+v", bedrockReq.ToolConfig.ToolChoice)
+	}
+}
+
+// TestToBedrockResponsesRequest_AnthropicRoute_BashPinSilentDrop tests the
+// Anthropic route where bash_20250124 arrives without a Name field. The pin
+// on "bash" must be silently dropped (not 400).
+func TestToBedrockResponsesRequest_AnthropicRoute_BashPinSilentDrop(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bashType := anthropic.AnthropicToolTypeBash20250124
+	toolType := anthropic.AnthropicToolTypeCustom
+	toolChoiceType := "tool"
+
+	anthropicReq := &anthropic.AnthropicMessageRequest{
+		Model: "global.anthropic.claude-sonnet-4-6",
+		Messages: []anthropic.AnthropicMessage{
+			{Role: "user", Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("Run ls")}},
+		},
+		Tools: []anthropic.AnthropicTool{
+			{Type: &toolType, Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			{Type: &bashType, Name: "bash"},
+		},
+		ToolChoice: &anthropic.AnthropicToolChoice{
+			Type: toolChoiceType,
+			Name: "bash",
+		},
+		MaxTokens: 1024,
+	}
+
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	// Verify the Anthropic converter drops the Name for bash
+	foundBash := false
+	for _, tool := range bifrostReq.Params.Tools {
+		if tool.Type == schemas.ResponsesToolTypeLocalShell {
+			foundBash = true
+			if tool.Name != nil {
+				t.Fatalf("expected bash tool to have nil Name from Anthropic converter, got %q", *tool.Name)
+			}
+		}
+	}
+	if !foundBash {
+		t.Fatalf("expected bash tool in converted request")
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("expected no error for bash pin (silent drop), got %v", err)
+	}
+	if bedrockReq.ToolConfig != nil && bedrockReq.ToolConfig.ToolChoice != nil {
+		t.Errorf("expected silent drop of bash pin, got ToolChoice=%+v", bedrockReq.ToolConfig.ToolChoice)
+	}
+}
+
+// TestToBedrockResponsesRequest_AnthropicRoute_UnknownPinRejected tests that
+// an unknown pin on the Anthropic route (where all sent tools have names)
+// is rejected with a 400 naming the raw pin.
+func TestToBedrockResponsesRequest_AnthropicRoute_UnknownPinRejected(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	toolType := anthropic.AnthropicToolTypeCustom
+	toolChoiceType := "tool"
+
+	anthropicReq := &anthropic.AnthropicMessageRequest{
+		Model: "global.anthropic.claude-sonnet-4-6",
+		Messages: []anthropic.AnthropicMessage{
+			{Role: "user", Content: anthropic.AnthropicContent{ContentStr: schemas.Ptr("What's the weather?")}},
+		},
+		Tools: []anthropic.AnthropicTool{
+			{Type: &toolType, Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+			{Type: &toolType, Name: "get_time", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}},
+		},
+		ToolChoice: &anthropic.AnthropicToolChoice{
+			Type: toolChoiceType,
+			Name: "nonexistent_tool",
+		},
+		MaxTokens: 1024,
+	}
+
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	// All tools should have names
+	for _, tool := range bifrostReq.Params.Tools {
+		if tool.Name == nil {
+			t.Fatalf("expected all function tools to have names, got nil for %s", tool.Type)
+		}
+	}
+
+	_, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err == nil {
+		t.Fatalf("expected error for unknown tool_choice pin, got nil")
+	}
+	if _, ok := providerUtils.AsBifrostBadRequestError(err); !ok {
+		t.Errorf("expected a 400 invalid-request error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent_tool") || !strings.Contains(err.Error(), "is not defined in tools") {
+		t.Errorf("expected error to name the unknown tool, got %v", err)
 	}
 }
 
