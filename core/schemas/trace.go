@@ -1253,7 +1253,9 @@ const (
 	AttrBifrostRelayBillable           = "bifrost.relay.billable"
 	AttrBifrostRelayCounted            = "bifrost.relay.counted" // the call was priced and charged
 	AttrBifrostRelayStreamed           = "bifrost.relay.streamed"
-	AttrBifrostRelayCost               = "bifrost.relay.cost" // USD charged for the call
+	AttrBifrostRelayCost               = "bifrost.relay.cost"           // USD charged for the call
+	AttrBifrostRelayJobSettlement      = "bifrost.relay.job.settlement" // the span carries a settled async job's charge, not a call
+	AttrBifrostRelayJobID              = "bifrost.relay.job.id"
 	AttrBifrostRelayBytesOut           = "bifrost.relay.bytes_out"
 	AttrBifrostRelayUpstreamDurationMs = "bifrost.relay.upstream.duration_ms" // time blocked on the upstream socket
 	AttrBifrostRelayDurationMs         = "bifrost.relay.duration_ms"          // the whole call, pre-hooks to the end of the reply
