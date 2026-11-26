@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"math"
 	"sort"
 	"strings"
@@ -145,6 +144,15 @@ func sortedStringSet(values []string) []string {
 func putIfSet[T any](m map[string]any, key string, v *T) {
 	if v != nil {
 		m[key] = *v
+	}
+}
+
+// copyExtraParams adds provider-specific params under their own key, so a
+// request field can never collide with a key the plugin derives itself
+// (stream, attachments or any *_hash) and stand in for it.
+func copyExtraParams(metadata map[string]any, extraParams map[string]any) {
+	if len(extraParams) > 0 {
+		metadata["extra_params"] = extraParams
 	}
 }
 
@@ -1029,10 +1037,32 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	putIfSet(metadata, "logit_bias", params.LogitBias)
 	putIfSet(metadata, "logprobs", params.LogProbs)
 	putSortedSetIfNonEmpty(metadata, "modalities", params.Modalities)
+	putIfSet(metadata, "audio", params.Audio)
+	putIfSet(metadata, "n", params.N)
+	putIfSet(metadata, "top_k", params.TopK)
 	putIfSet(metadata, "prompt_cache_key", params.PromptCacheKey)
 	if params.Reasoning != nil {
 		putIfSet(metadata, "reasoning_enabled", params.Reasoning.Enabled)
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
+		putIfSet(metadata, "reasoning_max_tokens", params.Reasoning.MaxTokens)
+		putIfSet(metadata, "reasoning_summary", params.Reasoning.Summary)
+		putIfSet(metadata, "reasoning_display", params.Reasoning.Display)
+		putIfSet(metadata, "reasoning_mode", params.Reasoning.Mode)
+		putIfSet(metadata, "reasoning_type", params.Reasoning.Type)
+	}
+	putIfSet(metadata, "web_search_options", params.WebSearchOptions)
+	putIfSet(metadata, "container", params.Container)
+	if len(params.MCPServers) > 0 {
+		// MCP servers are an order-insensitive set, hashed once like tools. On a
+		// marshal error the raw servers go in instead, so hashMap fails the same
+		// way and the request skips the cache rather than sharing an entry.
+		if mcpServersHash, err := hashSortedSet(params.MCPServers, func(s schemas.ChatMCPServer) string {
+			return s.Name
+		}); err != nil {
+			metadata["mcp_servers"] = params.MCPServers
+		} else if mcpServersHash != "" {
+			metadata["mcp_servers_hash"] = mcpServersHash
+		}
 	}
 	if params.ResponseFormat != nil {
 		// ResponseFormat is a struct pointer that callers expect to round-trip
@@ -1045,9 +1075,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	putIfSet(metadata, "store", params.Store)
 	putIfSet(metadata, "top_logprobs", params.TopLogProbs)
 	putIfSet(metadata, "verbosity", params.Verbosity)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 	if len(params.Tools) > 0 {
 		// Tools are an order-insensitive set; producer-side ordering (notably
 		// MCP's randomized map iteration) must not perturb the request hash.
@@ -1094,6 +1122,9 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
 		putIfSet(metadata, "reasoning_max_tokens", params.Reasoning.MaxTokens)
 		putIfSet(metadata, "reasoning_summary", params.Reasoning.Summary)
+		putIfSet(metadata, "reasoning_mode", params.Reasoning.Mode)
+		putIfSet(metadata, "reasoning_context", params.Reasoning.Context)
+		putIfSet(metadata, "reasoning_type", params.Reasoning.Type)
 	}
 	putIfSet(metadata, "safety_identifier", params.SafetyIdentifier)
 	putIfSet(metadata, "service_tier", params.ServiceTier)
@@ -1101,14 +1132,20 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	if params.Text != nil {
 		putIfSet(metadata, "text_verbosity", params.Text.Verbosity)
 		if params.Text.Format != nil {
-			metadata["text_format_type"] = params.Text.Format.Type
+			// A JSON schema can be large, so it is marshaled once into a hash here
+			// instead of being walked again by both the params and request hashes.
+			// On a marshal error the raw format goes in instead, so hashMap fails the
+			// same way and the request skips the cache rather than sharing an entry.
+			if data, err := schemas.MarshalDeeplySorted(params.Text.Format); err != nil {
+				metadata["text_format"] = params.Text.Format
+			} else {
+				metadata["text_format_hash"] = fmt.Sprintf("%x", xxhash.Sum64(data))
+			}
 		}
 	}
 	putIfSet(metadata, "top_logprobs", params.TopLogProbs)
 	putIfSet(metadata, "truncation", params.Truncation)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 	if len(params.Tools) > 0 {
 		// Tools are an order-insensitive set; producer-side ordering (notably
 		// MCP's randomized map iteration) must not perturb the request hash.
@@ -1141,9 +1178,7 @@ func (plugin *Plugin) extractTextCompletionParametersToMetadata(params *schemas.
 	putIfSet(metadata, "n", params.N)
 	putIfSet(metadata, "seed", params.Seed)
 	putIfSet(metadata, "suffix", params.Suffix)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // extractSpeechParametersToMetadata extracts Speech parameters into metadata map.
@@ -1175,9 +1210,7 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 			metadata["pronunciation_dictionary_locators_hash"] = hash
 		}
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // extractEmbeddingParametersToMetadata extracts Embedding parameters into metadata map.
@@ -1187,9 +1220,7 @@ func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.Embed
 	putIfSet(metadata, "task_type", params.TaskType)
 	putIfSet(metadata, "title", params.Title)
 	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // extractTranscriptionParametersToMetadata extracts Transcription parameters into metadata map.
@@ -1209,9 +1240,7 @@ func (plugin *Plugin) extractTranscriptionParametersToMetadata(params *schemas.T
 			metadata["additional_formats_hash"] = hash
 		}
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // extractImageGenerationParametersToMetadata extracts Image Generation parameters into metadata map.
@@ -1236,9 +1265,7 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 	if len(params.InputImages) > 0 {
 		metadata["input_images"] = params.InputImages
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // isConversationHistoryThresholdExceeded returns true when the request's
