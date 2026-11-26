@@ -28,6 +28,16 @@ plugin's config, the vector stores) is tested in
 `.claude/skills/semantic-cache-wiring/SKILL.md` for those cases. Only a change to what a
 provider receives or returns on a request the cache does not answer belongs here.
 
+Nor is it the routing harness. Routing behaviour (routing rules, model routers and the
+complexity router, the model catalog and key aliases, virtual key routing and governance
+load balancing, key selection, key pins and direct keys, session affinity, fallbacks and
+retries, `routing_info` and the routing log) is tested in
+`tests/e2e/api/runners/build-routing-wiring.mjs` and `build-model-catalog-wiring.mjs`: use
+`.claude/skills/routing-harness/SKILL.md` for those cases. The routing folders already in
+`provider-harness.json` stay, and a change that alters what one of them pins updates it
+here; add no new routing folders. Only a change to how a provider converts the request it
+was routed to, or the response it returns, belongs here.
+
 ## Step 1 - Resolve the reference
 
 The argument may be a PR number, an issue number, or a GitHub URL.
