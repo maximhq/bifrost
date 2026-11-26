@@ -2432,3 +2432,99 @@ func TestStatusCheckSharedByRoutesIsLookedUpOnce(t *testing.T) {
 	assert.Equal(t, JobPollKey(poll), candidates[0].match.RouteKey)
 	assert.Equal(t, "j-1", candidates[0].id)
 }
+
+type identityStub struct {
+	user     *schemas.UserRef
+	vk       *schemas.EntityRef
+	teams    []schemas.EntityRef
+	project  *schemas.EntityRef
+	presents bool
+}
+
+func (i *identityStub) Credential() schemas.Credential     { return schemas.Credential{} }
+func (i *identityStub) Presented() bool                    { return i.presents }
+func (i *identityStub) User() *schemas.UserRef             { return i.user }
+func (i *identityStub) VirtualKey() *schemas.EntityRef     { return i.vk }
+func (i *identityStub) Teams() []schemas.EntityRef         { return i.teams }
+func (i *identityStub) Customers() []schemas.EntityRef     { return nil }
+func (i *identityStub) BusinessUnits() []schemas.EntityRef { return nil }
+func (i *identityStub) Project() *schemas.EntityRef        { return i.project }
+
+type grantStub struct{ identity schemas.Identity }
+
+func (g *grantStub) Identity() schemas.Identity          { return g.identity }
+func (g *grantStub) Access() schemas.Access              { return nil }
+func (g *grantStub) Limits() schemas.Limits              { return nil }
+func (g *grantStub) SetIdentity(i schemas.Identity) bool { g.identity = i; return true }
+func (g *grantStub) SetAccess(schemas.Access) bool       { return false }
+func (g *grantStub) SetLimits(schemas.Limits) bool       { return false }
+
+// A relay span carries the same SpanEnrichment an LLM span does for the same key: the user, the
+// app, and every team, not only the first one or none.
+func TestRelaySpanCarriesTheLLMSpanEnrichment(t *testing.T) {
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli/1.0.0")
+	ctx.SetGrant(&grantStub{identity: &identityStub{
+		user:    &schemas.UserRef{ID: "u-1", Name: "Ada", Email: "ada@example.com"},
+		vk:      &schemas.EntityRef{ID: "vk-1", Name: "team-key"},
+		teams:   []schemas.EntityRef{{ID: "t-1", Name: "Search"}, {ID: "t-2", Name: "Docs"}},
+		project: &schemas.EntityRef{ID: "p-1", Name: "Atlas"},
+	}})
+	llm := schemas.SpanEnrichmentFromContext(ctx)
+
+	rec := &rawSpanRecorder{spanRecorder: newSpanRecorder(), span: &schemas.Span{}}
+	setRelayGovernanceSpanAttrs(rec, "relay", ctx)
+	e := rec.span.Enrichment
+	require.NotNil(t, e, "the span carries the typed dimensions, as an LLM span does")
+	assert.Equal(t, "u-1", e.UserID, "the user comes from the Grant")
+	assert.Equal(t, "Ada", e.UserName)
+	assert.Equal(t, "ada@example.com", e.UserEmail)
+	assert.Equal(t, llm.App, e.App)
+	assert.NotEmpty(t, e.App)
+	assert.Equal(t, "vk-1", e.VirtualKeyID)
+	assert.Equal(t, "t-1", e.TeamID, "the attributed team first")
+	assert.Equal(t, []string{"t-1", "t-2"}, e.TeamIDs, "and every team")
+	assert.Equal(t, []string{"Search", "Docs"}, e.TeamNames)
+	assert.Equal(t, "Atlas", e.ProjectName)
+	assert.Equal(t, "u-1", rec.span.Attributes[schemas.AttrBifrostUserID], "the attribute keys connectors read are written too")
+	assert.Equal(t, []string{"t-1", "t-2"}, rec.span.Attributes[schemas.AttrBifrostTeamIDs])
+}
+
+// BenchmarkRelaySpanEnrichment measures building a relay span's SpanEnrichment once per call: no
+// Grant, and a Grant naming a user and three teams.
+func BenchmarkRelaySpanEnrichment(b *testing.B) {
+	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	granted := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	granted.SetGrant(&grantStub{identity: &identityStub{
+		user:  &schemas.UserRef{ID: "u-1", Name: "Ada", Email: "ada@example.com"},
+		vk:    &schemas.EntityRef{ID: "vk-1", Name: "team-key"},
+		teams: []schemas.EntityRef{{ID: "t-1", Name: "A"}, {ID: "t-2", Name: "B"}, {ID: "t-3", Name: "C"}},
+	}})
+	for _, c := range []struct {
+		name string
+		ctx  *schemas.BifrostContext
+	}{{"no grant", plain}, {"grant with 3 teams", granted}} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = relaySpanEnrichment(c.ctx)
+			}
+		})
+	}
+}
+
+// The relay span carries its SpanEnrichment from its start, as an LLM span does, so nothing writes it
+// at the end, when a streamed call's span closes on another goroutine alongside export.
+func TestRelaySpanCarriesItsEnrichmentFromItsStart(t *testing.T) {
+	ctx := testCtx(t)
+	ctx.SetGrant(&grantStub{identity: &identityStub{vk: &schemas.EntityRef{ID: "vk-1", Name: "team-key"}}})
+	rec := &rawSpanRecorder{spanRecorder: newSpanRecorder(), span: &schemas.Span{}}
+	ctx.SetValue(schemas.BifrostContextKeyTracer, schemas.Tracer(rec))
+	span := startRelaySpan(ctx, nil, &schemas.BifrostRelayRequest{RelayName: "r", Method: "POST"}, time.Now())
+	require.NotNil(t, span)
+	require.NotNil(t, rec.span.Enrichment, "set when the span starts, before the call ends")
+	assert.Equal(t, "vk-1", rec.span.Enrichment.VirtualKeyID)
+	before := rec.span.Enrichment
+	span.end(ctx, nil, nil)
+	assert.Same(t, before, rec.span.Enrichment, "the end does not write it again")
+}
