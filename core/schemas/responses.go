@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"sort"
@@ -233,6 +234,7 @@ type BifrostResponsesResponse struct {
 	ID     *string `json:"id,omitempty"` // used for internal conversions
 	Object string  `json:"object"`       // "response"
 
+	AccessPrograms       *AccessPrograms                     `json:"access_programs,omitempty"` // OpenAI trusted-access program that served the request (Daybreak)
 	Background           *bool                               `json:"background,omitempty"`
 	Conversation         *ResponsesResponseConversation      `json:"conversation,omitempty"`
 	CreatedAt            int                                 `json:"created_at"`   // Unix timestamp when Response was created
@@ -396,6 +398,7 @@ func (resp *BifrostResponsesResponse) WithDefaults() *BifrostResponsesResponse {
 	result.PromptCacheRetention = resp.PromptCacheRetention
 	result.PromptCacheOptions = resp.PromptCacheOptions
 	result.SafetyIdentifier = resp.SafetyIdentifier
+	result.AccessPrograms = resp.AccessPrograms
 	result.MaxToolCalls = resp.MaxToolCalls
 	result.Instructions = resp.Instructions
 	result.Error = resp.Error
@@ -534,6 +537,61 @@ type PromptCacheOptions struct {
 	TTL  *string `json:"ttl,omitempty"`
 }
 
+// AccessPrograms selects the OpenAI trusted-access programs a Responses request
+// runs under (developers.openai.com/api/docs/guides/daybreak). Cyber is
+// "standard", "daybreak_blue" or "daybreak_red"; values are passed through
+// untouched so OpenAI stays the validator. On a response it records the program
+// that served the request, and is absent when OpenAI fell back implicitly.
+type AccessPrograms struct {
+	Cyber   *string                    `json:"cyber,omitempty"`
+	Unknown map[string]json.RawMessage `json:"-"` // members not modelled here, forwarded as sent
+}
+
+// UnmarshalJSON keeps every member it does not model, and a cyber that is not a
+// string, verbatim in Unknown. Dropping them would turn a misspelled member such
+// as {"cyebr":"daybreak_red"} into {}, which OpenAI serves under the model's
+// default program with no error; forwarded, OpenAI rejects it with a 400.
+func (a *AccessPrograms) UnmarshalJSON(data []byte) error {
+	var members map[string]json.RawMessage
+	if err := Unmarshal(data, &members); err != nil {
+		return err
+	}
+	*a = AccessPrograms{}
+	for name, raw := range members {
+		if name == "cyber" {
+			var cyber string
+			if err := Unmarshal(raw, &cyber); err == nil && !bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+				a.Cyber = &cyber
+				continue
+			}
+		}
+		if a.Unknown == nil {
+			a.Unknown = make(map[string]json.RawMessage, len(members))
+		}
+		a.Unknown[name] = raw
+	}
+	return nil
+}
+
+// MarshalJSON writes Cyber and the preserved Unknown members, keys sorted so the
+// body stays byte-stable. Without Unknown members it is the plain struct encoding.
+func (a AccessPrograms) MarshalJSON() ([]byte, error) {
+	if len(a.Unknown) == 0 {
+		type alias AccessPrograms
+		return Marshal(alias(a))
+	}
+	members := make(map[string]json.RawMessage, len(a.Unknown)+1)
+	maps.Copy(members, a.Unknown)
+	if a.Cyber != nil {
+		cyber, err := Marshal(*a.Cyber)
+		if err != nil {
+			return nil, err
+		}
+		members["cyber"] = cyber
+	}
+	return MarshalSorted(members)
+}
+
 // PromptCacheBreakpoint marks the end of a cacheable prompt prefix on a content
 // block (OpenAI gpt-5.6+). Only "explicit" is valid for Mode.
 type PromptCacheBreakpoint struct {
@@ -542,6 +600,7 @@ type PromptCacheBreakpoint struct {
 }
 
 type ResponsesParameters struct {
+	AccessPrograms       *AccessPrograms                `json:"access_programs,omitempty"` // OpenAI-only trusted-access program (Daybreak)
 	Background           *bool                          `json:"background,omitempty"`
 	Conversation         *ResponsesResponseConversation `json:"conversation,omitempty"`
 	Include              []string                       `json:"include,omitempty"` // Supported values: "web_search_call.action.sources", "code_interpreter_call.outputs", "computer_call_output.output.image_url", "file_search_call.results", "message.input_image.image_url", "message.output_text.logprobs", "reasoning.encrypted_content"
@@ -2343,23 +2402,64 @@ func (m *ResponsesMessage) ToolSearchOutputToolNames() []string {
 	return names
 }
 
+// DefersLoading reports whether tool holds a tool back until it is searched for: a
+// namespace when any member is deferred (IsDeferredNamespaceMember), any other tool
+// when its own defer_loading is true.
+func DefersLoading(tool *ResponsesTool) bool {
+	if tool.Type != ResponsesToolTypeNamespace || tool.ResponsesToolNamespace == nil {
+		return tool.DeferLoading != nil && *tool.DeferLoading
+	}
+	for i := range tool.ResponsesToolNamespace.Tools {
+		if IsDeferredNamespaceMember(tool, &tool.ResponsesToolNamespace.Tools[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDeferredNamespaceMember reports whether a namespace member is deferred: its own
+// defer_loading when set, otherwise the namespace's.
+func IsDeferredNamespaceMember(namespace, member *ResponsesTool) bool {
+	if member.DeferLoading != nil {
+		return *member.DeferLoading
+	}
+	return namespace.DeferLoading != nil && *namespace.DeferLoading
+}
+
+// defaultToolNamespace is the namespace whose members are top-level functions under
+// another spelling (providerUtils.DefaultToolNamespace, which schemas cannot import).
+const defaultToolNamespace = "functions"
+
 // clientToolSearchNames are the function names clients give their own tool search
 // (Claude Code registers ToolSearch; the Anthropic docs example uses tool_search).
 var clientToolSearchNames = []string{"tool_search", "ToolSearch"}
 
 // ClientToolSearchFunctionName returns the name of the function tool the caller runs
 // as its own tool search, or "" when there is none. It only looks when some tool is
-// deferred. A non-deferred function named tool_search or ToolSearch qualifies, as
-// does a function whose earlier result in input carried tool_reference blocks.
+// deferred (DefersLoading). A non-deferred function named tool_search or ToolSearch
+// qualifies, as does a function whose earlier result in input carried tool_reference
+// blocks; a member of the default "functions" namespace counts as a function.
 func ClientToolSearchFunctionName(tools []ResponsesTool, input []ResponsesMessage) string {
-	if !slices.ContainsFunc(tools, func(t ResponsesTool) bool { return t.DeferLoading != nil && *t.DeferLoading }) {
+	if !slices.ContainsFunc(tools, func(t ResponsesTool) bool { return DefersLoading(&t) }) {
 		return ""
 	}
+	isFunction := func(t *ResponsesTool, name string) bool {
+		return t.Type == ResponsesToolTypeFunction && t.Name != nil && *t.Name == name
+	}
 	isEagerFunction := func(name string) bool {
-		return slices.ContainsFunc(tools, func(t ResponsesTool) bool {
-			return t.Type == ResponsesToolTypeFunction && t.Name != nil && *t.Name == name &&
-				(t.DeferLoading == nil || !*t.DeferLoading)
-		})
+		for i := range tools {
+			t := &tools[i]
+			if isFunction(t, name) && !DefersLoading(t) {
+				return true
+			}
+			if t.Type == ResponsesToolTypeNamespace && t.Name != nil && *t.Name == defaultToolNamespace && t.ResponsesToolNamespace != nil &&
+				slices.ContainsFunc(t.ResponsesToolNamespace.Tools, func(m ResponsesTool) bool {
+					return isFunction(&m, name) && !IsDeferredNamespaceMember(t, &m)
+				}) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, name := range clientToolSearchNames {
 		if isEagerFunction(name) {

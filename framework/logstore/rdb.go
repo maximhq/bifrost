@@ -616,6 +616,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	if len(filters.GuardrailOutcomes) > 0 {
 		baseQuery = s.applyGuardrailOutcomeFilter(baseQuery, filters.GuardrailOutcomes)
 	}
+	if len(filters.GuardrailActions) > 0 || len(filters.GuardrailRuleIDs) > 0 || len(filters.GuardrailProfileIDs) > 0 || len(filters.GuardrailPhases) > 0 {
+		baseQuery = s.applyGuardrailMatchFilter(baseQuery, filters)
+	}
 	if filters.ContentSearch != "" {
 		dialect := s.db.Dialector.Name()
 		if dialect == "postgres" {
@@ -728,6 +731,96 @@ func (s *RDBLogStore) applyGuardrailOutcomeFilter(baseQuery *gorm.DB, outcomes [
 		if expr, ok := jsonArrayNotEmptyExpr(dialect, "guardrail_debug", "detections"); ok {
 			clauses = append(clauses, expr)
 		}
+	}
+	if len(clauses) == 0 {
+		return baseQuery.Where("1 = 0")
+	}
+	return baseQuery.Where("("+strings.Join(clauses, " OR ")+")", args...)
+}
+
+// Guardrail match actions accepted by SearchFilters.GuardrailActions: what a
+// guardrail did for one recorded match, as the logs UI labels it.
+const (
+	GuardrailMatchActionBlocked   = "blocked"
+	GuardrailMatchActionRedacted  = "redacted"
+	GuardrailMatchActionDetected  = "detected"
+	GuardrailMatchActionMonitored = "monitored"
+)
+
+// applyGuardrailMatchFilter keeps rows with one recorded guardrail match that
+// meets every set guardrail match filter. An intervention is a block; a
+// detection is labelled by its action unless it was not enforced, which makes
+// it monitored, matching how the logs UI labels each match. A block logged
+// before interventions were recorded names no rule, profile or phase, so it is
+// matched by its error type only when none of those is asked for. Unknown
+// actions are dropped, and a list of only unknown ones matches nothing rather
+// than every log.
+func (s *RDBLogStore) applyGuardrailMatchFilter(baseQuery *gorm.DB, filters SearchFilters) *gorm.DB {
+	dialect := s.db.Dialector.Name()
+	elem, ok := newJSONArrayElementSQL(dialect)
+	if !ok {
+		return baseQuery.Where("1 = 0")
+	}
+	actions := filters.GuardrailActions
+	if len(actions) == 0 {
+		actions = []string{GuardrailMatchActionBlocked, GuardrailMatchActionRedacted, GuardrailMatchActionDetected, GuardrailMatchActionMonitored}
+	}
+
+	// The rule, profile and phase conditions apply to the same match as the action.
+	var shared []string
+	var sharedArgs []any
+	if len(filters.GuardrailRuleIDs) > 0 {
+		shared = append(shared, elem.num("rule_id")+" IN ?")
+		sharedArgs = append(sharedArgs, filters.GuardrailRuleIDs)
+	}
+	if len(filters.GuardrailProfileIDs) > 0 {
+		shared = append(shared, elem.num("profile_id")+" IN ?")
+		sharedArgs = append(sharedArgs, filters.GuardrailProfileIDs)
+	}
+	if len(filters.GuardrailPhases) > 0 {
+		shared = append(shared, elem.str("phase")+" IN ?")
+		sharedArgs = append(sharedArgs, filters.GuardrailPhases)
+	}
+
+	enforced := elem.boolean("enforced") + " <> 'false'"
+	detectionAction := "COALESCE(" + elem.str("action") + ", '')"
+	var detectionConds []string
+	for _, action := range actions {
+		switch action {
+		case GuardrailMatchActionBlocked:
+			detectionConds = append(detectionConds, "("+detectionAction+" = 'block' AND "+enforced+")")
+		case GuardrailMatchActionRedacted:
+			detectionConds = append(detectionConds, "("+detectionAction+" IN ('redact', 'transform') AND "+enforced+")")
+		case GuardrailMatchActionDetected:
+			detectionConds = append(detectionConds, "("+detectionAction+" NOT IN ('block', 'redact', 'transform') AND "+enforced+")")
+		case GuardrailMatchActionMonitored:
+			detectionConds = append(detectionConds, "("+elem.boolean("enforced")+" = 'false')")
+		}
+	}
+
+	var clauses []string
+	var args []any
+	if slices.Contains(actions, GuardrailMatchActionBlocked) {
+		if len(shared) == 0 {
+			if expr, ok := jsonArrayNotEmptyExpr(dialect, "guardrail_debug", "interventions"); ok {
+				clauses = append(clauses, expr)
+			}
+			if expr, ok := jsonObjectFieldExpr(dialect, "error_details", "error", "type"); ok {
+				clauses = append(clauses, expr+" = ?")
+				args = append(args, guardrailInterventionErrorType)
+			}
+		} else {
+			clauses = append(clauses, elem.exists("guardrail_debug", "interventions", strings.Join(shared, " AND ")))
+			args = append(args, sharedArgs...)
+		}
+	}
+	if len(detectionConds) > 0 {
+		cond := "(" + strings.Join(detectionConds, " OR ") + ")"
+		if len(shared) > 0 {
+			cond += " AND " + strings.Join(shared, " AND ")
+		}
+		clauses = append(clauses, elem.exists("guardrail_debug", "detections", cond))
+		args = append(args, sharedArgs...)
 	}
 	if len(clauses) == 0 {
 		return baseQuery.Where("1 = 0")
@@ -1010,8 +1103,9 @@ func (s *RDBLogStore) BulkUpdateCost(ctx context.Context, updates map[string]Cos
 // for a specific cluster node after a stable cursor. The first scan uses the
 // timestamp/log-id lower bound for the ghost's detection point. Once DB-assigned
 // inc_number values are observed, subsequent scans use inc_number so rows flushed
-// late by the async log writer are not skipped.
-func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
+// late by the async log writer are not skipped. Actual-reset windows filter each
+// resource and dimension before aggregation; excluded rows still advance the cursor.
+func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error) {
 	type logRow struct {
 		ID           string    `gorm:"column:id"`
 		Timestamp    time.Time `gorm:"column:timestamp"`
@@ -1085,7 +1179,9 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 				for _, id := range budgetIDs {
 					if _, dup := seen[id]; !dup {
 						seen[id] = struct{}{}
-						budgetCosts[id] += row.Cost
+						if cutoff := windows.Budgets[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							budgetCosts[id] += row.Cost
+						}
 					}
 				}
 			}
@@ -1102,8 +1198,12 @@ func (s *RDBLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, curs
 				for _, id := range rateLimitIDs {
 					if _, dup := seen[id]; !dup {
 						seen[id] = struct{}{}
-						rateLimitRequests[id]++
-						rateLimitTokens[id] += row.TotalTokens
+						if cutoff := windows.Requests[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							rateLimitRequests[id]++
+						}
+						if cutoff := windows.Tokens[id]; cutoff == 0 || row.Timestamp.UnixNano() >= cutoff {
+							rateLimitTokens[id] += row.TotalTokens
+						}
 					}
 				}
 			}
@@ -1735,22 +1835,33 @@ func normalizeAggregateTimestamp(value any) string {
 //
 // Realtime turn rows are kept intact because the logs table renders them as a
 // combined Tool/User/Assistant summary and needs the full turn context.
+//
+// Columns only the log detail sheet reads are left out: alias_model_family,
+// server_side_fallback_model, served_model, routing_engines_used,
+// complexity_mechanism, model_router_id, model_router_name,
+// video_generation_input and cache_debug. The sheet waits for
+// GET /api/logs/{id}, which selects every column, before it renders, so
+// carrying them on every list row only grows the response. Each backs an
+// omitempty field, so a list row leaves the key out rather than reporting a
+// zero value. TestListProjectionLeavesOutDetailOnlyColumns pins the set.
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
+		// alias and complexity_tier stay: Warp's log search tool reports them.
 		"id", "parent_request_id", "timestamp", "object_type", "is_passthrough", "provider", "model", "alias",
-		"canonical_model_name", "alias_model_family", "server_side_fallback_model", "served_model",
+		"canonical_model_name",
 		"number_of_retries", "fallback_index",
+		// selected_key_name stays: the handler attaches selected_key to a row
+		// only when both the id and the name are present.
 		"selected_key_id", "selected_key_name",
 		"virtual_key_id", "virtual_key_name",
-		"routing_engines_used", "tool_call_names", "routing_rule_id", "routing_rule_name",
-		"complexity_tier", "complexity_mechanism", "session_id", "agent_correlation_id",
-		"model_router_id", "model_router_name",
+		"tool_call_names", "routing_rule_id", "routing_rule_name",
+		"complexity_tier", "session_id", "agent_correlation_id",
 		"user_id", "user_name", "user_email", "team_id", "team_name", "customer_id", "customer_name",
 		"business_unit_id", "business_unit_name",
 		"team_ids", "team_names", "customer_ids", "customer_names", "business_unit_ids", "business_unit_names",
 		"project_id", "project_name",
 		"user_agent", "app", "client_ip",
-		"speech_input", "transcription_input", "image_generation_input", "video_generation_input",
+		"speech_input", "transcription_input", "image_generation_input",
 		// error_details is intentionally excluded from the list select: for status=error
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
@@ -1758,7 +1869,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// Only guardrail blocks, whose errors are bounded, are listed (see below).
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream", "stop_reason",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", MaxContentSummaryBytes),
-		"metadata", "cache_debug",
+		"metadata",
 		"batch_debug",
 		// video_debug tells a settled video's aggregate cost row apart from the
 		// submission it settles; without it the list shows the same video twice.
@@ -1768,8 +1879,12 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"is_large_payload_request", "is_large_payload_response",
 		"prompt_tokens", "completion_tokens", "total_tokens",
 		"cached_read_tokens",
+		// content_hidden also gates Warp: its backfill and log search skip a
+		// hidden row before fetching it in full.
 		"has_object", "content_hidden",
 		"service_tier", "speed", "inference_geo",
+		// created_at is not omitempty, so a missing column would serialize as
+		// the zero time instead of being left out.
 		"created_at",
 		// guardrail_debug holds only sanitized rule metadata (never matched
 		// text), so it stays small; the Guardrail Incidents view reads the
@@ -5464,6 +5579,69 @@ func (s *RDBLogStore) stopMaintenance() {
 			s.logger.Warn(fmt.Sprintf("logstore: matview maintenance did not stop within %s; closing the pool anyway", matViewShutdownWait))
 		}
 	}
+}
+
+// ReclaimSpace returns pages freed by retention deletes to the OS on SQLite
+// databases created with auto_vacuum=incremental, maxPages at a time so
+// writers can interleave. It is a no-op on other engines and on SQLite files
+// still in the default auto_vacuum=NONE mode (those need a one-off VACUUM).
+func (s *RDBLogStore) ReclaimSpace(ctx context.Context, maxPages int) (int64, error) {
+	if s.db.Dialector.Name() != "sqlite" || maxPages < 1 {
+		return 0, nil
+	}
+	db := s.db.WithContext(ctx)
+	var mode int
+	if err := db.Raw("PRAGMA auto_vacuum").Scan(&mode).Error; err != nil {
+		return 0, err
+	}
+	if mode != 2 { // 2 = INCREMENTAL
+		return 0, nil
+	}
+	// With nothing on the freelist incremental_vacuum still wants the write
+	// lock, so an empty pass would wait on a writer for the whole busy timeout.
+	var free int64
+	if err := db.Raw("PRAGMA freelist_count").Scan(&free).Error; err != nil || free == 0 {
+		return 0, err
+	}
+	var released int64
+	for ctx.Err() == nil {
+		// incremental_vacuum frees one page per row it returns, so the rows
+		// must be read to the end (or only the first page is released), and
+		// their count, not the freelist, says how many pages this step freed.
+		// A step counts only when the statement finished cleanly.
+		rows, err := db.Raw(fmt.Sprintf("PRAGMA incremental_vacuum(%d)", maxPages)).Rows()
+		if err != nil {
+			return released, err
+		}
+		var step int64
+		for rows.Next() {
+			step++
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return released, err
+		}
+		if err := rows.Close(); err != nil {
+			return released, err
+		}
+		released += step
+		if step < int64(maxPages) { // freelist exhausted
+			break
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return released, err
+	}
+	// In WAL mode the released pages sit in the WAL until a checkpoint copies
+	// them back and truncates the main file, which would otherwise wait for the
+	// WAL to pass _wal_autocheckpoint. PASSIVE never waits for readers or
+	// writers; if one blocks it, the next write's auto-checkpoint finishes.
+	if released > 0 {
+		if err := db.Exec("PRAGMA wal_checkpoint(PASSIVE)").Error; err != nil {
+			return released, err
+		}
+	}
+	return released, nil
 }
 
 // Close stops matview maintenance and closes the log store.

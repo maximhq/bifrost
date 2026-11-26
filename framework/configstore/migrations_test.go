@@ -1364,20 +1364,20 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 	store, db := setupFullMigrationDB(t)
 	ctx := context.Background()
 
-	config := ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     "key-uuid-1",
-				Name:   "openai-primary",
-				Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			},
+	keys := []schemas.Key{
+		{
+			ID:     "key-uuid-1",
+			Name:   "openai-primary",
+			Value:  *schemas.NewSecretVar("sk-test-secret-key-12345"),
+			Models: schemas.WhiteList{"*"},
+			Weight: 1.0,
 		},
 	}
 
-	err := store.AddProvider(ctx, "openai", config)
-	require.NoError(t, err)
+	require.NoError(t, store.AddProvider(ctx, "openai", ProviderConfig{}))
+	for _, key := range keys {
+		require.NoError(t, store.CreateProviderKey(ctx, "openai", key))
+	}
 
 	// Read back through store (AfterFind hooks decrypt)
 	result, err := store.GetProvidersConfig(ctx)
@@ -1385,10 +1385,11 @@ func TestFullMigration_ProviderAndKeyCRUD(t *testing.T) {
 	require.Len(t, result, 1)
 	require.Contains(t, result, schemas.ModelProvider("openai"))
 
-	openai := result[schemas.ModelProvider("openai")]
-	require.Len(t, openai.Keys, 1)
-	assert.Equal(t, "openai-primary", openai.Keys[0].Name)
-	assert.Equal(t, "sk-test-secret-key-12345", openai.Keys[0].Value.GetValue())
+	openaiKeys, err := store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	require.Len(t, openaiKeys, 1)
+	assert.Equal(t, "openai-primary", openaiKeys[0].Name)
+	assert.Equal(t, "sk-test-secret-key-12345", openaiKeys[0].Value.GetValue())
 
 	// Verify encryption at the raw DB level
 	var rawValue string
@@ -1582,16 +1583,14 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 		{"openai", "key-oa-1", "openai-key", "sk-openai-secret"},
 		{"anthropic", "key-ant-1", "anthropic-key", "sk-anthropic-secret"},
 	} {
-		err := store.AddProvider(ctx, schemas.ModelProvider(p.provider), ProviderConfig{
-			Keys: []schemas.Key{{
-				ID:     p.keyID,
-				Name:   p.keyName,
-				Value:  *schemas.NewSecretVar(p.keyValue),
-				Models: schemas.WhiteList{"*"},
-				Weight: 1.0,
-			}},
-		})
-		require.NoError(t, err, "AddProvider %s", p.provider)
+		require.NoError(t, store.AddProvider(ctx, schemas.ModelProvider(p.provider), ProviderConfig{}), "AddProvider %s", p.provider)
+		require.NoError(t, store.CreateProviderKey(ctx, schemas.ModelProvider(p.provider), schemas.Key{
+			ID:     p.keyID,
+			Name:   p.keyName,
+			Value:  *schemas.NewSecretVar(p.keyValue),
+			Models: schemas.WhiteList{"*"},
+			Weight: 1.0,
+		}), "CreateProviderKey %s", p.provider)
 	}
 
 	// Add virtual keys
@@ -1624,8 +1623,14 @@ func TestFullMigration_EndToEnd(t *testing.T) {
 	assert.Len(t, providers, 2)
 	assert.Contains(t, providers, schemas.ModelProvider("openai"))
 	assert.Contains(t, providers, schemas.ModelProvider("anthropic"))
-	assert.Equal(t, "sk-openai-secret", providers["openai"].Keys[0].Value.GetValue())
-	assert.Equal(t, "sk-anthropic-secret", providers["anthropic"].Keys[0].Value.GetValue())
+	openaiKeys, err := store.GetProviderKeys(ctx, "openai")
+	require.NoError(t, err)
+	require.NotEmpty(t, openaiKeys)
+	assert.Equal(t, "sk-openai-secret", openaiKeys[0].Value.GetValue())
+	anthropicKeys, err := store.GetProviderKeys(ctx, "anthropic")
+	require.NoError(t, err)
+	require.NotEmpty(t, anthropicKeys)
+	assert.Equal(t, "sk-anthropic-secret", anthropicKeys[0].Value.GetValue())
 
 	// Verify virtual keys
 	vks, err := store.GetVirtualKeys(ctx)
@@ -6439,4 +6444,39 @@ func TestMigrationAddKeyDisableContentLoggingColumn(t *testing.T) {
 	assert.NotEqual(t, inheritHash, offHash, "forcing content off must change the hash")
 	assert.NotEqual(t, inheritHash, onHash, "forcing content on must change the hash")
 	assert.NotEqual(t, offHash, onHash, "off and on must not collide")
+}
+
+// TestUsageResetEpochMigrationLeavesUnknown proves legacy boundaries are not
+// promoted into evidence, including nonzero calendar-adoption boundaries.
+func TestUsageResetEpochMigrationLeavesUnknown(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableBudget{}, &tables.TableRateLimit{}))
+	boundary := time.Now().UTC().Truncate(time.Second)
+	budget := tables.TableBudget{ID: "legacy-budget", MaxLimit: 100, ResetDuration: "1h", CurrentUsage: 7, LastReset: boundary}
+	rate := tables.TableRateLimit{ID: "legacy-rate", TokenCurrentUsage: 9, RequestCurrentUsage: 3, TokenLastReset: boundary, RequestLastReset: boundary.Add(-time.Hour)}
+	require.NoError(t, db.Create(&budget).Error)
+	require.NoError(t, db.Create(&rate).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.NoError(t, migrationAddGovernanceUsageResetEpochs(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableBudget{}, "UsageResetEpoch"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "TokenUsageResetEpoch"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableRateLimit{}, "RequestUsageResetEpoch"))
+	require.NoError(t, migrationAddGovernanceUsageResetEpochs(ctx, db, testMigrationLogger))
+	require.NoError(t, db.First(&budget, "id = ?", budget.ID).Error)
+	require.NoError(t, db.First(&rate, "id = ?", rate.ID).Error)
+	require.Zero(t, budget.UsageResetEpoch)
+	require.Zero(t, rate.TokenUsageResetEpoch)
+	require.Zero(t, rate.RequestUsageResetEpoch)
+	require.Equal(t, 7.0, budget.CurrentUsage)
+	require.Equal(t, int64(9), rate.TokenCurrentUsage)
+	require.Equal(t, int64(3), rate.RequestCurrentUsage)
+	require.True(t, budget.LastReset.Equal(boundary))
+	require.True(t, rate.TokenLastReset.Equal(boundary))
+	require.True(t, rate.RequestLastReset.Equal(boundary.Add(-time.Hour)))
 }

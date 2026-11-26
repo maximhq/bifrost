@@ -29,12 +29,12 @@ import (
 func newPluginForConnectionHook(t *testing.T, config *configstore.GovernanceConfig) *GovernancePlugin {
 	t.Helper()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, config, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, config, nil, nil)
 	require.NoError(t, err)
 
 	plugin, err := InitFromStore(context.Background(), &Config{
 		IsVkMandatory: boolPtr(false),
-	}, logger, store, nil, nil, nil, nil)
+	}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin
@@ -261,8 +261,8 @@ func TestPreMCPConnectionHook_StampsVirtualKeyMetadata(t *testing.T) {
 	assert.Equal(t, map[string]string{"cost_center": "cc-42"}, ctx.Value(VirtualKeyMetadataContextKey))
 }
 
-// The connect path carries the key's team's content-logging decision as well, read from the live
-// team map like the request path reads it.
+// The connect path carries the key's team's content-logging decision as well, read from the team's
+// record like the request path reads it.
 func TestPreMCPConnectionHook_StampsTeamContentLoggingDecision(t *testing.T) {
 	team := configstoreTables.TableTeam{ID: "team-connect-dcl", Name: "team-connect-dcl", DisableContentLogging: new(true)}
 	vk := buildVKForMCPStamping(nil)

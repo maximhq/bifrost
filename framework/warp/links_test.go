@@ -200,10 +200,14 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 		// Deliberately absent from the Logs page, so a query narrowed by one
 		// gets no link at all (TestWarpResultsFilteredByErrorFieldsCarryNoLogsLink)
 		// rather than a link that is silently wider.
-		"error_types":        "the Logs page has no error-type filter",
-		"error_codes":        "the Logs page has no error-code filter",
-		"status_codes":       "the Logs page has no status-code filter",
-		"guardrail_outcomes": "the Logs page has no guardrail-outcome filter",
+		"error_types":           "the Logs page has no error-type filter",
+		"error_codes":           "the Logs page has no error-code filter",
+		"status_codes":          "the Logs page has no status-code filter",
+		"guardrail_outcomes":    "the Logs page has no guardrail-outcome filter",
+		"guardrail_actions":     "the Logs page has no guardrail match filter",
+		"guardrail_rule_ids":    "the Logs page has no guardrail match filter",
+		"guardrail_profile_ids": "the Logs page has no guardrail match filter",
+		"guardrail_phases":      "the Logs page has no guardrail match filter",
 	}
 	filters := &logstore.SearchFilters{}
 	value := reflect.ValueOf(filters).Elem()
@@ -584,6 +588,10 @@ func TestWarpLogsLinkPerFilterArgument(t *testing.T) {
 		"error_codes":           {arg: []any{"context_length_exceeded"}, noLink: true},
 		"status_codes":          {arg: []any{float64(429)}, noLink: true},
 		"guardrail_outcomes":    {arg: []any{"blocked", "detected"}, noLink: true},
+		"guardrail_actions":     {arg: []any{"blocked", "redacted"}, noLink: true},
+		"guardrail_rule_ids":    {arg: []any{"3"}, noLink: true},
+		"guardrail_profile_ids": {arg: []any{"7"}, noLink: true},
+		"guardrail_phases":      {arg: []any{"input"}, noLink: true},
 		"model_router_ids":      {arg: []any{"support"}, want: "support"},
 		// Widens the question; the page has no parameter for it.
 		"scope": {arg: "all"},

@@ -180,14 +180,16 @@ function SheetContent({
 		dragWidth.current = null;
 	}, [setWidthOverride]);
 
+	// Radix re-attaches contentRef on every render, so a null ref call does not mean the sheet closed.
+	useEffect(() => (contentNode ? endDrag : undefined), [contentNode, endDrag]);
+
 	const contentRef = useCallback(
 		(node: HTMLDivElement | null) => {
 			setContentNode(node);
-			if (!node) endDrag();
 			if (typeof ref === "function") ref(node);
 			else if (ref) ref.current = node;
 		},
-		[ref, endDrag],
+		[ref],
 	);
 
 	// Check if the target is a portaled element (like react-select menu)

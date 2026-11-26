@@ -16,7 +16,6 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
@@ -81,7 +80,7 @@ func (m *mockHandlerStore) GetAsyncJobResultTTL() int {
 	return 3600
 }
 
-func (m *mockHandlerStore) GetKVStore() *kvstore.Store {
+func (m *mockHandlerStore) GetSharedTables() *lib.SharedTables {
 	return nil
 }
 
@@ -145,9 +144,9 @@ func TestGenericRouter_ModelCatalogMarksDeprecatedListModels(t *testing.T) {
 		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"}
 	}`)
 	require.NoError(t, os.WriteFile(pricingPath, pricingJSON, 0o600))
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
-	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds)}, nil, nil, nil, nil)
+	router := NewGenericRouter(nil, &mockHandlerStore{modelCatalog: catalogWithDatasheetForTest(t, ds)}, nil, nil, nil, nil)
 	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{
 		{ID: "openai/deprecated-model"},
 		{ID: "openai/current-model"},
