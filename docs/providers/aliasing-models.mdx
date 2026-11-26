@@ -100,6 +100,7 @@ Each alias maps the name your application sends to either a plain target string 
 | `model_family` | enum | Forces the family used for provider routing decisions (request shape, response parsing, etc.). One of: `anthropic`, `openai`, `mistral`, `cohere`, `gemini`, `gemma`, `llama`, `imagen`, `veo`, `nova`, `titan`. When unset, the family is auto-detected by substring matching against `model_name`, `model_id`, and the alias name. |
 | `description` | string | Free-form note. Surfaced in the UI; not used for routing. |
 | `region` | string / EnvVar | Per-alias region override (Bedrock, SageMaker, Vertex). Falls back to the key-level region when unset. |
+| `force_fixed_budget_thinking` | boolean | Anthropic models only. When `true`, a reasoning request with an `effort` is sent as `thinking: {"type": "enabled", "budget_tokens": N}` even when the resolved model (`model_name`, else `model_id`) also supports adaptive thinking (for example Claude Sonnet 4.6 or Opus 4.6). Use it when you set `model_name` for pricing or Bedrock `cachePoint` support and want to keep the fixed thinking budget. Ignored for adaptive-only models (Opus 4.7+, Sonnet 5+, Fable/Mythos), which reject `budget_tokens`. Unset keeps the default. |
 
 **Provider-specific overrides** (only set on aliases whose owning key matches the provider; validation rejects mismatches):
 

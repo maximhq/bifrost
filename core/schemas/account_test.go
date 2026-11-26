@@ -62,11 +62,12 @@ func TestAliasConfigRedactedPreservesShape(t *testing.T) {
 		"metadata": {
 			ModelID: "model", ModelName: Ptr("canonical"), ModelFamily: Ptr(ModelFamilyAnthropic),
 			Description: "alias description", UseAnthropicEndpoints: Ptr(true), UseOpenAIEndpoints: Ptr(false),
-			AzureAliasCfg:     &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version"), UseSpeechEndpoints: Ptr(true)},
-			VertexAliasCfg:    &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
-			BedrockAliasCfg:   &BedrockAliasCfg{},
-			ReplicateAliasCfg: &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
-			BasetenAliasCfg:   &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")},
+			ForceFixedBudgetThinking: Ptr(true),
+			AzureAliasCfg:            &AzureAliasCfg{APIVersion: Ptr("api-version"), AnthropicVersion: Ptr("anthropic-version"), UseSpeechEndpoints: Ptr(true)},
+			VertexAliasCfg:           &VertexAliasCfg{ForceSingleRegion: Ptr(true)},
+			BedrockAliasCfg:          &BedrockAliasCfg{},
+			ReplicateAliasCfg:        &ReplicateAliasCfg{UseDeploymentsEndpoint: Ptr(true)},
+			BasetenAliasCfg:          &BasetenAliasCfg{DeploymentURL: NewSecretVar("https://model-abc.api.baseten.co/environments/production/sync/v1")},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -371,11 +372,12 @@ func TestKeyAliasesMarshalRichShapeWhenAnyExtraFieldSet(t *testing.T) {
 		wantKey   string
 		wantValue any
 	}{
-		"with_model_name":   {AliasConfig{ModelID: "x", ModelName: Ptr("canonical")}, "model_name", "canonical"},
-		"with_model_family": {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
-		"with_description":  {AliasConfig{ModelID: "x", Description: "prod"}, "description", "prod"},
-		"with_azure_subcfg": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}}, "api_version", "2024-08-01-preview"},
-		"with_azure_speech": {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{UseSpeechEndpoints: Ptr(true)}}, "use_speech_endpoints", true},
+		"with_model_name":                  {AliasConfig{ModelID: "x", ModelName: Ptr("canonical")}, "model_name", "canonical"},
+		"with_model_family":                {AliasConfig{ModelID: "x", ModelFamily: Ptr(ModelFamilyAnthropic)}, "model_family", "anthropic"},
+		"with_description":                 {AliasConfig{ModelID: "x", Description: "prod"}, "description", "prod"},
+		"with_azure_subcfg":                {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{APIVersion: Ptr("2024-08-01-preview")}}, "api_version", "2024-08-01-preview"},
+		"with_azure_speech":                {AliasConfig{ModelID: "x", AzureAliasCfg: &AzureAliasCfg{UseSpeechEndpoints: Ptr(true)}}, "use_speech_endpoints", true},
+		"with_force_fixed_budget_thinking": {AliasConfig{ModelID: "x", ForceFixedBudgetThinking: Ptr(true)}, "force_fixed_budget_thinking", true},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -873,6 +875,89 @@ func TestResolveCanonicalModelPrecedence(t *testing.T) {
 			got := ResolveCanonicalModel(withAlias(c.ra), c.fallback)
 			if got != c.want {
 				t.Fatalf("ResolveCanonicalModel: got %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestShouldUseAdaptiveThinking(t *testing.T) {
+	// Helper to build a BifrostContext carrying a ResolvedAlias (nil ra => no alias).
+	withAlias := func(ra *ResolvedAlias) *BifrostContext {
+		bc := NewBifrostContext(nil, NoDeadline)
+		if ra != nil {
+			bc.SetValue(BifrostContextKeyResolvedAlias, ra)
+		}
+		return bc
+	}
+	forced := func(v bool) *ResolvedAlias {
+		return &ResolvedAlias{Key: "best-claude", Config: &AliasConfig{
+			ModelID:                  "claude-sonnet-4-6",
+			ForceFixedBudgetThinking: Ptr(v),
+		}}
+	}
+
+	cases := []struct {
+		name             string
+		ra               *ResolvedAlias
+		supportsAdaptive bool
+		adaptiveOnly     bool
+		want             bool
+	}{
+		{
+			name:             "adaptive-capable, no override: adaptive used (regression baseline)",
+			ra:               nil,
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             true,
+		},
+		{
+			name:             "adaptive-capable, override nil: adaptive used",
+			ra:               &ResolvedAlias{Key: "best-claude", Config: &AliasConfig{ModelID: "claude-sonnet-4-6"}},
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             true,
+		},
+		{
+			name:             "adaptive-capable, override false: adaptive used",
+			ra:               forced(false),
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             true,
+		},
+		{
+			name:             "adaptive-capable NOT adaptive-only, override true: budget_tokens (new behavior)",
+			ra:               forced(true),
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             false,
+		},
+		{
+			name:             "adaptive-ONLY, override true: override ignored, adaptive used",
+			ra:               forced(true),
+			supportsAdaptive: true,
+			adaptiveOnly:     true,
+			want:             true,
+		},
+		{
+			name:             "does not support adaptive, override true: budget_tokens (unaffected, no panic)",
+			ra:               forced(true),
+			supportsAdaptive: false,
+			adaptiveOnly:     false,
+			want:             false,
+		},
+		{
+			name:             "override true but nil Config: defensive, adaptive used",
+			ra:               &ResolvedAlias{Key: "best-claude", Config: nil},
+			supportsAdaptive: true,
+			adaptiveOnly:     false,
+			want:             true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ShouldUseAdaptiveThinking(withAlias(c.ra), c.supportsAdaptive, c.adaptiveOnly)
+			if got != c.want {
+				t.Fatalf("ShouldUseAdaptiveThinking: got %v, want %v", got, c.want)
 			}
 		})
 	}

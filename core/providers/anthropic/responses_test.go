@@ -4659,3 +4659,65 @@ func TestToAnthropicResponsesRequest_AllowedTools(t *testing.T) {
 		})
 	}
 }
+
+// TestToAnthropicResponsesRequest_ForceFixedBudgetThinkingOverride is the
+// Responses-side twin of TestToAnthropicChatRequest_ForceFixedBudgetThinkingOverride:
+// an alias whose model_name resolves to an adaptive-capable (not adaptive-only)
+// model keeps budget_tokens thinking when force_fixed_budget_thinking is set.
+func TestToAnthropicResponsesRequest_ForceFixedBudgetThinkingOverride(t *testing.T) {
+	const wireModelID = "a1b2c3d4e5f6" // opaque resource id; capModel comes from the alias ModelName
+
+	tests := []struct {
+		name         string
+		modelName    string
+		force        *bool
+		expectedType string
+		expectBudget bool
+		expectEffort bool
+	}{
+		{"Sonnet4.6_NoOverride_UsesAdaptive", "claude-sonnet-4-6", nil, "adaptive", false, true},
+		{"Sonnet4.6_OverrideFalse_UsesAdaptive", "claude-sonnet-4-6", schemas.Ptr(false), "adaptive", false, true},
+		{"Sonnet4.6_OverrideTrue_UsesBudgetTokens", "claude-sonnet-4-6", schemas.Ptr(true), "enabled", true, false},
+		{"Sonnet5_AdaptiveOnly_OverrideTrue_IgnoredStaysAdaptive", "claude-sonnet-5", schemas.Ptr(true), "adaptive", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+				Key: "best-claude",
+				Config: &schemas.AliasConfig{
+					ModelID:                  wireModelID,
+					ModelName:                schemas.Ptr(tt.modelName),
+					ForceFixedBudgetThinking: tt.force,
+				},
+			})
+
+			out, err := ToAnthropicResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic,
+				Model:    wireModelID,
+				Input:    makeSimpleInput("think"),
+				Params: &schemas.ResponsesParameters{
+					MaxOutputTokens: schemas.Ptr(8192),
+					Reasoning:       &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")},
+				},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out.Thinking == nil {
+				t.Fatal("expected Thinking to be set")
+			}
+			if out.Thinking.Type != tt.expectedType {
+				t.Errorf("thinking.type: got %q, want %q", out.Thinking.Type, tt.expectedType)
+			}
+			if hasBudget := out.Thinking.BudgetTokens != nil; hasBudget != tt.expectBudget {
+				t.Errorf("budget_tokens presence: got %v, want %v (thinking=%+v)", hasBudget, tt.expectBudget, out.Thinking)
+			}
+			if hasEffort := out.OutputConfig != nil && out.OutputConfig.Effort != nil; hasEffort != tt.expectEffort {
+				t.Errorf("output_config.effort presence: got %v, want %v", hasEffort, tt.expectEffort)
+			}
+		})
+	}
+}

@@ -8869,6 +8869,10 @@
                   "use_openai_endpoints": {
                     "type": "boolean",
                     "description": "Per-alias override of use_openai_endpoints."
+                  },
+                  "force_fixed_budget_thinking": {
+                    "type": "boolean",
+                    "description": "Anthropic models (direct, Bedrock, Vertex, Azure): when true, reasoning requests that carry an effort use thinking {type: enabled, budget_tokens: N} even when the resolved model (model_name, else model_id) also supports adaptive thinking. Lets an alias set model_name for pricing or cachePoint gating without switching its reasoning to adaptive thinking. Ignored for adaptive-only models (Opus 4.7+, Sonnet 5+, Fable/Mythos), which reject budget_tokens. Unset keeps the default."
                   }
                 },
                 "required": [
