@@ -723,6 +723,25 @@ SearchFilters:
       items:
         type: string
         enum: [blocked, detected]
+    guardrail_actions:
+      type: array
+      items:
+        type: string
+        enum: [blocked, redacted, detected, monitored]
+      description: What a guardrail did on one recorded match; the guardrail rule, profile and phase filters must hold on that same match
+    guardrail_rule_ids:
+      type: array
+      items:
+        type: string
+    guardrail_profile_ids:
+      type: array
+      items:
+        type: string
+    guardrail_phases:
+      type: array
+      items:
+        type: string
+        enum: [input, output]
     error_types:
       type: array
       items:

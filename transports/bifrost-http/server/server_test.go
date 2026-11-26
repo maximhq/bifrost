@@ -478,13 +478,13 @@ func TestAgentGatewayRoutesRegisteredAfterStartupInitialization(t *testing.T) {
 	}
 	SetLogger(agentGatewayRouteLogger{})
 	t.Cleanup(func() { SetLogger(nil) })
-	requireNoError(s.InitializeAgentGateway(context.Background(), nil, nil))
+	requireNoError(s.InitializeAgentGateway(context.Background(), nil))
 	firstHandler := s.AgentGatewayHandler
 	if firstHandler == nil {
 		t.Fatal("expected Agent Gateway handler to be initialized")
 	}
 	defer s.CloseAgentGateway()
-	requireNoError(s.InitializeAgentGateway(context.Background(), nil, nil))
+	requireNoError(s.InitializeAgentGateway(context.Background(), nil))
 	if s.AgentGatewayHandler != firstHandler {
 		t.Fatal("expected Agent Gateway handler to be constructed only once")
 	}
