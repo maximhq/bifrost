@@ -148,7 +148,9 @@ func (p *RoutingPlugin) classifyModelRouterStatement(parent context.Context, rt 
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, noClassifiableComplexityInputLog)
 		return ModelRouterClassification{Mechanism: complexity.MechanismSkipped, Trace: ctx.GetRoutingEngineLogs()}
 	}
-	proposal := p.classifyRouterInput(ctx, input, rt)
+	// Straight to the classifier: a test statement is not a request, so there
+	// is no earlier answer to reuse and none to keep.
+	proposal := p.runRouterClassifier(ctx, input, rt)
 	if proposal.LogMessage != "" {
 		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, proposal.LogLevel, proposal.LogMessage)
 	}

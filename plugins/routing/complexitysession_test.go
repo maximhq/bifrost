@@ -46,7 +46,7 @@ func TestRoutingPluginRequiresSessionStoreForSessionMode(t *testing.T) {
 }
 
 // stringTableForTest returns a table of strings that keeps write times, on a new live store.
-func stringTableForTest(t *testing.T) *livestore.Table[string, string] {
+func stringTableForTest(t testing.TB) *livestore.Table[string, string] {
 	t.Helper()
 	live, err := livestore.New()
 	require.NoError(t, err)

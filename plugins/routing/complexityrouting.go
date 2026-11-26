@@ -27,6 +27,50 @@ type complexityProposal struct {
 	SemanticMiss *complexity.SemanticResult
 	LogLevel     schemas.LogLevel
 	LogMessage   string
+	// Reused marks an answer a router took from an earlier router's
+	// classification of the same request (see classifyRouterInput). Its log
+	// line is the earlier router's and is already in the routing log, so it
+	// is not written again: the log shows one classification, then what each
+	// router did with it.
+	Reused bool
+}
+
+// sharedClassificationsKey keys the per-request record of what classifiers
+// answered: a list of sharedClassification, one for each classifier key the
+// request met. Routers whose classifier settings are the same would each get
+// the same answer for one request, so the first one's is kept and the others
+// reuse it: the request is embedded, or sent to the decision or llm model,
+// once. A request meets one or two kinds of classifier, so the list is
+// searched in order.
+type sharedClassificationsKey struct{}
+
+// sharedClassification is one classifier's answer for a request, under the
+// key of the settings that produced it.
+type sharedClassification struct {
+	key      string
+	proposal complexityProposal
+}
+
+// sharedClassificationFor returns what a classifier with the same settings
+// already answered for this request, marked as reused.
+func sharedClassificationFor(ctx *schemas.BifrostContext, key string) (complexityProposal, bool) {
+	answers, _ := ctx.Value(sharedClassificationsKey{}).([]sharedClassification)
+	for i := range answers {
+		if answers[i].key == key {
+			proposal := answers[i].proposal
+			proposal.Reused = true
+			return proposal, true
+		}
+	}
+	return complexityProposal{}, false
+}
+
+// shareClassification keeps a classifier's answer for the routers after it. A
+// classification that produced no tier is kept as well: the next router with
+// the same settings would only fail, or time out, the same way.
+func shareClassification(ctx *schemas.BifrostContext, key string, proposal complexityProposal) {
+	answers, _ := ctx.Value(sharedClassificationsKey{}).([]sharedClassification)
+	ctx.SetValue(sharedClassificationsKey{}, append(answers, sharedClassification{key: key, proposal: proposal}))
 }
 
 // computeComplexity classifies the request for a routing rule's complexity_tier, with the
@@ -217,8 +261,25 @@ func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, inp
 	return p.classifyRouterInput(ctx, input, p.complexityRuntime())
 }
 
-// classifyRouterInput selects the router's configured primary classifier and fallback chain.
+// classifyRouterInput classifies the input with the router's classifiers, or
+// reuses the answer an earlier router with the same classifier settings got
+// for this request. Only the classifier's own answer is reused: session
+// memory is applied by the caller, per router.
 func (p *RoutingPlugin) classifyRouterInput(ctx *schemas.BifrostContext, input complexity.ComplexityInput, rt *modelRouterRuntime) complexityProposal {
+	key := rt.classifierKey()
+	if key == "" {
+		return p.runRouterClassifier(ctx, input, rt)
+	}
+	if proposal, ok := sharedClassificationFor(ctx, key); ok {
+		return proposal
+	}
+	proposal := p.runRouterClassifier(ctx, input, rt)
+	shareClassification(ctx, key, proposal)
+	return proposal
+}
+
+// runRouterClassifier selects the router's configured primary classifier and fallback chain.
+func (p *RoutingPlugin) runRouterClassifier(ctx *schemas.BifrostContext, input complexity.ComplexityInput, rt *modelRouterRuntime) complexityProposal {
 	config := rt.config.Load()
 	if config != nil {
 		switch config.Classifier {
@@ -421,6 +482,9 @@ func formatSessionProposalLog(event, effectiveTier, previousTier string, proposa
 		message += fmt.Sprintf(" previous=%s", previousTier)
 	}
 	message += fmt.Sprintf(" proposed=%s source=%s", proposal.Result.Tier, proposal.Mechanism)
+	if proposal.Reused {
+		message += " reused=true"
+	}
 	if proposal.Score != nil {
 		message += fmt.Sprintf(" proposed_similarity=%.2f", *proposal.Score)
 	}
