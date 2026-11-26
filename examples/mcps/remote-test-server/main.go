@@ -217,6 +217,11 @@ func newMCPServer(instructions string) *server.MCPServer {
 		mcp.WithString("message", mcp.Required(), mcp.Description("Message to echo")),
 	), slowEchoHandler)
 
+	s.AddTool(mcp.NewTool(
+		"bare_echo",
+		mcp.WithString("message", mcp.Required(), mcp.Description("Message to echo")),
+	), echoHandler)
+
 	return s
 }
 

@@ -20,6 +20,12 @@
         "connection_string": "http://localhost:3012/sse",
         "tools_to_execute": ["slow_echo"],
         "tools_to_auto_execute": ["slow_echo"]
+      },
+      {
+        "name": "bare_mcp",
+        "connection_type": "sse",
+        "connection_string": "http://localhost:3012/sse",
+        "tools_to_execute": ["bare_echo"]
       }
     ]
   },

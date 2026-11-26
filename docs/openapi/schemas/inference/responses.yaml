@@ -68,6 +68,17 @@ ResponsesRequest:
       $ref: "#/AccessPrograms"
     background:
       type: boolean
+    background_options:
+      type: object
+      description: "Options for a background response, forwarded to OpenAI. The `2h` and `8h` windows need `background: true`, standard processing and no streaming."
+      properties:
+        completion_window:
+          type: string
+          enum: [soonest, 2h, 8h]
+          description: How soon the response must complete. `2h` and `8h` select discounted background execution
+        continuation_id:
+          type: string
+          description: Caller-chosen ID that prioritizes related background requests
     conversation:
       oneOf:
         - type: string
@@ -96,6 +107,23 @@ ResponsesRequest:
       type: string
     prompt_cache_key:
       type: string
+    prompt_cache_options:
+      type: object
+      description: Request-wide prompt-caching options, forwarded to OpenAI gpt-5.6 and later; dropped for earlier models.
+      properties:
+        mode:
+          type: string
+          enum: [implicit, explicit]
+        ttl:
+          type: string
+          enum: [30m, 12h]
+          description: "Minimum lifetime of every breakpoint the request writes. Bedrock and Bedrock Mantle accept only `30m`; Bifrost drops any other value for them"
+        prewarm:
+          type: boolean
+          description: Write the prompt cache without generating output
+        comparison_response_id:
+          type: string
+          description: ID of an earlier response to compare against when diagnosing prompt cache reuse
     reasoning:
       $ref: "#/ResponsesParametersReasoning"
     safety_identifier:

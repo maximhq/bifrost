@@ -1742,12 +1742,8 @@ install-playwright: ## Install Playwright test dependencies
 	@which node > /dev/null || ($(ECHO) "$(RED)Error: Node.js is not installed. Please install Node.js first.$(NC)" && exit 1)
 	@which npm > /dev/null || ($(ECHO) "$(RED)Error: npm is not installed. Please install npm first.$(NC)" && exit 1)
 	@$(USE_NODE); cd tests/e2e && npm ci
-	@cd tests/e2e && if npx playwright install --list 2>/dev/null | grep -q "chromium"; then \
-		$(ECHO) "$(CYAN)Chromium is already installed, skipping download$(NC)"; \
-	else \
-		$(ECHO) "$(CYAN)Installing Chromium...$(NC)"; \
-		npx playwright install --with-deps chromium; \
-	fi
+	@$(ECHO) "$(CYAN)Installing the Chromium revision this Playwright version needs...$(NC)"
+	@cd tests/e2e && npx playwright install --with-deps chromium
 	@$(ECHO) "$(GREEN)Playwright is ready$(NC)"
 
 build-test-plugin: ## Build test plugin for E2E tests (copies to tmp/bifrost-test-plugin.so)

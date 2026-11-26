@@ -1106,6 +1106,8 @@ Refer to [Anthropic Responses API](/providers/supported-providers/anthropic#2-re
 
 Embeddings are supported for Gemini and other models that support embedding generation.
 
+**Several inputs in one request.** Text embedding models such as `text-embedding-005` take every input in one `:predict` call. `gemini-embedding-001` accepts only one input per request, so send a separate request for each input. `gemini-embedding-2` models use `:embedContent` for a single input and `:batchEmbedContents` for several, returning one vector per input in input order. A batch holds at most 250 inputs. Vertex requires every input in a batch to use the same `dimensions` and truncation setting, which holds because request-level parameters apply to every input.
+
 ## Request Parameters
 
 ### Core Parameters
