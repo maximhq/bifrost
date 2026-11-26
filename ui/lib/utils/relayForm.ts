@@ -48,7 +48,8 @@ export const savedHeaders = (headers: { name: string; value: string }[]): Record
 	Object.fromEntries(headers.filter((h) => h.name.trim() && h.value.trim()).map((h) => [h.name.trim(), h.value.trim()]));
 
 /**
- * What identifies a route, since routes have no id: its method, path and header matchers. JSON keeps
+ * What tells routes apart by content (two routes with one key could never both match): its method,
+ * path and header matchers. The stable route ID is separate and only names a route. JSON keeps
  * each part separate, so a header value containing "y: b" cannot pass for a second header.
  */
 export function routeKey(r: { method: string; path: string; headers: { name: string; value: string }[] }): string {
@@ -152,6 +153,7 @@ export function toRelayForm(e: Relay): RelayFormValues {
 			paths: e.streaming?.paths ?? [],
 		},
 		routes: (e.routes ?? []).map((r) => ({
+			id: r.id,
 			method: r.method.toUpperCase() as RelayRouteConfig["method"], // the server accepts any case
 			path: r.path,
 			headers: Object.entries(r.headers ?? {}).map(([name, value]) => ({ name, value })),
@@ -283,6 +285,8 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 				(r.billable ?? routeBillableByDefault(r.method)) ? cleanUsage(r.usage, true) : withoutPricing(cleanUsage(r.usage, true));
 			const bodyOverrides = toBodyOverrides(r.body_overrides);
 			return {
+				// Sent back so the route keeps its ID, and the grants naming it, across the edit.
+				...(r.id ? { id: r.id } : {}),
 				method: r.method,
 				path: r.path.trim(),
 				...(Object.keys(headers).length ? { headers } : {}),

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/google/uuid"
 	"golang.org/x/net/http/httpguts"
 )
 
@@ -253,6 +254,7 @@ func RelayUpstreamJobID(scoped string) string {
 
 // RelayRouteConfig overrides the endpoint defaults for one upstream operation.
 type RelayRouteConfig struct {
+	ID                   string                     `json:"id,omitempty"`                     // stable UUID that grants name; assigned on save, kept across edits
 	Method               string                     `json:"method"`                           // GET | POST | PUT | PATCH | DELETE | HEAD
 	Path                 string                     `json:"path"`                             // segment glob; a trailing /** matches the prefix and everything below
 	Headers              map[string]string          `json:"headers,omitempty"`                // request headers that must also match: name (case-insensitive) to value glob (X-Amz-Target: Textract.Get*)
@@ -504,6 +506,77 @@ func routeIdentity(route RelayRouteConfig) string {
 	return string(key)
 }
 
+// validateRelayRouteID accepts only a canonical lowercase UUID, so a grant naming the route
+// compares equal to it byte for byte.
+func validateRelayRouteID(id string) error {
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.String() != id {
+		return fmt.Errorf("%q must be a lowercase UUID", id)
+	}
+	return nil
+}
+
+// ValidateRelayRouteIDs refuses route IDs that are not lowercase UUIDs or that repeat, before
+// AssignRelayRouteIDs would quietly replace a repeat.
+func ValidateRelayRouteIDs(routes []RelayRouteConfig) error {
+	seen := make(map[string]int, len(routes))
+	for i, route := range routes {
+		if route.ID == "" {
+			continue
+		}
+		if err := validateRelayRouteID(route.ID); err != nil {
+			return fmt.Errorf("routes[%d].id: %w", i, err)
+		}
+		if j, dup := seen[route.ID]; dup {
+			return fmt.Errorf("routes[%d].id repeats routes[%d].id %q", i, j, route.ID)
+		}
+		seen[route.ID] = i
+	}
+	return nil
+}
+
+// AssignRelayRouteIDs fills in the route IDs of next, an incoming full set of routes, from prev, the
+// stored set. Saves always send every route, often without IDs, so a route keeps its ID when the
+// caller sends it back or when an unclaimed previous route has the same method, path and headers.
+// A repeated caller ID is treated as new, and every route left without one gets a fresh UUID.
+func AssignRelayRouteIDs(prev, next []RelayRouteConfig) {
+	used := make(map[string]bool, len(next))
+	for i := range next {
+		if id := next[i].ID; id != "" {
+			if used[id] {
+				next[i].ID = ""
+				continue
+			}
+			used[id] = true
+		}
+	}
+	byIdentity := make(map[string][]string, len(prev))
+	for _, route := range prev {
+		if route.ID != "" && !used[route.ID] {
+			key := routeIdentity(route)
+			byIdentity[key] = append(byIdentity[key], route.ID)
+		}
+	}
+	for i := range next {
+		if next[i].ID != "" {
+			continue
+		}
+		key := routeIdentity(next[i])
+		for len(byIdentity[key]) > 0 {
+			id := byIdentity[key][0]
+			byIdentity[key] = byIdentity[key][1:]
+			if !used[id] {
+				next[i].ID = id
+				break
+			}
+		}
+		if next[i].ID == "" {
+			next[i].ID = uuid.NewString()
+		}
+		used[next[i].ID] = true
+	}
+}
+
 // Validate checks a relay's routes, usage mapping, streaming paths, async jobs and forced body
 // fields; ValidateEndpoint adds the endpoint-level fields.
 func (c *RelayConfig) Validate() error {
@@ -526,7 +599,17 @@ func (c *RelayConfig) Validate() error {
 			}
 		}
 	}
+	seenIDs := make(map[string]int, len(c.Routes))
 	for i, route := range c.Routes {
+		if route.ID != "" {
+			if err := validateRelayRouteID(route.ID); err != nil {
+				return fmt.Errorf("routes[%d].id: %w", i, err)
+			}
+			if j, dup := seenIDs[route.ID]; dup {
+				return fmt.Errorf("routes[%d].id repeats routes[%d].id %q", i, j, route.ID)
+			}
+			seenIDs[route.ID] = i
+		}
 		if _, ok := endpointRouteMethods[strings.ToUpper(route.Method)]; !ok {
 			return fmt.Errorf("routes[%d]: unsupported method %q", i, route.Method)
 		}

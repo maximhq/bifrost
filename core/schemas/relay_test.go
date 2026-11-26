@@ -651,3 +651,53 @@ func TestRelayRouteGlobSegmentsMatchTheUI(t *testing.T) {
 		assert.Error(t, validateEndpointRouteGlob("/v1/"+segment), segment)
 	}
 }
+
+// TestAssignRelayRouteIDs covers how a full-replace save keeps route IDs: a sent ID wins, a route
+// without one takes an unclaimed stored ID of the same method, path and headers, and the rest are new.
+func TestAssignRelayRouteIDs(t *testing.T) {
+	const (
+		searchID  = "11111111-1111-4111-8111-111111111111"
+		extractID = "22222222-2222-4222-8222-222222222222"
+		dupID     = "33333333-3333-4333-8333-333333333333"
+	)
+	prev := []RelayRouteConfig{
+		{ID: searchID, Method: "POST", Path: "/search"},
+		{ID: extractID, Method: "POST", Path: "/extract", Headers: map[string]string{"X-Mode": "a"}},
+		{ID: dupID, Method: "POST", Path: "/extract", Headers: map[string]string{"X-Mode": "a"}},
+	}
+	next := []RelayRouteConfig{
+		{Method: "POST", Path: "/extract", Headers: map[string]string{"x-mode": "a"}}, // header names match case-insensitively
+		{ID: searchID, Method: "POST", Path: "/search/v2"},                            // edited, sent back with its ID
+		{Method: "POST", Path: "/extract", Headers: map[string]string{"X-Mode": "a"}}, // the second stored duplicate
+		{Method: "GET", Path: "/usage"},                                               // new
+		{ID: searchID, Method: "GET", Path: "/copy"},                                  // a repeated sent ID counts as new
+	}
+	AssignRelayRouteIDs(prev, next)
+
+	assert.Equal(t, extractID, next[0].ID, "an unchanged route keeps its stored ID")
+	assert.Equal(t, searchID, next[1].ID, "an edited route keeps the ID it was sent with")
+	assert.Equal(t, dupID, next[2].ID, "stored duplicates are claimed in order")
+	for _, i := range []int{3, 4} {
+		require.NoError(t, validateRelayRouteID(next[i].ID), "route %d gets a fresh UUID", i)
+		assert.NotContains(t, []string{searchID, extractID, dupID}, next[i].ID)
+	}
+	assert.NotEqual(t, next[3].ID, next[4].ID)
+}
+
+// TestRelayRouteIDValidation refuses route IDs a grant could not match byte for byte.
+func TestRelayRouteIDValidation(t *testing.T) {
+	route := func(id, path string) RelayRouteConfig { return RelayRouteConfig{ID: id, Method: "GET", Path: path} }
+	const id = "4444aaaa-4444-4444-8444-44444444abcd"
+
+	ok := &RelayConfig{Routes: []RelayRouteConfig{route(id, "/a"), route("", "/b")}}
+	require.NoError(t, ok.Validate(), "an empty ID is assigned on save")
+
+	upper := &RelayConfig{Routes: []RelayRouteConfig{route(strings.ToUpper(id), "/a")}}
+	assert.ErrorContains(t, upper.Validate(), "lowercase UUID")
+
+	notUUID := &RelayConfig{Routes: []RelayRouteConfig{route("search", "/a")}}
+	assert.ErrorContains(t, notUUID.Validate(), "lowercase UUID")
+
+	dup := &RelayConfig{Routes: []RelayRouteConfig{route(id, "/a"), route(id, "/b")}}
+	assert.ErrorContains(t, dup.Validate(), "repeats routes[0].id")
+}

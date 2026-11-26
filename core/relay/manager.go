@@ -217,6 +217,7 @@ func (m *Manager) Create(ctx context.Context, cfg *schemas.RelayConfig) (*schema
 	if err := cfg.RepeatedRoute(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
+	schemas.AssignRelayRouteIDs(nil, cfg.Routes)
 	m.mutations.Lock()
 	defer m.mutations.Unlock()
 	if err := m.store.CreateRelay(ctx, cfg, ""); err != nil {
@@ -269,6 +270,12 @@ func (m *Manager) Update(ctx context.Context, name string, cfg *schemas.RelayCon
 	}
 	cfg.Name = name
 	cfg.MergeRedacted(previous)
+	// IDs are settled before the config goes live, so the live routes and the stored rows agree.
+	// The IDs sent are checked first: assignment would silently replace a repeated one.
+	if err := schemas.ValidateRelayRouteIDs(cfg.Routes); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
+	}
+	schemas.AssignRelayRouteIDs(previous.Routes, cfg.Routes)
 	if err := cfg.ValidateEndpoint(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrInvalidConfig, err)
 	}
@@ -284,7 +291,22 @@ func (m *Manager) Update(ctx context.Context, name string, cfg *schemas.RelayCon
 		}
 		return nil, err
 	}
-	return cfg, nil
+	// The stored order can differ from the order sent (an existing route keeps its created_at), and
+	// equal-rank routes break ties on it, so the live relay is rebuilt from the row as peers do.
+	stored, err := m.store.GetRelay(ctx, name)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("relay %s: saved but could not be read back, serving the config as sent: %v", name, err)
+		}
+		return cfg, nil
+	}
+	if err := m.Upsert(stored); err != nil {
+		if m.logger != nil {
+			m.logger.Warn("relay %s: saved but the stored row did not compile, serving the config as sent: %v", name, err)
+		}
+		return cfg, nil
+	}
+	return stored, nil
 }
 
 // Delete removes the stored row and takes the relay out of service. It returns the ids of the
@@ -533,6 +555,7 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 		Streams:    p.stream == streamOn,
 	}
 	if p.route != nil {
+		req.RouteID = p.route.id
 		req.RoutePath = e.cfg.Routes[p.index].Path
 		req.RouteHeaders = p.route.matchedHeaders(headers, e.operatorLogHeaders)
 	}

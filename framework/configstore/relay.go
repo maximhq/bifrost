@@ -18,15 +18,80 @@ import (
 // ErrRelayExists is returned when creating an endpoint whose name is taken.
 var ErrRelayExists = errors.New("relay already exists")
 
+// loadRelayRoutes reads the route rows of the named relays, or of every relay when names is nil,
+// grouped by relay in stored order.
+func loadRelayRoutes(db *gorm.DB, names []string) (map[string][]tables.TableRelayRoute, error) {
+	var routes []tables.TableRelayRoute
+	query := db.Order("created_at ASC, id ASC")
+	if names != nil {
+		query = query.Where("relay_name IN ?", names)
+	}
+	if err := query.Find(&routes).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string][]tables.TableRelayRoute)
+	for _, route := range routes {
+		out[route.RelayName] = append(out[route.RelayName], route)
+	}
+	return out, nil
+}
+
+// writeRelayRoutes replaces a relay's route rows with the routes of row. IDs are assigned first
+// (kept from prev where a route matches), and a route that already existed keeps its created_at,
+// so its tie-break order survives the edit. New routes get increasing timestamps in the order
+// sent. It writes the assigned IDs back into cfg, so the caller sees what was stored.
+func writeRelayRoutes(tx *gorm.DB, cfg *schemas.RelayConfig, prev []tables.TableRelayRoute) error {
+	prevConfigs := make([]schemas.RelayRouteConfig, len(prev))
+	createdAt := make(map[string]time.Time, len(prev))
+	for i := range prev {
+		prevConfigs[i] = prev[i].ToConfig()
+		createdAt[prev[i].ID] = prev[i].CreatedAt
+	}
+	schemas.AssignRelayRouteIDs(prevConfigs, cfg.Routes)
+	if err := tx.Where("relay_name = ?", cfg.Name).Delete(&tables.TableRelayRoute{}).Error; err != nil {
+		return err
+	}
+	if len(cfg.Routes) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	// New routes sort after every kept one even when this node's clock is behind the one that
+	// stored them, so an added route never jumps ahead in a tie.
+	base := now
+	for _, at := range createdAt {
+		if !at.Before(base) {
+			base = at.Add(time.Microsecond)
+		}
+	}
+	rows := make([]tables.TableRelayRoute, len(cfg.Routes))
+	for i, route := range cfg.Routes {
+		rows[i] = tables.NewTableRelayRoute(cfg.Name, route)
+		if at, ok := createdAt[route.ID]; ok {
+			rows[i].CreatedAt = at
+		} else {
+			rows[i].CreatedAt = base.Add(time.Duration(i) * time.Microsecond)
+		}
+		rows[i].UpdatedAt = now
+	}
+	// Batched so a relay with many routes stays under the drivers' bind-parameter limits.
+	return tx.Omit(clause.Associations).CreateInBatches(&rows, 200).Error
+}
+
 // ListRelays loads every endpoint, oldest first, so startup reload and API output are
 // stable.
 func (s *RDBConfigStore) ListRelays(ctx context.Context) ([]*schemas.RelayConfig, error) {
+	db := s.DB().WithContext(ctx)
 	var rows []tables.TableRelay
-	if err := s.DB().WithContext(ctx).Order("created_at ASC, name ASC").Find(&rows).Error; err != nil {
+	if err := db.Order("created_at ASC, name ASC").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	routes, err := loadRelayRoutes(db, nil)
+	if err != nil {
 		return nil, err
 	}
 	out := make([]*schemas.RelayConfig, 0, len(rows))
 	for i := range rows {
+		rows[i].Routes = routes[rows[i].Name]
 		cfg, err := rows[i].ToConfig()
 		if err != nil {
 			return nil, err
@@ -38,18 +103,24 @@ func (s *RDBConfigStore) ListRelays(ctx context.Context) ([]*schemas.RelayConfig
 
 // GetRelay loads one endpoint, ErrNotFound when it does not exist.
 func (s *RDBConfigStore) GetRelay(ctx context.Context, name string) (*schemas.RelayConfig, error) {
+	db := s.DB().WithContext(ctx)
 	var row tables.TableRelay
-	if err := s.DB().WithContext(ctx).First(&row, "name = ?", name).Error; err != nil {
+	if err := db.First(&row, "name = ?", name).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	routes, err := loadRelayRoutes(db, []string{name})
+	if err != nil {
+		return nil, err
+	}
+	row.Routes = routes[name]
 	return row.ToConfig()
 }
 
-// CreateRelay persists a new endpoint. configHash is set by the config.json sync and
-// empty for API writes.
+// CreateRelay persists a new endpoint and its routes, giving each route without an ID a new one
+// (written back into cfg). configHash is set by the config.json sync and empty for API writes.
 func (s *RDBConfigStore) CreateRelay(ctx context.Context, cfg *schemas.RelayConfig, configHash string) error {
 	row, err := tables.NewTableRelay(cfg)
 	if err != nil {
@@ -64,11 +135,16 @@ func (s *RDBConfigStore) CreateRelay(ctx context.Context, cfg *schemas.RelayConf
 		if count > 0 {
 			return fmt.Errorf("%w: %s", ErrRelayExists, cfg.Name)
 		}
-		return tx.Create(row).Error
+		if err := tx.Omit(clause.Associations).Create(row).Error; err != nil {
+			return err
+		}
+		return writeRelayRoutes(tx, cfg, nil)
 	})
 }
 
-// UpdateRelay replaces an endpoint's settings. The stored config hash is written only
+// UpdateRelay replaces an endpoint's settings and routes. A route keeps its ID and created_at
+// when it is sent back with its ID or matches a stored route's method, path and headers; the
+// assigned IDs are written back into cfg. The stored config hash is written only
 // when the caller supplies one (the config.json sync); an API edit keeps the stored checkpoint so
 // split-mode reconciliation can tell the file has not changed.
 func (s *RDBConfigStore) UpdateRelay(ctx context.Context, cfg *schemas.RelayConfig, configHash string) error {
@@ -90,7 +166,14 @@ func (s *RDBConfigStore) UpdateRelay(ctx context.Context, cfg *schemas.RelayConf
 		if configHash != "" {
 			fields = append(fields, "config_hash")
 		}
-		return tx.Model(row).Select(fields).Updates(row).Error
+		if err := tx.Model(row).Select(fields).Updates(row).Error; err != nil {
+			return err
+		}
+		prev, err := loadRelayRoutes(tx, []string{cfg.Name})
+		if err != nil {
+			return err
+		}
+		return writeRelayRoutes(tx, cfg, prev[cfg.Name])
 	})
 }
 
@@ -99,6 +182,9 @@ func (s *RDBConfigStore) UpdateRelay(ctx context.Context, cfg *schemas.RelayConf
 func (s *RDBConfigStore) DeleteRelay(ctx context.Context, name string) error {
 	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("relay_name = ?", name).Delete(&tables.TableVirtualKeyRelayGrant{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("relay_name = ?", name).Delete(&tables.TableRelayRoute{}).Error; err != nil {
 			return err
 		}
 		// The row is loaded first so the vault remove callback sees its secrets and deletes the ones

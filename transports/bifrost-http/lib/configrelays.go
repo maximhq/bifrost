@@ -72,12 +72,13 @@ func loadRelaysConfig(ctx context.Context, config *Config, configData *ConfigDat
 			if storedHash == fileHash && !configData.isConfigJSONSourceOfTruth() {
 				continue
 			}
-			if err := config.ConfigStore.UpdateRelay(ctx, cfg, fileHash); err != nil {
+			// A copy, since the store writes assigned route IDs back and the file's form is what is hashed.
+			if err := config.ConfigStore.UpdateRelay(ctx, cfg.Clone(), fileHash); err != nil {
 				logger.Warn("failed to update relay %q: %v", cfg.Name, err)
 			}
 			continue
 		}
-		if err := config.ConfigStore.CreateRelay(ctx, cfg, fileHash); err != nil {
+		if err := config.ConfigStore.CreateRelay(ctx, cfg.Clone(), fileHash); err != nil {
 			logger.Warn("failed to create relay %q: %v", cfg.Name, err)
 			continue
 		}

@@ -2,14 +2,19 @@ package configstore
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/relay"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func testRelay(name string) *schemas.RelayConfig {
@@ -112,4 +117,100 @@ func TestDeleteVirtualKeyRemovesRelayGrants(t *testing.T) {
 	ids, err = store.GetRelayGrantedVirtualKeyIDs(ctx, "tavily")
 	require.NoError(t, err)
 	assert.Empty(t, ids, "the deleted key's grant rows are gone")
+}
+
+// TestRelayRoutesKeepIDsAcrossUpdates checks a full-replace save keeps each surviving route's ID
+// and created_at, drops removed routes, and stores new routes after the kept ones.
+func TestRelayRoutesKeepIDsAcrossUpdates(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	cfg := testRelay("tavily")
+	cfg.Routes = append(cfg.Routes, schemas.RelayRouteConfig{Method: "POST", Path: "/extract"}, schemas.RelayRouteConfig{Method: "GET", Path: "/usage"})
+	require.NoError(t, store.CreateRelay(ctx, cfg, ""))
+	created, err := store.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	require.Len(t, created.Routes, 3)
+	ids := map[string]string{}
+	for _, route := range created.Routes {
+		require.NotEmpty(t, route.ID)
+		ids[route.Path] = route.ID
+	}
+	assert.Equal(t, []string{"/search", "/extract", "/usage"}, routePaths(created.Routes), "routes come back in the order sent")
+
+	// Resent without IDs and reordered: /usage dropped, /extract edited by ID, /crawl added first.
+	edit := testRelay("tavily")
+	edit.Routes = []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/crawl"},
+		{ID: ids["/extract"], Method: "POST", Path: "/extract", Billable: schemas.Ptr(false)},
+		{Method: "POST", Path: "/search", Usage: edit.Routes[0].Usage},
+	}
+	require.NoError(t, store.UpdateRelay(ctx, edit, ""))
+	got, err := store.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"/search", "/extract", "/crawl"}, routePaths(got.Routes), "kept routes keep their order; the new one goes last")
+	assert.Equal(t, ids["/search"], got.Routes[0].ID)
+	assert.Equal(t, ids["/extract"], got.Routes[1].ID)
+	require.NotNil(t, got.Routes[1].Billable)
+	assert.False(t, *got.Routes[1].Billable, "the edit is saved")
+	assert.NotContains(t, []string{ids["/search"], ids["/extract"], ids["/usage"]}, got.Routes[2].ID)
+	assert.Equal(t, got.Routes[2].ID, edit.Routes[0].ID, "assigned IDs are written back to the caller's config")
+
+	var count int64
+	require.NoError(t, store.DB().Model(&tables.TableRelayRoute{}).Where("relay_name = ?", "tavily").Count(&count).Error)
+	assert.EqualValues(t, 3, count, "the removed route's row is gone")
+
+	require.NoError(t, store.DeleteRelay(ctx, "tavily"))
+	require.NoError(t, store.DB().Model(&tables.TableRelayRoute{}).Count(&count).Error)
+	assert.Zero(t, count, "deleting the relay deletes its routes")
+}
+
+// TestMigrationAddRelayRoutesTable checks the migration moves routes out of config_json into rows
+// in their saved order, so routes of equal rank keep the order that breaks their tie.
+func TestMigrationAddRelayRoutesTable(t *testing.T) {
+	ctx := context.Background()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, migrationAddRelaysTables(ctx, db, testMigrationLogger))
+
+	legacy := []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/v1/*", Headers: map[string]string{"X-Mode": "a*"}},
+		{Method: "POST", Path: "/v1/*", Headers: map[string]string{"X-Tier": "b*"}},
+		{Method: "POST", Path: "/v1/search", Billable: schemas.Ptr(false)},
+		{Method: "POST", Path: "/v1/search", Billable: schemas.Ptr(false)}, // a config.json duplicate
+	}
+	configJSON, err := json.Marshal(map[string]any{"base_url": "https://api.example.com", "routes": legacy, "skip_route_check": true})
+	require.NoError(t, err)
+	created := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	require.NoError(t, db.Exec("INSERT INTO config_relays (name, description, config_json, created_at, updated_at) VALUES (?, '', ?, ?, ?)", "legacy", string(configJSON), created, created).Error)
+
+	require.NoError(t, migrationAddRelayRoutesTable(ctx, db, testMigrationLogger))
+
+	var stripped string
+	require.NoError(t, db.Table("config_relays").Where("name = ?", "legacy").Pluck("config_json", &stripped).Error)
+	assert.NotContains(t, stripped, "routes", "config_json no longer carries routes")
+	assert.Contains(t, stripped, "skip_route_check", "other settings are untouched")
+
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+	got, err := store.GetRelay(ctx, "legacy")
+	require.NoError(t, err)
+	require.Len(t, got.Routes, 4, "duplicates each get their own row")
+	seen := map[string]bool{}
+	for i, route := range got.Routes {
+		require.NotEmpty(t, route.ID)
+		assert.False(t, seen[route.ID])
+		seen[route.ID] = true
+		route.ID = ""
+		assert.Equal(t, legacy[i], route, "route %d keeps its saved position and settings", i)
+	}
+	assert.Equal(t, relay.RouteMatchOrder(legacy), relay.RouteMatchOrder(got.Routes), "match order, ties included, is unchanged")
+}
+
+// routePaths lists route paths in order.
+func routePaths(routes []schemas.RelayRouteConfig) []string {
+	out := make([]string, len(routes))
+	for i, route := range routes {
+		out[i] = route.Path
+	}
+	return out
 }

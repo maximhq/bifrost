@@ -2851,7 +2851,7 @@ func GenerateRelayHash(cfg *schemas.RelayConfig) (string, error) {
 		hash.Write(data)
 	}
 
-	// Hash Routes in file order (order still breaks ties between equally specific routes); route headers are a map, so sort keys
+	// Hash Routes in file order, so a reorder is still a change to sync; route headers are a map, so sort keys
 	if len(cfg.Routes) > 0 {
 		data, err := providerUtils.MarshalSorted(cfg.Routes)
 		if err != nil {

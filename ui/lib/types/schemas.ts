@@ -3026,6 +3026,7 @@ export const relayJobSchema = z
 	});
 
 export const relayRouteFormSchema = z.object({
+	id: z.string().optional(),
 	method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]),
 	path: relayGlob,
 	headers: z.array(relayHeaderPairSchema).superRefine((pairs, ctx) => {

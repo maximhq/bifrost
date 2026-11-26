@@ -120,6 +120,8 @@ export interface RelayJobConfig {
 }
 
 export interface RelayRouteConfig {
+	/** Stable UUID that relay grants name; the server assigns it and keeps it across edits. */
+	id?: string;
 	method: RelayRouteMethod;
 	path: string;
 	headers?: Record<string, string>;

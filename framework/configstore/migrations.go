@@ -615,6 +615,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_oauth_flow_origin_column"}, run: migrationAddMCPOauthFlowOriginColumn},
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
+	{IDs: []string{"add_relay_routes_table"}, run: migrationAddRelayRoutesTable},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1367,6 +1368,103 @@ func migrationAddRelaysTables(ctx context.Context, db *gorm.DB, logger schemas.L
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("%s is non-rollbackable: dropping the relay tables would permanently delete endpoints, their credentials and virtual-key grants", migrationName)
+		},
+	})
+}
+
+// legacyRelayRow is the part of a config_relays row the route move reads and rewrites.
+type legacyRelayRow struct {
+	Name       string
+	ConfigJSON string
+	CreatedAt  time.Time
+}
+
+// migrationAddRelayRoutesTable moves each relay's routes out of config_json into
+// config_relay_routes, one row per route with a new UUID, so grants can name a route. A route's
+// created_at is its relay's plus its array index in microseconds, which keeps the saved order that
+// breaks ties between equal-rank routes. A relay that already has route rows is only stripped, so
+// the step is safe to re-run.
+func migrationAddRelayRoutesTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_relay_routes_table"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := tx.AutoMigrate(&tables.TableRelayRoute{}); err != nil {
+				return fmt.Errorf("create config_relay_routes: %w", err)
+			}
+			var relays []legacyRelayRow
+			if err := tx.Table("config_relays").Select("name, config_json, created_at").Scan(&relays).Error; err != nil {
+				return fmt.Errorf("read relays: %w", err)
+			}
+			for _, relay := range relays {
+				legacy := gjson.Get(relay.ConfigJSON, "routes")
+				if !legacy.Exists() {
+					continue
+				}
+				var count int64
+				if err := tx.Model(&tables.TableRelayRoute{}).Where("relay_name = ?", relay.Name).Count(&count).Error; err != nil {
+					return fmt.Errorf("count routes of relay %s: %w", relay.Name, err)
+				}
+				if count == 0 {
+					var routes []schemas.RelayRouteConfig
+					if err := json.Unmarshal([]byte(legacy.Raw), &routes); err != nil {
+						return fmt.Errorf("decode routes of relay %s: %w", relay.Name, err)
+					}
+					schemas.AssignRelayRouteIDs(nil, routes)
+					now := time.Now().UTC()
+					for i, route := range routes {
+						row := tables.NewTableRelayRoute(relay.Name, route)
+						row.CreatedAt = relay.CreatedAt.UTC().Add(time.Duration(i) * time.Microsecond)
+						row.UpdatedAt = now
+						if err := tx.Omit(clause.Associations).Create(&row).Error; err != nil {
+							return fmt.Errorf("insert route %d of relay %s: %w", i, relay.Name, err)
+						}
+					}
+				}
+				stripped, err := sjson.Delete(relay.ConfigJSON, "routes")
+				if err != nil {
+					return fmt.Errorf("strip routes of relay %s: %w", relay.Name, err)
+				}
+				if err := tx.Table("config_relays").Where("name = ?", relay.Name).Update("config_json", stripped).Error; err != nil {
+					return fmt.Errorf("rewrite relay %s: %w", relay.Name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasTable(&tables.TableRelayRoute{}) {
+				return nil
+			}
+			var relays []legacyRelayRow
+			if err := tx.Table("config_relays").Select("name, config_json, created_at").Scan(&relays).Error; err != nil {
+				return fmt.Errorf("read relays: %w", err)
+			}
+			for _, relay := range relays {
+				var rows []tables.TableRelayRoute
+				if err := tx.Where("relay_name = ?", relay.Name).Order("created_at ASC, id ASC").Find(&rows).Error; err != nil {
+					return fmt.Errorf("read routes of relay %s: %w", relay.Name, err)
+				}
+				if len(rows) == 0 {
+					continue
+				}
+				routes := make([]schemas.RelayRouteConfig, len(rows))
+				for i := range rows {
+					routes[i] = rows[i].ToConfig()
+					routes[i].ID = ""
+				}
+				folded, err := sjson.Set(relay.ConfigJSON, "routes", routes)
+				if err != nil {
+					return fmt.Errorf("fold routes of relay %s: %w", relay.Name, err)
+				}
+				if err := tx.Table("config_relays").Where("name = ?", relay.Name).Update("config_json", folded).Error; err != nil {
+					return fmt.Errorf("rewrite relay %s: %w", relay.Name, err)
+				}
+			}
+			return tx.Migrator().DropTable(&tables.TableRelayRoute{})
 		},
 	})
 }
