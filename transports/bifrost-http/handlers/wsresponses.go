@@ -854,12 +854,25 @@ func createBifrostContextFromHeaders(handlerStore lib.HandlerStore, setupHeaders
 
 	if len(setupHeaders.headers) > 0 {
 		requestHeaders := make(map[string]string, len(setupHeaders.headers))
+		var dimensions map[string]string
 		for name, values := range setupHeaders.headers {
-			if len(values) > 0 {
-				requestHeaders[name] = values[len(values)-1]
+			if len(values) == 0 {
+				continue
+			}
+			value := values[len(values)-1]
+			requestHeaders[name] = value
+			// Same rule as lib.ConvertToBifrostContext for HTTP requests.
+			if labelName, ok := strings.CutPrefix(name, "x-bf-dim-"); ok && labelName != "" && labelName != "path" && labelName != "method" {
+				if dimensions == nil {
+					dimensions = make(map[string]string)
+				}
+				dimensions[labelName] = value
 			}
 		}
 		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, requestHeaders)
+		if len(dimensions) > 0 {
+			ctx.SetValue(schemas.BifrostContextKeyDimensions, dimensions)
+		}
 	}
 
 	if sessionID := lib.ParseSessionIDFromBaggage(setupHeaders.baggage); sessionID != "" {

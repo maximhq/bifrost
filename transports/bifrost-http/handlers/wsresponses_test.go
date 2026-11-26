@@ -241,6 +241,28 @@ func TestCreateBifrostContextFromHeadersOwnsRequestHeaders(t *testing.T) {
 	}
 }
 
+func TestCreateBifrostContextFromHeaders_CollectsDimensionHeaders(t *testing.T) {
+	requestCtx := &fasthttp.RequestCtx{}
+	requestCtx.Request.Header.Set("X-Bf-Dim-Customer_id", "acme")
+	requestCtx.Request.Header.Set("x-bf-dim-environment", "prod")
+	requestCtx.Request.Header.Set("x-bf-dim-method", "should-be-skipped")
+	requestCtx.Request.Header.Set("x-bf-dim-path", "should-be-skipped")
+	requestCtx.Request.Header.Set("x-bf-dim-", "ignored")
+	requestCtx.Request.Header.Set("x-custom-identity", "alice")
+	ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, captureSessionHeaders(requestCtx))
+	defer cancel()
+
+	dimensions, ok := ctx.Value(schemas.BifrostContextKeyDimensions).(map[string]string)
+	require.True(t, ok, "x-bf-dim-* headers on the websocket upgrade should become dimensions")
+	assert.Equal(t, map[string]string{"customer_id": "acme", "environment": "prod"}, dimensions)
+
+	noDimCtx, noDimCancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{
+		headers: map[string][]string{"x-custom-identity": {"alice"}},
+	})
+	defer noDimCancel()
+	assert.Nil(t, noDimCtx.Value(schemas.BifrostContextKeyDimensions))
+}
+
 func BenchmarkCreateBifrostContextFromHeaders(b *testing.B) {
 	for name, setupHeaders := range map[string]*sessionHeaders{
 		"empty": {},
@@ -251,6 +273,13 @@ func BenchmarkCreateBifrostContextFromHeaders(b *testing.B) {
 			"x-bf-eh-originator": {"test-client"},
 			"connection":         {"Upgrade"},
 			"upgrade":            {"websocket"},
+		}},
+		"dimensions": {headers: map[string][]string{
+			"authorization":         {"Bearer sk-bf-test"},
+			"x-bf-dim-workspace_id": {"ws-1"},
+			"x-bf-dim-run_id":       {"run-1"},
+			"connection":            {"Upgrade"},
+			"upgrade":               {"websocket"},
 		}},
 	} {
 		b.Run(name, func(b *testing.B) {
