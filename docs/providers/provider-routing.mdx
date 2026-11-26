@@ -1512,7 +1512,7 @@ budget_used                // Budget usage %
 tokens_used                // Token rate limit usage %
 request                    // Request rate limit usage %
 
-// Request complexity (available only when classification succeeds)
+// Request complexity (available only when classification succeeds; deprecated, replaced by Routers in v3.0.0)
 complexity_tier            // SIMPLE, MEDIUM, or COMPLEX; otherwise unavailable and complexity-dependent rules fall through
 ```
 
@@ -1569,7 +1569,7 @@ Within each scope, rules are sorted by **priority** (ascending: 0 before 10).
 | **Capacity Awareness** | Access real-time budget and rate limit usage percentages               |
 
 <Info>
-For complexity-based routing driven by request content, see [Complexity Router](/features/complexity-router). It adds a `complexity_tier` CEL variable that lets routing rules steer SIMPLE, MEDIUM, and COMPLEX requests to different models.
+For complexity-based routing driven by request content, see [Routers](/features/routers). A router runs after the routing rules, classifies each request it takes as SIMPLE, MEDIUM, or COMPLEX, and sends each tier to its own model. The older [Complexity Router](/features/complexity-router) and its `complexity_tier` variable are deprecated and will be replaced by Routers in v3.0.0.
 </Info>
 
 ### Integration with Governance

@@ -35,6 +35,7 @@ Warp answers questions only when all of the following are in place:
 | A vector store | Holds the embedding index used for semantic log search. Warp cannot be enabled without one. | [Vector store](/architecture/framework/vector-store) |
 | A provider for the agent model | Runs Warp's agent loop. It must already be configured in Bifrost. | [Provider configuration](/quickstart/gateway/provider-configuration) |
 | A provider for the embedding model | Embeds logs for semantic search. It can be the same provider as the agent model. | [Provider configuration](/quickstart/gateway/provider-configuration) |
+| A virtual key for Warp, only when inference auth is enforced | With `enforce_auth_on_inference` on, a model call needs a credential, and the local admin's dashboard sign-in is not one. Without Warp's own key, the local admin (and anyone on a deployment without an identity provider) gets `virtual key is required`. Signed-in users don't need it. | [Warp's virtual key](#warps-virtual-key) |
 
 ---
 
@@ -85,7 +86,7 @@ curl -X PUT http://localhost:8080/api/feature-flags/warp \
 
 ## Configure Warp
 
-Warp's own settings are stored in the config store and managed through the Web UI or API. There is no `config.json` section for them.
+Warp's own settings are stored in the config store. Set them in the Web UI, through the API, or declare them in the `warp` section of `config.json`.
 
 <Tabs group="config-method">
 <Tab title="Web UI">
@@ -125,15 +126,58 @@ curl -X PUT http://localhost:8080/api/warp/config \
     "embedding_dimension": 1536,
     "log_vector_store_namespace": "BifrostWarpLogs",
     "semantic_search_threshold": 0.5,
-    "semantic_search_limit": 10
+    "semantic_search_limit": 10,
+    "topic_discovery_min_requests": 100
   }'
 ```
 
 The response is the saved configuration, with a `configured` field that says whether Warp can answer.
 
-`PUT` replaces the configuration. The exceptions are the embedding and search fields (`embedding_*`, `log_vector_store_namespace`, `semantic_search_*`). If you omit one of those, Bifrost keeps its stored value. `additional_models` is replaced as a whole, so leaving it out removes every additional model.
+`PUT` replaces the configuration. The exceptions are the embedding, search, and topic fields (`embedding_*`, `log_vector_store_namespace`, `semantic_search_*`, `topic_discovery_min_requests`). If you omit one of those, Bifrost keeps its stored value. `additional_models` is replaced as a whole, so leaving it out removes every additional model.
 
 Read the current configuration with `GET /api/warp/config`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "feature_flags": {
+    "flags": {
+      "warp": { "enabled": true }
+    }
+  },
+  "warp": {
+    "enabled": true,
+    "provider": "anthropic",
+    "model": "claude-sonnet-5-5",
+    "api_key_id": "a1b2c3d4-warp-key",
+    "additional_models": [
+      { "provider": "openai", "model": "gpt-4o" }
+    ],
+    "max_iterations": 8,
+    "request_timeout_seconds": 120,
+    "history_retention_days": 30,
+    "system_prompt_suffix": "Our production virtual keys are prefixed with prod-.",
+    "embedding_provider": "openai",
+    "embedding_model": "text-embedding-3-small",
+    "embedding_dimension": 1536,
+    "log_vector_store_namespace": "BifrostWarpLogs",
+    "semantic_search_threshold": 0.5,
+    "semantic_search_limit": 10,
+    "topic_discovery_min_requests": 100
+  }
+}
+```
+
+The `warp` section takes the same fields as the API, and Bifrost saves it at startup exactly as if it came from the settings page. It is validated the same way, and the log embedding namespace is created the same way. A section the settings page would refuse is logged as a warning and not applied. The stored settings stay as they were.
+
+How the file and the dashboard share these settings depends on [`source_of_truth`](/deployment-guides/config-json/source-of-truth):
+
+- **`split`** (default): the section is applied when it is new or has changed since the last startup. Edits made in the dashboard are kept until you change the section.
+- **`config.json`**: the section is applied on every startup, so dashboard edits last only until the next restart.
+
+Omit the section to manage Warp entirely from the dashboard. The `warp` feature flag is set separately. The section is saved whether or not the flag is on, but Warp stays hidden until the flag is on.
 
 </Tab>
 </Tabs>
@@ -145,6 +189,7 @@ Read the current configuration with `GET /api/warp/config`.
 | `enabled` | Enable Warp | `false` | Requires a connected vector store | Shows Warp in the dashboard. |
 | `provider`, `model` | Default model | - | Required when enabled. Must be a known provider. | The model that runs Warp's agent loop. |
 | `api_key_id` | API key | Any key | ID of one of the provider's configured keys | Pins Warp to one key. Leave it empty to load-balance, or for a provider that needs no key. Warp stores a reference to the key, never the secret itself. |
+| `virtual_key_id` | Virtual key | None | ID of an existing, active virtual key. Checked when the value changes. | The key Warp's model calls present when the person asking has no user identity. See [Warp's virtual key](#warps-virtual-key). Omitted keeps the stored value; `""` clears it. |
 | `additional_models` | Model N | `[]` | Up to 20, each with `provider` and `model`, no duplicates | Extra models people can switch to in the chat panel. Each entry takes an optional `api_key_id`. |
 | `max_iterations` | Max iterations | `8` | `0` (default) or `2`–`20` | How many tool-call rounds Warp may run before it must answer. The last round is reserved for answering, so `1` is rejected. |
 | `request_timeout_seconds` | Request timeout (seconds) | `120` | Not negative | Deadline for each call to Warp's model. Raise it for slow self-hosted models. |
@@ -158,6 +203,7 @@ Read the current configuration with `GET /api/warp/config`.
 | `log_vector_store_namespace` | Log embedding namespace | `BifrostWarpLogs` | Must change when the embedding provider, model, or dimension changes | The vector store namespace holding Warp's log index. |
 | `semantic_search_threshold` | Similarity threshold | `0.5` | Greater than `0`, at most `1` | Minimum similarity for a semantic search match. |
 | `semantic_search_limit` | Maximum matches | `10` | `1`–`25` | Most matches one semantic search returns. |
+| `topic_discovery_min_requests` | New topic threshold | `100` | `10`–`20000` | How many requests that matched no topic must be waiting before Warp clusters them into new topics. |
 
 ---
 
@@ -325,6 +371,18 @@ Naming a scope in the question ("for the payments team") always overrides the de
 Warp's model calls go through the full Bifrost pipeline, so they appear on the **Logs** page with the app name **Warp** and the user agent `bifrost-warp/1`. Calls from one conversation share a session ID equal to the conversation ID. MCP tools are never attached to Warp's calls.
 
 Warp's traffic is subject to the same governance as any other request. If a budget, rate limit, or model restriction applies to the person asking, Warp reports that its model call was refused and why (`budget_exceeded`, `rate_limited`, or `model_blocked`).
+
+### Warp's virtual key
+
+Warp's model calls go out as the person asking. When that person has no user identity of their own, there is nothing to send: the local admin signs in with the admin password, which is not an inference credential, and on a deployment without an identity provider no session names a user. With [inference auth enforced](/deployment-guides/how-to/security-best-practices), those calls are refused with `virtual key is required`.
+
+Set **Virtual key** in Warp's settings (`virtual_key_id`) to give Warp a key of its own for that case:
+
+- **Who uses it:** only a caller with no user identity. A signed-in user is always governed as themselves, by their own access, and never uses Warp's key. A request that already carries a virtual key goes by that key.
+- **What applies:** the key's allowed providers and models, budgets and rate limits. Warp's spend from those calls is attributed to the key on the **Logs** page, so a budget on the key caps it.
+- **What does not change:** which logs Warp can read. That still follows the person asking (see [What data Warp reads](#what-data-warp-reads)).
+
+If the key is deleted later, Warp refuses to start a turn for such a caller until an administrator chooses another. If it is switched off, the model call is refused with `virtual key is inactive`.
 
 Embedding calls made while indexing skip the plugin pipeline, so they do not appear on the **Logs** page and are not subject to governance. A backfill reports the embedding tokens and cost it used in its status.
 

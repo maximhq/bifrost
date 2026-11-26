@@ -44,6 +44,9 @@ Open **Diagnostics** from the Edge tray first. It reports the current service, a
   <Accordion title="The user signs in but has no usable policy or key">
     Confirm that the Bifrost user resolves to an active virtual key. Check the user's role and access-profile assignment first. Edge can also resolve active keys assigned directly to the user, through a team, or through a team in the user's business unit.
   </Accordion>
+  <Accordion title="A Bifrost MCP tool says your Bifrost sign-in has expired">
+    Some MCP servers on the gateway act as you by exchanging your Bifrost sign-in ([Token Exchange](/mcp/auth/token-exchange)). The Edge session keeps working without it, but those tools need a Bifrost sign-in in your browser that can still be refreshed. Open the Bifrost URL in the message, sign in, then retry the request.
+  </Accordion>
 </AccordionGroup>
 
 ## Certificates and TLS

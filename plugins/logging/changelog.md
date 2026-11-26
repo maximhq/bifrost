@@ -1,1 +1,4 @@
-- [feat]: snapshot virtual key metadata onto log metadata; the key's values override request-supplied entries [@jimseiwert](https://github.com/jimseiwert)
+- feat: speech sessions are logged with their full input text
+- feat: streamed multipart passthrough uploads are summarized with each part's content type
+- fix: log previews for agent-loop requests use the latest tool call or result
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

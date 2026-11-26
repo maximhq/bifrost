@@ -10,21 +10,26 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// newLoadBalanceTestPlugin builds a plugin over a store holding vk, with a resolver and no transport dependencies.
 func newLoadBalanceTestPlugin(t *testing.T, vk *configstoreTables.TableVirtualKey) *GovernancePlugin {
 	t.Helper()
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 	return &GovernancePlugin{
 		logger:   logger,
 		store:    store,
-		resolver: NewBudgetResolver(store, nil, logger, nil),
+		live:     store.live,
+		resolver: budgetResolverForTest(t, store, nil, logger),
 	}
 }
 
@@ -81,6 +86,31 @@ func TestLoadBalanceProvider_UnprefixedModelLoadBalances(t *testing.T) {
 	assert.Equal(t, "openai/gpt-4o", got)
 }
 
+// TestLoadBalanceProvider_KeyAliasIsNotRefined covers a virtual key that load balances a bare
+// key alias onto Databricks. The alias must reach key selection under its own name, or alias
+// resolution misses and the refined "system.ai.<alias>" is sent upstream as a model.
+func TestLoadBalanceProvider_KeyAliasIsNotRefined(t *testing.T) {
+	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-lb", "LB VK", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("databricks", []string{"*"}),
+	})
+	p := newLoadBalanceTestPlugin(t, vk)
+	mc := catalogForTest(t, nil)
+	mc.SetKeyConfigForProvider(schemas.Databricks, []schemas.Key{{
+		ID:      "dbx-key",
+		Models:  schemas.WhiteList{"*"},
+		Aliases: schemas.KeyAliases{"my-alias": {ModelID: "my-provisioned-endpoint"}},
+	}})
+	p.modelCatalog = mc
+
+	got, err := loadBalance(t, p, presentCtx("sk-bf-lb"), "my-alias")
+	require.NoError(t, err)
+	assert.Equal(t, "databricks/my-alias", got)
+
+	got, err = loadBalance(t, p, presentCtx("sk-bf-lb"), "gpt-5.5")
+	require.NoError(t, err)
+	assert.Equal(t, "databricks/system.ai.gpt-5.5", got)
+}
+
 // TestLoadBalanceProvider_UnknownPrefixIsTreatedAsModelNamespace verifies that a
 // "/" prefix that is not a known provider (e.g. a HuggingFace-style namespace) is
 // kept as part of the model name and load balancing still applies.
@@ -106,15 +136,16 @@ func TestLoadBalanceProvider_UnknownPrefixIsTreatedAsModelNamespace(t *testing.T
 func newLoadBalanceTestPluginWithStore(t *testing.T, vk *configstoreTables.TableVirtualKey, wrap *permitStore) *GovernancePlugin {
 	t.Helper()
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{})
+	}, nil, &liveFixture{})
 	require.NoError(t, err)
 	wrap.GovernanceStore = local
 	return &GovernancePlugin{
 		logger:   logger,
 		store:    wrap,
-		resolver: NewBudgetResolver(wrap, nil, logger, nil),
+		live:     local.live,
+		resolver: budgetResolverForTest(t, wrap, nil, logger),
 	}
 }
 
@@ -204,7 +235,7 @@ func TestLoadBalanceProvider_DuplicateProviderConfigsBothCount(t *testing.T) {
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-lb", "LB VK",
 		[]configstoreTables.TableVirtualKeyProviderConfig{first, second})
 
-	access := grant.NewAccess([]schemas.Permit{vkPermit(vk, nil)}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{vkPermit(t, vk, nil)}, "", nil, "", nil)
 	assert.Len(t, access.ProvidersForModel("llama-3.1-8b-instant"), 2)
 }
 
@@ -365,15 +396,16 @@ func TestLoadBalanceProvider_StoreDecidesWhichCandidatesCanBeFunded(t *testing.T
 		buildProviderConfig("anthropic", []string{"*"}),
 	})
 	logger := NewMockLogger()
-	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	local, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
-	}, nil, &mockInMemoryStore{})
+	}, nil, &liveFixture{})
 	require.NoError(t, err)
 	store := &excludingStore{GovernanceStore: local, provider: "openai", decision: DecisionBudgetExceeded}
 	p := &GovernancePlugin{
 		logger:   logger,
 		store:    store,
-		resolver: NewBudgetResolver(store, nil, logger, nil),
+		live:     local.live,
+		resolver: budgetResolverForTest(t, store, nil, logger),
 	}
 
 	got, err := loadBalance(t, p, lbCtx(), "claude-3-5-sonnet")
@@ -407,14 +439,14 @@ func TestCandidateExclusionConsultsProviderScopedModelConfigs(t *testing.T) {
 	pairConfig := buildModelConfig("mc-openai", "gpt-5", &openai, spentOnOpenAI, nil)
 	modelWideConfig := buildModelConfig("mc-any", "gpt-5", nil, spentEverywhere, nil)
 
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, NewMockLogger(), &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*pairConfig, *modelWideConfig},
 		Budgets:      []configstoreTables.TableBudget{*spentOnOpenAI, *spentEverywhere},
 	}, nil, nil)
 	require.NoError(t, err)
 
 	permit := permitWithProviders(grant.PermitVirtualKey, "vk-1", "Key", "openai", "azure")
-	access := grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	decision, exclusionErr := store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "openai"}, "gpt-5")
 	require.Error(t, exclusionErr, "the exact-pair budget is spent, so openai cannot serve the model")
@@ -457,13 +489,13 @@ func TestCandidateExclusionConsultsTheVirtualKeysProviderLimits(t *testing.T) {
 			spent := buildProviderConfig("openai", []string{"*"})
 			budgets, rateLimits := tc.spend(&spent)
 			vk := buildVirtualKeyWithProviders("vk-1", "sk-bf-lb", "LB Key", []configstoreTables.TableVirtualKeyProviderConfig{spent, buildProviderConfig("azure", []string{"*"})})
-			store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+			store, err := newTestGovernanceStore(t, NewMockLogger(), &configstore.GovernanceConfig{
 				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 				Budgets:     budgets,
 				RateLimits:  rateLimits,
 			}, nil, nil)
 			require.NoError(t, err)
-			access := grant.NewAccess([]schemas.Permit{permitWithProviders(grant.PermitVirtualKey, vk.ID, vk.Name, "openai", "azure")}, nil, "", nil)
+			access := grant.NewAccess([]schemas.Permit{permitWithProviders(grant.PermitVirtualKey, vk.ID, vk.Name, "openai", "azure")}, "", nil, "", nil)
 
 			decision, exclusionErr := store.CheckProviderCandidateExclusion(emptyCtx(), access, schemas.ProviderCandidate{Provider: "openai"}, "gpt-4o")
 			// openai's own limit on the key is spent, so it is no candidate, for that limit and no other reason.
@@ -494,7 +526,7 @@ func TestProviderScopedModelLimitsInScopeNarrowsANamedScopeToTheProvider(t *test
 	pairBudget := buildBudgetWithUsage("pair-b", 100.0, 0, "1h")
 	allOnProviderBudget := buildBudgetWithUsage("all-on-openai-b", 100.0, 0, "1h")
 	anyProviderBudget := buildBudgetWithUsage("any-b", 100.0, 0, "1h")
-	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, NewMockLogger(), &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{
 			inCallerScope(buildModelConfig("pair", "gpt-5", &openai, pairBudget, nil)),
 			inCallerScope(buildModelConfig("all-on-openai", configstoreTables.ModelConfigAllModels, &openai, allOnProviderBudget, nil)),
@@ -662,3 +694,30 @@ func TestRequireSplitCatchesASkew(t *testing.T) {
 	stat, critical = splitFit(names, map[string]int{"a": 0.7 * weightDraws, "b": 0.3 * weightDraws}, weights)
 	require.Less(t, stat, critical, "an exact 70/30 split should fit 70/30 weights")
 }
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

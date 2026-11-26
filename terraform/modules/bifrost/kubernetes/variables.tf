@@ -25,6 +25,12 @@ variable "health_check_path" {
   type        = string
 }
 
+variable "ingress_path" {
+  description = "Path prefix the ingress routes to Bifrost; \"/\" owns the whole host. Match server.base_path when serving under a prefix."
+  type        = string
+  default     = "/"
+}
+
 # --- Naming ---
 variable "name_prefix" {
   description = "Prefix for all resource names."

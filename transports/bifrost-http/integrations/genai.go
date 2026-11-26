@@ -41,6 +41,20 @@ type GenAIRouter struct {
 	*GenericRouter
 }
 
+// GenAIRealtimePaths returns the WebSocket GET path a Google GenAI client opens for the Live API.
+func GenAIRealtimePaths(pathPrefix string) []string {
+	return []string{pathPrefix + "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"}
+}
+
+// GenAIVertexRealtimePaths returns the WebSocket GET paths a Google GenAI client in Vertex mode opens for the Live
+// API: the Vertex AI service, in the API versions the SDK uses.
+func GenAIVertexRealtimePaths(pathPrefix string) []string {
+	return []string{
+		pathPrefix + "/ws/google.cloud.aiplatform.v1beta1.LlmBidiService/BidiGenerateContent",
+		pathPrefix + "/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent",
+	}
+}
+
 // CreateGenAIRouteConfigs creates a route configurations for GenAI endpoints.
 func CreateGenAIRouteConfigs(pathPrefix string) []RouteConfig {
 	var routes []RouteConfig
@@ -391,10 +405,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return true, fmt.Errorf("failed to generate upload ID: %w", err)
 			}
 
-			kvStore := handlerStore.GetKVStore()
-			if kvStore == nil {
-				return true, errors.New("kvstore not initialized")
-			}
+			uploads := handlerStore.GetSharedTables().GenAIUploads
 
 			session := &gemini.GeminiResumableUploadSession{
 				DisplayName: r.File.DisplayName,
@@ -404,9 +415,7 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			if vk, ok := bifrostCtx.Value(schemas.BifrostContextKeyVirtualKey).(string); ok && vk != "" {
 				session.VirtualKey = vk
 			}
-			if err := kvStore.SetWithTTL(uploadID, session, 1*time.Minute); err != nil {
-				return true, fmt.Errorf("failed to store upload session: %w", err)
-			}
+			uploads.PutWithTTL(uploadID, session, 1*time.Minute)
 
 			baseURL := lib.BuildBaseURL(ctx, "")
 			if baseURL == "" {
@@ -421,8 +430,8 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 			ctx.SetBody([]byte("{}"))
 			return true, nil
 		},
-		// FileRequestConverter handles step 2: retrieves the saved session from
-		// the KV store and builds a full BifrostFileUploadRequest.
+		// FileRequestConverter handles step 2: takes the saved session from the
+		// shared upload table and builds a full BifrostFileUploadRequest.
 		FileRequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*FileRequest, error) {
 			r, ok := req.(*gemini.GeminiFileUploadHandlerReq)
 			if !ok {
@@ -432,19 +441,9 @@ func CreateGenAIFileRouteConfigs(pathPrefix string, handlerStore lib.HandlerStor
 				return nil, errors.New("upload_id missing — step 1 should have been short-circuited")
 			}
 
-			kvStore := handlerStore.GetKVStore()
-			if kvStore == nil {
-				return nil, errors.New("kvstore not initialized")
-			}
-
-			val, err := kvStore.GetAndDelete(r.UploadID)
-			if err != nil {
-				return nil, fmt.Errorf("upload session not found for id %q: %w", r.UploadID, err)
-			}
-
-			session, ok := val.(*gemini.GeminiResumableUploadSession)
-			if !ok {
-				return nil, errors.New("invalid upload session type in kvstore")
+			session, ok := handlerStore.GetSharedTables().GenAIUploads.GetAndDelete(r.UploadID)
+			if !ok || session == nil {
+				return nil, fmt.Errorf("upload session not found for id %q: key not found", r.UploadID)
 			}
 
 			// Chunk requests carry no auth headers (resumable-upload protocol:
@@ -1231,7 +1230,7 @@ func CreateGenAICachedContentRouteConfigs(pathPrefix string, handlerStore lib.Ha
 					createReq.Provider = schemas.Gemini
 				}
 				if len(createReq.RawRequestBody) > 0 {
-					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+					enableGenAIRawRequestBodyRedaction(ctx)
 				}
 				return &CachedContentRequest{Type: schemas.CachedContentCreateRequest, CreateRequest: createReq}, nil
 			},
@@ -1587,6 +1586,65 @@ func rewriteGenAIRawRequestBody(rawBody []byte, replacements map[string]string) 
 	return rewriteRawRequestTextFields(rawBody, replacements, collectGenAIRawRequestTextPaths)
 }
 
+// rewriteGeminiInteractionsRawRequestBody applies runtime replacements to the texts a Gemini Interactions create is read
+// for.
+func rewriteGeminiInteractionsRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectGeminiInteractionsRawRequestTextPaths)
+}
+
+// collectGeminiInteractionsRawRequestTextPaths selects the texts of an Interactions create that passthroughparse reads:
+// the system instruction, and the input as a string, a text part, a user or model step's text parts, or a function
+// result given as a string, a content list of text parts, or a free-form object (its string values, as for a Gemini
+// function response), alone or in a list.
+func collectGeminiInteractionsRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	var collectErr error
+	appendRawRequestTextPath(&paths, root.Get("system_instruction"), "system_instruction")
+	collectTextParts := func(parts gjson.Result, path string) {
+		parts.ForEach(func(index, part gjson.Result) bool {
+			if part.Get("type").String() == "text" {
+				appendRawRequestTextPath(&paths, part.Get("text"), rawRequestObjectPath(rawRequestArrayPath(path, int(index.Int())), "text"))
+			}
+			return true
+		})
+	}
+	collectItem := func(item gjson.Result, path string) {
+		switch item.Get("type").String() {
+		case "text":
+			appendRawRequestTextPath(&paths, item.Get("text"), rawRequestObjectPath(path, "text"))
+		case "user_input", "model_output":
+			collectTextParts(item.Get("content"), rawRequestObjectPath(path, "content"))
+		case "function_call":
+			// Only string values are collected, so it cannot fail.
+			_ = collectRawRequestArgumentStringPaths(&paths, item.Get("arguments"), rawRequestObjectPath(path, "arguments"))
+		case "function_result":
+			result, resultPath := item.Get("result"), rawRequestObjectPath(path, "result")
+			switch {
+			case result.Type == gjson.String:
+				paths = append(paths, resultPath)
+			case result.IsObject():
+				if err := appendRawRequestJSONLeafPaths(&paths, result, resultPath, replacements); err != nil && collectErr == nil {
+					collectErr = err
+				}
+			default:
+				collectTextParts(result, resultPath)
+			}
+		}
+	}
+	switch input := root.Get("input"); {
+	case input.Type == gjson.String:
+		paths = append(paths, "input")
+	case input.IsObject():
+		collectItem(input, "input")
+	case input.IsArray():
+		input.ForEach(func(index, item gjson.Result) bool {
+			collectItem(item, rawRequestArrayPath("input", int(index.Int())))
+			return true
+		})
+	}
+	return paths, collectErr
+}
+
 // collectGenAIRawRequestTextPaths enumerates flat and countTokens-enveloped Gemini content fields.
 func collectGenAIRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
 	paths := make([]string, 0)
@@ -1664,7 +1722,8 @@ func collectGenAIGenerationTextPaths(paths *[]string, request gjson.Result, path
 	return collectErr
 }
 
-// collectGenAIContentTextPaths selects text parts and supported function-response JSON values from one Gemini content object.
+// collectGenAIContentTextPaths selects text parts, function-call argument string values, and supported function-response
+// JSON values from one Gemini content object.
 func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path string, includeFunctionResponses bool, replacements map[string]string) error {
 	if !content.Exists() || content.Type == gjson.Null {
 		return nil
@@ -1689,6 +1748,13 @@ func collectGenAIContentTextPaths(paths *[]string, content gjson.Result, path st
 		}
 		if !includeFunctionResponses {
 			return true
+		}
+		if collectErr = collectRawRequestArgumentStringPaths(
+			paths,
+			part.Get("functionCall.args"),
+			rawRequestObjectPath(rawRequestObjectPath(partPath, "functionCall"), "args"),
+		); collectErr != nil {
+			return false
 		}
 		functionResponse := part.Get("functionResponse")
 		if !functionResponse.Exists() || functionResponse.Type == gjson.Null {
@@ -1915,16 +1981,14 @@ func isTranscriptionRequest(req *gemini.GeminiGenerationRequest) bool {
 		return false
 	}
 
-	// Check all contents for audio input
+	// Only inline audio counts: the transcription path carries bytes, not a fileData URI,
+	// so fileData audio stays on Responses, which forwards the URI.
 	for _, content := range req.Contents {
 		for _, part := range content.Parts {
-			// Check for inline audio data
-			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
-				return true
+			if part == nil {
+				continue
 			}
-
-			// Check for file-based audio data
-			if part.FileData != nil && isAudioMimeType(part.FileData.MIMEType) {
+			if part.InlineData != nil && isAudioMimeType(part.InlineData.MIMEType) {
 				return true
 			}
 		}
@@ -2161,5 +2225,5 @@ func generateUploadID() (string, error) {
 		return "", err
 	}
 	encoded := base64.RawURLEncoding.EncodeToString(b)
-	return "genai_upload_session:" + encoded, nil
+	return lib.GenAIUploadKeyPrefix + encoded, nil
 }

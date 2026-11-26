@@ -13,9 +13,10 @@ import (
 	"github.com/valyala/fasthttp"
 )
 
-func newSessionsHandler(store *mockOAuth2Store) *OAuth2SessionsHandler {
+func newSessionsHandler(t testing.TB, store *mockOAuth2Store) *OAuth2SessionsHandler {
+	t.Helper()
 	SetLogger(&mockLogger{})
-	return NewOAuth2SessionsHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false))
+	return NewOAuth2SessionsHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeBoth, false))
 }
 
 func TestListSessions(t *testing.T) {
@@ -23,7 +24,7 @@ func TestListSessions(t *testing.T) {
 		store := &mockOAuth2Store{sessionRows: []configstore.OAuth2SessionRow{
 			{ID: "s1", ClientID: "c1", BfMode: "vk", BfSub: "vk-1", BfSubDisplay: "Alpha VK"},
 		}}
-		h := newSessionsHandler(store)
+		h := newSessionsHandler(t, store)
 		ctx := &fasthttp.RequestCtx{}
 		h.listSessions(ctx)
 		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
@@ -36,8 +37,35 @@ func TestListSessions(t *testing.T) {
 		assert.Equal(t, "Alpha VK", resp.Sessions[0].BfSubDisplay)
 	})
 
+	t.Run("reports the configured access token TTL", func(t *testing.T) {
+		h := newSessionsHandler(t, &mockOAuth2Store{})
+		h.store.ClientConfig.OAuth2ServerConfig.AccessTokenTTL = 1800
+		ctx := &fasthttp.RequestCtx{}
+		h.listSessions(ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+
+		var resp struct {
+			AccessTokenTTL int `json:"access_token_ttl"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, 1800, resp.AccessTokenTTL)
+	})
+
+	t.Run("unset access token TTL reports the default", func(t *testing.T) {
+		h := newSessionsHandler(t, &mockOAuth2Store{})
+		h.store.ClientConfig.OAuth2ServerConfig.AccessTokenTTL = 0
+		ctx := &fasthttp.RequestCtx{}
+		h.listSessions(ctx)
+
+		var resp struct {
+			AccessTokenTTL int `json:"access_token_ttl"`
+		}
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+		assert.Equal(t, configtables.DefaultAccessTokenTTL, resp.AccessTokenTTL)
+	})
+
 	t.Run("store error surfaces 500", func(t *testing.T) {
-		h := newSessionsHandler(&mockOAuth2Store{listErr: errors.New("boom")})
+		h := newSessionsHandler(t, &mockOAuth2Store{listErr: errors.New("boom")})
 		ctx := &fasthttp.RequestCtx{}
 		h.listSessions(ctx)
 		assert.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
@@ -59,7 +87,7 @@ func TestRevokeSession(t *testing.T) {
 
 	t.Run("vk-mode grant revokes without an identity gate", func(t *testing.T) {
 		store := newStore(&configtables.TableOAuth2RefreshToken{ID: "s1", BfMode: "vk", BfSub: "vk-1"})
-		h := newSessionsHandler(store)
+		h := newSessionsHandler(t, store)
 		ctx := revokeCtx("s1", "")
 		h.revokeSession(ctx)
 		assert.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
@@ -68,7 +96,7 @@ func TestRevokeSession(t *testing.T) {
 
 	t.Run("user-mode grant revokes when the caller matches bf_sub", func(t *testing.T) {
 		store := newStore(&configtables.TableOAuth2RefreshToken{ID: "s1", BfMode: "user", BfSub: "user-1"})
-		h := newSessionsHandler(store)
+		h := newSessionsHandler(t, store)
 		ctx := revokeCtx("s1", "user-1")
 		h.revokeSession(ctx)
 		assert.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
@@ -81,7 +109,7 @@ func TestRevokeSession(t *testing.T) {
 		// see comes back not-found (covered by the case below), so any caller who can
 		// load the row may revoke it, across all modes. Here a non-owner succeeds.
 		store := newStore(&configtables.TableOAuth2RefreshToken{ID: "s1", BfMode: "user", BfSub: "user-1"})
-		h := newSessionsHandler(store)
+		h := newSessionsHandler(t, store)
 		ctx := revokeCtx("s1", "intruder")
 		h.revokeSession(ctx)
 		assert.Equal(t, fasthttp.StatusNoContent, ctx.Response.StatusCode())
@@ -93,7 +121,7 @@ func TestRevokeSession(t *testing.T) {
 		// The handler must 404 and must not fall through to revoke — this is where
 		// visibility is actually enforced.
 		store := &mockOAuth2Store{sessionByID: map[string]*configtables.TableOAuth2RefreshToken{}}
-		h := newSessionsHandler(store)
+		h := newSessionsHandler(t, store)
 		ctx := revokeCtx("missing", "")
 		h.revokeSession(ctx)
 		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
@@ -101,7 +129,7 @@ func TestRevokeSession(t *testing.T) {
 	})
 
 	t.Run("empty id returns 400", func(t *testing.T) {
-		h := newSessionsHandler(&mockOAuth2Store{})
+		h := newSessionsHandler(t, &mockOAuth2Store{})
 		ctx := revokeCtx("", "")
 		h.revokeSession(ctx)
 		assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())

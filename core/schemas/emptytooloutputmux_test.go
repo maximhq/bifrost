@@ -54,7 +54,7 @@ func TestToChatMessages_EmptyToolOutputCarriesEmptyStringContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			chatMessages := ToChatMessages([]ResponsesMessage{tt.msg})
+			chatMessages := ToChatMessages([]ResponsesMessage{tt.msg}, nil)
 
 			if len(chatMessages) != 1 {
 				t.Fatalf("expected 1 chat message, got %d", len(chatMessages))
@@ -86,7 +86,7 @@ func TestToChatMessages_NonEmptyToolOutputUnchanged(t *testing.T) {
 				ResponsesToolCallOutputStr: Ptr("72 degrees and sunny"),
 			},
 		},
-	}})
+	}}, nil)
 
 	if len(chatMessages) != 1 {
 		t.Fatalf("expected 1 chat message, got %d", len(chatMessages))

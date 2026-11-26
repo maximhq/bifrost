@@ -771,3 +771,14 @@ func TestCostRecalcProgress(t *testing.T) {
 		t.Fatalf("malformed metadata should yield zero values, got %d %d %q", done, total, msg)
 	}
 }
+
+// TestRunCostRecalcJob_ResumesScalarMetadataFilter pins that a job queued before metadata filters
+// took several values per key still resumes: its stored metadata_filters holds one string per key.
+func TestRunCostRecalcJob_ResumesScalarMetadataFilter(t *testing.T) {
+	store := newFakeRecalcStore(nil)
+	p := newRecalcPlugin(t, store)
+	meta := `{"filters":{"start_time":"2024-01-01T00:00:00Z","end_time":"2024-01-02T00:00:00Z","metadata_filters":{"env":"prod"}},"missing_cost_only":true,"total":0,"processed":0}`
+	if _, err := p.RunCostRecalcJob(context.Background(), meta, func(string) error { return nil }); err != nil {
+		t.Fatalf("RunCostRecalcJob error = %v, want a scalar metadata filter to decode", err)
+	}
+}

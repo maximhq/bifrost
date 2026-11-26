@@ -3,6 +3,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { AlertCircle, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { PromptSidebar } from "./fragments/sidebar";
 import { PlaygroundPanel } from "./fragments/playgroundPanel";
 import { SettingsPanel } from "./fragments/settingsPanel";
@@ -13,6 +14,7 @@ import PromptsViewHeader from "./components/promptsViewHeader";
 import { usePromptContext } from "./context";
 
 export default function PromptsView() {
+	const { t } = useTranslation("config");
 	const isMobile = useIsMobile();
 	const { folders, prompts, foldersLoading, promptsLoading, foldersError, promptsError, isLoadingPlayground, selectedPromptId } =
 		usePromptContext();
@@ -26,7 +28,7 @@ export default function PromptsView() {
 			<div className="no-padding-parent no-border-parent p-4">
 				<Alert variant="destructive">
 					<AlertCircle className="h-4 w-4" />
-					<AlertDescription>Failed to load prompt repository</AlertDescription>
+					<AlertDescription>{t("promptRepo.loadFailed")}</AlertDescription>
 				</Alert>
 			</div>
 		);

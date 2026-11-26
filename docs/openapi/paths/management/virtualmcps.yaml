@@ -12,18 +12,28 @@ virtual-mcps:
     parameters:
       - name: limit
         in: query
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`.
         schema:
           type: integer
-          default: 25
+          minimum: 0
           maximum: 100
+          default: 25
       - name: offset
         in: query
         schema:
           type: integer
+          minimum: 0
           default: 0
       - name: search
         in: query
         description: Search by name.
+        schema:
+          type: string
+      - name: mcp_client_id
+        in: query
+        description: >-
+          Only Virtual MCPs with a tool spec for this MCP client (exact `client_id` match). `total_count` counts only the matches, so this answers which Virtual MCPs bundle a server without paging through every Virtual MCP.
         schema:
           type: string
     security:
@@ -38,6 +48,8 @@ virtual-mcps:
               $ref: '../../schemas/management/virtualmcps.yaml#/VirtualMCPListResponse'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   post:
     operationId: createVirtualMCP
@@ -72,6 +84,8 @@ virtual-mcps:
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-mcps-by-id:
   get:
@@ -102,6 +116,8 @@ virtual-mcps-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   put:
     operationId: updateVirtualMCP
@@ -145,6 +161,8 @@ virtual-mcps-by-id:
         $ref: '../../openapi.yaml#/components/responses/Conflict'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: deleteVirtualMCP
@@ -174,6 +192,8 @@ virtual-mcps-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
 virtual-mcps-virtual-key:
   post:
@@ -215,6 +235,8 @@ virtual-mcps-virtual-key:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
   delete:
     operationId: detachVirtualMCPVirtualKey
@@ -249,3 +271,5 @@ virtual-mcps-virtual-key:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'

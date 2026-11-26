@@ -3,6 +3,7 @@ package fireworks_test
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -421,6 +422,79 @@ func TestFireworksResponsesStreamUsesNativeResponsesEndpoint(t *testing.T) {
 	}
 	if !sawCompleted {
 		t.Fatal("expected a completed responses stream chunk")
+	}
+}
+
+// TestFireworksDisableStoreForcesStoreFalse verifies that openai_config.disable_store forces store=false on Fireworks responses requests,
+// including when a passthrough extra_params store would otherwise override the typed field.
+func TestFireworksDisableStoreForcesStoreFalse(t *testing.T) {
+	for _, disableStore := range []bool{true, false} {
+		for _, streaming := range []bool{false, true} {
+			for _, mode := range []string{"typed", "passthrough"} {
+				t.Run(fmt.Sprintf("disable_store=%v/stream=%v/%s", disableStore, streaming, mode), func(t *testing.T) {
+					var body []byte
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, _ = io.ReadAll(r.Body)
+						if streaming {
+							w.Header().Set("Content-Type", "text/event-stream")
+							_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"m\",\"output\":[]}}\n\n")
+							return
+						}
+						w.Header().Set("Content-Type", "application/json")
+						_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"m","output":[]}`)
+					}))
+					defer server.Close()
+
+					provider, err := fireworksprovider.NewFireworksProvider(&schemas.ProviderConfig{
+						NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 30},
+						OpenAIConfig:  &schemas.OpenAIConfig{DisableStore: disableStore},
+					}, bifrost.NewNoOpLogger())
+					if err != nil {
+						t.Fatalf("failed to create Fireworks provider: %v", err)
+					}
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+					req := &schemas.BifrostResponsesRequest{
+						Provider: schemas.Fireworks,
+						Model:    "accounts/fireworks/models/deepseek-v3p2",
+						Input:    []schemas.ResponsesMessage{llmtests.CreateBasicResponsesMessage("hello")},
+						Params:   &schemas.ResponsesParameters{Store: schemas.Ptr(true)},
+					}
+					if mode == "passthrough" {
+						ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+						req.Params.ExtraParams = map[string]interface{}{"store": true}
+					}
+
+					if streaming {
+						postHookRunner := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+							return result, err
+						}
+						stream, bErr := provider.ResponsesStream(ctx, postHookRunner, nil, key, req)
+						if bErr != nil {
+							t.Fatalf("ResponsesStream returned error: %v", llmtests.GetErrorMessage(bErr))
+						}
+						for range stream {
+						}
+					} else if _, bErr := provider.Responses(ctx, key, req); bErr != nil {
+						t.Fatalf("Responses returned error: %v", llmtests.GetErrorMessage(bErr))
+					}
+
+					want := `"store":true`
+					if disableStore {
+						want = `"store":false`
+					}
+					if !strings.Contains(string(body), want) || strings.Count(string(body), `"store":`) != 1 {
+						t.Fatalf("expected upstream body to contain exactly one %s, got %s", want, body)
+					}
+					if !*req.Params.Store {
+						t.Fatalf("caller's Params.Store was rewritten to false")
+					}
+					if v, ok := req.Params.ExtraParams["store"]; ok && v != true {
+						t.Fatalf("caller's ExtraParams store was rewritten to %v", v)
+					}
+				})
+			}
+		}
 	}
 }
 

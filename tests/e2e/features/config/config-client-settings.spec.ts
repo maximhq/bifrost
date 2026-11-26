@@ -1,6 +1,10 @@
+import { coreConfigApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
+import type { Page, WebSocketRoute } from '@playwright/test'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { ConfigSettingsState } from './pages/config-settings.page'
-import { DefaultCoreConfig } from '../../../../ui/lib/types/config'
+import { DefaultCoreConfig } from '../../../../ui/lib/types/coreConfigDefaults'
 
 test.describe('Skills marketplace URL settings', () => {
   test.use({ skipAutoLogin: true })
@@ -55,7 +59,7 @@ test.describe('Skills marketplace URL settings', () => {
         await expect(register).toBeDisabled()
         if (state.git) {
           await page.getByTestId('skill-marketplace-disabled-trigger').hover()
-          await page.getByTestId('skill-marketplace-settings-link').filter({ visible: true }).click()
+          await page.getByTestId('skill-marketplace-settings-link').first().click()
           await expect(page).toHaveURL(/\/workspace\/config\/skills$/)
           await expect(page.getByTestId('skills-external-client-url-input')).toBeVisible()
           await page.goto('/workspace/skills-repo')
@@ -81,29 +85,63 @@ test.describe('Skills marketplace URL settings', () => {
   }
 })
 
+// Mock an unconfigured instance so the checklist is incomplete and would be visible.
+// disable_onboarding is read per request, so a test can flip it between loads.
+async function mockUnconfiguredInstance(page: Page, state = { disableOnboarding: false }) {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/config') {
+      await route.fulfill({ json: {
+        client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false, allowed_origins: [] },
+        auth_config: null,
+        framework_config: {}, is_db_connected: true, metadata: {},
+        disable_onboarding: state.disableOnboarding,
+      } })
+    } else if (path === '/api/version') {
+      await route.fulfill({ json: '1.0.0' })
+    } else if (path === '/api/session/is-auth-enabled') {
+      await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
+    } else if (path === '/api/keys') {
+      await route.fulfill({ json: [] })
+    } else {
+      await route.fulfill({ json: {} })
+    }
+  })
+}
+
 test.describe('Onboarding widget snooze', () => {
   test.use({ skipAutoLogin: true })
 
-  test('remind me later opens a picker above the widget and snoozes it', async ({ page }) => {
-    // Mock an unconfigured instance so the checklist is incomplete and visible.
-    await page.route('**/api/**', async route => {
-      const path = new URL(route.request().url()).pathname
-      if (path === '/api/config') {
-        await route.fulfill({ json: {
-          client_config: { ...DefaultCoreConfig, enforce_auth_on_inference: false, allowed_origins: [] },
-          auth_config: null,
-          framework_config: {}, is_db_connected: true, metadata: {},
-        } })
-      } else if (path === '/api/version') {
-        await route.fulfill({ json: '1.0.0' })
-      } else if (path === '/api/session/is-auth-enabled') {
-        await route.fulfill({ json: { is_auth_enabled: false, has_valid_token: false, auth_type: 'none', inference_auth_enforced: false } })
-      } else if (path === '/api/keys') {
-        await route.fulfill({ json: [] })
-      } else {
-        await route.fulfill({ json: {} })
-      }
+  test('checklist reads one virtual key on load and after a change notification', async ({ page }) => {
+    test.skip(!existsSync(resolve(__dirname, '../../../../ui/app/enterprise')), 'Virtual-key checklist requires an enterprise UI build')
+    const queries: URL[] = []
+    let socket: WebSocketRoute | undefined
+    await page.routeWebSocket('**/ws*', ws => { socket = ws })
+    await mockUnconfiguredInstance(page)
+    await page.route('**/api/scim/providers', route => route.fulfill({ json: { providers: [] } }))
+    await page.route('**/api/governance/users/me/permissions', route => route.fulfill({ json: {
+      permissions: { VirtualKeys: { View: true }, Governance: { View: true }, UserProvisioning: { View: true } },
+      role_dac: 'all_data',
+    } }))
+    await page.route('**/api/governance/virtual-keys*', async route => {
+      queries.push(new URL(route.request().url()))
+      await route.fulfill({ json: { virtual_keys: [], count: 0, total_count: 45087, limit: 1, offset: 0 } })
     })
+    await page.goto('/workspace/config/client-settings')
+    await expect(page.getByTestId('onboarding-step-virtual-keys')).toBeVisible()
+    await expect.poll(() => queries.length).toBeGreaterThan(0)
+    await expect.poll(() => socket !== undefined).toBe(true)
+    expect(queries.every(url => url.searchParams.get('limit') === '1' && url.searchParams.get('offset') === '0')).toBe(true)
+
+    await page.getByTestId('onboarding-widget-close').click()
+    const count = queries.length
+    socket!.send(JSON.stringify({ type: 'store_update', tags: ['VirtualKeys'] }))
+    await expect.poll(() => queries.length).toBeGreaterThan(count)
+    expect(queries.every(url => url.searchParams.get('limit') === '1' && url.searchParams.get('offset') === '0')).toBe(true)
+  })
+
+  test('remind me later opens a picker above the widget and snoozes it', async ({ page }) => {
+    await mockUnconfiguredInstance(page)
     await page.goto('/workspace/config/client-settings')
 
     await page.getByTestId('onboarding-later').click()
@@ -113,6 +151,20 @@ test.describe('Onboarding widget snooze', () => {
     await expect(page.getByTestId('onboarding-later')).not.toBeVisible()
     const cookies = await page.context().cookies()
     expect(cookies.some(c => c.name === 'bifrost_onboarding_remind_at')).toBe(true)
+  })
+
+  test('disable_onboarding from config.json hides the checklist on an incomplete instance', async ({ page }) => {
+    const state = { disableOnboarding: false }
+    await mockUnconfiguredInstance(page, state)
+    // Positive control on the same page and mock: the widget renders while the flag is off.
+    await page.goto('/workspace/config/client-settings')
+    await expect(page.getByTestId('onboarding-later')).toBeVisible()
+
+    state.disableOnboarding = true
+    const configLoaded = page.waitForResponse(res => new URL(res.url()).pathname === '/api/config')
+    await page.reload()
+    await configLoaded
+    await expect(page.getByTestId('onboarding-later')).toHaveCount(0)
   })
 })
 
@@ -236,5 +288,82 @@ test.describe('Client Settings', () => {
         await configSettingsPage.saveSettings()
       }
     }
+  })
+
+  test('should save the Bifrost URL', async ({ configSettingsPage, request }) => {
+    const original = (await coreConfigApi.get(request)).client_config.bifrost_url ?? ''
+    try {
+      await configSettingsPage.goto('client-settings')
+      const input = configSettingsPage.page.getByTestId('client-settings-bifrost-url-input')
+      await expect(input).toBeVisible()
+
+      await input.fill('https://gateway.e2e.example')
+      await configSettingsPage.saveSettings()
+      await expect
+        .poll(async () => {
+          const value = (await coreConfigApi.get(request)).client_config.bifrost_url
+          if (typeof value === 'string') return value
+          return value !== null && typeof value === 'object' && 'value' in value ? value.value : undefined
+        })
+        .toBe('https://gateway.e2e.example')
+
+      await configSettingsPage.page.reload()
+      await expect(input).toHaveValue('https://gateway.e2e.example')
+    } finally {
+      await coreConfigApi.updateClientConfig(request, { bifrost_url: original })
+    }
+  })
+
+  test('should save the OpenAPI URL to the framework config', async ({ configSettingsPage, request }) => {
+    const original = String((await coreConfigApi.get(request)).framework_config.openapi_url ?? '')
+    try {
+      await configSettingsPage.goto('client-settings')
+      const input = configSettingsPage.page.getByTestId('client-settings-openapi-url-input')
+      await expect(input).toHaveValue(original)
+
+      await input.fill('openapi.json')
+      await configSettingsPage.saveSettings()
+      await expect.poll(async () => (await coreConfigApi.get(request)).framework_config.openapi_url).toBe('openapi.json')
+
+      await configSettingsPage.page.reload()
+      await expect(input).toHaveValue('openapi.json')
+    } finally {
+      await coreConfigApi.updateFrameworkConfig(request, { openapi_url: original })
+    }
+  })
+
+  // The form checks both URLs with the server's rules and shows the error beside
+  // the field, so an invalid value never reaches PUT /api/config.
+  test('should refuse invalid Bifrost and OpenAPI URLs inline', async ({ configSettingsPage, request }) => {
+    const before = await coreConfigApi.get(request)
+    const page = configSettingsPage.page
+    const bifrostURL = page.getByTestId('client-settings-bifrost-url-input')
+    const openAPIURL = page.getByTestId('client-settings-openapi-url-input')
+    const bifrostURLError = page.getByTestId('client-settings-bifrost-url-error')
+    const openAPIURLError = page.getByTestId('client-settings-openapi-url-error')
+
+    await bifrostURL.fill('https://gateway.e2e.example/?token=1')
+    await expect(bifrostURLError).toBeVisible()
+    await expect(bifrostURL).toHaveAttribute('aria-invalid', 'true')
+    await expect(configSettingsPage.saveBtn).toBeDisabled()
+
+    await bifrostURL.fill('https://gateway.e2e.example')
+    await expect(bifrostURLError).toHaveCount(0)
+
+    await openAPIURL.fill('../openapi.json')
+    await expect(openAPIURLError).toBeVisible()
+    await expect(openAPIURL).toHaveAttribute('aria-invalid', 'true')
+    await expect(configSettingsPage.saveBtn).toBeDisabled()
+
+    await openAPIURL.fill('/etc/openapi.json')
+    await expect(openAPIURLError).toBeVisible()
+
+    await openAPIURL.fill('specs/openapi.json')
+    await expect(openAPIURLError).toHaveCount(0)
+    await expect(configSettingsPage.saveBtn).toBeEnabled()
+
+    const after = await coreConfigApi.get(request)
+    expect(after.client_config.bifrost_url).toEqual(before.client_config.bifrost_url)
+    expect(after.framework_config.openapi_url).toEqual(before.framework_config.openapi_url)
   })
 })

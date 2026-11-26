@@ -1,5 +1,7 @@
 package schemas
 
+import "time"
+
 // Route is one provider and model a request can be sent to, with the provider key pinned for
 // that attempt when a routing rule named one. An empty KeyID leaves the key to selection.
 // The pin belongs to the route: an implementation that reorders a chain moves each route
@@ -67,3 +69,7 @@ type SessionAffinity interface {
 	// in, for a stream once the upstream has accepted it and started streaming.
 	Observe(ctx *BifrostContext, requested Route, outcome RouteOutcome)
 }
+
+// DefaultSessionStickyTTL is how long a session binding lasts when the request sets no TTL of its
+// own.
+const DefaultSessionStickyTTL = time.Hour
