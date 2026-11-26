@@ -48,6 +48,27 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		Provider: bifrostReq.Provider,
 	}
 
+	// OpenRouter replays reasoning_details (signed thinking, redacted blocks) to the underlying
+	// model; without it Claude re-reasons every tool-call turn. A message whose details are all
+	// unsigned text adds nothing reasoning_content lacks and can become an unsigned Claude
+	// thinking block, so details are sent only for messages where one carries a signature or
+	// encrypted data, and then whole: OpenRouter needs the model's sequence unmodified.
+	// Messages map 1:1 with Input here.
+	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter {
+		for i := range openaiReq.Messages {
+			assistantMessage := openaiReq.Messages[i].OpenAIChatAssistantMessage
+			if assistantMessage == nil {
+				continue
+			}
+			details := bifrostReq.Input[i].ChatAssistantMessage.ReasoningDetails
+			if slices.ContainsFunc(details, func(d schemas.ChatReasoningDetails) bool {
+				return (d.Signature != nil && *d.Signature != "") || (d.Data != nil && *d.Data != "")
+			}) {
+				assistantMessage.ReasoningDetails = details
+			}
+		}
+	}
+
 	if !caps.SupportsDeveloperRole(true) {
 		for i := range openaiReq.Messages {
 			if openaiReq.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
