@@ -1,0 +1,15 @@
+---
+title: "v2.1.51"
+description: "Helm v2.1.51 changelog - 2026-11-26"
+---
+
+<Update label="Bifrost Helm" description="v2.1.51">
+
+## Changelog
+
+- Added `bifrost.relays[].body_overrides` and `bifrost.relays[].routes[].body_overrides` (`relays[].body_overrides`, `relays[].routes[].body_overrides`): JSON fields forced into every request body, whatever the caller sent. A route's value replaces the relay's for the same path.
+- Added `bifrost.relays[].routes[].inherit_body_overrides` (`relays[].routes[].inherit_body_overrides`): `false` leaves the relay's `body_overrides` out of that route.
+- Added `bifrost.relays[].routes[].job` (`relays[].routes[].job`): the route starts an upstream async job, such as AWS Textract's StartDocumentAnalysis, which Bifrost polls and charges once when it finishes instead of on every status check.
+- Added `bifrost.scim.config.minSessionDuration` (default `30m`, every SSO provider), which renders into `scim_config.config.minSessionDuration`. It is the shortest time a sign-in stays trusted before Bifrost re-checks it with the IdP: whole days or h/m/s pairs (`30m`, `8h`, `1d`), between 5m and 7d. It applies with SCIM on or off.
+
+</Update>

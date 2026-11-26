@@ -1224,6 +1224,37 @@ expect_render_failure "scim: schema rejects a URL in tokenExchangeHosts" "tokenE
   "${OKTA_SCIM[@]}" \
   --set 'bifrost.scim.config.tokenExchangeHosts[0]=https://auth.example.com'
 
+# minSessionDuration is the shared session floor; every provider's schema branch must accept it
+# and pass it through, and the chart renders scim_config even with SCIM disabled.
+scim_provider_args() {
+  case $1 in
+    okta) echo "--set bifrost.scim.config.issuerUrl=https://acme.okta.com/oauth2/default" ;;
+    entra) echo "--set bifrost.scim.config.tenantId=00000000-0000-0000-0000-000000000000" ;;
+    keycloak) echo "--set bifrost.scim.config.serverUrl=https://keycloak.company.com --set bifrost.scim.config.realm=bifrost" ;;
+    zitadel) echo "--set bifrost.scim.config.domain=acme.zitadel.cloud" ;;
+    google) echo "--set bifrost.scim.config.domain=company.com" ;;
+    sailpoint) echo "--set bifrost.scim.config.product=isc --set bifrost.scim.config.tenant=acme" ;;
+    generic) echo "--set bifrost.scim.config.issuerUrl=https://idp.company.com" ;;
+  esac
+}
+for provider in okta entra keycloak zitadel google sailpoint generic; do
+  # shellcheck disable=SC2046 # the provider args are split into separate --set flags on purpose
+  check_config "scim: $provider renders minSessionDuration" \
+    'assert cfg["scim_config"]["config"]["minSessionDuration"] == "8h", "minSessionDuration changed: %r" % cfg["scim_config"]["config"].get("minSessionDuration")' \
+    --set bifrost.scim.enabled=true --set bifrost.scim.provider="$provider" \
+    --set bifrost.scim.config.clientId=bifrost --set bifrost.scim.config.clientSecret=env.SCIM_CLIENT_SECRET \
+    $(scim_provider_args "$provider") \
+    --set bifrost.scim.config.minSessionDuration=8h
+done
+check_config "scim: minSessionDuration renders with SCIM disabled" \
+  'assert cfg["scim_config"]["enabled"] is False, "scim_config.enabled changed: %r" % cfg["scim_config"].get("enabled")
+assert cfg["scim_config"]["config"]["minSessionDuration"] == "1d", "minSessionDuration changed: %r" % cfg["scim_config"]["config"].get("minSessionDuration")' \
+  --set bifrost.scim.enabled=false --set bifrost.scim.provider=okta \
+  --set bifrost.scim.config.minSessionDuration=1d
+expect_render_failure "scim: schema rejects a malformed minSessionDuration" "does not match pattern" \
+  "${OKTA_SCIM[@]}" \
+  --set bifrost.scim.config.minSessionDuration=soon
+
 # Workload identity's additional trusted issuers ride on the SSO provider's config, keyed by
 # name: the chart passes them through as declared, and the values schema refuses an issuer the
 # gateway would, so the error shows at render time. Workloads are mapped to service accounts in
