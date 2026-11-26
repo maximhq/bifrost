@@ -181,6 +181,7 @@ func TestRelaysHandlerDeleteAnswers500WhenGrantedKeysCannotReload(t *testing.T) 
 	h.delete(del)
 	assert.Equal(t, fasthttp.StatusInternalServerError, del.Response.StatusCode())
 	assert.Contains(t, string(del.Response.Body()), "Relay deleted in database but failed to reload in-memory state")
+	requireSingleAuditChange(t, del, "relay.deleted")
 
 	ctx := pteRequest("POST", `{"name":"tavily","base_url":"https://api.tavily.com","auth":{"type":"bearer"},"credential":{"value":"tvly-2"}}`, "")
 	h.create(ctx)

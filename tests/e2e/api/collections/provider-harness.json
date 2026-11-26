@@ -351595,7 +351595,272 @@
       ]
     },
     {
-      "name": "388. Passthrough-encoding (#9764 / PR #9804)",
+      "name": "388. Streamed chat with n>1 logs choice 0 alone (stream n choices)",
+      "description": "A streamed chat completion with n>1 interleaves events for different choices. The stream accumulator (framework/streaming/chat.go) used to read only Choices[0] of each event and keep no choice index, so it merged every choice's tokens into one message: the log stored the choices interleaved, guardrails evaluating the paused-stream snapshot saw the same mixed text, and the finish reason came from whichever choice sent the last event. The accumulator now builds each choice on its own; the logged output_message and stop_reason describe choice 0, the same as a non-streamed n>1 request is logged. Each case streams n=2 from openai/gpt-4o-mini, rebuilds every choice from the SSE events by index, then polls /api/logs/<x-bifrost-request-id> and asserts output_message equals choice 0's text exactly. Red before the fix: the logged content is both choices mixed, so the exact-equality assertion fails. The per-choice snapshot guardrails read, tool calls and the text-completion path are pinned by Go tests in framework/streaming (accumulator_test.go, gate_test.go).",
+      "item": [
+        {
+          "name": "388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2 logs choice 0 alone (stream n choices)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// Rebuild each choice from the SSE events the client received, keyed by choice index.",
+                  "var texts = {};",
+                  "var finishReasons = {};",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  line = line.trim();",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var event;",
+                  "  try { event = JSON.parse(payload); } catch (e) { return; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var index = choice.index || 0;",
+                  "    if (texts[index] === undefined) { texts[index] = ''; }",
+                  "    if (choice.delta && typeof choice.delta.content === 'string') { texts[index] += choice.delta.content; }",
+                  "    if (choice.finish_reason) { finishReasons[index] = choice.finish_reason; }",
+                  "  });",
+                  "});",
+                  "pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: client received two separate choices', function () {",
+                  "  pm.expect(Object.keys(texts).sort(), pm.response.text()).to.eql(['0', '1']);",
+                  "  pm.expect(texts[0], 'choice 0 text').to.not.eql('');",
+                  "  pm.expect(texts[1], 'choice 1 text').to.not.eql('');",
+                  "});",
+                  "pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: each choice received its own finish_reason', function () {",
+                  "  pm.expect(finishReasons[0], 'choice 0 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(finishReasons[1], 'choice 1 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "function contentText(content) {",
+                  "  if (typeof content === 'string') { return content; }",
+                  "  if (Array.isArray(content)) { return content.map(function (block) { return block.text || ''; }).join(''); }",
+                  "  return '';",
+                  "}",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err) {",
+                  "      pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: log read succeeded', function () { pm.expect.fail('GET /api/logs/' + reqId + ' failed: ' + String(err)); });",
+                  "      return;",
+                  "    }",
+                  "    // The batch writer writes the row asynchronously, so 404 means not yet; any other non-200 is a real failure.",
+                  "    if (res.code !== 200 && res.code !== 404) {",
+                  "      pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: log read returned 200', function () { pm.expect.fail('GET /api/logs/' + reqId + ' returned ' + res.code + ': ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.code === 200 ? res.json() : null;",
+                  "    if (j && j.status === 'success' && j.output_message) {",
+                  "      pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: logged output_message is choice 0 alone, not the choices interleaved', function () { pm.expect(contentText(j.output_message.content), JSON.stringify(j.output_message)).to.eql(texts[0]); });",
+                  "      pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: logged stop_reason is choice 0\\'s', function () {",
+                  "        pm.expect(finishReasons[0], 'choice 0 finish_reason missing from the stream: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "        pm.expect(j.stop_reason, JSON.stringify(j)).to.eql(finishReasons[0]);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('388.1 openai/gpt-4o-mini /v1/chat/completions stream n=2: log row completed with an output_message', function () { pm.expect.fail('log ' + reqId + ' not complete after 10 reads: ' + res.code + ' ' + res.text()); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"n\": 2,\n  \"temperature\": 1,\n  \"max_tokens\": 24,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one random fruit and give one short reason to eat it.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2 logs choice 0 alone (stream n choices)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// Rebuild each choice from the SSE events the client received, keyed by choice index.",
+                  "var texts = {};",
+                  "var finishReasons = {};",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  line = line.trim();",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var event;",
+                  "  try { event = JSON.parse(payload); } catch (e) { return; }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var index = choice.index || 0;",
+                  "    if (texts[index] === undefined) { texts[index] = ''; }",
+                  "    if (choice.delta && typeof choice.delta.content === 'string') { texts[index] += choice.delta.content; }",
+                  "    if (choice.finish_reason) { finishReasons[index] = choice.finish_reason; }",
+                  "  });",
+                  "});",
+                  "pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: client received two separate choices', function () {",
+                  "  pm.expect(Object.keys(texts).sort(), pm.response.text()).to.eql(['0', '1']);",
+                  "  pm.expect(texts[0], 'choice 0 text').to.not.eql('');",
+                  "  pm.expect(texts[1], 'choice 1 text').to.not.eql('');",
+                  "});",
+                  "pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: each choice received its own finish_reason', function () {",
+                  "  pm.expect(finishReasons[0], 'choice 0 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(finishReasons[1], 'choice 1 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});",
+                  "function contentText(content) {",
+                  "  if (typeof content === 'string') { return content; }",
+                  "  if (Array.isArray(content)) { return content.map(function (block) { return block.text || ''; }).join(''); }",
+                  "  return '';",
+                  "}",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    if (err) {",
+                  "      pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: log read succeeded', function () { pm.expect.fail('GET /api/logs/' + reqId + ' failed: ' + String(err)); });",
+                  "      return;",
+                  "    }",
+                  "    // The batch writer writes the row asynchronously, so 404 means not yet; any other non-200 is a real failure.",
+                  "    if (res.code !== 200 && res.code !== 404) {",
+                  "      pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: log read returned 200', function () { pm.expect.fail('GET /api/logs/' + reqId + ' returned ' + res.code + ': ' + res.text()); });",
+                  "      return;",
+                  "    }",
+                  "    var j = res.code === 200 ? res.json() : null;",
+                  "    if (j && j.status === 'success' && j.output_message) {",
+                  "      pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: logged output_message is choice 0 alone, not the choices interleaved', function () { pm.expect(contentText(j.output_message.content), JSON.stringify(j.output_message)).to.eql(texts[0]); });",
+                  "      pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: logged stop_reason is choice 0\\'s', function () {",
+                  "        pm.expect(finishReasons[0], 'choice 0 finish_reason missing from the stream: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "        pm.expect(j.stop_reason, JSON.stringify(j)).to.eql(finishReasons[0]);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('388.2 openai/gpt-4o-mini /openai/v1/chat/completions stream n=2: log row completed with an output_message', function () { pm.expect.fail('log ' + reqId + ' not complete after 10 reads: ' + res.code + ' ' + res.text()); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"n\": 2,\n  \"temperature\": 1,\n  \"max_tokens\": 24,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Name one random fruit and give one short reason to eat it.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2 keeps each choice and its finish_reason (stream n choices)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "// Rebuild each choice from the SSE events the client received, keyed by choice index.",
+                  "var texts = {};",
+                  "var finishReasons = {};",
+                  "var errorEvents = [];",
+                  "pm.response.text().split('\\n').forEach(function (line) {",
+                  "  line = line.trim();",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var payload = line.slice(5).trim();",
+                  "  if (!payload || payload === '[DONE]') { return; }",
+                  "  var event;",
+                  "  try { event = JSON.parse(payload); } catch (e) { return; }",
+                  "  if (event.error) { errorEvents.push(payload); }",
+                  "  (event.choices || []).forEach(function (choice) {",
+                  "    var index = choice.index || 0;",
+                  "    if (texts[index] === undefined) { texts[index] = ''; }",
+                  "    if (typeof choice.text === 'string') { texts[index] += choice.text; }",
+                  "    if (choice.finish_reason) { finishReasons[index] = choice.finish_reason; }",
+                  "  });",
+                  "});",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: stream carried no error event', function () { pm.expect(errorEvents, pm.response.text()).to.eql([]); });",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: client received two separate choices', function () {",
+                  "  pm.expect(Object.keys(texts).sort(), pm.response.text()).to.eql(['0', '1']);",
+                  "  pm.expect(texts[0], 'choice 0 text').to.not.eql('');",
+                  "  pm.expect(texts[1], 'choice 1 text').to.not.eql('');",
+                  "});",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: each choice received its own finish_reason', function () {",
+                  "  pm.expect(finishReasons[0], 'choice 0 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(finishReasons[1], 'choice 1 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"n\": 2,\n  \"temperature\": 1,\n  \"max_tokens\": 24,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"prompt\": \"Name one random fruit and give one short reason to eat it.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "389. Passthrough-encoding (#9764 / PR #9804)",
       "description": "Local gzip regression. Raw JSON and Responses bodies retain encoding metadata. Buffered JSON remains decoded and unlabeled. The delayed gzip streams cover OpenAI, Anthropic, Azure, Gemini and ElevenLabs. Newman decodes HTTP gzip, so these cases assert the exact decoded body and response header. Go transport tests also compare raw wire bytes. A truncated gzip response before its first body byte must produce an unlabeled JSON error. No paid provider calls. Start: node tests/e2e/api/runners/run-passthrough-encoding-fixture.mjs /tmp/bifrost-passthrough-encoding. Start a gateway from this checkout: make dev PORT=3024 APP_DIR=/tmp/bifrost-passthrough-encoding. Verify port 3024 is free first and wait for /health. Log in at POST /api/session/login using encoding-fixture / fixture-only-password and export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\". Run: make run-provider-harness-test FEATURE=\"passthrough-encoding\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3024. Stop both servers and remove the temporary profile afterward. PREVIEW keeps these fixture cases out of paid sweeps.",
       "item": [
         {
