@@ -30,6 +30,7 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 
 	// Canonical model for capability gating only; wire model is untouched.
 	capModel := NormalizeModelName(schemas.ResolveCanonicalModel(ctx, bifrostReq.Model))
+	capProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
 
 	// Convert parameters to generation config
 	if bifrostReq.Params != nil {
@@ -38,7 +39,7 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 		// on the same Bifrost request, so it must not mutate the source map.
 		geminiReq.ExtraParams = maps.Clone(bifrostReq.Params.ExtraParams)
 		var err error
-		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, bifrostReq.Provider, capModel)
+		geminiReq.GenerationConfig, err = convertParamsToGenerationConfig(bifrostReq.Params, []string{}, capProvider, capModel)
 		if err != nil {
 			return nil, err
 		}
@@ -120,7 +121,7 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 	// convertResponsesMessagesToGeminiContents: Gemini answers 400 for any conversation whose
 	// last turn is role:"model", regardless of which Bifrost API shaped it. See
 	// trimTrailingAssistantPrefill for why prefill is the only trailing model turn dropped.
-	input := trimTrailingChatAssistantPrefill(bifrostReq.Input, schemas.ResolveModelCaps(bifrostReq.Provider, capModel))
+	input := trimTrailingChatAssistantPrefill(bifrostReq.Input, schemas.ResolveModelCaps(capProvider, capModel))
 	contents, systemInstruction, err := convertBifrostMessagesToGemini(input, allowedImageURLSchemes...)
 	if err != nil {
 		return nil, err
