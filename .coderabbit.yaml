@@ -89,6 +89,63 @@ reviews:
         filter (grant.LimitsFrom) or it will record limits that were never charged.
         Do not flag existing call sites a PR leaves untouched, and do not flag the governance plugin keeping these
         keys populated for readers that have not moved to the Grant yet.
+    - path: "**/*.go"
+      instructions: |
+        Rule: Data lives in the live store (AGENTS.md "Data lives in the live store", skill .claude/skills/live-store/SKILL.md).
+
+        Review only code the PR adds or changes; do not flag existing code it leaves untouched.
+        Flag any NEW data a component keeps for longer than one request outside framework/livestore:
+        - a map, sync.Map or slice of records on a struct (with or without a mutex), a package-level map a function writes,
+          or a map behind an atomic pointer, used as a cache, an index or runtime state.
+        - The fix is a live-store structure chosen by what a miss means: a collection (every row of a config-database kind;
+          a miss means the row does not exist), a cache (only what was asked for; a miss means go fetch), or a table
+          (what the process writes itself; a miss means nothing was written yet; state keyed by a record uses RegisterState).
+        - Components keep only handles (connections, goroutines, locks, compiled programs) and per-request buffers.
+        - A map that genuinely cannot move must be added to tests/rawmaps/allowlist.txt with its group and a reason;
+          TestRepositoryKeepsDataInTheLiveStore fails otherwise.
+        In-flight working state is allowed in a map: state for one request, stream or run, keyed by its request, stream
+        or job ID and removed when that ends (stream accumulators, pending log entries, traces being built, running jobs),
+        with an `inflight` entry in tests/rawmaps/allowlist.txt. Flag such a map when an ending path (an error, a
+        cancellation, a timeout, an early return) does not remove its entry, since it then grows without bound, and flag
+        state labelled in-flight that a later request reuses (that is a cache and belongs in the live store).
+        Placement:
+        - Store.Collections holds config-store collections only; flag methods added to it that merge records or hide state.
+        - Store.Views holds tables derived from collections that several packages read, rebuilt by a subscriber once per
+          publish; a table only one component uses stays with that component.
+        - Records hold only what their loader fills: flag a record type reused with fields its loader never sets, and
+          settings and provider keys merged back into one value (functions that need keys take them as a parameter).
+        - UniqueIndex only where the database also keeps the key unique.
+        Request path:
+        - Reads go through typed handles (Get, GetBy, List, a view's Get); flag a collection looked up by name.
+        - Values read from the store are shared and read-only: flag code that modifies a slice or record it got from the store.
+        - Derived data that is the same for every request is built once per publish in a subscriber, not on every request;
+          a subscriber is fast, does no I/O and cannot fail. Work that depends on the request (filtering for one caller)
+          stays on the request path and reads the shared data without modifying it; do not flag it.
+    - path: "{transports/bifrost-http/handlers,transports/bifrost-http/lib,transports/bifrost-http/server,plugins}/**/*.go"
+      instructions: |
+        Rule: Writes reach memory the same way for every entity (AGENTS.md "Writes reach memory the same way for every
+        entity", skill .claude/skills/live-store/SKILL.md section "Write paths").
+
+        Review only write paths the PR adds or changes. For every database write that changes configuration, check:
+        - Delete: the records that refer to the entity (its holders) are read inside the delete's transaction, and a failed
+          read refuses the delete. After the commit the entity's record is removed with a Remove ref (no database read),
+          the caches bound to it are evicted, and the holders are re-read with lib.AdminRetry(). If that re-read fails the
+          handler answers 500 saying the delete was saved but not reloaded. Flag a delete that reads the row before removing
+          it, finds holders from memory instead of the database, or answers 200 when memory could not follow.
+        - Create or update: the written rows are re-read with lib.AdminRetry() (a refresh helper such as refreshRef or
+          refreshRows). On failure memory keeps the previous record and the handler answers 500 (lib.SavedNotAppliedError,
+          ErrSavedButNotReloaded). Flag a re-read without retries, a failure answered 200, or memory updated from the
+          request body instead of the re-read.
+        - Never write configuration from memory: a partial update merges onto a database read, never onto the live record,
+          and a settings save never rewrites child rows. Node-owned state (usage, reset times and epochs, discovery status)
+          is exempt.
+        - Only an explicit delete removes a record without reading it. A reload or reconcile that finds a held record
+          missing from a list it read earlier must re-read that record (a plain ref), not remove it.
+        - A change another process made is applied with lib.DBLookupRetry().
+        - The audit change is recorded right after the write commits, before the reload that can still fail.
+        Tests: each new or changed write path that re-reads needs a test where that re-read fails, showing the retry and the
+        exhausted case (previous record kept, 500); a delete needs a test that it removes without reading. A new config.json
+        kind extends TestConfigJSONContentPerMode. Ask for them when missing.
     - path: "core/**"
       instructions: |
         Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
@@ -142,6 +199,7 @@ knowledge_base:
     filePatterns:
       - "AGENTS.md"
       - ".greptile/rules.md"
+      - ".claude/skills/live-store/SKILL.md"
 
 chat:
   auto_reply: true
