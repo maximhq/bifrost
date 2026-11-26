@@ -921,18 +921,30 @@ func HandleOpenAITextCompletionStreaming(
 				continue
 			}
 
-			// Handle finish reason, usually in the final chunk. With n>1 every choice ends in
-			// its own frame; choice 0's reason moves to the synthetic final chunk, and any other
-			// choice keeps its reason on its own frame, forwarded below.
-			choice := response.Choices[0]
-			choiceFinished := choice.FinishReason != nil && *choice.FinishReason != ""
-			if choiceFinished {
-				// Collect finish reason and send at the end of the stream
-				finishReason = choice.FinishReason
-				if choice.Index == 0 {
-					choiceZeroFinishReason = choice.FinishReason
-					response.Choices[0].FinishReason = nil
+			// Handle finish reason, usually in the final chunk. With n>1 every choice ends on its
+			// own, and an event may bundle several choices, so every choice is checked. Choice 0's
+			// reason moves to the synthetic final chunk; any other choice keeps its reason on its
+			// own frame, forwarded below.
+			forwardEvent := false
+			eventFinished := false
+			for i := range response.Choices {
+				choice := &response.Choices[i]
+				choiceFinished := choice.FinishReason != nil && *choice.FinishReason != ""
+				if choiceFinished {
+					// Collect finish reason and send at the end of the stream
+					finishReason = choice.FinishReason
+					eventFinished = true
+					if choice.Index == 0 {
+						choiceZeroFinishReason = choice.FinishReason
+						choice.FinishReason = nil
+					}
 				}
+				if (choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil) ||
+					(choiceFinished && choice.Index != 0) {
+					forwardEvent = true
+				}
+			}
+			if eventFinished {
 				// An upstream that parks instead of sending [DONE] can only heartbeat now.
 				providerUtils.SSEEndOnCommentAfterFinish(sseReader)
 			}
@@ -945,8 +957,7 @@ func HandleOpenAITextCompletionStreaming(
 			}
 
 			// Handle regular content chunks
-			if (choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil) ||
-				(choiceFinished && choice.Index != 0) {
+			if forwardEvent {
 				chunkIndex++
 
 				response.ExtraFields.ChunkIndex = chunkIndex
@@ -1276,6 +1287,30 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 		provider.logger,
 		postHookSpanFinalizer,
 	)
+}
+
+// chatStreamChoiceCarriesDelta reports whether a streamed chat choice carries anything a client must
+// see, including the initial role-only delta. OpenAI commonly sends role:"assistant" with empty content
+// first; dropping it leaves strict streaming clients unable to reconstruct a valid message. Refusal and
+// Annotations are answer-bearing delta fields just like Content: a refusal IS the model's reply, and
+// annotations carry the URL citations behind a web-search answer. Omitting them dropped those chunks
+// entirely - the client saw a content-free completion, and the framework's ChatAssistantMessage.Refusal
+// / .Annotations assembly (framework/streaming/chat.go) could never fire for any OpenAI-compatible provider.
+func chatStreamChoiceCarriesDelta(choice *schemas.BifrostResponseChoice) bool {
+	if choice.ChatStreamResponseChoice == nil || choice.ChatStreamResponseChoice.Delta == nil {
+		return false
+	}
+	delta := choice.ChatStreamResponseChoice.Delta
+	return delta.Role != nil ||
+		(delta.Content != nil && *delta.Content != "") ||
+		(delta.Refusal != nil && *delta.Refusal != "") ||
+		len(delta.Annotations) > 0 ||
+		delta.Reasoning != nil ||
+		len(delta.ReasoningDetails) > 0 ||
+		delta.Audio != nil ||
+		len(delta.Images) > 0 ||
+		len(delta.ToolCalls) > 0 ||
+		len(delta.ExtraContent) > 0
 }
 
 // HandleOpenAIChatCompletionStreaming handles streaming for OpenAI-compatible APIs.
@@ -1860,16 +1895,29 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 
 				// Handle finish reason, usually in the final chunk. With n>1 every choice ends
-				// in its own frame; choice 0's reason rides the synthetic final chunk, and any
-				// other choice's finish frame is forwarded below so its reason stays on its index.
-				choice := response.Choices[0]
-				choiceFinished := choice.FinishReason != nil && *choice.FinishReason != ""
-				if choiceFinished {
-					// Collect finish reason and send at the end of the stream
-					finishReason = choice.FinishReason
-					if choice.Index == 0 {
-						choiceZeroFinishReason = choice.FinishReason
+				// on its own, and an event may bundle several choices, so every choice is
+				// checked. Choice 0's reason rides the synthetic final chunk unless the event is
+				// forwarded; any other choice's finish is forwarded so it stays on its index.
+				forwardEvent := false
+				eventFinished := false
+				choiceZeroFinishedInEvent := false
+				for i := range response.Choices {
+					choice := &response.Choices[i]
+					choiceFinished := choice.FinishReason != nil && *choice.FinishReason != ""
+					if choiceFinished {
+						// Collect finish reason and send at the end of the stream
+						finishReason = choice.FinishReason
+						eventFinished = true
+						if choice.Index == 0 {
+							choiceZeroFinishReason = choice.FinishReason
+							choiceZeroFinishedInEvent = true
+						}
 					}
+					if chatStreamChoiceCarriesDelta(choice) || (choiceFinished && choice.Index != 0) {
+						forwardEvent = true
+					}
+				}
+				if eventFinished {
 					// An upstream that parks instead of sending [DONE] can only heartbeat now.
 					providerUtils.SSEEndOnCommentAfterFinish(sseReader)
 				}
@@ -1882,29 +1930,8 @@ func HandleOpenAIChatCompletionStreaming(
 				}
 
 				// Handle regular content chunks, including the initial role-only delta.
-				// OpenAI commonly sends role:"assistant" with empty content first; dropping
-				// it leaves strict streaming clients unable to reconstruct a valid message.
-				// Refusal and Annotations are answer-bearing delta fields just like
-				// Content: a refusal IS the model's reply, and annotations carry the
-				// URL citations behind a web-search answer. Omitting them here dropped
-				// those chunks entirely - the client saw a content-free completion, and
-				// the framework's ChatAssistantMessage.Refusal / .Annotations assembly
-				// (framework/streaming/chat.go) could never fire for any
-				// OpenAI-compatible provider.
-				if choice.ChatStreamResponseChoice != nil &&
-					choice.ChatStreamResponseChoice.Delta != nil &&
-					(choice.ChatStreamResponseChoice.Delta.Role != nil ||
-						(choice.ChatStreamResponseChoice.Delta.Content != nil && *choice.ChatStreamResponseChoice.Delta.Content != "") ||
-						(choice.ChatStreamResponseChoice.Delta.Refusal != nil && *choice.ChatStreamResponseChoice.Delta.Refusal != "") ||
-						len(choice.ChatStreamResponseChoice.Delta.Annotations) > 0 ||
-						choice.ChatStreamResponseChoice.Delta.Reasoning != nil ||
-						len(choice.ChatStreamResponseChoice.Delta.ReasoningDetails) > 0 ||
-						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
-						len(choice.ChatStreamResponseChoice.Delta.Images) > 0 ||
-						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0 ||
-						len(choice.ChatStreamResponseChoice.Delta.ExtraContent) > 0) ||
-					(choiceFinished && choice.Index != 0) {
-					if choiceFinished && choice.Index == 0 {
+				if forwardEvent {
+					if choiceZeroFinishedInEvent {
 						forwardedTerminalFinishReason = true
 					}
 					chunkIndex++

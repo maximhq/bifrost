@@ -2299,3 +2299,86 @@ func TestTextCompletionStreamMultipleChoicesKeepTheirOwnFinishReasons(t *testing
 		t.Errorf("finish reasons by choice = %v, want %v", got, want)
 	}
 }
+
+// streamContentByChoice concatenates the content the client receives for each choice index.
+func streamContentByChoice(chunks []*schemas.BifrostStreamChunk) map[int]string {
+	content := map[int]string{}
+	for _, chunk := range chunks {
+		if chunk.BifrostChatResponse != nil {
+			for _, choice := range chunk.BifrostChatResponse.Choices {
+				if choice.ChatStreamResponseChoice != nil && choice.ChatStreamResponseChoice.Delta != nil && choice.ChatStreamResponseChoice.Delta.Content != nil {
+					content[choice.Index] += *choice.ChatStreamResponseChoice.Delta.Content
+				}
+			}
+		}
+		if chunk.BifrostTextCompletionResponse != nil {
+			for _, choice := range chunk.BifrostTextCompletionResponse.Choices {
+				if choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil {
+					content[choice.Index] += *choice.TextCompletionResponseChoice.Text
+				}
+			}
+		}
+	}
+	return content
+}
+
+// An event may bundle several choices. A finish-only choice 0 next to a content-bearing
+// choice 1 must not get the event dropped: choice 1's content and choice 0's finish
+// reason both have to reach the client, each on its own index, exactly once.
+func TestChatStreamBundledFinishOnlyChoiceZeroKeepsChoiceOneContent(t *testing.T) {
+	event := func(choices string) string {
+		return `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[` + choices + `]}` + "\n\n"
+	}
+	server := completeSSEServer(t, event(`{"index":0,"delta":{"role":"assistant","content":"a"},"finish_reason":null}`)+
+		event(`{"index":1,"delta":{"role":"assistant","content":"b"},"finish_reason":null}`)+
+		event(`{"index":0,"delta":{},"finish_reason":"stop"},{"index":1,"delta":{"content":"c"},"finish_reason":null}`)+
+		event(`{"index":1,"delta":{},"finish_reason":"length"}`)+
+		"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if got, want := streamContentByChoice(chunks), map[int]string{0: "a", 1: "bc"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("content by choice = %v, want %v", got, want)
+	}
+	if got, want := streamFinishReasonsByChoice(t, chunks), map[int][]string{0: {"stop"}, 1: {"length"}}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("finish reasons by choice = %v, want %v", got, want)
+	}
+}
+
+// The text completion mirror of the chat case above.
+func TestTextCompletionStreamBundledFinishOnlyChoiceZeroKeepsChoiceOneContent(t *testing.T) {
+	event := func(choices string) string {
+		return `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[` + choices + `]}` + "\n\n"
+	}
+	server := completeSSEServer(t, event(`{"index":0,"text":"a","finish_reason":null}`)+
+		event(`{"index":1,"text":"b","finish_reason":null}`)+
+		event(`{"index":0,"finish_reason":"stop"},{"index":1,"text":"c","finish_reason":null}`)+
+		event(`{"index":1,"text":"","finish_reason":"length"}`)+
+		"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	chunks := collectChunks(t, stream)
+	if got, want := streamContentByChoice(chunks), map[int]string{0: "a", 1: "bc"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("content by choice = %v, want %v", got, want)
+	}
+	if got, want := streamFinishReasonsByChoice(t, chunks), map[int][]string{0: {"stop"}, 1: {"length"}}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("finish reasons by choice = %v, want %v", got, want)
+	}
+}
