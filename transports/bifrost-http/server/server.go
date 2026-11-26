@@ -79,6 +79,10 @@ var enterprisePlugins = []string{
 
 // ServerCallbacks is a interface that defines the callbacks for the server.
 type ServerCallbacks interface {
+	// Agent Gateway registration and relay writes, which a deployment may wrap with its own
+	// coordination before the local runtime changes.
+	handlers.AgentRegistrationManager
+	handlers.RelayManager
 	// Plugins callbacks
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
@@ -948,8 +952,9 @@ func (s *BifrostHTTPServer) ReloadVirtualMCP(ctx context.Context, id uint) (*tab
 	return def, nil
 }
 
-// RemoveVirtualMCP drops a deleted Virtual MCP definition from memory. Keys that were assigned it
-// keep its ID until they are next refreshed; resolution skips an ID whose definition is gone.
+// RemoveVirtualMCP drops a deleted Virtual MCP definition from memory. The delete handler reloads
+// the keys that were assigned it, so their records drop its ID; until then resolution skips an ID
+// whose definition is gone.
 func (s *BifrostHTTPServer) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return s.removeRecord(ctx, livestore.KindVirtualMCP, registry.VirtualMCPKey(id))
 }
@@ -1311,25 +1316,29 @@ func (s *BifrostHTTPServer) RemoveProvider(ctx context.Context, provider schemas
 		logger.Error("failed to remove provider from client: %v", err)
 		return err
 	}
-	err = s.Config.RemoveProvider(ctx, provider)
-	if err != nil && !errors.Is(err, lib.ErrNotFound) {
-		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", err)
-		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", err)
+	removeErr := s.Config.RemoveProvider(ctx, provider)
+	if removeErr != nil && !errors.Is(removeErr, lib.ErrNotFound) {
+		logger.Error("failed to remove provider from config: %v. Client and config may be out of sync, please restart bifrost", removeErr)
+		return fmt.Errorf("failed to remove provider from config: %w. Client and config may be out of sync, please restart bifrost", removeErr)
 	}
-	// Removing the provider from the config dropped it from the live store, and its budget and rate
-	// limit with it, so governance stops enforcing them. Without the governance plugin the removal
-	// still reports its error, as it always has.
-	if _, err := s.getGovernancePlugin(); err != nil {
-		return err
+	// The provider is gone from the config store from here on. Removing it from the config dropped
+	// it from the live store, and its budget and rate limit with it, so governance stops enforcing them.
+	if s.Config.IsPluginLoaded(s.getGovernancePluginName()) {
+		if _, err := s.getGovernancePlugin(); err != nil {
+			if removeErr != nil {
+				return err // nothing was deleted here
+			}
+			return &lib.SavedNotAppliedError{Err: err}
+		}
 	}
-	if s.Config == nil || s.Config.ModelCatalog == nil {
-		return fmt.Errorf("pricing manager not found")
+	if s.Config.ModelCatalog == nil {
+		return removeErr // no catalog means no cached pricing or live models to drop
 	}
 	s.Config.ModelCatalog.InvalidateLiveProvider(provider)
 	s.Config.ModelCatalog.RemoveKeyConfigForProvider(provider)
 	s.Config.ModelCatalog.SetIgnoreProviderCost(provider, false)
 
-	return nil
+	return removeErr // lib.ErrNotFound when the store held no such provider
 }
 
 // OnKeyAdded refreshes the keyconfig snapshot and fetches list-models for the
@@ -2973,15 +2982,15 @@ func (s *BifrostHTTPServer) DeleteAgentRegistration(ctx context.Context, name st
 }
 
 // InitializeAgentGateway constructs the shared Agent Gateway handler before any
-// routes that depend on it are registered. registrationManager owns registration
-// mutations, while vkReloader refreshes virtual keys after grant changes. nil
-// values use the local OSS implementations.
-func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registrationManager handlers.AgentRegistrationManager, vkReloader handlers.VirtualKeyReloader) error {
+// routes that depend on it are registered. callbacks is the same object RegisterAPIRoutes receives:
+// it owns registration mutations and reloads virtual keys after grant changes, as it does for the
+// other governance handlers. nil uses this server.
+func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, callbacks ServerCallbacks) error {
 	if s.AgentGatewayHandler != nil || s.Config == nil || s.Config.ConfigStore == nil {
 		return nil
 	}
-	if vkReloader == nil {
-		vkReloader = s
+	if callbacks == nil {
+		callbacks = s
 	}
 	gatewayStore, ok := s.Config.ConfigStore.(agent.Store)
 	if !ok {
@@ -3020,7 +3029,7 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 	if err != nil {
 		return fmt.Errorf("failed to initialize agent gateway: %v", err)
 	}
-	s.AgentGatewayHandler = handlers.NewAgentGatewayHandler(manager, registrationManager, s.Config, vkReloader)
+	s.AgentGatewayHandler = handlers.NewAgentGatewayHandler(manager, callbacks, s.Config, callbacks)
 	s.agentGatewayManager = manager
 	agentCount := 0
 	if registrations, err := manager.List(ctx); err == nil {
@@ -4018,8 +4027,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Initialize the Agent Gateway once before either management or protocol
 	// routes are registered.
-	s.InitializeRelays(s.Ctx, nil, nil)
-	if err = s.InitializeAgentGateway(s.Ctx, nil, nil); err != nil {
+	s.InitializeRelays(s.Ctx, s)
+	if err = s.InitializeAgentGateway(s.Ctx, s); err != nil {
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil

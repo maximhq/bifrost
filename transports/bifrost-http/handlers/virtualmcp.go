@@ -282,13 +282,14 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.refreshDefinition(ctx, def.ID)
+	rec := lib.RecordAuditChange(ctx, "virtual_mcp.updated", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, before, h.toResponse(def, nil))
 	resp, err := h.withVKs(ctx, def)
 	if err != nil {
 		h.logger.Error("failed to load VK assignments for virtual MCP %d: %v", def.ID, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-	lib.RecordAuditChange(ctx, "virtual_mcp.updated", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, before, h.toResponse(def, nil))
+	rec.SetAfter(h.toResponse(def, nil))
 	SendJSON(ctx, map[string]any{"virtual_mcp": resp})
 }
 
@@ -302,12 +303,26 @@ func (h *VirtualMCPHandler) deleteVirtualMCP(ctx *fasthttp.RequestCtx) {
 		h.sendLookupError(ctx, err)
 		return
 	}
+	// The delete cascades over the keys' assignments of this Virtual MCP. The keys holding one are
+	// listed first and reloaded once the rows are gone, so no key record keeps the deleted ID. Keys
+	// that cannot be listed cannot be reloaded, so nothing is deleted then.
+	assigned, err := h.store.ConfigStore.GetVirtualKeyIDsForVirtualMCP(ctx, id)
+	if err != nil {
+		h.logger.Error("failed to list the virtual keys assigned virtual MCP %d before deleting it: %v", id, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to read the virtual keys assigned this Virtual MCP, so nothing was deleted")
+		return
+	}
 	if err := h.store.ConfigStore.DeleteVirtualMCP(ctx, id); err != nil {
 		h.logger.Error("failed to delete virtual MCP: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
 	h.removeDefinition(ctx, id)
+	if err := reloadGrantingVirtualKeys(ctx, h.governanceManager, assigned); err != nil {
+		h.logger.Error("failed to reload the virtual keys assigned virtual MCP %d after delete: %v", id, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Virtual MCP deleted in database but failed to reload in-memory state")
+		return
+	}
 	lib.RecordAuditChange(ctx, "virtual_mcp.deleted", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, h.toResponse(def, nil), nil)
 	SendJSON(ctx, map[string]any{"success": true})
 }

@@ -300,6 +300,7 @@ export interface BulkRotateVirtualKeysResponse {
 	message: string;
 	virtual_keys: VirtualKey[];
 	errors?: Record<string, string>;
+	warnings?: Record<string, string>; // saved, but not loaded into memory
 }
 
 export interface CreateTeamRequest {

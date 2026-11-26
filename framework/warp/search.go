@@ -317,6 +317,10 @@ func unsupportedSemanticFilters(filters *logstore.SearchFilters) []string {
 	add(len(filters.ErrorCodes) > 0, "error_codes")
 	add(len(filters.StatusCodes) > 0, "status_codes")
 	add(len(filters.GuardrailOutcomes) > 0, "guardrail_outcomes")
+	add(len(filters.GuardrailActions) > 0, "guardrail_actions")
+	add(len(filters.GuardrailRuleIDs) > 0, "guardrail_rule_ids")
+	add(len(filters.GuardrailProfileIDs) > 0, "guardrail_profile_ids")
+	add(len(filters.GuardrailPhases) > 0, "guardrail_phases")
 	add(len(filters.MetadataFilters) > 0, "metadata_filters")
 	add(filters.RealtimeInputItemID != "", "realtime_input_item_id")
 	return names

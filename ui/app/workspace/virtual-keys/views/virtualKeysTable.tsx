@@ -636,8 +636,16 @@ export default function VirtualKeysTable({
 			const graceNote = graceUntil
 				? ` ${t("virtualKeys.rotateGraceNote", { date: new Date(graceUntil).toLocaleString(getLocale()) })}`
 				: "";
+			const notLoadedCount = result.warnings ? Object.keys(result.warnings).length : 0;
+			const notLoaded =
+				notLoadedCount > 0 ? { description: t("virtualKeys.rotatedBulkNotLoaded", { notLoaded: notLoadedCount }) } : undefined;
 			if (failureCount > 0) {
-				toast.warning(t("virtualKeys.rotatedBulkPartial", { count: result.virtual_keys.length, failed: failureCount, graceNote }));
+				toast.warning(
+					t("virtualKeys.rotatedBulkPartial", { count: result.virtual_keys.length, failed: failureCount, graceNote }),
+					notLoaded,
+				);
+			} else if (notLoaded) {
+				toast.warning(t("virtualKeys.rotatedBulk", { count: result.virtual_keys.length, graceNote }), notLoaded);
 			} else {
 				toast.success(t("virtualKeys.rotatedBulk", { count: result.virtual_keys.length, graceNote }));
 			}

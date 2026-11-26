@@ -159,3 +159,99 @@ func TestVirtualMCPAssignmentReloadFailureAnswers500(t *testing.T) {
 
 	assert.Equal(t, []bool{true, false}, manager.reloads)
 }
+
+// vmcpDeleteGovernanceManager records the batched key reloads and the definition removals a Virtual
+// MCP delete asks for.
+type vmcpDeleteGovernanceManager struct {
+	reloadCountingGovernanceManager
+	removed []uint
+}
+
+// RemoveVirtualMCP records the removal and drops nothing.
+func (m *vmcpDeleteGovernanceManager) RemoveVirtualMCP(_ context.Context, id uint) error {
+	m.removed = append(m.removed, id)
+	return nil
+}
+
+// newVirtualMCPDeleteFixture saves a Virtual MCP assigned to one key and returns its ID.
+func newVirtualMCPDeleteFixture(t *testing.T, store configstore.ConfigStore) uint {
+	t.Helper()
+	ctx := context.Background()
+	def := &configstoreTables.TableVirtualMCP{Name: "Assigned", Enabled: true, ParsedTools: []configstoreTables.MCPToolSpec{{MCPClientID: "c1", ToolNames: []string{"*"}}}}
+	require.NoError(t, store.CreateVirtualMCP(ctx, def))
+	require.NoError(t, store.CreateVirtualKey(ctx, &configstoreTables.TableVirtualKey{ID: "vk-assigned", Name: "assigned", Value: *schemas.NewSecretVar("sk-bf-assigned"), IsActive: schemas.Ptr(true)}))
+	require.NoError(t, store.AttachVirtualMCPToVirtualKey(ctx, def.ID, "vk-assigned"))
+	return def.ID
+}
+
+// deleteVirtualMCPRequest deletes the Virtual MCP id through the handler and returns the request.
+func deleteVirtualMCPRequest(h *VirtualMCPHandler, id uint) *fasthttp.RequestCtx {
+	reqCtx := newTestRequestCtx("")
+	reqCtx.SetUserValue("id", strconv.FormatUint(uint64(id), 10))
+	h.deleteVirtualMCP(reqCtx)
+	return reqCtx
+}
+
+// TestDeleteVirtualMCPReloadsTheKeysItWasAssignedTo pins that a delete reloads, in one batch, the keys
+// the Virtual MCP was assigned to, listed before the delete cascaded over the assignments, so no key
+// record keeps the deleted ID.
+func TestDeleteVirtualMCPReloadsTheKeysItWasAssignedTo(t *testing.T) {
+	store := setupPricingOverrideHandlerStore(t)
+	id := newVirtualMCPDeleteFixture(t, store)
+	gm := &vmcpDeleteGovernanceManager{}
+	h := &VirtualMCPHandler{store: &lib.Config{ConfigStore: store}, governanceManager: gm, logger: &mockLogger{}}
+
+	reqCtx := deleteVirtualMCPRequest(h, id)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	assert.Equal(t, [][]string{{"vk-assigned"}}, gm.reloadedBatches, "the assigned key is reloaded once, in one batch")
+	assigned, err := store.GetVirtualKeyIDsForVirtualMCP(context.Background(), id)
+	require.NoError(t, err)
+	assert.Empty(t, assigned, "the delete cascaded over the assignment")
+}
+
+// TestDeleteVirtualMCPAnswers500WhenAssignedKeysCannotReload pins that a delete whose key reload fails
+// is saved but answered 500, as every write whose in-memory reload fails is.
+func TestDeleteVirtualMCPAnswers500WhenAssignedKeysCannotReload(t *testing.T) {
+	store := setupPricingOverrideHandlerStore(t)
+	id := newVirtualMCPDeleteFixture(t, store)
+	gm := &vmcpDeleteGovernanceManager{reloadCountingGovernanceManager: reloadCountingGovernanceManager{batchErr: errors.New("database unreachable")}}
+	h := &VirtualMCPHandler{store: &lib.Config{ConfigStore: store}, governanceManager: gm, logger: &mockLogger{}}
+
+	reqCtx := deleteVirtualMCPRequest(h, id)
+	assert.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode())
+	assert.Contains(t, string(reqCtx.Response.Body()), "Virtual MCP deleted in database but failed to reload in-memory state")
+	_, err := store.GetVirtualMCPByID(context.Background(), id)
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "the delete itself was saved")
+}
+
+// holderReadFailingStore is a config store whose listing of the keys a Virtual MCP is assigned to
+// fails.
+type holderReadFailingStore struct{ configstore.ConfigStore }
+
+// GetVirtualKeyIDsForVirtualMCP fails, as a database that cannot be read does.
+func (holderReadFailingStore) GetVirtualKeyIDsForVirtualMCP(context.Context, uint) ([]string, error) {
+	return nil, errors.New("database unreachable")
+}
+
+// TestDeleteVirtualMCPRefusesWhenAssignedKeysCannotBeListed pins that a delete whose assigned keys
+// cannot be listed answers 500 and deletes nothing: keys it cannot list it cannot reload, and they
+// would keep the deleted ID. The definition and its assignments stay, and nothing is removed from
+// memory or reloaded.
+func TestDeleteVirtualMCPRefusesWhenAssignedKeysCannotBeListed(t *testing.T) {
+	store := setupPricingOverrideHandlerStore(t)
+	id := newVirtualMCPDeleteFixture(t, store)
+	gm := &vmcpDeleteGovernanceManager{}
+	h := &VirtualMCPHandler{store: &lib.Config{ConfigStore: holderReadFailingStore{store}}, governanceManager: gm, logger: &mockLogger{}}
+
+	reqCtx := deleteVirtualMCPRequest(h, id)
+	assert.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+	assert.Contains(t, string(reqCtx.Response.Body()), "nothing was deleted")
+	_, err := store.GetVirtualMCPByID(context.Background(), id)
+	assert.NoError(t, err, "the definition stays")
+	assigned, err := store.GetVirtualKeyIDsForVirtualMCP(context.Background(), id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vk-assigned"}, assigned, "the assignment stays")
+	assert.Empty(t, gm.removed, "nothing is removed from memory")
+	assert.Empty(t, gm.reloadedBatches, "no key is reloaded")
+	assert.Empty(t, gm.reloaded, "no key is reloaded")
+}

@@ -134,24 +134,44 @@ func TestRelaysHandlerCRUD(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusNotFound, missing.Response.StatusCode())
 }
 
-// relayChangeRecorder stands in for the virtual-key reloader and records what it was asked to
-// reload; a failed reload is logged, never surfaced, as for agent grants.
+// relayChangeRecorder stands in for the governance manager and records each batch of keys it was
+// asked to reload; failReloads makes every reload fail. Only ReloadVirtualKeys is implemented: the
+// embedded interface is nil, so any other call panics and shows up in the test.
 type relayChangeRecorder struct {
-	reloads     []string
+	GovernanceManager
+	reloads     [][]string
 	failReloads bool
 }
 
-func (r *relayChangeRecorder) ReloadVirtualKey(_ context.Context, id string) (*tables.TableVirtualKey, error) {
-	r.reloads = append(r.reloads, id)
+// ReloadVirtualKeys records the batch and fails when failReloads is set.
+func (r *relayChangeRecorder) ReloadVirtualKeys(_ context.Context, ids []string) error {
+	r.reloads = append(r.reloads, append([]string(nil), ids...))
 	if r.failReloads {
-		return nil, errors.New("governance store unavailable")
+		return errors.New("governance store unavailable")
 	}
-	return nil, nil
+	return nil
 }
 
-// A delete reloads every key whose grant it took away, and a failed reload does not fail the
-// delete or block the name, exactly as the Agent Gateway handler treats agent grants.
+// A delete reloads, in one batch, every key whose grant it took away, and frees the name at once.
 func TestRelaysHandlerReloadsGrantedKeysOnDelete(t *testing.T) {
+	_, store, _ := newRelaysTestHandler(t)
+	recorder := &relayChangeRecorder{}
+	h := NewRelaysHandler(relay.NewManager(store, nil), nil, nil, recorder)
+	h.create(pteRequest("POST", `{"name":"tavily","base_url":"https://api.tavily.com","auth":{"type":"bearer"},"credential":{"value":"tvly-1"}}`, ""))
+	require.NoError(t, store.CreateVirtualKey(context.Background(), &tables.TableVirtualKey{ID: "vk-granted", Name: "granted", Value: *schemas.NewSecretVar("sk-bf-granted"), IsActive: schemas.Ptr(true), RelayGrants: []tables.TableVirtualKeyRelayGrant{{VirtualKeyID: "vk-granted", RelayName: "tavily"}}}))
+	del := pteRequest("DELETE", "", "tavily")
+	h.delete(del)
+	assert.Equal(t, fasthttp.StatusNoContent, del.Response.StatusCode())
+	assert.Equal(t, [][]string{{"vk-granted"}}, recorder.reloads, "the granted key is reloaded in one batch")
+
+	ctx := pteRequest("POST", `{"name":"tavily","base_url":"https://api.tavily.com","auth":{"type":"bearer"},"credential":{"value":"tvly-2"}}`, "")
+	h.create(ctx)
+	assert.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), "the name is free to reuse at once")
+}
+
+// A delete whose key reload fails is saved but answered 500, as every write whose in-memory reload
+// fails is: the relay is gone and its name free, while the keys keep their previous records.
+func TestRelaysHandlerDeleteAnswers500WhenGrantedKeysCannotReload(t *testing.T) {
 	_, store, _ := newRelaysTestHandler(t)
 	recorder := &relayChangeRecorder{failReloads: true}
 	h := NewRelaysHandler(relay.NewManager(store, nil), nil, nil, recorder)
@@ -159,12 +179,12 @@ func TestRelaysHandlerReloadsGrantedKeysOnDelete(t *testing.T) {
 	require.NoError(t, store.CreateVirtualKey(context.Background(), &tables.TableVirtualKey{ID: "vk-granted", Name: "granted", Value: *schemas.NewSecretVar("sk-bf-granted"), IsActive: schemas.Ptr(true), RelayGrants: []tables.TableVirtualKeyRelayGrant{{VirtualKeyID: "vk-granted", RelayName: "tavily"}}}))
 	del := pteRequest("DELETE", "", "tavily")
 	h.delete(del)
-	assert.Equal(t, fasthttp.StatusNoContent, del.Response.StatusCode(), "a failed key reload does not fail the delete")
-	assert.Equal(t, []string{"vk-granted"}, recorder.reloads, "the granted key is reloaded")
+	assert.Equal(t, fasthttp.StatusInternalServerError, del.Response.StatusCode())
+	assert.Contains(t, string(del.Response.Body()), "Relay deleted in database but failed to reload in-memory state")
 
 	ctx := pteRequest("POST", `{"name":"tavily","base_url":"https://api.tavily.com","auth":{"type":"bearer"},"credential":{"value":"tvly-2"}}`, "")
 	h.create(ctx)
-	assert.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), "the name is free to reuse at once")
+	assert.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), "the delete was saved, so the name is free")
 }
 
 // relayMutationRecorder stands in for a clustered server's RelayManager: it mutates locally and

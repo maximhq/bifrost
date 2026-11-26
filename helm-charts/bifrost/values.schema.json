@@ -4717,6 +4717,11 @@
                     "minimum": 0,
                     "description": "Number of preceding conversation turns to include when send_all_conversation_turns is false. 0 sends only the current input."
                   },
+                  "exclude_system_prompt": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Keep system messages away from the rule's guardrail providers, both as content to check and as conversation context. When false (default), they are sent like any other turn. Applies to LLM rules; the turn window counts only the turns that are sent."
+                  },
                   "evaluation_mode": {
                     "type": "string",
                     "enum": ["bundled", "per_turn"],
@@ -4741,6 +4746,11 @@
                     "enum": ["pre_call", "parallel"],
                     "default": "pre_call",
                     "description": "When the rule's input check runs. 'pre_call' (default) finishes the check before the request is sent, so it can block, redact, or transform the input. 'parallel' runs the check alongside the LLM call and holds the response until the verdict arrives; only a block is enforced, and redaction findings reach only the logs. Parallel requires target 'llm' and apply_to 'input' or 'both'."
+                  },
+                  "fail_closed": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Block traffic when one of the rule's guardrail providers errors, times out, or returns an invalid or partial result. When false (default), the content goes through and the failure is logged. Applies only to profiles that can block or rewrite content; the block returns the usual guardrail_intervention error with code 'guardrail_unavailable'."
                   },
                   "profile_execution_mode": {
                     "type": "string",

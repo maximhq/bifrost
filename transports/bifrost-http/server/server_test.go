@@ -478,13 +478,13 @@ func TestAgentGatewayRoutesRegisteredAfterStartupInitialization(t *testing.T) {
 	}
 	SetLogger(agentGatewayRouteLogger{})
 	t.Cleanup(func() { SetLogger(nil) })
-	requireNoError(s.InitializeAgentGateway(context.Background(), nil, nil))
+	requireNoError(s.InitializeAgentGateway(context.Background(), nil))
 	firstHandler := s.AgentGatewayHandler
 	if firstHandler == nil {
 		t.Fatal("expected Agent Gateway handler to be initialized")
 	}
 	defer s.CloseAgentGateway()
-	requireNoError(s.InitializeAgentGateway(context.Background(), nil, nil))
+	requireNoError(s.InitializeAgentGateway(context.Background(), nil))
 	if s.AgentGatewayHandler != firstHandler {
 		t.Fatal("expected Agent Gateway handler to be constructed only once")
 	}
@@ -3828,6 +3828,89 @@ func TestOverlappingKeyReloadsKeepTheRotatedValue(t *testing.T) {
 			require.False(t, stale, "the rotated-out value must not authenticate")
 			_, live := store.GetVirtualKey(ctx, after)
 			require.True(t, live, "the committed value must authenticate")
+		})
+	}
+}
+
+// TestRemoveProviderWithoutGovernanceOrCatalog pins that a delete with no governance plugin or
+// model catalog loaded is a plain success, not a saved-but-not-applied failure.
+func TestRemoveProviderWithoutGovernanceOrCatalog(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	lib.SetLogger(noopTestLogger{})
+
+	for _, tc := range []struct {
+		name    string
+		catalog bool
+	}{{"with catalog", true}, {"without catalog", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			const provider schemas.ModelProvider = "removable-provider"
+			cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+				provider: {
+					NetworkConfig:        &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", DefaultRequestTimeoutInSeconds: 5},
+					CustomProviderConfig: &schemas.CustomProviderConfig{IsKeyLess: true, BaseProviderType: schemas.OpenAI},
+				},
+			}, nil)
+			if tc.catalog {
+				catalog, err := modelcatalog.NewTestCatalog(nil)
+				require.NoError(t, err)
+				cfg.ModelCatalog = catalog
+			}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: lib.NewBaseAccount(cfg),
+				Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			defer client.Shutdown()
+
+			server := &BifrostHTTPServer{Config: cfg, Client: client, Ctx: schemas.NewBifrostContext(context.Background(), time.Time{})}
+			require.NoError(t, server.RemoveProvider(context.Background(), provider))
+			require.False(t, cfg.IsProviderConfigured(provider))
+		})
+	}
+}
+
+// deleteProviderErrStore answers every provider delete with err.
+type deleteProviderErrStore struct {
+	configstore.ConfigStore
+	err error
+}
+
+func (s deleteProviderErrStore) DeleteProvider(context.Context, schemas.ModelProvider, ...*gorm.DB) error {
+	return s.err
+}
+
+// TestRemoveProviderStoreErrors pins that an already deleted provider is lib.ErrNotFound and any other store error is not.
+func TestRemoveProviderStoreErrors(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+	lib.SetLogger(noopTestLogger{})
+
+	for _, tc := range []struct {
+		name     string
+		err      error
+		notFound bool
+	}{
+		{"already deleted", configstore.ErrNotFound, true},
+		{"database error", errors.New("connection refused"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := libtest.Config(t, nil, nil)
+			cfg.ConfigStore = deleteProviderErrStore{ConfigStore: cfg.ConfigStore, err: tc.err}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: lib.NewBaseAccount(cfg),
+				Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			defer client.Shutdown()
+
+			server := &BifrostHTTPServer{Config: cfg, Client: client, Ctx: schemas.NewBifrostContext(context.Background(), time.Time{})}
+			err = server.RemoveProvider(context.Background(), "gone-provider")
+			require.Error(t, err)
+			require.Equal(t, tc.notFound, errors.Is(err, lib.ErrNotFound))
+			require.False(t, lib.IsSavedNotApplied(err))
 		})
 	}
 }
