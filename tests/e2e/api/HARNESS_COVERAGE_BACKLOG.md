@@ -452,10 +452,10 @@ should be re-tested through passthrough since the translation layer is bypassed.
 
 ## Stream lifecycle
 
-- [x] **Consumer processing must not trigger provider idle timeout (#10165)** — folder **388 [PREVIEW]** has a loopback fixture that exercises the real OpenAI provider read loop and gateway SSE writer. The test runs these collection assertions using Node and a controlled HTTP upstream.
+- [x] **Consumer processing must not trigger provider idle timeout (#10165)** — folder **389 [PREVIEW]** has a loopback fixture that exercises the real OpenAI provider read loop and gateway SSE writer. The test runs these collection assertions using Node and a controlled HTTP upstream.
 
-  - **388.1** pauses the synchronous provider post-hook after reading the first chat chunk. The upstream sends the remaining chunks while the hook is held for three idle windows. The hook records the measured pause and the second write's completion in the first SSE data event. The assertion requires both chunks and a complete `[DONE]` frame.
-  - **388.2** sends an SSE error on a streamed Responses retrieval and keeps the upstream body open. After the error post-hook returns, the shared drain must close the response within the test's 10-second bound and preserve the structured error.
+  - **389.1** pauses the synchronous provider post-hook after reading the first chat chunk. The upstream sends the remaining chunks while the hook is held for three idle windows. The hook records the measured pause and the second write's completion in the first SSE data event. The assertion requires both chunks and a complete `[DONE]` frame.
+  - **389.2** sends an SSE error on a streamed Responses retrieval and keeps the upstream body open. After the error post-hook returns, the shared drain must close the response within the test's 10-second bound and preserve the structured error.
 
   Run from the repository root with Go 1.27.4, Node, and a local Go workspace:
 
