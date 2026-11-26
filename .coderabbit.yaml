@@ -146,6 +146,46 @@ reviews:
         Tests: each new or changed write path that re-reads needs a test where that re-read fails, showing the retry and the
         exhausted case (previous record kept, 500); a delete needs a test that it removes without reading. A new config.json
         kind extends TestConfigJSONContentPerMode. Ask for them when missing.
+    - path: "{core/mcp/**,core/internal/mcptests/**,framework/mcpcatalog/**,framework/oauth2/**,framework/modelcatalog/mcp_library_sync.go,plugins/governance/mcp*.go,transports/bifrost-http/handlers/mcp*.go,transports/bifrost-http/handlers/bifrostmcp.go,transports/bifrost-http/handlers/virtualmcp.go,transports/bifrost-http/lib/config_virtual_mcp.go}"
+      instructions: |
+        Rule: Every MCP change ships with MCP harness cases (AGENTS.md "Every MCP change ships with MCP harness cases",
+        skill .claude/skills/mcp-harness/SKILL.md).
+
+        Review only behaviour the PR adds or changes. When it changes MCP behaviour a client can observe (MCP clients and
+        their upstream auth, connection types, /mcp and /mcp/<slug>, /v1/mcp/tool/execute, MCP tools in inference and code
+        mode, tool filtering, virtual keys' MCP grants and Virtual MCPs, per-user discovery and sessions, MCP logs and
+        pricing, the MCP library, Bifrost's OAuth server, the Bifrost MCP on /v1/mcp), check that the PR adds or updates
+        cases in tests/e2e/api/runners/build-mcp-harness.mjs covering what the skill's section 3 lists for that kind of change:
+        - Upstream auth type: every connection type that can carry it, created through the API and from config.json; the
+          credential reaching the upstream on tools/list, tools/call, the health check, reconnect and tool sync, and no other
+          credential reaching it; expiry and refresh; per caller and shared; each inbound auth mode; no answer, error or log
+          echoing the secret or configuration values.
+        - Connection type or transport: every auth type that applies; the upstream down at create, dropped mid-call and
+          recovering; tool sync; proxies.
+        - Inbound auth on /mcp: each auth mode with enforce on and off; every caller credential alone and in pairs; every
+          surface; the exact refusal, with WWW-Authenticate only where the mode advertises OAuth.
+        - Tool filtering, MCP grants or Virtual MCPs: each level alone and combined, and every surface that lists or calls
+          tools answering the same.
+        - Tool execution, MCP tools in inference, per-user discovery, logs: the surfaces and result shapes the change
+          touches, what the upstream and the model received, and the call's log row.
+        Flag:
+        - MCP cases added to tests/e2e/api/collections/provider-harness.json instead of the MCP harness.
+        - Cases that cover one connection type, auth mode or surface when the change reaches more, unless the PR says why
+          the others are out of reach.
+        - Missing Go unit tests for the logic itself.
+        - A new value on an axis (an upstream auth type, connection type, discovery or credential kind, inbound auth mode,
+          caller credential, surface) whose cases were added without also adding it to the existing tests that enumerate
+          that axis, or without updating the skill's sections 2 and 3 (skill section 6).
+        Exempt: changes with no observable effect (comments, renames, log lines); the PR should say so.
+    - path: "tests/e2e/api/runners/{build-mcp-harness.mjs,lib/mcp-harness.mjs}"
+      instructions: |
+        MCP harness conventions (.claude/skills/mcp-harness/SKILL.md section 4):
+        - One folder per test case, named "<ID> <what it proves>" with a "Setup: ..." description; every request title
+          starts with the ID. A new test takes the next free ID in its section and is added to that section's list.
+        - Tests are independent: each re-adds the fleet servers it uses and restores what it changes (auth mode, enforce,
+          config, clients, virtual keys). Flag a test that relies on another test's state or order.
+        - Assertions are exact: status, message, tool names, what the upstream received, client state. Flag a script that
+          returns early on an error status, and a case that expects a 500. A known bug is asserted with A.skip(...).
     - path: "core/**"
       instructions: |
         Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
@@ -200,6 +240,7 @@ knowledge_base:
       - "AGENTS.md"
       - ".greptile/rules.md"
       - ".claude/skills/live-store/SKILL.md"
+      - ".claude/skills/mcp-harness/SKILL.md"
 
 chat:
   auto_reply: true
