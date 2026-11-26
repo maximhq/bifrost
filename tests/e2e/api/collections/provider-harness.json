@@ -352257,6 +352257,179 @@
           }
         }
       ]
+    },
+    {
+      "name": "372. Bedrock Claude redacted reasoning replay (#10177 / PR #10224) (bedrock-claude-redacted-replay)",
+      "description": "Regression coverage for #10177: Claude on Bedrock Converse returns redacted thinking as reasoning.encrypted, but the Chat replay path dropped that detail for text-shape models. Case 1 uses the documented trigger string to capture a real encrypted detail and a tool call; a missing fixture fails loudly. Case 2 answers every tool call and replays the assistant turn. Its raw_request assertion requires the captured blob in reasoningText.signature with an explicit empty text field and no redactedContent. The old implementation fails that wire assertion even when Bedrock accepts the incomplete replay with HTTP 200. These assertions pin which candidate shape Bifrost emits, not whether Bedrock accepts it; upstream acceptance still needs a live run.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions capture redacted reasoning + tool call - bedrock-claude-redacted-replay - #10177",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('bedrockClaudeRedactedReplayMessages10224');",
+                  "pm.collectionVariables.unset('bedrockClaudeRedactedReplayBlob10224');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('Claude returns redacted reasoning and a tool call for the replay - #10177', function () {",
+                  "  pm.expect(pm.response.code, 'producer failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  var msg = response.choices && response.choices[0] && response.choices[0].message;",
+                  "  pm.expect(msg, 'expected an assistant message: ' + body).to.be.an('object');",
+                  "  pm.expect(msg.tool_calls, 'no tool call was returned, so there is no continuation to replay: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var encrypted = (msg.reasoning_details || []).filter(function (detail) {",
+                  "    return detail && detail.type === 'reasoning.encrypted' && typeof detail.data === 'string' && detail.data.length > 0;",
+                  "  });",
+                  "  pm.expect(encrypted.length, 'no real reasoning.encrypted data was returned, so a replay could pass without exercising the fix: ' + body).to.be.above(0);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  var captured = pm.response.json().choices[0].message;",
+                  "  var calls = captured.tool_calls || [];",
+                  "  var details = (captured.reasoning_details || []).filter(function (detail) {",
+                  "    return detail && detail.type === 'reasoning.encrypted' && typeof detail.data === 'string' && detail.data.length > 0;",
+                  "  });",
+                  "  if (calls.length && details.length) {",
+                  "    var messages = [{ role: 'user', content: \"ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB What time is it? Use the get_time tool.\" }, captured];",
+                  "    calls.forEach(function (call) {",
+                  "      messages.push({ role: 'tool', tool_call_id: call.id, content: '{\"time\":\"12:00 UTC\"}' });",
+                  "    });",
+                  "    pm.collectionVariables.set('bedrockClaudeRedactedReplayMessages10224', JSON.stringify(messages));",
+                  "    pm.collectionVariables.set('bedrockClaudeRedactedReplayBlob10224', details[0].data);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":4096,\"reasoning\":{\"max_tokens\":1500},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[]}}}],\"messages\":[{\"role\":\"user\",\"content\":\"ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB What time is it? Use the get_time tool.\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions replay redacted reasoning with tool result - bedrock-claude-redacted-replay - #10177",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "var expectedBlob = pm.collectionVariables.get('bedrockClaudeRedactedReplayBlob10224');",
+                  "var requestBody = pm.request.body && pm.request.body.raw || '';",
+                  "pm.test('the producer supplied a real replay fixture - #10177', function () {",
+                  "  pm.expect(requestBody, 'the producer did not capture a complete tool continuation').to.not.include('{{');",
+                  "  pm.expect(expectedBlob, 'the producer did not capture an encrypted reasoning blob').to.be.a('string').that.is.not.empty;",
+                  "});",
+                  "pm.test('the tool-result continuation succeeds - #10177', function () {",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.equal(200);",
+                  "  var response = pm.response.json();",
+                  "  pm.expect(response.choices, 'expected a completed assistant response: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  var response = pm.response.json();",
+                  "  var rawRequest = response.extra_fields && response.extra_fields.raw_request;",
+                  "  if (typeof rawRequest === 'string') {",
+                  "    try { rawRequest = JSON.parse(rawRequest); } catch (e) { rawRequest = null; }",
+                  "  }",
+                  "  pm.test('the provider request was captured - #10177', function () {",
+                  "    pm.expect(rawRequest, 'raw_request missing; enable x-bf-send-back-raw-request: ' + body).to.be.an('object');",
+                  "  });",
+                  "  if (rawRequest && typeof rawRequest === 'object') {",
+                  "    pm.test('the captured blob reaches Bedrock in the current reasoningText candidate form - #10177', function () {",
+                  "      var assistants = (rawRequest.messages || []).filter(function (message) {",
+                  "        return message.role === 'assistant' && (message.content || []).some(function (block) { return block && block.toolUse; });",
+                  "      });",
+                  "      pm.expect(assistants.length, 'no assistant toolUse message in the Bedrock request: ' + JSON.stringify(rawRequest)).to.be.above(0);",
+                  "      var content = assistants[assistants.length - 1].content || [];",
+                  "      var matching = content.filter(function (block) {",
+                  "        var text = block && block.reasoningContent && block.reasoningContent.reasoningText;",
+                  "        return text && text.signature === expectedBlob &&",
+                  "          Object.prototype.hasOwnProperty.call(text, 'text') && text.text === '';",
+                  "      });",
+                  "      pm.expect(matching.length, 'the encrypted detail was dropped or the current candidate shape was not emitted; assistant content: ' + JSON.stringify(content)).to.be.above(0);",
+                  "      var redacted = content.some(function (block) {",
+                  "        var reasoning = block && block.reasoningContent;",
+                  "        return reasoning && Object.prototype.hasOwnProperty.call(reasoning, 'redactedContent');",
+                  "      });",
+                  "      pm.expect(redacted, 'current head emitted redactedContent instead of its reasoningText candidate: ' + JSON.stringify(content)).to.equal(false);",
+                  "    });",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":4096,\"reasoning\":{\"max_tokens\":1500},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"description\":\"Get the current time\",\"parameters\":{\"type\":\"object\",\"properties\":{},\"required\":[]}}}],\"messages\":{{bedrockClaudeRedactedReplayMessages10224}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
