@@ -430,20 +430,19 @@ func (s *Store) LoadAll(ctx context.Context, db *gorm.DB) error {
 			// Every kind these records name is published by now, so their IDs share its copies.
 			h.sharePage(recs)
 			page := make(map[string]any, len(recs))
+			ids := make([]string, 0, len(recs))
 			for _, v := range recs {
-				page[h.idOf(v)] = v
+				id := h.idOf(v)
+				page[id] = v
+				ids = append(ids, id)
 			}
 			s.mu.Lock()
 			if conflicts := h.uniqueConflicts(page, nil); len(conflicts) > 0 {
 				s.mu.Unlock()
 				return conflicts[0]
 			}
-			for _, v := range recs {
-				id := h.idOf(v)
-				old, changed := h.put(id, v)
-				if collect && changed {
-					changes = append(changes, anyChange{id: id, old: old, new: v})
-				}
+			if changed := h.putAll(ids, page); collect {
+				changes = append(changes, changed...)
 			}
 			s.mu.Unlock()
 		}
@@ -1038,7 +1037,8 @@ func (s *Store) publish(ctx context.Context, p *plan) []*UniqueConflictError {
 }
 
 // applyUpserts writes kind's upserts in p into its collection, in ID order, and returns what
-// changed. The caller holds s.mu.
+// changed. Every record's new index keys are added before any old key is dropped (putAll). The
+// caller holds s.mu.
 func (s *Store) applyUpserts(p *plan, kind Kind) []anyChange {
 	ups := p.upserts[kind]
 	if len(ups) == 0 {
@@ -1052,14 +1052,7 @@ func (s *Store) applyUpserts(p *plan, kind Kind) []anyChange {
 		ids = append(ids, id)
 	}
 	slices.Sort(ids)
-	var changes []anyChange
-	for _, id := range ids {
-		v := ups[id]
-		if old, changed := h.put(id, v); changed {
-			changes = append(changes, anyChange{id: id, old: old, new: v})
-		}
-	}
-	return changes
+	return h.putAll(ids, ups)
 }
 
 // applyRemovals drops kind's removals in p from its collection, in ID order, clearing each
@@ -1372,7 +1365,7 @@ type kindHandle interface {
 	loadByID(ctx context.Context, db *gorm.DB, ids []string) (map[string]any, error)
 	idOf(v any) string
 	heldID(id string) (string, bool)
-	put(id string, v any) (old any, changed bool)
+	putAll(ids []string, ups map[string]any) []anyChange
 	remove(id string) (old any)
 	uniqueConflicts(ups map[string]any, removes map[string]struct{}) []*UniqueConflictError
 	ids() []string
