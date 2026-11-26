@@ -861,6 +861,7 @@ append_dynamic_mcp_clients_insert() {
     append_v231_fixtures "$db_type" "$faker_sql" "$now"
     append_v240_fixtures "$db_type" "$faker_sql" "$now"
     append_v250_fixtures "$db_type" "$faker_sql" "$now"
+    append_v260_fixtures "$db_type" "$faker_sql" "$now"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -890,6 +891,7 @@ append_dynamic_mcp_clients_insert() {
     append_v231_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
     append_v240_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
     append_v250_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
+    append_v260_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
   fi
 }
 
@@ -902,7 +904,7 @@ v200_column_exists() {
     column_exists_postgres "$table" "$column"
   else
     local db="$fixture_config_db"
-    case "$table" in logs|mcp_tool_logs|user_agent_mappings|agent_logs|warp_conversations|warp_messages|matview_refresh_state|relay_logs|warp_topics|warp_topic_assignments|warp_topic_unmatched|warp_vector_deletes) db="$fixture_logs_db" ;; esac
+    case "$table" in logs|mcp_tool_logs|user_agent_mappings|agent_logs|warp_conversations|warp_messages|matview_refresh_state|relay_logs|warp_topics|warp_topic_assignments|warp_topic_unmatched|warp_vector_deletes|model_routing_suggestion_runs|model_routing_suggestions|model_routing_vector_deletes) db="$fixture_logs_db" ;; esac
     column_exists_sqlite "$db" "$table" "$column"
   fi
 }
@@ -1753,6 +1755,198 @@ discovered_at|$now
 created_at|$now
 updated_at|$now
 V250_ROW
+}
+
+# v2.6.0 introduced these columns and the model router, routing suggestion and
+# datasheet override tables. Same probing scheme as append_v250_fixtures.
+append_v260_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V260_COLUMNS'
+config_client|entity_access_profile_mode|'union'|id = 1
+config_client|mcp_server_max_protocol_version|''|id = 1
+config_client|usage_estimation_tokenizers_json|NULL|id = 1
+config_client|mcp_client_metadata_url|NULL|id = 1
+config_client|mcp_openapi_max_spec_mb|0|id = 1
+config_client|bifrost_url|NULL|id = 1
+config_client|bifrost_mcp_allow_writes|false|id = 1
+config_keys|databricks_scopes|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|server_type_on_slug|''|client_id = 'mcp-migration-test-001'
+framework_configs|openapi_url|NULL|id = 1
+governance_budgets|business_unit_id|NULL|id = 'budget-migration-test-1'
+oauth2_authorize_requests|device_code_hash|NULL|id IN ('oauth2-authorize-migration-test-001', 'oauth2-authreq-migration-test-001')
+oauth2_authorize_requests|user_code_hash|NULL|id IN ('oauth2-authorize-migration-test-001', 'oauth2-authreq-migration-test-001')
+oauth_configs|client_metadata_document|false|id = 'oauth-config-migration-test-001'
+warp_config|management_writes|NULL|id = 1
+agent_logs|caller_correlation_id|'caller-corr-migration-001'|id = 'agent-log-migration-001'
+logs|model_router_id|'router-migration-test-001'|id = 'log-migration-test-001'
+logs|model_router_name|'migration-test-router'|id = 'log-migration-test-001'
+V260_COLUMNS
+
+  v200_insert governance_datasheet_overrides <<V260_ROW
+id|'datasheet-override-migration-001'
+provider|'vertex'
+model|'gemini-3.5-flash'
+mode|'chat'
+is_custom|false
+pricing_patch_json|''
+params_patch_json|'{"supports_reasoning_budget":false}'
+baseline_json|'{"params":{"supports_reasoning_budget":null}}'
+config_hash|NULL
+pricing_claim|NULL
+created_at|$now
+updated_at|$now
+V260_ROW
+
+  v200_insert model_routers <<V260_ROW
+id|'router-migration-test-001'
+name|'migration-test-router'
+description|'Migration test model router'
+classifier|'decision'
+enabled|false
+scope|'global'
+scope_id|NULL
+cel_expression|NULL
+query|NULL
+priority|0
+simple_medium_boundary|NULL
+medium_complex_boundary|NULL
+simple_phrases_json|NULL
+medium_phrases_json|NULL
+complex_phrases_json|NULL
+semantic_provider|NULL
+semantic_embedding_model|NULL
+semantic_timeout_ns|NULL
+semantic_min_similarity|NULL
+semantic_message_history_count|NULL
+semantic_count_toward_budgets|NULL
+semantic_vector_store|NULL
+semantic_fallback|NULL
+decision_provider|'openai'
+decision_model|'gpt-4o-mini'
+decision_previous_message_count|NULL
+decision_timeout_ns|NULL
+decision_min_confidence|NULL
+decision_criteria_json|NULL
+llm_provider|NULL
+llm_model|NULL
+llm_timeout_ns|NULL
+llm_prompt|NULL
+llm_message_history_count|NULL
+llm_count_toward_budgets|NULL
+session_enabled|NULL
+suggestions_enabled|NULL
+suggestions_sample_rate|NULL
+suggestions_lookback_days|NULL
+suggestions_max_clustered_requests|NULL
+suggestions_min_cluster_requests|NULL
+suggestions_provider|NULL
+suggestions_model|NULL
+suggestions_instructions|NULL
+suggestions_schedule_every|NULL
+suggestions_schedule_start_at|NULL
+suggestions_tier_classifier|NULL
+suggestions_tier_provider|NULL
+suggestions_tier_model|NULL
+suggestions_tier_instructions|NULL
+suggestions_tier_prompt|NULL
+suggestions_tier_criteria_json|NULL
+config_hashes_json|NULL
+config_hash|NULL
+created_at|$now
+updated_at|$now
+V260_ROW
+
+  v200_insert model_router_targets router_id <<V260_ROW
+router_id|'router-migration-test-001'
+tier|'SIMPLE'
+provider|'openai'
+model|'gpt-4o-mini'
+key_id|NULL
+weight|1
+fallbacks|NULL
+V260_ROW
+
+  v200_insert model_routing_suggestion_schedules router_id <<V260_ROW
+router_id|'router-migration-test-001'
+schedule_hash|'migration-test-schedule-hash'
+next_run_at|$now
+last_run_at|NULL
+last_run_id|''
+version|0
+updated_at|$now
+V260_ROW
+
+  v200_insert model_routing_suggestion_runs <<V260_ROW
+id|'routing-run-migration-001'
+router_id|'router-migration-test-001'
+router_version|'migration-test-version'
+triggered_by|'manual'
+status|'completed'
+embedding_signature|'migration-test-embedding'
+model|'gpt-4o-mini'
+prompt_hash|'migration-test-prompt-hash'
+stage|''
+requests_read|0
+requests_clustered|0
+requests_assigned|0
+requests_skipped|0
+requests_grouped|0
+clusters|0
+clusters_decided|0
+clusters_over_limit|0
+clusters_asked|0
+clusters_done|0
+clusters_failed|0
+clusters_covered|0
+clusters_incoherent|0
+clusters_unreadable|0
+created|0
+refreshed|0
+superseded|0
+cost|0
+error|NULL
+window_start|$now
+started_at|$now
+finished_at|$now
+V260_ROW
+
+  v200_insert model_routing_suggestions <<V260_ROW
+id|'routing-suggestion-migration-001'
+router_id|'router-migration-test-001'
+router_version|'migration-test-version'
+status|'open'
+tier|'SIMPLE'
+phrases|'[]'
+category|'new'
+reason|'Migration test suggestion'
+confidence|'high'
+request_count|1
+coverage|0.5
+nearest_phrase|NULL
+nearest_tier|'SIMPLE'
+nearest_similarity|0
+centroid|NULL
+example_log_ids|'["log-migration-test-001"]'
+current_routing|NULL
+embedding_signature|'migration-test-embedding'
+run_id|'routing-run-migration-001'
+last_seen_at|$now
+resolved_at|NULL
+created_at|$now
+updated_at|$now
+V260_ROW
+
+  v200_insert model_routing_vector_deletes log_id <<V260_ROW
+log_id|'log-migration-deleted-001'
+namespace|''
+created_at|$now
+V260_ROW
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)

@@ -378,8 +378,8 @@ export function routeMatchCases() {
 			headers: { "x-amz-target": "Textract.AnalyzeDocument" },
 			want: { status: 200, route: "/v1/op" },
 		},
-		// Header precedence follows a provider passthrough call: the operator's extra header is sent
-		// (and matched) when the caller sends none, and the caller's own header replaces it.
+		// The operator's extra header is applied last, so routing matches it whether or not the
+		// caller sends the same header: a caller can never replace it.
 		{
 			id: "header-from-operator",
 			extraHeaders: { "X-Tier": "gold" },
@@ -389,23 +389,24 @@ export function routeMatchCases() {
 			want: { status: 200, route: "/v1/op", matched: { "x-tier": "gold" } },
 		},
 		{
-			id: "header-caller-over-operator",
+			id: "header-operator-over-caller",
 			extraHeaders: { "X-Tier": "gold" },
 			routes: [{ method: "POST", path: "/v1/op", headers: { "X-Tier": "gold" } }],
 			method: "POST",
 			path: "/v1/op",
 			headers: { "x-tier": "silver" },
-			want: { status: 404 },
+			want: { status: 200, route: "/v1/op", matched: { "x-tier": "gold" } },
 		},
 		{
-			id: "first-match-wins",
+			// Routes are tried most specific first, not in list order.
+			id: "most-specific-wins",
 			routes: [
 				{ method: "POST", path: "/v1/*", usage: { cost_per_request: 0.004 } },
 				{ method: "POST", path: "/v1/search", usage: { cost_per_request: 0.009 } },
 			],
 			method: "POST",
 			path: "/v1/search",
-			want: { status: 200, route: "/v1/*", cost: 0.004 },
+			want: { status: 200, route: "/v1/search", cost: 0.009 },
 		},
 		{
 			id: "disabled-shadows",
