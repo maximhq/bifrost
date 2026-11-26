@@ -157,6 +157,7 @@ func TestPrepareResponsesRequestNullClearsParameters(t *testing.T) {
 		{field: "tool_choice", value: `"auto"`},
 		{field: "reasoning", value: `{"effort":"low"}`},
 		{field: "store", value: `true`},
+		{field: "access_programs", value: `{"cyber":"standard"}`},
 	} {
 		for _, key := range []string{tt.field, strings.ToUpper(tt.field)} {
 			t.Run(key, func(t *testing.T) {
@@ -1086,4 +1087,28 @@ func keysOf(m map[string]any) []string {
 		keys = append(keys, key)
 	}
 	return keys
+}
+
+// TestPrepareResponsesRequestTypesAccessPrograms pins OpenAI's Daybreak
+// access_programs selector as a typed Responses field. Left untyped it landed in
+// ExtraParams and only reached OpenAI under x-bf-passthrough-extra-params, so a
+// client asking for daybreak_blue (or opting down to standard) was silently
+// served the model's default program.
+func TestPrepareResponsesRequestTypesAccessPrograms(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-6.1-terra","input":"hi","access_programs":{"cyber":"daybreak_blue"}}`)
+	_, req, err := prepareResponsesRequest(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := req.Params.ExtraParams["access_programs"]; ok {
+		t.Errorf("access_programs must be a typed field, not an extra param")
+	}
+	body, err := providerUtils.MarshalSorted(openai.ToOpenAIResponsesRequest(nil, req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"access_programs":{"cyber":"daybreak_blue"}`) {
+		t.Errorf("access_programs did not reach the OpenAI body without the passthrough header: %s", body)
+	}
 }

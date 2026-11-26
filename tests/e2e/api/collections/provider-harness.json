@@ -361426,6 +361426,332 @@
           }
         }
       ]
+    },
+    {
+      "name": "379. Function call replay carrying reasoning fields (function call summary)",
+      "description": "A Responses input item that is not a reasoning item can still decode Bifrost's embedded reasoning fields: Codex replays function_call items with encrypted_content (and summary), which allocate ResponsesReasoning on the item. ResponsesMessage.MarshalJSON then re-emitted summary on the function_call (null, or [] here) and OpenAI rejected the request with 400 \"Unknown parameter: 'input[N].summary'\". The fix omits an empty summary on every non-reasoning item. These cases replay a function_call carrying summary:[] with its matching function_call_output; summary:[] reaches the same path as Codex's encrypted_content without needing an OpenAI-minted token, so the case is deterministic. Pinned on /v1/responses (unary and streamed) and on the /openai/v1/responses drop-in route Codex uses.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini /v1/responses function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.status, 'response not completed: ' + body).to.equal('completed');",
+                  "  pm.expect(j.output, 'no output returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"stream\":false,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /v1/responses stream function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not reach response.completed: ' + body).to.include('response.completed');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body).to.not.include('\"type\":\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini /openai/v1/responses stream function_call replay omits summary - function call summary",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed function_call replay with summary:[] completes without a summary rejection', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'the replayed function_call reached OpenAI with a summary field').to.not.match(/input\\[\\d+\\]\\.summary/);",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not reach response.completed: ' + body).to.include('response.completed');",
+                  "  pm.expect(body, 'stream carried an error event: ' + body).to.not.include('\"type\":\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-4o-mini\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris? Use the tool.\"},{\"type\":\"function_call\",\"id\":\"fc_bfharness_summary_01\",\"status\":\"completed\",\"call_id\":\"call_bfharness_summary_01\",\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Paris\\\"}\",\"summary\":[]},{\"type\":\"function_call_output\",\"call_id\":\"call_bfharness_summary_01\",\"output\":\"{\\\"temperature_c\\\":18,\\\"conditions\\\":\\\"cloudy\\\"}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "380. OpenAI access_programs Daybreak selector (access programs)",
+      "description": "OpenAI's Responses API takes an access_programs object (developers.openai.com/api/docs/guides/daybreak) whose cyber member selects the trusted-access program: standard, daybreak_blue or daybreak_red. The response echoes the program that served the request (null on an implicit standard fallback). Bifrost did not model the field: on /v1/responses it fell into ExtraParams and was only forwarded under x-bf-passthrough-extra-params, so the caller silently got the model's default program, and the echo was dropped from the response. The fix types it on ResponsesParameters and BifrostResponsesResponse and forwards it only when the base provider is OpenAI. The cases pin: an explicit standard selection reaches OpenAI and its echo comes back (unary, streamed, and on the /openai/v1/responses drop-in route); daybreak_red on gpt-6-sol is rejected by OpenAI (invalid_access_program, or access_program_not_enabled on an org without Daybreak), which can only happen if the field reached the wire. Neither needs Daybreak approval on the harness org.",
+      "item": [
+        {
+          "name": "openai/gpt-6-sol /v1/responses access_programs standard is forwarded and echoed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('explicit access_programs.cyber=standard reaches OpenAI and is echoed', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.access_programs, 'access_programs echo missing, so the selection was dropped before OpenAI or the echo was dropped on the way back: ' + text).to.be.an('object');",
+                  "  pm.expect(j.access_programs.cyber, 'unexpected program echoed: ' + text).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /v1/responses stream access_programs standard is echoed on response.completed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed explicit access_programs.cyber=standard is echoed on the completed response', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var completed = null;",
+                  "  var errors = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var payload = line.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    var ev = null;",
+                  "    try { ev = JSON.parse(payload); } catch (e) { return; }",
+                  "    if (ev && ev.type === 'error') { errors.push(payload); }",
+                  "    if (ev && ev.type === 'response.completed') { completed = ev; }",
+                  "  });",
+                  "  pm.expect(errors.length, 'stream carried an error event: ' + errors.join(' | ')).to.equal(0);",
+                  "  pm.expect(completed, 'stream did not reach response.completed: ' + body).to.not.equal(null);",
+                  "  pm.expect(completed.response.access_programs, 'access_programs echo missing on response.completed: ' + JSON.stringify(completed.response)).to.be.an('object');",
+                  "  pm.expect(completed.response.access_programs.cyber).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":true,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /v1/responses access_programs daybreak_red is rejected by OpenAI [EXPECT-4XX] - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('daybreak_red on gpt-6-sol reaches OpenAI and is rejected with an access-program error', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'OpenAI did not reject the selection, so access_programs never reached it: ' + text).to.be.oneOf([400, 403]);",
+                  "  pm.expect(text, 'rejection is not an access-program error: ' + text).to.match(/invalid_access_program|access_program_not_enabled/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"daybreak_red\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-6-sol /openai/v1/responses access_programs standard is forwarded and echoed - access programs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('drop-in route forwards access_programs and keeps the echo', function () {",
+                  "  var text = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + text).to.equal(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.access_programs, 'access_programs echo missing: ' + text).to.be.an('object');",
+                  "  pm.expect(j.access_programs.cyber, 'unexpected program echoed: ' + text).to.equal('standard');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gpt-6-sol\",\"stream\":false,\"input\":\"Reply with the single word: ok\",\"access_programs\":{\"cyber\":\"standard\"},\"max_output_tokens\":64}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
