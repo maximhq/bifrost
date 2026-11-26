@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -632,7 +633,7 @@ func TestClaudeRedactedReasoningSurvivesTheReplayLoop(t *testing.T) {
 		require.True(t, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText.text").Exists(),
 			"an absent text key is the Converse 400 (see reasoningTextInvariant): %s", raw)
 		require.False(t, gjson.GetBytes(raw, "content.#.reasoningContent.redactedContent").Exists() && len(gjson.GetBytes(raw, "content.#.reasoningContent.redactedContent").Array()) > 0,
-			"redactedContent is the wrong variant for Anthropic on Converse, which answers it with a 400: %s", raw)
+			"the candidate shape is reasoningText, so redactedContent must not be emitted: %s", raw)
 		require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
 	})
 
@@ -653,4 +654,70 @@ func TestClaudeRedactedReasoningSurvivesTheReplayLoop(t *testing.T) {
 			"a foreign token cannot deserialize for Claude either, so it must not reach the request: %s", raw)
 		require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
 	})
+}
+
+// BenchmarkConvertMessageRedactedReplay measures the request-path cost of the
+// encrypted-detail branch. The plain case is the common path: a replayed tool
+// turn with no reasoning details must not pay for the new branch. The docNamer
+// is built once outside the loop because these messages carry no documents, so
+// naming is not part of what is being measured.
+func BenchmarkConvertMessageRedactedReplay(b *testing.B) {
+	const model = "global.anthropic.claude-sonnet-4-6"
+
+	toolTurn := func(details []schemas.ChatReasoningDetails) schemas.ChatMessage {
+		return schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ReasoningDetails: details,
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					Index: 0,
+					Type:  schemas.Ptr("function"),
+					ID:    schemas.Ptr("call_1"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{
+						Name: schemas.Ptr("get_time"), Arguments: `{"timezone":"UTC"}`,
+					},
+				}},
+			},
+		}
+	}
+
+	blob := func(size int) *string {
+		encoded := base64.StdEncoding.EncodeToString(make([]byte, size))
+		return &encoded
+	}
+
+	hundred := make([]schemas.ChatReasoningDetails, 100)
+	for i := range hundred {
+		hundred[i] = schemas.ChatReasoningDetails{
+			Index: i,
+			Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+			Data:  blob(1024),
+		}
+	}
+
+	for _, bc := range []struct {
+		name string
+		msg  schemas.ChatMessage
+	}{
+		{"plain_tool_turn", toolTurn(nil)},
+		{"encrypted_1KiB", toolTurn([]schemas.ChatReasoningDetails{{
+			Index: 0, Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: blob(1024),
+		}})},
+		{"encrypted_64KiB", toolTurn([]schemas.ChatReasoningDetails{{
+			Index: 0, Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: blob(64 * 1024),
+		}})},
+		{"encrypted_100x1KiB", toolTurn(hundred)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			namer := newBedrockDocNamer()
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := convertMessage(ctx, model, bc.msg, namer); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
