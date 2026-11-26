@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -25,6 +26,288 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+// Native ingress is covered by the HTTP integration tests; these cover the neutral SDK types.
+func TestDocumentCitationsRequestRoundTrip(t *testing.T) {
+	const chunks = `[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: 3 March."}]`
+	for _, route := range []string{"responses", "chat"} {
+		t.Run(route, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var req *schemas.BifrostResponsesRequest
+			switch route {
+			case "responses":
+				req = &schemas.BifrostResponsesRequest{}
+				require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[{"type":"input_file","filename":"pack","file_content":`+chunks+`,"citations":{"enabled":true}},{"type":"input_text","text":"Cite the budget."}]}]}`), req))
+			default:
+				file := `{"type":"file","file":{"filename":"pack","file_content":` + chunks + `},"citations":{"enabled":true}}`
+				var in schemas.BifrostChatRequest
+				require.NoError(t, json.Unmarshal([]byte(`{"provider":"bedrock","model":"global.anthropic.claude-haiku-5-5","input":[{"role":"user","content":[`+file+`,{"type":"text","text":"Cite the budget."}]}]}`), &in))
+				in.Params = &schemas.ChatParameters{MaxCompletionTokens: schemas.Ptr(128), Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("none")}}
+				out, err := bedrock.ToBedrockChatCompletionRequest(ctx, &in)
+				require.NoError(t, err)
+				wire, err := providerUtils.MarshalSorted(out)
+				require.NoError(t, err)
+				assert.True(t, gjson.GetBytes(wire, "messages.0.content.0.document.citations.enabled").Bool(), "%s", wire)
+				assert.Equal(t, "Audit: 3 March.", gjson.GetBytes(wire, "messages.0.content.0.document.source.content.1.text").Str, "%s", wire)
+				req = in.ToResponsesRequest()
+			}
+			if req.Params == nil {
+				req.Params = &schemas.ResponsesParameters{}
+			}
+			req.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("none")}
+			req.Params.MaxOutputTokens = schemas.Ptr(128)
+			out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+			require.NoError(t, err)
+			wire, err := providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			doc := gjson.GetBytes(wire, "messages.0.content.0.document")
+			assert.True(t, doc.Get("citations.enabled").Bool(), "%s", wire)
+			assert.Equal(t, "Budget: $4.2M.", doc.Get("source.content.0.text").Str, "%s", wire)
+			assert.Equal(t, "Audit: 3 March.", doc.Get("source.content.1.text").Str, "%s", wire)
+			assert.False(t, doc.Get("format").Exists(), "custom content must not inherit the PDF default: %s", wire)
+		})
+	}
+}
+
+func TestDocumentCitationsS3Ingress(t *testing.T) {
+	var in bedrock.BedrockConverseRequest
+	require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"format":"pdf","name":"pack","source":{"s3Location":{"uri":"s3://bucket/key.pdf"}}}}]}]}`), &in))
+	in.ModelID = "us.amazon.nova-2-lite-v1:0"
+	req, err := in.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Equal(t, schemas.Ptr("s3://bucket/key.pdf"), req.Input[0].Content.ContentBlocks[0].FileURL)
+}
+
+func TestDocumentCitationsConfigIngressRoundTrip(t *testing.T) {
+	for _, config := range []string{"", `,"citations":{}`, `,"citations":{"enabled":false}`, `,"citations":{"enabled":true}`} {
+		var native bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"format":"txt","name":"pack","source":{"text":"Budget: $4.2M."}`+config+`}},{"text":"Read the document."}]}]}`), &native))
+		native.ModelID = "global.anthropic.claude-haiku-5-5"
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := native.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		citations := req.Input[0].Content.ContentBlocks[0].Citations
+		if config == "" {
+			require.Nil(t, citations)
+			// An empty neutral config is equivalent to omission.
+			req.Input[0].Content.ContentBlocks[0].Citations = &schemas.Citations{}
+		} else {
+			require.NotNil(t, citations)
+			require.NotNil(t, citations.Enabled)
+			require.Equal(t, strings.Contains(config, "true"), *citations.Enabled)
+		}
+		out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		wire, err := providerUtils.MarshalSorted(out)
+		require.NoError(t, err)
+		got := gjson.GetBytes(wire, "messages.0.content.0.document.citations")
+		if config == "" {
+			require.False(t, got.Exists())
+		} else {
+			require.True(t, got.Get("enabled").Exists(), "explicit false must not disappear")
+			require.Equal(t, *citations.Enabled, got.Get("enabled").Bool())
+		}
+	}
+}
+
+func TestDocumentCitationsResponseRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		location, kind, start, end string
+		first, last                int
+	}{
+		{"documentChunk", "content_block_location", "start_block_index", "end_block_index", 0, 1},
+		{"documentChar", "char_location", "start_char_index", "end_char_index", 0, 14},
+		{"documentPage", "page_location", "start_page_number", "end_page_number", 1, 2},
+	} {
+		t.Run(tc.location, func(t *testing.T) {
+			citation := fmt.Sprintf(`{"title":"pack","sourceContent":[{"text":"Budget: "},{"text":"$4.2M."}],"location":{"%s":{"documentIndex":0,"start":%d,"end":%d}}}`, tc.location, tc.first, tc.last)
+			var in bedrock.BedrockConverseResponse
+			require.NoError(t, sonic.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"citationsContent":{"content":[{"text":"The budget is $4.2M."}],"citations":[`+citation+`]}}]}},"stopReason":"end_turn"}`), &in))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, err := in.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			chat, err := in.ToBifrostChatResponse(ctx, "global.anthropic.claude-haiku-5-5")
+			require.NoError(t, err)
+			require.NotNil(t, chat.Choices[0].Message.Content.ContentStr)
+			require.Equal(t, "The budget is $4.2M.", *chat.Choices[0].Message.Content.ContentStr)
+			require.NotEmpty(t, resp.Output, "generated text in citationsContent was discarded")
+			block := resp.Output[0].Content.ContentBlocks[0]
+			require.Equal(t, "The budget is $4.2M.", *block.Text)
+			require.Len(t, block.Annotations, 1)
+			assert.Equal(t, tc.kind, block.Annotations[0].Type)
+			assert.Equal(t, "Budget: $4.2M.", *block.Annotations[0].Text)
+			native := anthropic.ToAnthropicResponsesResponse(ctx, resp)
+			wire, err := providerUtils.MarshalSorted(native)
+			require.NoError(t, err)
+			ann := gjson.GetBytes(wire, "content.0.citations.0")
+			assert.Equal(t, tc.kind, ann.Get("type").Str, "%s", wire)
+			assert.Equal(t, "pack", ann.Get("document_title").Str)
+			assert.True(t, ann.Get(tc.start).Exists(), "zero index lost: %s", wire)
+			assert.Equal(t, int64(tc.first), ann.Get(tc.start).Int())
+			assert.Equal(t, int64(tc.last), ann.Get(tc.end).Int())
+			out, err := bedrock.ToBedrockConverseResponse(resp)
+			require.NoError(t, err)
+			wire, err = providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			nativeBlock := gjson.GetBytes(wire, "output.message.content.0.citationsContent")
+			assert.Equal(t, "The budget is $4.2M.", nativeBlock.Get("content.0.text").Str, "%s", wire)
+			assert.JSONEq(t, citation, nativeBlock.Get("citations.0").Raw)
+		})
+	}
+}
+
+func TestDocumentCitationsChatRejectsConflictingSources(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{Model: "global.anthropic.claude-haiku-5-5", Input: []schemas.ChatMessage{{
+		Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+			Type:      schemas.ChatContentBlockTypeFile,
+			File:      &schemas.ChatInputFile{FileContent: json.RawMessage(`"Budget."`), FileData: schemas.Ptr("QnVkZ2V0Lg==")},
+			Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+		}}},
+	}}}
+	_, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	bad, ok := providerUtils.AsBifrostBadRequestError(err)
+	require.True(t, ok, "got %v", err)
+	require.Equal(t, 400, *bad.StatusCode)
+	require.Contains(t, bad.Error.Message, "cannot be combined")
+}
+
+// An empty file_data beside file_content is no second source: it is ignored, as on the Anthropic path.
+func TestDocumentCitationsEmptyFileDataIsNotAConflict(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{Model: "global.anthropic.claude-haiku-5-5", Input: []schemas.ChatMessage{{
+		Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+			Type:      schemas.ChatContentBlockTypeFile,
+			File:      &schemas.ChatInputFile{FileContent: json.RawMessage(`"Budget."`), FileData: schemas.Ptr(""), Filename: schemas.Ptr("pack")},
+			Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+		}}},
+	}}}
+	out, err := bedrock.ToBedrockChatCompletionRequest(ctx, req)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	assert.Equal(t, "Budget.", gjson.GetBytes(wire, "messages.0.content.#(document).document.source.content.0.text").Str, "%s", wire)
+}
+
+// A citationsContent block whose content carries no text adds no empty message: its citations
+// annotate the preceding text, like the content-less Nova web citations.
+func TestDocumentCitationsWithoutGeneratedTextAnnotatePrecedingText(t *testing.T) {
+	for name, content := range map[string]string{"no text field": `[{}]`, "empty text": `[{"text":""}]`, "empty fragments": `[{"text":""},{}]`} {
+		t.Run(name, func(t *testing.T) {
+			var in bedrock.BedrockConverseResponse
+			require.NoError(t, sonic.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"text":"The budget is $4.2M."},`+
+				`{"citationsContent":{"content":`+content+`,"citations":[{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}]}}]}},"stopReason":"end_turn"}`), &in))
+			resp, err := in.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+			require.NoError(t, err)
+			require.Len(t, resp.Output, 1, "no empty text message may be added")
+			block := resp.Output[0].Content.ContentBlocks[0]
+			require.Equal(t, "The budget is $4.2M.", *block.Text)
+			require.Len(t, block.Annotations, 1)
+			assert.Equal(t, "content_block_location", block.Annotations[0].Type)
+		})
+	}
+}
+
+// A citation-only item (a stream that closed a block holding a citation and no text) keeps its
+// citations when the completed response is rendered as Converse.
+func TestDocumentCitationsCitationOnlyItemRendersAsConverse(t *testing.T) {
+	resp := &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr(""),
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{{
+				Type: "content_block_location", Index: schemas.Ptr(0), StartBlockIndex: schemas.Ptr(0), EndBlockIndex: schemas.Ptr(1),
+				Filename: schemas.Ptr("pack"), SourceContent: []string{"Budget: $4.2M."},
+			}}},
+		}}},
+	}}}
+	out, err := bedrock.ToBedrockConverseResponse(resp)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	citation := gjson.GetBytes(wire, "output.message.content.#(citationsContent).citationsContent.citations.0")
+	require.True(t, citation.Exists(), "citation-only item lost its citations: %s", wire)
+	assert.Equal(t, int64(1), citation.Get("location.documentChunk.end").Int())
+	assert.Equal(t, "Budget: $4.2M.", citation.Get("sourceContent.0.text").Str)
+
+	// Converting the rendered Converse response back keeps the citation, though no text precedes it.
+	var back bedrock.BedrockConverseResponse
+	require.NoError(t, sonic.Unmarshal(wire, &back))
+	round, err := back.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Len(t, round.Output, 1, "%s", wire)
+	block := round.Output[0].Content.ContentBlocks[0]
+	require.Len(t, block.Annotations, 1, "citation-only block lost its citation on the way back")
+	assert.Equal(t, "content_block_location", block.Annotations[0].Type)
+	assert.Equal(t, "", *block.Text)
+}
+
+func TestDocumentCitationsPreserveLegacyWeb(t *testing.T) {
+	var in bedrock.BedrockConverseResponse
+	raw := `{"output":{"message":{"role":"assistant","content":[{"text":"Answer"},{"citationsContent":{"citations":[{"location":{"web":{"url":"https://example.com","domain":"example.com"}}}]}}]}},"stopReason":"end_turn"}`
+	require.NoError(t, json.Unmarshal([]byte(raw), &in))
+	resp, err := in.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Len(t, resp.Output[0].Content.ContentBlocks[0].Annotations, 1)
+	require.Equal(t, "url_citation", resp.Output[0].Content.ContentBlocks[0].Annotations[0].Type)
+	out, err := bedrock.ToBedrockConverseResponse(resp)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.JSONEq(t, gjson.Get(raw, "output.message").Raw, gjson.GetBytes(wire, "output.message").Raw)
+
+	state := bedrock.NewBedrockResponsesStreamState()
+	start, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Start: &bedrock.BedrockContentBlockStart{
+		ToolUse: &bedrock.BedrockToolUseStart{ToolUseID: "grounding", Name: string(bedrock.BedrockSystemToolNovaGrounding)},
+	}}).ToBifrostResponsesStream(0, state)
+	require.Nil(t, bErr)
+	events, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &bedrock.BedrockContentBlockDelta{
+		Citation: &in.Output.Message.Content[1].CitationsContent.Citations[0],
+	}}).ToBifrostResponsesStream(len(start), state)
+	require.Nil(t, bErr)
+	require.Len(t, events, 1)
+	require.Equal(t, "url_citation", events[0].Annotation.Type)
+	final := bedrock.FinalizeBedrockStream(state, len(start)+len(events), &schemas.ResponsesResponseUsage{}, nil)
+	output := final[len(final)-1].Response.Output
+	require.Len(t, output, 1)
+	sources := output[0].Action.ResponsesWebSearchToolCallAction.Sources
+	require.Len(t, sources, 1)
+	require.Equal(t, "https://example.com", sources[0].URL)
+}
+
+func BenchmarkOrdinaryDocumentConversion(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{Filename: schemas.Ptr("pack.txt"), FileType: schemas.Ptr("text/plain"), FileData: schemas.Ptr("Budget: $4.2M.")},
+			}}},
+		}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := bedrock.ToBedrockResponsesRequest(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDocumentCitationsNativeRequest(b *testing.B) {
+	var request bedrock.BedrockConverseRequest
+	if err := json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"name":"pack","source":{"content":[{"text":"Budget: $4.2M."},{"text":"Audit: March."}]},"citations":{"enabled":true}}},{"text":"Cite it."}]}]}`), &request); err != nil {
+		b.Fatal(err)
+	}
+	request.ModelID = "global.anthropic.claude-haiku-5-5"
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := request.ToBifrostResponsesRequest(ctx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
 	b, err := json.Marshal(v)

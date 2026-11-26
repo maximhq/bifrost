@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ConfigIssuesAlert } from "@/components/ui/configIssuesAlert";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { SheetNavigationButtons } from "@/components/sheetNavigationButtons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -176,7 +177,7 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 
 	return (
 		<Sheet open onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]">
+			<SheetContent resizeKey="virtual-mcp" className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]">
 				<SheetHeader headerClassName="mb-0 px-4 py-4 md:px-8" showCloseButton={false}>
 					<div className="flex w-full items-center justify-between gap-2">
 						<div className="space-y-2">
@@ -216,6 +217,7 @@ export default function VirtualMCPSheet({ target, onClose, hasPrev = false, hasN
 						</TabsList>
 
 						<div className="grow overflow-y-auto px-4 py-5 md:px-8">
+							{!isCreate && <ConfigIssuesAlert issues={existing?.config_issues} className="mb-5" />}
 							<TabsContent value="general" className="mt-0">
 								<VirtualMCPGeneralTab
 									name={name}

@@ -122,6 +122,7 @@ func UnwrapDefaultNamespaceTools(req *schemas.BifrostResponsesRequest) (*schemas
 			for _, nested := range tool.ResponsesToolNamespace.Tools {
 				hoisted := nested
 				hoisted.Description = joinNamespaceDescription(tool.Description, nested.Description)
+				hoisted.DeferLoading = inheritDeferLoading(tool.DeferLoading, nested.DeferLoading)
 				unwrapped = append(unwrapped, hoisted)
 			}
 		}
@@ -187,6 +188,7 @@ func FlattenResponsesNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bi
 			hoisted := nested
 			hoisted.Name = new(alias)
 			hoisted.Description = joinNamespaceDescription(tool.Description, nested.Description)
+			hoisted.DeferLoading = inheritDeferLoading(tool.DeferLoading, nested.DeferLoading)
 			flattened = append(flattened, hoisted)
 			aliases[alias] = schemas.NamespaceToolAlias{Namespace: namespace, Name: *nested.Name}
 			byFunction[*nested.Name] = append(byFunction[*nested.Name], alias)
@@ -214,6 +216,15 @@ func FlattenResponsesNamespaceTools(ctx *schemas.BifrostContext, req *schemas.Bi
 		cp.NamespaceToolAliases = withBareNameFallbacks(aliases, byFunction, flattened)
 	}
 	return &cp, nil
+}
+
+// inheritDeferLoading is a hoisted member's defer_loading: its own when set, otherwise
+// the namespace's, so a namespace deferred as a whole stays deferred once flattened.
+func inheritDeferLoading(namespace, member *bool) *bool {
+	if member != nil {
+		return member
+	}
+	return namespace
 }
 
 // joinNamespaceDescription prepends the namespace's description to a hoisted

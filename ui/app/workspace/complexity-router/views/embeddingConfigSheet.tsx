@@ -119,7 +119,7 @@ export default function EmbeddingConfigSheet({
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="flex flex-col p-0" data-testid="complexity-router-embedding-sheet">
+			<SheetContent resizeKey="complexity-embedding-config" className="flex flex-col p-0" data-testid="complexity-router-embedding-sheet">
 				<SheetHeader className="flex flex-col items-start gap-1 py-4" headerClassName="bg-card z-10 mb-0 border-b px-4 md:px-6">
 					<SheetTitle>{tcpx("sheetTitle")}</SheetTitle>
 					<SheetDescription>{tcpx("sheetDescription")}</SheetDescription>

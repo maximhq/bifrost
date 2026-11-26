@@ -37,7 +37,7 @@ export default function AddNewKeySheet({ show, onCancel, provider, keyId, provid
 				if (!open) onCancel();
 			}}
 		>
-			<SheetContent className="p-0 pt-4" data-testid="key-form" onInteractOutside={(e) => e.preventDefault()}>
+			<SheetContent resizeKey="provider-key" className="p-0 pt-4" data-testid="key-form" onInteractOutside={(e) => e.preventDefault()}>
 				<SheetHeader className="flex flex-col items-start py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8 ">
 					<SheetTitle>
 						<div className="font-lg flex items-center gap-2">

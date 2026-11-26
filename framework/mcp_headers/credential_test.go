@@ -28,7 +28,7 @@ func TestGetCredentialByMode_AdminMode_EmptyIdentityReachesStore(t *testing.T) {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 
 	cred, err := provider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeAdmin, "", "client-1")
 	require.NoError(t, err)
@@ -55,7 +55,7 @@ func TestGetCredentialByMode_UserMode_EmptyIdentityStillRejected(t *testing.T) {
 		CreatedAt:   time.Now(),
 		UpdatedAt:   time.Now(),
 	}
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 
 	cred, err := provider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeUser, "", "client-1")
 	require.Error(t, err)

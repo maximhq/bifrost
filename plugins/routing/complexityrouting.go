@@ -62,18 +62,18 @@ func (p *RoutingPlugin) classifyRouterRequest(
 ) *complexity.ComplexityResult {
 	input, disposition := complexity.BuildInputWithDisposition(ctx, req)
 	sessionID, _ := ctx.Value(schemas.BifrostContextKeySessionID).(string)
-	sessionActive := rt.sessionEnabled.Load() && sessionID != "" && p.sessionStore != nil
+	sessionActive := rt.sessionEnabled.Load() && sessionID != "" && p.sessions != nil
 
 	if disposition == complexity.InputContinuation {
-		if sessionID != "" && p.turnTierStore != nil {
-			tier, found, err := p.turnTierStore.load(complexityTurnTierKeyFor(ctx, rt.id))
+		if sessionID != "" && p.sessions != nil {
+			tier, found, err := p.loadTurnTier(complexityTurnTierKeyFor(ctx, rt.id))
 			if err != nil {
-				p.logComplexitySessionStoreError("load continuation tier", err)
+				p.logComplexitySessionError("load continuation tier", err)
 			} else if found {
 				if sessionActive {
-					resolution, resolveErr := p.sessionStore.resolve(complexitySessionKeyFor(ctx, rt.id), tier)
+					resolution, resolveErr := p.resolveSessionTier(complexitySessionKeyFor(ctx, rt.id), tier)
 					if resolveErr != nil {
-						p.logComplexitySessionStoreError("refresh continuation", resolveErr)
+						p.logComplexitySessionError("refresh continuation", resolveErr)
 					} else if resolution.EffectiveTier != "" {
 						tier = resolution.EffectiveTier
 					}
@@ -87,9 +87,9 @@ func (p *RoutingPlugin) classifyRouterRequest(
 		}
 		if sessionActive {
 			key := complexitySessionKeyFor(ctx, rt.id)
-			tier, found, err := p.sessionStore.load(key, true)
+			tier, found, err := p.loadSessionTier(key, true)
 			if err != nil {
-				p.logComplexitySessionStoreError("refresh continuation", err)
+				p.logComplexitySessionError("refresh continuation", err)
 			} else if found {
 				result := &complexity.ComplexityResult{Tier: tier}
 				publishComplexityDecision(ctx, result, complexity.MechanismSession, nil)
@@ -128,16 +128,16 @@ func (p *RoutingPlugin) classifyRouterRequest(
 	}
 
 	key := complexitySessionKeyFor(ctx, rt.id)
-	priorTier, priorFound, loadErr := p.sessionStore.load(key, false)
+	priorTier, priorFound, loadErr := p.loadSessionTier(key, false)
 	if loadErr != nil {
-		p.logComplexitySessionStoreError("inspect", loadErr)
+		p.logComplexitySessionError("inspect", loadErr)
 		proposal := p.classifyRouterInput(ctx, input, rt)
 		rt.publishProposal(ctx, proposal)
 		return proposal.Result
 	}
 
 	if priorFound && priorTier == complexity.TierComplex {
-		resolution, err := p.sessionStore.resolve(key, "")
+		resolution, err := p.resolveSessionTier(key, "")
 		if err == nil && resolution.EffectiveTier != "" {
 			result := &complexity.ComplexityResult{Tier: resolution.EffectiveTier}
 			publishComplexityDecision(ctx, result, complexity.MechanismSession, nil)
@@ -149,7 +149,7 @@ func (p *RoutingPlugin) classifyRouterRequest(
 			return result
 		}
 		if err != nil {
-			p.logComplexitySessionStoreError("refresh complex ceiling", err)
+			p.logComplexitySessionError("refresh complex ceiling", err)
 		}
 		// The state could have expired between inspection and refresh. Classify the
 		// current human turn instead of routing from a stale read.
@@ -160,9 +160,9 @@ func (p *RoutingPlugin) classifyRouterRequest(
 	if proposal.Result != nil {
 		proposedTier = proposal.Result.Tier
 	}
-	resolution, err := p.sessionStore.resolve(key, proposedTier)
+	resolution, err := p.resolveSessionTier(key, proposedTier)
 	if err != nil {
-		p.logComplexitySessionStoreError("resolve", err)
+		p.logComplexitySessionError("resolve", err)
 		return p.publishLocalSessionFallback(ctx, rt, priorTier, priorFound, proposal)
 	}
 
@@ -376,8 +376,8 @@ func (p *RoutingPlugin) publishLocalSessionFallback(
 	return result
 }
 
-// logComplexitySessionStoreError logs a failed session-state operation.
-func (p *RoutingPlugin) logComplexitySessionStoreError(operation string, err error) {
+// logComplexitySessionError logs a failed session-state operation.
+func (p *RoutingPlugin) logComplexitySessionError(operation string, err error) {
 	if p.logger != nil {
 		p.logger.Warn("[Routing] complexity session store %s failed: %v", operation, err)
 	}

@@ -183,21 +183,22 @@ import (
 )
 
 func main() {
-    mcpConfig := &schemas.MCPConfig{
-        ClientConfigs: []schemas.MCPClientConfig{
-            {
-                Name:           "filesystem",
-                ConnectionType: schemas.MCPConnectionTypeSTDIO,
-                StdioConfig: &schemas.MCPStdioConfig{
-                    Command: "npx",
-                    Args:    []string{"-y", "@anthropic/mcp-filesystem"},
-                },
-                // All tools available
-                ToolsToExecute: []string{"*"},
-                // Only read operations auto-execute
-                ToolsToAutoExecute: []string{"read_file", "list_directory"},
-            },
+    // Your Account serves this client (setMCPClient as in Connecting to MCP Servers, Go SDK Setup).
+    account.setMCPClient(&schemas.MCPClientConfig{
+        ID:             "filesystem",
+        Name:           "filesystem",
+        ConnectionType: schemas.MCPConnectionTypeSTDIO,
+        StdioConfig: &schemas.MCPStdioConfig{
+            Command: "npx",
+            Args:    []string{"-y", "@anthropic/mcp-filesystem"},
         },
+        // All tools available
+        ToolsToExecute: []string{"*"},
+        // Only read operations auto-execute
+        ToolsToAutoExecute: []string{"read_file", "list_directory"},
+    })
+
+    mcpConfig := &schemas.MCPConfig{
         ToolManagerConfig: &schemas.MCPToolManagerConfig{
             MaxAgentDepth:        10,                      // Max iterations
             ToolExecutionTimeout: 30 * time.Second,        // Per-tool timeout
@@ -211,6 +212,7 @@ func main() {
     if err != nil {
         panic(err)
     }
+    client.ConnectConfiguredMCPClients(context.Background(), nil)
 
     // Make request - agent mode runs automatically
     request := &schemas.BifrostChatRequest{

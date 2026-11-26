@@ -493,7 +493,12 @@
 		"maximumSpend": "최대 지출(USD)",
 		"noBudgetLimits": "구성된 예산 한도가 없습니다.",
 		"removeBudgetAria": "예산 {{number}} 제거",
-		"duplicateResetPeriod": "재설정 기간이 중복되었어요. 각 예산 항목은 서로 다른 간격을 사용해야 해요."
+		"duplicateResetPeriod": "재설정 기간이 중복되었어요. 각 예산 항목은 서로 다른 간격을 사용해야 해요.",
+		"contentLogging": "콘텐츠 로그",
+		"contentLoggingInherit": "상속",
+		"contentLoggingOff": "이 팀에서는 끄기",
+		"contentLoggingOn": "이 팀에서는 켜기",
+		"contentLoggingHelp": "이 팀의 트래픽에 대해 요청과 응답 내용을 로그에 저장할지 여부입니다. 팀은 자신의 가상 키와 프로바이더 키보다 우선하므로, 팀이 끈 내용을 키가 다시 켤 수 없습니다. \"끄기\"는 커넥터 내보내기에서도 내용을 제거합니다. 요청별 재정의가 허용되면 요청 헤더는 그대로 적용됩니다."
 	},
 	"filters": {
 		"filters": "필터",
