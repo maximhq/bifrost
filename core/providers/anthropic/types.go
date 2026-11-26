@@ -2404,8 +2404,9 @@ type AnthropicMessageErrorDetails struct {
 type AnthropicError struct {
 	Type  string `json:"type"` // always "error"
 	Error *struct {
-		Type    string `json:"type"`    // Error type
-		Message string `json:"message"` // Error message
+		Type    string  `json:"type"`           // Error type
+		Message string  `json:"message"`        // Error message
+		Code    *string `json:"code,omitempty"` // Optional machine-readable code from compatible providers
 	} `json:"error,omitempty"` // Error details
 }
 

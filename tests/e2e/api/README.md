@@ -296,6 +296,28 @@ The same gateway config also registers an Azure key; the fixture answers model `
 which is how the dropped-annotation defect was measured.
 The cases are skipped unless `providerErrorFixture=1`.
 
+Case 154.9 (`anthropic error code`) uses the same isolated profile's Anthropic key.
+The fixture answers `/v1/messages` for `upstream-anthropic-error-code` with an
+Anthropic-style HTTP 429 envelope containing `error.code: "quota_exceeded"`.
+The case sends `POST /v1/chat/completions` through Bifrost and asserts the outward
+429, code, type and message. It requires no live provider credentials.
+
+Validate and select just this case from the repository root:
+
+```bash
+mkdir -p tmp
+node tests/e2e/api/runners/augment-provider-harness.mjs --source tests/e2e/api/collections/provider-harness.json --out tmp/anthropic-error-code-augmented.json
+node tests/e2e/api/runners/filter-collection.mjs --source tmp/anthropic-error-code-augmented.json --out tmp/anthropic-error-code-filtered.json --provider anthropic --feature "anthropic error code"
+```
+
+With the fixture and isolated gateway started as above, run:
+
+```bash
+newman run tmp/anthropic-error-code-filtered.json \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1
+```
+
 The fixture also serves the two datasheets a fresh gateway downloads on first start (the config's `framework.pricing` URLs point at it), including the model-parameters row that makes `gpt-5-pro` Responses-only, which is what makes folder 160's chat request convert. The run therefore needs no network. Starting the gateway with `HTTPS_PROXY=http://127.0.0.1:9` is a cheap proof: loopback is exempt from proxying, so only an accidental external call would fail.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
