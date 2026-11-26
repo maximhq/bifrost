@@ -65,7 +65,7 @@ func TestParseHTMLPageRejectsNonListings(t *testing.T) {
 func TestManagerFallsBackToHTMLListing(t *testing.T) {
 	var hits atomic.Int32
 	srv := newFeedServer(t, &hits, func() (int, string) { return http.StatusOK, newsListingFixture })
-	m := NewManagerWithClient(srv.Client())
+	m := managerForTest(t, srv.Client())
 	items, err := m.Fetch(context.Background(), srv.URL+"/news")
 	if err != nil {
 		t.Fatalf("Fetch: %v", err)

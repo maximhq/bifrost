@@ -67,14 +67,19 @@ func IsInteractionsResourcePath(method, path string) bool {
 // ClassifyPassthroughPath maps a Gemini/Vertex passthrough path to the Bifrost request type its
 // :action suffix addresses. :generateContent and :streamGenerateContent are Responses-shaped
 // (Bifrost routes GenAI generation through the Responses schema), :predict is Imagen and
-// :predictLongRunning is Veo. A query string is ignored; Interactions paths and unknown actions
-// return "". Usage extraction and passthrough log parsing both dispatch on this.
+// :predictLongRunning is Veo. The cachedContents collection has no action and maps to a cached
+// content create; callers that see the method keep a list (GET) apart. A query string is ignored;
+// Interactions paths and unknown actions return "". Usage extraction and passthrough log parsing
+// both dispatch on this.
 func ClassifyPassthroughPath(path string) schemas.RequestType {
 	if idx := strings.IndexByte(path, '?'); idx >= 0 {
 		path = path[:idx]
 	}
 	if strings.Contains(path, "/interactions") {
 		return ""
+	}
+	if strings.HasSuffix(path, "/cachedContents") {
+		return schemas.CachedContentCreateRequest
 	}
 
 	action := passthroughAction(path)
