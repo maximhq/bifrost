@@ -594,6 +594,42 @@ func TestOpenAISpeechRoutesReturnRawAudio(t *testing.T) {
 	}
 }
 
+// TestOpenAIChatRoutesPropagateFastAPIDetailError verifies that flat FastAPI
+// {"detail": "..."} error bodies from an OpenAI-compatible upstream survive end-to-end
+// HTTP error handling instead of degrading to "provider API error (status 400)".
+func TestOpenAIChatRoutesPropagateFastAPIDetailError(t *testing.T) {
+	const upstreamDetail = `Error: 400 - Bad Request - {"object":"error","message":"The input exceeds context length.","type":"BadRequestError","code":400}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"detail": upstreamDetail})
+	}))
+	defer upstream.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: speechTestAccount{baseURL: upstream.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}`)
+
+	r.Handler(&ctx)
+
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	require.Contains(t, string(ctx.Response.Body()), "The input exceeds context length.")
+	require.NotContains(t, string(ctx.Response.Body()), "provider API error (status 400)")
+}
+
 // fileUploadUpstream is a fake OpenAI/Azure Files API that streams the uploaded file into a hash,
 // so the upstream itself allocates almost nothing and does not distort allocation counts.
 type fileUploadUpstream struct {

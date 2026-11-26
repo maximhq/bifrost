@@ -4791,3 +4791,24 @@ func BenchmarkProcessAndSendResponseFinalChunk(b *testing.B) {
 		<-ch
 	}
 }
+
+// BenchmarkRootErrorMessage measures root-level "message" / "detail" extraction from
+// parsed error bodies along the provider error handling path.
+func BenchmarkRootErrorMessage(b *testing.B) {
+	cases := []struct {
+		name string
+		raw  interface{}
+	}{
+		{"Message", map[string]interface{}{"message": "rate limit exceeded"}},
+		{"Detail", map[string]interface{}{"detail": "Error: 400 - Bad Request - context length exceeded"}},
+		{"NestedError", map[string]interface{}{"error": map[string]interface{}{"message": "bad request"}}},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = rootErrorMessage(tc.raw)
+			}
+		})
+	}
+}
