@@ -256,6 +256,7 @@ export default function MCPClientDetailsSheet({
 			{/* The shared Sheet keeps focus where it was on open; this one moves it to its title, so the
 			    sheet is announced and Tab continues inside it, whichever way it was opened. */}
 			<SheetContent
+				resizeKey="mcp-client-details"
 				className="flex w-full flex-col overflow-hidden! pt-4 sm:max-w-[60%]"
 				data-testid="mcpclient-view-sheet"
 				onOpenAutoFocus={() => {

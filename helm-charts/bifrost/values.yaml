@@ -1792,9 +1792,11 @@ bifrost:
       #   timeout: 15        # Timeout in seconds for rule execution (default: 60)
       #   send_all_conversation_turns: false  # true = all input history; false enables the previous-turn window below
       #   max_turns_to_send: 8   # With the switch false: current input + 8 previous turns; 0 = current input only
+      #   exclude_system_prompt: true   # Keep system messages away from this rule's providers, as content and as conversation context; false (default) sends them (LLM rules only)
       #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
       #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
       #   output_mode: "enforce"   # "enforce" (default) | "monitor" (deliver the response untouched, evaluate it in the background, log matches without enforcing; needs apply_to output|both)
+      #   fail_closed: true   # Block traffic when a provider errors, times out, or returns an invalid or partial result; false (default) lets it through
       #   provider_config_ids: [1]   # Links this rule to guardrails.providers[].id above
 
   # Declarative Skills Repository. Rendered verbatim as top-level `skills_registry`

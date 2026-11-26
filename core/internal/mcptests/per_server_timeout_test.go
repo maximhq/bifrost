@@ -68,7 +68,7 @@ func TestPerServerTimeout_OverridesGlobal(t *testing.T) {
 	}
 
 	manager := setupMCPManager(t)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	bf := setupBifrost(t)
 	bf.SetMCPManager(manager)
@@ -111,7 +111,7 @@ func TestPerServerTimeout_AllowsLongerThanGlobal(t *testing.T) {
 	}
 
 	manager := setupMCPManager(t)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	bf := setupBifrost(t)
 	bf.SetMCPManager(manager)
@@ -146,7 +146,7 @@ func TestPerServerTimeout_FallsBackToGlobal(t *testing.T) {
 	}
 
 	manager := setupMCPManager(t)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	bf := setupBifrost(t)
 	bf.SetMCPManager(manager)

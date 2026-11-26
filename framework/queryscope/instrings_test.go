@@ -80,3 +80,68 @@ func TestInStrings_EmptyListMatchesNothing(t *testing.T) {
 		})
 	}
 }
+
+// TestInUints_DialectForms pins the fragment and argument InUints builds on each
+// dialect: one bigint[] literal on Postgres, one JSON array on SQLite, and the
+// slice itself elsewhere.
+func TestInUints_DialectForms(t *testing.T) {
+	ids := []uint{3, 1, 18446744073709551615}
+	cases := []struct {
+		name      string
+		db        *gorm.DB
+		wantWhere string
+		wantArg   any
+	}{
+		{"postgres", &gorm.DB{Config: &gorm.Config{Dialector: postgres.New(postgres.Config{})}}, "id = ANY(?::bigint[])", "{3,1,18446744073709551615}"},
+		{"sqlite", &gorm.DB{Config: &gorm.Config{Dialector: sqlite.Open("")}}, "id IN (SELECT value FROM json_each(?))", "[3,1,18446744073709551615]"},
+		{"none", &gorm.DB{Config: &gorm.Config{}}, "id IN ?", ids},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			where, arg := InUints(c.db, "id", ids)
+			require.Equal(t, c.wantWhere, where)
+			require.Equal(t, c.wantArg, arg)
+		})
+	}
+}
+
+// TestInUints_MoreIDsThanParameterLimit pins that an integer list longer than the
+// Postgres (65,535) and SQLite (32,766) parameter limits binds as one argument and
+// still selects exactly the listed rows.
+func TestInUints_MoreIDsThanParameterLimit(t *testing.T) {
+	for name, db := range inStringsTestDBs(t) {
+		t.Run(name, func(t *testing.T) {
+			table := "queryscope_inuints_test"
+			require.NoError(t, db.Exec("DROP TABLE IF EXISTS "+table).Error)
+			require.NoError(t, db.Exec("CREATE TABLE "+table+" (id BIGINT PRIMARY KEY)").Error)
+			t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS " + table) })
+			for _, id := range []uint{1, 2, 3, 100} {
+				require.NoError(t, db.Exec("INSERT INTO "+table+" (id) VALUES (?)", id).Error)
+			}
+
+			ids := make([]uint, 0, 70_002)
+			for i := range uint(70_000) {
+				ids = append(ids, 1_000_000+i)
+			}
+			ids = append(ids, 2, 100)
+
+			where, arg := InUints(db, "id", ids)
+			var got []uint
+			require.NoError(t, db.Table(table).Where(where, arg).Order("id").Pluck("id", &got).Error)
+			require.Equal(t, []uint{2, 100}, got)
+		})
+	}
+}
+
+// TestInUints_EmptyListMatchesNothing pins that an empty integer list selects no rows
+// on every dialect.
+func TestInUints_EmptyListMatchesNothing(t *testing.T) {
+	for name, db := range inStringsTestDBs(t) {
+		t.Run(name, func(t *testing.T) {
+			where, arg := InUints(db, "v", []uint{})
+			var n int64
+			require.NoError(t, db.Raw("SELECT count(*) FROM (SELECT 1 AS v) t WHERE "+where, arg).Scan(&n).Error)
+			require.Zero(t, n)
+		})
+	}
+}

@@ -494,7 +494,12 @@
 		"maximumSpend": "Gasto máximo (USD)",
 		"noBudgetLimits": "No hay límites de presupuesto configurados.",
 		"removeBudgetAria": "Eliminar presupuesto {{number}}",
-		"duplicateResetPeriod": "Período de reinicio duplicado; cada línea de presupuesto debe usar un intervalo distinto."
+		"duplicateResetPeriod": "Período de reinicio duplicado; cada línea de presupuesto debe usar un intervalo distinto.",
+		"contentLogging": "Registro de contenido",
+		"contentLoggingInherit": "Heredar",
+		"contentLoggingOff": "Desactivado para este equipo",
+		"contentLoggingOn": "Activado para este equipo",
+		"contentLoggingHelp": "Si el contenido de la petición y la respuesta se guarda en los registros del tráfico de este equipo. El equipo tiene prioridad sobre sus claves virtuales y claves de proveedor, así que una clave no puede volver a activar el contenido que el equipo desactivó. «Desactivado» también quita el contenido de las exportaciones de los conectores. La cabecera por petición sigue aplicándose cuando se permiten anulaciones por petición."
 	},
 	"filters": {
 		"filters": "Filtros",

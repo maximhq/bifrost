@@ -118,13 +118,13 @@ func (s *BifrostHTTPServer) WireBatchAccountingSweeper() {
 	// Re-wire the settlement tracer on reload. No-op at first bootstrap (tracer not
 	// built yet); Bootstrap calls it again once the tracer exists.
 	s.setSettlementTracer()
-	loggerPlugin.StartBatchAccountingSweeper(&bifrostBatchResultFetcher{client: s.Client}, time.Minute, s.Config.KVStore)
+	loggerPlugin.StartBatchAccountingSweeper(&bifrostBatchResultFetcher{client: s.Client}, time.Minute, s.Config.Shared.BatchPollLeases)
 	// Video jobs finish in minutes, not hours, so their sweeper runs on a much
 	// tighter tick than the batch one.
-	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client}, 30*time.Second, s.Config.KVStore)
+	loggerPlugin.StartVideoAccountingSweeper(&bifrostVideoRetriever{client: s.Client}, 30*time.Second, s.Config.Shared.VideoPollLeases)
 	// Stored interactions (Gemini Deep Research runs) settle once, from their final read; this
 	// sweeper reads the runs no client read to the end.
-	loggerPlugin.StartInteractionAccountingSweeper(&bifrostInteractionPoller{client: s.Client}, time.Minute, s.Config.KVStore)
+	loggerPlugin.StartInteractionAccountingSweeper(&bifrostInteractionPoller{client: s.Client}, time.Minute, s.Config.Shared.InteractionPollLeases)
 	// Relay jobs settle on their own sweeper: they bill to the Relay Logs and
 	// the overall budgets, not through the model catalog.
 	s.startEndpointJobSweeper(s.endpointUsageReporter())
