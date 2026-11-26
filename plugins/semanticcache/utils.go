@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -363,6 +364,15 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		metadata["conversation_history"] = history
 	}
 
+	// message_literals pins the IDs, numbers and codes of the newest message. Embeddings barely see
+	// them, so "reply with 4296a40a" scored above the threshold against "reply with 7a951e2e" and was
+	// served the other prompt's answer. Semantic search filters on this hash, so two prompts match by
+	// meaning only when their literal values are the same. A message with no digits carries no key.
+	delete(metadata, "message_literals")
+	if literals := plugin.messageLiteralsHash(state, req); literals != "" {
+		metadata["message_literals"] = literals
+	}
+
 	return metadata, nil
 }
 
@@ -397,6 +407,23 @@ func (plugin *Plugin) conversationHistoryHash(req *schemas.BifrostRequest) (stri
 		return "", fmt.Errorf("failed to marshal conversation history for hashing: %w", err)
 	}
 	return fmt.Sprintf("%x", xxhash.Sum64(data)), nil
+}
+
+// literalToken matches one word that contains a digit: an ID, hash, version, path segment or number.
+var literalToken = regexp.MustCompile(`[\p{L}\p{N}_.:/-]*\p{N}[\p{L}\p{N}_.:/-]*`)
+
+// messageLiteralsHash returns a hash of the digit-bearing words of the text semantic search embeds, in
+// order, or "" when that text has none or the request has no text to embed.
+func (plugin *Plugin) messageLiteralsHash(state *cacheState, req *schemas.BifrostRequest) string {
+	text, err := plugin.extractTextForEmbedding(state, req)
+	if err != nil {
+		return ""
+	}
+	literals := literalToken.FindAllString(text, -1)
+	if len(literals) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%x", xxhash.Sum64String(strings.Join(literals, "\n")))
 }
 
 // newestMessage returns only the last message of a conversation. Earlier messages are matched exactly
