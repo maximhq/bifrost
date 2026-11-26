@@ -50,7 +50,7 @@ func (f *fakeOAuth2Provider) GetUserAccessTokenByMode(ctx context.Context, mode 
 	return "", schemas.ErrOAuth2TokenNotFound
 }
 
-func (f *fakeOAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode schemas.MCPAuthMode) (*schemas.OAuth2FlowInitiation, string, error) {
+func (f *fakeOAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthConfigID string, mcpClientID string, redirectURI string, flowMode schemas.MCPAuthMode, _ string) (*schemas.OAuth2FlowInitiation, string, error) {
 	return &schemas.OAuth2FlowInitiation{AuthorizeURL: f.authorizeURL}, "flow-session-id", nil
 }
 

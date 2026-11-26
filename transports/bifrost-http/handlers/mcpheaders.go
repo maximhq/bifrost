@@ -61,7 +61,9 @@ func NewMCPPerUserHeadersHandler(mcpManager MCPManager, cacheManager MCPCredenti
 // visitors can complete the submission without a dashboard session.
 //
 // The DELETE-by-credential-ID route lives under /credential/{id} to
-// disambiguate from the flow-ID-keyed routes.
+// disambiguate from the flow-ID-keyed routes. It is deprecated: DELETE
+// /api/mcp/sessions/{id} revokes a header credential the same way, along with
+// every other row kind the sessions list shows.
 func (h *MCPPerUserHeadersHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/mcp/per-user-headers/flows/{id}", lib.ChainMiddlewares(h.flowDetail, middlewares...))
 	r.PUT("/api/mcp/per-user-headers/flows/{id}", lib.ChainMiddlewares(h.flowSubmit, middlewares...))
@@ -374,7 +376,13 @@ func (h *MCPPerUserHeadersHandler) storeSubmittedDiscovery(ctx context.Context, 
 // gated by a scoped GetCredentialByID lookup first: in enterprise the DAC
 // scope filters the row out for callers that don't own it (returns nil →
 // 404 here), so the unscoped delete that follows can never touch a row the
-// caller couldn't see. Mirrors the sessions handler's revoke pattern.
+// caller couldn't see. Of the rows they can see, a caller revokes their own,
+// and anyone else's only when the server lets them act on others' credentials
+// (403 otherwise). Mirrors the sessions handler's revoke pattern.
+//
+// Deprecated: DELETE /api/mcp/sessions/{id} (MCPSessionsHandler.revoke) revokes
+// a header credential the same way and is what the dashboard calls. This route
+// stays for API clients until a following major release removes it.
 func (h *MCPPerUserHeadersHandler) revoke(ctx *fasthttp.RequestCtx) {
 	if h.store.MCPHeadersProvider == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "per-user headers credential provider is not configured")
@@ -396,6 +404,10 @@ func (h *MCPPerUserHeadersHandler) revoke(ctx *fasthttp.RequestCtx) {
 	}
 	if cred == nil {
 		SendError(ctx, fasthttp.StatusNotFound, "credential not found")
+		return
+	}
+	if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, cred.AuthMode, cred.UserID) {
+		SendError(ctx, fasthttp.StatusForbidden, "You can only revoke your own credentials.")
 		return
 	}
 	// Drop pending submission flow rows for the same binding BEFORE the
