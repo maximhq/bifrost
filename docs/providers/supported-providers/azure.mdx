@@ -1068,7 +1068,7 @@ Bifrost calls `POST {endpoint}/providers/microsoft/v1/systemone`, which uses Typ
 - **Limits.** Choice questions take 2-255 options and score questions 2-10 levels; the context window is 32,768 tokens.
 - **No response `id`.** Azure's `x-request-id` is in `extra_fields.provider_response_headers`.
 
-Bifrost does not otherwise gate decisions on Azure by model name: a deployment that serves neither endpoint returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `gpt-6-luna` and `Microsoft-Decision-1` are still served natively. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use `Microsoft-Decision-1` as its classifier.
+Bifrost does not otherwise gate decisions on Azure by model name: a deployment that serves neither endpoint returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `gpt-6-luna` and `Microsoft-Decision-1` are still served natively. A [router](/features/routers#choosing-the-decision-model) can use `Microsoft-Decision-1` as its classifier.
 
 A decision is priced from the model catalog: at the model's decision rates where it lists them, otherwise at its chat rates. A model the catalog does not list is priced at $0; add a [pricing override](/providers/custom-pricing) for the Decisions request type to bill it.
 
@@ -1200,9 +1200,12 @@ Azure serves [GPT-Live](https://learn.microsoft.com/en-us/azure/foundry/openai/c
 }
 ```
 
+A voice model without a prefix runs on Azure when the request comes from the Azure OpenAI SDK, and on OpenAI otherwise on `/openai/v1/live/sessions`, the same provider the session's attach and content routes default to.
+
 Bifrost connects to `{endpoint}/openai/v1/live/sessions` with the key's API key or Entra ID token. Both `session.model` and `delegation.responses.model` are deployment names on Azure, and Bifrost maps each through the key's aliases. Azure runs the backend on the voice deployment's resource, so one key must serve both models, and the key's `endpoint` is used even when an alias sets its own.
 
-- **Sidebands**: `/v1/live/sessions/{session_id}/attach` takes `?provider=azure` or the `x-model-provider: azure` header. Without either, the route uses OpenAI when OpenAI is configured.
+- **Sidebands**: `/v1/live/sessions/{session_id}/attach` and `/openai/v1/live/sessions/{session_id}/attach` take `?provider=azure` or the `x-model-provider: azure` header, and the Azure OpenAI SDK's user agent selects Azure too. Without any of these, the route uses OpenAI when OpenAI is configured.
+- **Browser permissions**: Azure rejects `session.client` on WebRTC create, so Bifrost drops it upstream and applies `allowed_client_events` and `allowed_server_events` itself on the browser's data channel. A browser event outside the list gets OpenAI's `event_not_allowed` error and never reaches Azure. Sidebands are not restricted.
 - **Recordings**: `/v1/live/sessions/{session_id}/content` answers `400 unsupported_operation`. Azure does not store GPT-Live sessions yet and rejects `session.store`.
 - **Pricing overrides** match the deployment name Bifrost sends, not the alias.
 

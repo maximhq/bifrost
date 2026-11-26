@@ -50,6 +50,7 @@ type ModelCapabilities struct {
 	SupportsSamplingParams          *bool `json:"supports_sampling_params,omitempty"` // false ⇒ temperature/top_p/top_k rejected (adaptive-only models)
 	SupportsRedactThinking          *bool `json:"supports_redact_thinking,omitempty"`
 	SupportsTaskBudgets             *bool `json:"supports_task_budgets,omitempty"`
+	SupportsReasoningBudget         *bool `json:"supports_reasoning_budget,omitempty"` // false ⇒ token thinking budget rejected, effort level only (Gemini 4)
 	SupportsEagerInputStreaming     *bool `json:"supports_eager_input_streaming,omitempty"`
 	SupportsAdvancedToolUse         *bool `json:"supports_advanced_tool_use,omitempty"`
 	SupportsInputExamples           *bool `json:"supports_input_examples,omitempty"`
@@ -61,12 +62,20 @@ type ModelCapabilities struct {
 	SupportsPromptCacheBreakpoint   *bool `json:"supports_prompt_cache_breakpoint,omitempty"` // accepts OpenAI prompt_cache_breakpoint + prompt_cache_options
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
+	SupportsVision                  *bool `json:"supports_vision,omitempty"` // accepts image inputs in user content
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
+	SupportsNativeStructuredOutput  *bool `json:"supports_native_structured_output,omitempty"` // Bedrock Converse accepts outputConfig.textFormat; false ⇒ synthetic bf_so_* tool
 	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)
 	SupportsPromptCacheBreakpoints  *bool `json:"supports_prompt_cache_breakpoints,omitempty"` // Responses input_text accepts prompt_cache_breakpoint (Claude via OpenRouter, gpt-5.6+)
 	SupportsAsyncTools              *bool `json:"supports_async_tools,omitempty"`              // accepts OpenAI async on tools and replayed call items
 	SupportsCustomTools             *bool `json:"supports_custom_tools,omitempty"`             // accepts OpenAI custom (freeform) tools; false ⇒ rewritten as function tools
 	SupportsDecisions               *bool `json:"supports_decisions,omitempty"`                // served on the provider's native decisions endpoint (OpenAI POST /v1/decisions); absent ⇒ DefaultSupportsDecisions
+
+	// Model drops trailing whitespace from the text ending a user turn but keeps it mid-turn (Claude 5); absent ⇒ name detection.
+	StripsUserTurnTrailingWhitespace *bool `json:"strips_user_turn_trailing_whitespace,omitempty"`
+
+	// Anthropic converter: send mid-conversation system messages as native role:"system"; released gateways ignore it.
+	SupportsNativeMidConversationSystem *bool `json:"supports_native_mid_conversation_system,omitempty"`
 
 	// Baseline request-surface flags. These drive the compat plugin's
 	// parameter allowlist rather than provider request shaping, so they are

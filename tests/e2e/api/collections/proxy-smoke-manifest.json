@@ -1,7 +1,7 @@
 {
   "$schema_note": "Proxy egress selection for the proxy e2e flow (tests/e2e/api/runners/proxy/run-proxy-matrix.sh), in smoke-manifest.json's format: rows are matched by (folder, name) against the augmented collection and run with `make run-provider-harness-test SMOKE=<this file> PARALLEL=0`. One pillar per provider, each the cheapest existing row that reaches that provider's live upstream. `hosts` is not read by the harness: run-proxy-matrix.sh requires every pattern (an extended regex) to appear in the proxy's access log after a cell, which is what proves the provider's traffic went through the proxy. `token_hosts` are token exchanges, which may happen only at gateway startup and be cached for the inference requests, so they also count from the cell proxy's startup traffic.",
-  "budget": 23,
-  "total_selected": 23,
+  "budget": 24,
+  "total_selected": 24,
   "pillars": [
     {
       "key": "openai",
@@ -302,6 +302,19 @@
         {
           "folder": "285. Proxy egress: upstream reach for providers with no other cheap row (proxy-egress)",
           "name": "elevenlabs models listed through /v1/models reach api.elevenlabs.io - proxy-egress"
+        }
+      ]
+    },
+    {
+      "key": "relay",
+      "intent": "A relay call reaches its local upstream fixture through the proxy under test. RELAY_UPSTREAM stands for the address run-proxy-matrix.sh gives the relays (this host's IPv4), so no proxy exempts the call as loopback.",
+      "hosts": [
+        "RELAY_UPSTREAM"
+      ],
+      "requests": [
+        {
+          "folder": "Access: relay grants on virtual keys",
+          "name": "a virtual key granted one relay reaches that relay - relays-e2e"
         }
       ]
     }

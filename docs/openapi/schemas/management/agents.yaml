@@ -667,6 +667,9 @@ AgentLogSummary:
       type: string
     push_config_id:
       type: string
+    caller_correlation_id:
+      type: string
+      description: The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller.
     delivery_id:
       type: string
     attempt_id:
@@ -811,6 +814,9 @@ AgentLogDetail:
       type: string
     push_config_id:
       type: string
+    caller_correlation_id:
+      type: string
+      description: The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller.
     delivery_id:
       type: string
     attempt_id:
@@ -955,6 +961,9 @@ AgentLogOperation:
       type: string
     push_config_id:
       type: string
+    caller_correlation_id:
+      type: string
+      description: The caller's x-bf-agent-correlation-id, stored as sent. Agents that follow the integration guide send their A2A task ID, which links a subagent operation to its caller.
     delivery_id:
       type: string
     attempt_id:

@@ -7,7 +7,7 @@ description: "Configure Auth0 as your identity provider for Bifrost Enterprise u
 
 - An Auth0 account with admin access to create applications
 - Bifrost Enterprise deployed and accessible
-- Your Bifrost callback URL: `https://<your-bifrost-domain>/login`
+- Your Bifrost callback URL: `https://<your-bifrost-domain>/login` (under a `server.base_path` prefix: `https://<your-bifrost-domain>/<prefix>/login`; the SSO wizard shows the exact value)
 - Bifrost [roles](../rbac) created for the roles you plan to map
 
 ---
@@ -54,11 +54,15 @@ Still on the **Settings** tab, scroll down to **Application URIs** and add your 
 https://<your-bifrost-domain>/login
 ```
 
+Under a `server.base_path` prefix, insert it before the path: `https://<your-bifrost-domain>/<prefix>/login`.
+
 Optionally, to use the **Discover Claims** feature during Bifrost setup, also add:
 
 ```
 https://<your-bifrost-domain>/workspace/scim/oauth-discover-callback
 ```
+
+Under a `server.base_path` prefix, insert it before the path: `https://<your-bifrost-domain>/<prefix>/workspace/scim/oauth-discover-callback`.
 
 Discover Claims opens a one-time sign-in popup during configuration so Bifrost can inspect the exact JWT your Auth0 tenant sends - useful for verifying the `roles` claim is present before you build your attribute mappings. You can skip it and add the URL later if needed.
 

@@ -32,6 +32,10 @@ type Notification struct {
 	Message     string               `json:"message"`
 	ActionLabel string               `json:"action_label,omitempty"`
 	ActionPath  string               `json:"action_path,omitempty"`
+	SubjectType string               `json:"subject_type,omitempty"`
+	SubjectID   string               `json:"subject_id,omitempty"`
+	ResolvedAt  *time.Time           `json:"resolved_at,omitempty"`
+	Resolution  string               `json:"resolution,omitempty"`
 	CreatedAt   time.Time            `json:"created_at"`
 	ExpiresAt   time.Time            `json:"expires_at"`
 }
@@ -46,6 +50,18 @@ type NotificationInput struct {
 	Message     string               `json:"message"`
 	ActionLabel string               `json:"action_label,omitempty"`
 	ActionPath  string               `json:"action_path,omitempty"`
+	// SubjectType and SubjectID name the thing the notification is about, such
+	// as ("budget_request", <id>), so a later NotificationResolver call can find it.
+	SubjectType string `json:"subject_type,omitempty"`
+	SubjectID   string `json:"subject_id,omitempty"`
+}
+
+// NotificationResolveInput marks every unresolved notification for one subject
+// as handled. Resolution is the outcome line shown in place of the action.
+type NotificationResolveInput struct {
+	SubjectType string `json:"subject_type"`
+	SubjectID   string `json:"subject_id"`
+	Resolution  string `json:"resolution"`
 }
 
 // NotificationPublisher persists a notification and pushes it to every
@@ -60,3 +76,8 @@ type NotificationInput struct {
 // func rather than writing to the store directly, so the WebSocket fan-out and
 // role scoping stay in one place.
 type NotificationPublisher func(context.Context, NotificationInput) (*Notification, error)
+
+// NotificationResolver resolves the notifications published for a subject and
+// pushes the updated rows to connected dashboards. Resolving a subject with no
+// open notifications is a no-op, so callers need not track whether one exists.
+type NotificationResolver func(context.Context, NotificationResolveInput) ([]*Notification, error)

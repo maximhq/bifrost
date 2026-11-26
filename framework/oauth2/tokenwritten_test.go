@@ -101,7 +101,7 @@ func forceRefreshSession(p *OAuth2Provider) error {
 func TestOnTokenWrittenReachesAnotherProcessAfterRefresh(t *testing.T) {
 	store := newTestConfigStore()
 	seedSessionTokenFor(store, countingTokenServer(t).URL+"/token")
-	writer, reader := newTestProvider(store), newTestProvider(store)
+	writer, reader := newTestProvider(t, store), newTestProvider(t, store)
 
 	access, err := sessionAccessToken(reader)
 	require.NoError(t, err)
@@ -133,7 +133,7 @@ func TestOnTokenWrittenAfterRefreshRejected(t *testing.T) {
 	t.Cleanup(server.Close)
 	store := newTestConfigStore()
 	seedSessionTokenFor(store, server.URL+"/token")
-	writer, reader := newTestProvider(store), newTestProvider(store)
+	writer, reader := newTestProvider(t, store), newTestProvider(t, store)
 	rec := &tokenRecorder{}
 	writer.SetOnTokenWritten(func(ctx context.Context, tokenID string) {
 		rec.record(ctx, tokenID)
@@ -163,7 +163,7 @@ func TestOnTokenWrittenSkipsLostRefreshRace(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	seedSessionTokenFor(store, server.URL+"/token")
-	p := newTestProvider(store)
+	p := newTestProvider(t, store)
 	rec := &tokenRecorder{}
 	p.SetOnTokenWritten(rec.record)
 
@@ -212,6 +212,12 @@ func (s *reauthStore) CreateOauthToken(_ context.Context, token *tables.TableMCP
 	return nil
 }
 
+// CompleteOauthUserSession stores the token of the flow the claim handed out;
+// nothing here revokes flows, so the row is always still there.
+func (s *reauthStore) CompleteOauthUserSession(ctx context.Context, _ string, token *tables.TableMCPOauthToken) error {
+	return s.CreateOauthToken(ctx, token)
+}
+
 // TestOnTokenWrittenReachesAnotherProcessAfterReauthorization: re-authorizing
 // an existing binding replaces its row in place, and the reader switches to
 // the new credential.
@@ -219,7 +225,7 @@ func TestOnTokenWrittenReachesAnotherProcessAfterReauthorization(t *testing.T) {
 	store := &reauthStore{testConfigStore: newTestConfigStore()}
 	seedSessionTokenFor(store.testConfigStore, countingTokenServer(t).URL+"/token")
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	writer, reader := NewOAuth2Provider(store, logger), NewOAuth2Provider(store, logger)
+	writer, reader := newCachingProvider(t, store, logger), newCachingProvider(t, store, logger)
 	writer.SetOnTokenWritten(func(_ context.Context, tokenID string) {
 		reader.EvictUserTokenByID(tokenID)
 	})
@@ -258,7 +264,7 @@ func TestOnTokenWrittenAfterAdminExchangeWrites(t *testing.T) {
 	store := newTestConfigStore()
 	config := exchangeTestClientConfig()
 	store.mcpClients = map[string]*schemas.MCPClientConfig{config.ID: config}
-	p := NewOAuth2Provider(store, nil)
+	p := newCachingProvider(t, store, nil)
 	p.retryBaseDelay = time.Millisecond
 	p.SetTokenExchangeIdPResolver(&fakeIdPResolver{
 		available: true,
@@ -295,7 +301,7 @@ func TestOnTokenWrittenAfterAdminExchangeWrites(t *testing.T) {
 // eviction must not announce it again, or processes would echo it back and
 // forth.
 func TestEvictUserTokenByIDDoesNotCallOnTokenWritten(t *testing.T) {
-	p := newTestProvider(newTestConfigStore())
+	p := newTestProvider(t, newTestConfigStore())
 	rec := &tokenRecorder{}
 	p.SetOnTokenWritten(rec.record)
 

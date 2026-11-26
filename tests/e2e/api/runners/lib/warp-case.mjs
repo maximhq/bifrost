@@ -235,8 +235,9 @@ export function createWarpLib(pm) {
 
   function summary(body) {
     if (!body) return "";
+    // Arguments included: a repeated call is only diagnosable from what it changed.
     var tools = (body.tool_calls || []).map(function (t) {
-      return t.name + (t.failed ? "(failed)" : "");
+      return t.name + (t.failed ? "(failed)" : "") + (t.arguments ? " " + String(t.arguments).slice(0, 200) : "");
     });
     return " | tools: [" + tools.join(", ") + "] | finish: " + body.finish_reason + " | answer: " + String(body.answer || "").slice(0, 600);
   }

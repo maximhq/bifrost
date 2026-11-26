@@ -25,9 +25,11 @@ type Trace struct {
 	mu                    sync.Mutex // Mutex for thread-safe span operations
 }
 
-// Trace-level attribute keys. Unlike span attributes, trace attributes are never
-// exported as OTEL/Datadog span attributes — observability connectors (BigQuery,
-// Datadog) read them directly off the completed trace.
+// Trace-level attribute keys. Unlike span attributes, trace attributes are not
+// exported as OTEL/Datadog span attributes by default — observability connectors
+// (BigQuery, Datadog) read them directly off the completed trace. The one exception
+// is an OTEL profile with apply_trace_dimensions_to_child_spans, which merges
+// TraceAttrDimensions onto every exported span.
 const (
 	// TraceAttrSessionID holds the session ID from the x-bf-session-id request
 	// header. The key matches the header name because connectors already read it.
@@ -52,10 +54,10 @@ func GetBoolAttr(attrs map[string]any, key string) bool {
 	return v
 }
 
-// ContentLoggingDisabledForTrace reports whether governance turned content logging off for the
-// request behind this trace, through its virtual key or a project it was scoped to
-// (AttrBifrostContentLoggingDisabled on the root span). Every connector ORs this into its own
-// disable_content_logging: governance can only tighten what a connector exports, never loosen it.
+// ContentLoggingDisabledForTrace reports whether the content-logging layers of the request behind
+// this trace resolved to off, including a project the request was scoped to
+// (AttrBifrostContentLoggingDisabled true on the root span). Every connector ORs this into its own
+// disable_content_logging: the layers can only tighten what a connector exports, never loosen it.
 // Nil-safe, so a connector can call it on any trace.
 func ContentLoggingDisabledForTrace(t *Trace) bool {
 	if t == nil || t.RootSpan == nil {
@@ -129,6 +131,24 @@ func TraceDimensions(attrs map[string]any) map[string]string {
 		return out
 	}
 	return nil
+}
+
+// MergeDimensions adds dims to the trace's dimensions, overwriting a name already there. It stores
+// a new map, so an exporter holding the previous one never sees it change.
+func (t *Trace) MergeDimensions(dims map[string]string) {
+	if t == nil || len(dims) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	existing := TraceDimensions(t.Attributes)
+	merged := make(map[string]string, len(existing)+len(dims))
+	maps.Copy(merged, existing)
+	maps.Copy(merged, dims)
+	if t.Attributes == nil {
+		t.Attributes = make(map[string]any)
+	}
+	t.Attributes[TraceAttrDimensions] = merged
 }
 
 // AddSpan adds a span to the trace in a thread-safe manner
@@ -621,6 +641,30 @@ func (s *Span) SetAttribute(key string, value any) {
 		s.Attributes = make(map[string]any)
 	}
 	s.Attributes[key] = value
+}
+
+// SetStartTime moves the span's start, for work measured before its span was opened.
+func (s *Span) SetStartTime(start time.Time) {
+	if s == nil || start.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.StartTime = start
+}
+
+// SetStartTimeIfMatch is SetStartTime guarded like EndIfMatch against a recycled span.
+func (s *Span) SetStartTimeIfMatch(id string, start time.Time) bool {
+	if s == nil || start.IsZero() {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.SpanID != id {
+		return false
+	}
+	s.StartTime = start
+	return true
 }
 
 // GetAttribute reads one attribute under the span's lock.
@@ -1212,6 +1256,7 @@ const (
 	AttrBifrostRelayCost               = "bifrost.relay.cost" // USD charged for the call
 	AttrBifrostRelayBytesOut           = "bifrost.relay.bytes_out"
 	AttrBifrostRelayUpstreamDurationMs = "bifrost.relay.upstream.duration_ms" // time blocked on the upstream socket
+	AttrBifrostRelayDurationMs         = "bifrost.relay.duration_ms"          // the whole call, pre-hooks to the end of the reply
 
 	// RelayMethodLabelOther is the method label for a request method outside the set a relay
 	// route can name, so a relay that skips the route check cannot grow a metric's series.
@@ -1265,16 +1310,21 @@ const (
 	// reverse hop (enqueue->dequeue) is already the "queue-wait" span.
 	AttrBifrostWorkerHandoffMs = "bifrost.worker.handoff_ms"
 
+	// AttrBifrostBackground marks a span as work the request did not wait for (e.g. a
+	// guardrail evaluating the response after it was delivered). The overhead breakdown
+	// leaves it out; the span is still exported.
+	AttrBifrostBackground = "bifrost.background"
+
 	// AttrBifrostTimeToFirstTokenMs is request receipt to first streamed chunk, so
 	// unlike time_to_first_chunk it includes gateway overhead. Streaming only.
 	AttrBifrostTimeToFirstTokenMs = "bifrost.response.time_to_first_token_ms"
 
-	// AttrBifrostContentLoggingDisabled is set to true on the root span when governance turned
-	// content logging off for the request: its virtual key did, or a project it was scoped to did.
-	// Connectors read it through ContentLoggingDisabledForTrace and strip content the way their own
-	// disable_content_logging would. A key that keeps content on never writes it. It may read false
-	// when a project that keeps content on overrides a key that turned it off; a connector reads
-	// false the same as absent, so nothing can loosen a connector's own setting.
+	// AttrBifrostContentLoggingDisabled is set to true on the root span when the request's
+	// content-logging layers resolve to off (see StampContentLoggingDecision), or a project the
+	// request was scoped to turned content off. Connectors read it through
+	// ContentLoggingDisabledForTrace and strip content the way their own disable_content_logging
+	// would. Only true acts: it is written false solely to undo an earlier true when a higher layer
+	// or a project turns content back on, so it can never loosen a connector's own setting.
 	AttrBifrostContentLoggingDisabled = "bifrost.content_logging.disabled"
 
 	AttrBifrostProviderName        = "bifrost.provider.name"
@@ -1413,4 +1463,20 @@ func RelayMethodLabel(method string) string {
 		return strings.ToUpper(strings.TrimSpace(method))
 	}
 	return RelayMethodLabelOther
+}
+
+// RelaySpanDurationSeconds is a relay call's duration for the relay metrics: the whole call the
+// span records (AttrBifrostRelayDurationMs, which covers a call the pre-hooks refused), else the
+// span's own extent.
+func RelaySpanDurationSeconds(span *Span) float64 {
+	if span == nil {
+		return 0
+	}
+	if ms, ok := GetFloat64AttrOK(span.Attributes, AttrBifrostRelayDurationMs); ok && ms > 0 {
+		return ms / 1000
+	}
+	if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+		return span.EndTime.Sub(span.StartTime).Seconds()
+	}
+	return 0
 }

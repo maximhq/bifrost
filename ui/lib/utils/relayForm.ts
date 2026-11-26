@@ -1,3 +1,5 @@
+import i18n from "@/lib/i18n";
+import { withBasePath } from "@/lib/utils/basePath";
 import type { Relay, RelayJobConfig, RelayRouteConfig, RelaySecret, RelayUsageConfig } from "@/lib/types/relays";
 import {
 	type RelayFormValues,
@@ -300,18 +302,18 @@ export function toRelayConfig(v: RelayFormValues): Relay {
 		credential,
 		extra_headers: Object.keys(extraHeaders).length ? extraHeaders : undefined,
 		network: Object.keys(network).length ? network : undefined,
+		// "none" names no proxy, the same as leaving it unset (the provider rule): both inherit the
+		// global proxy, so both are saved as no proxy_config.
 		proxy_config:
-			v.proxy.type === "inherit"
+			v.proxy.type === "inherit" || v.proxy.type === "none"
 				? undefined
-				: v.proxy.type === "none"
-					? { type: "none" }
-					: {
-							type: v.proxy.type,
-							url: toApiSecret(v.proxy.url),
-							username: toApiSecret(v.proxy.username),
-							password: toApiSecret(v.proxy.password),
-							ca_cert_pem: toApiSecret(v.proxy.ca_cert_pem),
-						},
+				: {
+						type: v.proxy.type,
+						url: toApiSecret(v.proxy.url),
+						username: toApiSecret(v.proxy.username),
+						password: toApiSecret(v.proxy.password),
+						ca_cert_pem: toApiSecret(v.proxy.ca_cert_pem),
+					},
 		usage: cleanUsage(v.usage, false),
 		streaming: streamingSet ? { ...v.streaming, paths: v.streaming.paths.filter((p) => p.trim()) } : undefined,
 		routes: v.routes
@@ -362,20 +364,43 @@ export function cleanJob(job: Omit<RelayJobConfig, "usage"> & { usage?: RelayUsa
 	};
 }
 
+/** The path callers reach a relay at, for display and copying. The server sends it root-relative, so the server.base_path prefix goes on here. */
+export function relayGatewayPath(relay: Pick<Relay, "name" | "url">): string {
+	return withBasePath(relay.url || `/relay/${relay.name}`);
+}
+
 /** A one-line summary of what a call costs under a mapping, for the route table and pricing tab. */
 // ignoreUpstreamCost drops the reported cost, as the server does when the relay ignores it.
 export function describePricing(u: RelayUsageConfig | undefined, ignoreUpstreamCost = false): string {
-	if (!u) return "Free";
+	const T = { ns: "config" } as const;
+	if (!u) return i18n.t("relays.pricing.free", T);
 	const parts: string[] = [];
-	if (u.cost_per_request) parts.push(`$${u.cost_per_request} / call`);
+	if (u.cost_per_request) parts.push(i18n.t("relays.pricing.perCall", { ...T, price: u.cost_per_request }));
 	if (u.cost_per_unit) {
-		const what =
-			u.units_measure === "body_bytes" ? "byte" : u.units_measure === "body_chars" || u.units_measure === "chars" ? "char" : "unit";
-		const block = u.units_block_size && u.units_block_size !== 1 ? ` per ${u.units_block_size} ${what}s` : ` / ${what}`;
-		parts.push(`$${u.cost_per_unit}${block}${u.units_minimum ? `, min ${u.units_minimum}` : ""}`);
+		const price = u.cost_per_unit;
+		const bytes = u.units_measure === "body_bytes";
+		const chars = u.units_measure === "body_chars" || u.units_measure === "chars";
+		const blockSize = u.units_block_size;
+		let unitPricing: string;
+		if (blockSize && blockSize !== 1) {
+			const opts = { ...T, price, count: blockSize };
+			unitPricing = bytes
+				? i18n.t("relays.pricing.blockByte", opts)
+				: chars
+					? i18n.t("relays.pricing.blockChar", opts)
+					: i18n.t("relays.pricing.blockUnit", opts);
+		} else {
+			const opts = { ...T, price };
+			unitPricing = bytes
+				? i18n.t("relays.pricing.perByte", opts)
+				: chars
+					? i18n.t("relays.pricing.perChar", opts)
+					: i18n.t("relays.pricing.perUnit", opts);
+		}
+		parts.push(u.units_minimum ? i18n.t("relays.pricing.withMinimum", { ...T, pricing: unitPricing, min: u.units_minimum }) : unitPricing);
 	}
-	if (u.cost_path && !ignoreUpstreamCost) parts.push(`+ reported cost`);
-	return parts.length ? parts.join(" + ") : "Free";
+	if (u.cost_path && !ignoreUpstreamCost) parts.push(i18n.t("relays.pricing.reportedCost", T));
+	return parts.length ? parts.join(" + ") : i18n.t("relays.pricing.free", T);
 }
 
 /** The mapping a route resolves to: the endpoint's, overridden field by field. */

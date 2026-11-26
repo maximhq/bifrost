@@ -30,6 +30,16 @@ var (
 	paramsFetchTimeout  = DefaultModelParametersTimeout
 )
 
+// NewHTTPClient builds the client for every catalog feed download (pricing,
+// model parameters, MCP library). It is a var, not a direct call to
+// network.NewPrivateNetworkHTTPClient, only so tests can wrap the transport:
+// the guarded client builds its own *http.Transport, so swapping
+// http.DefaultTransport no longer intercepts these fetches. Without this hook
+// every LoadConfig in transports/bifrost-http/lib tests downloads the full
+// public datasheets (~29MB), which took that package from minutes to ~35 min
+// under -race in CI. Production code must not reassign it.
+var NewHTTPClient = network.NewPrivateNetworkHTTPClient
+
 // SyncFromURL fetches the upstream pricing datasheet, persists it to the DB
 // (when configStore != nil), and refreshes the in-memory cache + derived
 // datasheet view. On URL failure it falls back to existing DB records when
@@ -124,7 +134,8 @@ func (s *Store) resolvePricingRows(pricingData map[string]Entry) []configstoreTa
 	winners := make(map[string]pricingCandidate, len(pricingData))
 	var losers map[string][]pricingCandidate // stored key -> rows that lost it; empty unless rows fold
 	for modelKey, entry := range pricingData {
-		// Same identity convertEntryToTablePricing stores the row under.
+		// Same identity convertEntryToTablePricing stores the row under. Not makeKeyNormalized:
+		// the database keeps each casing as its own row.
 		provider := normalizeProvider(entry.Provider)
 		key := makeKey(extractModelName(modelKey), provider, entry.Mode)
 		cand := pricingCandidate{modelKey: modelKey, exact: entry.Provider == provider}
@@ -208,12 +219,7 @@ func (s *Store) LoadFromDB(ctx context.Context) error {
 	}
 
 	s.mu.Lock()
-	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(records))
-	for _, pricing := range records {
-		key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-		s.pricingData[key] = pricing
-	}
-	s.rebuildDatasheetViewUnsafe()
+	s.setPricingRowsUnsafe(records)
 	s.mu.Unlock()
 
 	if s.logger != nil {
@@ -241,11 +247,7 @@ func (s *Store) LoadFromURLIntoMemory(ctx context.Context) error {
 func (s *Store) applyPricingData(pricingData map[string]Entry) {
 	records := s.resolvePricingRows(pricingData)
 	s.mu.Lock()
-	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(records))
-	for _, pricing := range records {
-		s.pricingData[makeKey(pricing.Model, pricing.Provider, pricing.Mode)] = pricing
-	}
-	s.rebuildDatasheetViewUnsafe()
+	s.setPricingRowsUnsafe(records)
 	s.mu.Unlock()
 }
 
@@ -299,7 +301,7 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 		}
 		// ValidateExternalURL screens the configured host once; the guarded
 		// client holds every connection and redirect hop to the same policy.
-		client := network.NewPrivateNetworkHTTPClient(DefaultPricingTimeout)
+		client := NewHTTPClient(DefaultPricingTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

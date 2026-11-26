@@ -1,0 +1,201 @@
+package utils
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"slices"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+)
+
+const responsesStreamBody = "event: response.created\ndata: {\"type\":\"response.created\"}\n\n" +
+	"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":5,\"output_tokens\":3}}}\n\n"
+
+func endsResponsesStream(event []byte) bool {
+	return strings.Contains(string(event), `"type":"response.completed"`)
+}
+
+// hangupBody makes a read that the cancellation close interrupts fail the way a live connection
+// does. fasthttp's body reports io.EOF there, which the stream loop would take as a clean end.
+type hangupBody struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (b *hangupBody) CloseWithError(err error) error {
+	b.closed.Store(true)
+	closeBodyStream(b.Reader, err)
+	return nil
+}
+
+func (b *hangupBody) Read(p []byte) (int, error) {
+	n, err := b.Reader.Read(p)
+	if err == io.EOF && b.closed.Load() {
+		err = net.ErrClosed
+	}
+	return n, err
+}
+
+// runParkedPassthroughStream serves responsesStreamBody as a chunked SSE response and then keeps
+// the connection open, like an upstream that parks after response.completed. With hangUp set the
+// request is cancelled as soon as the client reads response.completed, the way Codex hangs up. It
+// returns every post-hook call and whether the stream channel closed within the deadline.
+func runParkedPassthroughStream(t *testing.T, endsStream func([]byte) bool, hangUp bool, finalize func(*schemas.BifrostPassthroughResponse)) (finals []*schemas.BifrostPassthroughResponse, errs []*schemas.BifrostError, closed bool) {
+	t.Helper()
+	hold := make(chan struct{})
+	t.Cleanup(func() { close(hold) })
+	srv := newScriptedServer(t, func(conn net.Conn, br *bufio.Reader) {
+		if !readRequest(br) {
+			return
+		}
+		writeAll(t, conn, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		writeAll(t, conn, fmt.Sprintf("%x\r\n%s\r\n", len(responsesStreamBody), responsesStreamBody))
+		<-hold
+	})
+
+	goCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ctx := schemas.NewBifrostContext(goCtx, time.Time{})
+	req, resp := streamGet(t, BuildStreamingClient(srv.client(5*time.Second)), "POST")
+	defer fasthttp.ReleaseRequest(req)
+
+	runner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if err != nil {
+			errs = append(errs, err)
+		} else if r != nil && r.PassthroughResponse != nil && r.PassthroughResponse.Body == nil {
+			finals = append(finals, r.PassthroughResponse)
+		}
+		return r, err
+	}
+
+	ch := StreamPassthrough(ctx, runner, nil, resp, &hangupBody{Reader: resp.BodyStream()}, PassthroughStreamParams{
+		StatusCode: 200,
+		EndsStream: endsStream,
+		Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
+			if strings.Contains(string(event), `"usage"`) {
+				return &schemas.BifrostPassthroughUsage{}
+			}
+			return nil
+		},
+		Finalize: finalize,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		for chunk := range ch {
+			if hangUp && chunk.BifrostPassthroughResponse != nil && strings.Contains(string(chunk.BifrostPassthroughResponse.Body), "response.completed") {
+				cancel()
+			}
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		return finals, errs, true
+	case <-time.After(2 * time.Second):
+		return finals, errs, false
+	}
+}
+
+func TestStreamPassthrough_EndsStreamAbandonsParkedUpstream(t *testing.T) {
+	// No client hangup: release must not drain a body the upstream never closes.
+	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, false, nil)
+	if !closed {
+		t.Fatal("stream channel did not close: release is draining the parked upstream body")
+	}
+	if len(errs) != 0 {
+		t.Fatalf("expected no error, got %q", errs[0].Error.Message)
+	}
+	if len(finals) != 1 || finals[0].PassthroughUsage == nil {
+		t.Fatalf("expected one final chunk with usage from response.completed, got %d", len(finals))
+	}
+}
+
+func TestStreamPassthrough_EndsStreamFinalizesBeforeClientHangup(t *testing.T) {
+	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, true, nil)
+	if !closed {
+		t.Fatal("stream channel did not close")
+	}
+	if len(errs) != 0 {
+		t.Fatalf("expected no cancellation error, got %q", errs[0].Error.Message)
+	}
+	if len(finals) != 1 || finals[0].PassthroughUsage == nil {
+		t.Fatalf("expected one final chunk with usage from response.completed, got %d", len(finals))
+	}
+}
+
+// A stream the client cuts off ends on the cancellation path, which never calls Finalize: no final
+// response reaches the post hooks, so a provider job the stream reported (an Interactions run) is
+// never recorded. The passthrough docs state this limit; this pins it.
+func TestStreamPassthrough_ClientHangupSkipsFinalize(t *testing.T) {
+	finalized := false
+	finals, errs, closed := runParkedPassthroughStream(t, nil, true, func(*schemas.BifrostPassthroughResponse) {
+		finalized = true
+	})
+	if !closed {
+		t.Fatal("stream channel did not close")
+	}
+	if finalized {
+		t.Fatal("Finalize ran on a stream the client cut off")
+	}
+	if len(finals) != 0 {
+		t.Fatalf("expected no final response, got %d", len(finals))
+	}
+	if len(errs) == 0 {
+		t.Fatal("expected the cancellation error to reach the post hooks")
+	}
+}
+
+// Finalize completes the final response once the stream ends: it sees the observed usage and can
+// move it onto a provider job and name the model the stream reported, all carried on the final chunk.
+func TestStreamPassthrough_FinalizeCompletesFinalResponse(t *testing.T) {
+	var seen *schemas.BifrostPassthroughUsage
+	finals, errs, closed := runParkedPassthroughStream(t, endsResponsesStream, false, func(resp *schemas.BifrostPassthroughResponse) {
+		seen = resp.PassthroughUsage
+		resp.ProviderJob = &schemas.BifrostPassthroughJob{ID: "int_1", Usage: resp.PassthroughUsage}
+		resp.PassthroughUsage = nil
+		resp.ServedModel = "deep-research-preview-04-2026"
+	})
+	if !closed || len(errs) != 0 {
+		t.Fatalf("closed=%v errs=%d", closed, len(errs))
+	}
+	if seen == nil {
+		t.Fatal("Finalize did not receive the observed usage")
+	}
+	if len(finals) != 1 || finals[0].PassthroughUsage != nil || finals[0].ServedModel != "deep-research-preview-04-2026" {
+		t.Fatalf("final chunk = %+v, want no usage and the served model", finals)
+	}
+	if finals[0].ProviderJob == nil || finals[0].ProviderJob.Usage != seen {
+		t.Fatalf("final chunk job = %+v, want the observed usage on the job", finals[0].ProviderJob)
+	}
+}
+
+// TestStreamPassthrough_StampsChunkIndexes verifies forwarded chunks carry consecutive ChunkIndex values and the final
+// chunk the next one, as typed stream chunks do.
+func TestStreamPassthrough_StampsChunkIndexes(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	var indexes []int
+	runner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if r != nil && r.PassthroughResponse != nil {
+			indexes = append(indexes, r.PassthroughResponse.ExtraFields.ChunkIndex)
+		}
+		return r, err
+	}
+	body := strings.Repeat("data: {}\n\n", 1000) // 10,000 bytes: three 4 KB reads
+
+	ch := StreamPassthroughHTTP(ctx, runner, nil, io.NopCloser(strings.NewReader(body)), PassthroughStreamParams{StatusCode: 200, StartTime: time.Now()})
+	for range ch {
+	}
+
+	if want := []int{0, 1, 2, 3}; !slices.Equal(indexes, want) {
+		t.Fatalf("chunk indexes = %v, want %v", indexes, want)
+	}
+}

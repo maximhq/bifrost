@@ -688,50 +688,115 @@ func TestConvertChatParameters_ResponseFormatWithPinnedServerTool_NoConflictingC
 	}
 }
 
-// TestConvertInferenceConfig_GLMSkipsStopSequences locks in the fix for the
-// user-reported 400 ("This model doesn't support the stopSequences field"):
-// GLM models on Bedrock reject inferenceConfig.stopSequences, so we omit it
-// for them while keeping it for every other model family.
-func TestConvertInferenceConfig_GLMSkipsStopSequences(t *testing.T) {
+// converseStopSequenceCases lists models probed live against bedrock-runtime
+// Converse in us-east-1 with inferenceConfig.stopSequences set. Most newer
+// families 400 with "This model doesn't support the stopSequences field".
+var converseStopSequenceCases = []struct {
+	model   string
+	accepts bool
+}{
+	{"anthropic.claude-sonnet-4", true},
+	{"us.anthropic.claude-opus-4-8", true},
+	{"us.amazon.nova-pro-v1:0", true},
+	{"us.amazon.nova-2-lite-v1:0", true},
+	{"meta.llama3-70b-instruct-v1:0", true},
+	{"us.meta.llama4-maverick-17b-instruct-v1:0", true},
+	{"us.deepseek.r1-v1:0", true},
+	{"mistral.mistral-7b-instruct-v0:2", true},
+	{"mistral.mixtral-8x7b-instruct-v0:1", true},
+	{"mistral.mistral-large-2402-v1:0", true},
+	{"mistral.mistral-small-2402-v1:0", true},
+	{"us.mistral.pixtral-large-2502-v1:0", true},
+	{"us.writer.palmyra-x5-v1:0", true},
+	{"deepseek.v3.2", false},
+	{"us.deepseek.v3.2", false},
+	{"zai.glm-5", false},
+	{"qwen.qwen3-32b-v1:0", false},
+	{"google.gemma-3-12b-it", false},
+	{"minimax.minimax-m2.5", false},
+	{"moonshotai.kimi-k2.5", false},
+	{"nvidia.nemotron-super-3-120b", false},
+	{"openai.gpt-oss-120b-1:0", false},
+	{"us.openai.gpt-6-luna", false},
+	{"us.xai.grok-4.6", false},
+	{"mistral.mistral-large-3-675b-instruct", false},
+	{"mistral.devstral-2-123b", false},
+	{"mistral.voxtral-small-24b-2507", false},
+	{"writer.palmyra-vision-7b", false},
+}
+
+// TestConvertInferenceConfig_StopSequencesByFamily pins which Converse models
+// keep stopSequences on the chat path; the rest would 400 if it were sent.
+func TestConvertInferenceConfig_StopSequencesByFamily(t *testing.T) {
 	params := &schemas.ChatParameters{
 		MaxCompletionTokens: schemas.Ptr(12000),
 		Stop:                []string{"hi"},
 	}
-
-	glm := convertInferenceConfig(params, schemas.ResolveModelCaps(schemas.Bedrock, "zai.glm-5"))
-	if glm.StopSequences != nil {
-		t.Fatalf("expected StopSequences to be omitted for GLM, got %v", glm.StopSequences)
-	}
-	// Other inference params must still pass through.
-	if glm.MaxTokens == nil || *glm.MaxTokens != 12000 {
-		t.Fatalf("expected MaxTokens to be preserved, got %v", glm.MaxTokens)
-	}
-
-	other := convertInferenceConfig(params, schemas.ResolveModelCaps(schemas.Bedrock, "anthropic.claude-sonnet-4"))
-	if len(other.StopSequences) != 1 || other.StopSequences[0] != "hi" {
-		t.Fatalf("expected StopSequences to be preserved for non-GLM, got %v", other.StopSequences)
+	for _, tc := range converseStopSequenceCases {
+		t.Run(tc.model, func(t *testing.T) {
+			cfg := convertInferenceConfig(params, schemas.ResolveModelCaps(schemas.Bedrock, tc.model))
+			if got := len(cfg.StopSequences) == 1 && cfg.StopSequences[0] == "hi"; got != tc.accepts {
+				t.Fatalf("stopSequences sent = %v, want %v (got %v)", got, tc.accepts, cfg.StopSequences)
+			}
+			// Other inference params must still pass through.
+			if cfg.MaxTokens == nil || *cfg.MaxTokens != 12000 {
+				t.Fatalf("expected MaxTokens to be preserved, got %v", cfg.MaxTokens)
+			}
+		})
 	}
 }
 
-// TestToBedrockResponsesRequest_GLMSkipsStopSequences verifies the Responses
-// path (where `stop` arrives via ExtraParams) also drops stopSequences for GLM.
-func TestToBedrockResponsesRequest_GLMSkipsStopSequences(t *testing.T) {
+// TestToBedrockResponsesRequest_StopSequencesByFamily covers the Responses path
+// (the one /anthropic/v1/messages takes), where `stop` arrives via ExtraParams.
+func TestToBedrockResponsesRequest_StopSequencesByFamily(t *testing.T) {
+	for _, tc := range converseStopSequenceCases {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    tc.model,
+				Input:    []schemas.ResponsesMessage{glmUserMessage("hello")},
+				Params: &schemas.ResponsesParameters{
+					MaxOutputTokens: schemas.Ptr(32000),
+					ExtraParams:     map[string]interface{}{"stop": []string{"hi"}},
+				},
+			}
+			bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+			}
+			got := bedrockReq.InferenceConfig != nil && len(bedrockReq.InferenceConfig.StopSequences) == 1
+			if got != tc.accepts {
+				t.Fatalf("stopSequences sent = %v, want %v", got, tc.accepts)
+			}
+		})
+	}
+}
+
+// TestToBedrockResponsesRequest_StopSequencesFollowAliasModelName checks that an
+// alias with an opaque wire id is gated on its canonical model_name. The opaque
+// id alone would omit stopSequences, so keeping them proves model_name decided.
+func TestToBedrockResponsesRequest_StopSequencesFollowAliasModelName(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+		Key:    "team-claude",
+		Config: &schemas.AliasConfig{ModelID: "abc12xyz", ModelName: schemas.Ptr("anthropic.claude-sonnet-4")},
+	})
 	req := &schemas.BifrostResponsesRequest{
-		Model: "zai.glm-5",
-		Input: []schemas.ResponsesMessage{glmUserMessage("hello")},
+		Provider: schemas.Bedrock,
+		Model:    "abc12xyz",
+		Input:    []schemas.ResponsesMessage{glmUserMessage("hello")},
 		Params: &schemas.ResponsesParameters{
 			MaxOutputTokens: schemas.Ptr(32000),
 			ExtraParams:     map[string]interface{}{"stop": []string{"hi"}},
 		},
 	}
-
 	bedrockReq, err := ToBedrockResponsesRequest(ctx, req)
 	if err != nil {
 		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
 	}
-	if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.StopSequences != nil {
-		t.Fatalf("expected StopSequences to be omitted for GLM, got %v", bedrockReq.InferenceConfig.StopSequences)
+	if bedrockReq.InferenceConfig == nil || len(bedrockReq.InferenceConfig.StopSequences) != 1 || bedrockReq.InferenceConfig.StopSequences[0] != "hi" {
+		t.Fatalf("expected exactly one StopSequence for an alias of anthropic.claude-sonnet-4, got %+v", bedrockReq.InferenceConfig)
 	}
 }
 

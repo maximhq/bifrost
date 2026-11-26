@@ -21,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"golang.org/x/sync/singleflight"
 	"gorm.io/gorm"
@@ -38,6 +39,9 @@ const (
 	// terminalStatusUpdateTimeout bounds the detached needs_reauth status
 	// write after a permanent OAuth rejection (see refreshAccessTokenLocked).
 	terminalStatusUpdateTimeout = 10 * time.Second
+	// unrenewableTokenReason is the needs_reauth reason for an expired access token the provider
+	// issued no refresh token for.
+	unrenewableTokenReason = "access token expired and the provider issued no refresh token"
 
 	// maxTokenEndpointResponseBytes caps how much of an OAuth token endpoint
 	// response callTokenEndpoint reads. A legitimate response is a small
@@ -77,8 +81,9 @@ type OAuth2Provider struct {
 	// reads behind unrelated revoke traffic.
 	tempTokens atomic.Pointer[temptoken.Service]
 
-	clientMetadataPaths atomic.Pointer[clientMetadataPaths]                           // set once at startup; see SetClientMetadataDocumentPaths
-	credentialsRotated  atomic.Pointer[func(ctx context.Context, mcpClientID string)] // see SetCredentialsRotatedHook
+	clientMetadataPaths  atomic.Pointer[clientMetadataPaths]                           // set once at startup; see SetClientMetadataDocumentPaths
+	hostedClientMetadata atomic.Pointer[func() string]                                 // see SetHostedClientMetadataDocumentURL
+	credentialsRotated   atomic.Pointer[func(ctx context.Context, mcpClientID string)] // see SetCredentialsRotatedHook
 
 	// userTokens caches per-user access-token lookups keyed by
 	// (auth mode, identity, mcp client). It owns its own locking and must
@@ -103,26 +108,39 @@ type OAuth2Provider struct {
 	onTokenWritten atomic.Pointer[func(ctx context.Context, tokenID string)]
 
 	// resourceEndpoints caches discovered upstream token endpoints for
-	// id_jag token-exchange clients, keyed by MCP client ID (one entry each).
-	resourceEndpoints sync.Map
+	// id_jag token-exchange clients, keyed by MCP client ID (one entry each):
+	// state of the MCP client kind, so deleting a client drops its entry, and
+	// expiring after resourceEndpointTTL.
+	resourceEndpoints *livestore.Table[string, *resourceEndpoint]
 
 	// idjagGrants holds the ID-JAG last issued per (user, MCP client) for
 	// re-presentation until it expires; bounded like userTokens. See idjagGrant.
 	idjagGrants *idjagGrantCache
 }
 
-// NewOAuth2Provider creates a new OAuth provider instance
-func NewOAuth2Provider(configStore configstore.ConfigStore, logger schemas.Logger) *OAuth2Provider {
+// NewOAuth2Provider creates an OAuth provider, with its token and ID-JAG caches in live, which is
+// required.
+func NewOAuth2Provider(configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*OAuth2Provider, error) {
+	if live == nil {
+		return nil, fmt.Errorf("oauth2: %w", livestore.ErrNoLiveStore)
+	}
 	if logger == nil {
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	}
 	SetLogger(logger)
-	return &OAuth2Provider{
-		configStore:    configStore,
-		retryBaseDelay: time.Second,
-		userTokens:     newUserTokenCache(defaultUserTokenCacheCapacity),
-		idjagGrants:    newIDJAGGrantCache(defaultUserTokenCacheCapacity),
+	tokens, err := newUserTokenCache(live)
+	if err != nil {
+		return nil, err
 	}
+	grants, err := newIDJAGGrantCache(live)
+	if err != nil {
+		return nil, err
+	}
+	endpoints, err := live.RegisterState[resourceEndpoint](context.Background(), resourceEndpointsTable, livestore.KindMCPClient, livestore.WithTTL(resourceEndpointTTL))
+	if err != nil {
+		return nil, err
+	}
+	return &OAuth2Provider{configStore: configStore, retryBaseDelay: time.Second, userTokens: tokens, idjagGrants: grants, resourceEndpoints: endpoints}, nil
 }
 
 // SetTempTokenService installs the temp-token service used by
@@ -199,6 +217,21 @@ func (p *OAuth2Provider) GetAccessToken(ctx context.Context, oauthConfigID strin
 	return p.resolveAccessToken(ctx, token)
 }
 
+// markUnrenewableNeedsReauth marks an expired credential the provider gave no refresh token for
+// as needs_reauth, as a rejected refresh is, so the registry asks for re-authorization instead of
+// reporting a transient failure. Returns the expired error either way.
+func (p *OAuth2Provider) markUnrenewableNeedsReauth(token *tables.TableMCPOauthToken) error {
+	statusCtx, cancel := context.WithTimeout(context.Background(), terminalStatusUpdateTimeout)
+	defer cancel()
+	marked, err := p.configStore.MarkOauthTokenNeedsReauthIfUnrenewable(statusCtx, token.ID, unrenewableTokenReason)
+	if err != nil {
+		logger.Warn("failed to mark an expired oauth token with no refresh token as needs_reauth: token_id=%s err=%v", token.ID, err)
+	} else if marked {
+		p.tokenWritten(statusCtx, token.ID)
+	}
+	return fmt.Errorf("token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
+}
+
 // resolveAccessToken takes an already-loaded MCP OAuth token row, refreshes
 // it if needed, and returns a usable access token. Factored out of
 // GetAccessToken so GetAdminAccessToken (same status/refresh/expiry/sanitize
@@ -230,6 +263,9 @@ func (p *OAuth2Provider) resolveAccessToken(ctx context.Context, token *tables.T
 		}
 	}
 	if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+		if strings.TrimSpace(token.RefreshToken) == "" && !isExchangeBackedTokenRow(token) {
+			return "", p.markUnrenewableNeedsReauth(token)
+		}
 		return "", fmt.Errorf("token expired and no refresh token is available; re-authorization required: %w", schemas.ErrOAuth2TokenExpired)
 	}
 
@@ -316,6 +352,9 @@ func (p *OAuth2Provider) refreshAccessTokenLocked(ctx context.Context, tokenID s
 	}
 
 	if strings.TrimSpace(token.RefreshToken) == "" {
+		if token.ExpiresAt != nil && time.Now().After(*token.ExpiresAt) {
+			return p.markUnrenewableNeedsReauth(token)
+		}
 		return fmt.Errorf("no refresh token available")
 	}
 
@@ -535,8 +574,11 @@ func (p *OAuth2Provider) RevokeToken(ctx context.Context, oauthConfigID string) 
 	defer p.mu.Unlock()
 
 	oauthConfig, err := p.configStore.GetOauthConfigByID(ctx, oauthConfigID)
-	if err != nil || oauthConfig == nil {
-		return fmt.Errorf("oauth config not found: %w", err)
+	if err != nil {
+		return fmt.Errorf("failed to load oauth config: %w", err)
+	}
+	if oauthConfig == nil {
+		return fmt.Errorf("oauth config not found")
 	}
 
 	token, err := p.configStore.GetSharedOauthTokenByConfigID(ctx, oauthConfigID)
@@ -702,21 +744,21 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 
 		metadata, err := DiscoverOAuthMetadata(ctx, config.ServerURL)
 		if err != nil {
-			return nil, fmt.Errorf("OAuth discovery failed: %w. Please provide authorize_url, token_url, and registration_url manually", err)
+			return nil, fmt.Errorf("%w: %w. Please provide authorize_url, token_url, and registration_url manually", ErrOAuthDiscoveryFailed, err)
 		}
 
 		// Use discovered values only for missing fields (prefer user-provided values)
 		if authorizeURL == "" {
 			authorizeURL = metadata.AuthorizationURL
 			if authorizeURL == "" {
-				return nil, fmt.Errorf("authorize_url could not be discovered. Please provide it manually")
+				return nil, fmt.Errorf("%w: authorize_url could not be discovered. Please provide it manually", ErrOAuthDiscoveryFailed)
 			}
 			logger.Debug("Discovered authorize_url", "url", authorizeURL)
 		}
 		if tokenURL == "" {
 			tokenURL = metadata.TokenURL
 			if tokenURL == "" {
-				return nil, fmt.Errorf("token_url could not be discovered. Please provide it manually")
+				return nil, fmt.Errorf("%w: token_url could not be discovered. Please provide it manually", ErrOAuthDiscoveryFailed)
 			}
 			logger.Debug("Discovered token_url", "url", tokenURL)
 		}
@@ -762,9 +804,11 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 	supportsClientMetadataDocument := config.UseClientMetadataDocument || (discovered != nil && discovered.ClientIDMetadataDocumentSupported)
 
 	// Prefer CIMD over DCR (deprecated in 2026-07-28).
+	clientMetadataDocument := false
 	if documentID := clientMetadataDocumentID(config.ClientMetadataURL, supportsClientMetadataDocument); !clientID.IsSet() && documentID != "" {
 		clientID = &schemas.SecretVar{Val: documentID, SecretType: schemas.SecretTypePlainText}
 		clientSecret = nil // a public client: its document declares token_endpoint_auth_method none
+		clientMetadataDocument = true
 		logger.Debug("Using Bifrost's Client ID Metadata Document as client_id: %s", documentID)
 	}
 
@@ -822,7 +866,8 @@ func (p *OAuth2Provider) InitiateOAuthFlow(ctx context.Context, config *schemas.
 		ServerURL:       config.ServerURL,
 		UseDiscovery:    config.UseDiscovery,
 
-		DynamicallyRegistered: dynamicallyRegistered,
+		DynamicallyRegistered:  dynamicallyRegistered,
+		ClientMetadataDocument: clientMetadataDocument,
 	}
 	if discovered != nil {
 		oauthConfigRecord.Issuer, oauthConfigRecord.IssParameterSupported = discovered.Issuer, discovered.IssParameterSupported
@@ -1447,7 +1492,7 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 	var lastErr error
 
 	for attempt := range maxTokenRetries {
-		req, err := http.NewRequestWithContext(ctx, "POST", tokenURL, strings.NewReader(data.Encode()))
+		req, err := http.NewRequestWithContext(requestContext(ctx), "POST", tokenURL, strings.NewReader(data.Encode()))
 		if err != nil {
 			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
@@ -1745,7 +1790,11 @@ var (
 
 	// ErrClientMetadataDocumentUnavailable means use_client_metadata_document was set but Bifrost's
 	// document is not at an address an authorization server can fetch (public HTTPS, not loopback).
-	ErrClientMetadataDocumentUnavailable = errors.New("the client metadata document needs Bifrost on a public HTTPS address: set the MCP external URL")
+	ErrClientMetadataDocumentUnavailable = errors.New("the client metadata document needs Bifrost on a public HTTPS address: set the MCP external URL, or host the document yourself with the client metadata document URL")
+
+	// ErrOAuthDiscoveryFailed means the authorization endpoints could not be discovered from the MCP
+	// server, so the caller has to provide them in the OAuth config.
+	ErrOAuthDiscoveryFailed = errors.New("OAuth discovery failed")
 )
 
 // ReregisterDynamicClient obtains a fresh client_id (and secret, if the
@@ -1840,16 +1889,18 @@ func (p *OAuth2Provider) ReregisterDynamicClient(ctx context.Context, oauthConfi
 }
 
 // CompleteUserOAuthFlow handles the OAuth callback for a per-user flow.
-// It looks up the session by state, exchanges code for tokens, and returns a session token.
-func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string, code string) (string, error) {
+// It looks up the session by state, exchanges code for tokens, stores them, and
+// returns the caller and MCP client the token was stored for, as the flow row
+// recorded them.
+func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string, code string) (*schemas.UserOAuthCompletion, error) {
 	// Atomically claim session by state to prevent concurrent callback races
 	session, err := p.configStore.ClaimOauthUserSessionByState(ctx, state)
 	if err != nil {
-		return "", fmt.Errorf("failed to claim per-user oauth session: %w", err)
+		return nil, fmt.Errorf("failed to claim per-user oauth session: %w", err)
 	}
 	if session == nil {
 		// State not found or already claimed — not a per-user session
-		return "", schemas.ErrOAuth2NotPerUserSession
+		return nil, schemas.ErrOAuth2NotPerUserSession
 	}
 
 	// Check expiry. Flow rows are deleted on every terminal transition
@@ -1858,7 +1909,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	// or already completed" — no audit trail to preserve here.
 	if time.Now().After(session.ExpiresAt) {
 		p.cleanupFlow(ctx, session.ID)
-		return "", fmt.Errorf("per-user oauth flow expired")
+		return nil, fmt.Errorf("per-user oauth flow expired")
 	}
 
 	// Load template OAuth config for token_url, client_id, etc. Split the
@@ -1868,15 +1919,15 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	templateConfig, err := p.configStore.GetOauthConfigByID(ctx, session.OauthConfigID)
 	if err != nil {
 		p.cleanupFlow(ctx, session.ID)
-		return "", fmt.Errorf("failed to load template oauth config: %w", err)
+		return nil, fmt.Errorf("failed to load template oauth config: %w", err)
 	}
 	if templateConfig == nil {
 		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
-		return "", schemas.ErrOAuth2ConfigNotFound
+		return nil, schemas.ErrOAuth2ConfigNotFound
 	}
 	if err := checkFlowAuthorizationServer(session, templateConfig); err != nil {
 		p.cleanupFlow(ctx, session.ID)
-		return "", err
+		return nil, err
 	}
 	// Exchange code for tokens with PKCE verifier
 	// Use the redirect URI stored in the session (same one used in authorize step)
@@ -1898,7 +1949,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 	)
 	if err != nil {
 		p.cleanupFlow(ctx, session.ID)
-		return "", fmt.Errorf("per-user token exchange failed: %w", err)
+		return nil, fmt.Errorf("per-user token exchange failed: %w", err)
 	}
 
 	// SessionID is carried from the flow row as-is: populated for session-mode
@@ -1926,13 +1977,13 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		tokenUserID = session.UserID
 		if tokenUserID == nil || *tokenUserID == "" {
 			p.cleanupFlow(ctx, session.ID)
-			return "", fmt.Errorf("user-mode oauth flow has no user_id at completion")
+			return nil, fmt.Errorf("user-mode oauth flow has no user_id at completion")
 		}
 	case schemas.MCPAuthModeVK:
 		tokenVKID = session.VirtualKeyID
 		if tokenVKID == nil || *tokenVKID == "" {
 			p.cleanupFlow(ctx, session.ID)
-			return "", fmt.Errorf("vk-mode oauth flow has no virtual_key_id at completion")
+			return nil, fmt.Errorf("vk-mode oauth flow has no virtual_key_id at completion")
 		}
 	case schemas.MCPAuthModeSession:
 		// Both identity columns left nil; row is keyed by session_id.
@@ -1940,7 +1991,7 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		// Bogus flow_mode on the row — drop it so a fresh flow can start
 		// instead of leaving the row stuck in 'claiming' forever.
 		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
-		return "", fmt.Errorf("invalid flow mode on session: %s", session.ID)
+		return nil, fmt.Errorf("invalid flow mode on session: %s", session.ID)
 	}
 
 	// Create per-user OAuth token record
@@ -1964,13 +2015,20 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 		AuthMode:      string(flowMode),
 		Status:        "active",
 	}
-	if err := p.configStore.CreateOauthToken(ctx, tokenRecord); err != nil {
+	// The token is stored only while the flow row still exists, in the same
+	// write that consumes it: a revoke that ran during the code exchange has
+	// deleted the row, and must not be undone by this completion.
+	if err := p.configStore.CompleteOauthUserSession(ctx, session.ID, tokenRecord); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			p.cleanupFlow(ctx, session.ID)
+			return nil, fmt.Errorf("per-user oauth flow was revoked or expired before it completed")
+		}
 		// The flow row has already been claimed and the auth code has been
 		// exchanged; leaving the row in 'claiming' state would block the
 		// next initiation for this binding indefinitely. Drop it so the
 		// caller can restart cleanly.
 		_ = p.configStore.DeleteOauthUserSession(ctx, session.ID)
-		return "", fmt.Errorf("failed to create per-user oauth token: %w", err)
+		return nil, fmt.Errorf("failed to create per-user oauth token: %w", err)
 	}
 	// CreateOauthToken upserts by binding and rewrites tokenRecord.ID to the
 	// reused row's ID when one existed, so this evicts exactly the row that
@@ -1987,7 +2045,14 @@ func (p *OAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string
 
 	logger.Debug("Per-user OAuth flow completed: session_id=%s, mcp_client_id=%s", session.ID, session.MCPClientID)
 
-	return sessionID, nil
+	identity := sessionID
+	switch flowMode {
+	case schemas.MCPAuthModeUser:
+		identity = *tokenUserID
+	case schemas.MCPAuthModeVK:
+		identity = *tokenVKID
+	}
+	return &schemas.UserOAuthCompletion{AuthMode: flowMode, Identity: identity, MCPClientID: session.MCPClientID}, nil
 }
 
 // GetUserAccessTokenByMode retrieves the upstream access token using exactly
@@ -2078,6 +2143,42 @@ func (p *OAuth2Provider) SetClientMetadataDocumentPaths(callbackPath, documentPa
 
 type clientMetadataPaths struct{ callback, document string }
 
+// SetHostedClientMetadataDocumentURL installs hostedURL, which returns where the admin hosts Bifrost's Client
+// ID Metadata Document, or "" when it is served under Bifrost's base URL. nil removes it.
+func (p *OAuth2Provider) SetHostedClientMetadataDocumentURL(hostedURL func() string) {
+	if p == nil {
+		return
+	}
+	if hostedURL == nil {
+		p.hostedClientMetadata.Store(nil)
+		return
+	}
+	p.hostedClientMetadata.Store(&hostedURL)
+}
+
+// ClientMetadataDocumentURL returns Bifrost's Client ID Metadata Document URL for a sign-in presenting
+// redirectURI: the hosted one when configured, else the one served under the callback's base.
+func (p *OAuth2Provider) ClientMetadataDocumentURL(redirectURI string) string {
+	if p == nil {
+		return ""
+	}
+	return p.currentClientMetadataDocument(p.clientMetadataPaths.Load(), redirectURI)
+}
+
+// currentClientMetadataDocument returns the document a sign-in presenting redirectURI should use: the hosted
+// one when configured, else the one served under the callback's base, or "" when neither applies.
+func (p *OAuth2Provider) currentClientMetadataDocument(paths *clientMetadataPaths, redirectURI string) string {
+	if hosted := p.hostedClientMetadata.Load(); hosted != nil {
+		if url := (*hosted)(); url != "" {
+			return url
+		}
+	}
+	if paths == nil || !strings.HasSuffix(redirectURI, paths.callback) {
+		return ""
+	}
+	return strings.TrimSuffix(redirectURI, paths.callback) + paths.document
+}
+
 // SetCredentialsRotatedHook installs hook, run after the provider itself rotates an MCP client's OAuth
 // credentials (a metadata-document client_id following Bifrost's address, or a sign-in moving the
 // config to a new authorization server), so the caller can drop that client's cached tokens and
@@ -2093,23 +2194,25 @@ func (p *OAuth2Provider) SetCredentialsRotatedHook(hook func(ctx context.Context
 	p.credentialsRotated.Store(&hook)
 }
 
-// followClientMetadataDocument moves a metadata-document client_id to the document served under the base
-// the sign-in presents its callback on, so the authorization server fetches a document that lists that
-// callback. Tokens issued to the old client_id are marked to sign in again: they cannot be refreshed
-// under the new one.
+// followClientMetadataDocument moves a metadata-document client_id to Bifrost's current document: the hosted
+// one when configured, else the one served under the base the sign-in presents its callback on, so the
+// authorization server fetches a document that lists that callback. Tokens issued to the old client_id are
+// marked to sign in again: they cannot be refreshed under the new one.
 func (p *OAuth2Provider) followClientMetadataDocument(ctx context.Context, config *tables.TableOauthConfig, mcpClientID, redirectURI string) (*tables.TableOauthConfig, error) {
 	paths := p.clientMetadataPaths.Load()
 	clientID := config.GetResolvedClientID()
-	if paths == nil || !strings.HasSuffix(clientID, paths.document) || !strings.HasSuffix(redirectURI, paths.callback) {
+	// Only Bifrost's own document moves, so a document configured by hand is left alone. Configs stored
+	// before the marker are recognised by the document sitting under the base of their stored callback.
+	ours := config.ClientMetadataDocument || (paths != nil && strings.HasSuffix(clientID, paths.document) &&
+		strings.HasSuffix(config.RedirectURI, paths.callback) &&
+		strings.TrimSuffix(clientID, paths.document) == strings.TrimSuffix(config.RedirectURI, paths.callback))
+	if !ours {
 		return config, nil
 	}
-	// Only Bifrost's own document moves: it sits under the base of the callback stored with the config,
-	// so a document on another host, configured by hand, is left alone.
-	if strings.TrimSuffix(clientID, paths.document) != strings.TrimSuffix(config.RedirectURI, paths.callback) {
-		return config, nil
-	}
-	current := strings.TrimSuffix(redirectURI, paths.callback) + paths.document
-	// A base the authorization server cannot fetch (http, loopback) keeps the stored document.
+	current := p.currentClientMetadataDocument(paths, redirectURI)
+	// A base the authorization server cannot fetch (http, loopback) keeps the stored document. An unmoved
+	// hosted document keeps its stored callback too: rewriting it would sign out tokens the client_id still
+	// owns, and sign-ins use the callback on their flow.
 	if current == clientID || clientMetadataDocumentID(current, true) == "" {
 		return config, nil
 	}
@@ -2125,9 +2228,10 @@ func (p *OAuth2Provider) followClientMetadataDocument(ctx context.Context, confi
 		TokenURL:     config.TokenURL,
 		Resource:     config.Resource,
 		Scopes:       scopes,
-		RedirectURI:  redirectURI, // the stored callback moves with the document, so the next move is ours too
+		RedirectURI:  redirectURI, // the stored callback moves with the document
 
-		ExpectedClientID: &clientID, // a sign-in that loaded the config before another moved it must not move it again
+		ClientMetadataDocument: true,
+		ExpectedClientID:       &clientID, // a sign-in that loaded the config before another moved it must not move it again
 	}
 	if config.RegistrationURL != nil {
 		fields.RegistrationURL = *config.RegistrationURL

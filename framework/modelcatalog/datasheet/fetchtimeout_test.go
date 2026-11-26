@@ -43,7 +43,7 @@ func TestSyncFallsBackToDBWhenURLHangs(t *testing.T) {
 
 	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	defer hang.Close()
-	store := New(cs, logger, Config{URL: hang.URL, ModelParametersURL: hang.URL})
+	store := newForTest(t, cs, logger, Config{URL: hang.URL, ModelParametersURL: hang.URL})
 
 	// Mirrors a caller-level deadline like force sync's; the fetch must not consume all of it.
 	syncCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
@@ -65,7 +65,7 @@ func TestSyncErrorKeepsURLCause(t *testing.T) {
 
 	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }))
 	defer hang.Close()
-	store := New(nil, bifrost.NewDefaultLogger(schemas.LogLevelError), Config{URL: hang.URL})
+	store := newForTest(t, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), Config{URL: hang.URL})
 
 	err := store.SyncFromURL(context.Background())
 	if err == nil {
@@ -85,7 +85,7 @@ func TestLoadFromURLRefusesRedirectToLinkLocal(t *testing.T) {
 		http.Redirect(w, r, "http://169.254.169.254/latest/meta-data/", http.StatusFound)
 	}))
 	defer redirect.Close()
-	store := New(nil, bifrost.NewDefaultLogger(schemas.LogLevelError), Config{URL: redirect.URL, ModelParametersURL: redirect.URL})
+	store := newForTest(t, nil, bifrost.NewDefaultLogger(schemas.LogLevelError), Config{URL: redirect.URL, ModelParametersURL: redirect.URL})
 
 	_, err := store.loadPricingFromURL(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "link-local") {

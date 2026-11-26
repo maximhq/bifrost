@@ -424,3 +424,49 @@ func TestTextStream_ContentAfterToolStartNotEmittedPastStop(t *testing.T) {
 		t.Fatalf("block index misses: %v", misses)
 	}
 }
+
+// TestReasoningStream_ReasoningTextDeltaBecomesThinkingDelta pins that raw
+// response.reasoning_text.delta frames (vLLM, gpt-oss) reach the Anthropic
+// surface as thinking_delta, the same as reasoning_summary_text.delta. Before the
+// fix the thinking block opened empty and every reasoning token was dropped.
+func TestReasoningStream_ReasoningTextDeltaBecomesThinkingDelta(t *testing.T) {
+	t.Parallel()
+
+	reasoningID := "rs_vllm"
+	reasoningType := schemas.ResponsesMessageTypeReasoning
+	item := &schemas.ResponsesMessage{
+		ID:                 &reasoningID,
+		Type:               &reasoningType,
+		ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+	}
+	extra := schemas.BifrostResponseExtraFields{Provider: schemas.VLLM}
+	frames := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0), Item: item, ExtraFields: extra},
+		{Type: schemas.ResponsesStreamResponseTypeReasoningTextDelta, OutputIndex: schemas.Ptr(0), ContentIndex: schemas.Ptr(0), ItemID: &reasoningID, Delta: schemas.Ptr("391 = 17 * 23, "), ExtraFields: extra},
+		{Type: schemas.ResponsesStreamResponseTypeReasoningTextDelta, OutputIndex: schemas.Ptr(0), ContentIndex: schemas.Ptr(0), ItemID: &reasoningID, Delta: schemas.Ptr("so not prime."), ExtraFields: extra},
+		{Type: schemas.ResponsesStreamResponseTypeReasoningTextDone, OutputIndex: schemas.Ptr(0), ContentIndex: schemas.Ptr(0), ItemID: &reasoningID, Text: schemas.Ptr("391 = 17 * 23, so not prime."), ExtraFields: extra},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: schemas.Ptr(0), Item: item, ExtraFields: extra},
+	}
+
+	thinking := ""
+	thinkingIndex := -1
+	for _, event := range driveAnthropicEgress(t, frames) {
+		if event.Type == AnthropicStreamEventTypeContentBlockStart && event.ContentBlock != nil &&
+			event.ContentBlock.Type == AnthropicContentBlockTypeThinking {
+			thinkingIndex = *event.Index
+		}
+		if event.Type == AnthropicStreamEventTypeContentBlockDelta && event.Delta != nil &&
+			event.Delta.Type == AnthropicStreamDeltaTypeThinking && event.Delta.Thinking != nil {
+			if event.Index == nil || *event.Index != thinkingIndex {
+				t.Fatalf("thinking_delta on index %v, thinking block opened at %d", event.Index, thinkingIndex)
+			}
+			thinking += *event.Delta.Thinking
+		}
+	}
+	if thinkingIndex < 0 {
+		t.Fatal("no thinking content_block_start emitted")
+	}
+	if thinking != "391 = 17 * 23, so not prime." {
+		t.Fatalf("thinking_delta text = %q, want the full reasoning_text", thinking)
+	}
+}

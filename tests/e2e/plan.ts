@@ -10,6 +10,8 @@ export interface PlannedWorker {
   name: string;
   port: number;
   files: string[];
+  /** URL prefix the worker's server is mounted under (--base-path); unset at the domain root. */
+  basePath?: string;
 }
 
 export const E2E_ROOT = __dirname;

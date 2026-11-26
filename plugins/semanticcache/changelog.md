@@ -1,1 +1,2 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0
+- fix: a follow-up turn no longer matches an earlier turn of the same conversation; earlier messages must match exactly and only the newest message is compared by meaning

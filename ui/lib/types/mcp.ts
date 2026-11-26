@@ -237,11 +237,15 @@ export interface OAuthConfigUpdate {
 	resource?: string;
 }
 
+// Code mode on a client's own /mcp/<slug>; "inherit" follows is_code_mode_client.
+export type MCPServerTypeOnSlug = "inherit" | "enabled" | "disabled";
+
 export interface MCPClientConfig {
 	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
 	endpoint_slug?: string; // URL-safe, immutable after creation; served at /mcp/<slug>
 	is_code_mode_client?: boolean;
+	server_type_on_slug?: MCPServerTypeOnSlug;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
@@ -283,6 +287,10 @@ export interface MCPClientConfig {
 	// admin credential check, so every connection to it must resolve to a
 	// public address. Never cleared once set.
 	require_public_target?: boolean;
+	// Per-user auth types only (not openapi): each caller's tools are
+	// discovered with their own credential, and the server keeps no admin
+	// credential or tool list of its own.
+	per_user_discovery?: boolean;
 	tool_pricing?: Record<string, number>;
 	max_protocol_version?: string; // Per-client cap on the MCP protocol version ("" = use global, "auto" = newest)
 	// Per-client override (0 = use global). API returns NANOSECONDS
@@ -400,12 +408,17 @@ export interface MCPClient {
 	// types without one (none, headers) and for servers that have not
 	// completed their one-time authorization yet.
 	credential?: MCPClientCredential;
+	// Set for a server with per_user_discovery on, whose `tools` are the names
+	// seen in its callers' discoveries: how many of those discoveries include
+	// each. Absent until a caller holds one.
+	callers_by_tool?: Record<string, number>;
 }
 
 export interface CreateMCPClientRequest {
 	name: string;
 	endpoint_slug?: string; // Optional on create (derived from name when blank); immutable after
 	is_code_mode_client?: boolean;
+	server_type_on_slug?: MCPServerTypeOnSlug;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
@@ -437,6 +450,8 @@ export interface CreateMCPClientRequest {
 	max_protocol_version?: string; // omitted or "" = follow the global setting, "auto" = newest supported
 	// Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
 	allowed_extra_headers?: string[];
+	// Per-user auth types only (not openapi). See MCPClientConfig's field doc.
+	per_user_discovery?: boolean;
 }
 
 export interface OAuthFlowResponse {
@@ -471,6 +486,7 @@ export interface MCPVKConfig {
 export interface UpdateMCPClientRequest {
 	name?: string;
 	is_code_mode_client?: boolean;
+	server_type_on_slug?: MCPServerTypeOnSlug;
 	headers?: Record<string, SecretVar>;
 	// Set to a new list (including empty) to replace per-user-headers schema.
 	// Omitted = preserve existing. When this list changes against the stored
@@ -487,6 +503,10 @@ export interface UpdateMCPClientRequest {
 	// persistent connection now, switching to false closes it. See
 	// MCPClientConfig's field doc for the full contract.
 	needs_session_stickiness?: boolean;
+	// Per-user auth types only (not openapi). Turning it on deletes the admin
+	// credential and tool list the server keeps; turning it off deletes every
+	// caller's discovery, and the server needs an admin credential again.
+	per_user_discovery?: boolean;
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
 	max_protocol_version?: string; // "" = use global, "auto" = newest

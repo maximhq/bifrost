@@ -1,32 +1,46 @@
 import { addMilliseconds } from "date-fns";
+import type { TFunction } from "i18next";
 
-import type { MCPToolLogEntry } from "@/lib/types/logs";
+import type { BifrostError, MCPToolLogEntry } from "@/lib/types/logs";
 
 // Policy approval confirms permission, never successful execution.
-export function getMCPLogPresentation(log: MCPToolLogEntry) {
+export function getMCPLogPresentation(log: MCPToolLogEntry, t?: TFunction<"observability">) {
 	const policy = log.metadata?.inspection_phase === "pre_execution";
 	const approved = policy && log.decision === "allow";
 	const blocked = policy && log.decision === "deny";
+	const retryLater = log.status === "input_required" && log.metadata?.retry_later === true;
 	const label = approved
-		? "Policy approved"
+		? (t?.("mcpLogs.presentation.policyApproved") ?? "Policy approved")
 		: blocked
-			? "Policy blocked"
+			? (t?.("mcpLogs.presentation.policyBlocked") ?? "Policy blocked")
 			: log.status === "unknown"
-				? "Observed"
+				? (t?.("mcpLogs.presentation.observed") ?? "Observed")
 				: log.status === "success"
-					? "Succeeded"
+					? (t?.("mcpLogs.presentation.succeeded") ?? "Succeeded")
 					: log.status === "error"
-						? "Failed"
-						: log.status === "cancelled"
-							? "Cancelled"
-							: "Processing";
-	const description = approved
-		? "Allowed before execution. No execution result is recorded in this entry."
+						? (t?.("mcpLogs.presentation.failed") ?? "Failed")
+						: retryLater
+							? (t?.("mcpLogs.presentation.retryLater") ?? "Retry later")
+							: log.status === "input_required"
+								? (t?.("mcpLogs.presentation.inputRequired") ?? "Needs input")
+								: log.status === "cancelled"
+									? (t?.("mcpLogs.presentation.cancelled") ?? "Cancelled")
+									: (t?.("mcpLogs.presentation.processing") ?? "Processing");
+	// An ordinary execution (succeeded, failed, cancelled, still running) has nothing to add to its
+	// status label, so it carries no description and the sheet and tooltips show none.
+	const description: string | undefined = approved
+		? (t?.("mcpLogs.presentation.approvedDescription") ?? "Allowed before execution. No execution result is recorded in this entry.")
 		: blocked
-			? "Blocked before execution."
+			? (t?.("mcpLogs.presentation.blockedDescription") ?? "Blocked before execution.")
 			: log.status === "unknown"
-				? "Tool activity was captured, but its execution outcome is not known."
-				: "Recorded tool execution outcome.";
+				? (t?.("mcpLogs.presentation.observedDescription") ?? "Tool activity was captured, but its execution outcome is not known.")
+				: retryLater
+					? (t?.("mcpLogs.presentation.retryLaterDescription") ??
+						"The MCP server asked the caller to retry later, without asking for input. The retry is a separate entry.")
+					: log.status === "input_required"
+						? (t?.("mcpLogs.presentation.inputRequiredDescription") ??
+							"The MCP server asked the caller for input before completing. The retry that answers it is a separate entry.")
+						: undefined;
 	const rawDuration = log.metadata?.inspection_duration_ms;
 	const duration = rawDuration == null || (typeof rawDuration === "string" && rawDuration.trim() === "") ? undefined : Number(rawDuration);
 	const inspectionDuration = duration != null && Number.isFinite(duration) && duration >= 0 ? duration : undefined;
@@ -37,14 +51,130 @@ export function getMCPLogPresentation(log: MCPToolLogEntry) {
 			? observed
 			: undefined;
 	const durationLabel = policy
-		? "Policy check"
+		? (t?.("mcpLogs.policyCheck") ?? "Policy check")
 		: log.latency == null && observedDuration != null
-			? "Observed round trip"
-			: "Execution time";
+			? (t?.("mcpLogs.observedRoundTrip") ?? "Observed round trip")
+			: (t?.("mcpLogs.executionTime") ?? "Execution time");
 	return { policy, approved, label, description, inspectionDuration, observedDuration, durationLabel };
 }
 
-export type MCPLogPillTone = "success" | "error" | "processing" | "approved" | "neutral";
+// The error card's message and Details text for a failed entry. The inner error goes under Details
+// only when it says something the message does not; extra_fields is never shown.
+export function getMCPLogError(errorDetails: BifrostError): { message?: string; details?: string } {
+	const message = errorDetails.error?.message || undefined;
+	const inner = errorDetails.error?.error;
+	if (inner == null || inner === "") return message ? { message } : {};
+	if (typeof inner !== "string") return { ...(message ? { message } : {}), details: JSON.stringify(inner, null, 2) };
+	if (!message) return { message: inner };
+	return inner.trim() === message.trim() ? { message } : { message, details: inner };
+}
+
+// Bifrost's own wrapping around a tool failure (core/mcp/toolmanager.go): the sheet already names
+// the tool and says it failed, so the card shows only what the upstream server said.
+const MCP_TOOL_ERROR_PREFIX = /^MCP tool call failed for [^:\n]+: /;
+const MCP_TOOL_ERROR_SENTINEL = /: mcp tool call (failed|timed out)$/;
+// Longer messages stay plain text, which bounds the JSON.parse work each render of the sheet does.
+const MAX_JSON_SCAN_LENGTH = 100_000;
+// Deeper JSON stays text: JSON.stringify recurses once per level, and the pretty-printed size grows
+// with the square of the depth.
+const MAX_JSON_DEPTH = 20;
+// A failed JSON.parse throws, which costs far more than the scan, so only this many are tried.
+const MAX_JSON_PARSE_ATTEMPTS = 50;
+
+// The upstream error text for the error card, with the first JSON object or array inside it pulled
+// out and pretty-printed. The copy button keeps the full stored message.
+export function splitMCPErrorMessage(message: string): { text: string; json?: string; textAfter?: string } {
+	const unwrapped = message.replace(MCP_TOOL_ERROR_PREFIX, "").replace(MCP_TOOL_ERROR_SENTINEL, "");
+	const found = unwrapped.length <= MAX_JSON_SCAN_LENGTH ? findEmbeddedJSON(unwrapped) : undefined;
+	if (!found) return { text: unwrapped };
+	const textAfter = unwrapped
+		.slice(found.end)
+		.replace(/^[\s:]+/, "")
+		.trimEnd();
+	return {
+		text: unwrapped.slice(0, found.start).trimEnd(),
+		json: found.json,
+		...(textAfter ? { textAfter } : {}),
+	};
+}
+
+// The first object or array in text that parses as JSON and holds something worth a block of its own,
+// pretty-printed. The text comes from the upstream MCP server, so its brackets are untrusted and the work
+// has to stay linear in its length: one pass pairs every bracket with a stack and records how deeply each
+// pair nests, and only the outermost pairs, which never overlap, are candidates. A candidate nested past
+// MAX_JSON_DEPTH, or whose first character cannot start JSON, is skipped without parsing, and the search
+// gives up after MAX_JSON_PARSE_ATTEMPTS parses that fail. Quotes count only inside brackets, where they
+// delimit JSON strings, and a closing bracket of the wrong kind drops the brackets still open.
+function findEmbeddedJSON(text: string): { start: number; end: number; json: string } | undefined {
+	const open: number[] = [];
+	// For each open bracket, the depth of the deepest pair closed inside it so far.
+	const innerDepth: number[] = [];
+	const pairs: Array<[start: number, close: number, depth: number]> = [];
+	let inString = false;
+	for (let i = 0; i < text.length; i++) {
+		const ch = text[i];
+		if (inString) {
+			if (ch === "\\") i++;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === "{" || ch === "[") {
+			open.push(i);
+			innerDepth.push(0);
+		} else if (ch === "}" || ch === "]") {
+			const start = open.pop();
+			if (start === undefined) continue;
+			const depth = (innerDepth.pop() ?? 0) + 1;
+			if (text[start] !== (ch === "}" ? "{" : "[")) {
+				open.length = 0;
+				innerDepth.length = 0;
+				continue;
+			}
+			pairs.push([start, i, depth]);
+			const top = innerDepth.length - 1;
+			if (top >= 0 && innerDepth[top] < depth) innerDepth[top] = depth;
+		} else if (ch === '"' && open.length > 0) {
+			inString = true;
+		}
+	}
+	// Pairs are recorded innermost first; ordered by where they open, a pair inside the last outermost
+	// one is skipped.
+	pairs.sort((a, b) => a[0] - b[0]);
+	let coveredUntil = -1;
+	let attempts = 0;
+	for (const [start, close, depth] of pairs) {
+		if (start <= coveredUntil) continue;
+		coveredUntil = close;
+		if (depth > MAX_JSON_DEPTH || !mayOpenJSON(text, start)) continue;
+		if (++attempts > MAX_JSON_PARSE_ATTEMPTS) return undefined;
+		try {
+			const value: unknown = JSON.parse(text.slice(start, close + 1));
+			if (isStructured(value)) return { start, end: close + 1, json: JSON.stringify(value, null, 2) };
+		} catch {
+			// Brackets that start like JSON but are not, such as "[2026-11-07 10:00]": keep scanning.
+		}
+	}
+	return undefined;
+}
+
+const JSON_WHITESPACE = " \t\n\r";
+const JSON_ARRAY_FIRST_CHARS = '"{[]-0123456789tfn';
+
+// Whether the bracket at start can open JSON at all, so "[WARN]" or "{a}" are skipped without the
+// exception a failed JSON.parse throws. The pair is balanced, so the scan stops at its closing bracket.
+function mayOpenJSON(text: string, start: number): boolean {
+	let i = start + 1;
+	while (JSON_WHITESPACE.includes(text[i])) i++;
+	return text[start] === "{" ? text[i] === '"' || text[i] === "}" : JSON_ARRAY_FIRST_CHARS.includes(text[i]);
+}
+
+// A non-empty object, or an array holding at least one, so "[1, 2]" or "{}" stay in the sentence.
+function isStructured(value: unknown): boolean {
+	if (Array.isArray(value)) return value.some((item) => isStructured(item));
+	return value !== null && typeof value === "object" && Object.keys(value).length > 0;
+}
+
+export type MCPLogPillTone = "success" | "error" | "processing" | "approved" | "input" | "neutral";
 
 // Maps the presentation label (policy outcome or execution status) onto a pill tone.
 export function getMCPLogPillTone(log: MCPToolLogEntry, presentation: ReturnType<typeof getMCPLogPresentation>): MCPLogPillTone {
@@ -55,6 +185,7 @@ export function getMCPLogPillTone(log: MCPToolLogEntry, presentation: ReturnType
 	if (log.status === "success") return "success";
 	if (log.status === "error") return "error";
 	if (log.status === "processing") return "processing";
+	if (log.status === "input_required") return "input";
 	return "neutral";
 }
 

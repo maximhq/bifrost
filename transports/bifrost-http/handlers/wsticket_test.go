@@ -9,12 +9,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 func TestSignedWSTicketValidatesAcrossStores(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	issuer := NewSignedWSTicketStore(key)
-	consumer := NewSignedWSTicketStore(key)
+	issuer := signedTicketsForTest(t, key)
+	consumer := signedTicketsForTest(t, key)
 
 	ticket, err := issuer.Issue("session-token")
 	if err != nil {
@@ -30,8 +32,8 @@ func TestSignedWSTicketValidatesAcrossStores(t *testing.T) {
 }
 
 func TestSignedWSTicketRejectsWrongKey(t *testing.T) {
-	issuer := NewSignedWSTicketStore([]byte("0123456789abcdef0123456789abcdef"))
-	consumer := NewSignedWSTicketStore([]byte("abcdef0123456789abcdef0123456789"))
+	issuer := signedTicketsForTest(t, []byte("0123456789abcdef0123456789abcdef"))
+	consumer := signedTicketsForTest(t, []byte("abcdef0123456789abcdef0123456789"))
 
 	ticket, err := issuer.Issue("session-token")
 	if err != nil {
@@ -45,7 +47,7 @@ func TestSignedWSTicketRejectsWrongKey(t *testing.T) {
 
 func TestSignedWSTicketRejectsExpiredTicket(t *testing.T) {
 	key := []byte("0123456789abcdef0123456789abcdef")
-	store := NewSignedWSTicketStore(key)
+	store := signedTicketsForTest(t, key)
 	ticket := buildSignedWSTicketForTest(t, store.signingKey, signedWSTicketPayload{
 		Version:      wsTicketVersion,
 		SessionToken: "session-token",
@@ -59,7 +61,7 @@ func TestSignedWSTicketRejectsExpiredTicket(t *testing.T) {
 }
 
 func TestSignedWSTicketRejectsMalformedTicket(t *testing.T) {
-	store := NewSignedWSTicketStore([]byte("0123456789abcdef0123456789abcdef"))
+	store := signedTicketsForTest(t, []byte("0123456789abcdef0123456789abcdef"))
 
 	for _, ticket := range []string{"", "missing-dot", "payload.", ".signature", "payload.not-base64"} {
 		if got := store.Consume(ticket); got != "" {
@@ -69,7 +71,7 @@ func TestSignedWSTicketRejectsMalformedTicket(t *testing.T) {
 }
 
 func TestSignedWSTicketRejectsTamperedTicket(t *testing.T) {
-	store := NewSignedWSTicketStore([]byte("0123456789abcdef0123456789abcdef"))
+	store := signedTicketsForTest(t, []byte("0123456789abcdef0123456789abcdef"))
 
 	ticket, err := store.Issue("session-token")
 	if err != nil {
@@ -87,7 +89,7 @@ func TestSignedWSTicketRejectsTamperedTicket(t *testing.T) {
 }
 
 func TestLegacyWSTicketRemainsSingleUse(t *testing.T) {
-	store := NewWSTicketStore()
+	store := ticketsForTest(t)
 	defer store.Stop()
 
 	ticket, err := store.Issue("session-token")
@@ -103,7 +105,7 @@ func TestLegacyWSTicketRemainsSingleUse(t *testing.T) {
 }
 
 func TestSignedWSTicketDoesNotExposeSessionToken(t *testing.T) {
-	store := NewSignedWSTicketStore([]byte("0123456789abcdef0123456789abcdef"))
+	store := signedTicketsForTest(t, []byte("0123456789abcdef0123456789abcdef"))
 
 	ticket, err := store.Issue("session-token")
 	if err != nil {
@@ -133,7 +135,7 @@ func buildSignedWSTicketForTest(t *testing.T, key []byte, payload signedWSTicket
 }
 
 func TestSignedWSTicketPayloadEncryptionRejectsShortPayload(t *testing.T) {
-	store := NewSignedWSTicketStore([]byte("0123456789abcdef0123456789abcdef"))
+	store := signedTicketsForTest(t, []byte("0123456789abcdef0123456789abcdef"))
 	encodedPayload := base64.RawURLEncoding.EncodeToString([]byte("short"))
 	mac := hmac.New(sha256.New, store.signingKey)
 	mac.Write([]byte(encodedPayload))
@@ -145,7 +147,7 @@ func TestSignedWSTicketPayloadEncryptionRejectsShortPayload(t *testing.T) {
 }
 
 func TestSignedWSTicketNonceIsHex(t *testing.T) {
-	store := NewSignedWSTicketStore([]byte("0123456789abcdef0123456789abcdef"))
+	store := signedTicketsForTest(t, []byte("0123456789abcdef0123456789abcdef"))
 
 	ticket, err := store.Issue("session-token")
 	if err != nil {
@@ -167,4 +169,26 @@ func TestSignedWSTicketNonceIsHex(t *testing.T) {
 	if _, err := hex.DecodeString(payload.Nonce); err != nil {
 		t.Fatalf("nonce is not hex: %v", err)
 	}
+}
+
+// ticketsForTest returns an unsigned ticket store over a new live store.
+func ticketsForTest(t *testing.T) *WSTicketStore {
+	t.Helper()
+	return signedTicketsForTest(t, nil)
+}
+
+// signedTicketsForTest returns a ticket store signing with key, unsigned when key is empty, over
+// a new live store.
+func signedTicketsForTest(t *testing.T, key []byte) *WSTicketStore {
+	t.Helper()
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatalf("live store: %v", err)
+	}
+	t.Cleanup(live.Close)
+	store, err := NewSignedWSTicketStore(live, key)
+	if err != nil {
+		t.Fatalf("ticket store: %v", err)
+	}
+	return store
 }

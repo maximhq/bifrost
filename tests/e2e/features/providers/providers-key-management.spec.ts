@@ -54,6 +54,27 @@ test.describe("Provider Key Management", () => {
     });
   });
 
+  test("should set and clear content logging for a key", async ({ providersPage }) => {
+    const keyData = createProviderKeyData({
+      name: `Content-Logging-Key-${Date.now()}`,
+      value: "sk-test-content-logging-key",
+      contentLogging: "disabled",
+    });
+    managementKeys.push(keyData.name);
+    await providersPage.addKey(keyData);
+
+    // The choice made on create is what the editor shows when the key is reopened.
+    expect(await providersPage.getKeyContentLogging(keyData.name)).toBe("disabled");
+
+    // Back to inherit: the key is saved whole with null, which must not read back as "off".
+    await providersPage.editKey(keyData.name, { contentLogging: "inherit" });
+    expect(await providersPage.getKeyContentLogging(keyData.name)).toBe("inherit");
+
+    // And the third state is a decision of its own, distinct from inherit.
+    await providersPage.editKey(keyData.name, { contentLogging: "enabled" });
+    expect(await providersPage.getKeyContentLogging(keyData.name)).toBe("enabled");
+  });
+
   test("should delete a key", async ({ providersPage }) => {
     // First add a key
     const keyData = createProviderKeyData({
@@ -179,13 +200,15 @@ test.describe("Provider Key Management", () => {
         await expect(page.getByTestId("apikey-sagemaker-access-key-input")).toHaveValue(/.+/);
         await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).toHaveValue(/.+/);
         await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).not.toHaveValue("e2e-sagemaker-secret-key-0001");
-        await page.keyboard.press("Escape");
+        await providersPage.keyCancelBtn.click();
+        await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
       } finally {
         if (await providersPage.keyExists(keyName, 2000)) {
           await providersPage.deleteKey(keyName);
         }
         if (createdProvider && (await providersPage.providerExists("sagemaker"))) {
-          await providersPage.deleteProvider("sagemaker");
+          await providersPage.deleteProvider("sagemaker", { skipToastWait: true });
+          await expect(providersPage.getProviderItem("sagemaker")).toHaveCount(0, { timeout: 5000 });
         }
       }
     });

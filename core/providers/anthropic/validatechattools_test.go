@@ -21,6 +21,7 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 	cases := []struct {
 		name        string
 		provider    schemas.ModelProvider
+		model       string // defaults to claude-opus-4-5
 		input       []schemas.ChatTool
 		wantKeep    int
 		wantDropped []string
@@ -33,19 +34,29 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 			wantKeep: 2,
 		},
 		{
-			name:     "bedrock keeps web_search + code_execution via Nova carve-out, matching the Responses-path validator",
+			name:     "bedrock keeps web_search + code_execution via Nova carve-out on nova 2, matching the Responses-path validator",
 			provider: schemas.Bedrock,
+			model:    "us.amazon.nova-2-lite-v1:0",
 			input: []schemas.ChatTool{
 				serverTool("web_search_20260209", "web_search"),
 				serverTool("code_execution_20250825", "code_execution"),
 			},
 			// WebSearch/CodeExecution are false for Bedrock, but WebSearchNova/
-			// CodeExecNova are true — ValidateResponsesToolsForProvider already ORs
-			// these in; the Chat path must match, or a Nova2 request loses the tool
-			// at validation time before it ever reaches the Nova-system-tool
-			// conversion in convertToolConfigFromFiltered.
+			// CodeExecNova are true for Nova 2 — the Chat path must match the
+			// Responses path, or a Nova2 request loses the tool at validation time
+			// before it reaches the Nova-system-tool conversion.
 			wantKeep:    2,
 			assertNotes: "Bedrock has WebSearch=false, WebSearchNova=true (nova_grounding); CodeExecution=false, CodeExecNova=true (nova_code_interpreter)",
+		},
+		{
+			name:     "bedrock claude drops web_search + code_execution (no Nova carve-out)",
+			provider: schemas.Bedrock,
+			input: []schemas.ChatTool{
+				serverTool("web_search_20250305", "web_search"),
+				serverTool("code_execution_20250825", "code_execution"),
+			},
+			wantKeep:    0,
+			wantDropped: []string{"web_search_20250305", "code_execution_20250825"},
 		},
 		{
 			name:     "bedrock drops web_fetch + mcp_toolset",
@@ -126,7 +137,11 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			keep, dropped := ValidateChatToolsForProvider(tc.input, schemas.ResolveModelCaps(tc.provider, "claude-opus-4-5"))
+			model := tc.model
+			if model == "" {
+				model = "claude-opus-4-5"
+			}
+			keep, dropped := ValidateChatToolsForProvider(tc.input, schemas.ResolveModelCaps(tc.provider, model))
 			if len(keep) != tc.wantKeep {
 				t.Errorf("keep count: got %d, want %d (%s)", len(keep), tc.wantKeep, tc.assertNotes)
 			}
@@ -140,6 +155,55 @@ func TestValidateChatToolsForProvider(t *testing.T) {
 				if dropped[i] != d {
 					t.Errorf("dropped[%d]: got %q, want %q", i, dropped[i], d)
 				}
+			}
+		})
+	}
+}
+
+// TestServerToolGatesHostFlagBoundsCatalog pins that a datasheet record can narrow a
+// host's web_search / code_execution support but never widen it past the host flag:
+// the catalog marks Claude on Bedrock supports_web_search, and Bedrock rejects
+// web_search_20250305 with 400. Nova 2 keeps its carve-out, and a record that says
+// false still drops the tool on a host that serves it.
+func TestServerToolGatesHostFlagBoundsCatalog(t *testing.T) {
+	yes, no := true, false
+	record := &schemas.ModelCapabilities{SupportsWebSearch: &yes, SupportsCodeExecution: &yes}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		return record
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	chatTools := []schemas.ChatTool{
+		{Type: schemas.ChatToolType("web_search_20250305"), Name: "web_search"},
+		{Type: schemas.ChatToolType("code_execution_20250825"), Name: "code_execution"},
+	}
+	responsesTools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeWebSearch},
+		{Type: schemas.ResponsesToolTypeCodeInterpreter},
+	}
+
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		record   *schemas.ModelCapabilities
+		wantKeep int
+	}{
+		{"bedrock claude drops both although the record says supported", schemas.Bedrock, "global.anthropic.claude-sonnet-4-6", record, 0},
+		{"bedrock mantle claude drops both although the record says supported", schemas.BedrockMantle, "anthropic.claude-sonnet-4-6", record, 0},
+		{"bedrock nova 2 keeps both through the carve-out", schemas.Bedrock, "us.amazon.nova-2-lite-v1:0", record, 2},
+		{"anthropic keeps both when the record agrees", schemas.Anthropic, "claude-sonnet-4-6", record, 2},
+		{"anthropic drops both when the record says unsupported", schemas.Anthropic, "claude-sonnet-4-6", &schemas.ModelCapabilities{SupportsWebSearch: &no, SupportsCodeExecution: &no}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			record = tc.record
+			caps := schemas.ResolveModelCaps(tc.provider, tc.model)
+			if keep, dropped := ValidateChatToolsForProvider(chatTools, caps); len(keep) != tc.wantKeep {
+				t.Errorf("chat: kept %d, want %d (dropped %v)", len(keep), tc.wantKeep, dropped)
+			}
+			if keep, dropped := ValidateResponsesToolsForProvider(responsesTools, caps); len(keep) != tc.wantKeep {
+				t.Errorf("responses: kept %d, want %d (dropped %v)", len(keep), tc.wantKeep, dropped)
 			}
 		})
 	}

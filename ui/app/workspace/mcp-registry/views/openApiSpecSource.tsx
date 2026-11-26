@@ -3,18 +3,23 @@ import { CodeEditor } from "@/components/ui/codeEditor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useGetCoreConfigQuery } from "@/lib/store";
 import { Info, Upload } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import {
 	detectSpecLanguage,
 	formatBytes,
-	isSpecTooLarge,
 	OPENAPI_AUTO_PARSE_DELAY_MS,
-	OPENAPI_MAX_SPEC_BYTES,
+	knownOpenAPIUploadLimit,
 	autoParseStep,
 	openAPIParseControls,
 	applyUploadedSpec,
 	readUploadedSpec,
+	serializedSpecBytes,
+	uploadOverLimit,
+	uploadSpecLimit,
+	type OpenAPIUploadLimit,
 	type UploadErrorState,
 	visibleUploadError,
 	type OpenAPISourceMode,
@@ -50,7 +55,6 @@ export interface OpenAPISpecSourceProps {
 }
 
 const ALL_SOURCE_MODES: OpenAPISourceMode[] = ["paste", "url", "upload"];
-const SOURCE_MODE_LABELS: Record<OpenAPISourceMode, string> = { paste: "Paste", url: "URL", upload: "Upload" };
 
 /**
  * The three ways to hand Bifrost an OpenAPI document: paste it, point at a URL,
@@ -81,9 +85,29 @@ export function OpenAPISpecSource({
 	modes = ALL_SOURCE_MODES,
 	urlHint,
 }: OpenAPISpecSourceProps) {
+	const { t } = useTranslation("mcp");
+	const sourceModeLabel = (m: OpenAPISourceMode) =>
+		m === "paste" ? t("openapi.source.tabPaste") : m === "upload" ? t("openapi.source.tabUpload") : "URL";
 	const fileInputRef = useRef<HTMLInputElement>(null);
+	// The server enforces the configured limits; this only spares a doomed upload. Until the config
+	// has loaded (or when the caller cannot read it) the limit is unknown and only the supported
+	// maximum is applied; a file over a cached limit is refused only after the config is re-read.
+	// The upload must fit both the spec limit and the request body limit the document travels in.
+	const { data: bifrostConfig, refetch: refetchConfig } = useGetCoreConfigQuery({ fromDB: true });
+	const uploadLimit = knownOpenAPIUploadLimit(bifrostConfig);
 	const sourceEmpty = mode === "url" ? !specUrl.trim() : !specText.trim();
-	const uploadTooLarge = mode === "upload" && specText && isSpecTooLarge(new TextEncoder().encode(specText).length);
+	// Encoding a large upload is not free, so measure it once per text change rather than on every
+	// render, and only for an upload: the other modes never show or check the size.
+	const specBytes = useMemo(() => (mode === "upload" ? new TextEncoder().encode(specText).length : 0), [mode, specText]);
+	const specSerializedBytes = useMemo(
+		() => (mode === "upload" && specText && uploadLimit?.bodyBytes != null ? serializedSpecBytes(specText) : 0),
+		[mode, specText, uploadLimit?.bodyBytes],
+	);
+	const uploadOver =
+		mode === "upload" && specText && uploadLimit !== null ? uploadOverLimit(specBytes, specSerializedBytes, uploadLimit) : null;
+	const uploadTooLarge = uploadOver !== null;
+	const bodyLimitMessage = (limit: OpenAPIUploadLimit) =>
+		t("openapi.source.fileTooLargeBodyCap", { size: formatBytes(limit.bodyBytes ?? 0) });
 
 	const [uploadError, setUploadError] = useState<UploadErrorState | null>(null);
 	// Bumped by every new file, source switch and text edit, so a slow read that
@@ -101,7 +125,17 @@ export function OpenAPISpecSource({
 	const handleFile = async (file: File | undefined) => {
 		if (!file) return;
 		const token = ++readToken.current;
-		const result = await readUploadedSpec(file);
+		let current = uploadLimit;
+		const limit = await uploadSpecLimit(file.size, uploadLimit?.bytes ?? null, async () => {
+			current = knownOpenAPIUploadLimit(await refetchConfig().unwrap());
+			return current?.bytes ?? null;
+		});
+		if (token !== readToken.current) return;
+		const result = await readUploadedSpec(
+			file,
+			limit,
+			current?.bodyBound && current.bytes === limit ? bodyLimitMessage(current) : undefined,
+		);
 		if (token !== readToken.current) return;
 		// A rejected file keeps the document already loaded.
 		const { accept, error } = applyUploadedSpec(fileName ?? "", result);
@@ -171,7 +205,7 @@ export function OpenAPISpecSource({
 				<TabsList data-testid="openapi-spec-source-tabs">
 					{modes.map((m) => (
 						<TabsTrigger key={m} value={m} data-testid={`openapi-spec-source-tab-${m}`} disabled={disabled}>
-							{SOURCE_MODE_LABELS[m]}
+							{sourceModeLabel(m)}
 						</TabsTrigger>
 					))}
 				</TabsList>
@@ -190,31 +224,27 @@ export function OpenAPISpecSource({
 							readonly={disabled}
 						/>
 					</div>
-					<p className="text-muted-foreground text-xs">
-						Paste the OpenAPI or Swagger document as JSON or YAML (2.0, 3.0, 3.1 and 3.2 are supported).
-					</p>
+					<p className="text-muted-foreground text-xs">{t("openapi.source.pasteHelp")}</p>
 				</TabsContent>
 
 				<TabsContent value="url" className="mt-2 space-y-2">
-					<div className="flex items-center gap-3">
-						<Label htmlFor="openapi-spec-url" className="shrink-0">
-							Spec URL
-						</Label>
-						<Input
-							id="openapi-spec-url"
-							className="min-w-0 flex-1"
-							data-testid="openapi-spec-url-input"
-							placeholder="https://api.example.com/openapi.json"
-							value={specUrl}
-							disabled={disabled}
-							onChange={(e) => onSpecUrlChange(e.target.value)}
-							aria-invalid={!!specUrlError}
-						/>
-						{controls.showButton && parseButton}
+					<div className="flex flex-col gap-2">
+						<Label htmlFor="openapi-spec-url">{t("openapi.source.specUrl")}</Label>
+						<div className="flex items-center gap-2">
+							<Input
+								id="openapi-spec-url"
+								className="min-w-0 flex-1"
+								data-testid="openapi-spec-url-input"
+								placeholder="https://api.example.com/openapi.json"
+								value={specUrl}
+								disabled={disabled}
+								onChange={(e) => onSpecUrlChange(e.target.value)}
+								aria-invalid={!!specUrlError}
+							/>
+							{controls.showButton && parseButton}
+						</div>
 					</div>
-					<p className="text-muted-foreground text-xs">
-						{urlHint ?? "Bifrost fetches the document once and stores it with the server; the URL is kept as its source."}
-					</p>
+					<p className="text-muted-foreground text-xs">{urlHint ?? t("openapi.source.urlHelp")}</p>
 				</TabsContent>
 
 				<TabsContent value="upload" className="mt-2 space-y-2">
@@ -228,7 +258,7 @@ export function OpenAPISpecSource({
 							data-testid="openapi-spec-upload-btn"
 						>
 							<Upload className="mr-2 h-4 w-4" />
-							Choose file
+							{t("openapi.source.chooseFile")}
 						</Button>
 						<input
 							ref={fileInputRef}
@@ -244,17 +274,24 @@ export function OpenAPISpecSource({
 						{fileName && (
 							<span className="text-muted-foreground font-mono text-xs" data-testid="openapi-spec-upload-filename">
 								{fileName}
-								{specText ? ` · ${formatBytes(new TextEncoder().encode(specText).length)}` : ""}
+								{specText ? ` · ${formatBytes(specBytes)}` : ""}
 							</span>
 						)}
 					</div>
 					{shownUploadError || uploadTooLarge ? (
 						<p className="text-destructive text-xs" data-testid="openapi-spec-upload-error">
-							{shownUploadError ?? `The file exceeds the ${formatBytes(OPENAPI_MAX_SPEC_BYTES)} limit for OpenAPI documents.`}
+							{shownUploadError ??
+								(uploadOver === "body" && uploadLimit
+									? bodyLimitMessage(uploadLimit)
+									: t("openapi.source.fileTooLarge", { size: formatBytes(uploadLimit?.specBytes ?? 0) }))}
 						</p>
 					) : (
 						<p className="text-muted-foreground text-xs">
-							JSON or YAML, up to {formatBytes(OPENAPI_MAX_SPEC_BYTES)}. The file is read in your browser and stored with the server.
+							{uploadLimit === null
+								? t("openapi.source.uploadHelpNoLimit")
+								: uploadLimit.bodyBound
+									? t("openapi.source.uploadHelpBodyCap", { size: formatBytes(uploadLimit.bytes) })
+									: t("openapi.source.uploadHelp", { size: formatBytes(uploadLimit.bytes) })}
 						</p>
 					)}
 				</TabsContent>
@@ -275,7 +312,7 @@ export function OpenAPISpecSource({
 				<div className="min-w-0 flex-1">
 					{controls.showPending && (
 						<p className="text-muted-foreground text-xs" data-testid="openapi-parse-pending">
-							Parsing the document…
+							{t("openapi.source.parsing")}
 						</p>
 					)}
 					{mode === "url" && isStale && !parseError && (
@@ -284,7 +321,7 @@ export function OpenAPISpecSource({
 							data-testid="openapi-spec-stale-notice"
 						>
 							<Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
-							<p>The URL or server name changed since the document was fetched. Fetch it again to refresh the operations below.</p>
+							<p>{t("openapi.source.staleNotice")}</p>
 						</div>
 					)}
 					{parseError && (

@@ -20,8 +20,8 @@
   },
   "overrides": {
     "fast-uri": "3.1.9",
-    "hono": "4.13.11",
-    "@hono/node-server": "2.0.10",
+    "hono": "4.13.16",
+    "@hono/node-server": "2.1.6",
     "zod": "$zod",
     "body-parser": "2.4.0"
   }

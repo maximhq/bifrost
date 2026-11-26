@@ -49,9 +49,9 @@ func newPluginForEndpointsWith(t testing.TB, modelConfigs []configstoreTables.Ta
 			cfg.RateLimits = append(cfg.RateLimits, *mc.RateLimit)
 		}
 	}
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, cfg, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, cfg, nil, nil)
 	require.NoError(t, err)
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	return plugin, store
@@ -127,6 +127,7 @@ func TestPreRelayHookGrants(t *testing.T) {
 	require.NotNil(t, short.Error.StatusCode)
 	assert.Equal(t, 403, *short.Error.StatusCode, "an ungranted endpoint is refused")
 	assert.Equal(t, string(DecisionRelayBlocked), *short.Error.Type)
+	assert.Equal(t, schemas.ErrorTypePolicyAccessDenied, short.Error.ExtraFields.ErrorType, "classified as the access denial it is")
 	assert.Equal(t, true, ctx.Value(governanceRejectedContextKey))
 
 	none, _ := newPluginForEndpoints(t)

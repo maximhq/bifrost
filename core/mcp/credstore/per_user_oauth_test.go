@@ -54,8 +54,8 @@ func (f *fakeOAuth2Provider) InitiateUserOAuthFlow(ctx context.Context, oauthCon
 	return &schemas.OAuth2FlowInitiation{AuthorizeURL: f.authorizeURL}, "flow-session-id", nil
 }
 
-func (f *fakeOAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string, code string) (string, error) {
-	return "", errors.New("not implemented")
+func (f *fakeOAuth2Provider) CompleteUserOAuthFlow(ctx context.Context, state string, code string) (*schemas.UserOAuthCompletion, error) {
+	return nil, errors.New("not implemented")
 }
 
 func (f *fakeOAuth2Provider) RefreshAccessToken(ctx context.Context, tokenID string) error {

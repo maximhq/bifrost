@@ -14,7 +14,7 @@ import (
 )
 
 // TestUpdateMCPClientDiscovery_TargetedColumnUpdate pins that UpdateMCPClientDiscovery
-// only ever touches discovered_tools_json/tool_name_mapping_json — unlike
+// only ever touches the discovery columns. Unlike
 // UpdateMCPClientConfig's full-row overwrite, a periodic tool-sync writer
 // using this method can never clobber an unrelated field a concurrent config
 // edit just wrote (e.g. Name).
@@ -32,16 +32,45 @@ func TestUpdateMCPClientDiscovery_TargetedColumnUpdate(t *testing.T) {
 	tools := map[string]schemas.ChatTool{
 		"echo": {Type: "function"},
 	}
-	mapping := map[string]string{"echo": "echo-server"}
 
-	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-tools-client", &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping}))
+	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-tools-client", &schemas.MCPDiscovery{Tools: tools}))
 
 	got, err := s.GetMCPClientByID(ctx, "mcp-tools-client")
 	require.NoError(t, err)
 	assert.Equal(t, tools, got.DiscoveredTools)
-	assert.Equal(t, mapping, got.DiscoveredToolNameMapping)
 	// Untouched column proves this was a targeted update, not a full-row one.
 	assert.Equal(t, "original_name", got.Name)
+}
+
+// TestMCPClientWrites_LeaveStoredToolNameMappingInPlace pins that tool_name_mapping_json is no
+// longer written: a row that already holds a value keeps it through a discovery update and a full
+// config update, and is never cleared.
+func TestMCPClientWrites_LeaveStoredToolNameMappingInPlace(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "mcp-mapping-client",
+		Name:             "mapping_client",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	stored := `{"a_b":"a-b"}`
+	require.NoError(t, s.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", "mcp-mapping-client").Update("tool_name_mapping_json", stored).Error)
+	column := func() string {
+		var value string
+		require.NoError(t, s.DB().Model(&tables.TableMCPClient{}).Where("client_id = ?", "mcp-mapping-client").Select("tool_name_mapping_json").Scan(&value).Error)
+		return value
+	}
+
+	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-mapping-client", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"mapping_client-echo": {Type: "function"}}}))
+	assert.Equal(t, stored, column(), "a discovery update leaves the column alone")
+
+	row, err := s.GetMCPClientByName(ctx, "mapping_client")
+	require.NoError(t, err)
+	row.Name = "mapping_client_renamed"
+	require.NoError(t, s.UpdateMCPClientConfig(ctx, "mcp-mapping-client", row))
+	assert.Equal(t, stored, column(), "a full config update leaves the column alone")
 }
 
 // TestUpdateMCPClientDiscovery_EmptyMapPersistsAsLegitimateZeroTools confirms an
@@ -60,7 +89,7 @@ func TestUpdateMCPClientDiscovery_EmptyMapPersistsAsLegitimateZeroTools(t *testi
 		DiscoveredTools:  map[string]schemas.ChatTool{"stale": {Type: "function"}},
 	}))
 
-	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-empty-tools-client", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}))
+	require.NoError(t, s.UpdateMCPClientDiscovery(ctx, "mcp-empty-tools-client", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
 
 	got, err := s.GetMCPClientByID(ctx, "mcp-empty-tools-client")
 	require.NoError(t, err)
@@ -74,7 +103,7 @@ func TestUpdateMCPClientDiscovery_UnknownClientReturnsNotFound(t *testing.T) {
 	s := setupRDBTestStore(t)
 	ctx := context.Background()
 
-	err := s.UpdateMCPClientDiscovery(ctx, "does-not-exist", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}})
+	err := s.UpdateMCPClientDiscovery(ctx, "does-not-exist", &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}})
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -126,10 +155,10 @@ func TestMCPClientConfig_OpenAPIConfigRoundTripsThroughStore(t *testing.T) {
 	assert.Equal(t, "k-1", byID.OpenAPIConfig.SecurityCredentials["ApiKeyAuth"].Value.GetValue())
 	assert.Equal(t, 3, byID.OpenAPIConfig.OperationCount)
 
-	all, err := s.GetMCPConfig(ctx)
+	clients, err := s.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
 	var found *schemas.MCPClientConfig
-	for _, c := range all.ClientConfigs {
+	for _, c := range clients {
 		if c.ID == "openapi-store-1" {
 			found = c
 		}
@@ -196,9 +225,11 @@ func TestMaxProtocolVersion_RoundTripsThroughStore(t *testing.T) {
 
 	mcpConfig, err := s.GetMCPConfig(ctx)
 	require.NoError(t, err)
+	clients, err := s.GetMCPClientConfigs(ctx)
+	require.NoError(t, err)
 	assert.Equal(t, schemas.MCPProtocolVersion20250618, mcpConfig.MaxProtocolVersion)
-	require.Len(t, mcpConfig.ClientConfigs, 1)
-	assert.Equal(t, schemas.MCPMaxProtocolVersionAuto, mcpConfig.ClientConfigs[0].MaxProtocolVersion)
+	require.Len(t, clients, 1)
+	assert.Equal(t, schemas.MCPMaxProtocolVersionAuto, clients[0].MaxProtocolVersion)
 }
 
 // A client's discovered catalog round-trips through the targeted update, GetMCPClientByID and
@@ -227,12 +258,12 @@ func TestUpdateMCPClientDiscovery_ResourcesAndPromptsRoundTrip(t *testing.T) {
 	require.Len(t, row.DiscoveredPrompts, 1)
 	assert.Equal(t, "docs-review", row.DiscoveredPrompts[0].Name)
 
-	mcpConfig, err := s.GetMCPConfig(ctx)
+	clients, err := s.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
-	require.Len(t, mcpConfig.ClientConfigs, 1)
-	assert.Len(t, mcpConfig.ClientConfigs[0].DiscoveredResources, 1)
-	assert.Len(t, mcpConfig.ClientConfigs[0].DiscoveredResourceTemplates, 1)
-	assert.Len(t, mcpConfig.ClientConfigs[0].DiscoveredPrompts, 1)
+	require.Len(t, clients, 1)
+	assert.Len(t, clients[0].DiscoveredResources, 1)
+	assert.Len(t, clients[0].DiscoveredResourceTemplates, 1)
+	assert.Len(t, clients[0].DiscoveredPrompts, 1)
 
 	// A server that stopped offering prompts clears the stored list.
 	discovery.Prompts = nil
@@ -372,11 +403,11 @@ func TestMCPClientExposeLists_RoundTrip(t *testing.T) {
 	require.NotNil(t, config.PromptsToExpose, "[] is kept, not read back as unset")
 	assert.Empty(t, config.PromptsToExpose)
 	assert.Equal(t, schemas.WhiteList{"repo://{owner}/{name}"}, config.ResourcesToExpose)
-	mcpConfig, err := s.GetMCPConfig(ctx)
+	clients, err := s.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
-	require.Len(t, mcpConfig.ClientConfigs, 1)
-	assert.NotNil(t, mcpConfig.ClientConfigs[0].PromptsToExpose)
-	assert.Equal(t, schemas.WhiteList{"repo://{owner}/{name}"}, mcpConfig.ClientConfigs[0].ResourcesToExpose)
+	require.Len(t, clients, 1)
+	assert.NotNil(t, clients[0].PromptsToExpose)
+	assert.Equal(t, schemas.WhiteList{"repo://{owner}/{name}"}, clients[0].ResourcesToExpose)
 
 	row.PromptsToExpose, row.ResourcesToExpose = nil, nil
 	require.NoError(t, s.UpdateMCPClientConfig(ctx, "expose-client", row))

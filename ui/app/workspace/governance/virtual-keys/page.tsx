@@ -11,12 +11,15 @@ import { isValidVirtualKeyMetadataFilterKey } from "@/lib/utils/virtualKeyMetada
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const POLLING_INTERVAL = 5000;
 const PAGE_SIZE = 25;
 
 export default function GovernanceVirtualKeysPage() {
+	const { t } = useTranslation("governance");
+	const { t: tCommon } = useTranslation("common");
 	const hasVirtualKeysAccess = useRbac(RbacResource.VirtualKeys, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
 
@@ -87,7 +90,7 @@ export default function GovernanceVirtualKeysPage() {
 		const errorKey = `${!!vkError}`;
 		if (shownErrorsRef.current.has(errorKey)) return;
 		shownErrorsRef.current.add(errorKey);
-		toast.error(`Failed to load virtual keys: ${getErrorMessage(vkError)}`);
+		toast.error(t("virtualKeys.loadFailed", { message: getErrorMessage(vkError) }));
 	}, [vkError]);
 
 	if (isLoading) {
@@ -96,7 +99,12 @@ export default function GovernanceVirtualKeysPage() {
 
 	if (showLoadError(vkError, virtualKeysData)) {
 		return (
-			<LoadErrorView entity="virtual keys" error={vkError} onRetry={() => void refetchVirtualKeys()} testId="virtual-keys-load-error" />
+			<LoadErrorView
+				entity={tCommon("entities.virtualKeys")}
+				error={vkError}
+				onRetry={() => void refetchVirtualKeys()}
+				testId="virtual-keys-load-error"
+			/>
 		);
 	}
 
@@ -147,17 +155,14 @@ export default function GovernanceVirtualKeysPage() {
 			{metadataKeyInvalid && (
 				<Alert variant="warning" className="mb-3" data-testid="vk-metadata-filter-invalid-alert">
 					<AlertDescription className="flex items-center justify-between gap-3">
-						<span>
-							The metadata filter key in this link is not valid, so it is not applied. Keys use 1-256 letters, digits, &quot;.&quot;,
-							&quot;_&quot; or &quot;-&quot;.
-						</span>
+						<span>{t("virtualKeys.metadataFilterInvalid")}</span>
 						<Button
 							size="sm"
 							variant="outline"
 							data-testid="vk-metadata-filter-invalid-clear-btn"
 							onClick={() => handleMetadataFilterChange("", "")}
 						>
-							Clear filter
+							{t("virtualKeys.clearFilter")}
 						</Button>
 					</AlertDescription>
 				</Alert>

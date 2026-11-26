@@ -845,8 +845,8 @@ func TestCodeExecution_ProgrammaticStreamRoundTrip(t *testing.T) {
 						firstWsStartPos = pos
 					}
 				}
-				// web_search delivers its query whole in content_block_start.input
-				// (no input_json_delta), so seed it here.
+				// Accept input supplied at block start as well as streamed deltas;
+				// concatenating both also detects accidental duplicate delivery.
 				if len(e.ContentBlock.Input) > 0 && string(e.ContentBlock.Input) != "{}" {
 					inputByIndex[idx] += string(e.ContentBlock.Input)
 				}

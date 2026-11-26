@@ -179,6 +179,172 @@ func InjectChatCacheBreakpointsSkipping(cfg *schemas.PromptCacheConfig, input []
 	return out
 }
 
+// promptCacheBreakpointModeExplicit is the only mode an OpenAI prompt_cache_breakpoint accepts.
+const promptCacheBreakpointModeExplicit = "explicit"
+
+func isExplicitBreakpoint(bp *schemas.PromptCacheBreakpoint) bool {
+	return bp != nil && bp.Mode != nil && *bp.Mode == promptCacheBreakpointModeExplicit
+}
+
+// breakpointRef addresses one translated marker. toolOutput marks the function_call_output
+// item itself, block is then unused.
+type breakpointRef struct {
+	msg, block int
+	toolOutput bool
+}
+
+// ResponsesBreakpointsAsCacheControl returns input with each OpenAI prompt_cache_breakpoint
+// rewritten as an ephemeral cache_control, for converters that only read cache_control (the
+// Anthropic family and Bedrock Converse). It is the inverse of the openai provider's
+// applyResponsesCacheBreakpoints and follows the same rules:
+//
+//   - A block that already carries cache_control keeps it, TTL included.
+//   - Only mode "explicit" converts. The breakpoint ttl ("30m"/"12h") has no cache_control
+//     equivalent, and mapping 12h onto "1h" would double the write price unasked, so a
+//     translated marker takes the default lifetime.
+//   - A breakpoint inside a function_call_output marks the item, which converters render as
+//     tool_result.cache_control. Anthropic rejects cache_control inside tool_result.content.
+//   - Translated markers spend only the ceiling the caller's own cache_control markers leave,
+//     keeping the latest, so a provider clamp never drops a caller marker to make room.
+//
+// Input without a breakpoint is returned unchanged. Marked messages are deep-copied, since
+// input is shared with plugins and the fallback chain.
+func ResponsesBreakpointsAsCacheControl(input []schemas.ResponsesMessage, params *schemas.ResponsesParameters, ceiling int) []schemas.ResponsesMessage {
+	var refs []breakpointRef
+	existing := 0
+	for i := range input {
+		msg := &input[i]
+		if msg.CacheControl != nil {
+			existing++
+		}
+		if msg.Content != nil {
+			for j := range msg.Content.ContentBlocks {
+				b := &msg.Content.ContentBlocks[j]
+				if b.CacheControl != nil {
+					existing++
+				} else if isExplicitBreakpoint(b.PromptCacheBreakpoint) && isCacheableResponsesBlock(b.Type) {
+					refs = append(refs, breakpointRef{msg: i, block: j})
+				}
+			}
+		}
+		if !isResponsesToolOutput(msg) {
+			continue
+		}
+		marked := false
+		for _, b := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+			if b.CacheControl != nil {
+				existing++
+			} else if isExplicitBreakpoint(b.PromptCacheBreakpoint) {
+				marked = true
+			}
+		}
+		if marked && msg.CacheControl == nil {
+			refs = append(refs, breakpointRef{msg: i, toolOutput: true})
+		}
+	}
+	if len(refs) == 0 {
+		return input
+	}
+	if params != nil {
+		for i := range params.Tools {
+			if params.Tools[i].CacheControl != nil {
+				existing++
+			}
+		}
+		if params.ExtraParams["cache_control"] != nil {
+			existing++
+		}
+	}
+	budget := ceiling - existing
+	if budget <= 0 {
+		return input
+	}
+	if len(refs) > budget {
+		refs = refs[len(refs)-budget:]
+	}
+
+	out := slices.Clone(input)
+	copied := make(map[int]bool, len(refs))
+	for _, ref := range refs {
+		msg := &out[ref.msg]
+		if ref.toolOutput {
+			msg.CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+			continue
+		}
+		// Clone only the content written below; every other field keeps the caller's value.
+		if !copied[ref.msg] {
+			content := *msg.Content
+			content.ContentBlocks = slices.Clone(content.ContentBlocks)
+			msg.Content = &content
+			copied[ref.msg] = true
+		}
+		msg.Content.ContentBlocks[ref.block].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	}
+	return out
+}
+
+// ChatBreakpointsAsCacheControl is the Chat Completions parallel of
+// ResponsesBreakpointsAsCacheControl. A tool message needs no special case: the converters
+// already hoist a block marker onto the tool_result.
+func ChatBreakpointsAsCacheControl(input []schemas.ChatMessage, params *schemas.ChatParameters, ceiling int) []schemas.ChatMessage {
+	var refs []breakpointRef
+	existing := 0
+	for i := range input {
+		msg := &input[i]
+		if msg.Content != nil {
+			for j := range msg.Content.ContentBlocks {
+				b := &msg.Content.ContentBlocks[j]
+				if b.CacheControl != nil {
+					existing++
+				} else if isExplicitBreakpoint(b.PromptCacheBreakpoint) && isCacheableChatBlock(b.Type) {
+					refs = append(refs, breakpointRef{msg: i, block: j})
+				}
+			}
+		}
+		if msg.ChatAssistantMessage != nil {
+			for _, tc := range msg.ChatAssistantMessage.ToolCalls {
+				if tc.CacheControl != nil {
+					existing++
+				}
+			}
+		}
+	}
+	if len(refs) == 0 {
+		return input
+	}
+	if params != nil {
+		for i := range params.Tools {
+			if params.Tools[i].CacheControl != nil {
+				existing++
+			}
+		}
+		if params.CacheControl != nil || params.ExtraParams["cache_control"] != nil {
+			existing++
+		}
+	}
+	budget := ceiling - existing
+	if budget <= 0 {
+		return input
+	}
+	if len(refs) > budget {
+		refs = refs[len(refs)-budget:]
+	}
+
+	out := slices.Clone(input)
+	copied := make(map[int]bool, len(refs))
+	for _, ref := range refs {
+		msg := &out[ref.msg]
+		if !copied[ref.msg] {
+			content := *msg.Content
+			content.ContentBlocks = slices.Clone(content.ContentBlocks)
+			msg.Content = &content
+			copied[ref.msg] = true
+		}
+		msg.Content.ContentBlocks[ref.block].CacheControl = &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral}
+	}
+	return out
+}
+
 // ChatCachePointsSupported reports whether this attempt accepts cachePoint markers.
 // cachePoint is a Converse-only element, so the provider gate comes first: the name
 // fallback matches a Claude model whatever serves it.

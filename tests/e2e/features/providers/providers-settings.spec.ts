@@ -693,7 +693,7 @@ test.describe("Provider Settings", () => {
         await expect(providerSettingsPage.getPassthroughSaveBtn()).toBeDisabled();
         await page.getByTestId(`${first}-path-input`).fill("/v1/chat/completions");
         await page.getByTestId(`${first}-methods-select`).click();
-        await page.getByRole("option", { name: "POST", exact: true }).click();
+        await page.getByRole("option", { name: /^POST,/ }).click();
         await page.keyboard.press("Escape");
 
         await page.getByTestId("provider-passthrough-add-btn").click();
@@ -703,7 +703,7 @@ test.describe("Provider Settings", () => {
         await page.getByTestId(`${row}-path-input`).fill("/v1/files/**");
         await expect(page.getByTestId(row)).not.toContainText("Path must start with /");
         await page.getByTestId(`${row}-methods-select`).click();
-        await page.getByRole("option", { name: "GET", exact: true }).click();
+        await page.getByRole("option", { name: /^GET,/ }).last().click();
         await page.keyboard.press("Escape");
 
         const body = await providerSettingsPage.savePassthrough("openai");

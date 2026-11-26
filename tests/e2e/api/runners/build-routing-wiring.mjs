@@ -13,7 +13,8 @@
 // Verification:
 //   * sync — on success assert extra_fields.routing_info {provider, model, key,
 //     resolved_key_alias}; on rejection assert the error message (routing_info is
-//     empty on errors). Each routing request is sent once and judged once: before a
+//     empty on errors raised before a route is chosen, and names the route on
+//     errors after one is). Each routing request is sent once and judged once: before a
 //     scenario's first inference request, a polling step waits for the model
 //     catalog to list every provider's models (live discovery), and asserts nothing
 //     about routing, so a route that only shows up on a retry fails.
@@ -1301,13 +1302,24 @@ const SCENARIOS = [
     ],
   },
   {
-    id: "alias-vs-whitelist",
-    title: "Alias name not whitelisted is blocked",
-    description: "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so governance refuses it with 403 model_blocked.",
+    id: "alias-of-allowed-model",
+    title: "Alias of an allowed model resolves",
+    description: "The VK whitelists only the resolved model id and the request uses the alias name; every enabled key maps the alias to that allowed model, so governance accepts it (#8528).",
     steps: [
       { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
       { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [MODEL_B] })] },
-      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", label: "unlisted alias refused (403 model_blocked)" },
+      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 200, expectResolvedModelId: MODEL_B, label: "alias of allowed model routes, resolves to model id" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "alias-vs-whitelist",
+    title: "Alias of an unlisted model is blocked",
+    description: "The VK whitelists a different model than the alias resolves to; neither the alias name nor its target is in allowed_models, so governance refuses it with 403 model_blocked.",
+    steps: [
+      { type: "addProvider", keys: [key({ id: "k1", models: ["catwiring-alias-{{run_id}}"], aliases: { "catwiring-alias-{{run_id}}": MODEL_B } })] },
+      { type: "createVK", providerConfigs: [vkProvider({ allowedModels: [MODEL_A] })] },
+      { type: "route", model: "catwiring-alias-{{run_id}}", expectStatus: 403, expectErrorType: "model_blocked", expectErrorSubstr: "is not allowed", label: "alias of unlisted model refused (403 model_blocked)" },
       { type: "cleanup" },
     ],
   },

@@ -10,6 +10,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -566,6 +567,81 @@ func TestAzureSpeechSynthesisWire(t *testing.T) {
 	})
 }
 
+// TestAzureSpeechBillsTheSynthesizedVoice pins that a voice whose suffix differs from the requested
+// model is priced as that suffix: Azure synthesizes, and bills, the voice it is sent.
+func TestAzureSpeechBillsTheSynthesizedVoice(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		model  string
+		voice  string
+		input  string
+		served string
+	}{
+		{name: "HD voice under neural", model: "neural", voice: "en-US-Ava:DragonHDLatestNeural", input: "Hi", served: "DragonHDLatestNeural"},
+		{name: "voice suffix wins over another suffix model", model: "DragonHDLatestNeural", voice: "en-US-Harper:MAI-Voice-2.1-Flash", input: "Hi", served: "MAI-Voice-2.1-Flash"},
+		{name: "HD voice in SSML under neural", model: "neural", input: `<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="en-US"><voice name="en-US-Andrew:DragonHDLatestNeural">Hi</voice></speak>`, served: "DragonHDLatestNeural"},
+		{name: "standard voice under neural", model: "neural", voice: "en-US-AvaNeural", input: "Hi"},
+		{name: "voice takes the model suffix", model: "MAI-Voice-2.1-Flash", voice: "en-US-Harper", input: "Hi"},
+	}
+	for _, tt := range tests {
+		request := &schemas.BifrostSpeechRequest{
+			Provider: schemas.Azure,
+			Model:    tt.model,
+			Input:    &schemas.SpeechInput{Input: tt.input},
+			Params:   &schemas.SpeechParameters{},
+		}
+		if tt.voice != "" {
+			request.Params.VoiceConfig = &schemas.SpeechVoiceInput{Voice: new(tt.voice)}
+		}
+		assertServed := func(t *testing.T, got *string) {
+			t.Helper()
+			switch {
+			case tt.served == "" && got != nil:
+				t.Errorf("served model = %q, want none", *got)
+			case tt.served != "" && (got == nil || *got != tt.served):
+				t.Errorf("served model = %v, want %q", got, tt.served)
+			}
+		}
+		t.Run(tt.name+"/Speech", func(t *testing.T) {
+			t.Parallel()
+			upstream := newAzureSpeechUpstream(t)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			resp, bifrostErr := newAzureSpeechTestProvider(t).Speech(ctx, newAzureSpeechTestKey(upstream.URL), request)
+			if bifrostErr != nil {
+				t.Fatalf("Speech: %+v", bifrostErr.Error)
+			}
+			assertServed(t, resp.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+		})
+		t.Run(tt.name+"/SpeechStream", func(t *testing.T) {
+			t.Parallel()
+			upstream := newAzureSpeechUpstream(t)
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			postHook := func(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return resp, err
+			}
+			stream, bifrostErr := newAzureSpeechTestProvider(t).SpeechStream(ctx, postHook, nil, newAzureSpeechTestKey(upstream.URL), request)
+			if bifrostErr != nil {
+				t.Fatalf("SpeechStream: %+v", bifrostErr.Error)
+			}
+			var done *schemas.BifrostSpeechStreamResponse
+			for chunk := range stream {
+				if chunk.BifrostError != nil {
+					t.Fatalf("stream error: %+v", chunk.BifrostError.Error)
+				}
+				if r := chunk.BifrostSpeechStreamResponse; r != nil && r.Type == schemas.SpeechStreamResponseTypeDone {
+					done = r
+				}
+			}
+			if done == nil {
+				t.Fatal("no done event")
+			}
+			assertServed(t, done.ExtraFields.RoutingInfo.ServerSideFallbackModel)
+		})
+	}
+}
+
 func TestAzureSpeechTranscriptionWire(t *testing.T) {
 	t.Parallel()
 	upstream := newAzureSpeechUpstream(t)
@@ -867,5 +943,197 @@ func BenchmarkToAzureSpeechSSML(b *testing.B) {
 	for b.Loop() {
 		ssml, _ := ToAzureSpeechSSML("MAI-Voice-2.1-Flash", request)
 		_ = azureSpeechBillableChars(ssml)
+		_ = azureSpeechServedModel("MAI-Voice-2.1-Flash", *request.Params.VoiceConfig.Voice)
+	}
+}
+
+// TestAzureListModelsWithSpeechEndpoints pins that a key with use_speech_endpoints lists the Azure AI
+// Speech models beside its Azure OpenAI models: "neural", each voice suffix the voices list reports,
+// and the transcription models, filtered like any other model. A failed voices list keeps the rest.
+func TestAzureListModelsWithSpeechEndpoints(t *testing.T) {
+	t.Parallel()
+	const models = `{"object":"list","data":[{"id":"gpt-4o","status":"succeeded","created_at":1715558400,"object":"model"}]}`
+	const voices = `[{"ShortName":"en-US-AvaNeural","VoiceType":"Neural"},{"ShortName":"en-US-Ava:DragonHDLatestNeural","VoiceType":"NeuralHD"},{"ShortName":"en-US-Andrew:DragonHDLatestNeural","VoiceType":"NeuralHD"},{"ShortName":"en-US-Harper:MAI-Voice-2.1-Flash","VoiceType":"NeuralHD"}]`
+	transcription := []string{"azure/fast-transcription", "azure/llm-speech", "azure/short-audio", "azure/MAI-Transcribe-2"}
+	tests := []struct {
+		name         string
+		speech       bool
+		models       []string
+		aliases      schemas.KeyAliases
+		voicesStatus int
+		want         []string
+		wantVoices   bool
+	}{
+		{
+			name:         "speech key lists the speech models",
+			speech:       true,
+			models:       []string{"*"},
+			voicesStatus: http.StatusOK,
+			want:         slices.Concat([]string{"azure/gpt-4o", "azure/neural", "azure/DragonHDLatestNeural", "azure/MAI-Voice-2.1-Flash"}, transcription),
+			wantVoices:   true,
+		},
+		{
+			name:         "key without speech endpoints",
+			models:       []string{"*"},
+			voicesStatus: http.StatusOK,
+			want:         []string{"azure/gpt-4o"},
+		},
+		{
+			name:         "alias with the speech override on a key without speech endpoints",
+			models:       []string{"*"},
+			aliases:      schemas.KeyAliases{"speech-neural": {ModelID: "neural", AzureAliasCfg: &schemas.AzureAliasCfg{UseSpeechEndpoints: new(true)}}},
+			voicesStatus: http.StatusOK,
+			want:         []string{"azure/gpt-4o", "azure/speech-neural"},
+		},
+		{
+			name:         "allowlist filters the speech models",
+			speech:       true,
+			models:       []string{"gpt-4o", "neural", "fast-transcription"},
+			voicesStatus: http.StatusOK,
+			want:         []string{"azure/gpt-4o", "azure/neural", "azure/fast-transcription"},
+			wantVoices:   true,
+		},
+		{
+			name:         "failed voices list keeps the other models",
+			speech:       true,
+			models:       []string{"*"},
+			voicesStatus: http.StatusInternalServerError,
+			want:         slices.Concat([]string{"azure/gpt-4o", "azure/neural"}, transcription),
+			wantVoices:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var voicesHeaders http.Header
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/openai/v1/models":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(models))
+				case "/tts/cognitiveservices/voices/list":
+					mu.Lock()
+					voicesHeaders = r.Header.Clone()
+					mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tt.voicesStatus)
+					if tt.voicesStatus == http.StatusOK {
+						_, _ = w.Write([]byte(voices))
+					}
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			key := newAzureSpeechTestKey(upstream.URL)
+			key.Models = tt.models
+			key.Aliases = tt.aliases
+			key.AzureKeyConfig.UseSpeechEndpoints = tt.speech
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			response, bifrostErr := newAzureSpeechTestProvider(t).listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{Provider: schemas.Azure})
+			if bifrostErr != nil {
+				t.Fatalf("listModelsByKey: %v", bifrostErr.Error.Message)
+			}
+
+			got := make([]string, 0, len(response.Data))
+			for _, model := range response.Data {
+				got = append(got, model.ID)
+				if model.ID != "azure/gpt-4o" && model.Created != nil {
+					t.Errorf("%s created = %d, want none", model.ID, *model.Created)
+				}
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("models = %v, want %v", got, tt.want)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if (voicesHeaders != nil) != tt.wantVoices {
+				t.Fatalf("voices list requested = %v, want %v", voicesHeaders != nil, tt.wantVoices)
+			}
+			if voicesHeaders != nil && (voicesHeaders.Get("Ocp-Apim-Subscription-Key") != "speech-key" || voicesHeaders.Get("api-key") != "") {
+				t.Errorf("voices list auth = Ocp-Apim-Subscription-Key %q, api-key %q; want the key as Ocp-Apim-Subscription-Key only", voicesHeaders.Get("Ocp-Apim-Subscription-Key"), voicesHeaders.Get("api-key"))
+			}
+		})
+	}
+}
+
+// TestAzureListModelsSpeechVoicesTiming pins that the voices list runs beside the model list and stops
+// before the key's deadline, so a slow voices list costs only the voice suffixes, never the listing.
+func TestAzureListModelsSpeechVoicesTiming(t *testing.T) {
+	t.Parallel()
+	const models = `{"object":"list","data":[{"id":"gpt-4o","status":"succeeded","created_at":1715558400,"object":"model"}]}`
+	const voices = `[{"ShortName":"en-US-Ava:DragonHDLatestNeural"}]`
+	transcription := []string{"azure/fast-transcription", "azure/llm-speech", "azure/short-audio", "azure/MAI-Transcribe-2"}
+	tests := []struct {
+		name        string
+		modelsDelay time.Duration
+		voicesDelay time.Duration
+		deadline    time.Duration
+		maxElapsed  time.Duration
+		want        []string
+	}{
+		{
+			name:        "voices list runs beside the model list",
+			modelsDelay: 800 * time.Millisecond,
+			voicesDelay: 800 * time.Millisecond,
+			deadline:    10 * time.Second,
+			maxElapsed:  1400 * time.Millisecond,
+			want:        slices.Concat([]string{"azure/gpt-4o", "azure/neural", "azure/DragonHDLatestNeural"}, transcription),
+		},
+		{
+			name:        "voices list slower than the key's deadline",
+			voicesDelay: 10 * time.Second,
+			deadline:    2 * time.Second,
+			maxElapsed:  1500 * time.Millisecond,
+			want:        slices.Concat([]string{"azure/gpt-4o", "azure/neural"}, transcription),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			wait := func(r *http.Request, d time.Duration) {
+				select {
+				case <-time.After(d):
+				case <-r.Context().Done():
+				}
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/openai/v1/models":
+					wait(r, tt.modelsDelay)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(models))
+				case "/tts/cognitiveservices/voices/list":
+					wait(r, tt.voicesDelay)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(voices))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(tt.deadline))
+			defer ctx.Cancel()
+			start := time.Now()
+			response, bifrostErr := newAzureSpeechTestProvider(t).listModelsByKey(ctx, newAzureSpeechTestKey(upstream.URL), &schemas.BifrostListModelsRequest{Provider: schemas.Azure})
+			elapsed := time.Since(start)
+			if bifrostErr != nil {
+				t.Fatalf("listModelsByKey: %v", bifrostErr.Error.Message)
+			}
+			if elapsed > tt.maxElapsed {
+				t.Errorf("listModelsByKey took %v, want at most %v", elapsed.Round(time.Millisecond), tt.maxElapsed)
+			}
+			got := make([]string, 0, len(response.Data))
+			for _, model := range response.Data {
+				got = append(got, model.ID)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("models = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

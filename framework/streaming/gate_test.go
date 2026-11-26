@@ -1727,6 +1727,46 @@ func TestGate_GetAccumulatedResponse_ChatSnapshot(t *testing.T) {
 	}
 }
 
+// TestGate_GetAccumulatedResponse_ChatSnapshotKeepsChoicesSeparate verifies that a paused n>1 stream's snapshot,
+// which guardrails evaluate, returns each choice on its own instead of one message mixing their tokens.
+func TestGate_GetAccumulatedResponse_ChatSnapshotKeepsChoicesSeparate(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-snapshot-choices"
+
+	deltas := []struct {
+		choice int
+		text   string
+	}{{0, "Hello "}, {1, "SECRET "}, {0, "world"}, {1, "PASSWORD"}}
+	for i, d := range deltas {
+		chunk := &ChatStreamChunk{
+			ChunkIndex:  i,
+			ChoiceIndex: d.choice,
+			Timestamp:   time.Now(),
+			Delta:       &schemas.ChatStreamResponseChoiceDelta{Content: bifrost.Ptr(d.text)},
+		}
+		if err := a.addChatStreamChunk(traceID, StreamTypeChat, chunk, false); err != nil {
+			t.Fatalf("add chunk %d: %v", i, err)
+		}
+	}
+
+	resp := a.GetAccumulatedResponse(traceID)
+	if resp == nil || resp.ChatResponse == nil {
+		t.Fatalf("expected a chat snapshot, got %+v", resp)
+	}
+	want := []string{"Hello world", "SECRET PASSWORD"}
+	if len(resp.ChatResponse.Choices) != len(want) {
+		t.Fatalf("got %d choices, want %d", len(resp.ChatResponse.Choices), len(want))
+	}
+	for i, choice := range resp.ChatResponse.Choices {
+		if choice.Index != i {
+			t.Fatalf("choice %d has index %d", i, choice.Index)
+		}
+		if got := *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr; got != want[i] {
+			t.Fatalf("choice %d content = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
 // TestGate_GetAccumulatedResponse_TextSnapshot verifies that text streams use
 // the text-completion response envelope even though they share ChatStreamChunks.
 func TestGate_GetAccumulatedResponse_TextSnapshot(t *testing.T) {

@@ -10,6 +10,14 @@ import (
 // Different Tracer implementations can use their own concrete types.
 type SpanHandle interface{}
 
+// StreamChoiceOutput is the accumulated output of one choice in a chat or text stream.
+type StreamChoiceOutput struct {
+	Index        int
+	Message      *ChatMessage
+	FinishReason *string
+	LogProbs     *BifrostLogProbs
+}
+
 // StreamAccumulatorResult contains the accumulated data from streaming chunks.
 // This is the return type for tracer's streaming accumulation methods.
 type StreamAccumulatorResult struct {
@@ -28,6 +36,7 @@ type StreamAccumulatorResult struct {
 	// Debug spelling is retained for the established Go contract.
 	CacheDebug            *BifrostCacheMetadata           // Semantic cache metadata if available
 	GuardrailDebug        *BifrostGuardrailMetadata       // Guardrail metadata if available
+	OutputChoices         []StreamChoiceOutput            // Every choice of a chat/text stream with n>1, by index; nil otherwise
 	ErrorDetails          *BifrostError                   // Error details if any
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming
@@ -35,6 +44,7 @@ type StreamAccumulatorResult struct {
 	PassthroughOutput     *BifrostPassthroughResponse     // For passthrough streaming
 	FinishReason          *string                         // Finish reason
 	RawResponse           *string                         // Raw response
+	RawResponseFormat     RawResponseFormat               // Declared format of RawResponse's frames, if any
 	RawRequest            interface{}                     // Raw request
 }
 
@@ -74,6 +84,14 @@ type Tracer interface {
 	// SetAttribute sets an attribute on the span.
 	// Attributes provide additional context about the operation.
 	SetAttribute(handle SpanHandle, key string, value any)
+
+	// SetSpanStartTime moves a span's start time. A caller that opens a span only once
+	// the work has finished uses it so the span covers the work's real duration.
+	SetSpanStartTime(handle SpanHandle, start time.Time)
+
+	// MergeTraceDimensions adds dims to the trace's dimensions (TraceAttrDimensions), which
+	// connectors export with x-bf-dim-* labels. A name already there is overwritten.
+	MergeTraceDimensions(traceID string, dims map[string]string)
 
 	// SpanFromHandle resolves the *Span for a handle once, so a caller writing many
 	// attributes (e.g. the per-request LLM-call block) can call span.SetAttribute
@@ -250,6 +268,12 @@ func (n *NoOpTracer) EndSpan(_ SpanHandle, _ SpanStatus, _ string) {}
 
 // SetAttribute does nothing.
 func (n *NoOpTracer) SetAttribute(_ SpanHandle, _ string, _ any) {}
+
+// SetSpanStartTime does nothing.
+func (n *NoOpTracer) SetSpanStartTime(_ SpanHandle, _ time.Time) {}
+
+// MergeTraceDimensions does nothing.
+func (n *NoOpTracer) MergeTraceDimensions(_ string, _ map[string]string) {}
 
 func (n *NoOpTracer) SpanFromHandle(_ SpanHandle) *Span { return nil }
 

@@ -78,11 +78,12 @@ func (route *compiledRoute) matchHeaders(headers, operator map[string]string) bo
 	return true
 }
 
-// headerValue is the value a header will carry upstream: the operator's extra header when one is
-// configured, since it replaces the caller's copy, else the caller's. The transport lower-cases
-// caller names; a Go SDK caller may not, so a miss falls back to a case-insensitive scan.
+// headerValue is the value a header will carry upstream, in the order a passthrough call applies
+// them: the caller's header (headers already holds the caller's x-bf-eh-* values beneath it, see
+// routeHeaders), else the operator's extra header. The transport lower-cases caller names; a Go SDK
+// caller may not, so a miss falls back to a case-insensitive scan.
 // matchedHeaders returns, by name, the value that selected the route for each header the route
-// matches on: the operator's when the relay sets that header, else the caller's. nil for a route
+// matches on: the caller's when the caller sent that header, else the operator's. nil for a route
 // without header matchers.
 func (route *compiledRoute) matchedHeaders(headers, operator map[string]string) map[string]string {
 	if len(route.headers) == 0 {
@@ -98,9 +99,6 @@ func (route *compiledRoute) matchedHeaders(headers, operator map[string]string) 
 }
 
 func headerValue(name string, headers, operator map[string]string) (string, bool) {
-	if v, ok := operator[name]; ok {
-		return v, true
-	}
 	if v, ok := headers[name]; ok {
 		return v, true
 	}
@@ -108,6 +106,9 @@ func headerValue(name string, headers, operator map[string]string) (string, bool
 		if strings.EqualFold(k, name) {
 			return v, true
 		}
+	}
+	if v, ok := operator[name]; ok {
+		return v, true
 	}
 	return "", false
 }

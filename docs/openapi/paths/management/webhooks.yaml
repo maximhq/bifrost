@@ -29,7 +29,9 @@ webhooks:
       - name: event
         in: query
         required: false
-        description: Comma-separated events; returns endpoints subscribed to any of them.
+        description: |
+          Comma-separated events; returns endpoints subscribed to any of them.
+          Allowed values: `async_job.completed`, `async_job.failed`. Unknown values return 400.
         schema:
           type: string
       - name: disabled
@@ -41,13 +43,22 @@ webhooks:
       - name: limit
         in: query
         required: false
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is
+          rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
+        description: Number of rows to skip. A negative value is rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of webhook endpoints
@@ -57,6 +68,8 @@ webhooks:
               $ref: '../../schemas/management/webhooks.yaml#/WebhookEndpointList'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -95,6 +108,8 @@ webhooks:
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -127,6 +142,8 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -168,6 +185,8 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -198,6 +217,8 @@ webhooks-by-id:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -205,6 +226,7 @@ webhooks-by-id:
 webhooks-rotate-secret:
   post:
     operationId: rotateWebhookEndpointSecret
+    x-bifrost-destructive: true
     x-mint:
       content: |
         **Required Permissions**
@@ -234,6 +256,8 @@ webhooks-rotate-secret:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+      '503':
+        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -259,7 +283,7 @@ webhooks-test:
     parameters:
       - $ref: '#/components/parameters/WebhookEndpointId'
     requestBody:
-      required: true
+      required: false
       content:
         application/json:
           schema:
@@ -281,6 +305,12 @@ webhooks-test:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '404':
         $ref: '../../openapi.yaml#/components/responses/NotFound'
+      '503':
+        description: Config store not available, or webhook delivery is not available.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
@@ -307,13 +337,22 @@ webhooks-deliveries:
       - name: limit
         in: query
         required: false
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is
+          rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
+        description: Number of rows to skip. A negative value is rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of delivery history
@@ -324,7 +363,7 @@ webhooks-deliveries:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '503':
-        description: Logs store is not available.
+        description: Config store not available, or logs store not available.
         content:
           application/json:
             schema:
@@ -438,13 +477,22 @@ webhooks-deliveries-search:
       - name: limit
         in: query
         required: false
+        description: >-
+          Page size, 0 to 100 (default 25). Values above 100 are clamped to 100 without an error, and 0 uses the default, so read `limit` back from the response. Page with `offset` until `offset >= total_count`. A negative value is
+          rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          maximum: 100
+          default: 25
       - name: offset
         in: query
         required: false
+        description: Number of rows to skip. A negative value is rejected with a 400.
         schema:
           type: integer
+          minimum: 0
+          default: 0
     responses:
       '200':
         description: A page of delivery history
@@ -455,7 +503,7 @@ webhooks-deliveries-search:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '503':
-        description: Logs store is not available.
+        description: Config store not available, or logs store not available.
         content:
           application/json:
             schema:
@@ -501,6 +549,12 @@ webhooks-deliveries-redeliver:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '409':
         description: This delivery is already in flight.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '503':
+        description: Config store not available, or logs store not available.
         content:
           application/json:
             schema:

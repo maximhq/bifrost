@@ -173,3 +173,23 @@ func TestEventForJobStatus(t *testing.T) {
 	_, ok = EventForJobStatus(schemas.AsyncJobStatusPending)
 	assert.False(t, ok)
 }
+
+// TestRenderPayload_ResultURLCarriesBasePath pins that result_url is prefixed with
+// the configured server.base_path: receivers join it onto the gateway origin, so a
+// root-relative path would miss the prefix the proxy routes on.
+func TestRenderPayload_ResultURLCarriesBasePath(t *testing.T) {
+	SetResultURLPrefix("/bifrost")
+	t.Cleanup(func() { SetResultURLPrefix("") })
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	body, err := renderPayload(testAsyncJob(), tables.WebhookEventAsyncJobCompleted, false, 256*1024, now)
+	require.NoError(t, err)
+	var env struct {
+		Data map[string]any `json:"data"`
+	}
+	require.NoError(t, json.Unmarshal(body, &env))
+	assert.Equal(t, "/bifrost/v1/async/chat/completions/job-1", env.Data["result_url"])
+
+	path, ok := AsyncResultPath(schemas.ChatCompletionRequest, "job-2")
+	require.True(t, ok)
+	assert.Equal(t, "/bifrost/v1/async/chat/completions/job-2", path)
+}
