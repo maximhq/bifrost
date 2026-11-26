@@ -1,11 +1,16 @@
 package vertex
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Vertex resolves gs:// through fileData.fileUri, the only way to embed media too large to
@@ -13,7 +18,7 @@ import (
 // so a GCS URI failed inside the converter - and as a conversion fault, at HTTP 500.
 func TestToVertexGeminiEmbeddingRequestAllowsGCSImages(t *testing.T) {
 	t.Run("gs image url survives as fileData", func(t *testing.T) {
-		req, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		req, err := ToVertexGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 			Model: "gemini-embedding-2-preview",
 			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
 				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("gs://my-bucket/xxx.png")}},
@@ -26,7 +31,7 @@ func TestToVertexGeminiEmbeddingRequestAllowsGCSImages(t *testing.T) {
 	})
 
 	t.Run("a scheme no one allows is a caller error, not a conversion fault", func(t *testing.T) {
-		_, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		_, err := ToVertexGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 			Model: "gemini-embedding-2-preview",
 			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
 				{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("ftp://my-host/xxx.png")}},
@@ -43,7 +48,7 @@ func TestToVertexGeminiEmbeddingRequestAllowsGCSImages(t *testing.T) {
 			{Type: schemas.EmbeddingContentPartTypeAudio, Audio: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("gs://my-bucket/clip.mp3")}},
 			{Type: schemas.EmbeddingContentPartTypeVideo, Video: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("gs://my-bucket/clip.mp4")}},
 		} {
-			req, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+			req, err := ToVertexGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 				Model: "gemini-embedding-2-preview",
 				Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{part}}},
 			})
@@ -55,7 +60,7 @@ func TestToVertexGeminiEmbeddingRequestAllowsGCSImages(t *testing.T) {
 
 func TestToVertexGeminiEmbeddingRequest(t *testing.T) {
 	text := "hello"
-	req, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+	req, err := ToVertexGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{
 			{Type: schemas.EmbeddingContentPartTypeText, Text: &text},
 			{Type: schemas.EmbeddingContentPartTypeImage, Image: &schemas.EmbeddingMediaPart{URL: schemas.Ptr("https://example.com/img.png")}},
@@ -74,17 +79,160 @@ func TestToVertexGeminiEmbeddingRequest(t *testing.T) {
 	require.Equal(t, 128, *req.OutputDimensionality)
 }
 
-func TestToVertexGeminiEmbeddingRequestRejectsBatch(t *testing.T) {
-	t1 := "first"
-	t2 := "second"
-	_, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
-		Input: []schemas.EmbeddingInputItem{
-			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &t1}}},
-			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &t2}}},
-		},
+// Vertex serves several gemini-embedding-2 inputs online via :batchEmbedContents; a single
+// input stays on :embedContent. Vertex requires every entry to carry the same
+// outputDimensionality/autoTruncate, which the request-level params fan out to.
+func TestVertexGeminiEmbeddingBatch(t *testing.T) {
+	type sent struct{ path, body string }
+	call := func(t *testing.T, inputs ...string) (chan sent, *schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+		t.Helper()
+		received := make(chan sent, 1)
+		provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			data, _ := io.ReadAll(r.Body)
+			received <- sent{r.URL.Path, string(data)}
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, ":batchEmbedContents") {
+				_, _ = io.WriteString(w, `{"embeddings":[{"values":[0.1,0.2]},{"values":[0.3,0.4]}],"usageMetadata":{"promptTokenCount":4,"totalTokenCount":4}}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"embedding":{"values":[0.1,0.2]},"usageMetadata":{"promptTokenCount":1,"totalTokenCount":1}}`)
+		}))
+		items := make([]schemas.EmbeddingInputItem, 0, len(inputs))
+		for _, in := range inputs {
+			items = append(items, schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr(in)}}})
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := provider.Embedding(ctx, key, &schemas.BifrostEmbeddingRequest{
+			Provider: schemas.Vertex, Model: "gemini-embedding-2", Input: items,
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("RETRIEVAL_DOCUMENT"), Dimensions: schemas.Ptr(8), AutoTruncate: schemas.Ptr(true)},
+		})
+		return received, resp, bifrostErr
+	}
+	run := func(t *testing.T, inputs ...string) (sent, *schemas.BifrostEmbeddingResponse) {
+		t.Helper()
+		received, resp, bifrostErr := call(t, inputs...)
+		require.Nil(t, bifrostErr)
+		return <-received, resp
+	}
+
+	t.Run("multiple inputs use batchEmbedContents", func(t *testing.T) {
+		call, resp := run(t, "hello", "world")
+		require.True(t, strings.HasSuffix(call.path, "/publishers/google/models/gemini-embedding-2:batchEmbedContents"), call.path)
+		requests := gjson.Get(call.body, "requests").Array()
+		require.Len(t, requests, 2, call.body)
+		for i, want := range []string{"hello", "world"} {
+			require.Equal(t, want, requests[i].Get("content.parts.0.text").String(), call.body)
+			require.Equal(t, int64(8), requests[i].Get("outputDimensionality").Int(), call.body)
+			require.True(t, requests[i].Get("autoTruncate").Bool(), call.body)
+			require.Equal(t, "RETRIEVAL_DOCUMENT", requests[i].Get("taskType").String(), call.body)
+			require.False(t, requests[i].Get("model").Exists(), "vertex entries carry no model: %s", call.body)
+		}
+		require.Len(t, resp.Data, 2)
+		require.Equal(t, 1, resp.Data[1].Index)
+		require.Equal(t, []float64{0.3, 0.4}, resp.Data[1].Embedding.EmbeddingArray)
+		require.Equal(t, 4, resp.Usage.PromptTokens)
 	})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "batch")
+
+	t.Run("single input stays on embedContent", func(t *testing.T) {
+		call, resp := run(t, "hello")
+		require.True(t, strings.HasSuffix(call.path, ":embedContent"), call.path)
+		require.Equal(t, "hello", gjson.Get(call.body, "content.parts.0.text").String(), call.body)
+		require.Len(t, resp.Data, 1)
+	})
+}
+
+// Request-level embedContentConfig belongs on each entry; at the batch top level Vertex rejects it.
+func TestToVertexGeminiBatchEmbeddingRequestPlacesEmbedContentConfigPerEntry(t *testing.T) {
+	extra := map[string]interface{}{"embedContentConfig": map[string]interface{}{"documentOcr": true}, "labels": map[string]interface{}{"team": "a"}}
+	req, err := ToVertexGeminiBatchEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
+		Model: "gemini-embedding-2",
+		Input: []schemas.EmbeddingInputItem{
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("a")}}},
+			{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("b")}}},
+		},
+		Params: &schemas.EmbeddingParameters{ExtraParams: extra},
+	})
+	require.NoError(t, err)
+	body, err := providerUtils.MarshalSorted(req)
+	require.NoError(t, err)
+	merged, err := providerUtils.MergeExtraParamsIntoJSON(body, req.ExtraParams)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(merged, "embedContentConfig").Exists(), string(merged))
+	require.True(t, gjson.GetBytes(merged, "labels").Exists(), string(merged))
+	require.True(t, gjson.GetBytes(merged, "requests.1.embedContentConfig.documentOcr").Bool(), string(merged))
+	require.Contains(t, extra, "embedContentConfig", "caller's ExtraParams must not be mutated")
+}
+
+// taskType, title, outputDimensionality and autoTruncate are read from extra params only under passthrough:
+// per entry on :batchEmbedContents (Vertex 400s them at the root, typed params win), merged at the top level on :embedContent.
+func TestVertexGeminiEmbeddingEntryExtraParams(t *testing.T) {
+	text := func(s string) schemas.EmbeddingInputItem {
+		return schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr(s)}}}
+	}
+	fromExtra := map[string]string{"taskType": "RETRIEVAL_DOCUMENT", "title": "extra", "outputDimensionality": "8", "autoTruncate": "false"}
+	fromTyped := map[string]string{"taskType": "CLASSIFICATION", "title": "typed", "outputDimensionality": "16", "autoTruncate": "true"}
+	for name, tc := range map[string]struct {
+		typed       *schemas.EmbeddingParameters
+		passthrough bool
+		want        map[string]string // nil means absent
+	}{
+		"extra params with passthrough":    {&schemas.EmbeddingParameters{}, true, fromExtra},
+		"extra params without passthrough": {&schemas.EmbeddingParameters{}, false, nil},
+		"typed params win": {&schemas.EmbeddingParameters{
+			TaskType: schemas.Ptr("CLASSIFICATION"), Title: schemas.Ptr("typed"), Dimensions: schemas.Ptr(16), AutoTruncate: schemas.Ptr(true),
+		}, true, fromTyped},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			if tc.passthrough {
+				ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+			}
+			extra := map[string]interface{}{"taskType": "RETRIEVAL_DOCUMENT", "title": "extra", "outputDimensionality": float64(8), "autoTruncate": false}
+			params := tc.typed
+			params.ExtraParams = extra
+			check := func(wire []byte, prefix string) {
+				for key := range fromExtra {
+					got := gjson.GetBytes(wire, prefix+key)
+					if tc.want == nil {
+						require.False(t, got.Exists(), "%s%s: %s", prefix, key, wire)
+						continue
+					}
+					require.Equal(t, tc.want[key], got.String(), "%s%s: %s", prefix, key, wire)
+				}
+			}
+
+			batch, err := ToVertexGeminiBatchEmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{Model: "gemini-embedding-2", Input: []schemas.EmbeddingInputItem{text("a"), text("b")}, Params: params})
+			require.NoError(t, err)
+			body, err := providerUtils.MarshalSorted(batch)
+			require.NoError(t, err)
+			merged := body
+			if tc.passthrough {
+				merged, err = providerUtils.MergeExtraParamsIntoJSON(body, batch.ExtraParams)
+				require.NoError(t, err)
+			}
+			for key := range fromExtra {
+				require.False(t, gjson.GetBytes(merged, key).Exists(), "%s at the batch root: %s", key, merged)
+			}
+			check(merged, "requests.0.")
+			check(merged, "requests.1.")
+
+			single, err := ToVertexGeminiEmbeddingRequest(ctx, &schemas.BifrostEmbeddingRequest{Model: "gemini-embedding-2", Input: []schemas.EmbeddingInputItem{text("a")}, Params: params})
+			require.NoError(t, err)
+			body, err = providerUtils.MarshalSorted(single)
+			require.NoError(t, err)
+			if tc.passthrough {
+				// Extras merge over the body at the top level, so they win on a single input.
+				merged, err = providerUtils.MergeExtraParamsIntoJSON(body, single.ExtraParams)
+				require.NoError(t, err)
+				for key, want := range fromExtra {
+					require.Equal(t, want, gjson.GetBytes(merged, key).String(), "%s: %s", key, merged)
+				}
+			} else {
+				check(body, "")
+			}
+			require.Len(t, extra, 4, "caller's ExtraParams must not be mutated")
+		})
+	}
 }
 
 // :predict takes many instances, so the OpenAI batched form maps onto it directly.
@@ -140,7 +288,7 @@ func TestToVertexGeminiEmbeddingRequestForwardsEmbedContentConfig(t *testing.T) 
 	text := "alpha"
 	convert := func(extra map[string]interface{}) (*VertexGeminiEmbeddingRequest, []byte, []byte) {
 		t.Helper()
-		req, err := ToVertexGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		req, err := ToVertexGeminiEmbeddingRequest(nil, &schemas.BifrostEmbeddingRequest{
 			Model:  "gemini-embedding-2",
 			Input:  []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
 			Params: &schemas.EmbeddingParameters{ExtraParams: extra},
@@ -175,4 +323,53 @@ func TestToVertexGeminiEmbeddingRequestForwardsEmbedContentConfig(t *testing.T) 
 		require.NotContains(t, string(body), "documentOcr")
 		require.Contains(t, extra, "documentOcr", "caller's ExtraParams must not be mutated")
 	})
+}
+
+// BenchmarkVertexGeminiEmbeddingRequestBody measures the body build Embedding runs: conversion, marshal and extra-param merge.
+func BenchmarkVertexGeminiEmbeddingRequestBody(b *testing.B) {
+	newRequest := func(n int, extra map[string]interface{}) *schemas.BifrostEmbeddingRequest {
+		items := make([]schemas.EmbeddingInputItem, n)
+		for i := range items {
+			items[i] = schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("The quick brown fox jumps over the lazy dog.")}}}
+		}
+		return &schemas.BifrostEmbeddingRequest{
+			Provider: schemas.Vertex, Model: "gemini-embedding-2", Input: items,
+			Params: &schemas.EmbeddingParameters{TaskType: schemas.Ptr("RETRIEVAL_DOCUMENT"), Dimensions: schemas.Ptr(768), AutoTruncate: schemas.Ptr(true), ExtraParams: extra},
+		}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	b.Run("single", func(b *testing.B) {
+		req := newRequest(1, nil)
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := providerUtils.CheckContextAndGetRequestBody(ctx, req, func() (*VertexGeminiEmbeddingRequest, error) {
+				return ToVertexGeminiEmbeddingRequest(ctx, req)
+			}); err != nil {
+				b.Fatal(err.Error.Message)
+			}
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		n     int
+		extra map[string]interface{}
+	}{
+		{"batch-2", 2, nil},
+		{"batch-16", 16, nil},
+		{"batch-16-extra-params", 16, map[string]interface{}{"embedContentConfig": map[string]interface{}{"documentOcr": true}, "labels": map[string]interface{}{"team": "a"}}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			req := newRequest(tc.n, tc.extra)
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := providerUtils.CheckContextAndGetRequestBody(ctx, req, func() (*VertexGeminiBatchEmbeddingRequest, error) {
+					return ToVertexGeminiBatchEmbeddingRequest(ctx, req)
+				}); err != nil {
+					b.Fatal(err.Error.Message)
+				}
+			}
+		})
+	}
 }

@@ -189,6 +189,16 @@ func (r *VertexGeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
 	return r.ExtraParams
 }
 
+// VertexGeminiBatchEmbeddingRequest is the :batchEmbedContents body. Entries carry no model field on Vertex.
+type VertexGeminiBatchEmbeddingRequest struct {
+	Requests    []VertexGeminiEmbeddingRequest `json:"requests"`
+	ExtraParams map[string]interface{}         `json:"-"`
+}
+
+func (r *VertexGeminiBatchEmbeddingRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
 // VertexEmbeddingStatistics represents statistics computed from the input text
 type VertexEmbeddingStatistics struct {
 	Truncated  bool `json:"truncated"`   // Whether the input text was truncated

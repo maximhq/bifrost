@@ -1811,15 +1811,20 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	}
 
 	isGeminiEmbedding2Request := isVertexGeminiEmbeddingModel(request.Model)
+	isGeminiBatchEmbedRequest := isGeminiEmbedding2Request && len(request.Input) > 1
 	isNativeMultimodalRequest := isVertexNativeMultimodalEmbeddingModel(request.Model)
 
 	// Branch before the call so each converter keeps its concrete body type.
 	var jsonBody []byte
 	var bifrostErr *schemas.BifrostError
 	switch {
+	case isGeminiBatchEmbedRequest:
+		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexGeminiBatchEmbeddingRequest, error) {
+			return ToVertexGeminiBatchEmbeddingRequest(ctx, request)
+		})
 	case isGeminiEmbedding2Request:
 		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexGeminiEmbeddingRequest, error) {
-			return ToVertexGeminiEmbeddingRequest(request)
+			return ToVertexGeminiEmbeddingRequest(ctx, request)
 		})
 	case isNativeMultimodalRequest:
 		jsonBody, bifrostErr = providerUtils.CheckContextAndGetRequestBody(ctx, request, func() (*VertexEmbeddingRequest, error) {
@@ -1845,9 +1850,12 @@ func (provider *VertexProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		return nil, providerUtils.NewConfigurationError("project number is not set for fine-tuned models")
 	}
 
-	// Gemini embedding models use :embedContent; all others (text + native multimodal) use :predict.
+	// Gemini embedding models use :embedContent for single embeddings and
+	// :batchEmbedContents for several inputs, all others use :predict.
 	endpointSuffix := ":predict"
-	if isGeminiEmbedding2Request {
+	if isGeminiBatchEmbedRequest {
+		endpointSuffix = ":batchEmbedContents"
+	} else if isGeminiEmbedding2Request {
 		endpointSuffix = ":embedContent"
 	}
 	completeURL := getCompleteURLForGeminiEndpoint(request.Model, region, projectID, projectNumber, endpointSuffix)

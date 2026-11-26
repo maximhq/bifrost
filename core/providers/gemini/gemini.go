@@ -1394,7 +1394,7 @@ func (provider *GeminiProvider) Embedding(ctx *schemas.BifrostContext, key schem
 		ctx,
 		request,
 		func() (*GeminiBatchEmbeddingRequest, error) {
-			return ToGeminiEmbeddingRequest(request)
+			return ToGeminiEmbeddingRequest(ctx, request)
 		})
 	if err != nil {
 		return nil, err
