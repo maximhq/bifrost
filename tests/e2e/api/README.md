@@ -246,6 +246,22 @@ Start the fixture and the isolated gateway as in
 make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+## Provider-reported zero cost
+
+Folder 391 pins that a provider's zero `usage.cost` reaches the client as
+`"cost": {"total_cost": 0}` and not as `"cost": {}`. The fixture model `upstream-zero-cost`
+answers like `upstream-ok` and reports `usage.cost: 0`. The native `/v1/chat/completions` cases
+check the non-streaming response and the streamed usage chunk; the OpenAI SDK route case checks
+that the bare `cost: 0` is still there. These cases make no live provider calls and are skipped
+unless `providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="zero provider cost" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
@@ -560,7 +576,7 @@ every proxy cell, with the profile's relays given each cell's proxy.
 
 | Path | Description |
 |------|-------------|
-| `collections/bifrost-routing-wiring.postman_collection.json` | Generated collection asserting how virtual-key gates and per-key catalog gates compose on the routing path: the route each request takes, the error on a refusal, and the stored log. **Generated — do not hand-edit.** |
+| `collections/bifrost-routing-wiring.postman_collection.json` | Generated collection for the routing path: how virtual keys, key and catalog gates, aliases, routing rules, fallbacks and governance load balancing pick the provider, model and key a request takes, the error on a refusal, and the stored log and routing trail. **Generated: do not hand-edit.** |
 | `runners/build-routing-wiring.mjs` | Generator for the collection above; its scenario table is the source of truth. |
 | `runners/individual/run-newman-routing-wiring-tests.sh` | Script to run the routing wiring collection; `--binary` boots a clean server for the run. |
 | `runners/lib/clean-bifrost.sh` | Boots that clean server for both wiring runners: no providers, sqlite stores in a throwaway app dir. |
@@ -861,17 +877,26 @@ These tests cover the path **HTTP mutation → config write → server-side cata
 hook → read endpoint**: the wiring that keeps the model catalog (`/api/models`,
 `/api/models/details`) in sync with provider and key changes made through the
 management API. Each scenario stands up an isolated custom provider backed by a
-real upstream (the per-provider scenarios run once each for OpenAI, Anthropic and
-Gemini), drives a sequence of mutations, and asserts the catalog reflects each one.
+real upstream, drives a sequence of mutations, and asserts the catalog reflects each one.
 
-What it covers (one scenario per contract):
+What it covers, one scenario per contract, each run once for OpenAI, Anthropic and Gemini:
 
-- **Add provider + key** — a gated key surfaces its allowed model.
-- **Update key model set** — changing a key's allow-list re-gates the catalog.
-- **Disable / re-enable key** — a disabled key drops its models; re-enabling restores them.
-- **Delete one of two keys** — only the deleted key's models drop; the sibling's survive.
-- **Delete provider** — the provider and its models disappear from the catalog.
-- **Alias resolution** — an inference call via a key alias routes to the underlying model.
+- **Add provider + key**: a gated key surfaces its allowed model.
+- **Update key model set**: changing a key's allow-list re-gates the catalog.
+- **Disable / re-enable key**: a disabled key drops its models; re-enabling restores them.
+- **Delete one of two keys**: only the deleted key's models drop; the sibling's survive.
+- **Delete provider**: the provider and its models disappear from the catalog.
+- **Alias resolution**: an inference call via a key alias routes to the underlying model.
+- **Blacklist re-gate**: blacklisting a model removes it from a wildcard key's catalog.
+- **Multi-key union**: two keys gating distinct models both contribute to the list.
+- **Model details gating**: `/api/models/details` lists only what the keys allow, like `/api/models`.
+- **Base models stable**: key changes leave the base model list unchanged.
+
+And once, on one base type:
+
+- **Keyless provider**: the provider is listed but contributes no catalog rows.
+- **Unreachable list-models upstream**: discovery failing keeps the keys' allow-listed models.
+- **Disallowed list-models**: with `list_models` not allowed, discovery never runs and only explicit allow-lists surface.
 
 Run locally (from this directory):
 
@@ -914,10 +939,15 @@ The only seed-env var it reads is `e2e_seed_prefix`, for run-id namespacing.
 
 ### Routing Wiring Tests
 
-These tests cover how governance and the model catalog compose on the routing
-path. Each scenario creates providers and keys, gates them with a virtual key,
-sends inference, and asserts the route taken (`extra_fields.routing_info`), the
-error on a refusal, and the stored log. Before a scenario's first inference
+These tests cover the routing path: how virtual keys, key and catalog gates,
+aliases, routing rules, request-level and rule fallbacks, and governance load
+balancing decide where a request goes. Each scenario creates providers and keys,
+gates them with a virtual key or a routing rule, sends inference on `/v1`, the
+OpenAI drop-in route or the Anthropic route, and asserts the route taken
+(`extra_fields.routing_info` and the routing headers), the error on a refusal,
+the stored log and its fallback rows, and the routing trail. New routing cases go
+in this suite, or in the model catalog wiring suite when they read the catalog, following
+`.claude/skills/routing-harness/SKILL.md`, not in the provider harness. Before a scenario's first inference
 request, one step polls until the model catalog lists every provider's models and
 asserts nothing about routing; each routing request after it is sent once and
 judged once, so a route that only shows up on a retry fails.
@@ -935,7 +965,7 @@ node runners/build-routing-wiring.mjs                                           
 It calls real providers through `env.<NAME>` keys, so the server's environment
 needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `AZURE_API_KEY` and
 `AZURE_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`,
-and `VERTEX_PROJECT_ID` and `VERTEX_CREDENTIALS`. Both wiring collections send the
+and `VERTEX_PROJECT_ID`, `VERTEX_PROJECT_NUMBER` and `VERTEX_CREDENTIALS`. Both wiring collections send the
 setup token on `/api` calls (`BIFROST_SETUP_TOKEN`, default
 `bifrost-e2e-setup-token`), which a server with a setup token and no admin requires.
 

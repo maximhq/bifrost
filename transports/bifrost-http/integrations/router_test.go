@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -33,6 +34,7 @@ import (
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1728,6 +1730,10 @@ func TestRegisterPassthroughTextRewriters(t *testing.T) {
 		{"openai chat", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ChatCompletionRequest}, true},
 		{"openai responses", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.ResponsesRequest}, true},
 		{"openai embeddings", passthroughparse.Route{Wire: schemas.OpenAI, RequestType: schemas.EmbeddingRequest}, false},
+		{"gemini interactions", passthroughparse.Route{Wire: passthroughparse.WireGeminiInteractions, RequestType: schemas.ResponsesRequest}, true},
+		{"runware tasks", passthroughparse.Route{Wire: schemas.Runware}, true},
+		{"sagemaker invocations", passthroughparse.Route{Wire: schemas.SageMaker}, true},
+		{"bedrock agent", passthroughparse.Route{Wire: schemas.Bedrock}, true},
 		{"untyped route", passthroughparse.Route{}, false},
 	}
 	for _, tc := range cases {
@@ -1736,6 +1742,189 @@ func TestRegisterPassthroughTextRewriters(t *testing.T) {
 			registerPassthroughTextRewriters(ctx, tc.route)
 			_, registered := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
 			require.Equal(t, tc.want, registered)
+		})
+	}
+}
+
+// TestPassthroughRequestRewritersMatchTheReaders verifies, for every request shape the Runware, SageMaker, Bedrock agent
+// and Gemini Interactions readers accept, that the route's rewriter rewrites exactly the texts passthroughparse hands
+// guardrails: rewriting a value the reader read gives a body that reads back with only that value replaced. A text the
+// reader reads but the rewriter cannot reach would turn a decided redaction into a refused request. Synthetic payloads.
+func TestPassthroughRequestRewritersMatchTheReaders(t *testing.T) {
+	const secret = "alice@example.com"
+	runware := passthroughparse.Input{Provider: schemas.Runware, Method: "POST", Path: "/v1"}
+	sageMaker := passthroughparse.Input{Provider: schemas.SageMaker, Method: "POST", Path: "/endpoints/e/invocations"}
+	agent := passthroughparse.Input{Provider: schemas.Bedrock, Method: "POST", Path: "/agents/A/agentAliases/B/sessions/c/text"}
+	gemini := passthroughparse.Input{Provider: schemas.Gemini, Method: "POST", Path: "/v1beta/interactions"}
+	vertex := passthroughparse.Input{Provider: schemas.Vertex, Method: "POST", Path: "/v1beta1/projects/p/locations/global/interactions"}
+	interactionSteps := `{"model":"gemini-3.8-flash","system_instruction":"reply to alice@example.com","input":[` +
+		`{"type":"user_input","content":[{"type":"text","text":"mail alice@example.com"},{"type":"image","uri":"gs://b/i.png"}]},` +
+		`{"type":"model_output","content":[{"type":"text","text":"sent to alice@example.com"}]},` +
+		`{"type":"function_call","id":"c1","name":"send","arguments":{"to":"alice@example.com","cc":["alice@example.com"]}},` +
+		`{"type":"function_result","name":"send","call_id":"c1","result":"delivered to alice@example.com"},` +
+		`{"type":"function_result","name":"send","call_id":"c2","result":[{"type":"text","text":"list alice@example.com"}]},` +
+		`{"type":"function_result","name":"send","call_id":"c3","result":{"content":[{"type":"text","text":"content alice@example.com"}]}},` +
+		`{"type":"text","text":"part alice@example.com"}]}`
+	cases := []struct {
+		name string
+		in   passthroughparse.Input
+		body string
+	}{
+		{"runware text and image tasks", runware, `[{"taskType":"textInference","taskUUID":"t1","settings":{"systemPrompt":"sys alice@example.com"},` +
+			`"messages":[{"role":"user","content":"hi alice@example.com"},{"role":"assistant","content":"ok alice@example.com"}]},` +
+			`{"taskType":"imageInference","taskUUID":"t2","positivePrompt":"draw alice@example.com","negativePrompt":"blurry"}]`},
+		{"runware single image task", runware, `{"taskType":"imageInference","taskUUID":"t1","positivePrompt":"draw alice@example.com"}`},
+		{"runware video tasks", runware, `[{"taskType":"videoInference","taskUUID":"t1","positivePrompt":"film alice@example.com"}]`},
+		{"runware avatar speech and kling shots", runware, `[{"taskType":"videoInference","taskUUID":"t1","positivePrompt":"office",` +
+			`"speech":{"text":"email alice@example.com","voice":"v1"}},{"taskType":"videoInference","taskUUID":"t2",` +
+			`"providerSettings":{"klingai":{"multiPrompt":[{"prompt":"wide shot","duration":3},{"prompt":"screen shows alice@example.com","duration":3}]}}}]`},
+		{"runware image system prompt", runware, `[{"taskType":"imageInference","taskUUID":"t1","positivePrompt":"a red fox","settings":{"systemPrompt":"sign as alice@example.com"}}]`},
+		{"runware caption and prompt enhance", runware, `[{"taskType":"caption","taskUUID":"t1","inputs":{"image":"https://example.com/i.png"},"prompt":"mention alice@example.com"},` +
+			`{"taskType":"promptEnhance","taskUUID":"t2","prompt":"portrait of alice@example.com","promptMaxLength":64}]`},
+		{"sagemaker inputs", sageMaker, `{"inputs":"say alice@example.com","parameters":{"max_new_tokens":8}}`},
+		{"sagemaker input list", sageMaker, `{"inputs":["a alice@example.com","b alice@example.com"]}`},
+		{"sagemaker chat with tools", sageMaker, `{"messages":[{"role":"system","content":"sys alice@example.com"},` +
+			`{"role":"user","content":[{"type":"text","text":"hi alice@example.com"}]},` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"send","arguments":"{\"to\":\"alice@example.com\"}"}}]},` +
+			`{"role":"tool","tool_call_id":"c1","content":"sent to alice@example.com"}]}`},
+		{"sagemaker completion prompt", sageMaker, `{"prompt":"say alice@example.com","max_tokens":5}`},
+		{"sagemaker messages and inputs", sageMaker, `{"messages":[{"role":"user","content":"hello"}],"inputs":"mail alice@example.com"}`},
+		{"sagemaker messages and prompt", sageMaker, `{"messages":[{"role":"user","content":"hi"}],"prompt":"mail alice@example.com"}`},
+		{"sagemaker prompt and inputs", sageMaker, `{"prompt":["a","b"],"inputs":"mail alice@example.com"}`},
+		{"sagemaker null prompt and inputs", sageMaker, `{"prompt":null,"inputs":"mail alice@example.com"}`},
+		{"sagemaker empty messages and inputs", sageMaker, `{"messages":[],"inputs":"mail alice@example.com"}`},
+		{"sagemaker inputs with token ids", sageMaker, `{"inputs":["mail alice@example.com",[101,2023,102]]}`},
+		{"bedrock agent prompt session attributes", agent, `{"inputText":"book it","sessionState":{"sessionAttributes":{"k":"v"},"promptSessionAttributes":{"contact":"alice@example.com","tz":"UTC"}}}`},
+		{"bedrock agent turn", agent, `{"inputText":"mail alice@example.com","sessionState":{"sessionAttributes":{"k":"v"},` +
+			`"conversationHistory":{"messages":[{"role":"user","content":[{"text":"earlier alice@example.com"}]},{"role":"assistant","content":[{"text":"reply alice@example.com"}]}]},` +
+			`"returnControlInvocationResults":[{"functionResult":{"actionGroup":"g","function":"f","responseBody":{"TEXT":{"body":"result alice@example.com"}}}},` +
+			`{"apiResult":{"actionGroup":"g","apiPath":"/p","httpMethod":"GET","responseBody":{"application/json":{"body":"{\"to\":\"alice@example.com\"}"}}}}]}}`},
+		{"interactions string input", gemini, `{"model":"gemini-3.8-flash","system_instruction":"reply to alice@example.com","input":"mail alice@example.com"}`},
+		{"interactions text part", gemini, `{"model":"gemini-3.8-flash","input":{"type":"text","text":"mail alice@example.com"}}`},
+		{"interactions steps", gemini, interactionSteps},
+		{"vertex interactions steps", vertex, interactionSteps},
+		{"interactions object function result", gemini, `{"model":"gemini-3.8-flash","input":[{"type":"function_result","name":"lookup","call_id":"c1","result":{"owner":"alice@example.com","rows":2,"tags":["alice@example.com"]}}]}`},
+		{"interactions string arguments", gemini, `{"model":"gemini-3.8-flash","input":[{"type":"function_call","id":"c1","name":"send","arguments":"{\"to\":\"alice@example.com\"}"}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// The rewriter the route registers for the call, as the passthrough handler registers it.
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			registerPassthroughTextRewriters(ctx, passthroughparse.Classify(tc.in.Provider, "", tc.in.Method, tc.in.Path))
+			rewrite, _ := ctx.Value(schemas.BifrostContextKeyRawRequestBodyTextRewriter).(schemas.RawRequestBodyTextRewriter)
+			require.NotNil(t, rewrite)
+			read := func(body []byte) []string {
+				in := tc.in
+				in.RequestBody = body
+				result, err := passthroughparse.Parse(in)
+				require.NoError(t, err)
+				require.NotNil(t, result)
+				require.NotNil(t, result.Request)
+				return requestStringLeaves(t, result.Request)
+			}
+			before := read([]byte(tc.body))
+			require.True(t, strings.Contains(strings.Join(before, "\n"), secret), "the reader reads the value: %q", before)
+			rewritten, err := rewrite([]byte(tc.body), map[string]string{secret: "[EMAIL]"})
+			require.NoError(t, err)
+			want := make([]string, len(before))
+			for i, text := range before {
+				want[i] = strings.ReplaceAll(text, secret, "[EMAIL]")
+			}
+			require.Equal(t, want, read(rewritten), "the rewritten body reads back as the reader's texts with only the value replaced")
+		})
+	}
+}
+
+// requestStringLeaves returns every string value of v's JSON form, in document order, so two reads of a parsed request
+// can be compared whatever type the reader produced.
+func requestStringLeaves(t *testing.T, v any) []string {
+	t.Helper()
+	encoded, err := json.Marshal(v)
+	require.NoError(t, err)
+	var leaves []string
+	var walk func(gjson.Result)
+	walk = func(value gjson.Result) {
+		switch {
+		case value.Type == gjson.String:
+			leaves = append(leaves, value.Str)
+		case value.IsObject() || value.IsArray():
+			value.ForEach(func(_, child gjson.Result) bool {
+				walk(child)
+				return true
+			})
+		}
+	}
+	walk(gjson.ParseBytes(encoded))
+	return leaves
+}
+
+// TestRewritePassthroughOnlyRawRequestBodies verifies the Runware, SageMaker and Bedrock agent rewriters change only the
+// text fields passthroughparse reads, and keep every other field, unknown ones included, as sent. Synthetic payloads.
+func TestRewritePassthroughOnlyRawRequestBodies(t *testing.T) {
+	replacements := map[string]string{"alice@example.com": "[EMAIL]"}
+	cases := []struct {
+		name      string
+		rewrite   schemas.RawRequestBodyTextRewriter
+		body      string
+		redacted  []string
+		untouched map[string]string
+	}{
+		{
+			name:    "runware tasks",
+			rewrite: rewriteRunwareRawRequestBody,
+			body: `[{"taskType":"textInference","taskUUID":"t1","settings":{"systemPrompt":"sys alice@example.com"},"messages":[{"role":"user","content":"hi alice@example.com"}]},` +
+				`{"taskType":"imageInference","taskUUID":"t2","positivePrompt":"draw alice@example.com","negativePrompt":"alice@example.com"},` +
+				`{"taskType":"imageUpscale","taskUUID":"t3","inputImage":"alice@example.com"}]`,
+			redacted:  []string{"0.settings.systemPrompt", "0.messages.0.content", "1.positivePrompt"},
+			untouched: map[string]string{"1.negativePrompt": "alice@example.com", "2.inputImage": "alice@example.com", "0.taskUUID": "t1"},
+		},
+		{
+			name:      "runware single task",
+			rewrite:   rewriteRunwareRawRequestBody,
+			body:      `{"taskType":"videoInference","positivePrompt":"film alice@example.com","futureField":"alice@example.com"}`,
+			redacted:  []string{"positivePrompt"},
+			untouched: map[string]string{"futureField": "alice@example.com"},
+		},
+		{
+			name:      "sagemaker inputs",
+			rewrite:   rewriteSageMakerRawRequestBody,
+			body:      `{"inputs":"say alice@example.com","parameters":{"stop":["alice@example.com"]}}`,
+			redacted:  []string{"inputs"},
+			untouched: map[string]string{"parameters.stop.0": "alice@example.com"},
+		},
+		{
+			name:     "sagemaker input list",
+			rewrite:  rewriteSageMakerRawRequestBody,
+			body:     `{"inputs":["a alice@example.com","b alice@example.com"]}`,
+			redacted: []string{"inputs.0", "inputs.1"},
+		},
+		{
+			name:      "sagemaker messages",
+			rewrite:   rewriteSageMakerRawRequestBody,
+			body:      `{"messages":[{"role":"user","content":"hi alice@example.com"}],"futureField":"alice@example.com"}`,
+			redacted:  []string{"messages.0.content"},
+			untouched: map[string]string{"futureField": "alice@example.com"},
+		},
+		{
+			name:    "bedrock agent",
+			rewrite: rewriteBedrockAgentRawRequestBody,
+			body: `{"inputText":"mail alice@example.com","sessionState":{"sessionAttributes":{"k":"alice@example.com"},` +
+				`"conversationHistory":{"messages":[{"role":"user","content":[{"text":"earlier alice@example.com"}]}]},` +
+				`"returnControlInvocationResults":[{"functionResult":{"actionGroup":"g","function":"f","responseBody":{"TEXT":{"body":"result alice@example.com"}}}}]}}`,
+			redacted: []string{
+				"inputText",
+				"sessionState.conversationHistory.messages.0.content.0.text",
+				"sessionState.returnControlInvocationResults.0.functionResult.responseBody.TEXT.body",
+			},
+			untouched: map[string]string{"sessionState.sessionAttributes.k": "alice@example.com"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.rewrite([]byte(tc.body), replacements)
+			require.NoError(t, err)
+			assertRawPaths(t, got, tc.redacted, tc.untouched)
 		})
 	}
 }

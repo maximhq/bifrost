@@ -915,7 +915,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
-	parseGuardrailOutcomesFilter(ctx, filters)
+	parseGuardrailFilters(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -1439,7 +1439,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
-	parseGuardrailOutcomesFilter(ctx, filters)
+	parseGuardrailFilters(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -1612,12 +1612,22 @@ func parseToolCallNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.Search
 	}
 }
 
-// parseGuardrailOutcomesFilter reads the comma-separated guardrail_outcomes
-// query param ("blocked", "detected") into filters. Shared like
-// parseToolCallNamesFilter so the guardrail incidents list and its counts agree.
-func parseGuardrailOutcomesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
-	if outcomes := string(ctx.QueryArgs().Peek("guardrail_outcomes")); outcomes != "" {
-		filters.GuardrailOutcomes = parseCommaSeparated(outcomes)
+// parseGuardrailFilters reads the comma-separated guardrail query params into
+// filters: guardrail_outcomes ("blocked", "detected") and the guardrail match
+// filters (guardrail_actions, guardrail_rule_ids, guardrail_profile_ids,
+// guardrail_phases). Shared like parseToolCallNamesFilter so the guardrail
+// incidents list and its counts agree.
+func parseGuardrailFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	for param, target := range map[string]*[]string{
+		"guardrail_outcomes":    &filters.GuardrailOutcomes,
+		"guardrail_actions":     &filters.GuardrailActions,
+		"guardrail_rule_ids":    &filters.GuardrailRuleIDs,
+		"guardrail_profile_ids": &filters.GuardrailProfileIDs,
+		"guardrail_phases":      &filters.GuardrailPhases,
+	} {
+		if values := string(ctx.QueryArgs().Peek(param)); values != "" {
+			*target = parseCommaSeparated(values)
+		}
 	}
 }
 
@@ -1759,7 +1769,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
-	parseGuardrailOutcomesFilter(ctx, filters)
+	parseGuardrailFilters(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
