@@ -936,16 +936,17 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	topK := bifrostReq.Params.TopK
 	// Add extra parameters
 	extraParams := newConverseExtraParams(bifrostReq.Params.ExtraParams)
-	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
-		if extraTopK, ok := schemas.SafeExtractIntPointer(extraParams.m["top_k"]); ok {
+	rawTopK, hasExtraTopK := extraParams.m["top_k"]
+	if (topK != nil || hasExtraTopK) && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		if extraTopK, ok := schemas.SafeExtractIntPointer(rawTopK); ok {
 			extraParams.consume("top_k")
 			if topK == nil {
 				topK = extraTopK
 			}
 		}
+		applyAnthropicTopK(caps, topK, bedrockReq)
 	}
-	applyAnthropicTopK(ctx, bifrostReq.Model, caps, topK, bedrockReq)
-	if err := applyBedrockExtraParams(extraParams, bedrockReq); err != nil {
+	if err := applyBedrockExtraParams(&extraParams, bedrockReq); err != nil {
 		return err
 	}
 	bedrockReq.ExtraParams = extraParams.result()
@@ -1358,12 +1359,12 @@ func invokeChatGuardTagging(request *schemas.BifrostChatRequest) (*schemas.Bifro
 }
 
 // applyAnthropicTopK sends a Claude caller's top_k through additionalModelRequestFields, the
-// only place Converse takes it (the invoke route does the same). Models that reject top_k
-// (adaptive-only thinking) get none, matching the Anthropic provider. Runs before
-// applyBedrockExtraParams so an explicit additionalModelRequestFieldPaths entry still wins.
-func applyAnthropicTopK(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, topK *int, bedrockReq *BedrockConverseRequest) {
-	if topK == nil || !schemas.IsAnthropicModelFamily(ctx, model) ||
-		caps.AdaptiveOnlyThinking(anthropic.DefaultAdaptiveOnlyThinking(caps.Model())) {
+// only place Converse takes it (the invoke route does the same). The caller checks that the
+// model is a Claude model. Models that reject top_k (adaptive-only thinking) get none, matching
+// the Anthropic provider. Runs before applyBedrockExtraParams so an explicit
+// additionalModelRequestFieldPaths entry still wins.
+func applyAnthropicTopK(caps schemas.ModelCaps, topK *int, bedrockReq *BedrockConverseRequest) {
+	if topK == nil || caps.AdaptiveOnlyThinking(anthropic.DefaultAdaptiveOnlyThinking(caps.Model())) {
 		return
 	}
 	if bedrockReq.AdditionalModelRequestFields == nil {
@@ -2010,8 +2011,8 @@ type converseExtraParams struct {
 
 // newConverseExtraParams wraps extraParams and drops the top-level "cache_control", which the
 // converters handle on their own.
-func newConverseExtraParams(extraParams map[string]interface{}) *converseExtraParams {
-	p := &converseExtraParams{m: extraParams}
+func newConverseExtraParams(extraParams map[string]interface{}) converseExtraParams {
+	p := converseExtraParams{m: extraParams}
 	p.consume("cache_control")
 	return p
 }

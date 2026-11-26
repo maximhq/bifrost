@@ -2,6 +2,7 @@ package bedrock
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -198,4 +199,58 @@ func TestConverseExtraParamsCopyOnlyWhenConsuming(t *testing.T) {
 		require.Contains(t, extra, "requestMetadata", "the caller's map lost a key")
 		require.Equal(t, map[string]string{"a": "b"}, req.RequestMetadata)
 	})
+}
+
+// Request-path cost of the ExtraParams handling in the Converse converters, with and without
+// keys they consume (go test -run '^$' -bench ConverseExtraParams -benchmem ./providers/bedrock/).
+func BenchmarkConverseExtraParams(b *testing.B) {
+	const llama = "meta.llama3-70b-instruct-v1:0"
+	unrelated := func(n int) map[string]interface{} {
+		m := map[string]interface{}{"max_gen_len": 64}
+		for i := 1; i < n; i++ {
+			m[fmt.Sprintf("custom_%d", i)] = i
+		}
+		return m
+	}
+	withTopK := func(m map[string]interface{}) map[string]interface{} {
+		m["top_k"] = 41
+		return m
+	}
+	cases := []struct {
+		name  string
+		model string
+		extra func() map[string]interface{}
+	}{
+		{"llama/1 unrelated key", llama, func() map[string]interface{} { return unrelated(1) }},
+		{"llama/8 unrelated keys", llama, func() map[string]interface{} { return unrelated(8) }},
+		{"llama/64 unrelated keys", llama, func() map[string]interface{} { return unrelated(64) }},
+		{"claude/top_k only", topKClaudeModel, func() map[string]interface{} { return map[string]interface{}{"top_k": 41} }},
+		{"claude/top_k + 8 keys", topKClaudeModel, func() map[string]interface{} { return withTopK(unrelated(8)) }},
+	}
+	for _, tc := range cases {
+		caps := schemas.ResolveModelCaps(schemas.Bedrock, tc.model)
+		b.Run("chat/"+tc.name, func(b *testing.B) {
+			req := &schemas.BifrostChatRequest{Model: tc.model, Params: &schemas.ChatParameters{ExtraParams: tc.extra()}}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if err := convertChatParameters(nil, req, &BedrockConverseRequest{}, caps); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("responses/"+tc.name, func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    tc.model,
+				Params:   &schemas.ResponsesParameters{ExtraParams: tc.extra()},
+			}
+			ctx := &schemas.BifrostContext{}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

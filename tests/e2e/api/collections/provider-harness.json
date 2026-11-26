@@ -194127,6 +194127,62 @@
               }
             }
           ]
+        },
+        {
+          "name": "146.13 bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses top_k reaches Converse additionalModelRequestFields (sampling top_k)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"input\": \"Reply OK.\",\n  \"max_output_tokens\": 16,\n  \"top_k\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var __b = {};",
+                  "try { __b = pm.response.json() || {}; } catch (e) { __b = {}; }",
+                  "pm.test('status 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.equal(200); });",
+                  "var rr = (__b.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('raw_request captured', function () { pm.expect(rr, 'raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
+                  "if (rr) {",
+                  "  // Converse has no typed top_k slot: it must ride additionalModelRequestFields, as on the invoke route (#9930). /v1/responses has no typed top_k, so it arrives as an extra param.",
+                  "  pm.test('top_k reaches Converse as additionalModelRequestFields.top_k', function () {",
+                  "    var amrf = rr.additionalModelRequestFields || {};",
+                  "    pm.expect(amrf.top_k, JSON.stringify(rr).slice(0, 600)).to.equal(1);",
+                  "  });",
+                  "  pm.test('top_k is not left at the Converse top level', function () {",
+                  "    pm.expect(rr, JSON.stringify(rr).slice(0, 600)).to.not.have.property('top_k');",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
