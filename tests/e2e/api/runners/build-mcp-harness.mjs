@@ -5898,6 +5898,57 @@ const LOG10 = folder("LOG-10 Code mode inside agent mode", `Setup: ${AGENT_TEXT(
   agentTeardown("LOG-10"),
 ]);
 
+// INF-82: listToolFiles(query=...) returns a ranked shortlist of the code-mode tool files the caller can see, instead
+// of the complete listing.
+const INF82_DSA = [
+  { name: "send_message", description: "Post a message to a chat channel" },
+  { name: "search_messages", description: "Search past chat messages" },
+  { name: "create_issue", description: "Open an issue in the tracker" },
+];
+const listQuery = (id, title, args, asserts, headers = []) => execBody(id, title, toolCall("listToolFiles", args), [A.status(200), ...asserts], { headers });
+// shortlist reads the listing's file lines (path only) as `files` (ES5).
+const SHORTLIST = "var text = pm.response.json().content; var files = text.split('\\n').filter(function (l) { return l.indexOf('servers/') === 0; }).map(function (l) { return l.split('  #')[0]; });";
+const shortlistIs = (header, files) => A.custom(`the shortlist starts ${lit(header)} and lists exactly ${lit(files)}`, [
+  SHORTLIST,
+  `pm.expect(text.indexOf(${lit(header)}), 'body: ' + pm.response.text()).to.equal(0);`,
+  `pm.expect(files).to.eql(${lit(files)});`,
+]);
+const INF82 = folder("INF-82 Ranked listToolFiles discovery", `Setup: dsa (send_message "Post a message to a chat channel", search_messages "Search past chat messages", create_issue "Open an issue in the tracker") and dsb (send_message "Send a message") registered as code-mode clients dsa and dsb, auth none, per call, tools_to_execute ["*"]; mcp_code_mode_binding_level "tool", then "server"; no discovery ranker is configured, so queries use the built-in lexical ranking.`, [
+  ...serveTools("INF-82", "dsa", INF82_DSA, "send_message, search_messages and create_issue"),
+  ...serveTools("INF-82", "dsb", [{ name: "send_message", description: "Send a message" }], "send_message"),
+  createClient("INF-82", httpClient("inf-82-dsa", "dsa", "dsa", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register dsa as a code-mode client"),
+  createClient("INF-82", httpClient("inf-82-dsb", "dsb", "dsb", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register dsb as a code-mode client"),
+  readConfig("INF-82"),
+  putConfig("INF-82", "setup: set mcp_code_mode_binding_level \"tool\"", ["cc.mcp_code_mode_binding_level = 'tool';"], [A.status(200)]),
+  listQuery("INF-82", "a query ranks the matching tools first, at most limit files", { query: "post a message to a chat channel", limit: 2 }, [A.custom("a lexical shortlist of two files, dsa's send_message first", [
+    SHORTLIST,
+    "pm.expect(text, 'body: ' + pm.response.text()).to.match(/^# Ranked shortlist for this query \\(lexical match\\): \\d+ of \\d+ tools visible to this caller matched\\./);",
+    "pm.expect(text).to.include('# Not exhaustive: call listToolFiles without query for the complete listing.');",
+    "pm.expect(files.length).to.equal(2);",
+    "pm.expect(files[0]).to.equal('servers/dsa/send_message.pyi');",
+    "pm.expect(files).to.not.include('servers/dsa/create_issue.pyi');",
+  ])]),
+  listQuery("INF-82", "the shortlist covers only the clients the caller may see", { query: "send a message" }, [shortlistIs("# Ranked shortlist for this query (lexical match): 1 of 1 tools visible to this caller matched.", ["servers/dsb/send_message.pyi"])], [inc("clients", "dsb")]),
+  listQuery("INF-82", "a query that is exactly a tool reference returns that tool", { query: "dsa.create_issue" }, [A.custom("one exact match", [
+    SHORTLIST,
+    "pm.expect(text, 'body: ' + pm.response.text()).to.match(/^# Exact match for this query: 1 of \\d+ tools visible to this caller\\./);",
+    "pm.expect(files).to.eql(['servers/dsa/create_issue.pyi']);",
+  ])]),
+  listQuery("INF-82", "a query nothing matches says so", { query: "zzqx" }, [contentHas("No tool names or descriptions matched this query among the")]),
+  listQuery("INF-82", "an empty query returns the complete listing", { query: "  " }, [contentHas("servers/\n  dsa/\n    create_issue.pyi\n    search_messages.pyi\n    send_message.pyi")], [inc("clients", "dsa")]),
+  execBody("INF-82", "limit 0 is refused", toolCall("listToolFiles", { query: "message", limit: 0 }), [A.status(400), A.msgContains("limit must be an integer from 1 to 20")]),
+  putConfig("INF-82", "setup: set mcp_code_mode_binding_level \"server\"", ["cc.mcp_code_mode_binding_level = 'server';"], [A.status(200)]),
+  listQuery("INF-82", "at server binding each server file is listed once with its matching tools", { query: "search past chat messages" }, [A.custom("servers/dsa.pyi first, naming search_messages first", [
+    SHORTLIST,
+    "pm.expect(files[0], 'body: ' + pm.response.text()).to.equal('servers/dsa.pyi');",
+    "pm.expect(text.split('\\n').filter(function (l) { return l.indexOf('servers/dsa.pyi') === 0; })[0]).to.match(/^servers\\/dsa\\.pyi  # tools: search_messages/);",
+    "pm.expect(files.filter(function (f) { return f === 'servers/dsa.pyi'; }).length).to.equal(1);",
+  ])]),
+  restoreConfig("INF-82"),
+  deleteClient("INF-82", "inf-82-dsa"),
+  deleteClient("INF-82", "inf-82-dsb"),
+]);
+
 // ================================================================ provider-injected tools on the mock LLM
 
 // A provider's injected_tools expose one MCP tool to the model under a name of the provider's choosing, and Bifrost
@@ -13589,7 +13640,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80, INF82]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
