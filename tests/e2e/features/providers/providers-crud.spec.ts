@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import { expectListLoadError } from "../../core/utils/test-helpers";
@@ -131,6 +133,7 @@ test.describe("Providers", () => {
 
   test("should add Wally from the provider menu and save a dummy key", async ({
     providersPage,
+    providerSettingsPage,
     page,
   }) => {
     expect(await providersPage.providerExists("wally"), "use a fresh isolated backend").toBe(false);
@@ -139,29 +142,54 @@ test.describe("Providers", () => {
     await expect(providersPage.getProviderItem("wally")).toBeVisible({ timeout: 15000 });
     await providersPage.selectProvider("wally");
 
-    const keyData = createProviderKeyData({
-      name: `Wally-E2E-${Date.now()}`,
-      value: "e2e-wally-dummy-key",
-      weight: 1.0,
+    // Keep model discovery on this machine: point Wally at a local stub through the
+    // settings flow, so saving the key never waits on the real API.
+    let discoveryCalls = 0;
+    const upstream = createServer((_request, response) => {
+      discoveryCalls++;
+      response.setHeader("Content-Type", "application/json");
+      response.end(JSON.stringify({ object: "list", data: [] }));
     });
-    createdKeys.push({ provider: "wally", keyName: keyData.name });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    const { port } = upstream.address() as AddressInfo;
+    try {
+      // The add-provider menu can still be closing; open the config sheet only once it is gone.
+      await expect(page.locator('[role="dialog"]')).toHaveCount(0);
+      await providerSettingsPage.setNetworkConfig({ baseUrl: `http://127.0.0.1:${port}/v1` });
+      await providerSettingsPage.saveNetworkConfig();
+      await page.keyboard.press("Escape");
+      const wally = await page.request.get("/api/providers/wally");
+      expect(wally.ok()).toBe(true);
+      expect(((await wally.json()) as { network_config?: { base_url?: string } }).network_config?.base_url).toBe(
+        `http://127.0.0.1:${port}/v1`,
+      );
 
-    // Model discovery runs on save and fails against a dummy key; the key must still save.
-    await providersPage.addKey(keyData);
-    expect(await providersPage.keyExists(keyData.name)).toBe(true);
+      const keyData = createProviderKeyData({
+        name: `Wally-E2E-${Date.now()}`,
+        value: "e2e-wally-dummy-key",
+        weight: 1.0,
+      });
+      createdKeys.push({ provider: "wally", keyName: keyData.name });
 
-    const keysResponse = await page.request.get("/api/providers/wally/keys");
-    expect(keysResponse.ok()).toBe(true);
-    const provider = (await keysResponse.json()) as {
-      keys: { name: string; models?: string[] }[];
-    };
-    const saved = provider.keys.find((k) => k.name === keyData.name);
-    expect(saved, "saved key must be listed").toBeTruthy();
-    expect(saved?.models).toEqual(["*"]);
+      await providersPage.addKey(keyData);
+      expect(await providersPage.keyExists(keyData.name)).toBe(true);
+      expect(discoveryCalls, "model discovery must hit the local stub").toBeGreaterThan(0);
 
-    await page.reload();
-    await providersPage.selectProvider("wally");
-    await expect(providersPage.getKeyRow(keyData.name)).toBeVisible();
+      const keysResponse = await page.request.get("/api/providers/wally/keys");
+      expect(keysResponse.ok()).toBe(true);
+      const provider = (await keysResponse.json()) as {
+        keys: { name: string; models?: string[] }[];
+      };
+      const saved = provider.keys.find((k) => k.name === keyData.name);
+      expect(saved, "saved key must be listed").toBeTruthy();
+      expect(saved?.models).toEqual(["*"]);
+
+      await page.reload();
+      await providersPage.selectProvider("wally");
+      await expect(providersPage.getKeyRow(keyData.name)).toBeVisible();
+    } finally {
+      await new Promise<void>((resolve, reject) => upstream.close((error) => (error ? reject(error) : resolve())));
+    }
   });
 
   test.describe("Provider Keys", () => {
