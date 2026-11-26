@@ -523,7 +523,6 @@
 				"allowed": "Allowed",
 				"blocked": "Blocked",
 				"redacted": "Redacted",
-				"transformed": "Transformed",
 				"monitored": "Monitored",
 				"detected": "Detected"
 			},
@@ -569,11 +568,9 @@
 			"audioMeta": "ID: {{id}} | Expires: {{expires}}",
 			"guardrailHints": {
 				"blocked": "The rule stopped the request.",
-				"redacted": "The rule removed the matched content and the request continued.",
-				"transformed": "The rule rewrote the matched content and the request continued.",
+				"redacted": "The rule masked or rewrote the matched content and the request continued.",
 				"monitoredWouldBlock": "The rule only monitors: it would have blocked this, but the request continued unchanged.",
 				"monitoredWouldRedact": "The rule only monitors: it would have redacted this, but the request continued unchanged.",
-				"monitoredWouldTransform": "The rule only monitors: it would have transformed this, but the request continued unchanged.",
 				"monitored": "The rule only monitors: the request continued unchanged.",
 				"detected": "The rule flagged the request and let it continue unchanged."
 			},
