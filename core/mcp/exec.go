@@ -171,7 +171,7 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, nil, fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
 	clientName := state.ExecutionConfig.Name
-	if err := checkToolExecutionPermitted(ctx, state, toolName, m.logger); err != nil {
+	if err := checkToolExecutionPermitted(ctx, state, m.withheld(state.ExecutionConfig.ID), toolName, m.logger); err != nil {
 		return nil, nil, nil, nil, err
 	}
 	toolMeta := discovery.GetTools()[toolName].MCP
@@ -255,7 +255,9 @@ func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
 // for tool discovery, in the same order. Without these a caller could invoke a tool by
 // name that was deliberately hidden from the tool list.
 //
-//  1. Client lifecycle — a disabled client is not usable.
+//  1. Client lifecycle: a disabled client is not usable, and neither is one
+//     withheld from callers while it awaits its admin verification (withheld,
+//     see withheldFromCallers).
 //  2. Client allow-list — request-context MCPContextKeyIncludeClients.
 //  3. Tool allow-list   — client-level ToolsToExecute (most restrictive).
 //  4. Tool narrowing    — request-context MCPContextKeyIncludeTools.
@@ -267,12 +269,12 @@ func (m *MCPManager) codeModeClientReachable(ctx *schemas.BifrostContext) bool {
 // request, so neither the client's allow-list nor the caller's include lists apply.
 // The marker names one client and one exact prefixed tool, and both must match, so it
 // never authorizes a sibling or another client's tool.
-func checkToolExecutionPermitted(ctx *schemas.BifrostContext, state *schemas.MCPClientState, toolName string, logger schemas.Logger) error {
+func checkToolExecutionPermitted(ctx *schemas.BifrostContext, state *schemas.MCPClientState, withheld bool, toolName string, logger schemas.Logger) error {
 	clientName := state.ExecutionConfig.Name
 	if state.State == schemas.MCPConnectionStateDisabled {
 		return fmt.Errorf("tool '%s' is not permitted (client %s is disabled)", toolName, clientName)
 	}
-	if withheldFromCallers(state.State, state.ExecutionConfig) {
+	if withheld {
 		return fmt.Errorf("tool '%s' is not permitted (client %s awaits admin verification)", toolName, clientName)
 	}
 	if mcpvouch.Kind(ctx, clientName, toolName) == schemas.MCPToolCallKindInjected {

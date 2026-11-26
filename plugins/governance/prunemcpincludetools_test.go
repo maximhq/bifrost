@@ -30,33 +30,33 @@ func includeToolsFromCtx(t *testing.T, ctx *schemas.BifrostContext) []string {
 
 // No caller-provided list on ctx → returns false and leaves ctx untouched.
 func TestPruneMCPIncludeTools_NoCallerList(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects"})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	assert.False(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.False(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Nil(t, ctx.Value(schemas.MCPContextKeyIncludeTools),
 		"ctx should remain unset when the caller provided no list")
 }
 
 // A tool the VK does not grant is dropped; the result is an empty (deny-all) list.
 func TestPruneMCPIncludeTools_DisallowedToolDropped(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-search_tools"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Empty(t, includeToolsFromCtx(t, ctx),
 		"a tool outside the VK grant must be pruned, leaving a deny-all list")
 }
 
 // A tool the VK explicitly grants survives pruning.
 func TestPruneMCPIncludeTools_GrantedToolKept(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects", "search_issues"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-find_projects", "sentry-search_tools"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Equal(t, []string{"sentry-find_projects"}, includeToolsFromCtx(t, ctx),
 		"granted entries survive, ungranted entries are dropped")
 }
@@ -64,96 +64,96 @@ func TestPruneMCPIncludeTools_GrantedToolKept(t *testing.T) {
 // A specific tool requested under an unrestricted ("*") VK grant survives — the
 // header narrows within the wildcard grant.
 func TestPruneMCPIncludeTools_SpecificToolUnderUnrestrictedGrant(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"*"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-search_tools"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Equal(t, []string{"sentry-search_tools"}, includeToolsFromCtx(t, ctx),
 		"specific request should be allowed by the client's unrestricted grant")
 }
 
 // A caller wildcard is kept verbatim only when the VK itself is unrestricted for that client.
 func TestPruneMCPIncludeTools_WildcardKeptWhenVKUnrestricted(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"*"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Equal(t, []string{"sentry-*"}, includeToolsFromCtx(t, ctx))
 }
 
 // A caller wildcard against a specific VK grant is narrowed to the grant's entries —
 // passing the wildcard through would read downstream as "all tools of this client".
 func TestPruneMCPIncludeTools_WildcardNarrowedToSpecificGrants(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects", "search_issues"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Equal(t, []string{"sentry-find_projects", "sentry-search_issues"}, includeToolsFromCtx(t, ctx))
 }
 
 // A caller wildcard for a client the VK does not grant at all yields nothing.
 func TestPruneMCPIncludeTools_WildcardForUngrantedClientDropped(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects"})
 	ctx := newCtxWithIncludeTools([]string{"github-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Empty(t, includeToolsFromCtx(t, ctx))
 }
 
 // An empty header value (parsed as [""] by lib/ctx.go) prunes to a deny-all list,
 // letting callers suppress tool injection for a request.
 func TestPruneMCPIncludeTools_EmptyHeaderOptOut(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"*"})
 	ctx := newCtxWithIncludeTools([]string{""})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Empty(t, includeToolsFromCtx(t, ctx))
 }
 
 // Wildcard expansion plus an overlapping specific request must not produce duplicates.
 func TestPruneMCPIncludeTools_DedupAcrossWildcardAndSpecific(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"find_projects", "search_issues"})
 	ctx := newCtxWithIncludeTools([]string{"sentry-*", "sentry-find_projects"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Equal(t, []string{"sentry-find_projects", "sentry-search_issues"}, includeToolsFromCtx(t, ctx))
 }
 
 // AllowByDefault client with no explicit VK config: both specific and wildcard
 // requests survive (the implicit grant is client-wide).
 func TestPruneMCPIncludeTools_AllowByDefaultClient(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{
+	p := newPluginWithFixture(t, &liveFixture{
 		allowedByDefaultClients: map[string]string{"client-1": "youtube"},
 	})
 	vk := buildVKNoMCPConfigs()
 	ctx := newCtxWithIncludeTools([]string{"youtube-search", "youtube-*", "github-list_repos"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, map[string]string{"client-1": "youtube"})))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, map[string]string{"client-1": "youtube"})))
 	assert.Equal(t, []string{"youtube-search", "youtube-*"}, includeToolsFromCtx(t, ctx),
 		"AllowByDefault grants the whole client; other clients are still pruned")
 }
 
 // An explicit empty VK config (deny-all) overrides the client's AllowByDefault flag.
 func TestPruneMCPIncludeTools_ExplicitEmptyConfigOverridesAllowAll(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{
+	p := newPluginWithFixture(t, &liveFixture{
 		allowedByDefaultClients: map[string]string{"client-1": "youtube"},
 	})
 	vk := buildVKWithMCPConfigs("client-1", "youtube", []string{})
 	ctx := newCtxWithIncludeTools([]string{"youtube-search", "youtube-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, map[string]string{"client-1": "youtube"})))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, map[string]string{"client-1": "youtube"})))
 	assert.Empty(t, includeToolsFromCtx(t, ctx))
 }
 
 // Pruning spans multiple VK clients independently.
 func TestPruneMCPIncludeTools_MultipleClients(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := &configstoreTables.TableVirtualKey{
 		ID:   "vk-multi",
 		Name: "test-vk-multi",
@@ -170,18 +170,18 @@ func TestPruneMCPIncludeTools_MultipleClients(t *testing.T) {
 	}
 	ctx := newCtxWithIncludeTools([]string{"sentry-find_projects", "sentry-search_issues", "github-list_repos", "github-*"})
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Equal(t, []string{"sentry-find_projects", "github-list_repos", "github-*"}, includeToolsFromCtx(t, ctx))
 }
 
 // A ctx value of the wrong type fails closed: treated as a present-but-empty caller list.
 func TestPruneMCPIncludeTools_WrongTypeFailsClosed(t *testing.T) {
-	p := newPluginWithInMemoryStore(&mockInMemoryStore{})
+	p := newPluginWithFixture(t, &liveFixture{})
 	vk := buildVKWithMCPConfigs("client-1", "sentry", []string{"*"})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.MCPContextKeyIncludeTools, "sentry-search_tools")
 
-	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(vk, nil)))
+	assert.True(t, p.pruneMCPIncludeToolsFromContext(ctx, accessFor(t, vk, nil)))
 	assert.Empty(t, includeToolsFromCtx(t, ctx),
 		"a malformed ctx value must prune to deny-all, not pass through")
 }

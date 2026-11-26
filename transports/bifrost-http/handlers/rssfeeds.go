@@ -37,6 +37,11 @@ const (
 	rssFeedUnavailableMessage = "feed could not be loaded"
 )
 
+// errRSSFeedsUnavailable answers every feed route while the handler's store is nil: the config
+// store does not provide RSS feed storage (it does not implement configstore.RSSFeedStore), for
+// example a store that wraps another by embedding the ConfigStore interface, which promotes only
+// that interface's methods. RequireConfigStoreMiddleware refuses only a disabled config store, so
+// these routes check the feed store themselves.
 var errRSSFeedsUnavailable = errors.New("rss feed storage is unavailable")
 
 // rssItemsFetchTimeout bounds one items request and one probe; a var so tests can shorten it.
@@ -51,11 +56,9 @@ type RSSFeedsHandler struct {
 	manager *rssfeed.Manager
 }
 
+// NewRSSFeedsHandler serves the feed API over store, fetching and caching feeds through manager.
 func NewRSSFeedsHandler(store configstore.ConfigStore, manager *rssfeed.Manager) *RSSFeedsHandler {
 	feedStore, _ := store.(configstore.RSSFeedStore)
-	if manager == nil {
-		manager = rssfeed.NewManager()
-	}
 	return &RSSFeedsHandler{store: feedStore, manager: manager}
 }
 
@@ -84,6 +87,7 @@ type rssFeedListResponse struct {
 	Feeds []tables.TableRSSFeed `json:"feeds"`
 }
 
+// listFeeds handles GET /api/rss/feeds: every configured feed, built-in and custom.
 func (h *RSSFeedsHandler) listFeeds(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -114,6 +118,7 @@ type rssFeedUpdateRequest struct {
 	Enabled *bool   `json:"enabled,omitempty"`
 }
 
+// createFeed handles POST /api/rss/feeds: it validates and probes a custom feed, then saves it.
 func (h *RSSFeedsHandler) createFeed(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -153,9 +158,11 @@ func (h *RSSFeedsHandler) createFeed(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to create rss feed")
 		return
 	}
+	lib.RecordAuditChange(ctx, "rss_feed.created", "rss_feed", strconv.FormatUint(uint64(feed.ID), 10), feed.Name, nil, auditRSSFeed(feed))
 	SendJSONWithStatus(ctx, feed, fasthttp.StatusCreated)
 }
 
+// updateFeed handles PUT /api/rss/feeds/{id}. A built-in feed can only be enabled or disabled.
 func (h *RSSFeedsHandler) updateFeed(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -180,6 +187,7 @@ func (h *RSSFeedsHandler) updateFeed(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Built-in feeds can only be enabled or disabled")
 		return
 	}
+	before := auditRSSFeed(feed)
 	previousURL := feed.URL
 	if req.Name != nil || req.URL != nil {
 		name, feedURL := feed.Name, feed.URL
@@ -217,6 +225,7 @@ func (h *RSSFeedsHandler) updateFeed(ctx *fasthttp.RequestCtx) {
 		h.sendStoreError(ctx, err)
 		return
 	}
+	lib.RecordAuditChange(ctx, "rss_feed.updated", "rss_feed", strconv.FormatUint(uint64(feed.ID), 10), feed.Name, before, auditRSSFeed(feed))
 	if feed.URL != previousURL {
 		h.manager.Forget(previousURL)
 	}
@@ -224,6 +233,7 @@ func (h *RSSFeedsHandler) updateFeed(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, feed)
 }
 
+// deleteFeed handles DELETE /api/rss/feeds/{id}. Built-in feeds cannot be deleted, only disabled.
 func (h *RSSFeedsHandler) deleteFeed(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -247,6 +257,7 @@ func (h *RSSFeedsHandler) deleteFeed(ctx *fasthttp.RequestCtx) {
 		h.sendStoreError(ctx, err)
 		return
 	}
+	lib.RecordAuditChange(ctx, "rss_feed.deleted", "rss_feed", strconv.FormatUint(uint64(feed.ID), 10), feed.Name, auditRSSFeed(feed), nil)
 	h.manager.Forget(feed.URL)
 	SendJSON(ctx, map[string]string{"message": "Feed deleted"})
 }
@@ -286,6 +297,7 @@ type rssSettingsUpdateRequest struct {
 	Enabled *bool `json:"enabled"`
 }
 
+// getSettings handles GET /api/rss/settings: whether the gateway-wide news switch is on.
 func (h *RSSFeedsHandler) getSettings(ctx *fasthttp.RequestCtx) {
 	if h.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, errRSSFeedsUnavailable.Error())
@@ -313,11 +325,16 @@ func (h *RSSFeedsHandler) updateSettings(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "enabled is required")
 		return
 	}
+	var before any
+	if previous, err := h.store.GetRSSNewsEnabled(ctx); err == nil {
+		before = rssSettings{Enabled: previous}
+	}
 	if err := h.store.SetRSSNewsEnabled(ctx, *req.Enabled); err != nil {
 		logger.Warn("failed to store rss news setting: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to update news settings")
 		return
 	}
+	lib.RecordAuditChange(ctx, "rss_settings.updated", "rss_settings", "rss_settings", "News settings", before, rssSettings{Enabled: *req.Enabled})
 	SendJSON(ctx, rssSettings{Enabled: *req.Enabled})
 }
 
@@ -537,4 +554,42 @@ func rssFeedIDParam(ctx *fasthttp.RequestCtx) (uint, bool) {
 		return 0, false
 	}
 	return uint(id), true
+}
+
+// auditRSSFeed snapshots a feed for the audit log with any credentials stripped from its URLs.
+func auditRSSFeed(feed *tables.TableRSSFeed) map[string]any {
+	if feed == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":       feed.ID,
+		"slug":     feed.Slug,
+		"name":     feed.Name,
+		"url":      auditURLOrigin(feed.URL),
+		"icon_url": auditRSSFeedIcon(feed.IconURL),
+		"source":   feed.Source,
+		"enabled":  feed.Enabled,
+	}
+}
+
+// auditRSSFeedIcon keeps an icon URL out of the audit log when it is an inline image.
+func auditRSSFeedIcon(icon string) string {
+	if strings.HasPrefix(icon, "data:") {
+		return "data:(inline image)"
+	}
+	return auditURLOrigin(icon)
+}
+
+// auditURLOrigin keeps only the scheme and host of a URL for the audit log: a private feed can
+// carry its access token in the path as well as in the userinfo or query, so nothing past the
+// host is recorded, and a URL that does not parse is not recorded at all.
+func auditURLOrigin(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return unparseableURLPlaceholder
+	}
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host}).String()
 }

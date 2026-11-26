@@ -243,7 +243,7 @@ func TestExtraHeadersHealthCheckPingReachWire(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := httpExtraHeaderConfig("hc_ping", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	// Drive fast health-check pings (the AddClient-owned monitor ticks far too
 	// slowly for a test).
@@ -271,7 +271,7 @@ func TestExtraHeadersHealthCheckListToolsReachWire(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := httpExtraHeaderConfig("hc_list", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	// isPingAvailable=false → health check uses list_tools as the probe.
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
@@ -295,7 +295,7 @@ func TestExtraHeadersToolCallReachWire(t *testing.T) {
 	manager, bf := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := httpExtraHeaderConfig("call_extra", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	toolCall := schemas.ChatAssistantMessageToolCall{
 		ID: schemas.Ptr("call-1"),
@@ -324,7 +324,7 @@ func TestExtraHeadersSSEHealthCheckPingReachWire(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_hc_ping", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, true, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
@@ -350,7 +350,7 @@ func TestExtraHeadersSSEHealthCheckListToolsReachWire(t *testing.T) {
 	manager, _ := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_hc_list", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	monitor := mcp.NewClientConnectionChecker(manager, cfg.ID, 10*time.Millisecond, false, core.NewDefaultLogger(schemas.LogLevelError))
 	monitor.Start()
@@ -373,7 +373,7 @@ func TestExtraHeadersSSEToolCallReachWire(t *testing.T) {
 	manager, bf := setupBifrostWithPlugins(t, []schemas.MCPPlugin{&extraHeaderInjectPlugin{}})
 
 	cfg := sseExtraHeaderConfig("sse_call_extra", ts.URL)
-	require.NoError(t, manager.AddClient(context.Background(), cfg))
+	require.NoError(t, addClient(context.Background(), manager, cfg))
 
 	toolCall := schemas.ChatAssistantMessageToolCall{
 		ID: schemas.Ptr("sse-call-1"),
@@ -457,18 +457,28 @@ func removeClientsOnCleanup(t *testing.T, manager *mcp.MCPManager) {
 	})
 }
 
+// newAccountManager builds a manager that reads its clients from a fresh test account, so addClient can serve them.
+func newAccountManager(t *testing.T, config schemas.MCPConfig, logger schemas.Logger, codeMode mcp.CodeMode) *mcp.MCPManager {
+	t.Helper()
+	account := newTestAccount()
+	manager := mcp.NewMCPManager(context.Background(), config, account, nil, logger, codeMode)
+	managerAccounts.Store(manager, account)
+	t.Cleanup(func() { managerAccounts.Delete(manager) })
+	return manager
+}
+
 // setupOutboundTokenBifrostWithStickiness wires manager and client with configured stickiness.
 func setupOutboundTokenBifrostWithStickiness(t *testing.T, provider schemas.OutboundMCPTokenProvider, clientName, serverURL string, sticky bool, plugins ...schemas.MCPPlugin) (*mcp.MCPManager, *core.Bifrost) {
 	t.Helper()
 
 	logger := newTestLogger(t)
-	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+	manager := newAccountManager(t, schemas.MCPConfig{
 		OutboundTokenProvider: provider,
 		PluginPipelineProvider: func() interface{} {
 			return &noopPluginPipeline{}
 		},
 		ReleasePluginPipeline: func(pipeline interface{}) {},
-	}, nil, logger, nil)
+	}, logger, nil)
 	bf, err := core.Init(context.Background(), schemas.BifrostConfig{
 		Account:    &testAccount{},
 		MCPPlugins: plugins,
@@ -482,7 +492,7 @@ func setupOutboundTokenBifrostWithStickiness(t *testing.T, provider schemas.Outb
 	if sticky {
 		stickiness = schemas.Ptr(true)
 	}
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 		ID:                     clientName + "-id",
 		Name:                   clientName,
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,
@@ -663,7 +673,7 @@ func TestOutboundTokenHookTokenWithoutProvider(t *testing.T) {
 				stickiness = schemas.Ptr(true)
 			}
 			clientName := "outbound_ctx_" + name
-			require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+			require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 				ID:                     clientName + "-id",
 				Name:                   clientName,
 				ConnectionType:         schemas.MCPConnectionTypeHTTP,
@@ -710,10 +720,10 @@ func TestOutboundTokenNeverOnProbes(t *testing.T) {
 
 	ts, rec := buildAuthEchoServer(t)
 	logger := newTestLogger(t)
-	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+	manager := newAccountManager(t, schemas.MCPConfig{
 		PluginPipelineProvider: func() interface{} { return &noopPluginPipeline{} },
 		ReleasePluginPipeline:  func(pipeline interface{}) {},
-	}, nil, logger, nil)
+	}, logger, nil)
 	bf, err := core.Init(context.Background(), schemas.BifrostConfig{
 		Account:    &testAccount{},
 		MCPPlugins: []schemas.MCPPlugin{&outboundTokenHookPlugin{token: "hook-probe-leak"}},
@@ -725,7 +735,7 @@ func TestOutboundTokenNeverOnProbes(t *testing.T) {
 
 	clientID := "outbound_probe-id"
 	clientName := "outbound_probe"
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 		ID:                     clientID,
 		Name:                   clientName,
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,
@@ -798,7 +808,7 @@ func TestOutboundTokenSequentialTwoClientsScopedOnSameCtx(t *testing.T) {
 		removeClientsOnCleanup(t, manager)
 
 		for _, name := range []string{"client_a", "client_b"} {
-			require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+			require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 				ID:                     name + "-id",
 				Name:                   name,
 				ConnectionType:         schemas.MCPConnectionTypeHTTP,
@@ -829,11 +839,11 @@ func TestOutboundTokenSequentialTwoClientsScopedOnSameCtx(t *testing.T) {
 			return "", nil
 		})
 		logger := newTestLogger(t)
-		manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+		manager := newAccountManager(t, schemas.MCPConfig{
 			OutboundTokenProvider:  provider,
 			PluginPipelineProvider: func() interface{} { return &noopPluginPipeline{} },
 			ReleasePluginPipeline:  func(pipeline interface{}) {},
-		}, nil, logger, nil)
+		}, logger, nil)
 		bf, err := core.Init(context.Background(), schemas.BifrostConfig{
 			Account: &testAccount{},
 			Logger:  core.NewDefaultLogger(schemas.LogLevelError),
@@ -843,7 +853,7 @@ func TestOutboundTokenSequentialTwoClientsScopedOnSameCtx(t *testing.T) {
 		removeClientsOnCleanup(t, manager)
 
 		for _, name := range []string{"client_p_a", "client_p_b"} {
-			require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+			require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 				ID:                     name + "-id",
 				Name:                   name,
 				ConnectionType:         schemas.MCPConnectionTypeHTTP,
@@ -873,11 +883,11 @@ func TestOutboundTokenProviderEmptyFallsBackToHookToken(t *testing.T) {
 	ts, rec := buildAuthEchoServer(t)
 	provider := funcTokenProvider(func(context.Context, string) (string, error) { return "", nil })
 	logger := newTestLogger(t)
-	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+	manager := newAccountManager(t, schemas.MCPConfig{
 		OutboundTokenProvider:  provider,
 		PluginPipelineProvider: func() interface{} { return &noopPluginPipeline{} },
 		ReleasePluginPipeline:  func(pipeline interface{}) {},
-	}, nil, logger, nil)
+	}, logger, nil)
 	bf, err := core.Init(context.Background(), schemas.BifrostConfig{
 		Account:    &testAccount{},
 		MCPPlugins: []schemas.MCPPlugin{&outboundTokenHookPlugin{token: "fallback-hook-token"}},
@@ -888,7 +898,7 @@ func TestOutboundTokenProviderEmptyFallsBackToHookToken(t *testing.T) {
 	removeClientsOnCleanup(t, manager)
 
 	clientName := "outbound_fallback"
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 		ID:                     clientName + "-id",
 		Name:                   clientName,
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,
@@ -1042,11 +1052,11 @@ func TestOutboundTokenSSEConcurrentCallsAreIsolated(t *testing.T) {
 		return "sse-token-" + tenant, nil
 	})
 	logger := newTestLogger(t)
-	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+	manager := newAccountManager(t, schemas.MCPConfig{
 		OutboundTokenProvider:  provider,
 		PluginPipelineProvider: func() interface{} { return &noopPluginPipeline{} },
 		ReleasePluginPipeline:  func(pipeline interface{}) {},
-	}, nil, logger, nil)
+	}, logger, nil)
 	bf, err := core.Init(context.Background(), schemas.BifrostConfig{
 		Account: &testAccount{},
 		Logger:  core.NewDefaultLogger(schemas.LogLevelError),
@@ -1056,7 +1066,7 @@ func TestOutboundTokenSSEConcurrentCallsAreIsolated(t *testing.T) {
 	removeClientsOnCleanup(t, manager)
 
 	clientName := "outbound_sse_conc"
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 		ID:               clientName + "-id",
 		Name:             clientName,
 		ConnectionType:   schemas.MCPConnectionTypeSSE,
@@ -1102,11 +1112,11 @@ func TestOutboundTokenCodeModeNestedCallCarriesToken(t *testing.T) {
 	})
 	logger := newTestLogger(t)
 	codeMode := starlark.NewStarlarkCodeMode(nil, logger)
-	manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+	manager := newAccountManager(t, schemas.MCPConfig{
 		OutboundTokenProvider:  provider,
 		PluginPipelineProvider: func() interface{} { return &noopPluginPipeline{} },
 		ReleasePluginPipeline:  func(pipeline interface{}) {},
-	}, nil, logger, codeMode)
+	}, logger, codeMode)
 
 	bf, err := core.Init(context.Background(), schemas.BifrostConfig{
 		Account: &testAccount{},
@@ -1117,7 +1127,7 @@ func TestOutboundTokenCodeModeNestedCallCarriesToken(t *testing.T) {
 	removeClientsOnCleanup(t, manager)
 
 	clientName := "codemode_target"
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 		ID:                     clientName + "-id",
 		Name:                   clientName,
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,
@@ -1204,11 +1214,11 @@ func TestOutboundTokenCodeModeNestedResolvesAfterHooks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ts, rec := buildAuthEchoServer(t)
 			logger := newTestLogger(t)
-			manager := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{
+			manager := newAccountManager(t, schemas.MCPConfig{
 				OutboundTokenProvider:  tc.provider,
 				PluginPipelineProvider: func() interface{} { return &noopPluginPipeline{} },
 				ReleasePluginPipeline:  func(pipeline interface{}) {},
-			}, nil, logger, starlark.NewStarlarkCodeMode(nil, logger))
+			}, logger, starlark.NewStarlarkCodeMode(nil, logger))
 			bf, err := core.Init(context.Background(), schemas.BifrostConfig{
 				Account:    &testAccount{},
 				MCPPlugins: []schemas.MCPPlugin{tc.hook},
@@ -1218,7 +1228,7 @@ func TestOutboundTokenCodeModeNestedResolvesAfterHooks(t *testing.T) {
 			bf.SetMCPManager(manager)
 			removeClientsOnCleanup(t, manager)
 
-			require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+			require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 				ID:               "codemode_target-id",
 				Name:             "codemode_target",
 				ConnectionType:   schemas.MCPConnectionTypeHTTP,
@@ -1345,7 +1355,7 @@ func TestOutboundTokenSharedContextParallelCallsAreIsolated(t *testing.T) {
 	removeClientsOnCleanup(t, manager)
 
 	clientName := "outbound_shared_ctx"
-	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+	require.NoError(t, addClient(context.Background(), manager, &schemas.MCPClientConfig{
 		ID:                     clientName + "-id",
 		Name:                   clientName,
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,

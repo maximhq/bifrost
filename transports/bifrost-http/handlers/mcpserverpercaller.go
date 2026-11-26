@@ -12,6 +12,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
 
 // Serving clients with per_user_discovery on.
@@ -80,6 +81,31 @@ func (e *perCallerEntries) union(other *perCallerEntries) *perCallerEntries {
 // codeModeToolNames are the tools a caller reaches a code-mode client through.
 var codeModeToolNames = []string{coremcp.ToolTypeListToolFiles, coremcp.ToolTypeReadToolFile, coremcp.ToolTypeGetToolDocs, coremcp.ToolTypeExecuteToolCode}
 
+// mcpPerUserDiscoveryClient is an enabled MCP client with per_user_discovery on, as the MCP gateway
+// registers it.
+type mcpPerUserDiscoveryClient struct {
+	Name     string
+	CodeMode bool // reached through the code-mode tools on /mcp or its own /mcp/<slug>
+}
+
+// perUserDiscoveryClients returns every enabled MCP client with per_user_discovery on, keyed by
+// client ID.
+func (h *MCPServerHandler) perUserDiscoveryClients() map[string]mcpPerUserDiscoveryClient {
+	var result map[string]mcpPerUserDiscoveryClient
+	h.config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
+		config := &client.Config
+		if config.Disabled || config.PerUserDiscovery == nil || !*config.PerUserDiscovery {
+			return true
+		}
+		if result == nil {
+			result = make(map[string]mcpPerUserDiscoveryClient)
+		}
+		result[config.ID] = mcpPerUserDiscoveryClient{Name: config.Name, CodeMode: config.UsesCodeModeGlobalOrSlug()}
+		return true
+	})
+	return result
+}
+
 // loadPerCallerEntries reads the placeholders for every enabled client with per_user_discovery on,
 // or nil when there is none. When the names cannot be read it returns the clients' connect tools
 // with the read error, and the caller keeps the names it already installed.
@@ -87,7 +113,7 @@ func (h *MCPServerHandler) loadPerCallerEntries(ctx context.Context) (*perCaller
 	if h.config == nil {
 		return nil, nil
 	}
-	clients := h.config.GetMCPPerUserDiscoveryClients()
+	clients := h.perUserDiscoveryClients()
 	if len(clients) == 0 {
 		return nil, nil
 	}

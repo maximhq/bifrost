@@ -412,6 +412,85 @@ test.describe("LLM Logs", () => {
       await expect(sheet.getByText(assistantText)).toBeVisible();
     });
 
+    test("should end a resize drag when the sheet closes in the middle of it", async ({ page, logsPage }) => {
+      const timestamp = new Date().toISOString();
+      const logId = `synthetic-sheet-drag-${Date.now()}`;
+      const log = {
+        id: logId,
+        object: "chat.completion",
+        timestamp,
+        created_at: timestamp,
+        provider: "openai",
+        model: "synthetic-model",
+        number_of_retries: 0,
+        fallback_index: 0,
+        status: "success",
+        stream: false,
+        latency: 120,
+        cost: 0,
+        input_history: [{ role: "user", content: "hello" }],
+        output_message: { role: "assistant", content: "hi" },
+        responses_input_history: [],
+      };
+      await page.route((url) => url.pathname === "/api/logs", async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        await route.fulfill({ json: {
+          logs: [log],
+          pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+          stats: {
+            total_requests: 1,
+            success_rate: 100,
+            user_facing_success_rate: 100,
+            user_facing_total_requests: 1,
+            average_latency: 120,
+            total_tokens: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_cost: 0,
+          },
+          has_logs: true,
+        } });
+      });
+      await page.route((url) => url.pathname === `/api/logs/${logId}`, async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        await route.fulfill({ json: log });
+      });
+      await logsPage.goto();
+
+      // The log sheet stays mounted while closed, so drag state left behind would carry over.
+      const sheet = logsPage.logDetailSheet;
+      const openSheet = async () => {
+        await logsPage.viewLogDetails(0);
+        await sheet.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+        const handle = sheet.getByTestId("sheet-resize-handle");
+        await expect(handle).toBeVisible();
+        const box = await handle.boundingBox();
+        expect(box, "resize handle has no bounding box").not.toBeNull();
+        return { handle, x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+      };
+      const sheetWidth = async () => Math.round((await sheet.boundingBox())!.width);
+
+      const first = await openSheet();
+      await page.mouse.move(first.x, first.y);
+      await page.mouse.down();
+      await page.mouse.move(first.x - 100, first.y, { steps: 4 });
+      await expect(first.handle).toHaveAttribute("data-dragging", "true");
+      const draggedWidth = await sheetWidth();
+      // Close the sheet mid-drag, then release the button with the handle gone.
+      await page.keyboard.press("Escape");
+      await expect(sheet).not.toBeVisible();
+      await page.mouse.up();
+
+      const second = await openSheet();
+      await expect(second.handle).not.toHaveAttribute("data-dragging");
+      // The width reached before the close is kept, and hovering with no button pressed does not resize.
+      await expect.poll(sheetWidth).toBe(draggedWidth);
+      expect(await page.evaluate(() => localStorage.getItem("bifrost.sheet.width.log-details"))).toBe(String(draggedWidth));
+      await page.mouse.move(second.x, second.y);
+      await page.mouse.move(second.x - 150, second.y, { steps: 4 });
+      expect(await sheetWidth()).toBe(draggedWidth);
+    });
+
     test.describe("Fallback chain", () => {
       // Serves `listed` as the only row of the logs page, the rows of each
       // parent_request_id lookup from `byParent`, and any row by id.

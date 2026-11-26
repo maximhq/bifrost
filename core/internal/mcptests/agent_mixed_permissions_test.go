@@ -235,8 +235,9 @@ func TestAgent_MixedPermissions_PartialExecution(t *testing.T) {
 	clients := manager.GetClients()
 	for i := range clients {
 		if clients[i].ExecutionConfig.ID == "go-test-server" {
-			clients[i].ExecutionConfig.ToolsToAutoExecute = []string{"*"}
-			require.NoError(t, manager.UpdateClient(clients[i].ExecutionConfig.ID, clients[i].ExecutionConfig))
+			require.NoError(t, editClient(manager, clients[i].ExecutionConfig.ID, func(c *schemas.MCPClientConfig) {
+				c.ToolsToAutoExecute = []string{"*"}
+			}))
 		}
 	}
 
@@ -320,8 +321,9 @@ func TestAgent_MixedPermissions_MultipleSTDIOSamePermissions(t *testing.T) {
 	clients := manager.GetClients()
 	for i := range clients {
 		if clients[i].ExecutionConfig.ConnectionType == schemas.MCPConnectionTypeSTDIO {
-			clients[i].ExecutionConfig.ToolsToAutoExecute = []string{"*"}
-			require.NoError(t, manager.UpdateClient(clients[i].ExecutionConfig.ID, clients[i].ExecutionConfig))
+			require.NoError(t, editClient(manager, clients[i].ExecutionConfig.ID, func(c *schemas.MCPClientConfig) {
+				c.ToolsToAutoExecute = []string{"*"}
+			}))
 		}
 	}
 
@@ -450,8 +452,9 @@ func TestAgent_MixedPermissions_SpecificToolNames(t *testing.T) {
 	clients := manager.GetClients()
 	for i := range clients {
 		if clients[i].ExecutionConfig.ID == "go-test-server" {
-			clients[i].ExecutionConfig.ToolsToAutoExecute = []string{"uuid_generate"}
-			require.NoError(t, manager.UpdateClient(clients[i].ExecutionConfig.ID, clients[i].ExecutionConfig))
+			require.NoError(t, editClient(manager, clients[i].ExecutionConfig.ID, func(c *schemas.MCPClientConfig) {
+				c.ToolsToAutoExecute = []string{"uuid_generate"}
+			}))
 		}
 	}
 
