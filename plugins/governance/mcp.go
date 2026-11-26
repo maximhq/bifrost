@@ -6,6 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
 
 // mcpClientTools is one client's accumulated grant: every tool, or a named subset.
@@ -79,18 +80,18 @@ func (acc *MCPToolAccumulator) GrantClientTools(clientID, clientName string, too
 	}
 }
 
-// addMCPConfig folds in a key's own config: the client is registered even with no tools, and carries
-// its own name.
-func (acc *MCPToolAccumulator) addMCPConfig(cfg *configstoreTables.TableVirtualKeyMCPConfig) {
-	clientID := cfg.MCPClient.ClientID
+// addMCPGrant folds in one of a key's own MCP configs from its grant set: the client is registered
+// even with no tools, and carries its own name.
+func (acc *MCPToolAccumulator) addMCPGrant(g *registry.MCPGrant) {
+	clientID := g.ClientID
 	if clientID == "" {
 		return
 	}
 	entry := acc.client(clientID)
-	if cfg.MCPClient.Name != "" {
-		entry.name = cfg.MCPClient.Name
+	if g.ClientName != "" {
+		entry.name = g.ClientName
 	}
-	for _, tool := range cfg.ToolsToExecute {
+	for _, tool := range g.Tools {
 		acc.GrantTool(clientID, tool)
 	}
 }
@@ -145,21 +146,32 @@ func (acc *MCPToolAccumulator) ConfiguredClients() map[string]struct{} {
 	return configured
 }
 
-// mcpClientNames resolves client id → display name from the in-memory store, or nil.
-func (gs *LocalGovernanceStore) mcpClientNames() map[string]string {
-	if gs.inMemoryStore == nil {
-		return nil
-	}
-	return gs.inMemoryStore.GetMCPClientNames()
-}
-
 // MCPPermitsFromAccumulator emits one permit per client, naming unnamed clients from clientNames. A
 // client that reaches no tool is dropped (allowed-by-default stays blocked via ConfiguredClients, not a
 // permit); an unresolvable name is dropped and logged. A free function so any store passes its own deps.
 func MCPPermitsFromAccumulator(acc *MCPToolAccumulator, holderKind, holderName string, clientNames map[string]string, logger schemas.Logger) []schemas.MCPPermit {
+	result, unnamed := MCPPermitsOf(acc, clientNames)
+	for _, clientID := range unnamed {
+		WarnUnnamedMCPClient(logger, holderKind, holderName, clientID)
+	}
+	return result
+}
+
+// WarnUnnamedMCPClient logs that a holder grants tools of an MCP client with no configured name. A
+// store that computes permits once and shares them calls it each time it hands one out, as
+// MCPPermitsFromAccumulator does when it computes them.
+func WarnUnnamedMCPClient(logger schemas.Logger, holderKind, holderName, clientID string) {
+	if logger != nil {
+		logger.Warn("governance: %s %q grants tools of MCP client %q, which has no configured name; those tools are not reachable until the client is configured", holderKind, holderName, clientID)
+	}
+}
+
+// MCPPermitsOf is MCPPermitsFromAccumulator without the logging: it returns the clients it dropped
+// for having no name, in the order it met them, for the caller to report with WarnUnnamedMCPClient.
+func MCPPermitsOf(acc *MCPToolAccumulator, clientNames map[string]string) (result []schemas.MCPPermit, unnamed []string) {
 	// Sorted for a stable permit across nodes and rebuilds.
 	sort.Strings(acc.order)
-	result := make([]schemas.MCPPermit, 0, len(acc.order))
+	result = make([]schemas.MCPPermit, 0, len(acc.order))
 	for _, clientID := range acc.order {
 		entry := acc.byClient[clientID]
 		tools := entry.named
@@ -174,9 +186,7 @@ func MCPPermitsFromAccumulator(acc *MCPToolAccumulator, holderKind, holderName s
 			clientName = clientNames[clientID]
 		}
 		if clientName == "" {
-			if logger != nil {
-				logger.Warn("governance: %s %q grants tools of MCP client %q, which has no configured name; those tools are not reachable until the client is configured", holderKind, holderName, clientID)
-			}
+			unnamed = append(unnamed, clientID)
 			continue
 		}
 		result = append(result, schemas.MCPPermit{
@@ -185,7 +195,7 @@ func MCPPermitsFromAccumulator(acc *MCPToolAccumulator, holderKind, holderName s
 			Tools:      tools,
 		})
 	}
-	return result
+	return result, unnamed
 }
 
 // AppendMCPPermitsAllowedByDefault adds a wildcard permit for every allowed-by-default client the

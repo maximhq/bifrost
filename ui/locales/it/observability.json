@@ -521,7 +521,6 @@
 				"allowed": "Consentito",
 				"blocked": "Bloccato",
 				"redacted": "Oscurato",
-				"transformed": "Trasformato",
 				"monitored": "Monitorato",
 				"detected": "Rilevato"
 			},
@@ -577,11 +576,9 @@
 			"toolTypeCount_other": "{{type}} · {{count}} strumenti",
 			"guardrailHints": {
 				"blocked": "La regola ha interrotto la richiesta.",
-				"redacted": "La regola ha rimosso il contenuto corrispondente e la richiesta è proseguita.",
-				"transformed": "La regola ha riscritto il contenuto corrispondente e la richiesta è proseguita.",
+				"redacted": "La regola ha mascherato o riscritto il contenuto corrispondente e la richiesta è proseguita.",
 				"monitoredWouldBlock": "La regola è solo in monitoraggio: avrebbe bloccato la richiesta, che invece è proseguita senza modifiche.",
 				"monitoredWouldRedact": "La regola è solo in monitoraggio: avrebbe oscurato il contenuto, ma la richiesta è proseguita senza modifiche.",
-				"monitoredWouldTransform": "La regola è solo in monitoraggio: avrebbe trasformato il contenuto, ma la richiesta è proseguita senza modifiche.",
 				"monitored": "La regola è solo in monitoraggio: la richiesta è proseguita senza modifiche.",
 				"detected": "La regola ha segnalato la richiesta, che è proseguita senza modifiche."
 			},

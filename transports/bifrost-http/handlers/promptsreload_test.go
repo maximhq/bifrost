@@ -23,6 +23,9 @@ func (s *promptReloadStore) GetFolderByID(context.Context, string) (*tables.Tabl
 	return &tables.TableFolder{ID: "folder-1", Name: "folder"}, nil
 }
 func (s *promptReloadStore) DeleteFolder(context.Context, string) error { return s.writeErr }
+func (s *promptReloadStore) GetPrompts(context.Context, *string) ([]tables.TablePrompt, error) {
+	return []tables.TablePrompt{{ID: "prompt-1", Name: "prompt"}}, nil
+}
 func (s *promptReloadStore) GetPromptByID(context.Context, string) (*tables.TablePrompt, error) {
 	return &tables.TablePrompt{ID: "prompt-1", Name: "prompt"}, nil
 }
@@ -63,12 +66,15 @@ func (s *promptReloadStore) DeletePromptSession(context.Context, uint) error { r
 var promptTestMessage = tables.PromptMessage(`{"role":"user","content":"hi"}`)
 
 type countingPromptReloader struct {
-	calls int
-	err   error
+	calls   int
+	ids     []string
+	removed bool
+	err     error
 }
 
-func (r *countingPromptReloader) ReloadPromptCache(context.Context) error {
+func (r *countingPromptReloader) RefreshPrompts(_ context.Context, promptIDs []string, removed bool) error {
 	r.calls++
+	r.ids, r.removed = promptIDs, removed
 	return r.err
 }
 
@@ -193,8 +199,9 @@ func TestPromptMutationsDoNotReloadOnStoreFailure(t *testing.T) {
 	}
 }
 
-// A missing plugin or a failed reload must not fail the write itself.
-func TestPromptMutationsSurviveReloaderProblems(t *testing.T) {
+// Without a reloader a write answers as usual; a failed refresh answers 500 naming the write, which
+// stands in the database while memory still holds the previous prompts.
+func TestPromptMutationsReportReloaderProblems(t *testing.T) {
 	SetLogger(&mockLogger{})
 	body := CreatePromptRequest{Name: "greeting"}
 	payload, err := json.Marshal(body)
@@ -211,14 +218,47 @@ func TestPromptMutationsSurviveReloaderProblems(t *testing.T) {
 	})
 
 	t.Run("failing reloader", func(t *testing.T) {
-		reloader := &countingPromptReloader{err: errors.New("cluster unreachable")}
+		reloader := &countingPromptReloader{err: errors.New("database unavailable")}
 		handler := NewPromptsHandler(&promptReloadStore{}, reloader)
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetBody(payload)
 
 		handler.createPrompt(ctx)
 
-		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+		require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+		require.Contains(t, string(ctx.Response.Body()), "Prompt created in database but failed to reload in-memory state")
 		require.Equal(t, 1, reloader.calls)
 	})
+}
+
+// Each write names the prompts it changed: a prompt or version write its prompt, a folder delete
+// the folder's prompts (removed), and a session write none.
+func TestPromptMutationsNameTheirPrompts(t *testing.T) {
+	SetLogger(&mockLogger{})
+	want := map[string]struct {
+		ids     []string
+		removed bool
+	}{
+		"deleteFolder":  {[]string{"prompt-1"}, true},
+		"deletePrompt":  {[]string{"prompt-1"}, true},
+		"deleteVersion": {[]string{"prompt-1"}, false},
+		"createSession": {nil, false},
+	}
+	for _, m := range promptMutations() {
+		w, ok := want[m.name]
+		if !ok {
+			continue
+		}
+		t.Run(m.name, func(t *testing.T) {
+			reloader := &countingPromptReloader{}
+			handler := NewPromptsHandler(&promptReloadStore{}, reloader)
+			ctx := promptRequestCtx(t, m)
+
+			m.invoke(handler, ctx)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Equal(t, w.ids, reloader.ids)
+			require.Equal(t, w.removed, reloader.removed)
+		})
+	}
 }

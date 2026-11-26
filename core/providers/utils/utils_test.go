@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2739,6 +2740,53 @@ func TestFlattenResponsesNamespaceTools_AmbiguousToolChoiceReturns400(t *testing
 	}
 	if !strings.Contains(bifrostErr.Error.Message, "namespace_a") || !strings.Contains(bifrostErr.Error.Message, "namespace_b") {
 		t.Fatalf("error should list both namespaces, got %q", bifrostErr.Error.Message)
+	}
+}
+
+// A namespace deferred as a whole stays deferred once flattened: a member without its
+// own defer_loading inherits the namespace's, and a member's own value wins. Codex
+// marks its MCP namespaces deferred, and on a flattening wire (Gemini, Vertex,
+// Anthropic) losing the flag sent every member eagerly.
+func boolPtrString(b *bool) string {
+	if b == nil {
+		return "unset"
+	}
+	return strconv.FormatBool(*b)
+}
+
+func TestFlattenResponsesNamespaceTools_MembersInheritNamespaceDeferLoading(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	eager := namespaceFunctionTool("eager")
+	eager.DeferLoading = new(false)
+	deferred := namespaceTool("mcp__demo", namespaceFunctionTool("inherits"), eager)
+	deferred.DeferLoading = new(true)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{deferred, namespaceTool("plain", namespaceFunctionTool("js"))}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	want := map[string]*bool{"mcp__demo__inherits": new(true), "mcp__demo__eager": new(false), "plain__js": nil}
+	for _, tool := range out.Params.Tools {
+		got, expected := tool.DeferLoading, want[*tool.Name]
+		if (got == nil) != (expected == nil) || (got != nil && *got != *expected) {
+			t.Errorf("%s defer_loading = %s, want %s", *tool.Name, boolPtrString(got), boolPtrString(expected))
+		}
+	}
+	if req.Params.Tools[0].ResponsesToolNamespace.Tools[0].DeferLoading != nil {
+		t.Fatal("the shared request's member was mutated")
+	}
+
+	functions := namespaceTool(DefaultToolNamespace, namespaceFunctionTool("exec"))
+	functions.DeferLoading = new(true)
+	req.Params.Tools = []schemas.ResponsesTool{functions}
+	unwrapped, bifrostErr := UnwrapDefaultNamespaceTools(req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if got := unwrapped.Params.Tools[0].DeferLoading; got == nil || !*got {
+		t.Fatalf("an unwrapped default-namespace member must inherit defer_loading, got %v", got)
 	}
 }
 

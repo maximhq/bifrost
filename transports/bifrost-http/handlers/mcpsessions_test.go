@@ -15,7 +15,6 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -176,7 +175,7 @@ func TestFlowStart_ExpiredOAuthFlowIsGone(t *testing.T) {
 		VirtualKeyID: &vk, FlowMode: "vk", Status: "pending",
 		ExpiresAt: expired, CreatedAt: expired.Add(-15 * time.Minute), UpdatedAt: expired,
 	}))
-	h.store.OAuthProvider = oauth2.NewOAuth2Provider(h.store.ConfigStore, &mockLogger{})
+	h.store.OAuthProvider = newTestOAuthProvider(t, h.store.ConfigStore, &mockLogger{})
 	sessions := NewMCPSessionsHandler(h.store, nil, nil)
 
 	status, body := doMCPRequest(t, sessions.flowStart, fasthttp.MethodGet, "", "flow-expired", false)

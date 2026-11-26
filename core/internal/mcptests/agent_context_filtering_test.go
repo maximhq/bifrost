@@ -287,15 +287,10 @@ func TestAgent_ContextToolFilter_WildcardOverride(t *testing.T) {
 	require.NoError(t, RegisterWeatherTool(manager))
 
 	// Config: Only echo in ToolsToExecute and ToolsToAutoExecute
-	clients := manager.GetClients()
-	for i := range clients {
-		if clients[i].ExecutionConfig.ID == "bifrostInternal" {
-			clients[i].ExecutionConfig.ToolsToExecute = []string{"echo"}
-			clients[i].ExecutionConfig.ToolsToAutoExecute = []string{"echo"}
-			require.NoError(t, manager.UpdateClient(clients[i].ExecutionConfig.ID, clients[i].ExecutionConfig))
-			break
-		}
-	}
+	require.NoError(t, editInternalClient(manager, func(c *schemas.MCPClientConfig) {
+		c.ToolsToExecute = []string{"echo"}
+		c.ToolsToAutoExecute = []string{"echo"}
+	}))
 
 	// Context: Wildcard allows all
 	ctx := CreateTestContextWithMCPFilter(nil, []string{"*"})
