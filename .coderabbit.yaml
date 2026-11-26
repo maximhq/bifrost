@@ -26,6 +26,12 @@ reviews:
     auto_pause_after_reviewed_commits: 0
     base_branches:
       - ".*"
+  pre_merge_checks:
+    custom_checks:
+      - name: "Audit commit point"
+        mode: "warning"
+        instructions: |
+          Fail if a changed handler under transports/bifrost-http/handlers/ can return an error after a successful write but before its typed audit record, including a step the PR inserts above an existing record call. Pass otherwise.
   path_instructions:
     - path: package.json
       instructions: |
@@ -328,6 +334,9 @@ reviews:
         Apply HTTP/API security review: authentication and authorization checks, fail-closed behavior, input size limits, request validation, SSRF/path traversal/header injection defenses, CORS/cookie safety, and secret redaction in logs/errors.
         Preserve transport patterns: handlers are dependency-injected structs with RegisterRoutes, route middleware is applied through lib.ChainMiddlewares, SDK integration compatibility must remain drop-in, and config changes must update transports/config.schema.json first.
         Verify HTTP handlers preserve SDK compatibility, middleware ordering, context conversion, and route-level middleware behavior.
+    - path: "transports/bifrost-http/handlers/**"
+      instructions: |
+        Audit commit point: a handler that saves config must record its typed audit event with `lib.RecordAuditChange` right after the write commits, before any step that can still fail (reload, read-back, rebuild, broadcast, key or cache reload). Flag an error return between a successful write and the record call, including a step a PR inserts above an existing, unchanged record call, so review the whole handler and not just the diff. Also flag a record placed before the write, a handler that saves config with no typed event, and a snapshot that carries a secret.
     - path: "plugins/**"
       instructions: |
         Review plugin changes for hook symmetry, nil response/error handling, fallback behavior, and module-local dependency hygiene.
