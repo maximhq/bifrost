@@ -199,8 +199,9 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 
 	// Prepend total lines info so LLM knows the file size upfront (+1 for the header line itself)
 	fileContent = fmt.Sprintf("# Total lines: %d (this is the complete file, no need to paginate)\n%s", contentLines+1, fileContent)
-	// Split the full file for startLine/endLine slicing below
-	lines := strings.Split(fileContent, "\n")
+	// Split the full file for startLine/endLine slicing below. Trim the final "\n" first so
+	// totalLines equals the header count and a clamped range ends on the last line, not on "".
+	lines := strings.Split(strings.TrimSuffix(fileContent, "\n"), "\n")
 	totalLines := len(lines)
 
 	// Handle line slicing if provided

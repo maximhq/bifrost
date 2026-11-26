@@ -1868,7 +1868,9 @@ func TestReadToolFileClientCapOverridesConfiguredGlobal(t *testing.T) {
 }
 
 // The "# Total lines: N" header is what a model uses to decide whether it already holds the
-// whole file, so N must equal the number of lines readToolFile actually returns (#9841).
+// whole file, so N must equal the number of lines readToolFile actually returns (#9841), and
+// startLine/endLine must page over the same N lines: line N is the last def, and a startLine
+// past N clamps to it instead of returning the empty string after the final newline.
 func TestReadToolFileTotalLinesHeaderMatchesLinesReturned(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -1882,11 +1884,14 @@ func TestReadToolFileTotalLinesHeaderMatchesLinesReturned(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mode := newInstructionsCodeMode(tc.level)
-			msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
-				ID:       schemas.Ptr("tool-call-1"),
-				Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"` + tc.fileName + `"}`},
-			})
-			content := instructionsToolResponse(t, msg, err)
+			read := func(extraArgs string) string {
+				msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+					ID:       schemas.Ptr("tool-call-1"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"` + tc.fileName + `"` + extraArgs + `}`},
+				})
+				return instructionsToolResponse(t, msg, err)
+			}
+			content := read("")
 
 			header, _, _ := strings.Cut(content, "\n")
 			countText, ok := strings.CutPrefix(header, "# Total lines: ")
@@ -1902,6 +1907,15 @@ func TestReadToolFileTotalLinesHeaderMatchesLinesReturned(t *testing.T) {
 			returned := len(strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
 			if claimed != returned {
 				t.Fatalf("header claims %d lines but readToolFile returned %d, got:\n%s", claimed, returned, content)
+			}
+
+			n := strconv.Itoa(claimed)
+			last := read(`,"startLine":` + n + `,"endLine":` + n)
+			if !strings.HasPrefix(last, "def ") {
+				t.Fatalf("line %d (the header count) should be the last def line, got %q from:\n%s", claimed, last, content)
+			}
+			if past := read(`,"startLine":` + strconv.Itoa(claimed+1)); past != last {
+				t.Fatalf("startLine %d should clamp to the last line %q, got %q", claimed+1, last, past)
 			}
 		})
 	}
