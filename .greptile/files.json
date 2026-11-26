@@ -18,6 +18,11 @@
       "path": ".claude/skills/live-store/SKILL.md",
       "description": "How to add or change data the live store holds and the write paths that change configuration.",
       "scope": ["core/**", "framework/**", "plugins/**", "transports/**"]
+    },
+    {
+      "path": ".claude/skills/mcp-harness/SKILL.md",
+      "description": "Which MCP harness cases each kind of MCP change needs, where they go and how to write and run them.",
+      "scope": ["core/mcp/**", "core/internal/mcptests/**", "framework/mcpcatalog/**", "framework/modelcatalog/mcp_library_sync.go", "framework/oauth2/**", "plugins/governance/**", "transports/bifrost-http/**", "tests/e2e/api/runners/**"]
     }
   ]
 }
