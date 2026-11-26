@@ -58,6 +58,21 @@ func TestParseOpenAIError_PreservesProviderMessageWhenPresent(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIError_PreservesFastAPIStringDetail(t *testing.T) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusBadRequest)
+	const wantDetail = `Error: 400 - Bad Request - {"object":"error","message":"context length exceeded"}`
+	resp.SetBodyString(`{"detail":"Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"context length exceeded\"}"}`)
+
+	errResp := ParseOpenAIError(&resp)
+	if errResp == nil || errResp.Error == nil {
+		t.Fatal("expected non-nil error response")
+	}
+	if errResp.Error.Message != wantDetail {
+		t.Fatalf("expected detail message %q, got %q", wantDetail, errResp.Error.Message)
+	}
+}
+
 func TestParseOpenAIError_FallbackMessageWhenBodyIsEmpty(t *testing.T) {
 	var resp fasthttp.Response
 	resp.SetStatusCode(fasthttp.StatusBadRequest)

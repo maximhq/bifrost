@@ -3429,6 +3429,21 @@ func TestHandleProviderAPIErrorRootMessage(t *testing.T) {
 			body:            `{"message":"   "}`,
 			expectedMessage: "",
 		},
+		{
+			name:            "FastAPI flat string detail",
+			body:            `{"detail":"Error: 400 - Bad Request - context length exceeded"}`,
+			expectedMessage: "Error: 400 - Bad Request - context length exceeded",
+		},
+		{
+			name:            "blank root message falls back to detail",
+			body:            `{"message":"   ","detail":"  downstream timeout  "}`,
+			expectedMessage: "downstream timeout",
+		},
+		{
+			name:            "non-string detail is ignored",
+			body:            `{"detail":[{"loc":["body"],"msg":"field required"}]}`,
+			expectedMessage: "",
+		},
 	}
 
 	for _, tt := range tests {
