@@ -2166,6 +2166,9 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 	}
 
 	// Convert messages using the new conversion method
+	if err := validateBedrockToolResultContent(request.Messages); err != nil {
+		return nil, err
+	}
 	convertedMessages := ConvertBedrockMessagesToBifrostMessages(ctx, request.Messages, request.System, false)
 	bifrostReq.Input = convertedMessages
 
@@ -4513,6 +4516,61 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 	return bedrockMessages, systemMessages, nil
 }
 
+// bedrockToolResultNeedsBlocks reports whether a tool result must be carried as structured
+// output blocks. A lone text or json member stays a plain string, so the common case costs
+// nothing extra; cache points are markers, not members.
+func bedrockToolResultNeedsBlocks(content []BedrockContentBlock) bool {
+	members := 0
+	for _, c := range content {
+		if c.CachePoint != nil {
+			continue
+		}
+		if c.AnthropicToolReference != nil || c.Document != nil || c.Image != nil {
+			return true
+		}
+		members++
+	}
+	return members > 1
+}
+
+// validateBedrockToolResultContent refuses a tool_result member the ingress cannot forward,
+// so the caller gets a 400 instead of a 200 whose result silently lacks the member. A result
+// holding a searchResult or video is carried whole by the envelope and is not checked.
+func validateBedrockToolResultContent(messages []BedrockMessage) error {
+	for mi := range messages {
+		for _, block := range messages[mi].Content {
+			if block.ToolResult == nil {
+				continue
+			}
+			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool {
+				return c.SearchResult != nil || c.Video != nil
+			}) {
+				continue
+			}
+			for ci, c := range block.ToolResult.Content {
+				var problem string
+				switch {
+				case c.Text != nil, c.JSON != nil, c.CachePoint != nil, c.AnthropicToolReference != nil:
+				case c.Image != nil:
+					if c.Image.Source.Bytes == nil {
+						problem = "an image must carry inline bytes"
+					}
+				case c.Document != nil:
+					if src := c.Document.Source; src == nil || (src.Bytes == nil && src.Text == nil && src.URL == nil) {
+						problem = "a document must carry inline bytes, text or a url"
+					}
+				default:
+					problem = "only text, json, image and document blocks are supported"
+				}
+				if problem != "" {
+					return providerUtils.InvalidRequestErrorf("messages[%d] tool_result content[%d]: %s", mi, ci, problem)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // ConvertBedrockMessagesToBifrostMessages converts an array of Bedrock messages to Bifrost ResponsesMessage format
 // This is the main conversion method from Bedrock to Bifrost - handles all message types and content blocks
 func ConvertBedrockMessagesToBifrostMessages(ctx *schemas.BifrostContext, bedrockMessages []BedrockMessage, systemMessages []BedrockSystemMessage, isOutputMessage bool) []schemas.ResponsesMessage {
@@ -5267,17 +5325,16 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				}
 			}
 
-			// A tool_reference comes only from the InvokeModel ingress, whose UnmarshalJSON yields
-			// just text, image, document, tool_use and tool_reference inside a tool_result, so these
-			// output blocks hold everything that can be decoded. The envelope above is no fallback
-			// here: it drops the json:"-" reference and only the Converse egress decodes it. If that
-			// ingress learns search_result, map it here as well. A document is carried too, because
-			// flattening the result to its first text would send the model a result without it.
-			// An envelope stays authoritative: output blocks cannot carry its searchResult or video.
+			// A result with more than one member, or with an image, document or tool_reference,
+			// cannot be flattened to a string without silently dropping what the model was meant
+			// to see, so it is carried member by member. A tool_reference comes only from the
+			// InvokeModel ingress, whose UnmarshalJSON yields just text, image, document, tool_use
+			// and tool_reference inside a tool_result. The envelope above is no fallback here: it
+			// drops the json:"-" reference and only the Converse egress decodes it. A member this
+			// loop cannot map was already refused by validateBedrockToolResultContent on the
+			// request path; a response never reaches that check, so it is skipped here.
 			var outputBlocks []schemas.ResponsesMessageContentBlock
-			if !hasUnrepresentableBlock && slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool {
-				return c.AnthropicToolReference != nil || c.Document != nil
-			}) {
+			if !hasUnrepresentableBlock && bedrockToolResultNeedsBlocks(block.ToolResult.Content) {
 				for _, c := range block.ToolResult.Content {
 					if c.Document != nil {
 						outputBlocks = append(outputBlocks, bedrockDocumentToFileBlock(c.Document))

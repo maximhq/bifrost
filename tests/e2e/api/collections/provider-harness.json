@@ -362846,6 +362846,323 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "353. Bedrock tool_result keeps every member on the invoke and Converse routes (#9516)",
+      "description": "Regression for #9516. The Bedrock ingress (POST /bedrock/model/{modelId}/invoke and /converse) reduced a tool_result to one string, the first json or first text member, so an image, a document or a second text block never reached the model and the request was still answered 200. Cases 1-2 pin a PNG image member on invoke and Converse (the model must name its colour), cases 3-4 pin two text members (the model must see both words), case 5 pins a document member on Converse, and cases 6-7 pin that a member the gateway cannot forward (an image given by s3Location on Converse, an unsupported block type on invoke) is refused with a 4xx instead of being dropped. The streaming routes share the same ingress converter and are covered by the Go unit tests.",
+      "item": [
+        {
+          "name": "Bedrock invoke: image in tool_result reaches the model (Haiku 4.5) - #9516",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke: the tool_result image reaches the model - #9516', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var text = (function(){var b=pm.response.json();return (b.content||[]).map(function(c){return c.text||''}).join(' ').toUpperCase();})();",
+                  "  pm.expect(text, 'model response: ' + pm.response.text()).to.include('RED');",
+                  "  pm.expect(text, 'the tool_result member was silently dropped (#9516): ' + text).to.not.include('NO_IMAGE');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"name\": \"get\",\n      \"description\": \"Returns the requested item.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"t1\",\n          \"name\": \"get\",\n          \"input\": {}\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"t1\",\n          \"content\": [\n            {\n              \"type\": \"image\",\n              \"source\": {\n                \"type\": \"base64\",\n                \"media_type\": \"image/png\",\n                \"data\": \"iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==\"\n              }\n            }\n          ]\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What colour is the image in the tool result? Answer with one word. If there is no image, answer exactly: NO_IMAGE\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock converse: image in tool_result reaches the model (Haiku 4.5) - #9516",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('converse: the tool_result image reaches the model - #9516', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var text = (function(){var b=pm.response.json();var parts=((b.output||{}).message||{}).content||[];return parts.map(function(c){return c.text||''}).join(' ').toUpperCase();})();",
+                  "  pm.expect(text, 'model response: ' + pm.response.text()).to.include('RED');",
+                  "  pm.expect(text, 'the tool_result member was silently dropped (#9516): ' + text).to.not.include('NO_IMAGE');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inferenceConfig\": {\n    \"maxTokens\": 32\n  },\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"get\",\n          \"description\": \"Returns the requested item.\",\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"properties\": {}\n            }\n          }\n        }\n      }\n    ]\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Call get.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"toolUse\": {\n            \"toolUseId\": \"t1\",\n            \"name\": \"get\",\n            \"input\": {}\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"toolResult\": {\n            \"toolUseId\": \"t1\",\n            \"content\": [\n              {\n                \"image\": {\n                  \"format\": \"png\",\n                  \"source\": {\n                    \"bytes\": \"iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==\"\n                  }\n                }\n              }\n            ]\n          }\n        },\n        {\n          \"text\": \"What colour is the image in the tool result? Answer with one word. If there is no image, answer exactly: NO_IMAGE\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "converse"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke: both text blocks of a tool_result reach the model (Haiku 4.5) - #9516",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke: both text members reach the model - #9516', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var text = (function(){var b=pm.response.json();return (b.content||[]).map(function(c){return c.text||''}).join(' ').toUpperCase();})();",
+                  "  pm.expect(text, 'model response: ' + pm.response.text()).to.include('PINEAPPLE');",
+                  "  pm.expect(text, 'model response: ' + pm.response.text()).to.include('KUMQUAT');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"name\": \"get\",\n      \"description\": \"Returns the requested item.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"t1\",\n          \"name\": \"get\",\n          \"input\": {}\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"t1\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"PINEAPPLE\"\n            },\n            {\n              \"type\": \"text\",\n              \"text\": \"KUMQUAT\"\n            }\n          ]\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"List the words the tool returned, separated by a space. Answer with the words only.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock converse: both text blocks of a tool_result reach the model (Haiku 4.5) - #9516",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('converse: both text members reach the model - #9516', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var text = (function(){var b=pm.response.json();var parts=((b.output||{}).message||{}).content||[];return parts.map(function(c){return c.text||''}).join(' ').toUpperCase();})();",
+                  "  pm.expect(text, 'model response: ' + pm.response.text()).to.include('PINEAPPLE');",
+                  "  pm.expect(text, 'model response: ' + pm.response.text()).to.include('KUMQUAT');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inferenceConfig\": {\n    \"maxTokens\": 32\n  },\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"get\",\n          \"description\": \"Returns the requested item.\",\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"properties\": {}\n            }\n          }\n        }\n      }\n    ]\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Call get.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"toolUse\": {\n            \"toolUseId\": \"t1\",\n            \"name\": \"get\",\n            \"input\": {}\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"toolResult\": {\n            \"toolUseId\": \"t1\",\n            \"content\": [\n              {\n                \"text\": \"PINEAPPLE\"\n              },\n              {\n                \"text\": \"KUMQUAT\"\n              }\n            ]\n          }\n        },\n        {\n          \"text\": \"List the words the tool returned, separated by a space. Answer with the words only.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "converse"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock converse: document in tool_result reaches the model (Haiku 4.5) - #9516",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('converse: the tool_result document reaches the model - #9516', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var text = (function(){var b=pm.response.json();var parts=((b.output||{}).message||{}).content||[];return parts.map(function(c){return c.text||''}).join(' ').toUpperCase();})();",
+                  "  pm.expect(text, 'model response: ' + pm.response.text()).to.include('PINEAPPLE');",
+                  "  pm.expect(text, 'the tool_result member was silently dropped (#9516): ' + text).to.not.include('NO_DOCUMENT');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inferenceConfig\": {\n    \"maxTokens\": 32\n  },\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"get\",\n          \"description\": \"Returns the requested item.\",\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"properties\": {}\n            }\n          }\n        }\n      }\n    ]\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Call get.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"toolUse\": {\n            \"toolUseId\": \"t1\",\n            \"name\": \"get\",\n            \"input\": {}\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"toolResult\": {\n            \"toolUseId\": \"t1\",\n            \"content\": [\n              {\n                \"document\": {\n                  \"format\": \"txt\",\n                  \"name\": \"notes\",\n                  \"source\": {\n                    \"bytes\": \"VGhlIHNlY3JldCB3b3JkIGlzIFBJTkVBUFBMRS4=\"\n                  }\n                }\n              }\n            ]\n          }\n        },\n        {\n          \"text\": \"What is the secret word in the document the tool returned? Answer with the word only. If there is no document, answer exactly: NO_DOCUMENT\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "converse"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock converse: tool_result image by s3Location is refused, not dropped (Haiku 4.5) [EXPECT-400] - #9516",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('converse: an unforwardable tool_result image is refused - #9516', function () {",
+                  "  pm.expect(pm.response.code, 'expected exactly 400, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'expected the request-conversion refusal, got: ' + pm.response.text()).to.include('failed to convert request to Bifrost format');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"inferenceConfig\": {\n    \"maxTokens\": 32\n  },\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"get\",\n          \"description\": \"Returns the requested item.\",\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"properties\": {}\n            }\n          }\n        }\n      }\n    ]\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Call get.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"toolUse\": {\n            \"toolUseId\": \"t1\",\n            \"name\": \"get\",\n            \"input\": {}\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"toolResult\": {\n            \"toolUseId\": \"t1\",\n            \"content\": [\n              {\n                \"text\": \"here it is\"\n              },\n              {\n                \"image\": {\n                  \"format\": \"png\",\n                  \"source\": {\n                    \"s3Location\": {\n                      \"uri\": \"s3://bifrost-harness-nonexistent/red.png\"\n                    }\n                  }\n                }\n              }\n            ]\n          }\n        },\n        {\n          \"text\": \"What colour is the image in the tool result? Answer with one word. If there is no image, answer exactly: NO_IMAGE\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "converse"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Bedrock invoke: unsupported block inside tool_result is refused, not dropped (Haiku 4.5) [EXPECT-400] - #9516",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('invoke: an unforwardable tool_result member is refused - #9516', function () {",
+                  "  pm.expect(pm.response.code, 'expected exactly 400, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'expected the request-conversion refusal, got: ' + pm.response.text()).to.include('failed to convert request to Bifrost format');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"name\": \"get\",\n      \"description\": \"Returns the requested item.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"t1\",\n          \"name\": \"get\",\n          \"input\": {}\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"t1\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"here it is\"\n            },\n            {\n              \"type\": \"image\",\n              \"source\": {\n                \"type\": \"url\",\n                \"url\": \"https://example.com/red.png\"\n              }\n            }\n          ]\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What colour is the image in the tool result? Answer with one word. If there is no image, answer exactly: NO_IMAGE\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
