@@ -4047,3 +4047,41 @@ func TestInvokeRequest_DocumentURLIsFetchedByTheEgress(t *testing.T) {
 	require.Error(t, err, "a url document that cannot be fetched must fail the request, not be dropped")
 	assert.NotContains(t, err.Error(), "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
 }
+
+// Thinking or a deferred tool on the InvokeModel ingress selects the native InvokeModel builder
+// instead of Converse. A url document nested in a tool_result must be fetched there as well,
+// because AWS-hosted Claude rejects a url source. The loopback refusal of the SSRF-safe fetcher
+// is the network-free proof that the fetch was attempted (see the test above). The deferred-tool
+// case is the request shape of the matching provider-harness case.
+func TestInvokeRequest_NestedDocumentURLIsFetchedByTheNativeInvokeBuilder(t *testing.T) {
+	const toolResult = `{"role":"user","content":"Read the report."},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read_notes","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[` +
+		`{"type":"document","source":{"type":"url","url":"http://127.0.0.1/report.pdf?X-Amz-Signature=SUPERSECRET"}}]}]}`
+	cases := map[string]string{
+		"thinking": `{"max_tokens":2048,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[` + toolResult + `]}`,
+		"deferred tool": `{"max_tokens":64,"anthropic_beta":["tool-search-tool-2025-10-19"],"tools":[` +
+			`{"name":"tool_search","description":"Load deferred tool definitions by name.","input_schema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},` +
+			`{"name":"read_notes","description":"Read the attached document.","input_schema":{"type":"object","properties":{}}},` +
+			`{"name":"fetch_weather_report","description":"Get weather.","defer_loading":true,"input_schema":{"type":"object","properties":{"zq_city_code_v7":{"type":"string"}},"required":["zq_city_code_v7"]}}` +
+			`],"messages":[` + toolResult + `]}`,
+	}
+	for name, invokeBody := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(BedrockContextKeyAnthropicInvokeIngress, true)
+			var req BedrockInvokeRequest
+			require.NoError(t, sonic.Unmarshal([]byte(invokeBody), &req))
+			req.ModelID = "us.anthropic.claude-sonnet-5-5"
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			bifrostReq.Model = req.ModelID
+			require.True(t, responsesUsesAnthropicInvokePath(ctx, bifrostReq), "the request must select the native builder")
+
+			provider := &BedrockProvider{}
+			body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, bifrostReq, provider.invokeBuildConfig(bifrostReq.Model, false, true, nil))
+			require.NotNil(t, bifrostErr, "the nested url document reached Bedrock unfetched: %s", body)
+			assert.NotContains(t, bifrostErr.Error.Message, "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
+		})
+	}
+}

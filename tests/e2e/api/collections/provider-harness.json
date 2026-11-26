@@ -362711,6 +362711,55 @@
           "response": []
         },
         {
+          "name": "Bedrock invoke (native InvokeModel builder): url document nested in tool_result is fetched and reaches the model (Sonnet 5) - #9308",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "// The defer_loading tool sends this request through the native InvokeModel builder instead of",
+                  "// Converse. AWS-hosted Claude rejects a url source, so the gateway must fetch the document nested",
+                  "// in the tool_result there too. indigo-418 appears only inside the fetched PDF.",
+                  "pm.test('invoke native builder tool_result url source: the document reaches the model - #9308', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = pm.response.json();",
+                  "  var text = (body.content || []).map(function (c) { return c.text || ''; }).join(' ').toUpperCase();",
+                  "  pm.expect(text, 'model response: ' + JSON.stringify(body.content)).to.include('INDIGO-418');",
+                  "  pm.expect(text, 'the document was silently dropped (#9308): ' + text).to.not.include('NOT_PROVIDED');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"anthropic_beta\": [\n    \"tool-search-tool-2025-10-19\"\n  ],\n  \"max_tokens\": 64,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"read_notes\",\n      \"description\": \"Read the attached document.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {}\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Read the attached document with the read_notes tool.\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_9308url\",\n          \"name\": \"read_notes\",\n          \"input\": {}\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_9308url\",\n          \"content\": [\n            {\n              \"type\": \"text\",\n              \"text\": \"Here is the document.\"\n            },\n            {\n              \"type\": \"document\",\n              \"title\": \"Attachment\",\n              \"source\": {\n                \"type\": \"url\",\n                \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/refs/tags/transports/v2.6.0/tests/e2e/api/fixtures/cowork-marker-inline.pdf\"\n              }\n            }\n          ]\n        },\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the document marker stated in the attached document? Reply with the marker only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-5/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-5",
+                "invoke"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
           "name": "[EXPECT-400] Bedrock invoke: unsupported ftp document url scheme fails with a 4xx (Haiku 4.5) - #9308",
           "event": [
             {
