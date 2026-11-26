@@ -1471,11 +1471,12 @@ func (m *ToolsManager) UpdateConfig(config *schemas.MCPToolManagerConfig) {
 	}
 
 	// Update CodeMode configuration — propagate whenever any field is set
-	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0 || config.CodeModeLimits != nil) {
+	if m.codeMode != nil && (config.CodeModeBindingLevel != "" || config.ToolExecutionTimeout > 0 || config.CodeModeLimits != nil || config.CodeModeDiscoveryRanker != nil) {
 		m.codeMode.UpdateConfig(&CodeModeConfig{
 			BindingLevel:         config.CodeModeBindingLevel,
 			ToolExecutionTimeout: time.Duration(config.ToolExecutionTimeout),
 			Limits:               config.CodeModeLimits,
+			DiscoveryRanker:      config.CodeModeDiscoveryRanker,
 		})
 	}
 

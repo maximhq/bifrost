@@ -28690,3 +28690,85 @@ func BenchmarkGetOAuth2SigningKey(b *testing.B) {
 		})
 	})
 }
+
+func TestApplyCodeModeDiscoveryRanker(t *testing.T) {
+	SetLogger(&testLogger{})
+	fileWith := func(ranker *schemas.MCPCodeModeDiscoveryRanker) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{CodeModeDiscoveryRanker: ranker}}
+	}
+
+	t.Run("unset leaves the tool manager config alone", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, "")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		mcpCfg := &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, nil)
+		if mcpCfg.ToolManagerConfig != nil {
+			t.Fatalf("expected no tool manager config, got %+v", mcpCfg.ToolManagerConfig)
+		}
+	})
+
+	t.Run("file value reaches the store-backed runtime config", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, "")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		mcpCfg := &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{MaxAgentDepth: 3}}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: 2}))
+		got := mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.URL != "https://ranker.example/rank" || got.TimeoutSeconds != 2 {
+			t.Fatalf("unexpected ranker %+v", got)
+		}
+		if mcpCfg.ToolManagerConfig.MaxAgentDepth != 3 {
+			t.Fatalf("other tool manager settings changed: %+v", mcpCfg.ToolManagerConfig)
+		}
+	})
+
+	t.Run("environment overrides the file", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, " http://127.0.0.1:9000/rank ")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "/run/secrets/ranker")
+		mcpCfg := &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TimeoutSeconds: 4}))
+		got := mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.URL != "http://127.0.0.1:9000/rank" || got.TokenFile != "/run/secrets/ranker" || got.TimeoutSeconds != 4 {
+			t.Fatalf("unexpected ranker %+v", got)
+		}
+	})
+
+	// The file's token belongs to the file's endpoint: an environment URL that
+	// replaces it must not carry that token to the new endpoint, while an
+	// explicit token-file variable still applies.
+	t.Run("environment url drops the file token file", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerURL, "https://other-ranker.example/rank")
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		mcpCfg := &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TokenFile: "/run/secrets/ranker", TimeoutSeconds: 4}))
+		got := mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.URL != "https://other-ranker.example/rank" || got.TokenFile != "" || got.TimeoutSeconds != 4 {
+			t.Fatalf("unexpected ranker %+v", got)
+		}
+
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "/run/secrets/other-ranker")
+		mcpCfg = &schemas.MCPConfig{}
+		applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&schemas.MCPCodeModeDiscoveryRanker{URL: "https://ranker.example/rank", TokenFile: "/run/secrets/ranker"}))
+		got = mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker
+		if got == nil || got.URL != "https://other-ranker.example/rank" || got.TokenFile != "/run/secrets/other-ranker" {
+			t.Fatalf("unexpected ranker with an explicit token file %+v", got)
+		}
+	})
+
+	t.Run("invalid settings are dropped", func(t *testing.T) {
+		t.Setenv(envCodeModeDiscoveryRankerTokenFile, "")
+		for _, ranker := range []schemas.MCPCodeModeDiscoveryRanker{
+			{URL: "ftp://ranker.example/rank"},
+			{URL: "https://user:pass@ranker.example/rank"},
+			{URL: "/rank"},
+			{URL: "https://ranker.example/rank", TimeoutSeconds: 31},
+			{URL: "https://ranker.example/rank", TimeoutSeconds: -1},
+		} {
+			t.Setenv(envCodeModeDiscoveryRankerURL, "")
+			mcpCfg := &schemas.MCPConfig{ToolManagerConfig: &schemas.MCPToolManagerConfig{}}
+			applyCodeModeDiscoveryRanker(mcpCfg, fileWith(&ranker))
+			if mcpCfg.ToolManagerConfig.CodeModeDiscoveryRanker != nil {
+				t.Fatalf("expected %+v to be rejected", ranker)
+			}
+		}
+	})
+}

@@ -3,7 +3,6 @@ package mcp
 import (
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/bytedance/sonic"
@@ -494,8 +493,10 @@ func createToolResultMessage(toolCall schemas.ChatAssistantMessageToolCall, resu
 }
 
 // buildAllowedAutoExecutionTools builds a map of client names to their auto-executable tools.
-// It processes code mode clients and parses their ToolsToAutoExecute configuration to create
-// a map of allowed tools. Tool names are parsed to match their appearance in JavaScript code.
+// It processes code mode clients and lists, for each tool ToolsToAutoExecute allows, every
+// identifier executeToolCode binds it under (see CodeModeBindings), computed from the same
+// model-visible tools the sandbox binds, so a suffixed callable name such as get_user_2 is
+// recognized and a name bound to a tool that is not allowed is not.
 //
 // Parameters:
 //   - ctx: Context for accessing client tools
@@ -506,7 +507,7 @@ func createToolResultMessage(toolCall schemas.ChatAssistantMessageToolCall, resu
 //   - map[string][]string: Map of client names to their auto-executable tool names (as they appear in code)
 func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager ClientManager) ([]string, map[string][]string) {
 	allowedTools := make(map[string][]string)
-	availableToolsPerClient := clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := clientManager.GetToolPerClient(WithModelToolsOnly(ctx))
 	allClientNames := []string{}
 
 	for clientName := range availableToolsPerClient {
@@ -528,16 +529,21 @@ func buildAllowedAutoExecutionTools(ctx *schemas.BifrostContext, clientManager C
 			continue
 		}
 
-		// Parse tool names (as they appear in JavaScript code)
+		// Tool names as they appear in code
 		autoExecutableTools := []string{}
 		if toolsToAutoExecute.IsUnrestricted() {
 			autoExecutableTools = append(autoExecutableTools, "*")
 		} else {
-			for _, originalToolName := range toolsToAutoExecute {
-				// Replace - with _ for code mode compatibility, then parse for JS compatibility
-				toolNameForCode := strings.ReplaceAll(originalToolName, "-", "_")
-				parsedToolName := parseToolName(toolNameForCode)
-				autoExecutableTools = append(autoExecutableTools, parsedToolName)
+			rawNames := make([]string, 0, len(availableToolsPerClient[clientName]))
+			for _, tool := range availableToolsPerClient[clientName] {
+				if tool.Function != nil && tool.Function.Name != "" {
+					rawNames = append(rawNames, tool.Function.Name)
+				}
+			}
+			for identifier, rawName := range CodeModeBindings(clientName, rawNames) {
+				if toolsToAutoExecute.Contains(StripClientPrefix(rawName, clientName)) {
+					autoExecutableTools = append(autoExecutableTools, identifier)
+				}
 			}
 		}
 		// Add to map if there are auto-executable tools

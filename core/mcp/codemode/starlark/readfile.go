@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	codemcp "github.com/maximhq/bifrost/core/mcp"
@@ -92,70 +93,44 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find matching client
-	var matchedClientName string
 	var matchedTools []schemas.ChatTool
-	matchCount := 0
-
-	for clientName, tools := range availableToolsPerClient {
-		client := s.clientManager.GetClientByName(clientName)
-		if client == nil {
-			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
-			continue
+	matchedClientName, candidates := s.matchCodeModeServer(ctx, availableToolsPerClient, serverName)
+	if len(candidates) > 1 {
+		errorMsg := fmt.Sprintf("Multiple servers match filename '%s':\n", fileName)
+		for _, name := range candidates {
+			errorMsg += fmt.Sprintf("  - %s\n", name)
 		}
-		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
-			continue
-		}
+		errorMsg += "\nPlease use a more specific filename. Use the exact display name from listToolFiles to avoid ambiguity."
+		return createToolResponseMessage(toolCall, errorMsg, true), nil
+	}
+	if matchedClientName != "" {
+		clientName, tools := matchedClientName, availableToolsPerClient[matchedClientName]
+		if isToolLevel {
+			// Tool-level: filter to specific tool
+			var foundTool *schemas.ChatTool
+			if i := findToolReference(tools, toolName, clientName); i >= 0 {
+				foundTool = &tools[i]
+			}
 
-		clientNameLower := strings.ToLower(clientName)
-		serverNameLower := strings.ToLower(serverName)
-
-		if clientNameLower == serverNameLower {
-			matchCount++
-			if matchCount > 1 {
-				// Multiple matches found
-				errorMsg := fmt.Sprintf("Multiple servers match filename '%s':\n", fileName)
-				for name := range availableToolsPerClient {
-					if strings.ToLower(name) == serverNameLower {
-						errorMsg += fmt.Sprintf("  - %s\n", name)
+			if foundTool == nil {
+				names := callableChatToolNames(clientName, tools)
+				availableTools := make([]string, 0)
+				for _, tool := range tools {
+					if tool.Function != nil {
+						availableTools = append(availableTools, names[tool.Function.Name])
 					}
 				}
-				errorMsg += "\nPlease use a more specific filename. Use the exact display name from listToolFiles to avoid ambiguity."
+				errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
+				for _, t := range availableTools {
+					errorMsg += fmt.Sprintf("  - servers/%s/%s.pyi\n", clientName, t)
+				}
 				return createToolResponseMessage(toolCall, errorMsg, true), nil
 			}
 
-			matchedClientName = clientName
-
-			if isToolLevel {
-				// Tool-level: filter to specific tool
-				var foundTool *schemas.ChatTool
-				for i, tool := range tools {
-					if tool.Function != nil {
-						if matchesToolReference(toolName, clientName, tool.Function.Name) {
-							foundTool = &tools[i]
-							break
-						}
-					}
-				}
-
-				if foundTool == nil {
-					availableTools := make([]string, 0)
-					for _, tool := range tools {
-						if tool.Function != nil {
-							availableTools = append(availableTools, getCanonicalToolName(clientName, tool.Function.Name))
-						}
-					}
-					errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools in this server are:\n", toolName, clientName)
-					for _, t := range availableTools {
-						errorMsg += fmt.Sprintf("  - servers/%s/%s.pyi\n", clientName, t)
-					}
-					return createToolResponseMessage(toolCall, errorMsg, true), nil
-				}
-
-				matchedTools = []schemas.ChatTool{*foundTool}
-			} else {
-				// Server-level: use all tools
-				matchedTools = tools
-			}
+			matchedTools = []schemas.ChatTool{*foundTool}
+		} else {
+			// Server-level: use all tools
+			matchedTools = tools
 		}
 	}
 
@@ -171,9 +146,10 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 				client := s.clientManager.GetClientByName(name)
 				if client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
 					if tools, ok := availableToolsPerClient[name]; ok {
+						names := callableChatToolNames(name, tools)
 						for _, tool := range tools {
 							if tool.Function != nil {
-								availableFiles = append(availableFiles, fmt.Sprintf("servers/%s/%s.pyi", name, getCanonicalToolName(name, tool.Function.Name)))
+								availableFiles = append(availableFiles, fmt.Sprintf("servers/%s/%s.pyi", name, names[tool.Function.Name]))
 							}
 						}
 					}
@@ -189,7 +165,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, callableChatToolNames(matchedClientName, availableToolsPerClient[matchedClientName]), isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
@@ -247,6 +223,35 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	return createToolResponseMessage(toolCall, fileContent, false), nil
 }
 
+// matchCodeModeServer finds the code mode server a file path or getToolDocs
+// call names. Client names may differ only by case (crm and CRM), so a name
+// that matches one exactly wins, as it does in listToolFiles(query=...).
+// Otherwise it matches case-insensitively, and candidates lists every match
+// when that is ambiguous, in which case match is empty.
+func (s *StarlarkCodeMode) matchCodeModeServer(ctx context.Context, toolsPerClient map[string][]schemas.ChatTool, serverName string) (match string, candidates []string) {
+	for clientName, tools := range toolsPerClient {
+		client := s.clientManager.GetClientByName(clientName)
+		if client == nil {
+			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
+			continue
+		}
+		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
+			continue
+		}
+		if clientName == serverName {
+			return clientName, nil
+		}
+		if strings.EqualFold(clientName, serverName) {
+			candidates = append(candidates, clientName)
+		}
+	}
+	if len(candidates) == 1 {
+		return candidates[0], nil
+	}
+	sort.Strings(candidates)
+	return "", candidates
+}
+
 // parseVFSFilePath parses a VFS file path and extracts the server name and optional tool name.
 func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel bool) {
 	// Remove .pyi extension
@@ -282,14 +287,16 @@ func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel
 }
 
 // generateCompactSignatures generates compact Python function signatures for tools.
+// names maps each raw tool name to its callable name (see callableToolNames).
 // jsonModuleAvailable says whether the sandbox's json module is reachable (see generateTypeDefinitions).
-func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
+func generateCompactSignatures(clientName string, tools []schemas.ChatTool, names map[string]string, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
 	var sb strings.Builder
 
 	// Minimal header
+	docsToolName := "tool_name"
 	if isToolLevel && len(tools) == 1 && tools[0].Function != nil {
-		toolName := getCanonicalToolName(clientName, tools[0].Function.Name)
-		sb.WriteString(fmt.Sprintf("# %s.%s tool\n", clientName, toolName))
+		docsToolName = names[tools[0].Function.Name]
+		sb.WriteString(fmt.Sprintf("# %s.%s tool\n", clientName, docsToolName))
 	} else {
 		sb.WriteString(fmt.Sprintf("# %s server tools\n", clientName))
 	}
@@ -301,7 +308,7 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 		sb.WriteString("# json.decode(s) parses a str that holds JSON; plain text raises.\n")
 	}
 	sb.WriteString("# A call that fails returns an error value: check hasattr(r, \"error\"); r.error holds the message, and fail(r.error) stops the run.\n")
-	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
+	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"%s\")\n", clientName, docsToolName))
 	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
 	if instructions != "" {
 		sb.WriteString("#\n")
@@ -314,7 +321,7 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 			continue
 		}
 
-		toolName := getCanonicalToolName(clientName, tool.Function.Name)
+		toolName := names[tool.Function.Name]
 
 		// Format inline parameters in Python style
 		params := formatPythonParams(tool.Function.Parameters)
