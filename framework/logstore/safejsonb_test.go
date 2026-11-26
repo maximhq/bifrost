@@ -487,8 +487,9 @@ func TestPGTextSafety_PoisonedRowDoesNotFailBatch(t *testing.T) {
 }
 
 // TestPGTextSafety_JSONColumnsStayJSONBCastable pins that every JSON column the
-// ranking and dimension queries cast with ::jsonb stays castable after a NUL or
-// a lone surrogate reaches it, so one row cannot error a whole dashboard query.
+// ranking, dimension and guardrail filter queries cast with ::jsonb stays
+// castable after a NUL or a lone surrogate reaches it, so one row cannot error
+// a whole dashboard or incidents query.
 func TestPGTextSafety_JSONColumnsStayJSONBCastable(t *testing.T) {
 	store, db := setupPGTextSafetyStore(t)
 	ctx := context.Background()
@@ -500,13 +501,17 @@ func TestPGTextSafety_JSONColumnsStayJSONBCastable(t *testing.T) {
 	out := "reply a\x00b"
 	entries[0].OutputMessageParsed = &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &out}}
 	entries[1].ParamsParsed = map[string]interface{}{"raw": json.RawMessage(`"\udc00"`)}
+	entries[1].GuardrailDebugParsed = &schemas.BifrostGuardrailMetadata{Detections: []schemas.BifrostGuardrailDetection{
+		{Phase: "output", RuleName: "pii-rule", Reason: "provider said a\x00b", Action: "redact"},
+	}}
 	require.NoError(t, store.BatchCreateIfNotExists(ctx, entries))
 
 	var n int64
 	err := db.Raw(`SELECT COUNT(*) FROM logs WHERE
 		(NULLIF(error_details, '')::jsonb IS NOT NULL OR error_details IS NULL OR error_details = '')
 		AND (NULLIF(output_message, '')::jsonb IS NOT NULL OR output_message IS NULL OR output_message = '')
-		AND (NULLIF(params, '')::jsonb IS NOT NULL OR params IS NULL OR params = '')`).Scan(&n).Error
+		AND (NULLIF(params, '')::jsonb IS NOT NULL OR params IS NULL OR params = '')
+		AND (NULLIF(guardrail_debug, '')::jsonb IS NOT NULL OR guardrail_debug IS NULL OR guardrail_debug = '')`).Scan(&n).Error
 	require.NoError(t, err, "stored JSON columns must cast to jsonb")
 	assert.Equal(t, int64(2), n)
 }

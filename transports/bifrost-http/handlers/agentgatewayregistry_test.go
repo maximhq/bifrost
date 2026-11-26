@@ -144,6 +144,7 @@ func TestAgentRefreshFailureStillReloadsGrantedKeys(t *testing.T) {
 	h.create(createCtx)
 	require.Equal(t, fasthttp.StatusInternalServerError, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
 	require.Contains(t, string(createCtx.Response.Body()), "Agent created in database but failed to reload in-memory state")
+	requireSingleAuditChange(t, createCtx, "agent.created")
 	require.Equal(t, [][]string{{"vk-w"}}, reloader.reloadedBatches, "the key the new agent granted is reloaded")
 
 	reloader.reloadedBatches = nil
@@ -153,6 +154,7 @@ func TestAgentRefreshFailureStillReloadsGrantedKeys(t *testing.T) {
 	h.update(updateCtx)
 	require.Equal(t, fasthttp.StatusInternalServerError, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
 	require.Contains(t, string(updateCtx.Response.Body()), "Agent updated in database but failed to reload in-memory state")
+	requireSingleAuditChange(t, updateCtx, "agent.updated")
 	require.Equal(t, [][]string{{"vk-v"}}, reloader.reloadedBatches, "the key the update dropped is reloaded")
 
 	reloader.reloadedBatches = nil
@@ -161,6 +163,7 @@ func TestAgentRefreshFailureStillReloadsGrantedKeys(t *testing.T) {
 	h.delete(deleteCtx)
 	require.Equal(t, fasthttp.StatusInternalServerError, deleteCtx.Response.StatusCode(), string(deleteCtx.Response.Body()))
 	require.Contains(t, string(deleteCtx.Response.Body()), "Agent deleted in database but failed to reload in-memory state")
+	requireSingleAuditChange(t, deleteCtx, "agent.deleted")
 	require.Equal(t, [][]string{{"vk-v"}}, reloader.reloadedBatches, "the key the deleted agent granted is reloaded")
 }
 
@@ -207,6 +210,7 @@ func TestAgentDeleteAnswersASavedButStaleDelete(t *testing.T) {
 	failed.delete(reqCtx)
 	require.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode())
 	require.NotContains(t, string(reqCtx.Response.Body()), "deleted in database", "a failed delete is not answered as saved")
+	require.Empty(t, liveAuditChanges(reqCtx), "a failed delete records nothing")
 	_, ok := agents.Get("alpha")
 	require.True(t, ok, "a failed delete keeps the record")
 
@@ -216,6 +220,7 @@ func TestAgentDeleteAnswersASavedButStaleDelete(t *testing.T) {
 	saved.delete(reqCtx)
 	require.Equal(t, fasthttp.StatusInternalServerError, reqCtx.Response.StatusCode())
 	require.Contains(t, string(reqCtx.Response.Body()), "Agent deleted in database but failed to reload in-memory state")
+	requireSingleAuditChange(t, reqCtx, "agent.deleted")
 	_, ok = agents.Get("alpha")
 	require.False(t, ok, "a saved delete still drops the record")
 }

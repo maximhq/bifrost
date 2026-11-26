@@ -10,6 +10,14 @@ import (
 // Different Tracer implementations can use their own concrete types.
 type SpanHandle interface{}
 
+// StreamChoiceOutput is the accumulated output of one choice in a chat or text stream.
+type StreamChoiceOutput struct {
+	Index        int
+	Message      *ChatMessage
+	FinishReason *string
+	LogProbs     *BifrostLogProbs
+}
+
 // StreamAccumulatorResult contains the accumulated data from streaming chunks.
 // This is the return type for tracer's streaming accumulation methods.
 type StreamAccumulatorResult struct {
@@ -28,6 +36,7 @@ type StreamAccumulatorResult struct {
 	// Debug spelling is retained for the established Go contract.
 	CacheDebug            *BifrostCacheMetadata           // Semantic cache metadata if available
 	GuardrailDebug        *BifrostGuardrailMetadata       // Guardrail metadata if available
+	OutputChoices         []StreamChoiceOutput            // Every choice of a chat/text stream with n>1, by index; nil otherwise
 	ErrorDetails          *BifrostError                   // Error details if any
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming

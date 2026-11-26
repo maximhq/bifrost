@@ -89,6 +89,222 @@ reviews:
         filter (grant.LimitsFrom) or it will record limits that were never charged.
         Do not flag existing call sites a PR leaves untouched, and do not flag the governance plugin keeping these
         keys populated for readers that have not moved to the Grant yet.
+    - path: "**/*.go"
+      instructions: |
+        Rule: Data lives in the live store (AGENTS.md "Data lives in the live store", skill .claude/skills/live-store/SKILL.md).
+
+        Review only code the PR adds or changes; do not flag existing code it leaves untouched.
+        Flag any NEW data a component keeps for longer than one request outside framework/livestore:
+        - a map, sync.Map or slice of records on a struct (with or without a mutex), a package-level map a function writes,
+          or a map behind an atomic pointer, used as a cache, an index or runtime state.
+        - The fix is a live-store structure chosen by what a miss means: a collection (every row of a config-database kind;
+          a miss means the row does not exist), a cache (only what was asked for; a miss means go fetch), or a table
+          (what the process writes itself; a miss means nothing was written yet; state keyed by a record uses RegisterState).
+        - Components keep only handles (connections, goroutines, locks, compiled programs) and per-request buffers.
+        - A map that genuinely cannot move must be added to tests/rawmaps/allowlist.txt with its group and a reason;
+          TestRepositoryKeepsDataInTheLiveStore fails otherwise.
+        In-flight working state is allowed in a map: state for one request, stream or run, keyed by its request, stream
+        or job ID and removed when that ends (stream accumulators, pending log entries, traces being built, running jobs),
+        with an `inflight` entry in tests/rawmaps/allowlist.txt. Flag such a map when an ending path (an error, a
+        cancellation, a timeout, an early return) does not remove its entry, since it then grows without bound, and flag
+        state labelled in-flight that a later request reuses (that is a cache and belongs in the live store).
+        Placement:
+        - Store.Collections holds config-store collections only; flag methods added to it that merge records or hide state.
+        - Store.Views holds tables derived from collections that several packages read, rebuilt by a subscriber once per
+          publish; a table only one component uses stays with that component.
+        - Records hold only what their loader fills: flag a record type reused with fields its loader never sets, and
+          settings and provider keys merged back into one value (functions that need keys take them as a parameter).
+        - UniqueIndex only where the database also keeps the key unique.
+        Request path:
+        - Reads go through typed handles (Get, GetBy, List, a view's Get); flag a collection looked up by name.
+        - Values read from the store are shared and read-only: flag code that modifies a slice or record it got from the store.
+        - Derived data that is the same for every request is built once per publish in a subscriber, not on every request;
+          a subscriber is fast, does no I/O and cannot fail. Work that depends on the request (filtering for one caller)
+          stays on the request path and reads the shared data without modifying it; do not flag it.
+    - path: "{transports/bifrost-http/handlers,transports/bifrost-http/lib,transports/bifrost-http/server,plugins}/**/*.go"
+      instructions: |
+        Rule: Writes reach memory the same way for every entity (AGENTS.md "Writes reach memory the same way for every
+        entity", skill .claude/skills/live-store/SKILL.md section "Write paths").
+
+        Review only write paths the PR adds or changes. For every database write that changes configuration, check:
+        - Delete: the records that refer to the entity (its holders) are read inside the delete's transaction, and a failed
+          read refuses the delete. After the commit the entity's record is removed with a Remove ref (no database read),
+          the caches bound to it are evicted, and the holders are re-read with lib.AdminRetry(). If that re-read fails the
+          handler answers 500 saying the delete was saved but not reloaded. Flag a delete that reads the row before removing
+          it, finds holders from memory instead of the database, or answers 200 when memory could not follow.
+        - Create or update: the written rows are re-read with lib.AdminRetry() (a refresh helper such as refreshRef or
+          refreshRows). On failure memory keeps the previous record and the handler answers 500 (lib.SavedNotAppliedError,
+          ErrSavedButNotReloaded). Flag a re-read without retries, a failure answered 200, or memory updated from the
+          request body instead of the re-read.
+        - Never write configuration from memory: a partial update merges onto a database read, never onto the live record,
+          and a settings save never rewrites child rows. Node-owned state (usage, reset times and epochs, discovery status)
+          is exempt.
+        - Only an explicit delete removes a record without reading it. A reload or reconcile that finds a held record
+          missing from a list it read earlier must re-read that record (a plain ref), not remove it.
+        - A change another process made is applied with lib.DBLookupRetry().
+        - The audit change is recorded right after the write commits, before the reload that can still fail.
+        Tests: each new or changed write path that re-reads needs a test where that re-read fails, showing the retry and the
+        exhausted case (previous record kept, 500); a delete needs a test that it removes without reading. A new config.json
+        kind extends TestConfigJSONContentPerMode. Ask for them when missing.
+    - path: "{core/mcp/**,core/internal/mcptests/**,framework/mcpcatalog/**,framework/oauth2/**,framework/modelcatalog/mcp_library_sync.go,plugins/governance/mcp*.go,transports/bifrost-http/handlers/mcp*.go,transports/bifrost-http/handlers/bifrostmcp.go,transports/bifrost-http/handlers/virtualmcp.go,transports/bifrost-http/lib/config_virtual_mcp.go}"
+      instructions: |
+        Rule: Every MCP change ships with MCP harness cases (AGENTS.md "Every MCP change ships with MCP harness cases",
+        skill .claude/skills/mcp-harness/SKILL.md).
+
+        Review only behaviour the PR adds or changes. When it changes MCP behaviour a client can observe (MCP clients and
+        their upstream auth, connection types, /mcp and /mcp/<slug>, /v1/mcp/tool/execute, MCP tools in inference and code
+        mode, tool filtering, virtual keys' MCP grants and Virtual MCPs, per-user discovery and sessions, MCP logs and
+        pricing, the MCP library, Bifrost's OAuth server, the Bifrost MCP on /v1/mcp), check that the PR adds or updates
+        cases in tests/e2e/api/runners/build-mcp-harness.mjs covering what the skill's section 3 lists for that kind of change:
+        - Upstream auth type: every connection type that can carry it, created through the API and from config.json; the
+          credential reaching the upstream on tools/list, tools/call, the health check, reconnect and tool sync, and no other
+          credential reaching it; expiry and refresh; per caller and shared; each inbound auth mode; no answer, error or log
+          echoing the secret or configuration values.
+        - Connection type or transport: every auth type that applies; the upstream down at create, dropped mid-call and
+          recovering; tool sync; proxies.
+        - Inbound auth on /mcp: each auth mode with enforce on and off; every caller credential alone and in pairs; every
+          surface; the exact refusal, with WWW-Authenticate only where the mode advertises OAuth.
+        - Tool filtering, MCP grants or Virtual MCPs: each level alone and combined, and every surface that lists or calls
+          tools answering the same.
+        - Tool execution, MCP tools in inference, per-user discovery, logs: the surfaces and result shapes the change
+          touches, what the upstream and the model received, and the call's log row.
+        Flag:
+        - MCP cases added to tests/e2e/api/collections/provider-harness.json instead of the MCP harness.
+        - Cases that cover one connection type, auth mode or surface when the change reaches more, unless the PR says why
+          the others are out of reach.
+        - Missing Go unit tests for the logic itself.
+        - A new value on an axis (an upstream auth type, connection type, discovery or credential kind, inbound auth mode,
+          caller credential, surface) whose cases were added without also adding it to the existing tests that enumerate
+          that axis, or without updating the skill's sections 2 and 3 (skill section 6).
+        Exempt: changes with no observable effect (comments, renames, log lines); the PR should say so.
+    - path: "tests/e2e/api/runners/{build-mcp-harness.mjs,lib/mcp-harness.mjs}"
+      instructions: |
+        MCP harness conventions (.claude/skills/mcp-harness/SKILL.md section 4):
+        - One folder per test case, named "<ID> <what it proves>" with a "Setup: ..." description; every request title
+          starts with the ID. A new test takes the next free ID in its section and is added to that section's list.
+        - Tests are independent: each re-adds the fleet servers it uses and restores what it changes (auth mode, enforce,
+          config, clients, virtual keys). Flag a test that relies on another test's state or order.
+        - Assertions are exact: status, message, tool names, what the upstream received, client state. Flag a script that
+          returns early on an error status, and a case that expects a 500. A known bug is asserted with A.skip(...).
+    - path: "{plugins/semanticcache/**,framework/vectorstore/**,transports/bifrost-http/handlers/cache.go,transports/bifrost-http/handlers/logging.go,transports/bifrost-http/lib/config.go,transports/bifrost-http/lib/responseheaders.go,transports/bifrost-http/lib/ctx.go}"
+      instructions: |
+        Rule: Every semantic cache change ships with semantic cache wiring cases (AGENTS.md "Every semantic cache change
+        ships with semantic cache wiring cases", skill .claude/skills/semantic-cache-wiring/SKILL.md).
+
+        Review only behaviour the PR adds or changes. When it changes semantic cache behaviour a client can observe (what a
+        request writes, hits or misses and what a hit replays, direct and semantic mode, the cacheable request types and
+        routes, streams, the x-bf-cache-* request headers, extra_fields.cache_debug and the x-bifrost-cache-* response
+        headers, identity scoping, the semantic_cache plugin config and its validation, the /api/cache clear endpoints, the
+        vector stores, cache fields on log rows, logs filters and stats), check that the PR adds or updates rows in
+        tests/e2e/api/runners/build-semantic-cache-wiring.mjs covering what the skill's section 3 lists for that kind of change:
+        - Config field: its default, set, cleared with null on a PUT, each invalid value's exact 400 on create and on update,
+          GET echoing it, and its effect in direct and semantic mode.
+        - Cache key input (a request parameter, normalization, tools, the system prompt, attachments, the model or provider):
+          a hit on the same request; a miss with only that input changed when it must keep entries apart, and a hit on the
+          first entry when it must not (reordered tools, letter case, surrounding whitespace); in both modes, streamed and
+          not; in semantic mode the paraphrase too.
+        - Request type, route or what a hit replays: a write, a hit and a miss on that type and on its stream; the replay
+          equal to the original (content, usage, binary payloads); body cache_debug and headers agreeing on /v1 and /openai,
+          headers only (no body cache_debug) on the other SDK routes; the log row.
+        - Streams: the replay's chunks, event types, texts, tool-call fragments and usage equal to the original, with
+          cache_debug only on the final chunk.
+        - Semantic matching: a paraphrase hit with similarity, threshold and the embedding fields; an unrelated miss; a
+          near-miss under the default threshold on every store; an embedding failure still answering, with a plugin_logs
+          warning.
+        - Identity scoping: each virtual key and no virtual key kept apart, and one shared entry with scoping off; clearing
+          by key clears every identity's entry, while clearing by cache_id clears only that entry.
+        - Vector store: the same expectation passing on Redis and on Weaviate, plus the store's own test file.
+        Flag:
+        - Semantic cache cases added to tests/e2e/api/collections/provider-harness.json instead of the semantic cache suite.
+        - Rows that cover one cache mode, request type, route or stream when the change reaches more, unless the PR says why
+          the others are out of reach.
+        - Missing Go unit tests for the logic itself.
+        - A new value on an axis (a request type, route, config field, request header, cache_debug field or response header,
+          vector store, caller identity, cache key input) whose rows were added without also adding it to the existing rows
+          that enumerate that axis, or without updating the skill's sections 2 and 3 (skill section 6).
+        Exempt: changes with no observable effect (comments, renames, log lines); the PR should say so.
+    - path: "tests/e2e/api/{runners/build-semantic-cache-wiring.mjs,runners/lib/semantic-cache-wiring.mjs,runners/lib/semantic-cache-wiring.test.mjs,runners/individual/run-newman-semantic-cache-wiring-tests.sh,collections/bifrost-semantic-cache-wiring.postman_collection.json}"
+      instructions: |
+        Semantic cache wiring suite conventions (.claude/skills/semantic-cache-wiring/SKILL.md section 4):
+        - The collection is generated by runners/build-semantic-cache-wiring.mjs, which embeds lib/semantic-cache-wiring.mjs
+          in it as scw_lib. Flag a change to the collection JSON without a matching change to the generator or the library,
+          and a change to either whose regenerated collection is not committed.
+        - Every request of a case is named "<folder letter><number> <what it checks>", with the next free number in its folder.
+        - A read that must hit uses hit() (polled, sent with x-bf-cache-no-store); a read that must miss uses miss() and runs
+          only after the entry it is isolated from was seen to hit. Cache keys go through H.key and namespaces through NS,
+          so every run uses its own. Fixed waits only on TTL rows and "nothing was written" rows.
+        - A row that changes the plugin config restores the folder's baseline afterwards, and a new config field joins RESET.
+        - Assertions go through scw.run specs: a new kind of check is added to lib/semantic-cache-wiring.mjs with a case in
+          lib/semantic-cache-wiring.test.mjs. Flag a script that returns early on an error status, and a case that expects
+          a 500.
+        - A provider a row needs is added to the generator's provider lists and its key variable to the runner's
+          REQUIRED_ENV; keys stay env.<NAME> references.
+    - path: "tests/e2e/api/collections/provider-harness.json"
+      instructions: |
+        Semantic cache cases do not belong in the provider harness (AGENTS.md "Every semantic cache change ships with
+        semantic cache wiring cases"). Flag a case the PR adds or changes that exercises the semantic cache: one that
+        configures the semantic_cache plugin, sends x-bf-cache-* headers, calls /api/cache, or asserts a cache write, hit,
+        miss or replay, cache_debug or the x-bifrost-cache-* headers. It belongs in
+        tests/e2e/api/runners/build-semantic-cache-wiring.mjs. A case that only names cache_debug among other log fields is
+        not a cache case.
+    - path: "{plugins/routing/**,framework/routing/**,framework/modelcatalog/**,plugins/modelcatalogresolver/**,plugins/governance/{main,resolver,store,permitview}.go,core/keyselectors/**,core/sessionaffinity.go,core/bifrost.go,core/utils.go,core/failureclass.go,core/schemas/account.go,framework/configstore/{complexity*,modelrouter*}.go,framework/configstore/tables/{routingrules,modelrouter,modelroutertarget}.go,framework/livestore/registry/{routingrules,modelrouters}.go,transports/bifrost-http/handlers/{routing,modelrouters,modelrouterclassify,complexitysuggestions,providers,provider_keys,governance}.go,transports/bifrost-http/lib/{ctx,responseheaders,config}.go}"
+      instructions: |
+        Rule: Every routing change ships with routing harness cases (AGENTS.md "Every routing change ships with routing
+        harness cases", skill .claude/skills/routing-harness/SKILL.md).
+
+        Review only behaviour the PR adds or changes, and only when it changes how a request is routed in a way a client can
+        observe (routing rules, model routers and the complexity router, the model catalog and key aliases, a model named
+        without a provider, virtual key provider configs and governance load balancing, key selection and key pins, direct
+        keys, session affinity, fallbacks and retries, extra_fields.routing_info, the x-bifrost-routing-info-* headers, the
+        routing log trail). Check that the PR adds or updates scenarios in tests/e2e/api/runners/build-routing-wiring.mjs
+        (and build-model-catalog-wiring.mjs for catalog reads) covering what the skill's section 3 lists for that kind of
+        change:
+        - Routing rule: a match and a no-match for each CEL input it reads; each scope that can hold it and the order between
+          scopes; priority; each target shape (provider and model, model only, a key pin, weights, a first-token cutoff);
+          its fallbacks replacing the caller's, one the virtual key refuses and one whose provider was deleted; chains;
+          created, edited, disabled and deleted between requests; an invalid CEL refused with 400.
+        - Model router or complexity router: each classifier picking each tier and its fallback chain; tier targets and
+          fallbacks; a router after a rule; complexity_tier in a rule; the request types that classify.
+        - Catalog and aliases: provider and key mutations reaching /api/models and /api/models/details and the next route;
+          exact, case-insensitive and regex aliases; a bare model resolved through the catalog, with its inferred fallbacks.
+        - Virtual key routing: weighted, zero and allow-list-only configs; allowed and blacklisted models; a candidate that
+          cannot serve skipped at any weight; a caller-named provider skipping the balancing; budgets and rate limits; each
+          refusal's exact status and message.
+        - Key selection, pins and direct keys: a pool of keys and each error when none is left; pins by ID and by name; a
+          rule's pin over the caller's; a direct key with the server setting on and off.
+        - Session affinity: the session headers and TTL; the route and key bindings; a caller-named provider or caller key
+          pin blocking the move; what binds and what is dropped.
+        - Fallbacks and retries: every fallback source; tried in order; an exhausted chain returning the primary's error and
+          headers; a 429, a 5xx, a dropped connection and a refused key.
+        Flag:
+        - New routing cases added to tests/e2e/api/collections/provider-harness.json instead of the routing harness. Updates
+          to its existing routing folders are fine.
+        - Scenarios that cover one scope, config, fallback source or entry point when the change reaches more, unless the PR
+          says why the others are out of reach.
+        - A case left out because the generator has no step for it: the generator is extended in the same PR.
+        - Missing Go unit tests for the logic itself.
+        - A new value on an axis (an entry point, routing header, rule scope, CEL input, target field, fallback source,
+          classifier, key field, routing_info field, provider) whose scenarios were added without also adding it to the
+          existing scenarios that enumerate that axis, or without updating the skill's sections 2 and 3 (skill section 6).
+        Exempt: changes with no observable effect (comments, renames, log lines); the PR should say so.
+    - path: "tests/e2e/api/{runners/build-routing-wiring.mjs,runners/build-model-catalog-wiring.mjs,runners/lib/collection-builder.mjs,runners/individual/run-newman-routing-wiring-tests.sh,runners/individual/run-newman-model-catalog-wiring-tests.sh,collections/bifrost-routing-wiring.postman_collection.json,collections/bifrost-model-catalog-wiring.postman_collection.json}"
+      instructions: |
+        Routing harness conventions (.claude/skills/routing-harness/SKILL.md section 4):
+        - The collections are generated by runners/build-routing-wiring.mjs and runners/build-model-catalog-wiring.mjs. Flag
+          a change to a collection JSON without the matching generator change, and a generator change whose regenerated
+          collection is not committed.
+        - A scenario has a unique kebab-case id and a title that names what it proves; renaming a title that
+          collections/collection-scripts.test.mjs looks up needs that test updated.
+        - Routing requests are sent once and judged once; only catalog, log, trail and pricing reads poll. A new step that
+          sends inference joins inferenceSteps, and a new step that creates something adds its delete to the generated
+          teardown.
+        - Everything a scenario creates is run-scoped through {{run_id}}, except a standard provider (Azure, Bedrock and Vertex
+          always, or providerKind "standard"), which keeps its fixed name on the clean server the runner boots. A model a
+          rule's CEL matches is a run-scoped alias. Keys stay env.<NAME> references.
+        - Assertions are exact: status, message, error type, provider and key. Distributions assert membership, never exact
+          splits. Flag a script that returns early on an error status, and a case that expects a 500.
+        - A new step type comes with a test in collections/collection-scripts.test.mjs when its script logic is easy to get
+          wrong.
     - path: "core/**"
       instructions: |
         Review Go core changes for concurrency safety, provider isolation, pooled object reset discipline, and plugin hook ordering.
@@ -142,6 +358,10 @@ knowledge_base:
     filePatterns:
       - "AGENTS.md"
       - ".greptile/rules.md"
+      - ".claude/skills/live-store/SKILL.md"
+      - ".claude/skills/mcp-harness/SKILL.md"
+      - ".claude/skills/semantic-cache-wiring/SKILL.md"
+      - ".claude/skills/routing-harness/SKILL.md"
 
 chat:
   auto_reply: true
