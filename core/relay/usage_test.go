@@ -385,10 +385,15 @@ func TestRequestBodyError(t *testing.T) {
 		"lone case variant":            `{"text":"` + strings.Repeat("b", 100) + `"}`,
 		"duplicate inside an array":    `[{"Text":"a"},{"Text":"a","TEXT":"b"}]`,
 		"duplicate in a nested object": `{"Options":{"x":1,"X":2},"Text":"a"}`,
-		"too deep":                     strings.Repeat(`{"a":`, 70) + `1` + strings.Repeat(`}`, 70),
+		"too deep":                     strings.Repeat(`{"a":`, 1001) + `1` + strings.Repeat(`}`, 1001),
 	} {
 		assert.Errorf(t, translate.requestBodyError([]byte(body)), "%s must be refused", name)
 	}
+	// The same depth bound as every other relay JSON check, not a tighter one of its own.
+	deep := strings.Repeat(`{"a":`, 70) + `1` + strings.Repeat(`}`, 70)
+	assert.NoError(t, translate.requestBodyError([]byte(`{"Text":"hi","Options":`+deep+`}`)), "70 levels is fine, as it is everywhere else")
+	assert.EqualError(t, translate.requestBodyError([]byte(strings.Repeat(`{"a":`, 1001)+`1`+strings.Repeat(`}`, 1001))), "the request body nests deeper than 1000 levels",
+		"past the bound the message says so, not \"duplicate key\"")
 
 	tts := resolveUsage(&schemas.RelayUsageConfig{UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsBodyChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
 	assert.NoError(t, tts.requestBodyError([]byte(`<speak>hi</speak>`)), "a whole-body measure reads any body")
@@ -447,4 +452,52 @@ func TestReadRequestModel(t *testing.T) {
 	got, err = ReadRequestModel(schemas.RelayModelFromQuery, nil, "", "model=nova-3", "")
 	require.NoError(t, err)
 	assert.Empty(t, got, "no path reads nothing")
+}
+
+// BenchmarkRequestBodyError measures the check a route billing on a request-body path runs on every
+// call: a normal body, and the worst case for a nested-duplicate scan, a 1 MiB string under 999
+// arrays, which must cost about what its size does whatever its depth.
+func BenchmarkRequestBodyError(b *testing.B) {
+	translate := resolveUsage(&schemas.RelayUsageConfig{UnitsPath: "Text", UnitsSource: schemas.RelayUnitsFromRequest, UnitsMeasure: schemas.RelayUnitsChars, CostPerUnit: schemas.Ptr(0.001)}, nil)
+	normal := []byte(`{"Text":"` + strings.Repeat("hello world ", 80) + `","SourceLanguageCode":"en","TargetLanguageCode":"de","Settings":{"Formality":"FORMAL","Profanity":"MASK"}}`)
+	deep := []byte(`{"Text":"x","Doc":` + strings.Repeat("[", 999) + `"` + strings.Repeat("a", 1<<20) + `"` + strings.Repeat("]", 999) + `}`)
+	for _, c := range []struct {
+		name string
+		body []byte
+	}{{"normal 1KiB", normal}, {"1MiB string under 999 arrays", deep}} {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(c.body)))
+			for b.Loop() {
+				if err := translate.requestBodyError(c.body); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// The single-pass duplicate-key scan finds what the nested walk found, at any depth, and only on keys.
+func TestHasDuplicateKey(t *testing.T) {
+	for name, c := range map[string]struct {
+		body string
+		dup  bool
+	}{
+		"plain":                    {`{"Text":"a","Lang":"de"}`, false},
+		"exact duplicate":          {`{"Text":"a","Text":"b"}`, true},
+		"case variant":             {`{"Text":"a","text":"b"}`, true},
+		"escaped key spells it":    {`{"Text":"a","Text":"b"}`, true},
+		"escaped quote in a value": {`{"Text":"a \"Text\" b","Lang":"de"}`, false},
+		"a value naming a key":     {`{"a":"Text","Text":"x"}`, false},
+		"same key in siblings":     {`[{"Text":"a"},{"Text":"b"}]`, false},
+		"duplicate in an array":    {`[{"Text":"a"},{"Text":"a","TEXT":"b"}]`, true},
+		"nested duplicate":         {`{"Options":{"x":1,"X":2},"Text":"a"}`, true},
+		"key after a nested value": {`{"a":{"b":[1,{"c":true}]},"A":null}`, true},
+		"numbers and literals":     {`{"n":-1.5e3,"t":true,"f":false,"z":null,"N":0}`, true},
+		"empty containers":         {`{"a":{},"b":[],"c":""}`, false},
+		"duplicate 999 deep":       {strings.Repeat(`[`, 998) + `{"k":1,"K":2}` + strings.Repeat(`]`, 998), true},
+		"no duplicate 999 deep":    {strings.Repeat(`[`, 998) + `{"k":1}` + strings.Repeat(`]`, 998), false},
+	} {
+		assert.Equal(t, c.dup, hasDuplicateKey([]byte(c.body)), name)
+	}
 }

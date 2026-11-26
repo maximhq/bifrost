@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/url"
@@ -221,9 +222,6 @@ func (u resolvedUsage) requestUnits(body []byte) usageFields {
 	return f
 }
 
-// maxRequestJSONDepth bounds the duplicate-key walk over a billed request body.
-const maxRequestJSONDepth = 64
-
 // requestBodyError refuses a request that a billable route reading its quantity at a path in the
 // caller's body (Translate's Text) cannot measure unambiguously: a body that is not JSON, which
 // would otherwise bill nothing, and a body naming one key twice in an object, case-insensitively,
@@ -240,8 +238,8 @@ func (u resolvedUsage) requestBodyError(body []byte) error {
 	if !gjson.ValidBytes(body) {
 		return errors.New("this route bills on " + u.unitsPath + " in the request body, which must be JSON")
 	}
-	if hasDuplicateKey(gjson.ParseBytes(body), 0) {
-		return errors.New("the request body names a key more than once (case-insensitively) or nests deeper than 64 levels, so the billed quantity is ambiguous")
+	if hasDuplicateKey(body) {
+		return errors.New("the request body names a key more than once (case-insensitively), so the billed quantity is ambiguous")
 	}
 	if caseVariantOnly(body, u.unitsPath) {
 		// gjson matches keys exactly while most upstream decoders fold case, so a lone "text" for a
@@ -323,32 +321,102 @@ func (u resolvedUsage) unitCharge(f usageFields) float64 {
 	return u.billedUnits(f.units) * u.costPerUnit
 }
 
-// hasDuplicateKey reports whether any object in v names a key twice, case-insensitively, or v
-// nests deeper than maxRequestJSONDepth.
-func hasDuplicateKey(v gjson.Result, depth int) bool {
-	if depth > maxRequestJSONDepth {
-		return true
+// hasDuplicateKey reports whether any object in body names a key twice, case-insensitively. It reads
+// the body once, byte by byte, keeping the keys seen in each open object, so its cost follows the
+// body's size whatever its depth; a walk that re-read each nested value at every level grew with
+// size times depth. Only recorded keys allocate. The body was already held to maxJSONDepth and
+// checked as valid JSON, so the scan can trust its structure.
+func hasDuplicateKey(body []byte) bool {
+	type frame struct {
+		object  bool
+		wantKey bool
+		seen    map[string]struct{}
 	}
-	dup := false
-	if v.IsObject() {
-		seen := make(map[string]struct{})
-		v.ForEach(func(k, val gjson.Result) bool {
-			name := strings.ToLower(k.Str)
-			if _, ok := seen[name]; ok {
-				dup = true
-				return false
+	var stack []frame
+	var lower []byte // the current key, lower-cased, reused across keys
+	// valueDone marks the current object as waiting for its next key once one of its values ends.
+	valueDone := func() {
+		if n := len(stack); n > 0 && stack[n-1].object {
+			stack[n-1].wantKey = true
+		}
+	}
+	for i := 0; i < len(body); {
+		switch c := body[i]; c {
+		case '{', '[':
+			if n := len(stack); n > 0 && stack[n-1].object {
+				stack[n-1].wantKey = false
 			}
-			seen[name] = struct{}{}
-			dup = hasDuplicateKey(val, depth+1)
-			return !dup
-		})
-	} else if v.IsArray() {
-		v.ForEach(func(_, val gjson.Result) bool {
-			dup = hasDuplicateKey(val, depth+1)
-			return !dup
-		})
+			stack = append(stack, frame{object: c == '{', wantKey: c == '{'})
+			i++
+		case '}', ']':
+			stack = stack[:len(stack)-1]
+			valueDone()
+			i++
+		case '"':
+			end, escaped := i+1, false
+			for end < len(body) && body[end] != '"' {
+				if body[end] == '\\' {
+					escaped = true
+					end++
+				}
+				end++
+			}
+			if n := len(stack); n > 0 && stack[n-1].object && stack[n-1].wantKey {
+				top := &stack[n-1]
+				lower = lowerKey(lower[:0], body[i+1:end], body[i:end+1], escaped)
+				if top.seen == nil {
+					top.seen = make(map[string]struct{})
+				}
+				// The lookup reads the reused buffer without copying it; only a stored key allocates.
+				if _, ok := top.seen[string(lower)]; ok {
+					return true
+				}
+				top.seen[string(lower)] = struct{}{}
+				top.wantKey = false
+			} else {
+				valueDone()
+			}
+			i = end + 1
+		case ' ', '\t', '\r', '\n', ':', ',':
+			i++
+		default:
+			// A number, true, false or null runs to the next delimiter.
+			for i < len(body) && !strings.ContainsRune(" \t\r\n,]}", rune(body[i])) {
+				i++
+			}
+			valueDone()
+		}
 	}
-	return dup
+	return false
+}
+
+// lowerKey appends the lower-cased text of a JSON key to dst: ASCII in place, anything else (an
+// escape, a non-ASCII letter) decoded and folded the way strings.ToLower folds it.
+func lowerKey(dst, raw, quoted []byte, escaped bool) []byte {
+	if !escaped {
+		ascii := true
+		for _, c := range raw {
+			if c >= utf8.RuneSelf {
+				ascii = false
+				break
+			}
+		}
+		if ascii {
+			for _, c := range raw {
+				if 'A' <= c && c <= 'Z' {
+					c += 'a' - 'A'
+				}
+				dst = append(dst, c)
+			}
+			return dst
+		}
+	}
+	key := string(raw)
+	if escaped {
+		// An escaped key (\u0054ext) is compared as the text it spells.
+		_ = json.Unmarshal(quoted, &key)
+	}
+	return append(dst, strings.ToLower(key)...)
 }
 
 // merge overlays the fields o carries onto f.

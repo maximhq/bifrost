@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -560,6 +562,8 @@ func TestServeStreamOpenIsBoundedByTimeout(t *testing.T) {
 	assert.Less(t, time.Since(begin), 5*time.Second, "the wait for the headers is bounded by timeout_seconds")
 	require.NotNil(t, bErr.Error.Type)
 	assert.Equal(t, schemas.RequestTimedOut, *bErr.Error.Type)
+	assert.Equal(t, `the upstream did not answer within 1 second; raise timeout_seconds in relay "slow"'s network settings`, bErr.Error.Message,
+		"the message names the relay's own timeout, not the provider network config")
 }
 
 func TestServeStreamBilledBySizeOnEarlyClose(t *testing.T) {
@@ -774,6 +778,7 @@ func TestServeStreamIdleTimeoutIsATimeout(t *testing.T) {
 	require.NotNil(t, pipeline.postErr[0])
 	require.NotNil(t, pipeline.postErr[0].Error.Type)
 	assert.Equal(t, schemas.RequestTimedOut, *pipeline.postErr[0].Error.Type)
+	assert.Equal(t, `the upstream sent nothing for 1 second; raise stream_idle_timeout_in_seconds in relay "slow"'s network settings`, pipeline.postErr[0].Error.Message)
 }
 
 func TestServeJobRouteHandsBackJob(t *testing.T) {
@@ -2236,4 +2241,111 @@ func TestJobPollKeepsAConfiguredMethodOverride(t *testing.T) {
 	require.Nil(t, bErr)
 	assert.Equal(t, "POST", method)
 	assert.Equal(t, "GET", got.Get("X-HTTP-Method-Override"), "the operator's configured override reaches the upstream")
+}
+
+// handshakeTimeoutErr is shaped as net/http's own TLS handshake timeout: a net.Error that times out.
+type handshakeTimeoutErr struct{}
+
+func (handshakeTimeoutErr) Error() string   { return "net/http: TLS handshake timeout" }
+func (handshakeTimeoutErr) Timeout() bool   { return true }
+func (handshakeTimeoutErr) Temporary() bool { return true }
+
+type timeoutNetErr struct{}
+
+func (timeoutNetErr) Error() string   { return "i/o timeout" }
+func (timeoutNetErr) Timeout() bool   { return true }
+func (timeoutNetErr) Temporary() bool { return true }
+
+// A timeout names timeout_seconds only when that limit fired: one well short of it came from a fixed
+// connection limit, such as the TLS handshake, which raising timeout_seconds would not help.
+func TestTimeoutMessageNamesOnlyTheLimitThatFired(t *testing.T) {
+	limits := relayTimeouts{relay: "slow", wholeSeconds: 30, streamSeconds: 60}
+	// A caller deadline at 28s with a 30s relay timeout is still the caller's: it came first.
+	nearLimit := limits
+	nearLimit.callerDeadline = time.Now().Add(-time.Millisecond)
+	caller := transportError(context.DeadlineExceeded, 28*time.Second, nearLimit)
+	assert.Equal(t, "the request's own deadline passed after 28 seconds", caller.Error.Message)
+	// A caller deadline later than the relay's own leaves the relay's timeout to blame.
+	late := limits
+	late.callerDeadline = time.Now().Add(-time.Millisecond)
+	relayFirst := transportError(context.DeadlineExceeded, 31*time.Second, late)
+	assert.Contains(t, relayFirst.Error.Message, "raise timeout_seconds")
+	// A streamed reply is not bounded by timeout_seconds once it started, so a long stream ended by
+	// the caller's deadline is the caller's, even past the relay's timeout.
+	stream := limits
+	stream.streaming = true
+	stream.callerDeadline = time.Now().Add(-time.Millisecond)
+	streamed := transportError(context.DeadlineExceeded, 90*time.Second, stream)
+	assert.Equal(t, "the request's own deadline passed after 90 seconds", streamed.Error.Message)
+	// The TLS handshake limit fired: named as a connection timeout even with a relay timeout near it.
+	near := relayTimeouts{relay: "slow", wholeSeconds: 11, streamSeconds: 60}
+	handshake := transportError(&url.Error{Op: "Post", URL: "https://x", Err: handshakeTimeoutErr{}}, 10*time.Second, near)
+	assert.Equal(t, "connecting to the upstream timed out after 10 seconds", handshake.Error.Message)
+	dial := transportError(&net.OpError{Op: "dial", Net: "tcp", Err: timeoutNetErr{}}, 10*time.Second, near)
+	assert.Equal(t, "connecting to the upstream timed out after 10 seconds", dial.Error.Message)
+	early := transportError(timeoutNetErr{}, 10*time.Second, limits)
+	assert.Equal(t, schemas.RequestTimedOut, *early.Error.Type, "still a timeout")
+	assert.Equal(t, "connecting to the upstream timed out after 10 seconds", early.Error.Message)
+
+	full := transportError(timeoutNetErr{}, 30*time.Second, limits)
+	assert.Contains(t, full.Error.Message, "raise timeout_seconds", "the whole timeout ran out")
+	own := transportError(context.DeadlineExceeded, 2*time.Second, limits)
+	assert.Contains(t, own.Error.Message, "raise timeout_seconds", "the relay's own timer fired")
+	idle := transportError(providerUtils.ErrStreamIdleTimeout, 2*time.Second, limits)
+	assert.Contains(t, idle.Error.Message, "raise stream_idle_timeout_in_seconds")
+}
+
+// A Go SDK caller's own deadline that runs out before the relay's timeout names no relay setting,
+// since raising timeout_seconds would not have helped.
+func TestTimeoutFromTheCallersOwnDeadlineNamesNoSetting(t *testing.T) {
+	released := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-released:
+		}
+	}))
+	defer upstream.Close()
+	defer close(released)
+	cfg := bearerConfig("slow", upstream.URL)
+	cfg.SkipRouteCheck = true
+	cfg.Network = &schemas.RelayNetworkConfig{TimeoutSeconds: 60}
+	m, _ := newTestManager(t, cfg)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(300*time.Millisecond))
+	t.Cleanup(ctx.Cancel)
+	_, bErr := m.Serve(ctx, Request{Endpoint: "slow", Method: "POST", Path: "/x", Headers: map[string]string{}})
+	require.NotNil(t, bErr)
+	require.NotNil(t, bErr.Error)
+	assert.Contains(t, bErr.Error.Message, "the request's own deadline passed")
+	assert.NotContains(t, bErr.Error.Message, "timeout_seconds")
+}
+
+// A caller that sets its own stream idle timeout sees that value in the error, not the relay's.
+func TestStreamIdleTimeoutNamesTheTimeoutEnforced(t *testing.T) {
+	released := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-released:
+		}
+	}))
+	defer upstream.Close()
+	defer close(released)
+	cfg := bearerConfig("slow", upstream.URL)
+	cfg.Network = &schemas.RelayNetworkConfig{StreamIdleTimeoutInSeconds: 60}
+	cfg.Routes = []schemas.RelayRouteConfig{{Method: "POST", Path: "/events", Stream: schemas.Ptr(true)}}
+	m, pipeline := newTestManager(t, cfg)
+	ctx := testCtx(t)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, time.Second)
+	res, bErr := m.Serve(ctx, Request{Endpoint: "slow", Method: "POST", Path: "/events", Headers: map[string]string{}})
+	require.Nil(t, bErr)
+	_, err := io.ReadAll(res.Stream)
+	require.Error(t, err)
+	require.NoError(t, res.Stream.Close())
+	require.Len(t, pipeline.postErr, 1)
+	assert.Contains(t, pipeline.postErr[0].Error.Message, "sent nothing for 1 second, the stream idle timeout this request set")
+	assert.NotContains(t, pipeline.postErr[0].Error.Message, "stream_idle_timeout_in_seconds", "the relay setting would not help")
 }

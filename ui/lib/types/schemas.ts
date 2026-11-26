@@ -2731,7 +2731,7 @@ export const relayHeaderPairSchema = z
 	});
 
 // Forced body fields are edited as path/JSON pairs, checked as core's validateBodyOverrides does.
-const relayBodyOverrideSegment = /^[A-Za-z0-9_-]{1,128}$/;
+const relayBodyOverrideSegment = /^[A-Za-z0-9_-]+$/;
 
 export function isRelayBodyOverridePath(path: string): boolean {
 	// An all-digit key is an array index to the gateway's JSON setter, and -1 an array append.
