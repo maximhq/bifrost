@@ -755,6 +755,10 @@ paths:
     $ref: "./paths/management/config.yaml#/version"
   /api/proxy-config:
     $ref: "./paths/management/config.yaml#/proxy-config"
+  /api/config/vector-stores:
+    $ref: "./paths/management/config.yaml#/vector-stores"
+  /api/config/vector-stores/{name}:
+    $ref: "./paths/management/config.yaml#/vector-store"
   /api/feature-flags:
     $ref: "./paths/management/featureflags.yaml#/feature-flags"
   /api/feature-flags/{id}:

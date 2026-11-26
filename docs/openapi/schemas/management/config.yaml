@@ -93,37 +93,6 @@ ClientConfig:
     log_retention_days:
       type: integer
       description: Number of days to retain logs
-    vector_retention_days:
-      type: [integer, 'null']
-      minimum: 0
-      maximum: 106751
-      default: 0
-      description: >
-        Upper bound, in days, on how long vector store entries tied to logs are
-        kept: Warp's log index and the complexity router's captured requests.
-        It caps, never extends: a value above log_retention_days is capped at
-        it, and 0 bounds them by the log retention alone. A router also drops
-        its captured requests after its own suggestions lookback (7 days
-        unless set), so they go at whichever comes first. Where no log
-        retention applies (logs kept forever, with no log store or cleaner), a
-        positive value applies on its own. null on PUT resets it to 0; omitted
-        on PUT keeps the stored value.
-    vector_max_size_mb:
-      type: [integer, 'null']
-      minimum: 0
-      maximum: 8796093022207
-      default: 0
-      description: >
-        Storage limit, in MB, for every vector built from logs together: Warp's
-        log index and all complexity routers' captured requests. The size is
-        estimated from counts (each vector's embedding plus 1 KB for its
-        metadata and index), not read from the store. Once the total passes
-        80% of the limit, the hourly sweep deletes the oldest vectors first
-        across all of them, down to 65%, so it can go over the limit between
-        sweeps. The cutoff is a timestamp to the second: vectors written in the
-        same second are kept or deleted together. 0 sets no limit. Works alongside vector_retention_days:
-        whichever removes a vector first applies. null on PUT resets it to 0
-        (no limit); omitted on PUT keeps the stored value.
     delete_expired_virtual_keys:
       type: boolean
       default: false
@@ -858,3 +827,82 @@ SecretVarObject:
     type:
       type: string
   additionalProperties: false
+
+VectorStore:
+  type: object
+  description: >
+    One vector store config.json configures (vector_store or a vector_stores
+    entry), what became of it at startup, and its settings. Stores are
+    configured in config.json only.
+  required: [name, type, primary, status, error, shared_with, endpoint, retention_days, max_size_mb]
+  properties:
+    name:
+      type: string
+      description: The name the store is selected by. The primary store is named after its type unless config.json names it.
+    type:
+      type: string
+      enum: [weaviate, redis, qdrant, pinecone, chromem]
+    primary:
+      type: boolean
+      description: Whether this is the top-level vector_store, which anything that selects no store uses.
+    status:
+      type: string
+      enum: [connected, failed, disabled]
+      description: connected, failed (it could not be reached at startup; see error), or disabled (enabled is false).
+    error:
+      type: string
+      description: Why the store failed at startup; empty otherwise.
+    shared_with:
+      type: string
+      description: >
+        The store whose connection this one uses, when both reach the same
+        endpoint; empty when it has its own. Such a store follows that store's
+        settings and cannot be edited itself.
+    endpoint:
+      type: string
+      description: Where the store keeps its data (its type and endpoint, or a Chromem path). Never a credential.
+    retention_days:
+      type: integer
+      minimum: 0
+      maximum: 106751
+      description: >
+        Upper bound, in days, on how long vectors built from logs are kept in
+        this store: Warp's log index and the complexity router's captured
+        requests. 0 bounds them by the log retention alone, and a larger value
+        is capped at it. Where logs are kept forever, a positive value applies
+        on its own.
+    max_size_mb:
+      type: integer
+      minimum: 0
+      maximum: 8796093022207
+      description: >
+        Storage limit, in MB, for the vectors built from logs that this store
+        holds, estimated from counts. Once the total passes 80% of it, the
+        hourly sweep deletes the oldest first, down to 65%. 0 sets no limit.
+
+VectorStoreList:
+  type: object
+  required: [editable, vector_stores]
+  properties:
+    editable:
+      type: boolean
+      description: False without a config store, when the settings come from config.json alone and cannot be changed here.
+    vector_stores:
+      type: array
+      description: Every configured store, the primary first, in config.json order.
+      items:
+        $ref: '#/VectorStore'
+
+UpdateVectorStoreSettingsRequest:
+  type: object
+  additionalProperties: false
+  description: A field left out keeps the stored value; null resets it to 0.
+  properties:
+    retention_days:
+      type: [integer, 'null']
+      minimum: 0
+      maximum: 106751
+    max_size_mb:
+      type: [integer, 'null']
+      minimum: 0
+      maximum: 8796093022207

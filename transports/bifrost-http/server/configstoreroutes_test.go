@@ -31,11 +31,12 @@ type namedPlugin struct {
 func (p namedPlugin) GetName() string { return p.name }
 
 // configStoreOpenRoute reports whether an /api route keeps working with the config store
-// disabled: the dashboard shell and version, sign-in and session, the log stores, cache
-// clearing and dev profiling. Every other /api route is configuration.
+// disabled: the dashboard shell and version, the vector stores list (read-only then, its
+// settings coming from config.json alone), sign-in and session, the log stores, cache clearing
+// and dev profiling. Every other /api route is configuration.
 func configStoreOpenRoute(method, path string) bool {
 	switch {
-	case method == fasthttp.MethodGet && (path == "/api/config" || path == "/api/version"):
+	case method == fasthttp.MethodGet && (path == "/api/config" || path == "/api/version" || path == "/api/config/vector-stores"):
 		return true
 	case strings.HasPrefix(path, "/api/logs/recalculate-cost"):
 		return false // a background job kept in the config store

@@ -430,12 +430,6 @@ false
 {{- if .Values.bifrost.client.logRetentionDays }}
 {{- $_ := set $client "log_retention_days" .Values.bifrost.client.logRetentionDays }}
 {{- end }}
-{{- if hasKey .Values.bifrost.client "vectorRetentionDays" }}
-{{- $_ := set $client "vector_retention_days" (.Values.bifrost.client.vectorRetentionDays | int) }}
-{{- end }}
-{{- if hasKey .Values.bifrost.client "vectorMaxSizeMB" }}
-{{- $_ := set $client "vector_max_size_mb" (.Values.bifrost.client.vectorMaxSizeMB | int) }}
-{{- end }}
 {{- if hasKey .Values.bifrost.client "disableDbPingsInHealth" }}
 {{- $_ := set $client "disable_db_pings_in_health" .Values.bifrost.client.disableDbPingsInHealth }}
 {{- end }}
@@ -1423,6 +1417,15 @@ false
 {{- /* Vector Store */ -}}
 {{- if and .Values.vectorStore.enabled (ne .Values.vectorStore.type "none") }}
 {{- $vectorStore := dict "enabled" true "type" .Values.vectorStore.type }}
+{{- if .Values.vectorStore.name }}
+{{- $_ := set $vectorStore "name" .Values.vectorStore.name }}
+{{- end }}
+{{- if hasKey .Values.vectorStore "retentionDays" }}
+{{- $_ := set $vectorStore "retention_days" (.Values.vectorStore.retentionDays | int) }}
+{{- end }}
+{{- if hasKey .Values.vectorStore "maxSizeMB" }}
+{{- $_ := set $vectorStore "max_size_mb" (.Values.vectorStore.maxSizeMB | int) }}
+{{- end }}
 {{- if eq .Values.vectorStore.type "weaviate" }}
 {{- $weaviateConfig := dict "scheme" (include "bifrost.weaviate.scheme" .) "host" (include "bifrost.weaviate.host" .) }}
 {{- if .Values.vectorStore.weaviate.external.enabled }}
@@ -1541,6 +1544,9 @@ false
 {{- $_ := set $vectorStore "config" $chromemConfig }}
 {{- end }}
 {{- $_ := set $config "vector_store" $vectorStore }}
+{{- end }}
+{{- if .Values.vectorStores }}
+{{- $_ := set $config "vector_stores" .Values.vectorStores }}
 {{- end }}
 {{- /* MCP */ -}}
 {{- if .Values.bifrost.mcp.enabled }}

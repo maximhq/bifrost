@@ -15,6 +15,8 @@ type FileInput struct {
 	// ProviderKeys is each provider's keys in config.json order, keyed as Providers is.
 	ProviderKeys map[schemas.ModelProvider][]schemas.Key
 	Governance   *configstore.GovernanceConfig
+	// VectorStoreSettings is each configured vector store's settings from config.json.
+	VectorStoreSettings []tables.TableVectorStoreSettings
 }
 
 // FileRecords holds the records a gateway without a config store loads, built from config.json.
@@ -31,6 +33,8 @@ type FileRecords struct {
 	PricingOverrides []*PricingOverride
 	// GrantSets are the keys' grant sets, which the store interns before it loads the keys.
 	GrantSets []*GrantSet
+	// VectorStoreSettings are the configured vector stores' settings.
+	VectorStoreSettings []*VectorStoreSettings
 }
 
 // FromConfig builds the records config.json declares, for a gateway without a config store: a
@@ -45,6 +49,9 @@ type FileRecords struct {
 // order.
 func FromConfig(in FileInput) *FileRecords {
 	g := &FileRecords{}
+	for i := range in.VectorStoreSettings {
+		g.VectorStoreSettings = append(g.VectorStoreSettings, &VectorStoreSettings{TableVectorStoreSettings: in.VectorStoreSettings[i]})
+	}
 	providerBudget, providerRateLimit := governanceRecords(g, in.Governance)
 	if in.Governance != nil {
 		for i := range in.Governance.PricingOverrides {

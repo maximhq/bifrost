@@ -41,18 +41,6 @@ const (
 // MaxAuthCodeTTL, and matching the maximum published in config.schema.json.
 const MaxVKRotationCooldown = 30 * 24 * time.Hour
 
-// MaxVectorRetentionDays is the longest vector_retention_days whose span fits
-// in a time.Duration (about 292 years): a longer one would wrap the sweep's
-// cutoff into the future and delete every vector. Enforced at every config
-// entry point, matching the maximum published in config.schema.json.
-const MaxVectorRetentionDays = int(math.MaxInt64 / int64(24*time.Hour))
-
-// MaxVectorMaxSizeMB is the largest vector_max_size_mb whose size in bytes fits
-// in an int64: a larger one would overflow the sweep's limit into a negative
-// number. Enforced at every config entry point, matching the maximum published
-// in config.schema.json and the Helm chart's values.schema.json.
-const MaxVectorMaxSizeMB = int(math.MaxInt64 >> 20)
-
 // MaxMCPOpenAPISpecMB is the ceiling on mcp_openapi_max_spec_mb: parsing holds several times the
 // spec's size in memory, so the setting may raise the limit but not without bound. Enforced at
 // PUT /api/config and the config.json load path, matching the maximum in config.schema.json.
@@ -122,8 +110,6 @@ type ClientConfig struct {
 	VKRotationCooldown                      schemas.Duration                      `json:"vk_rotation_cooldown,omitempty"`             // Grace period during which a rotated virtual key's previous value still authenticates (e.g. "5m"); 0 = old value stops working immediately
 	DisableDBPingsInHealth                  bool                                  `json:"disable_db_pings_in_health"`
 	LogRetentionDays                        int                                   `json:"log_retention_days" validate:"min=1"`           // Number of days to retain logs (minimum 1 day)
-	VectorRetentionDays                     int                                   `json:"vector_retention_days"`                         // Days to keep vector store entries; 0 = same as logs, capped at log retention
-	VectorMaxSizeMB                         int                                   `json:"vector_max_size_mb"`                            // Storage limit in MB for all log-derived vectors together, oldest deleted first; 0 = no cap
 	EnforceAuthOnInference                  bool                                  `json:"enforce_auth_on_inference"`                     // Require auth (VK, API key, or user token) on inference endpoints
 	DualCredentialConflictBehavior          tables.DualCredentialConflictBehavior `json:"dual_credential_conflict_behavior,omitempty"`   // Behavior when both an IDP token and a VK are present on an inference request
 	ExtraFieldsPlacement                    tables.ExtraFieldsPlacement           `json:"extra_fields_placement,omitempty"`              // Where inference responses carry extra_fields: "body" (default) or "headers"
@@ -374,21 +360,6 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.AllowDirectKeys {
 		hash.Write([]byte("allowDirectKeys:true"))
-	}
-
-	// Only hash non-default value to avoid legacy config hash churn on upgrade.
-	// Any value but 0: a negative one must change the hash too, or a file that
-	// sets one matches the stored row's hash and is passed over instead of
-	// reaching validation.
-	if c.VectorRetentionDays != 0 {
-		hash.Write([]byte("vectorRetentionDays:" + strconv.Itoa(c.VectorRetentionDays)))
-	}
-
-	// Any value but 0: a negative one must change the hash too, or a file that
-	// sets one matches the stored row's hash and is passed over instead of
-	// reaching validation.
-	if c.VectorMaxSizeMB != 0 {
-		hash.Write([]byte("vectorMaxSizeMB:" + strconv.Itoa(c.VectorMaxSizeMB)))
 	}
 
 	if c.VKRotationCooldown > 0 {

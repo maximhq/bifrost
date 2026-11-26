@@ -1,5 +1,12 @@
 import i18n from "@/lib/i18n";
-import { BifrostConfig, GlobalProxyConfig, LatestReleaseResponse } from "@/lib/types/config";
+import {
+	BifrostConfig,
+	GlobalProxyConfig,
+	LatestReleaseResponse,
+	UpdateVectorStorePayload,
+	VectorStoreInfo,
+	VectorStoresResponse,
+} from "@/lib/types/config";
 import axios from "axios";
 import { baseApi } from "./baseApi";
 
@@ -133,6 +140,28 @@ export const configApi = baseApi.injectEndpoints({
 			invalidatesTags: ["Config"],
 		}),
 
+		// Vector stores from config.json, with each one's log-vector retention and size limit.
+		getVectorStores: builder.query<VectorStoresResponse, void>({
+			query: () => ({
+				url: "/config/vector-stores",
+			}),
+			providesTags: (result) => [
+				{ type: "VectorStores" as const, id: "LIST" },
+				...(result?.vector_stores ?? []).map((store) => ({ type: "VectorStores" as const, id: store.name })),
+			],
+		}),
+
+		// Update one vector store's retention and size limit. Invalidated on error
+		// too: a 500 means the write was saved but not loaded, so refetch either way.
+		updateVectorStore: builder.mutation<VectorStoreInfo, { name: string; data: UpdateVectorStorePayload }>({
+			query: ({ name, data }) => ({
+				url: `/config/vector-stores/${encodeURIComponent(name)}`,
+				method: "PUT",
+				body: data,
+			}),
+			invalidatesTags: (_result, _error, { name }) => [{ type: "VectorStores", id: name }],
+		}),
+
 		// Force a pricing sync immediately
 		forcePricingSync: builder.mutation<null, void>({
 			query: () => ({
@@ -210,4 +239,6 @@ export const {
 	useCreateUserAgentMappingMutation,
 	useUpdateUserAgentMappingMutation,
 	useDeleteUserAgentMappingMutation,
+	useGetVectorStoresQuery,
+	useUpdateVectorStoreMutation,
 } = configApi;

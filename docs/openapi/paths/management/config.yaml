@@ -208,6 +208,112 @@ proxy-config:
       '503':
         $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
 
+vector-stores:
+  get:
+    operationId: listVectorStores
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: List vector stores
+    description: |
+      Lists every vector store config.json configures (the primary vector_store and each
+      vector_stores entry), what became of it at startup, and its retention and storage limit.
+      Stores themselves are configured in config.json only.
+    tags:
+      - Configuration
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/config.yaml#/VectorStoreList'
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+vector-store:
+  put:
+    operationId: updateVectorStoreSettings
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Update a vector store's settings
+    description: |
+      Changes one configured store's retention_days and max_size_mb. A field left out keeps the
+      stored value; null resets it to 0. The change lasts across restarts until config.json
+      changes that store's value, which then wins. A store that shares another's connection
+      follows that store's settings and is refused with 409.
+    tags:
+      - Configuration
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    parameters:
+      - name: name
+        in: path
+        required: true
+        description: The store's name.
+        schema:
+          type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/config.yaml#/UpdateVectorStoreSettingsRequest'
+    responses:
+      '200':
+        description: The store with its new settings
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/config.yaml#/VectorStore'
+      '400':
+        description: A value out of range, not a whole number, or a field that cannot be changed
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '404':
+        description: No store with this name is configured
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '409':
+        description: The store shares another store's connection; edit that store instead
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '500':
+        description: Saved, but the settings were not reloaded into memory
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '503':
+        description: Config store not available
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
+
 force-sync-pricing:
   post:
     operationId: forceSyncPricing

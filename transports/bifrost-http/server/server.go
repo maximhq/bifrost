@@ -168,6 +168,8 @@ type ServerCallbacks interface {
 	RetryModelRouterWarmup(ctx context.Context, id string) (complexity.SemanticStatusInfo, bool, error)
 	// Prompt repository related callbacks
 	RefreshPrompts(ctx context.Context, promptIDs []string, removed bool) error
+	// Vector store related callbacks
+	ReloadVectorStoreSettings(ctx context.Context, name string) error
 	// Webhook related callbacks
 	ReloadWebhookEndpoint(ctx context.Context, id string) error
 	RemoveWebhookEndpoint(ctx context.Context, id string) error
@@ -1630,6 +1632,13 @@ func (s *BifrostHTTPServer) RemoveRoutingRule(ctx context.Context, id string) er
 	return err
 }
 
+// ReloadVectorStoreSettings re-reads one vector store's settings into the live store after a
+// write. Every node sweeps its stores under these settings, so a server that embeds this one
+// may override it to have its other nodes reload them too.
+func (s *BifrostHTTPServer) ReloadVectorStoreSettings(ctx context.Context, name string) error {
+	return s.Config.ReloadVectorStoreSettings(ctx, name)
+}
+
 // ReloadWebhookEndpoint re-reads a single webhook endpoint into the live store
 // after a mutation. A row that is gone answers configstore.ErrNotFound, as
 // reading it from the config store did. A server that embeds this one may
@@ -2793,10 +2802,10 @@ type vectorRetentionSetter interface {
 }
 
 // effectiveVectorRetentionDays is how long vector store entries tied to logs
-// are kept: client_config.vector_retention_days, but never longer than the
-// logs, since a vector that outlives its log keeps the deleted request's
-// metadata and turns up in search with nothing behind its id. 0 for either
-// side means unbounded on that side; 0 overall means no sweep.
+// are kept: the store's retention_days, but never longer than the logs, since a
+// vector that outlives its log keeps the deleted request's metadata and turns
+// up in search with nothing behind its id. 0 for either side means unbounded
+// on that side; 0 overall means no sweep.
 func effectiveVectorRetentionDays(logDays, vectorDays int) int {
 	switch {
 	case vectorDays <= 0:
@@ -2808,34 +2817,56 @@ func effectiveVectorRetentionDays(logDays, vectorDays int) int {
 	}
 }
 
-// vectorRetentionDays reads the effective vector retention now. It is read at
-// each sweep rather than once: LogsCleaner is built later in Bootstrap, may be
-// absent (logs kept forever), and both retentions can change at runtime.
-func (s *BifrostHTTPServer) vectorRetentionDays() int {
-	logDays := 0
-	if s.LogsCleaner != nil {
-		logDays = s.LogsCleaner.RetentionDays()
+// vectorStoreSettings reads a configured vector store's retention_days and
+// max_size_mb now, from the live store; zero for a store with no settings.
+func (s *BifrostHTTPServer) vectorStoreSettings(name string) (retentionDays, maxSizeMB int) {
+	if s.Config == nil || s.Config.LiveStore == nil || name == "" {
+		return 0, 0
 	}
-	vectorDays := 0
-	if s.Config != nil {
-		s.Config.Mu.RLock()
-		if s.Config.ClientConfig != nil {
-			vectorDays = s.Config.ClientConfig.VectorRetentionDays
+	settings, ok := s.Config.LiveStore.Collections.VectorStoreSettings.Get(name)
+	if !ok {
+		return 0, 0
+	}
+	return settings.RetentionDays, settings.MaxSizeMB
+}
+
+// primaryVectorStoreName is the name of the store a consumer that selects none
+// uses, "" when no vector_store is configured.
+func (s *BifrostHTTPServer) primaryVectorStoreName() string {
+	if s.Config == nil {
+		return ""
+	}
+	if primary := s.Config.VectorStores.Primary(); primary != nil {
+		return primary.Name
+	}
+	return ""
+}
+
+// vectorRetentionDaysFor returns a reader of the effective retention of the
+// vectors in the named store. It reads at each sweep rather than once:
+// LogsCleaner is built later in Bootstrap, may be absent (logs kept forever),
+// and both retentions can change at runtime.
+func (s *BifrostHTTPServer) vectorRetentionDaysFor(name string) func() int {
+	return func() int {
+		logDays := 0
+		if s.LogsCleaner != nil {
+			logDays = s.LogsCleaner.RetentionDays()
 		}
-		s.Config.Mu.RUnlock()
+		vectorDays, _ := s.vectorStoreSettings(name)
+		return effectiveVectorRetentionDays(logDays, vectorDays)
 	}
-	return effectiveVectorRetentionDays(logDays, vectorDays)
 }
 
 // applyRoutingVectorRetention tells a plugin that keeps per-log data how long
-// its vectors live, so captured request vectors never outlive their logs. It
-// runs at bootstrap and on every reload, since a reload builds a fresh plugin.
+// its vectors live, so captured request vectors never outlive their logs: the
+// retention of the primary store, where captures are kept. It runs at
+// bootstrap and on every reload, since a reload builds a fresh plugin.
 func (s *BifrostHTTPServer) applyRoutingVectorRetention(plugin any) {
 	setter, ok := plugin.(vectorRetentionSetter)
 	if !ok {
 		return
 	}
-	setter.SetVectorRetention(s.vectorRetentionDays)
+	setter.SetVectorRetention(s.vectorRetentionDaysFor(s.primaryVectorStoreName()))
 }
 
 // captureDropTimeout bounds dropping complexity request capture's vectors
@@ -3318,8 +3349,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	s.subscribeCaptureDeletes(loggerPlugin)
 	// Read at each sweep rather than once: the cleaner is built in Bootstrap,
-	// after this, and both retentions can change at runtime.
-	s.WarpHandler.Service().SetVectorRetention(s.vectorRetentionDays)
+	// after this, and both retentions can change at runtime. Warp's log index is
+	// in the primary store.
+	s.WarpHandler.Service().SetVectorRetention(s.vectorRetentionDaysFor(s.primaryVectorStoreName()))
 	// config.json's warp section saves through the service, so it is validated and provisions its
 	// vector namespace exactly like a save from the settings page.
 	s.Config.ApplyWarpFileConfig(s.Ctx, s.WarpHandler.Service())
@@ -3414,6 +3446,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpPerUserHeadersHandler.RegisterRoutes(s.Router, configRoutes...)
 	mcpSessionsHandler.RegisterRoutes(s.Router, configRoutes...)
 	configHandler.RegisterRoutes(s.Router, middlewares...)
+	handlers.NewVectorStoresHandler(s.Config, callbacks).RegisterRoutes(s.Router, middlewares...)
 	oauthHandler.RegisterRoutes(s.Router, configRoutes...)
 	pluginsHandler.RegisterRoutes(s.Router, configRoutes...)
 	sessionHandler.RegisterRoutes(s.Router, middlewares...)

@@ -159,8 +159,6 @@ bifrost:
     disableContentLogging: true
     disableDbPingsInHealth: true
     logRetentionDays: 30
-    vectorRetentionDays: 7
-    vectorMaxSizeMB: 2048
     enforceGovernanceHeader: true
     maxRequestBodySizeMb: 50
     compat:
@@ -201,8 +199,6 @@ assert_field_value 'client.enable_logging' '.client.enable_logging' 'true'
 assert_field_value 'client.disable_content_logging' '.client.disable_content_logging' 'true'
 assert_field_value 'client.disable_db_pings_in_health' '.client.disable_db_pings_in_health' 'true'
 assert_field_value 'client.log_retention_days' '.client.log_retention_days' '30'
-assert_field_value 'client.vector_retention_days' '.client.vector_retention_days' '7'
-assert_field_value 'client.vector_max_size_mb' '.client.vector_max_size_mb' '2048'
 assert_field_value 'client.enforce_governance_header' '.client.enforce_governance_header' 'true'
 assert_field_value 'client.max_request_body_size_mb' '.client.max_request_body_size_mb' '50'
 assert_field_value 'client.compat.convert_text_to_chat' '.client.compat.convert_text_to_chat' 'true'
@@ -1380,6 +1376,39 @@ render_config "$TMPDIR/values-vs-pinecone.yaml"
 assert_field_value 'vector_store.type (pinecone)' '.vector_store.type' '"pinecone"'
 assert_field_value 'pinecone config.api_key' '.vector_store.config.api_key' '"pinecone-api-key"'
 assert_field_value 'pinecone config.index_host' '.vector_store.config.index_host' '"my-index.svc.us-east1.pinecone.io"'
+
+# Named stores: the primary store's name and vectorStores, rendered as written
+cat > "$TMPDIR/values-vs-named.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+vectorStore:
+  enabled: true
+  type: chromem
+  name: shared
+  retentionDays: 7
+  maxSizeMB: 2048
+vectorStores:
+  - name: warp-qdrant
+    enabled: true
+    type: qdrant
+    config:
+      host: qdrant.internal
+      port: "6334"
+      api_key: env.WARP_QDRANT_API_KEY
+    retention_days: 14
+    max_size_mb: 4096
+VALS
+
+render_config "$TMPDIR/values-vs-named.yaml"
+assert_field_value 'vector_store.name' '.vector_store.name' '"shared"'
+assert_field_value 'vector_store.retention_days' '.vector_store.retention_days' '7'
+assert_field_value 'vector_store.max_size_mb' '.vector_store.max_size_mb' '2048'
+assert_field_value 'vector_stores[0].retention_days' '.vector_stores.[0].retention_days' '14'
+assert_field_value 'vector_stores[0].max_size_mb' '.vector_stores.[0].max_size_mb' '4096'
+assert_field_value 'vector_stores[0].name' '.vector_stores.[0].name' '"warp-qdrant"'
+assert_field_value 'vector_stores[0].type' '.vector_stores.[0].type' '"qdrant"'
+assert_field_value 'vector_stores[0].config.host' '.vector_stores.[0].config.host' '"qdrant.internal"'
+assert_field_value 'vector_stores[0].config.api_key' '.vector_stores.[0].config.api_key' '"env.WARP_QDRANT_API_KEY"'
 
 ###############################################################################
 # 10. Config Store & Logs Store (sqlite + postgres)

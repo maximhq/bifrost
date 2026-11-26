@@ -937,10 +937,6 @@ export interface CoreConfig {
 	disable_db_pings_in_health: boolean;
 	dump_errors_in_console_logs: boolean;
 	log_retention_days: number;
-	// Days to keep log-derived vector store entries; 0 = same as logs, capped at log_retention_days.
-	vector_retention_days?: number;
-	// Storage limit in MB for all log-derived vectors together, oldest deleted first; 0 = no limit.
-	vector_max_size_mb?: number;
 	enforce_auth_on_inference: boolean;
 	dual_credential_conflict_behavior?: "error" | "prefer_vk" | "prefer_idp";
 	extra_fields_placement?: "body" | "headers";
@@ -1095,4 +1091,31 @@ export interface ClientGatewayTelemetry {
 		headers?: Record<string, SecretVar | string>;
 	}[];
 	drop_attributes?: string[];
+}
+// Vector stores configured in config.json (vector_store and vector_stores), as
+// GET /api/config/vector-stores lists them. Stores are created and deleted only
+// in config.json; the dashboard edits each one's log-vector retention and size.
+export type VectorStoreStatus = "connected" | "failed" | "disabled";
+
+export interface VectorStoreInfo {
+	name: string;
+	type: string;
+	primary: boolean;
+	status: VectorStoreStatus;
+	error: string; // set only when status is "failed"
+	shared_with: string; // the store whose connection (and settings) this one uses, "" otherwise
+	endpoint: string;
+	retention_days: number; // 0 follows the log retention
+	max_size_mb: number; // 0 is no limit
+}
+
+export interface VectorStoresResponse {
+	editable: boolean; // false without a config store: values come from config.json
+	vector_stores: VectorStoreInfo[];
+}
+
+// PUT /api/config/vector-stores/{name}: an omitted field keeps the stored value, null resets it to 0.
+export interface UpdateVectorStorePayload {
+	retention_days?: number | null;
+	max_size_mb?: number | null;
 }

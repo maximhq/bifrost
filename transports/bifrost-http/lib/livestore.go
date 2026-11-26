@@ -228,16 +228,22 @@ type bootConfig struct {
 	// featureFlags is config.json's feature flag overrides, set by initFeatureFlags; the flag store
 	// applies them in both modes.
 	featureFlags *FeatureFlagsFileConfig
+	// vectorStoreSettings is each configured vector store's retention and storage limit from
+	// config.json, set by loadVectorStoreSettings. Loaded without a config store; with one, the
+	// database rows it synced are loaded instead.
+	vectorStoreSettings []configstoreTables.TableVectorStoreSettings
 }
 
 // records builds the live store records a gateway without a config store loads, from b: the
-// providers with their keys and the governance lists. Every other content kind is skipped in that
+// providers with their keys, the governance lists and the vector stores' settings. Every other content kind is skipped in that
 // mode, as its loader has always skipped it: MCP clients and virtual MCPs (loadMCPConfig warns that
 // the MCP manager will not be initialized), webhooks, agents, relays, model routers and routing
 // rules. Datasheet overrides and feature flags are tables their owners fill in both modes. Loading
 // a skipped kind in this mode means adding its records here and dropping its loader's early return.
 func (b *bootConfig) records(live *livestore.Store) []livestore.Record {
-	return FileOnlyRecords(live, b.providers, b.providerKeys, b.governance)
+	return live.Collections.FileRecords(registry.FromConfig(registry.FileInput{
+		Providers: b.providers, ProviderKeys: b.providerKeys, Governance: b.governance, VectorStoreSettings: b.vectorStoreSettings,
+	}))
 }
 
 // FileOnlyRecords wraps the records a gateway without a config store loads into live, as

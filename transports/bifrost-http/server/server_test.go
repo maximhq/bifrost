@@ -2848,7 +2848,7 @@ type retentionRecorder struct{ days func() int }
 
 func (r *retentionRecorder) SetVectorRetention(days func() int) { r.days = days }
 
-// vector_retention_days only ever shortens how long vectors are kept: unset
+// A store's retention_days only ever shortens how long vectors are kept: unset
 // follows the logs, a shorter value wins, a longer one is capped at the logs,
 // and with logs kept forever the vector value alone applies.
 func TestEffectiveVectorRetentionDays(t *testing.T) {
@@ -2873,15 +2873,18 @@ func TestEffectiveVectorRetentionDays(t *testing.T) {
 
 // A reload builds a fresh routing plugin, which must get the same vector
 // retention as the one bootstrap wired, or its captured vectors outlive their
-// logs. Both retentions are read at each sweep: the cleaner's (0 while there is
-// none, logs kept forever) and client_config.vector_retention_days, so a change
-// to either through PUT /api/config applies at the next sweep.
+// logs. Captures are kept in the primary store, so it is that store's
+// retention_days, and both retentions are read at each sweep: the cleaner's (0
+// while there is none, logs kept forever) and the store's, so a change to
+// either applies at the next sweep.
 func TestApplyRoutingVectorRetentionReadsLiveRetentions(t *testing.T) {
-	s := &BifrostHTTPServer{}
+	cfg := vectorStoreTestConfig(t, nil, &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeChromem},
+		vectorstore.Config{Name: "other", Enabled: true, Type: vectorstore.VectorStoreTypeChromem})
+	s := &BifrostHTTPServer{Config: cfg}
 	rec := &retentionRecorder{}
 	s.applyRoutingVectorRetention(rec)
 	require.NotNil(t, rec.days)
-	assert.Equal(t, 0, rec.days(), "no cleaner and no config: nothing is swept")
+	assert.Equal(t, 0, rec.days(), "no cleaner and no settings: nothing is swept")
 
 	s.LogsCleaner = logstore.NewLogsCleaner(nil, logstore.CleanerConfig{RetentionDays: 5}, bifrost.NewNoOpLogger())
 	assert.Equal(t, 5, rec.days(), "a cleaner built after wiring is still read")
@@ -2889,9 +2892,11 @@ func TestApplyRoutingVectorRetentionReadsLiveRetentions(t *testing.T) {
 	assert.Equal(t, 2, rec.days(), "a log retention changed at runtime is read at the next sweep")
 
 	s.LogsCleaner.UpdateRetentionDays(30)
-	s.Config = &lib.Config{ClientConfig: &configstore.ClientConfig{VectorRetentionDays: 7}}
+	setVectorStoreSettings(t, cfg, "chromem", 7, 0)
 	assert.Equal(t, 7, rec.days(), "a shorter vector retention wins over the logs'")
-	s.Config.ClientConfig.VectorRetentionDays = 90
+	setVectorStoreSettings(t, cfg, "other", 1, 0)
+	assert.Equal(t, 7, rec.days(), "another store's retention does not apply to the primary store's vectors")
+	setVectorStoreSettings(t, cfg, "chromem", 90, 0)
 	assert.Equal(t, 30, rec.days(), "a vector retention longer than the logs' is capped at it")
 
 	s.LogsCleaner = nil

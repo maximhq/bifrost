@@ -33,6 +33,7 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `config_store` | object | Configuration database backend - SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
 | `logs_store` | object | Request/response log database - SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
+| `vector_stores` | array | More vector stores, each with a required `name` it is selected by, and per-store `retention_days` and `max_size_mb` | [Storage](/deployment-guides/config-json/storage#more-than-one-store-vector_stores) |
 | `plugins` | array | Opt-in plugins: `semantic_cache`, `otel`, `maxim`, `datadog`, custom | [Plugins](/deployment-guides/config-json/plugins) |
 | `framework` | object | Model pricing catalog URL and sync interval | [Framework](#framework) |
 | `datasheet_overrides` | array | Edits to the synced model datasheet (limits, capabilities, base prices) and custom models, re-applied after every sync | [Datasheet Editor](/providers/datasheet-editor) |
@@ -93,8 +94,6 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `enable_logging` | boolean | `true`* | Persist request/response logs (`*` auto-enabled when `logs_store` is set) |
 | `disable_content_logging` | boolean | `false` | Strip message content from logs |
 | `log_retention_days` | integer | `365` | Days to retain log entries |
-| `vector_retention_days` | integer | `0` | Upper bound on days to keep log-derived vector store entries; `0` = same as logs, capped at `log_retention_days`; applies alone when logs are kept forever |
-| `vector_max_size_mb` | integer | `0` | Storage limit in MB for all log-derived vectors together (estimated), oldest deleted first; `0` = no limit |
 | `logging_headers` | array | `[]` | HTTP headers to capture in log metadata |
 | `hidden_request_types` | array | `[]` | Request types hidden from Logs and Dashboard reads; logs are still stored |
 | `enforce_auth_on_inference` | boolean | `false` | Require a virtual key on every `/v1/*` request |
@@ -387,6 +386,7 @@ Storage backends. Each has `enabled` (boolean), `type` (string), and `config` (o
 | `config_store` | `"sqlite"`, `"postgres"` |
 | `logs_store` | `"sqlite"`, `"postgres"`, `"clickhouse"` (+ optional `object_storage` for LLM and MCP logs) |
 | `vector_store` | `"weaviate"`, `"redis"`, `"qdrant"`, `"pinecone"` (`"redis"` also covers Valkey-compatible endpoints) |
+| `vector_stores` | Same types as `vector_store`; each entry also has a required `name` |
 
 Full documentation: [Storage](/deployment-guides/config-json/storage).
 

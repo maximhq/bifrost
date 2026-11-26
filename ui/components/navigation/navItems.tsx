@@ -846,6 +846,14 @@ export function useNavItems(): NavItem[] {
 						hasAccess: hasSettingsAccess,
 					},
 					{
+						id: "settings.vector-stores",
+						title: t("nav.vectorStores"),
+						url: "/workspace/config/vector-stores",
+						icon: Database,
+						description: t("navDesc.vectorStores"),
+						hasAccess: hasSettingsAccess,
+					},
+					{
 						id: "settings.security",
 						title: t("nav.security"),
 						url: "/workspace/config/security",

@@ -355,6 +355,8 @@
 		"valueMustBeAPositiveWholeNumber": "Deve essere un numero intero positivo",
 		"vectorRetentionDaysAtMost106751": "La conservazione dei vettori può essere al massimo di 106751 giorni.",
 		"vectorMaxSizeMustBeAWholeNumber": "Il limite di archiviazione deve essere un numero intero di MB.",
+		"vectorRetentionDaysMustBeAWholeNumber": "La conservazione deve essere un numero intero di giorni.",
+		"vectorMaxSizeAtMost8796093022207": "Il limite di dimensione può essere al massimo di 8796093022207 MB.",
 		"mustBeAJsonObject": "Deve essere un oggetto JSON",
 		"providerCannotBePatched": "provider non può essere modificato; identifica la voce",
 		"customProviderNameIsRequired": "Il nome del provider personalizzato è obbligatorio",

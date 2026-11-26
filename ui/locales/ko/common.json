@@ -355,6 +355,8 @@
 		"valueMustBeAPositiveWholeNumber": "양의 정수여야 합니다",
 		"vectorRetentionDaysAtMost106751": "벡터 보존 기간은 최대 106751일입니다.",
 		"vectorMaxSizeMustBeAWholeNumber": "저장 용량 한도는 MB 단위의 정수여야 합니다.",
+		"vectorRetentionDaysMustBeAWholeNumber": "보존 기간은 일 단위의 정수여야 합니다.",
+		"vectorMaxSizeAtMost8796093022207": "크기 한도는 최대 8796093022207MB입니다.",
 		"mustBeAJsonObject": "JSON 객체여야 합니다",
 		"providerCannotBePatched": "provider는 항목을 식별하므로 패치할 수 없습니다",
 		"customProviderNameIsRequired": "커스텀 프로바이더 이름은 필수예요",

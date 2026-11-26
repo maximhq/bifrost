@@ -4375,6 +4375,31 @@ func TestSchemaVectorStoreTypes(t *testing.T) {
 			}
 		}
 	})
+
+	// vector_stores entries have vector_store's shape and a required name, written the way
+	// ValidateStoreNames accepts it; the primary store may carry a name too.
+	t.Run("named stores", func(t *testing.T) {
+		compiled := compileSchema(t)
+		valid := `{
+			"vector_store": {"name": "shared", "enabled": true, "type": "chromem"},
+			"vector_stores": [{"name": "warp-qdrant", "enabled": true, "type": "qdrant", "config": {"host": "q.internal"}}]
+		}`
+		if err := validateConfig(t, compiled, valid); err != nil {
+			t.Errorf("named stores must be valid, got: %v", err)
+		}
+		for name, config := range map[string]string{
+			"an entry without a name":         `{"vector_stores": [{"enabled": true, "type": "chromem"}]}`,
+			"an entry without a type":         `{"vector_stores": [{"name": "x", "enabled": true}]}`,
+			"a name with a space":             `{"vector_stores": [{"name": "my store", "enabled": true, "type": "chromem"}]}`,
+			"a primary name with a slash":     `{"vector_store": {"name": "a/b", "enabled": true, "type": "chromem"}}`,
+			"an entry with a mismatched type": `{"vector_stores": [{"name": "x", "enabled": true, "type": "redis", "config": {"path": "/data"}}]}`,
+			"an entry with an unknown field":  `{"vector_stores": [{"name": "x", "enabled": true, "type": "chromem", "retention": 3}]}`,
+		} {
+			if err := validateConfig(t, compiled, config); err == nil {
+				t.Errorf("%s must be rejected", name)
+			}
+		}
+	})
 }
 
 // TestSchemaGovernanceProjectsValidation pins the constraints a governance.projects declaration

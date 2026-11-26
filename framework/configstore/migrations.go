@@ -614,8 +614,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
-	{IDs: []string{"add_client_config_vector_retention_days_column"}, run: migrationAddClientConfigVectorRetentionDaysColumn},
-	{IDs: []string{"add_client_config_vector_max_size_mb_column"}, run: migrationAddClientConfigVectorMaxSizeMBColumn},
+	{IDs: []string{"add_vector_store_settings_table"}, run: migrationAddVectorStoreSettingsTable},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17942,46 +17941,28 @@ func migrationAddGovernanceUsageResetEpochs(ctx context.Context, db *gorm.DB, lo
 	return migration.Migrate()
 }
 
-// migrationAddClientConfigVectorRetentionDaysColumn adds vector_retention_days to
-// config_client. It defaults to 0, which reads as "same as the logs' retention",
-// so existing rows need no backfill and a rolled-back binary ignores the column.
-func migrationAddClientConfigVectorRetentionDaysColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_client_config_vector_retention_days_column"
+// migrationAddVectorStoreSettingsTable adds the per-store settings of the vector
+// stores config.json names: how long vectors built from logs are kept in each, and
+// its storage limit. A store without a row has neither, so nothing is moved here.
+func migrationAddVectorStoreSettingsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vector_store_settings_table"
 	logger.Info("[configstore] starting migration %s", migrationName)
 	defer logger.Info("[configstore] finished migration %s", migrationName)
-	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
 		ID: migrationName,
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
-			if err := setMigrationLockTimeout(tx); err != nil {
-				return err
+			if tx.Migrator().HasTable(&tables.TableVectorStoreSettings{}) {
+				return nil
 			}
-			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "vector_retention_days")
+			return tx.Migrator().CreateTable(&tables.TableVectorStoreSettings{})
 		},
 		Rollback: func(tx *gorm.DB) error {
-			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "vector_retention_days")
+			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableVectorStoreSettings{})
 		},
-	})
-}
-
-// migrationAddClientConfigVectorMaxSizeMBColumn adds vector_max_size_mb to
-// config_client. It defaults to 0, no limit, so existing rows need no backfill and
-// a rolled-back binary ignores the column.
-func migrationAddClientConfigVectorMaxSizeMBColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
-	migrationName := "add_client_config_vector_max_size_mb_column"
-	logger.Info("[configstore] starting migration %s", migrationName)
-	defer logger.Info("[configstore] finished migration %s", migrationName)
-	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
-		ID: migrationName,
-		Migrate: func(tx *gorm.DB) error {
-			tx = tx.WithContext(ctx)
-			if err := setMigrationLockTimeout(tx); err != nil {
-				return err
-			}
-			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "vector_max_size_mb")
-		},
-		Rollback: func(tx *gorm.DB) error {
-			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "vector_max_size_mb")
-		},
-	})
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

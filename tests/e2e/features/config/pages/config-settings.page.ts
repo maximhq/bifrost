@@ -26,8 +26,6 @@ export class ConfigSettingsPage extends BasePage {
   readonly disableContentLoggingSwitch: Locator
   readonly hideDeletedVirtualKeysInFiltersSwitch: Locator
   readonly logRetentionDaysInput: Locator
-  readonly vectorRetentionDaysInput: Locator
-  readonly vectorMaxSizeInput: Locator
   readonly workspaceLoggingHeadersTextarea: Locator
 
   // Security Settings
@@ -89,8 +87,6 @@ export class ConfigSettingsPage extends BasePage {
     this.logRetentionDaysInput = page.getByLabel(/Log Retention Days/i).or(
       page.locator('#log-n-days')
     )
-    this.vectorRetentionDaysInput = page.getByTestId('workspace-vector-retention-days-input')
-    this.vectorMaxSizeInput = page.getByTestId('workspace-vector-max-size-mb-input')
     this.workspaceLoggingHeadersTextarea = page.getByTestId('workspace-logging-headers-textarea')
 
     // Security Settings locators
