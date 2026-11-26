@@ -437,6 +437,7 @@ type CompletionHandler struct {
 - On a branch whose rollback undid the write, call `rec.Discard()`, also when the rollback committed and then returned `lib.SavedNotAppliedError`. Keep the event only when the rollback write itself failed, because the change is still stored.
 - A loop of writes records one change per write as it commits.
 - Snapshots never carry secrets: pass redacted values (`Redacted()`, `configstore.RedactedKey`).
+- `TestCommitPointRule` in `handlers/auditchange_test.go` fails when a handler sends a saved-then-failed 500 ("... in database but failed to ...") before its first `RecordAuditChange`. Fix the handler; don't reword the message to get past it.
 - When a lower layer commits and then fails, return `lib.SavedNotAppliedError` so the handler can tell a saved change from a failed write (`lib.IsSavedNotApplied`).
 
 **SDK integration layers** (`transports/bifrost-http/integrations/`) provide request/response converters between provider-native SDK formats and Bifrost's internal format. This enables drop-in replacement of OpenAI SDK, Anthropic SDK, AWS Bedrock SDK, Google GenAI SDK, LangChain, and LiteLLM.

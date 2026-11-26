@@ -31,7 +31,8 @@ type AccumulatedData struct {
 	StartTimestamp   time.Time
 	EndTimestamp     time.Time
 	OutputMessage    *schemas.ChatMessage
-	OutputMessages   []schemas.ResponsesMessage // For responses API
+	OutputChoices    []schemas.StreamChoiceOutput // Every choice of a chat/text stream with n>1, by index; nil otherwise
+	OutputMessages   []schemas.ResponsesMessage   // For responses API
 	ToolCalls        []schemas.ChatAssistantMessageToolCall
 	ErrorDetails     *schemas.BifrostError
 	TokenUsage       *schemas.BifrostLLMUsage
@@ -89,6 +90,8 @@ type ChatStreamChunk struct {
 	Cost               *float64                               // Cost in dollars from pricing plugin
 	ErrorDetails       *schemas.BifrostError                  // Error if any
 	ChunkIndex         int                                    // Index of the chunk in the stream
+	ChoiceIndex        int                                    // Index of the choice the delta belongs to
+	ExtraChoices       []ChatStreamChunk                      // Further choices carried by the same event, if any
 	RawResponse        *string                                // Raw response if available
 	RawResponseFormat  schemas.RawResponseFormat              // Declared format of RawResponse, if any
 }
@@ -241,9 +244,14 @@ func (sa *StreamAccumulator) getLastChatChunkLocked() *ChatStreamChunk {
 // finish_reason together with content.
 // MUST be called with sa.mu already held.
 func (sa *StreamAccumulator) getChatFinishReasonLocked() *string {
+	return latestChatFinishReason(sa.ChatStreamChunks)
+}
+
+// latestChatFinishReason returns the finish_reason of the highest-index chunk that carries one.
+func latestChatFinishReason(chunks []*ChatStreamChunk) *string {
 	var finishReason *string
 	maxIdx := -1
-	for _, chunk := range sa.ChatStreamChunks {
+	for _, chunk := range chunks {
 		if chunk.FinishReason != nil && chunk.ChunkIndex > maxIdx {
 			finishReason = chunk.FinishReason
 			maxIdx = chunk.ChunkIndex
@@ -327,6 +335,61 @@ type ProcessedStreamResponse struct {
 	RawRequest     *interface{}
 }
 
+// responseChoices converts the accumulated choices of a chat or text stream into response choices. A single-choice
+// stream has no OutputChoices and yields one choice from the top-level output.
+func (d *AccumulatedData) responseChoices(toResponseChoice func(schemas.StreamChoiceOutput) schemas.BifrostResponseChoice) []schemas.BifrostResponseChoice {
+	if len(d.OutputChoices) == 0 {
+		return []schemas.BifrostResponseChoice{toResponseChoice(schemas.StreamChoiceOutput{
+			Message:      d.OutputMessage,
+			FinishReason: d.FinishReason,
+			LogProbs:     d.LogProbs,
+		})}
+	}
+	choices := make([]schemas.BifrostResponseChoice, 0, len(d.OutputChoices))
+	for _, choice := range d.OutputChoices {
+		choices = append(choices, toResponseChoice(choice))
+	}
+	return choices
+}
+
+// textResponseChoice converts one accumulated choice into a text completion choice.
+func textResponseChoice(choice schemas.StreamChoiceOutput) schemas.BifrostResponseChoice {
+	text := ""
+	if choice.Message != nil && choice.Message.Content != nil && choice.Message.Content.ContentStr != nil {
+		text = *choice.Message.Content.ContentStr
+	}
+	return schemas.BifrostResponseChoice{
+		Index:        choice.Index,
+		FinishReason: choice.FinishReason,
+		LogProbs:     choice.LogProbs,
+		TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
+			Text: &text,
+		},
+	}
+}
+
+// chatResponseChoice converts one accumulated choice into a non-streaming chat choice.
+func chatResponseChoice(choice schemas.StreamChoiceOutput) schemas.BifrostResponseChoice {
+	var message *schemas.ChatMessage
+	if choice.Message != nil {
+		message = &schemas.ChatMessage{
+			Role:                 choice.Message.Role,
+			Content:              choice.Message.Content,
+			ChatAssistantMessage: choice.Message.ChatAssistantMessage,
+			ChatToolMessage:      choice.Message.ChatToolMessage,
+			Name:                 choice.Message.Name,
+		}
+	}
+	return schemas.BifrostResponseChoice{
+		Index:        choice.Index,
+		FinishReason: choice.FinishReason,
+		LogProbs:     choice.LogProbs,
+		ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+			Message: message,
+		},
+	}
+}
+
 // ToBifrostResponse converts a ProcessedStreamResponse to a BifrostResponse
 func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 	if p.Data == nil {
@@ -337,25 +400,12 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 
 	switch p.StreamType {
 	case StreamTypeText:
-		text := ""
-		if p.Data.OutputMessage != nil && p.Data.OutputMessage.Content != nil && p.Data.OutputMessage.Content.ContentStr != nil {
-			text = *p.Data.OutputMessage.Content.ContentStr
-		}
 		textResp := &schemas.BifrostTextCompletionResponse{
-			ID:     p.RequestID,
-			Object: "text_completion",
-			Model:  p.RequestedModel,
-			Choices: []schemas.BifrostResponseChoice{
-				{
-					Index:        0,
-					FinishReason: p.Data.FinishReason,
-					LogProbs:     p.Data.LogProbs,
-					TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{
-						Text: &text,
-					},
-				},
-			},
-			Usage: p.Data.TokenUsage,
+			ID:      p.RequestID,
+			Object:  "text_completion",
+			Model:   p.RequestedModel,
+			Choices: p.Data.responseChoices(textResponseChoice),
+			Usage:   p.Data.TokenUsage,
 		}
 
 		resp.TextCompletionResponse = textResp
@@ -379,16 +429,6 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			resp.TextCompletionResponse.ExtraFields.GuardrailDebug = p.Data.GuardrailDebug
 		}
 	case StreamTypeChat:
-		var message *schemas.ChatMessage
-		if p.Data.OutputMessage != nil {
-			message = &schemas.ChatMessage{
-				Role:                 p.Data.OutputMessage.Role,
-				Content:              p.Data.OutputMessage.Content,
-				ChatAssistantMessage: p.Data.OutputMessage.ChatAssistantMessage,
-				ChatToolMessage:      p.Data.OutputMessage.ChatToolMessage,
-				Name:                 p.Data.OutputMessage.Name,
-			}
-		}
 		usage := p.Data.TokenUsage
 		if usage == nil && p.Data.Cost != nil && *p.Data.Cost > 0 {
 			usage = &schemas.BifrostLLMUsage{
@@ -400,17 +440,8 @@ func (p *ProcessedStreamResponse) ToBifrostResponse() *schemas.BifrostResponse {
 			Object:  "chat.completion",
 			Model:   p.RequestedModel,
 			Created: int(p.Data.StartTimestamp.Unix()),
-			Choices: []schemas.BifrostResponseChoice{
-				{
-					Index:        0,
-					FinishReason: p.Data.FinishReason,
-					LogProbs:     p.Data.LogProbs,
-					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
-						Message: message,
-					},
-				},
-			},
-			Usage: usage,
+			Choices: p.Data.responseChoices(chatResponseChoice),
+			Usage:   usage,
 		}
 
 		resp.ChatResponse = chatResp

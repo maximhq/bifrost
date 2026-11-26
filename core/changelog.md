@@ -1,3 +1,4 @@
+[fix]: preserve cache-write TTL usage on Bedrock Invoke responses [@gauravch-code](https://github.com/gauravch-code)
 - [fix]: Cloudflare 520-524 origin errors from providers behind Cloudflare, such as OpenAI, now retry on the same key as transient instead of reaching the caller (#8967) [@wangrat](https://github.com/wangrat)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
