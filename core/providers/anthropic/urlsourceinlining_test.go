@@ -76,6 +76,41 @@ func TestCollectURLSourceRefs_NestedInToolResult(t *testing.T) {
 	}
 }
 
+// JSON may spell any letter as a \uXXXX escape, and gjson decodes escaped keys and values,
+// so a url source with no literal "url" in the body must still be collected (a raw request
+// body is forwarded as the client wrote it).
+func TestCollectURLSourceRefs_EscapedSourceIsCollected(t *testing.T) {
+	const u = `\u0075` // the JSON escape for 'u'
+	cases := map[string]struct {
+		body string
+		path string
+	}{
+		"escaped type and url key": {
+			`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"` + u + `rl","` + u + `rl":"https://x.invalid/a.pdf"}}]}]}`,
+			"messages.0.content.0.source",
+		},
+		"escaped source key": {
+			`{"messages":[{"role":"user","content":[{"type":"document","so` + u + `rce":{"type":"` + u + `rl","` + u + `rl":"https://x.invalid/a.pdf"}}]}]}`,
+			"messages.0.content.0.source",
+		},
+		"escaped inside a tool_result": {
+			`{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"document","source":{"type":"` + u + `rl","` + u + `rl":"https://x.invalid/a.pdf"}}]}]}]}`,
+			"messages.0.content.0.content.0.source",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if strings.Contains(tc.body, `"url"`) {
+				t.Fatalf("fixture must not hold a literal \"url\": %s", tc.body)
+			}
+			refs := collectURLSourceRefs([]byte(tc.body))
+			if len(refs) != 1 || refs[0].path != tc.path || refs[0].url != "https://x.invalid/a.pdf" {
+				t.Fatalf("escaped url source not collected, got %+v", refs)
+			}
+		})
+	}
+}
+
 func TestCollectURLSourceRefs_IgnoresAlreadyInlinedAndMalformed(t *testing.T) {
 	cases := map[string]string{
 		"base64 source":     `{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"AAAA"}}]}]}`,

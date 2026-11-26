@@ -113,9 +113,10 @@ func applyInlinedSource(body []byte, ref urlSourceRef, mediaType, encoded string
 // in it, and returns every url-typed source. Content that is a plain string (the shorthand
 // form) carries no sources and is skipped.
 func collectURLSourceRefs(body []byte) []urlSourceRef {
-	// Every url source holds the JSON string "url" (its type and its key), so a body
-	// without it has nothing to collect and skips the walk.
-	if !bytes.Contains(body, []byte(`"url"`)) {
+	// Every url source holds the JSON string "url" (its type and its key), unless a
+	// letter of it is written as a \uXXXX escape, which gjson decodes. A body with
+	// neither has nothing to collect and skips the walk.
+	if !bytes.Contains(body, []byte(`"url"`)) && !bytes.Contains(body, []byte(`\u`)) {
 		return nil
 	}
 	messages := gjson.GetBytes(body, "messages")

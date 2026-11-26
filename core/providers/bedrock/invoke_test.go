@@ -4045,6 +4045,7 @@ func TestInvokeRequest_DocumentURLIsFetchedByTheEgress(t *testing.T) {
 
 	_, err = ToBedrockResponsesRequest(ctx, bifrostReq)
 	require.Error(t, err, "a url document that cannot be fetched must fail the request, not be dropped")
+	assert.Contains(t, err.Error(), "blocked connection to non-public address 127.0.0.1", "the request must fail at the fetcher, not elsewhere")
 	assert.NotContains(t, err.Error(), "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
 }
 
@@ -4081,7 +4082,12 @@ func TestInvokeRequest_NestedDocumentURLIsFetchedByTheNativeInvokeBuilder(t *tes
 			provider := &BedrockProvider{}
 			body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, bifrostReq, provider.invokeBuildConfig(bifrostReq.Model, false, true, nil))
 			require.NotNil(t, bifrostErr, "the nested url document reached Bedrock unfetched: %s", body)
+			require.NotNil(t, bifrostErr.Error.Error, "the builder error carries no cause")
+			cause := bifrostErr.Error.Error.Error()
+			assert.Contains(t, cause, "failed to inline URL content source", "the request must fail at url inlining, not elsewhere")
+			assert.Contains(t, cause, "blocked connection to non-public address 127.0.0.1", "the request must fail at the fetcher, not elsewhere")
 			assert.NotContains(t, bifrostErr.Error.Message, "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
+			assert.NotContains(t, cause, "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
 		})
 	}
 }
