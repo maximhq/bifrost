@@ -521,7 +521,6 @@
 				"allowed": "Permitido",
 				"blocked": "Bloqueado",
 				"redacted": "Redactado",
-				"transformed": "Transformado",
 				"monitored": "Supervisado",
 				"detected": "Detectado"
 			},
@@ -577,11 +576,9 @@
 			"toolTypeCount_other": "{{type}} · {{count}} herramientas",
 			"guardrailHints": {
 				"blocked": "La regla detuvo la solicitud.",
-				"redacted": "La regla eliminó el contenido coincidente y la solicitud continuó.",
-				"transformed": "La regla reescribió el contenido coincidente y la solicitud continuó.",
+				"redacted": "La regla enmascaró o reescribió el contenido coincidente y la solicitud continuó.",
 				"monitoredWouldBlock": "La regla solo monitorea: habría bloqueado esto, pero la solicitud continuó sin cambios.",
 				"monitoredWouldRedact": "La regla solo monitorea: habría eliminado este contenido, pero la solicitud continuó sin cambios.",
-				"monitoredWouldTransform": "La regla solo monitorea: habría transformado esto, pero la solicitud continuó sin cambios.",
 				"monitored": "La regla solo monitorea: la solicitud continuó sin cambios.",
 				"detected": "La regla marcó la solicitud y la dejó continuar sin cambios."
 			},
