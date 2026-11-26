@@ -27642,6 +27642,2176 @@
           }
         }
       ]
+    },
+    {
+      "name": "A bare decision model that several providers serve is refused on /v1/decisions",
+      "description": "Two run-scoped OpenAI-backed providers map a run-scoped alias to gpt-6-luna. A bare /v1/decisions request for the alias is not sent to the alphabetically first one: it gets a 400 naming both candidates. /openai/v1/decisions refuses it too, since neither candidate is the route's own provider. Named as provider/model, or routed by a rule that sets the provider, the same model is served (#10009).",
+      "item": [
+        {
+          "id": "rt-decisions-ambiguous-bare-model-01-add-provider",
+          "name": "01. add provider [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "pm.test(\"01. add provider [decisions-ambiguous-bare-model]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-02-add-key",
+          "name": "02. add key ka [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "pm.test(\"02. add key ka [decisions-ambiguous-bare-model]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"ka-{{run_id}}\",\"name\":\"catwiring-rt-decisions-ambiguous-bare-model-ka-{{run_id}}\",\"models\":[\"catwiring-dam-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dam-{{run_id}}\":\"gpt-6-luna\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-03-add-provider",
+          "name": "03. add provider (b) [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "pm.test(\"03. add provider (b) [decisions-ambiguous-bare-model]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-04-add-key",
+          "name": "04. add key kb (b) [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "pm.test(\"04. add key kb (b) [decisions-ambiguous-bare-model]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kb-{{run_id}}\",\"name\":\"catwiring-rt-decisions-ambiguous-bare-model-kb-{{run_id}}\",\"models\":[\"catwiring-dam-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dam-{{run_id}}\":\"gpt-6-luna\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-05-await-catalog",
+          "name": "05. wait for the catalog to list the provider's models [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-decisions-ambiguous-bare-model-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-dam-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. wait for the catalog to list the provider's models [decisions-ambiguous-bare-model]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. wait for the catalog to list the provider's models [decisions-ambiguous-bare-model]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-06-await-catalog",
+          "name": "06. wait for the catalog to list b's models [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-decisions-ambiguous-bare-model-b-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-dam-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. wait for the catalog to list b's models [decisions-ambiguous-bare-model]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. wait for the catalog to list b's models [decisions-ambiguous-bare-model]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-07-route",
+          "name": "07. /v1/decisions: the bare model is refused with 400 naming both candidates [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
+                  "  [\"decision model catwiring-dam-{{run_id}} is served by more than one provider (\",\"catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}\",\"catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}\",\"send it as provider/model\"].forEach(function (part) {",
+                  "    var expectedSubstr = pm.variables.replaceIn(part);",
+                  "    if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"07. /v1/decisions: the bare model is refused with 400 naming both candidates [decisions-ambiguous-bare-model]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-dam-{{run_id}}\",\"input\":\"Customer message: I was double charged last month and want a refund.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"is_frustrated\",\"instructions\":\"Is the customer frustrated?\"}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-08-route",
+          "name": "08. /openai/v1/decisions: refused too, openai is not a candidate [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
+                  "  var expectedSubstr = pm.variables.replaceIn(\"decision model catwiring-dam-{{run_id}} is served by more than one provider (\");",
+                  "  if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"08. /openai/v1/decisions: refused too, openai is not a candidate [decisions-ambiguous-bare-model]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-dam-{{run_id}}\",\"input\":\"Customer message: I was double charged last month and want a refund.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"is_frustrated\",\"instructions\":\"Is the customer frustrated?\"}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-09-route",
+          "name": "09. /v1/decisions: provider/model for B is served by B [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!Array.isArray(body.answers) || body.answers.length !== 1 || body.answers[0].type !== 'predicate') { throw new Error('not one predicate answer: ' + pm.response.text()); }",
+                  "  var served = pm.response.headers.get('x-bifrost-routing-info-provider');",
+                  "  var allowedProviders = ['catwiring-rt-decisions-ambiguous-bare-model-b-' + pm.variables.get('run_id')];",
+                  "  if (allowedProviders.indexOf(served) < 0) { throw new Error('x-bifrost-routing-info-provider=' + served + ' not in ' + JSON.stringify(allowedProviders)); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"09. /v1/decisions: provider/model for B is served by B [decisions-ambiguous-bare-model]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}/catwiring-dam-{{run_id}}\",\"input\":\"Customer message: I was double charged last month and want a refund.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"is_frustrated\",\"instructions\":\"Is the customer frustrated?\"}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-10-create-rule",
+          "name": "10. create the rule: the bare alias goes to B [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "pm.test(\"10. create the rule: the bare alias goes to B [decisions-ambiguous-bare-model]\", function () { pm.expect([200, 201], 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code); });",
+                  "if (pm.response.code === 200 || pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('ruleid_decisions-ambiguous-bare-model', ((pm.response.json() || {}).rule || {}).id || '');",
+                  "} else { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/governance/routing-rules",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "governance",
+                "routing-rules"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}\",\"cel_expression\":\"model == 'catwiring-dam-{{run_id}}'\",\"targets\":[{\"provider\":\"catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}\",\"model\":\"catwiring-dam-{{run_id}}\",\"weight\":1}],\"fallbacks\":[],\"scope\":\"global\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-ambiguous-bare-model-11-route",
+          "name": "11. /v1/decisions: the rule's provider serves the bare model [decisions-ambiguous-bare-model]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete routing rule [decisions-ambiguous-bare-model]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!Array.isArray(body.answers) || body.answers.length !== 1 || body.answers[0].type !== 'predicate') { throw new Error('not one predicate answer: ' + pm.response.text()); }",
+                  "  var served = pm.response.headers.get('x-bifrost-routing-info-provider');",
+                  "  var allowedProviders = ['catwiring-rt-decisions-ambiguous-bare-model-b-' + pm.variables.get('run_id')];",
+                  "  if (allowedProviders.indexOf(served) < 0) { throw new Error('x-bifrost-routing-info-provider=' + served + ' not in ' + JSON.stringify(allowedProviders)); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"11. /v1/decisions: the rule's provider serves the bare model [decisions-ambiguous-bare-model]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-dam-{{run_id}}\",\"input\":\"Customer message: I was double charged last month and want a refund.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"is_frustrated\",\"instructions\":\"Is the customer frustrated?\"}]}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-decisions-ambiguous-bare-model-cleanup-rule",
+              "name": "cleanup: delete routing rule [decisions-ambiguous-bare-model]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete routing rule [decisions-ambiguous-bare-model]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/governance/routing-rules/{{ruleid_decisions-ambiguous-bare-model}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "governance",
+                    "routing-rules",
+                    "{{ruleid_decisions-ambiguous-bare-model}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-decisions-ambiguous-bare-model-cleanup-provider-self",
+              "name": "cleanup: delete provider [decisions-ambiguous-bare-model]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [decisions-ambiguous-bare-model]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-decisions-ambiguous-bare-model-cleanup-provider-b",
+              "name": "cleanup: delete provider b [decisions-ambiguous-bare-model]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider b [decisions-ambiguous-bare-model]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "A provider whose allowed_requests forbid decisions is not a bare decision model's candidate",
+      "description": "A and B serve a run-scoped alias of gpt-6-luna, and B's allowed_requests leave decisions out. The bare /v1/decisions request is not ambiguous: A, the one candidate that may serve decisions, answers. With A gated off decisions as well, the request is refused with a 400 that says every candidate forbids decisions (#10009).",
+      "item": [
+        {
+          "id": "rt-decisions-gated-candidates-01-add-provider",
+          "name": "01. add provider [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "pm.test(\"01. add provider [decisions-gated-candidates]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-decisions-gated-candidates-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-02-add-key",
+          "name": "02. add key ka [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "pm.test(\"02. add key ka [decisions-gated-candidates]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-gated-candidates-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-decisions-gated-candidates-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"ka-{{run_id}}\",\"name\":\"catwiring-rt-decisions-gated-candidates-ka-{{run_id}}\",\"models\":[\"catwiring-dgc-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dgc-{{run_id}}\":\"gpt-6-luna\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-03-add-provider",
+          "name": "03. add provider (b) [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "pm.test(\"03. add provider (b) [decisions-gated-candidates]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-decisions-gated-candidates-b-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false,\"allowed_requests\":{\"list_models\":true,\"decisions\":false}}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-04-add-key",
+          "name": "04. add key kb (b) [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "pm.test(\"04. add key kb (b) [decisions-gated-candidates]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-gated-candidates-b-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-decisions-gated-candidates-b-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kb-{{run_id}}\",\"name\":\"catwiring-rt-decisions-gated-candidates-kb-{{run_id}}\",\"models\":[\"catwiring-dgc-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dgc-{{run_id}}\":\"gpt-6-luna\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-05-await-catalog",
+          "name": "05. wait for the catalog to list the provider's models [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-decisions-gated-candidates-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-dgc-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. wait for the catalog to list the provider's models [decisions-gated-candidates]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. wait for the catalog to list the provider's models [decisions-gated-candidates]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-decisions-gated-candidates-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-decisions-gated-candidates-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-06-await-catalog",
+          "name": "06. wait for the catalog to list b's models [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-decisions-gated-candidates-b-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-dgc-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. wait for the catalog to list b's models [decisions-gated-candidates]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. wait for the catalog to list b's models [decisions-gated-candidates]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-decisions-gated-candidates-b-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-decisions-gated-candidates-b-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-07-route",
+          "name": "07. /v1/decisions: the gated provider does not make the model ambiguous; A serves [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!Array.isArray(body.answers) || body.answers.length !== 1 || body.answers[0].type !== 'predicate') { throw new Error('not one predicate answer: ' + pm.response.text()); }",
+                  "  var served = pm.response.headers.get('x-bifrost-routing-info-provider');",
+                  "  var allowedProviders = ['catwiring-rt-decisions-gated-candidates-' + pm.variables.get('run_id')];",
+                  "  if (allowedProviders.indexOf(served) < 0) { throw new Error('x-bifrost-routing-info-provider=' + served + ' not in ' + JSON.stringify(allowedProviders)); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"07. /v1/decisions: the gated provider does not make the model ambiguous; A serves [decisions-gated-candidates]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-dgc-{{run_id}}\",\"input\":\"Customer message: I was double charged last month and want a refund.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"is_frustrated\",\"instructions\":\"Is the customer frustrated?\"}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-08-add-provider",
+          "name": "08. add provider (c) [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "pm.test(\"08. add provider (c) [decisions-gated-candidates]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-decisions-gated-candidates-c-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false,\"allowed_requests\":{\"list_models\":true,\"decisions\":false}}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-09-add-key",
+          "name": "09. add key kc (c) [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "pm.test(\"09. add key kc (c) [decisions-gated-candidates]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-gated-candidates-c-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-decisions-gated-candidates-c-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kc-{{run_id}}\",\"name\":\"catwiring-rt-decisions-gated-candidates-kc-{{run_id}}\",\"models\":[\"catwiring-dgc2-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dgc2-{{run_id}}\":\"gpt-6-luna\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-10-add-provider",
+          "name": "10. add provider (d) [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "pm.test(\"10. add provider (d) [decisions-gated-candidates]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-decisions-gated-candidates-d-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false,\"allowed_requests\":{\"list_models\":true,\"decisions\":false}}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-11-add-key",
+          "name": "11. add key kd (d) [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "pm.test(\"11. add key kd (d) [decisions-gated-candidates]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-gated-candidates-d-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-decisions-gated-candidates-d-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kd-{{run_id}}\",\"name\":\"catwiring-rt-decisions-gated-candidates-kd-{{run_id}}\",\"models\":[\"catwiring-dgc2-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dgc2-{{run_id}}\":\"gpt-6-luna\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-12-await-catalog",
+          "name": "12. wait for the catalog to list c's models [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-decisions-gated-candidates-c-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-dgc2-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"12. wait for the catalog to list c's models [decisions-gated-candidates]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"12. wait for the catalog to list c's models [decisions-gated-candidates]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-decisions-gated-candidates-c-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-decisions-gated-candidates-c-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-13-await-catalog",
+          "name": "13. wait for the catalog to list d's models [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-decisions-gated-candidates-d-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-dgc2-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"13. wait for the catalog to list d's models [decisions-gated-candidates]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"13. wait for the catalog to list d's models [decisions-gated-candidates]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-decisions-gated-candidates-d-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-decisions-gated-candidates-d-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-gated-candidates-14-route",
+          "name": "14. /v1/decisions: every candidate gated off decisions is refused with 400 [decisions-gated-candidates]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [decisions-gated-candidates]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
+                  "  [\"decision model catwiring-dgc2-{{run_id}} is served only by providers whose allowed_requests forbid decisions (\",\"catwiring-rt-decisions-gated-candidates-c-{{run_id}}\",\"catwiring-rt-decisions-gated-candidates-d-{{run_id}}\"].forEach(function (part) {",
+                  "    var expectedSubstr = pm.variables.replaceIn(part);",
+                  "    if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"14. /v1/decisions: every candidate gated off decisions is refused with 400 [decisions-gated-candidates]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-dgc2-{{run_id}}\",\"input\":\"Customer message: I was double charged last month and want a refund.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"is_frustrated\",\"instructions\":\"Is the customer frustrated?\"}]}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-decisions-gated-candidates-cleanup-provider-self",
+              "name": "cleanup: delete provider [decisions-gated-candidates]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [decisions-gated-candidates]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-gated-candidates-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-decisions-gated-candidates-{{run_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-decisions-gated-candidates-cleanup-provider-b",
+              "name": "cleanup: delete provider b [decisions-gated-candidates]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider b [decisions-gated-candidates]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-gated-candidates-b-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-decisions-gated-candidates-b-{{run_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-decisions-gated-candidates-cleanup-provider-c",
+              "name": "cleanup: delete provider c [decisions-gated-candidates]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider c [decisions-gated-candidates]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-gated-candidates-c-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-decisions-gated-candidates-c-{{run_id}}"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-decisions-gated-candidates-cleanup-provider-d",
+              "name": "cleanup: delete provider d [decisions-gated-candidates]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider d [decisions-gated-candidates]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-gated-candidates-d-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-decisions-gated-candidates-d-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "/openai/v1/decisions serves a bare decision model by openai when openai is a candidate",
+      "description": "The standard openai provider and a run-scoped OpenAI-backed provider B both map a run-scoped alias to gpt-6-luna. On /openai/v1/decisions the route's own provider is a candidate, so openai serves the bare alias; on /v1/decisions, which names no provider, the same request is refused with a 400 naming both. Serial-only (global provider) (#10009).",
+      "item": [
+        {
+          "id": "rt-decisions-integration-route-provider-01-add-provider",
+          "name": "01. add provider [decisions-integration-route-provider]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-integration-route-provider]\";",
+                  "pm.test(\"01. add provider [decisions-integration-route-provider]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"openai\"}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-integration-route-provider-02-add-key",
+          "name": "02. add key ko [decisions-integration-route-provider]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-integration-route-provider]\";",
+                  "pm.test(\"02. add key ko [decisions-integration-route-provider]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/openai/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"ko-{{run_id}}\",\"name\":\"catwiring-rt-decisions-integration-route-provider-ko-{{run_id}}\",\"models\":[\"catwiring-dir-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dir-{{run_id}}\":\"gpt-6-luna\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-integration-route-provider-03-add-provider",
+          "name": "03. add provider (b) [decisions-integration-route-provider]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-integration-route-provider]\";",
+                  "pm.test(\"03. add provider (b) [decisions-integration-route-provider]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"provider\":\"catwiring-rt-decisions-integration-route-provider-b-{{run_id}}\",\"custom_provider_config\":{\"base_provider_type\":\"openai\",\"is_key_less\":false}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-integration-route-provider-04-add-key",
+          "name": "04. add key kb (b) [decisions-integration-route-provider]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var acceptable = [200,201];",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-integration-route-provider]\";",
+                  "pm.test(\"04. add key kb (b) [decisions-integration-route-provider]\", function () {",
+                  "  pm.expect(acceptable, 'status ' + pm.response.code + ' body ' + pm.response.text()).to.include(pm.response.code);",
+                  "});",
+                  "if (acceptable.indexOf(pm.response.code) < 0) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-integration-route-provider-b-{{run_id}}/keys",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "catwiring-rt-decisions-integration-route-provider-b-{{run_id}}",
+                "keys"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\":\"kb-{{run_id}}\",\"name\":\"catwiring-rt-decisions-integration-route-provider-kb-{{run_id}}\",\"models\":[\"catwiring-dir-{{run_id}}\"],\"enabled\":true,\"value\":\"env.OPENAI_API_KEY\",\"aliases\":{\"catwiring-dir-{{run_id}}\":\"gpt-6-luna\"}}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-integration-route-provider-05-await-catalog",
+          "name": "05. wait for the catalog to list the provider's models [decisions-integration-route-provider]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-integration-route-provider]\";",
+                  "function assertNow() {",
+                  "  var providerName = \"openai\";",
+                  "  var expected = [\"catwiring-dir-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. wait for the catalog to list the provider's models [decisions-integration-route-provider]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"05. wait for the catalog to list the provider's models [decisions-integration-route-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=openai&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-integration-route-provider-06-await-catalog",
+          "name": "06. wait for the catalog to list b's models [decisions-integration-route-provider]",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "pm.collectionVariables.set('__cur_poll_key', pollKey);",
+                  "pm.collectionVariables.set('__cur_poll_attempt', String(attempt));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var maxAttempts = 8;",
+                  "var pollKey = '__poll_' + pm.info.requestName;",
+                  "var attempt = parseInt(pm.collectionVariables.get(pollKey) || '0', 10);",
+                  "var cleanupReq = \"cleanup: delete provider [decisions-integration-route-provider]\";",
+                  "function assertNow() {",
+                  "  var providerName = 'catwiring-rt-decisions-integration-route-provider-b-' + pm.variables.get('run_id');",
+                  "  var expected = [\"catwiring-dir-{{run_id}}\"].map(function (m) { return pm.variables.replaceIn(m); });",
+                  "  if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code); }",
+                  "  var names = ((pm.response.json() || {}).models || []).filter(function (m) { return m.provider === providerName; })",
+                  "    .map(function (m) { return m.name; });",
+                  "  if (names.length === 0) { throw new Error('the catalog lists no models for ' + providerName + ' yet'); }",
+                  "  expected.forEach(function (m) {",
+                  "    if (names.indexOf(m) < 0) { throw new Error('the catalog does not list ' + m + ' for ' + providerName + ' yet: ' + JSON.stringify(names.slice(0, 20))); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "if (ok) {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. wait for the catalog to list b's models [decisions-integration-route-provider]\", function () { pm.expect(true, 'assertion satisfied').to.be.true; });",
+                  "} else if (attempt < maxAttempts) {",
+                  "  pm.collectionVariables.set(pollKey, String(attempt + 1));",
+                  "  var sleepMs = Math.min(250 * Math.pow(2, attempt), 4000);",
+                  "  var start = Date.now(); while (Date.now() - start < sleepMs) {}",
+                  "  pm.execution.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.collectionVariables.set(pollKey, '0');",
+                  "  pm.test(\"06. wait for the catalog to list b's models [decisions-integration-route-provider]\", function () { throw new Error('gave up after ' + (maxAttempts + 1) + ' attempts: ' + errMsg); });",
+                  "  pm.execution.setNextRequest(cleanupReq);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models?provider=catwiring-rt-decisions-integration-route-provider-b-{{run_id}}&limit=1000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "catwiring-rt-decisions-integration-route-provider-b-{{run_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "1000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-integration-route-provider-07-route",
+          "name": "07. /openai/v1/decisions: openai, the route's provider, serves the bare model [decisions-integration-route-provider]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [decisions-integration-route-provider]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  if (!Array.isArray(body.answers) || body.answers.length !== 1 || body.answers[0].type !== 'predicate') { throw new Error('not one predicate answer: ' + pm.response.text()); }",
+                  "  var served = pm.response.headers.get('x-bifrost-routing-info-provider');",
+                  "  var allowedProviders = [\"openai\"];",
+                  "  if (allowedProviders.indexOf(served) < 0) { throw new Error('x-bifrost-routing-info-provider=' + served + ' not in ' + JSON.stringify(allowedProviders)); }",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"07. /openai/v1/decisions: openai, the route's provider, serves the bare model [decisions-integration-route-provider]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/openai/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-dir-{{run_id}}\",\"input\":\"Customer message: I was double charged last month and want a refund.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"is_frustrated\",\"instructions\":\"Is the customer frustrated?\"}]}"
+            }
+          }
+        },
+        {
+          "id": "rt-decisions-integration-route-provider-08-route",
+          "name": "08. /v1/decisions: the same bare model is refused with 400 naming both [decisions-integration-route-provider]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cleanupReq = \"cleanup: delete provider [decisions-integration-route-provider]\";",
+                  "function assertNow() {",
+                  "  if (pm.response.code !== 400) { throw new Error('expected status 400 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  var body = pm.response.json();",
+                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
+                  "  [\"decision model catwiring-dir-{{run_id}} is served by more than one provider (catwiring-rt-decisions-integration-route-provider-b-{{run_id}}, openai);\"].forEach(function (part) {",
+                  "    var expectedSubstr = pm.variables.replaceIn(part);",
+                  "    if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }",
+                  "  });",
+                  "}",
+                  "var ok = true, errMsg = '';",
+                  "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
+                  "pm.test(\"08. /v1/decisions: the same bare model is refused with 400 naming both [decisions-integration-route-provider]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"catwiring-dir-{{run_id}}\",\"input\":\"Customer message: I was double charged last month and want a refund.\",\"questions\":[{\"type\":\"predicate\",\"name\":\"is_frustrated\",\"instructions\":\"Is the customer frustrated?\"}]}"
+            }
+          }
+        },
+        {
+          "name": "Cleanup",
+          "item": [
+            {
+              "id": "rt-decisions-integration-route-provider-cleanup-provider-self",
+              "name": "cleanup: delete provider [decisions-integration-route-provider]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider [decisions-integration-route-provider]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/openai",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "openai"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "rt-decisions-integration-route-provider-cleanup-provider-b",
+              "name": "cleanup: delete provider b [decisions-integration-route-provider]",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test(\"cleanup: delete provider b [decisions-integration-route-provider]\", function () {",
+                      "  pm.expect([200, 204, 404], 'cleanup status ' + pm.response.code).to.include(pm.response.code);",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [],
+                "url": {
+                  "raw": "{{base_url}}/api/providers/catwiring-rt-decisions-integration-route-provider-b-{{run_id}}",
+                  "host": [
+                    "{{base_url}}"
+                  ],
+                  "path": [
+                    "api",
+                    "providers",
+                    "catwiring-rt-decisions-integration-route-provider-b-{{run_id}}"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "var required = [];",
+              "for (var i = 0; i < required.length; i++) {",
+              "  var v = required[i];",
+              "  if (!pm.variables.get(v) && !pm.environment.get(v)) {",
+              "    console.log('SKIP: missing ' + v);",
+              "    pm.execution.skipRequest();",
+              "    return;",
+              "  }",
+              "}"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

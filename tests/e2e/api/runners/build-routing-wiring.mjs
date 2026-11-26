@@ -169,7 +169,27 @@ function routeHeaderLines(step, jsNameOf) {
   return lines;
 }
 
+// The decision routes take one predicate question and answer with one typed answer.
+const DECISION_ENDPOINTS = new Set(["decisions", "openai-decisions"]);
+const DECISION_BODY = {
+  input: "Customer message: I was double charged last month and want a refund.",
+  questions: [{ type: "predicate", name: "is_frustrated", instructions: "Is the customer frustrated?" }],
+};
+
 function routeAssertLines(sid, step, jsNameOf) {
+  if (step.expectStatus === 200 && DECISION_ENDPOINTS.has(step.endpoint)) {
+    // A decision answers with typed answers, not choices; the route that served it rides on the headers.
+    const lines = [
+      "if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
+      "var body = pm.response.json();",
+      "if (!Array.isArray(body.answers) || body.answers.length !== 1 || body.answers[0].type !== 'predicate') { throw new Error('not one predicate answer: ' + pm.response.text()); }",
+      "var served = pm.response.headers.get('x-bifrost-routing-info-provider');",
+    ];
+    const refs = step.expectProviderOneOf || [step.routeRef];
+    lines.push(`var allowedProviders = [${refs.map((r) => jsNameOf(r)).join(", ")}];`);
+    lines.push("if (allowedProviders.indexOf(served) < 0) { throw new Error('x-bifrost-routing-info-provider=' + served + ' not in ' + JSON.stringify(allowedProviders)); }");
+    return [...lines, ...routeHeaderLines(step, jsNameOf)];
+  }
   if (step.expectStatus === 200 && step.endpoint === "anthropic") {
     // The /anthropic route answers in the Messages shape; routing info rides on the headers.
     const lines = [
@@ -227,8 +247,16 @@ function routeAssertLines(sid, step, jsNameOf) {
   ];
   if (step.expectErrorSubstr) {
     // Run variables such as {{run_id}} are not substituted inside script source, so resolve them here.
-    lines.push(`var expectedSubstr = pm.variables.replaceIn(${JSON.stringify(step.expectErrorSubstr)});`);
-    lines.push("if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }");
+    if (Array.isArray(step.expectErrorSubstr)) {
+      // An array checks that the message contains each of its parts.
+      lines.push(`${JSON.stringify(step.expectErrorSubstr)}.forEach(function (part) {`);
+      lines.push("  var expectedSubstr = pm.variables.replaceIn(part);");
+      lines.push("  if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }");
+      lines.push("});");
+    } else {
+      lines.push(`var expectedSubstr = pm.variables.replaceIn(${JSON.stringify(step.expectErrorSubstr)});`);
+      lines.push("if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }");
+    }
   }
   if (step.expectErrorType) {
     lines.push(`if (body.type !== ${JSON.stringify(step.expectErrorType)}) { throw new Error('error type=' + body.type + ' expected ${step.expectErrorType}'); }`);
@@ -463,6 +491,8 @@ function expandScenario(sc) {
         const body = { provider: pseg };
         if (!isStandard) {
           body.custom_provider_config = { base_provider_type: prov.base, is_key_less: false };
+          // allowedRequests gates the custom provider's request types (allowed_requests); left out, it serves every type.
+          if (step.allowedRequests) body.custom_provider_config.allowed_requests = step.allowedRequests;
         }
         const name = uniq("add provider" + plabel);
         items.push(item(nextId("add-provider"), name, request("POST", url(["api", "providers"]), body),
@@ -506,22 +536,28 @@ function expandScenario(sc) {
         if (step.pinKey) {
           headers.push({ key: "x-bf-api-key-id", value: keyId(step.pinKey) });
         }
-        const body = {
-          // bareModel routes without a provider prefix so an upstream routing
-          // layer (governance LB) resolves the provider. routeRef targets a
-          // specific provider in a multi-provider scenario (default: self).
-          model: step.bareModel ? step.model : `${nameOf(step.routeRef)}/${step.model}`,
-          messages: [{ role: "user", content: "Reply with the single word: ok." }],
-          max_tokens: 5,
-        };
+        // bareModel routes without a provider prefix so an upstream routing
+        // layer (governance LB) resolves the provider. routeRef targets a
+        // specific provider in a multi-provider scenario (default: self).
+        const model = step.bareModel ? step.model : `${nameOf(step.routeRef)}/${step.model}`;
+        const body = DECISION_ENDPOINTS.has(step.endpoint)
+          ? { model, ...DECISION_BODY }
+          : { model, messages: [{ role: "user", content: "Reply with the single word: ok." }], max_tokens: 5 };
         // Request-level fallbacks. The /v1 OpenAI-compatible endpoint takes the
         // string "provider/model" form (not the {provider,model} object form).
         if (step.fallbacks) {
           body.fallbacks = step.fallbacks.map((f) => `${nameOf(f.providerRef)}/${f.model}`);
         }
         // endpoint: "v1" (default) is /v1/chat/completions, "openai" the OpenAI drop-in route and
-        // "anthropic" the Anthropic Messages route (same body: model, messages, max_tokens).
-        const path = { v1: ["v1", "chat", "completions"], openai: ["openai", "v1", "chat", "completions"], anthropic: ["anthropic", "v1", "messages"] }[step.endpoint || "v1"];
+        // "anthropic" the Anthropic Messages route (same body: model, messages, max_tokens);
+        // "decisions" is /v1/decisions and "openai-decisions" OpenAI's /openai/v1/decisions (DECISION_BODY).
+        const path = {
+          v1: ["v1", "chat", "completions"],
+          openai: ["openai", "v1", "chat", "completions"],
+          anthropic: ["anthropic", "v1", "messages"],
+          decisions: ["v1", "decisions"],
+          "openai-decisions": ["openai", "v1", "decisions"],
+        }[step.endpoint || "v1"];
         // requestId sends a known x-request-id, kept as reqid_<sid>, so later steps can read this
         // request's own log row (its id) and its fallback attempts' rows (their parent_request_id).
         const pre = step.requestId ? [
@@ -1331,6 +1367,47 @@ const SCENARIOS = [
       { type: "addProvider", keys: [key({ id: "k1", models: ["*"] })] },
       { type: "createVK", providerConfigs: [] },
       { type: "route", model: MODEL_B, expectStatus: 403, expectErrorType: "provider_blocked", expectErrorSubstr: "is not allowed", label: "deny-by-default refuses the request (403 provider_blocked)" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "decisions-ambiguous-bare-model",
+    title: "A bare decision model that several providers serve is refused on /v1/decisions",
+    description: "Two run-scoped OpenAI-backed providers map a run-scoped alias to gpt-6-luna. A bare /v1/decisions request for the alias is not sent to the alphabetically first one: it gets a 400 naming both candidates. /openai/v1/decisions refuses it too, since neither candidate is the route's own provider. Named as provider/model, or routed by a rule that sets the provider, the same model is served (#10009).",
+    steps: [
+      { type: "addProvider", ref: "self", keys: [key({ id: "ka", models: ["catwiring-dam-{{run_id}}"], aliases: { "catwiring-dam-{{run_id}}": "gpt-6-luna" } })] },
+      { type: "addProvider", ref: "b", keys: [key({ id: "kb", models: ["catwiring-dam-{{run_id}}"], aliases: { "catwiring-dam-{{run_id}}": "gpt-6-luna" } })] },
+      { type: "route", endpoint: "decisions", model: "catwiring-dam-{{run_id}}", bareModel: true, useVk: false, expectStatus: 400, expectErrorSubstr: ["decision model catwiring-dam-{{run_id}} is served by more than one provider (", "catwiring-rt-decisions-ambiguous-bare-model-{{run_id}}", "catwiring-rt-decisions-ambiguous-bare-model-b-{{run_id}}", "send it as provider/model"], label: "/v1/decisions: the bare model is refused with 400 naming both candidates" },
+      { type: "route", endpoint: "openai-decisions", model: "catwiring-dam-{{run_id}}", bareModel: true, useVk: false, expectStatus: 400, expectErrorSubstr: "decision model catwiring-dam-{{run_id}} is served by more than one provider (", label: "/openai/v1/decisions: refused too, openai is not a candidate" },
+      { type: "route", endpoint: "decisions", model: "catwiring-dam-{{run_id}}", routeRef: "b", useVk: false, expectStatus: 200, label: "/v1/decisions: provider/model for B is served by B" },
+      { type: "createRule", cel: "model == 'catwiring-dam-{{run_id}}'", targets: [{ providerRef: "b", model: "catwiring-dam-{{run_id}}" }], label: "create the rule: the bare alias goes to B" },
+      { type: "route", endpoint: "decisions", model: "catwiring-dam-{{run_id}}", bareModel: true, useVk: false, expectStatus: 200, expectProviderOneOf: ["b"], label: "/v1/decisions: the rule's provider serves the bare model" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "decisions-gated-candidates",
+    title: "A provider whose allowed_requests forbid decisions is not a bare decision model's candidate",
+    description: "A and B serve a run-scoped alias of gpt-6-luna, and B's allowed_requests leave decisions out. The bare /v1/decisions request is not ambiguous: A, the one candidate that may serve decisions, answers. With A gated off decisions as well, the request is refused with a 400 that says every candidate forbids decisions (#10009).",
+    steps: [
+      { type: "addProvider", ref: "self", keys: [key({ id: "ka", models: ["catwiring-dgc-{{run_id}}"], aliases: { "catwiring-dgc-{{run_id}}": "gpt-6-luna" } })] },
+      { type: "addProvider", ref: "b", allowedRequests: { list_models: true, decisions: false }, keys: [key({ id: "kb", models: ["catwiring-dgc-{{run_id}}"], aliases: { "catwiring-dgc-{{run_id}}": "gpt-6-luna" } })] },
+      { type: "route", endpoint: "decisions", model: "catwiring-dgc-{{run_id}}", bareModel: true, useVk: false, expectStatus: 200, expectProviderOneOf: ["self"], label: "/v1/decisions: the gated provider does not make the model ambiguous; A serves" },
+      { type: "addProvider", ref: "c", allowedRequests: { list_models: true, decisions: false }, keys: [key({ id: "kc", models: ["catwiring-dgc2-{{run_id}}"], aliases: { "catwiring-dgc2-{{run_id}}": "gpt-6-luna" } })] },
+      { type: "addProvider", ref: "d", allowedRequests: { list_models: true, decisions: false }, keys: [key({ id: "kd", models: ["catwiring-dgc2-{{run_id}}"], aliases: { "catwiring-dgc2-{{run_id}}": "gpt-6-luna" } })] },
+      { type: "route", endpoint: "decisions", model: "catwiring-dgc2-{{run_id}}", bareModel: true, useVk: false, expectStatus: 400, expectErrorSubstr: ["decision model catwiring-dgc2-{{run_id}} is served only by providers whose allowed_requests forbid decisions (", "catwiring-rt-decisions-gated-candidates-c-{{run_id}}", "catwiring-rt-decisions-gated-candidates-d-{{run_id}}"], label: "/v1/decisions: every candidate gated off decisions is refused with 400" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "decisions-integration-route-provider",
+    title: "/openai/v1/decisions serves a bare decision model by openai when openai is a candidate",
+    description: "The standard openai provider and a run-scoped OpenAI-backed provider B both map a run-scoped alias to gpt-6-luna. On /openai/v1/decisions the route's own provider is a candidate, so openai serves the bare alias; on /v1/decisions, which names no provider, the same request is refused with a 400 naming both. Serial-only (global provider) (#10009).",
+    steps: [
+      { type: "addProvider", ref: "self", providerKind: "standard", providerType: "openai", keys: [key({ id: "ko", models: ["catwiring-dir-{{run_id}}"], aliases: { "catwiring-dir-{{run_id}}": "gpt-6-luna" } })] },
+      { type: "addProvider", ref: "b", keys: [key({ id: "kb", models: ["catwiring-dir-{{run_id}}"], aliases: { "catwiring-dir-{{run_id}}": "gpt-6-luna" } })] },
+      { type: "route", endpoint: "openai-decisions", model: "catwiring-dir-{{run_id}}", bareModel: true, useVk: false, expectStatus: 200, expectProviderOneOf: ["self"], label: "/openai/v1/decisions: openai, the route's provider, serves the bare model" },
+      { type: "route", endpoint: "decisions", model: "catwiring-dir-{{run_id}}", bareModel: true, useVk: false, expectStatus: 400, expectErrorSubstr: ["decision model catwiring-dir-{{run_id}} is served by more than one provider (catwiring-rt-decisions-integration-route-provider-b-{{run_id}}, openai);"], label: "/v1/decisions: the same bare model is refused with 400 naming both" },
       { type: "cleanup" },
     ],
   },
