@@ -522,7 +522,7 @@ type tokenProvider struct{}
 // Called once per tool call, with that call's context and the MCP client name.
 func (tokenProvider) GetTokenForUpstream(ctx context.Context, serverName string) (string, error) {
     tenant, _ := ctx.Value(tenantKey{}).(string)
-    return mintToken(tenant, serverName) // "" means: use the configured credential
+    return mintToken(tenant, serverName) // "" falls back; see the precedence below
 }
 
 mcpConfig := &schemas.MCPConfig{
@@ -531,7 +531,7 @@ mcpConfig := &schemas.MCPConfig{
 ```
 
 - A non-empty token is sent as `Authorization: Bearer <token>` on that JSON-RPC request only. Concurrent calls over the same connection each send their own token.
-- An empty string means "no per-request token": the call uses the configured credential unchanged.
+- An empty string means "no token from the provider": the call falls back to a hook's `OutboundToken`, then to a forwarded `Authorization` extra header, then to the configured credential, as the precedence below lists.
 - An error fails that tool call, and nothing is sent upstream.
 - Plugins can supply the same token without a Go SDK provider: a `PreMCPHook` sets `OutboundToken` on the `*schemas.BifrostMCPRequest` it returns. The field belongs to that call alone, so parallel calls never see each other's token.
 - Precedence, highest first: the provider's token, the hook's `OutboundToken`, `Authorization` from [forwarded extra headers](#forwarding-request-headers-to-mcp-servers), then the configured credential.
