@@ -349971,8 +349971,8 @@
     }
   ,
     {
-      "name": "383. Chat message role validation (#9298) (chat-message-role-validation)",
-      "description": "Chat requests with missing, null or empty roles used to reach providers and could succeed on permissive backends. The native handler and shared OpenAI routes now refuse them with JSON 400 invalid_request_error before inference or SSE starts. Cases cover the native endpoint, OpenAI SDK aliases, LangChain, LiteLLM, PydanticAI and Azure deployment routes. The exact message and message index distinguish gateway validation from an unrelated provider/auth error. Large-payload passthrough is not parsed and remains outside this validation.",
+      "name": "388. Chat message role validation (#9298) (chat-message-role-validation)",
+      "description": "Parsed native chat submissions and OpenAI-compatible routes reject missing, null and empty message roles before provider dispatch, SSE or async job submission. Each case checks the indexed field and error type.",
       "event": [
         {
           "listen": "test",
@@ -349995,7 +349995,7 @@
       ],
       "item": [
         {
-          "name": "383.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions missing messages[0].role - #9298",
+          "name": "388.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350018,7 +350018,7 @@
           "response": []
         },
         {
-          "name": "383.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages[0].role streaming - #9298",
+          "name": "388.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350041,7 +350041,7 @@
           "response": []
         },
         {
-          "name": "383.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions null messages[0].role - #9298",
+          "name": "388.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions null messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350064,7 +350064,7 @@
           "response": []
         },
         {
-          "name": "383.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions later message messages[1].role streaming - #9298",
+          "name": "388.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions later message messages[1].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350087,7 +350087,7 @@
           "response": []
         },
         {
-          "name": "383.5 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions missing messages[0].role - #9298",
+          "name": "388.5 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350110,7 +350110,7 @@
           "response": []
         },
         {
-          "name": "383.6 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions later message messages[1].role streaming - #9298",
+          "name": "388.6 [EXPECT-400] openai/gpt-4o-mini /openai/v1/chat/completions later message messages[1].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350133,7 +350133,7 @@
           "response": []
         },
         {
-          "name": "383.7 [EXPECT-400] openai/gpt-4o-mini /openai/chat/completions null messages[0].role - #9298",
+          "name": "388.7 [EXPECT-400] openai/gpt-4o-mini /openai/chat/completions null messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350156,7 +350156,7 @@
           "response": []
         },
         {
-          "name": "383.8 [EXPECT-400] openai/gpt-4o-mini /langchain/v1/chat/completions missing messages[0].role - #9298",
+          "name": "388.8 [EXPECT-400] openai/gpt-4o-mini /langchain/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350179,7 +350179,7 @@
           "response": []
         },
         {
-          "name": "383.9 [EXPECT-400] openai/gpt-4o-mini /langchain/chat/completions empty messages[0].role streaming - #9298",
+          "name": "388.9 [EXPECT-400] openai/gpt-4o-mini /langchain/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350202,7 +350202,7 @@
           "response": []
         },
         {
-          "name": "383.10 [EXPECT-400] openai/gpt-4o-mini /litellm/v1/chat/completions missing messages[0].role - #9298",
+          "name": "388.10 [EXPECT-400] openai/gpt-4o-mini /litellm/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350225,7 +350225,7 @@
           "response": []
         },
         {
-          "name": "383.11 [EXPECT-400] openai/gpt-4o-mini /litellm/chat/completions empty messages[0].role streaming - #9298",
+          "name": "388.11 [EXPECT-400] openai/gpt-4o-mini /litellm/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350248,7 +350248,7 @@
           "response": []
         },
         {
-          "name": "383.12 [EXPECT-400] openai/gpt-4o-mini /pydanticai/v1/chat/completions missing messages[0].role - #9298",
+          "name": "388.12 [EXPECT-400] openai/gpt-4o-mini /pydanticai/v1/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350271,7 +350271,7 @@
           "response": []
         },
         {
-          "name": "383.13 [EXPECT-400] openai/gpt-4o-mini /pydanticai/chat/completions empty messages[0].role streaming - #9298",
+          "name": "388.13 [EXPECT-400] openai/gpt-4o-mini /pydanticai/chat/completions empty messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350294,7 +350294,7 @@
           "response": []
         },
         {
-          "name": "383.14 [EXPECT-400] azure/gpt-4o-mini /openai/openai/deployments/gpt-4o-mini/chat/completions missing messages[0].role - #9298",
+          "name": "388.14 [EXPECT-400] azure/gpt-4o-mini /openai/openai/deployments/gpt-4o-mini/chat/completions missing messages[0].role - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350317,7 +350317,7 @@
           "response": []
         },
         {
-          "name": "383.15 [EXPECT-400] azure/gpt-4o-mini /azure/openai/deployments/gpt-4o-mini/chat/completions null messages[0].role streaming - #9298",
+          "name": "388.15 [EXPECT-400] azure/gpt-4o-mini /azure/openai/deployments/gpt-4o-mini/chat/completions null messages[0].role streaming - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350338,12 +350338,35 @@
             "url": "{{baseUrl}}/azure/openai/deployments/gpt-4o-mini/chat/completions?api-version=2024-10-21"
           },
           "response": []
+        },
+        {
+          "name": "388.16 [EXPECT-400] openai/gpt-4o-mini /v1/async/chat/completions later message messages[1].role - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    },\n    {\n      \"content\": \"world\"\n    }\n  ],\n  \"max_tokens\": 8,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/async/chat/completions"
+          },
+          "response": []
         }
       ]
     },
     {
-      "name": "384. Native chat preparation error compatibility (#9298) (chat-message-role-validation)",
-      "description": "The role-validation fix must only add error.type for missing message roles. Existing native chat preparation failures keep their JSON 400 envelope without error.type. Empty messages and malformed JSON are checked with stream false and true; all four requests fail before provider dispatch.",
+      "name": "389. Native chat preparation error compatibility (#9298) (chat-message-role-validation)",
+      "description": "Empty messages and malformed JSON keep their original JSON 400 response without error.type. The synchronous cases exercise both stream settings. The asynchronous case checks that an empty message list keeps the same response on job submission.",
       "event": [
         {
           "listen": "test",
@@ -350366,7 +350389,7 @@
       ],
       "item": [
         {
-          "name": "384.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=false - #9298",
+          "name": "389.1 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=false - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350389,7 +350412,7 @@
           "response": []
         },
         {
-          "name": "384.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=true - #9298",
+          "name": "389.2 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions empty messages stream=true - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350412,7 +350435,7 @@
           "response": []
         },
         {
-          "name": "384.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=false - #9298",
+          "name": "389.3 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=false - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350435,7 +350458,7 @@
           "response": []
         },
         {
-          "name": "384.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=true - #9298",
+          "name": "389.4 [EXPECT-400] openai/gpt-4o-mini /v1/chat/completions malformed JSON stream=true - #9298",
           "request": {
             "method": "POST",
             "header": [
@@ -350454,6 +350477,29 @@
               }
             },
             "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "response": []
+        },
+        {
+          "name": "389.5 [EXPECT-400] openai/gpt-4o-mini /v1/async/chat/completions empty messages - #9298",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": false,\n  \"messages\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/async/chat/completions"
           },
           "response": []
         }

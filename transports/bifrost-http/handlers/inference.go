@@ -1183,6 +1183,22 @@ func (e *missingChatMessageRoleError) Error() string {
 	return fmt.Sprintf("messages[%d].role is required", e.index)
 }
 
+// sendChatPreparationError adds the error type only when a message is missing its role.
+func sendChatPreparationError(ctx *fasthttp.RequestCtx, err error) {
+	var roleErr *missingChatMessageRoleError
+	if !errors.As(err, &roleErr) {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	SendBifrostError(ctx, &schemas.BifrostError{
+		StatusCode: schemas.Ptr(fasthttp.StatusBadRequest),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr("invalid_request_error"),
+			Message: err.Error(),
+		},
+	})
+}
+
 // prepareChatCompletionRequest prepares a BifrostChatRequest from a ChatRequest
 func prepareChatCompletionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*ChatRequest, *schemas.BifrostChatRequest, error) {
 	req, base, err := prepareRequest[ChatRequest](ctx, config, chatParamsKnownFields)
@@ -1233,18 +1249,7 @@ func (h *CompletionHandler) chatCompletion(ctx *fasthttp.RequestCtx) {
 		pt.EndSpan(ph, schemas.SpanStatusOk, "")
 	}
 	if err != nil {
-		var roleErr *missingChatMessageRoleError
-		if !errors.As(err, &roleErr) {
-			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-			return
-		}
-		SendBifrostError(ctx, &schemas.BifrostError{
-			StatusCode: schemas.Ptr(fasthttp.StatusBadRequest),
-			Error: &schemas.ErrorField{
-				Type:    schemas.Ptr("invalid_request_error"),
-				Message: err.Error(),
-			},
-		})
+		sendChatPreparationError(ctx, err)
 		return
 	}
 

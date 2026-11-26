@@ -141,7 +141,7 @@ func (h *AsyncHandler) asyncTextCompletion(ctx *fasthttp.RequestCtx) {
 func (h *AsyncHandler) asyncChatCompletion(ctx *fasthttp.RequestCtx) {
 	req, bifrostChatReq, err := prepareChatCompletionRequest(ctx, h.config)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendChatPreparationError(ctx, err)
 		return
 	}
 

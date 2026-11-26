@@ -214,10 +214,21 @@ func TestChatRequestDecodeAllSections(t *testing.T) {
 	}
 }
 
+// nativeChatPreparationRoutes uses nil clients and a nil executor to catch dispatch or job submission.
+var nativeChatPreparationRoutes = []struct {
+	name   string
+	stream bool
+	handle fasthttp.RequestHandler
+}{
+	{"stream=false", false, (&CompletionHandler{}).chatCompletion},
+	{"stream=true", true, (&CompletionHandler{}).chatCompletion},
+	{"async", false, (&AsyncHandler{}).asyncChatCompletion},
+}
+
 // TestChatCompletionRequiresMessageRole verifies missing, null, and empty roles produce an indexed
-// JSON 400 error before provider dispatch, for both streaming and non-streaming requests.
+// JSON 400 error for synchronous, streaming, and asynchronous submissions.
 func TestChatCompletionRequiresMessageRole(t *testing.T) {
-	for _, stream := range []bool{false, true} {
+	for _, route := range nativeChatPreparationRoutes {
 		for _, tc := range []struct {
 			name, messages string
 			index          int
@@ -228,13 +239,12 @@ func TestChatCompletionRequiresMessageRole(t *testing.T) {
 			{"null message", `[null]`, 0},
 			{"later message", `[{"role":"user","content":"hello"},{"content":"world"}]`, 1},
 		} {
-			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+			t.Run(tc.name+"/"+route.name, func(t *testing.T) {
 				var ctx fasthttp.RequestCtx
-				ctx.Request.SetBodyString(fmt.Sprintf(`{"model":"ollama/gemma4:e4b","stream":%t,"messages":%s}`, stream, tc.messages))
+				ctx.Request.SetBodyString(fmt.Sprintf(`{"model":"ollama/gemma4:e4b","stream":%t,"messages":%s}`, route.stream, tc.messages))
 				_, _, err := prepareChatCompletionRequest(&ctx, nil)
 				require.EqualError(t, err, fmt.Sprintf("messages[%d].role is required", tc.index))
-				// A nil client proves the handler refuses the request before core/provider dispatch.
-				(&CompletionHandler{}).chatCompletion(&ctx)
+				route.handle(&ctx)
 				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 				require.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
 				var response schemas.BifrostError
@@ -250,7 +260,7 @@ func TestChatCompletionRequiresMessageRole(t *testing.T) {
 // TestChatCompletionPreservesPreparationErrorShape verifies non-role validation errors
 // retain their existing JSON 400 response without an error.type field.
 func TestChatCompletionPreservesPreparationErrorShape(t *testing.T) {
-	for _, stream := range []bool{false, true} {
+	for _, route := range nativeChatPreparationRoutes {
 		for _, tc := range []struct {
 			name, fields, message string
 		}{
@@ -260,11 +270,10 @@ func TestChatCompletionPreservesPreparationErrorShape(t *testing.T) {
 			{"malformed JSON", `,"messages":[`, "Invalid request payload"},
 			{"invalid messages type", `,"messages":42}`, "Invalid request payload"},
 		} {
-			t.Run(fmt.Sprintf("%s/stream=%t", tc.name, stream), func(t *testing.T) {
+			t.Run(tc.name+"/"+route.name, func(t *testing.T) {
 				var ctx fasthttp.RequestCtx
-				ctx.Request.SetBodyString(fmt.Sprintf(`{"model":"openai/gpt-4o-mini","stream":%t%s`, stream, tc.fields))
-				// A nil client proves preparation errors do not reach provider dispatch.
-				(&CompletionHandler{}).chatCompletion(&ctx)
+				ctx.Request.SetBodyString(fmt.Sprintf(`{"model":"openai/gpt-4o-mini","stream":%t%s`, route.stream, tc.fields))
+				route.handle(&ctx)
 				require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 				require.Equal(t, "application/json", string(ctx.Response.Header.ContentType()))
 				var response struct {
@@ -290,6 +299,22 @@ func TestPrepareChatCompletionPreservesNonemptyRoles(t *testing.T) {
 	require.Equal(t, req.Messages, converted.Input)
 	for i, role := range []schemas.ChatMessageRole{"system", "developer", "user", "assistant", "tool", "custom"} {
 		require.Equal(t, role, converted.Input[i].Role)
+	}
+}
+
+// BenchmarkAsyncChatCompletionMissingRole measures preparation and the serialized async error.
+func BenchmarkAsyncChatCompletionMissingRole(b *testing.B) {
+	var h AsyncHandler
+	var ctx fasthttp.RequestCtx
+	ctx.Request.SetBodyString(`{"model":"openai/gpt-4o-mini","messages":[{"content":"hello"}]}`)
+	h.asyncChatCompletion(&ctx)
+	if ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+		b.Fatalf("expected a bad request, got %d", ctx.Response.StatusCode())
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx.Response.Reset()
+		h.asyncChatCompletion(&ctx)
 	}
 }
 
