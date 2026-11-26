@@ -708,26 +708,53 @@ func TestReleaseStreamingResponse_GenericBodyGuardCallbackSynchronized(t *testin
 			mode = "timer_callback"
 		}
 		t.Run(mode+"_drain_finishes_before_callback_claims", func(t *testing.T) {
+			testAbort := make(chan struct{})
+			releaseDone := make(chan struct{})
+			t.Cleanup(func() {
+				select {
+				case <-releaseDone:
+				case <-time.After(time.Second):
+				}
+			})
+			t.Cleanup(func() {
+				testHookGenericDrainGuardStart.Store(nil)
+				testHookGenericDrainCompleted.Store(nil)
+			})
+			t.Cleanup(func() { close(testAbort) })
+
 			guardStarted := make(chan struct{})
-			releaseGuard := make(chan struct{})
-			var startedOnce sync.Once
-			testHookGenericDrainGuardStart = func() {
+			drainCompleted := make(chan struct{})
+			var startedOnce, completedOnce sync.Once
+			var guardObservedCompletion atomic.Bool
+
+			guardHook := func() {
 				startedOnce.Do(func() { close(guardStarted) })
-				<-releaseGuard
+				select {
+				case <-drainCompleted:
+					guardObservedCompletion.Store(true)
+				case <-testAbort:
+				case <-time.After(2 * time.Second):
+				}
 			}
-			t.Cleanup(func() { testHookGenericDrainGuardStart = nil })
+			completedHook := func() {
+				completedOnce.Do(func() { close(drainCompleted) })
+			}
+			testHookGenericDrainGuardStart.Store(&guardHook)
+			testHookGenericDrainCompleted.Store(&completedHook)
 
 			inRead := make(chan struct{})
 			var readOnce sync.Once
 			body := &synchronizedGenericBody{
 				onRead: func() (int, error) {
 					readOnce.Do(func() { close(inRead) })
-					<-guardStarted
-					go func() {
-						time.Sleep(15 * time.Millisecond)
-						close(releaseGuard)
-					}()
-					return 0, io.EOF
+					select {
+					case <-guardStarted:
+						return 0, io.EOF
+					case <-testAbort:
+						return 0, io.ErrClosedPipe
+					case <-time.After(2 * time.Second):
+						return 0, errors.New("timed out waiting for guard callback to start")
+					}
 				},
 			}
 
@@ -737,24 +764,36 @@ func TestReleaseStreamingResponse_GenericBodyGuardCallbackSynchronized(t *testin
 				ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 5*time.Millisecond)
 			} else {
 				go func() {
-					<-inRead
-					cancel()
+					select {
+					case <-inRead:
+						cancel()
+					case <-testAbort:
+					case <-time.After(2 * time.Second):
+					}
 				}()
 			}
 
 			resp := fasthttp.AcquireResponse()
 			resp.SetBodyStream(body, -1)
 
-			// Note: when viaTimer is false, cancel() sets ctx.Err()!=nil before
+			// When viaTimer is false, cancel() sets ctx.Err()!=nil before
 			// ReleaseStreamingResponse if called too early, so only cancel once Read is active.
-			ReleaseStreamingResponse(ctx, resp)
+			go func() {
+				defer close(releaseDone)
+				ReleaseStreamingResponse(ctx, resp)
+			}()
 
-			if got := body.closeCount.Load(); got != 1 {
-				t.Fatalf("closeCount immediately after ReleaseStreamingResponse = %d, want 1", got)
+			select {
+			case <-releaseDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for ReleaseStreamingResponse to finish")
 			}
-			time.Sleep(25 * time.Millisecond)
+
+			if !guardObservedCompletion.Load() {
+				t.Fatal("guard callback did not observe drain completion CAS before attempting its own CAS")
+			}
 			if got := body.closeCount.Load(); got != 1 {
-				t.Fatalf("closeCount after delayed callback window = %d, want 1 (late double-close)", got)
+				t.Fatalf("closeCount = %d, want 1", got)
 			}
 		})
 

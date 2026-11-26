@@ -543,7 +543,13 @@ func (s *streamBody) drainForReuse(ctx context.Context, timeout time.Duration, m
 // testHookGenericDrainGuardStart runs at the start of drainStreamingBody's
 // generic timeout/cancel callback before its ownership CAS. Nil outside tests;
 // lets a test pause an already-dispatched callback while io.Copy finishes.
-var testHookGenericDrainGuardStart func()
+var testHookGenericDrainGuardStart atomic.Pointer[func()]
+
+// testHookGenericDrainCompleted runs immediately after drainStreamingBody wins
+// the completion CAS (drainRunning -> drainCompleted), before waiting on
+// guardDone. Nil outside tests; lets a test release a paused guard callback
+// only once completion ownership is established.
+var testHookGenericDrainCompleted atomic.Pointer[func()]
 
 // drainStreamingBody bounds the post-stream body drain by both wall-clock time
 // and byte count while honoring ctx cancellation. Returns abandoned=true when a
@@ -564,11 +570,12 @@ func drainStreamingBody(ctx context.Context, timeout time.Duration, bodyStream i
 	)
 	var state atomic.Int32
 	guardDone := make(chan struct{})
-	hook := testHookGenericDrainGuardStart
+	guardHook := testHookGenericDrainGuardStart.Load()
+	completedHook := testHookGenericDrainCompleted.Load()
 	closeOnce := sync.OnceFunc(func() {
 		defer close(guardDone)
-		if hook != nil {
-			hook()
+		if guardHook != nil {
+			(*guardHook)()
 		}
 		if !state.CompareAndSwap(drainRunning, drainAborted) {
 			return
@@ -592,6 +599,9 @@ func drainStreamingBody(ctx context.Context, timeout time.Duration, bodyStream i
 	if !state.CompareAndSwap(drainRunning, drainCompleted) {
 		<-guardDone
 		return true, errStreamDrainIncomplete
+	}
+	if completedHook != nil {
+		(*completedHook)()
 	}
 	if !timerStopped || !cancelStopped {
 		<-guardDone
