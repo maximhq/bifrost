@@ -4785,38 +4785,58 @@ func TestConverseFlatReasoningEffort(t *testing.T) {
 		assertConverseFlatReasoningEffort(t, out, "")
 	})
 
-	t.Run("alias uses canonical model", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
-			Key: "coding-model",
-			Config: &schemas.AliasConfig{
-				ModelID:   "opaque-profile-id",
-				ModelName: new("global.moonshotai.kimi-k3.1"),
-			},
+	for _, tc := range []struct {
+		alias, model, wire string
+	}{
+		{"coding-model", "global.moonshotai.kimi-k3.1", "opaque-profile-id"},
+		{"gpt-4o", "global.moonshotai.kimi-k3.1", "global.moonshotai.kimi-k3.1"},
+		{"gpt-4o", "global.zai.glm-5.3", "global.zai.glm-5.3"},
+	} {
+		t.Run("alias/"+tc.alias+"/"+tc.model, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+				Key: tc.alias,
+				Config: &schemas.AliasConfig{
+					ModelID: tc.wire, ModelName: &tc.model,
+				},
+			})
+			chat, err := bedrock.ToBedrockChatCompletionRequest(ctx, converseEffortChatRequest(t, ctx, tc.alias, "minimal"))
+			require.NoError(t, err)
+			assertConverseFlatReasoningEffort(t, chat, "low")
+			responses, err := bedrock.ToBedrockResponsesRequest(ctx, converseEffortResponsesRequest(t, ctx, tc.alias, "minimal"))
+			require.NoError(t, err)
+			assertConverseFlatReasoningEffort(t, responses, "low")
 		})
-		chat, err := bedrock.ToBedrockChatCompletionRequest(ctx, converseEffortChatRequest(t, ctx, "coding-model", "minimal"))
-		require.NoError(t, err)
-		assertConverseFlatReasoningEffort(t, chat, "low")
-		responses, err := bedrock.ToBedrockResponsesRequest(ctx, converseEffortResponsesRequest(t, ctx, "coding-model", "minimal"))
-		require.NoError(t, err)
-		assertConverseFlatReasoningEffort(t, responses, "low")
-	})
+	}
 
-	t.Run("budget without explicit effort", func(t *testing.T) {
-		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-		chatReq := converseEffortChatRequest(t, ctx, "global.zai.glm-5.3", "")
-		chatReq.Params.MaxCompletionTokens = new(4096)
-		chatReq.Params.Reasoning = &schemas.ChatReasoning{MaxTokens: new(2048)}
-		chat, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatReq)
-		require.NoError(t, err)
-		assertConverseFlatReasoningEffort(t, chat, "medium")
-		responsesReq := converseEffortResponsesRequest(t, ctx, "global.zai.glm-5.3", "")
-		responsesReq.Params.MaxOutputTokens = new(4096)
-		responsesReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{MaxTokens: new(2048)}
-		responses, err := bedrock.ToBedrockResponsesRequest(ctx, responsesReq)
-		require.NoError(t, err)
-		assertConverseFlatReasoningEffort(t, responses, "medium")
-	})
+	for _, model := range []string{"global.moonshotai.kimi-k3.1", "global.zai.glm-5.3"} {
+		for _, tc := range []struct {
+			name   string
+			effort *string
+			budget int
+			want   string
+		}{
+			{"budget only", nil, 2048, "medium"},
+			{"none overrides budget", schemas.Ptr("none"), 2048, "none"},
+			{"none overrides dynamic budget", schemas.Ptr("none"), -1, "none"},
+		} {
+			t.Run(model+"/"+tc.name, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				chatReq := converseEffortChatRequest(t, ctx, model, "")
+				chatReq.Params.MaxCompletionTokens = new(4096)
+				chatReq.Params.Reasoning = &schemas.ChatReasoning{Effort: tc.effort, MaxTokens: &tc.budget}
+				chat, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatReq)
+				require.NoError(t, err)
+				assertConverseFlatReasoningEffort(t, chat, tc.want)
+				responsesReq := converseEffortResponsesRequest(t, ctx, model, "")
+				responsesReq.Params.MaxOutputTokens = new(4096)
+				responsesReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: tc.effort, MaxTokens: &tc.budget}
+				responses, err := bedrock.ToBedrockResponsesRequest(ctx, responsesReq)
+				require.NoError(t, err)
+				assertConverseFlatReasoningEffort(t, responses, tc.want)
+			})
+		}
+	}
 
 	t.Run("anthropic/messages", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4886,18 +4906,28 @@ func BenchmarkConverseReasoningEffort(b *testing.B) {
 	for _, tc := range []struct {
 		name, model, effort string
 		reasoningOnly       bool
+		budget              *int
 	}{
-		{"omitted", "global.zai.glm-5.3", "", false},
-		{"existing", "openai.gpt-oss-120b-1:0", "high", false},
-		{"flat", "global.zai.glm-5.3", "high", false},
-		{"openai-default", "global.openai.gpt-5.6-luna", "", true},
-		{"grok-default", "us.xai.grok-4.6", "", true},
+		{"omitted", "global.zai.glm-5.3", "", false, nil},
+		{"existing", "openai.gpt-oss-120b-1:0", "high", false, nil},
+		{"flat", "global.zai.glm-5.3", "high", false, nil},
+		{"openai-default", "global.openai.gpt-5.6-luna", "", true, nil},
+		{"grok-default", "us.xai.grok-4.6", "", true, nil},
+		{"flat-budget", "global.zai.glm-5.3", "", false, new(2048)},
+		{"flat-none-budget", "global.zai.glm-5.3", "none", false, new(2048)},
 	} {
 		b.Run("chat/"+tc.name, func(b *testing.B) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			req := converseEffortChatRequest(b, ctx, tc.model, tc.effort)
 			if tc.reasoningOnly {
 				req.Params.Reasoning = &schemas.ChatReasoning{}
+			}
+			if tc.budget != nil {
+				if req.Params.Reasoning == nil {
+					req.Params.Reasoning = &schemas.ChatReasoning{}
+				}
+				req.Params.Reasoning.MaxTokens = tc.budget
+				req.Params.MaxCompletionTokens = new(4096)
 			}
 			for b.Loop() {
 				if _, err := bedrock.ToBedrockChatCompletionRequest(ctx, req); err != nil {
@@ -4910,6 +4940,13 @@ func BenchmarkConverseReasoningEffort(b *testing.B) {
 			req := converseEffortResponsesRequest(b, ctx, tc.model, tc.effort)
 			if tc.reasoningOnly {
 				req.Params.Reasoning = &schemas.ResponsesParametersReasoning{Summary: new("auto")}
+			}
+			if tc.budget != nil {
+				if req.Params.Reasoning == nil {
+					req.Params.Reasoning = &schemas.ResponsesParametersReasoning{}
+				}
+				req.Params.Reasoning.MaxTokens = tc.budget
+				req.Params.MaxOutputTokens = new(4096)
 			}
 			for b.Loop() {
 				if _, err := bedrock.ToBedrockResponsesRequest(ctx, req); err != nil {

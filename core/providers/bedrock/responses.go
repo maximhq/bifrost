@@ -2686,14 +2686,20 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 					bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 				} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
-					// Converse exposes no token budget for these models, so express the
-					// budget as the effort it corresponds to.
-					defaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
-					if inferenceConfig.MaxTokens != nil {
-						defaultMaxTokens = *inferenceConfig.MaxTokens
+					effort := bifrostReq.Params.Reasoning.Effort
+					if config.field == schemas.FieldReasoningEffort && effort != nil && *effort == schemas.ReasoningEffortNone {
+						// An explicit disable takes precedence over a co-present budget on flat-effort models.
+						config.set(bedrockReq.AdditionalModelRequestFields, caps, effort)
+					} else {
+						// Converse exposes no token budget for these models, so express the
+						// budget as the effort it corresponds to.
+						defaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
+						if inferenceConfig.MaxTokens != nil {
+							defaultMaxTokens = *inferenceConfig.MaxTokens
+						}
+						effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, defaultMaxTokens)
+						config.set(bedrockReq.AdditionalModelRequestFields, caps, &effort)
 					}
-					effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, defaultMaxTokens)
-					config.set(bedrockReq.AdditionalModelRequestFields, caps, &effort)
 				}
 			} else {
 				if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {

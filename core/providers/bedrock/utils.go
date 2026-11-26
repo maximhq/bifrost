@@ -838,14 +838,20 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 
 				bedrockReq.AdditionalModelRequestFields.Set("reasoningConfig", config)
 			} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
-				// Converse exposes no token budget for these models, so express the
-				// budget as the effort it corresponds to.
-				maxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
-				if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
-					maxTokens = *bedrockReq.InferenceConfig.MaxTokens
+				effort := bifrostReq.Params.Reasoning.Effort
+				if config.field == schemas.FieldReasoningEffort && effort != nil && *effort == schemas.ReasoningEffortNone {
+					// An explicit disable takes precedence over a co-present budget on flat-effort models.
+					config.set(bedrockReq.AdditionalModelRequestFields, caps, effort)
+				} else {
+					// Converse exposes no token budget for these models, so express the
+					// budget as the effort it corresponds to.
+					maxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
+					if bedrockReq.InferenceConfig != nil && bedrockReq.InferenceConfig.MaxTokens != nil {
+						maxTokens = *bedrockReq.InferenceConfig.MaxTokens
+					}
+					effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, maxTokens)
+					config.set(bedrockReq.AdditionalModelRequestFields, caps, &effort)
 				}
-				effort := providerUtils.GetReasoningEffortFromBudgetTokens(tokenBudget, MinimumReasoningMaxTokens, maxTokens)
-				config.set(bedrockReq.AdditionalModelRequestFields, caps, &effort)
 			}
 		} else if bifrostReq.Params.Reasoning.Effort != nil && *bifrostReq.Params.Reasoning.Effort != "none" {
 			modelDefaultMaxTokens := providerUtils.GetMaxOutputTokensOrDefault(bifrostReq.Provider, bifrostReq.Model, DefaultCompletionMaxTokens)
@@ -3586,12 +3592,13 @@ func resolveConverseReasoningEffort(ctx *schemas.BifrostContext, caps schemas.Mo
 	switch {
 	case schemas.IsGrokModel(caps.Model()):
 		return converseEffortConfig{field: "reasoning", levels: bedrockConverseGrokEffortLevels}
-	case schemas.IsOpenAIModelFamily(ctx, caps.Model()):
-		return converseEffortConfig{field: "reasoning", levels: bedrockConverseOpenAIEffortLevels}
 	case schemas.IsKimiModel(caps.Model()):
 		return converseEffortConfig{field: schemas.FieldReasoningEffort, levels: bedrockConverseKimiEffortLevels}
 	case schemas.IsGLMModel(caps.Model()):
 		return converseEffortConfig{field: schemas.FieldReasoningEffort, levels: bedrockConverseGLMEffortLevels}
+	// Match canonical families first: an OpenAI-looking alias key must not override its target.
+	case schemas.IsOpenAIModelFamily(ctx, caps.Model()):
+		return converseEffortConfig{field: "reasoning", levels: bedrockConverseOpenAIEffortLevels}
 	default:
 		return converseEffortConfig{}
 	}
