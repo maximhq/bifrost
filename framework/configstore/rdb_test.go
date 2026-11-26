@@ -1753,6 +1753,29 @@ func TestGetVirtualKeyByValue(t *testing.T) {
 	assert.Equal(t, "vk-lookup", result.ID)
 }
 
+type virtualKeyRepairStartupLogger struct {
+	schemas.Logger
+	beforeRepair func()
+	failures     chan string
+}
+
+func (l *virtualKeyRepairStartupLogger) Info(msg string, args ...any) {
+	if msg == "[configstore] starting migration %s" && len(args) == 1 && args[0] == "normalize_virtual_key_is_active" {
+		l.beforeRepair()
+	}
+	l.Logger.Info(msg, args...)
+}
+
+func (l *virtualKeyRepairStartupLogger) Warn(msg string, args ...any) {
+	if strings.Contains(msg, "virtual key active-state repair failed") {
+		select {
+		case l.failures <- fmt.Sprintf(msg, args...):
+		default:
+		}
+	}
+	l.Logger.Warn(msg, args...)
+}
+
 // A failed legacy repair must not prevent the configuration store from opening.
 func TestVirtualKeyRepairDoesNotBlockStartup(t *testing.T) {
 	ctx := context.Background()
@@ -1760,34 +1783,72 @@ func TestVirtualKeyRepairDoesNotBlockStartup(t *testing.T) {
 	first, err := newSqliteConfigStore(ctx, config, testMigrationLogger)
 	require.NoError(t, err)
 	require.NoError(t, first.Close(ctx))
-	db, err := gorm.Open(sqlite.Open(config.Path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	// BEGIN IMMEDIATE on this separate pool holds SQLite's write lock until rollback.
+	db, err := gorm.Open(sqlite.Open(config.Path+"?_txlock=immediate"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sqlDB.Close() })
 	require.NoError(t, db.Create(&tables.TableVirtualKey{ID: "legacy", Name: "legacy", Value: *schemas.NewSecretVar("vk_legacy"), IsActive: schemas.Ptr(true)}).Error)
 	require.NoError(t, db.Exec("UPDATE governance_virtual_keys SET is_active = NULL, config_hash = 'original' WHERE id = 'legacy'").Error)
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = 'normalize_virtual_key_is_active'").Error)
 	require.NoError(t, db.Exec(`CREATE TRIGGER reject_repair BEFORE UPDATE ON governance_virtual_keys WHEN NEW.id = 'legacy' BEGIN SELECT RAISE(ABORT, 'repair unavailable'); END`).Error)
-	sqlDB, err := db.DB()
-	require.NoError(t, err)
-	require.NoError(t, sqlDB.Close())
-
-	store, err := newSqliteConfigStore(ctx, config, testMigrationLogger)
-	require.NoError(t, err, "legacy repair failures must not block startup")
-	t.Cleanup(func() { _ = store.Close(ctx) })
+	lockCtx, releaseLock := context.WithCancel(ctx)
+	locked := make(chan *gorm.DB, 1)
+	probe := &virtualKeyRepairStartupLogger{
+		Logger: testMigrationLogger,
+		// Acquire the lock after normal schema initialization and before the repair writes.
+		beforeRepair: func() { locked <- db.WithContext(lockCtx).Begin() },
+		failures:     make(chan string, 1),
+	}
+	var store ConfigStore
+	var openErr error
+	opened := make(chan struct{})
+	go func() {
+		store, openErr = newSqliteConfigStore(ctx, config, probe)
+		close(opened)
+	}()
+	t.Cleanup(func() {
+		releaseLock()
+		select {
+		case <-opened:
+			if store != nil {
+				_ = store.Close(ctx)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("constructor did not return after releasing the write lock")
+		}
+	})
+	var blocker *gorm.DB
+	select {
+	case blocker = <-locked:
+		require.NoError(t, blocker.Error)
+	case <-time.After(5 * time.Second):
+		t.Fatal("repair never reached the write gate")
+	}
+	select {
+	case <-opened:
+		require.NoError(t, openErr)
+	case <-time.After(5 * time.Second):
+		t.Fatal("constructor waited for the blocked repair")
+	}
 	key, err := store.GetVirtualKey(ctx, "legacy")
 	require.NoError(t, err)
 	require.Equal(t, schemas.Ptr(true), key.IsActive, "reads must normalize NULL while repair is pending")
 	require.Equal(t, "original", key.ConfigHash)
+	require.NoError(t, blocker.Rollback().Error)
+	select {
+	case failure := <-probe.failures:
+		require.Contains(t, failure, "repair unavailable", "the rejecting trigger must have run")
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker did not report the rejected repair")
+	}
 	require.NoError(t, store.Close(ctx))
 
-	db, err = gorm.Open(sqlite.Open(config.Path), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	require.NoError(t, err)
 	var pending int64
 	require.NoError(t, db.Table("migrations").Where("id = ?", "normalize_virtual_key_is_active").Count(&pending).Error)
-	require.Zero(t, pending, "failed or cancelled repairs must not be marked complete")
+	require.Zero(t, pending, "the rejected repair must remain pending")
 	require.NoError(t, db.Exec("DROP TRIGGER reject_repair").Error)
-	sqlDB, err = db.DB()
-	require.NoError(t, err)
-	require.NoError(t, sqlDB.Close())
 
 	restarted, err := newSqliteConfigStore(ctx, config, testMigrationLogger)
 	require.NoError(t, err)
@@ -1815,13 +1876,17 @@ func TestVirtualKeyRepairCloseCancelsWorker(t *testing.T) {
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	entered := make(chan struct{})
+	cancelled := make(chan struct{})
 	release := make(chan struct{})
+	releaseWorker := sync.OnceFunc(func() { close(release) })
 	var once sync.Once
 	require.NoError(t, db.Callback().Update().Before("gorm:update").Register("block_virtual_key_repair", func(tx *gorm.DB) {
 		if tx.Statement.Table == "governance_virtual_keys" {
 			once.Do(func() { close(entered) })
 			select {
 			case <-tx.Statement.Context.Done():
+				close(cancelled)
+				<-release
 				tx.AddError(tx.Statement.Context.Err())
 			case <-release:
 			}
@@ -1832,7 +1897,7 @@ func TestVirtualKeyRepairCloseCancelsWorker(t *testing.T) {
 	store.startVirtualKeyRepair()
 	t.Cleanup(func() {
 		// Unblock the callback even if the Close being tested never cancels it.
-		close(release)
+		releaseWorker()
 		store.virtualKeyRepairCancel()
 		_ = sqlDB.Close()
 	})
@@ -1844,10 +1909,24 @@ func TestVirtualKeyRepairCloseCancelsWorker(t *testing.T) {
 	closed := make(chan error, 1)
 	go func() { closed <- store.Close(context.Background()) }()
 	select {
+	case <-cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not cancel the blocked repair")
+	}
+	pingCtx, cancelPing := context.WithTimeout(context.Background(), time.Second)
+	defer cancelPing()
+	require.NoError(t, sqlDB.PingContext(pingCtx), "the pool must stay open while the worker is held")
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the worker was still held")
+	default:
+	}
+	releaseWorker()
+	select {
 	case err := <-closed:
 		require.NoError(t, err)
 	case <-time.After(5 * time.Second):
-		t.Fatal("Close did not cancel the blocked repair")
+		t.Fatal("Close did not return after the worker was released")
 	}
 	select {
 	case <-store.virtualKeyRepairDone:
