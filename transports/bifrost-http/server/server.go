@@ -79,6 +79,10 @@ var enterprisePlugins = []string{
 
 // ServerCallbacks is a interface that defines the callbacks for the server.
 type ServerCallbacks interface {
+	// Agent Gateway registration and relay writes, which a deployment may wrap with its own
+	// coordination before the local runtime changes.
+	handlers.AgentRegistrationManager
+	handlers.RelayManager
 	// Plugins callbacks
 	ReloadPlugin(ctx context.Context, name string, path *string, pluginConfig any, placement *schemas.PluginPlacement, order *int) error
 	RemovePlugin(ctx context.Context, name string) error
@@ -948,8 +952,9 @@ func (s *BifrostHTTPServer) ReloadVirtualMCP(ctx context.Context, id uint) (*tab
 	return def, nil
 }
 
-// RemoveVirtualMCP drops a deleted Virtual MCP definition from memory. Keys that were assigned it
-// keep its ID until they are next refreshed; resolution skips an ID whose definition is gone.
+// RemoveVirtualMCP drops a deleted Virtual MCP definition from memory. The delete handler reloads
+// the keys that were assigned it, so their records drop its ID; until then resolution skips an ID
+// whose definition is gone.
 func (s *BifrostHTTPServer) RemoveVirtualMCP(ctx context.Context, id uint) error {
 	return s.removeRecord(ctx, livestore.KindVirtualMCP, registry.VirtualMCPKey(id))
 }
@@ -2977,15 +2982,15 @@ func (s *BifrostHTTPServer) DeleteAgentRegistration(ctx context.Context, name st
 }
 
 // InitializeAgentGateway constructs the shared Agent Gateway handler before any
-// routes that depend on it are registered. registrationManager owns registration
-// mutations, while vkReloader refreshes virtual keys after grant changes. nil
-// values use the local OSS implementations.
-func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registrationManager handlers.AgentRegistrationManager, vkReloader handlers.VirtualKeyReloader) error {
+// routes that depend on it are registered. callbacks is the same object RegisterAPIRoutes receives:
+// it owns registration mutations and reloads virtual keys after grant changes, as it does for the
+// other governance handlers. nil uses this server.
+func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, callbacks ServerCallbacks) error {
 	if s.AgentGatewayHandler != nil || s.Config == nil || s.Config.ConfigStore == nil {
 		return nil
 	}
-	if vkReloader == nil {
-		vkReloader = s
+	if callbacks == nil {
+		callbacks = s
 	}
 	gatewayStore, ok := s.Config.ConfigStore.(agent.Store)
 	if !ok {
@@ -3024,7 +3029,7 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 	if err != nil {
 		return fmt.Errorf("failed to initialize agent gateway: %v", err)
 	}
-	s.AgentGatewayHandler = handlers.NewAgentGatewayHandler(manager, registrationManager, s.Config, vkReloader)
+	s.AgentGatewayHandler = handlers.NewAgentGatewayHandler(manager, callbacks, s.Config, callbacks)
 	s.agentGatewayManager = manager
 	agentCount := 0
 	if registrations, err := manager.List(ctx); err == nil {
@@ -4022,8 +4027,8 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Initialize the Agent Gateway once before either management or protocol
 	// routes are registered.
-	s.InitializeRelays(s.Ctx, nil, nil)
-	if err = s.InitializeAgentGateway(s.Ctx, nil, nil); err != nil {
+	s.InitializeRelays(s.Ctx, s)
+	if err = s.InitializeAgentGateway(s.Ctx, s); err != nil {
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil

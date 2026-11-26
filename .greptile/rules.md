@@ -44,6 +44,62 @@ When reviewing a PR, first identify which Bifrost area is touched:
 - UI changes must preserve `data-testid` attributes used by E2E tests.
 - E2E API payloads must be constructed directly as object literals. Do not serialize through maps, Records, `Object.fromEntries`, or JSON round trips.
 
+## Live Store
+
+Every piece of data a process keeps (configuration, runtime state, caches) lives in `framework/livestore`. AGENTS.md ("Data lives in the live store", "Writes reach memory the same way for every entity") and `.claude/skills/live-store/SKILL.md` hold the full rules. Review only code a PR adds or changes against them:
+
+- Flag new maps, `sync.Map`s or record slices a component keeps as a cache, index or state. They belong in a live-store collection (every row of a config-database kind), cache (only what was asked for) or table (what the process writes itself), or in `tests/rawmaps/allowlist.txt` with a reason.
+- In-flight working state (one request, stream or run, keyed by its ID and removed when it ends: stream accumulators, pending log entries, traces being built, running jobs) may stay in a map with an `inflight` allowlist entry. Flag one whose entry is not removed on every ending path, errors and cancellation included, and state labelled in-flight that a later request reuses.
+- `Store.Collections` holds config-store collections only; derived tables several packages read go in `Store.Views`, rebuilt by a subscriber once per publish. Records hold only what their loader fills, and provider settings and keys stay separate values.
+- Request-path reads go through typed handles and never modify a value read from the store.
+- Delete: holders are read inside the delete's transaction; the record is removed with a `Remove` ref and no read; bound caches are evicted; holders are re-read with `lib.AdminRetry()`; a failed re-read answers 500.
+- Create or update: the written rows are re-read with `lib.AdminRetry()`; on failure memory keeps the previous record and the handler answers 500.
+- A partial update merges onto a database read, never onto the live record; a settings save never rewrites child rows.
+- Only an explicit delete removes a record without reading it; a reload or reconcile re-reads a held record its list does not name.
+- A change another process made is applied with `lib.DBLookupRetry()`.
+- A write path that re-reads needs a test where the re-read fails; a delete needs a test that it removes without reading.
+
+## MCP Harness
+
+Every MCP change a client can observe ships with cases in the MCP harness, `tests/e2e/api/runners/build-mcp-harness.mjs`. AGENTS.md ("Every MCP change ships with MCP harness cases") and `.claude/skills/mcp-harness/SKILL.md` hold the full rules and, in section 3, the cases each kind of change needs. Review only behaviour a PR adds or changes against them:
+
+- MCP behaviour covers MCP clients and their upstream auth, connection types, `/mcp` and `/mcp/<slug>`, `/v1/mcp/tool/execute`, MCP tools in inference and code mode, tool filtering, virtual keys' MCP grants and Virtual MCPs, per-user discovery and sessions, MCP logs and pricing, the MCP library, Bifrost's OAuth server and the Bifrost MCP on `/v1/mcp`. Its cases go in the MCP harness, never in `provider-harness.json`.
+- A new or changed upstream auth type is covered on every connection type that can carry it, from the API and from `config.json`, through expiry and refresh, per caller and shared, in each inbound auth mode, with the credential reaching the upstream on every call path and no answer or log echoing it.
+- A connection type or transport change covers every auth type that applies, failure at create and mid-call, recovery and tool sync.
+- An inbound auth change covers each auth mode with enforce on and off, every caller credential alone and in pairs, every surface, and the exact refusal (`WWW-Authenticate` only where the mode advertises OAuth).
+- A filtering, MCP grant or Virtual MCP change covers each level alone and combined, with every surface that lists or calls tools answering the same.
+- Flag cases that cover one connection type, auth mode or surface when the change reaches more and the PR does not say why the others are out of reach.
+- A new value on an axis (an upstream auth type, connection type, discovery or credential kind, inbound auth mode, caller credential, surface) is also added to every existing test that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new tests.
+- Harness conventions: one folder per test named by its ID, every request titled with the ID, independent tests that restore what they change, exact assertions, no early return on an error status, no 500 as the expected answer, a known bug asserted with `A.skip(...)`.
+
+## Semantic Cache Wiring
+
+Every semantic cache change a client can observe ships with rows in the semantic cache wiring suite, `tests/e2e/api/runners/build-semantic-cache-wiring.mjs`. AGENTS.md ("Every semantic cache change ships with semantic cache wiring cases") and `.claude/skills/semantic-cache-wiring/SKILL.md` hold the full rules and, in section 3, the cases each kind of change needs. Review only behaviour a PR adds or changes against them:
+
+- Semantic cache behaviour covers the `semantic_cache` plugin and its config, what a request writes, hits or misses and what a hit replays, direct and semantic mode on every cacheable request type and route, streams, the `x-bf-cache-*` request headers, `extra_fields.cache_debug` and the `x-bifrost-cache-*` response headers, identity scoping, the `/api/cache` clear endpoints, the vector stores and the cache fields on log rows, logs filters and stats. Its cases go in the semantic cache wiring suite, never in `provider-harness.json`.
+- A config field is covered with its default, `null` on a PUT, its exact 400s on create and update, GET echoing it, and its effect in direct and semantic mode.
+- A cache key input is covered with a hit on the same request, a miss with only that input changed when it must keep entries apart, and a hit on the first entry when it must not (reordered tools, letter case, surrounding whitespace), in both modes, streamed and not, plus the paraphrase in semantic mode.
+- A request type, route or replay change covers a write, a hit and a miss on that type and its stream, a replay equal to the original, the body `cache_debug` and headers agreeing on `/v1` and `/openai` (headers only, with no body `cache_debug`, on the other SDK routes), and the log row.
+- A vector store change passes the same rows on Redis and on Weaviate, plus that store's own test file.
+- Flag rows that cover one cache mode, request type, route or stream when the change reaches more and the PR does not say why the others are out of reach.
+- A new value on an axis (a request type, route, config field, request header, `cache_debug` field or response header, vector store, caller identity, cache key input) is also added to every existing row that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new rows.
+- Suite conventions: the collection is regenerated from the generator and never hand-edited; every request of a case is named by its ID; reads that must hit go through `hit()` and are polled with `x-bf-cache-no-store`; a miss runs only after its isolation hit; keys and namespaces carry the run ID; a row that changes the plugin restores the folder's baseline; exact assertions, no early return on an error status, no 500 as the expected answer.
+
+## Routing Harness
+
+Every routing change a client can observe ships with scenarios in the routing harness: `tests/e2e/api/runners/build-routing-wiring.mjs` for the routing path and `build-model-catalog-wiring.mjs` for the model catalog. AGENTS.md ("Every routing change ships with routing harness cases") and `.claude/skills/routing-harness/SKILL.md` hold the full rules and, in section 3, the cases each kind of change needs. Review only behaviour a PR adds or changes against them:
+
+- Routing covers routing rules, model routers and the complexity router, the model catalog and key aliases, a model named without a provider, virtual key provider configs and governance load balancing, key selection and key pins, direct keys, session affinity, fallbacks and retries, `extra_fields.routing_info`, the `x-bifrost-routing-info-*` headers and the routing log trail. Its cases go in the routing harness, never as new folders in `provider-harness.json`; updates to the routing folders already there are fine.
+- A routing rule change covers a match and a no-match for each CEL input it reads, each scope that can hold it and the order between scopes, priority, each target shape (provider and model, model only, a key pin, weights, a first-token cutoff), its fallbacks and chains, and an edit, disable and delete between requests.
+- A model router or complexity router change covers each classifier picking each tier and its fallback chain, tier targets and fallbacks, a router after a rule, and the request types that classify.
+- A catalog or alias change covers provider and key mutations reaching `/api/models` and `/api/models/details` and the next route, and exact, case-insensitive and regex aliases.
+- A virtual key routing change covers weighted, zero and allow-list-only configs, a candidate that cannot serve skipped at any weight, a caller-named provider skipping the balancing, budgets and rate limits, and each refusal's exact status and message.
+- A fallback or retry change covers every fallback source, an exhausted chain returning the primary's error and headers, and each upstream outcome it reaches (429, 5xx, a dropped connection, a refused key).
+- When the generator has no step for a case (streams, sessions, direct keys, rule scopes, model routers, a scripted upstream), the PR extends the generator; flag a case left out for that reason.
+- Flag scenarios that cover one scope, config, fallback source or entry point when the change reaches more and the PR does not say why the others are out of reach.
+- A new value on an axis (an entry point, routing header, rule scope, CEL input, target field, fallback source, classifier, key field, `routing_info` field, provider) is also added to every existing scenario that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new scenarios.
+- Harness conventions: the collections are regenerated from the generators and never hand-edited; routing requests are sent once and judged once, and only catalog, log, trail and pricing reads poll; everything a scenario creates is run-scoped except standard providers, which keep their fixed name on the clean server; exact assertions, distributions as membership and never exact splits, no early return on an error status, no 500 as the expected answer.
+
 ## Path-Specific Checks
 
 For `core/providers/**`:
@@ -59,6 +115,7 @@ For `core/mcp/**`:
 - Check tool filtering across global, client, tool, and per-request filters.
 - Review agent loops for bounded depth, deterministic tool execution behavior, and safe error propagation.
 - Preserve deterministic tool registration, discovery, and filtering behavior across in-process, SSE, streamable HTTP, and code-mode clients.
+- Ask for MCP harness cases for observable behaviour changes (see MCP Harness above).
 
 For `framework/streaming/**`:
 
@@ -70,13 +127,27 @@ For `transports/bifrost-http/handlers/**`:
 
 - Verify handler changes keep SDK integration behavior compatible with OpenAI, Anthropic, Bedrock, Google GenAI, LangChain, LiteLLM, and PydanticAI where relevant.
 - Check request parsing, error status codes, and middleware ordering.
-- Keep runtime config updates and persistent store updates rollback-aware so in-memory state, core state, and database state do not silently diverge.
+- Configuration changes go to the database first and memory follows (see Live Store above). A create or update re-reads the written record; if that read fails, memory keeps the record's previous version and the handler answers 500 saying the write was saved but not reloaded. A delete removes its record without a read; if the holders' re-read then fails, the holders keep their previous records and the handler answers 500, while the deleted record stays removed. Do not ask for a rollback of the committed write.
+
+For `plugins/semanticcache/**` and `framework/vectorstore/**`:
+
+- Every vector store gives the same answer for the same rows: similarity is cosine on every store, and a store-specific change ships with the cosine check in that store's test file.
+- Ask for semantic cache wiring rows for observable behaviour changes (see Semantic Cache Wiring above).
+
+For audit events in `transports/bifrost-http/handlers/**`:
+
+- Audit commit point: a handler that saves config must record its typed audit event with `lib.RecordAuditChange` right after the write commits, before any step that can still fail (reload, read-back, rebuild, broadcast, key or cache reload). Flag an error return between a successful write and the record call, including a step a PR inserts above an existing, unchanged record call, so review the whole handler and not just the diff. Also flag a record placed before the write, a handler that saves config with no typed event, and a snapshot that carries a secret.
 
 For `plugins/governance/**`:
 
 - Review budget, rate-limit, virtual key, and RBAC paths for fail-closed behavior where security is involved.
 - Check that fallback and retry attempts do not double-count or undercount usage unexpectedly.
 - Preserve nil-versus-empty access semantics where configured lists distinguish allow-all, deny-all, and explicit allow-list behavior.
+- Ask for routing harness cases when a change alters virtual key routing or load balancing (see Routing Harness above).
+
+For `plugins/routing/**`, `framework/routing/**`, `framework/modelcatalog/**` and `plugins/modelcatalogresolver/**`:
+
+- Ask for routing harness cases for observable routing changes (see Routing Harness above).
 
 For `ui/**`:
 

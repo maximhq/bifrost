@@ -2,4 +2,5 @@
 - feat: virtual keys are read from the `xi-api-key` header for ElevenLabs clients
 - fix: updating the budget of a config.json virtual key no longer fails with `invalid reset duration format` (thanks [@High-PO](https://github.com/High-PO)!)
 - fix: a team's cached virtual keys follow its new customer
+- fix: calendar-aligned rate limits stay enforced on the last day of the period [@pratyagarwal](https://github.com/pratyagarwal)
 - chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0
