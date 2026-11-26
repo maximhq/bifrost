@@ -572,6 +572,7 @@ bifrost:
   #     default_request_timeout_in_seconds: 300       # Request timeout. On streams this bounds connect, request
   #                                                   # write and wait-for-headers; after headers arrive,
   #                                                   # stream_idle_timeout_in_seconds governs the body
+  #     max_remote_file_size_bytes: 26214400          # Remote HTTP(S) download limit. 0 or omitted uses 25 MiB; maximum 1073741824 (1 GiB)
   #     max_retries: 3                                # Maximum number of retries
   #     retry_backoff_initial_ms: 500                 # Initial retry backoff in ms
   #     retry_backoff_max_ms: 5000                    # Max retry backoff in ms

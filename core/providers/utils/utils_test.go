@@ -2430,6 +2430,25 @@ func TestEnsureStreamFinalizerCalled_NoParkedSpan_StillRunsFinalizerOnce(t *test
 	}
 }
 
+// TestGateSendChunkCancelledError checks that a provider can publish its terminal error during shutdown.
+func TestGateSendChunkCancelledError(t *testing.T) {
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	ctx.Cancel()
+	chunks := make(chan *schemas.BifrostStreamChunk, 1)
+	failure := &schemas.BifrostStreamChunk{BifrostError: newStreamContextError(ctx)}
+
+	// The send and cancellation are both ready on every iteration.
+	for range 32 {
+		if !GateSendChunk(ctx, failure, chunks) || <-chunks != failure {
+			t.Fatal("cancelled provider discarded a terminal error with a free output slot")
+		}
+	}
+	chunks <- failure
+	if GateSendChunk(ctx, failure, chunks) {
+		t.Fatal("cancelled provider sent to a full output")
+	}
+}
+
 // Fix A: when the final chunk's send fails with the context still alive (a closed
 // consumer channel), ProcessAndSendResponse must still complete the deferred span
 // with its real (success) outcome rather than strand it.

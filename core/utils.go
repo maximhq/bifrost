@@ -16,6 +16,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -380,18 +381,11 @@ func newBifrostQueueFullError() *schemas.BifrostError {
 	}
 }
 
-// newBifrostMessageChan creates a channel that sends a bifrost response.
-// It is used to send a bifrost response to the client.
-func newBifrostMessageChan(message *schemas.BifrostResponse) chan *schemas.BifrostStreamChunk {
+// newBifrostMessageChan returns one client-facing response with the request's raw-field settings.
+func newBifrostMessageChan(ctx *schemas.BifrostContext, message *schemas.BifrostResponse) chan *schemas.BifrostStreamChunk {
 	// Filled and closed up front: a stream nobody reads holds no goroutine.
 	ch := make(chan *schemas.BifrostStreamChunk, 1)
-	ch <- &schemas.BifrostStreamChunk{
-		BifrostTextCompletionResponse:      message.TextCompletionResponse,
-		BifrostChatResponse:                message.ChatResponse,
-		BifrostResponsesStreamResponse:     message.ResponsesStreamResponse,
-		BifrostSpeechStreamResponse:        message.SpeechStreamResponse,
-		BifrostTranscriptionStreamResponse: message.TranscriptionStreamResponse,
-	}
+	ch <- providerUtils.BuildClientStreamChunk(ctx, message, nil)
 	close(ch)
 	return ch
 }
@@ -427,25 +421,17 @@ func requestedRouteFromContext(ctx *schemas.BifrostContext) schemas.Route {
 	return schemas.Route{Provider: provider, Model: model}
 }
 
-// layerFallbackIdentity marks an attempt's routing info as a fallback's when the request is on one,
-// naming the primary from the previous attempt's record: the primary's own, or the primary it
-// carried on a later fallback (clearCtxForFallback keeps the record).
-func layerFallbackIdentity(ctx *schemas.BifrostContext, info *schemas.RoutingInfo) {
-	if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex <= 0 {
+// layerFallbackIdentity records the chain head selected before a streaming fallback's per-attempt hooks.
+func layerFallbackIdentity(primary *schemas.Route, info *schemas.RoutingInfo) {
+	if primary == nil {
 		return
 	}
 	info.IsFallback = true
-	prev, ok := ctx.Value(schemas.BifrostContextKeyRoutingInfo).(schemas.RoutingInfo)
-	if !ok {
-		return
+	if primary.Provider != "" {
+		info.PrimaryProvider = Ptr(primary.Provider)
 	}
-	if prev.IsFallback && prev.PrimaryProvider != nil {
-		info.PrimaryProvider = prev.PrimaryProvider
-		info.PrimaryModel = prev.PrimaryModel
-	} else if prev.Provider != "" {
-		primaryProvider, primaryModel := prev.Provider, prev.Model
-		info.PrimaryProvider = &primaryProvider
-		info.PrimaryModel = &primaryModel
+	if primary.Model != "" {
+		info.PrimaryModel = Ptr(primary.Model)
 	}
 }
 

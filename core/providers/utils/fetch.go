@@ -60,7 +60,8 @@ func sanitizeFetchError(err error, redacted string) error {
 // FetchAndEncodeURL downloads a remote resource (image, document, etc.) and
 // returns its base64 encoding plus the response Content-Type. Used by providers
 // (Bedrock Converse, Anthropic-on-Vertex) whose upstream surface only accepts
-// inline bytes, not remote URLs. Bounded by a 20s timeout and a 25 MiB body cap;
+// inline bytes, not remote URLs. Bounded by a 20s timeout and a per-provider body
+// cap (25 MiB by default, network_config.max_remote_file_size_bytes to override);
 // non-2xx responses error. The provided ctx is honored for cancellation and
 // deadlines; pass context.Background() if no request context is available.
 //
@@ -78,8 +79,6 @@ func sanitizeFetchError(err error, redacted string) error {
 // and the tunnel is opened to the checked address rather than the hostname; see
 // newFetchClient. With no proxy configured the fetch connects directly, as before.
 func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType string, encoded string, err error) {
-	const maxBytes = maxFetchBytes
-
 	// Every error below names the resource by its redacted form only; see
 	// RedactURLForError for why the query and userinfo never make it into a message.
 	redacted := RedactURLForError(resourceURL)
@@ -92,7 +91,7 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 		return "", "", fmt.Errorf("unsupported URL scheme %q (only http/https allowed)", parsed.Scheme)
 	}
 
-	client, err := fetchClientFor(ctx)
+	client, maxBytes, err := fetchClientFor(ctx)
 	if err != nil {
 		return "", "", fmt.Errorf("failed to fetch from %q: %w", redacted, err)
 	}
@@ -132,41 +131,34 @@ func FetchAndEncodeURL(ctx context.Context, resourceURL string) (mediaType strin
 	return mediaType, base64.StdEncoding.EncodeToString(body), nil
 }
 
-// maxFetchBytes caps a fetched resource at 25 MiB.
-const maxFetchBytes int64 = 25 * 1024 * 1024
-
 // proxyEnvVars are the variables golang.org/x/net/http/httpproxy reads.
 var proxyEnvVars = []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy", "REQUEST_METHOD"}
 
-// fetchClients holds one http.Client per distinct proxy, so connections are pooled
-// across fetches instead of a fresh transport being built per call. Keyed by
-// fetchClientKeyFor; the set is bounded by the number of distinct proxy configs.
+// fetchClients reuses one immutable client per distinct (resolved proxy, limit).
+// As with the existing proxy cache, entries live for the process lifetime; only
+// idle connections expire. No downloaded file contents are retained here.
 var fetchClients sync.Map // fetchClientKey -> *http.Client
 
 // fetchClientFor returns the client for the proxy config carried on ctx, or the
-// direct client when there is none.
-func fetchClientFor(ctx context.Context) (*http.Client, error) {
+// direct client when there is none, together with the same resolved limit used
+// to build it. A caller never resolves the client and reader bounds separately.
+func fetchClientFor(ctx context.Context) (*http.Client, int64, error) {
+	limit, _ := ctx.Value(schemas.BifrostContextKeyMaxRemoteFileSizeBytes).(int64)
+	config := schemas.NetworkConfig{MaxRemoteFileSizeBytes: limit}
+	if err := config.ValidateRemoteFileSizeLimit(); err != nil {
+		return nil, 0, err
+	}
+	maxBytes := config.RemoteFileSizeLimit()
 	proxyConfig, _ := ctx.Value(schemas.BifrostContextKeyProviderProxyConfig).(*schemas.ProxyConfig)
 	key := fetchClientKeyFor(proxyConfig)
+	key.maxBytes = maxBytes
 	if cached, ok := fetchClients.Load(key); ok {
-		return cached.(*http.Client), nil
+		return cached.(*http.Client), maxBytes, nil
 	}
-	actual, _ := fetchClients.LoadOrStore(key, newFetchClient(proxyConfig))
-	return actual.(*http.Client), nil
+	actual, _ := fetchClients.LoadOrStore(key, newFetchClient(proxyConfig, maxBytes))
+	return actual.(*http.Client), maxBytes, nil
 }
 
-// newFetchClient builds the SSRF-hardened fetch client on fasthttp, with the proxy
-// from the same ConfigureProxy the provider's inference clients use.
-//
-// Direct connections, including targets the proxy is told to skip (errBypassProxy),
-// go through network.SSRFSafeDialContext, which checks the resolved target on every
-// dial. Once a request is proxied the dial goes to the proxy, which is operator
-// configuration and may well be on a private address, so it is not checked. The
-// target is resolved and checked first (fetchResolveTarget), and the proxy is asked
-// for a tunnel to one of the checked addresses, never the hostname: the proxy cannot
-// resolve the name to somewhere else after the check. Redirect hops dial again and
-// are checked the same way. The bypass decision (no_proxy, NO_PROXY) is still made on
-// the hostname, before the address is pinned.
 // proxyBypassFunc reports whether a fetch to host:port skips proxyConfig's proxy, the
 // way ConfigureProxy's dialer decides it: a no_proxy match, or for the environment
 // proxy, NO_PROXY or no variable set for the port's scheme (443 is https, anything else
@@ -197,7 +189,19 @@ func proxyBypassFunc(proxyConfig *schemas.ProxyConfig) func(host, port string) b
 // can stand in for DNS.
 var fetchResolveTarget = network.ResolvePublicTarget
 
-func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
+// newFetchClient builds the SSRF-hardened fetch client on fasthttp, with the proxy
+// from the same ConfigureProxy the provider's inference clients use.
+//
+// Direct connections, including targets the proxy is told to skip (errBypassProxy),
+// go through network.SSRFSafeDialContext, which checks the resolved target on every
+// dial. Once a request is proxied the dial goes to the proxy, which is operator
+// configuration and may well be on a private address, so it is not checked. The
+// target is resolved and checked first (fetchResolveTarget), and the proxy is asked
+// for a tunnel to one of the checked addresses, never the hostname: the proxy cannot
+// resolve the name to somewhere else after the check. Redirect hops dial again and
+// are checked the same way. The bypass decision (no_proxy, NO_PROXY) is still made on
+// the hostname, before the address is pinned.
+func newFetchClient(proxyConfig *schemas.ProxyConfig, maxBytes int64) *http.Client {
 	ssrfDial := network.SSRFSafeDialContext(10 * time.Second)
 	direct := func(addr string) (net.Conn, error) {
 		return ssrfDial(context.Background(), "tcp", addr)
@@ -206,7 +210,7 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 		ReadTimeout:              20 * time.Second,
 		WriteTimeout:             20 * time.Second,
 		MaxIdleConnDuration:      30 * time.Second,
-		MaxResponseBodySize:      int(maxFetchBytes) + 1,
+		MaxResponseBodySize:      int(maxBytes) + 1,
 		NoDefaultUserAgentHeader: true,
 	}
 	proxied := false
@@ -270,9 +274,10 @@ func newFetchClient(proxyConfig *schemas.ProxyConfig) *http.Client {
 // fetchClientKey is the set of resolved values that change which client a fetch needs.
 // It is a comparable struct used directly as the cache key: the values already live in
 // memory on the provider's ProxyConfig, so keying by them exposes nothing new, and no
-// hashing is needed. Everything that NetHTTPProxy treats as "no proxy" maps to the
-// zero key.
+// serialization is needed. Direct fetches have a zero proxy portion; maxBytes is
+// always populated with the effective limit before cache lookup.
 type fetchClientKey struct {
+	maxBytes  int64
 	proxyType schemas.ProxyType
 	url       string
 	username  string
