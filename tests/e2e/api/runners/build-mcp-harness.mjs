@@ -5913,7 +5913,7 @@ const shortlistIs = (header, files) => A.custom(`the shortlist starts ${lit(head
   `pm.expect(text.indexOf(${lit(header)}), 'body: ' + pm.response.text()).to.equal(0);`,
   `pm.expect(files).to.eql(${lit(files)});`,
 ]);
-const INF82 = folder("INF-82 Ranked listToolFiles discovery", `Setup: dsa (send_message "Post a message to a chat channel", search_messages "Search past chat messages", create_issue "Open an issue in the tracker") and dsb (send_message "Send a message") registered as code-mode clients dsa and dsb, auth none, per call, tools_to_execute ["*"]; mcp_code_mode_binding_level "tool", then "server"; no discovery ranker is configured, so queries use the built-in lexical ranking.`, [
+const INF82 = folder("INF-82 Ranked listToolFiles discovery", `Setup: dsa (send_message "Post a message to a chat channel", search_messages "Search past chat messages", create_issue "Open an issue in the tracker") and dsb (send_message "Send a message") registered as code-mode clients dsa and dsb, auth none, per call, tools_to_execute ["*"]; mcp_code_mode_binding_level "tool", then "server". The boot config's decision ranker (INF-83) has no scenario for these queries, so each falls back to the built-in lexical ranking.`, [
   ...serveTools("INF-82", "dsa", INF82_DSA, "send_message, search_messages and create_issue"),
   ...serveTools("INF-82", "dsb", [{ name: "send_message", description: "Send a message" }], "send_message"),
   createClient("INF-82", httpClient("inf-82-dsa", "dsa", "dsa", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register dsa as a code-mode client"),
@@ -5947,6 +5947,99 @@ const INF82 = folder("INF-82 Ranked listToolFiles discovery", `Setup: dsa (send_
   restoreConfig("INF-82"),
   deleteClient("INF-82", "inf-82-dsa"),
   deleteClient("INF-82", "inf-82-dsb"),
+]);
+
+// INF-83: the boot config's decision-model discovery ranker (decision_model openai/mock-model, fallback
+// anthropic/mock-model). The mock LLM has no native decisions endpoint, so each call is emulated through the
+// provider's Responses API and answered by the scenario the query's marker names. Every call is logged as its own
+// decision row tagged with the tool call's request ID.
+const DR_TOOLS = [
+  { name: "send_message", description: "Post a message to a chat channel" },
+  { name: "search_messages", description: "Search past chat messages" },
+  { name: "create_issue", description: "Open an issue in the tracker" },
+];
+const DR_PATHS = ["servers/dr/create_issue.pyi", "servers/dr/search_messages.pyi", "servers/dr/send_message.pyi"];
+// drAnswer is one emit_decision call choosing choice, with probabilities over the three candidates.
+const drAnswer = (choice, probabilities) => ({ tool_calls: [{ id: "d1", name: "emit_decision", arguments: {
+  relevant_tool: { choice, confidence: 0.8, probabilities },
+  tools_cover_request: { value: 0.9, confidence: 0.9 },
+} }] });
+const DR_GOOD = drAnswer("servers/dr/search_messages.pyi", { "servers/dr/search_messages.pyi": 0.8, "servers/dr/send_message.pyi": 0.15, "servers/dr/create_issue.pyi": 0.05 });
+const DR_BAD = drAnswer("servers/dr/unknown.pyi", { "servers/dr/search_messages.pyi": 1, "servers/dr/send_message.pyi": 0, "servers/dr/create_issue.pyi": 0 });
+const DR_FAIL = { error: { status: 500, message: "mock outage" } };
+const drQuery = (id, title, key, R, asserts) => execBody(id, title, toolCall("listToolFiles", { query: `${marker(key)} find old chat messages` }),
+  [A.status(200), ...asserts], { headers: [inc("clients", "dr"), reqId(R)] });
+const DR_LISTING = "var text = pm.response.json().content; var lines = text.split('\\n').filter(function (l) { return l.indexOf('servers/') === 0; });";
+// rankerRows polls GET /api/logs for the decision rows of tool call R, then asserts on them (oldest first) as `rows`.
+const rankerRows = (id, title, R, n, asserts) => request(id, title, "GET", `/api/logs?objects=decisions&metadata_mcp_request_id=${R}`, {
+  pre: [
+    "var left = 30;",
+    "function poll() {",
+    `  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/logs?objects=decisions&metadata_mcp_request_id=${R}', method: 'GET', header: { Authorization: pm.variables.get('admin_auth_header') } }, function (err, res) {`,
+    `    if ((!err && res.code === 200 && (res.json().logs || []).length >= ${n}) || --left <= 0) { return; }`,
+    "    setTimeout(poll, 500);",
+    "  });",
+    "}",
+    "poll();",
+  ],
+  asserts: [A.status(200), A.custom(`${n} decision row${n === 1 ? "" : "s"}`, [
+    "var rows = (pm.response.json().logs || []).slice().sort(function (a, b) { return a.timestamp < b.timestamp ? -1 : 1; });",
+    `pm.expect(rows.length, 'body: ' + pm.response.text()).to.equal(${n});`,
+    ...asserts,
+  ])],
+});
+const INF83 = folder("INF-83 Decision-model discovery ranker", `Setup: the runner's config.json sets mcp.tool_manager_config.code_mode_discovery_ranker {decision_model "openai/mock-model", fallbacks ["anthropic/mock-model"]}; ${LLM_TEXT}; dr (send_message, search_messages, create_issue) and dr2 (send_message) registered as code-mode clients, auth none, per call, tools_to_execute ["*"]; mcp_code_mode_binding_level "tool"; every query is sent with x-bf-mcp-include-clients dr.`, [
+  ...serveTools("INF-83", "dr", DR_TOOLS, "send_message, search_messages and create_issue"),
+  ...serveTools("INF-83", "dr2", [{ name: "send_message", description: "Post a message to a chat channel" }], "send_message"),
+  createClient("INF-83", httpClient("inf-83-dr", "dr", "dr", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register dr as a code-mode client"),
+  createClient("INF-83", httpClient("inf-83-dr2", "dr2", "dr2", { tools_to_execute: ["*"], is_code_mode_client: true }), "setup: register dr2 as a code-mode client"),
+  readConfig("INF-83"),
+  putConfig("INF-83", "setup: set mcp_code_mode_binding_level \"tool\"", ["cc.mcp_code_mode_binding_level = 'tool';"], [A.status(200)]),
+  // The decision model ranks the shortlist.
+  llmScript("INF-83", "inf83a", { turns: [DR_GOOD] }),
+  drQuery("INF-83", "the decision model's probabilities rank the shortlist", "inf83a", "inf83-a", [A.custom("a ranker shortlist with search_messages first at 0.80", [DR_LISTING,
+    "pm.expect(text.indexOf('# Ranked shortlist for this query (discovery ranker): 3 of 3 tools visible to this caller were ranked.'), 'body: ' + pm.response.text()).to.equal(0);",
+    "pm.expect(text).to.not.include('may not cover the request');",
+    "pm.expect(lines).to.eql(['servers/dr/search_messages.pyi  # relevance=0.80', 'servers/dr/send_message.pyi  # relevance=0.15', 'servers/dr/create_issue.pyi  # relevance=0.05']);",
+  ])]),
+  llmCaptured("INF-83", "one emulated decision request on openai, offering only dr's tools", "inf83a", [reqCount(1), A.custom("an openai.responses request declaring emit_decision, naming dr's three tools and no dr2 tool", [REQS,
+    "pm.expect(reqs[0].format, 'body: ' + pm.response.text()).to.equal('openai.responses');",
+    "pm.expect(reqs[0].tools).to.eql(['emit_decision']);",
+    "var body = JSON.stringify(reqs[0].json);",
+    `${lit(DR_PATHS)}.forEach(function (p) { pm.expect(body).to.include(p); });`,
+    "pm.expect(body).to.not.include('servers/dr2/');",
+  ])]),
+  rankerRows("INF-83", "one successful decision row on openai/mock-model", "inf83-a", 1, [
+    "pm.expect(rows[0].status).to.equal('success');",
+    "pm.expect(rows[0].provider + '/' + rows[0].model).to.equal('openai/mock-model');",
+    "pm.expect(rows[0].metadata.internal_request).to.equal('code_mode_discovery_ranker');",
+    "pm.expect(rows[0].virtual_key_id || null).to.equal(null);",
+  ]),
+  // An answer that does not fit the questions is rejected and the fallback model is asked.
+  llmScript("INF-83", "inf83b", { turns: [DR_BAD, DR_GOOD] }),
+  drQuery("INF-83", "a rejected answer moves to the fallback model, whose answer ranks the shortlist", "inf83b", "inf83-b", [A.custom("a ranker shortlist with search_messages first", [DR_LISTING,
+    "pm.expect(text.indexOf('# Ranked shortlist for this query (discovery ranker):'), 'body: ' + pm.response.text()).to.equal(0);",
+    "pm.expect(lines[0]).to.equal('servers/dr/search_messages.pyi  # relevance=0.80');",
+  ])]),
+  llmCaptured("INF-83", "openai was asked, then anthropic", "inf83b", [reqCount(2), A.custom("formats openai.responses then anthropic.messages", [REQS,
+    "pm.expect(reqs.map(function (r) { return r.format; }), 'body: ' + pm.response.text()).to.eql(['openai.responses', 'anthropic.messages']);",
+  ])]),
+  rankerRows("INF-83", "an error row for the rejected answer, then a success row on the fallback", "inf83-b", 2, [
+    "pm.expect(rows.map(function (r) { return r.provider + ':' + r.status; })).to.eql(['openai:error', 'anthropic:success']);",
+    "pm.expect(JSON.stringify(rows[0])).to.not.include('servers/dr/unknown.pyi');",
+  ]),
+  // Every model failing falls back to the built-in lexical ranking.
+  llmScript("INF-83", "inf83c", { turns: [DR_FAIL, DR_FAIL] }),
+  drQuery("INF-83", "when every decision model fails the lexical ranking answers", "inf83c", "inf83-c", [A.custom("a lexical shortlist saying the ranker was not used", [DR_LISTING,
+    "pm.expect(text, 'body: ' + pm.response.text()).to.match(/^# Ranked shortlist for this query \\(lexical match\\): \\d+ of 3 tools visible to this caller matched\\.\\n# The discovery ranker was not used \\(it did not return a usable answer\\)\\./);",
+    "pm.expect(lines[0]).to.equal('servers/dr/search_messages.pyi');",
+  ])]),
+  rankerRows("INF-83", "two error rows, openai then anthropic", "inf83-c", 2, [
+    "pm.expect(rows.map(function (r) { return r.provider + ':' + r.status; })).to.eql(['openai:error', 'anthropic:error']);",
+  ]),
+  restoreConfig("INF-83"),
+  deleteClient("INF-83", "inf-83-dr"),
+  deleteClient("INF-83", "inf-83-dr2"),
 ]);
 
 // ================================================================ provider-injected tools on the mock LLM
@@ -13640,7 +13733,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80, INF82]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80, INF82, INF83]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
