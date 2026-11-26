@@ -364,6 +364,7 @@ func (h *AgentGatewayHandler) create(ctx *fasthttp.RequestCtx) {
 		h.registrationMutationError(ctx, err)
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent.created", "agent", view.Name, view.Name, nil, auditAgentRegistration(&view))
 	refreshErr := h.refreshAgent(workCtx, view.Name, false)
 	// The keys are reloaded even when the agent's own refresh failed: a retried create is refused
 	// as a duplicate, so it would never reload them.
@@ -373,7 +374,6 @@ func (h *AgentGatewayHandler) create(ctx *fasthttp.RequestCtx) {
 		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent created in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "agent.created", "agent", view.Name, view.Name, nil, auditAgentRegistration(&view))
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, view)
 }
@@ -443,6 +443,7 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 		h.registrationMutationError(ctx, err)
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent.updated", "agent", view.Name, view.Name, auditAgentRegistration(&previous), auditAgentRegistration(&view))
 	refreshErr := h.refreshAgent(workCtx, view.Name, false)
 	// The keys are reloaded even when the agent's own refresh failed: a retry reads the registration
 	// already written, which no longer names a key this update dropped.
@@ -452,7 +453,6 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent updated in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "agent.updated", "agent", view.Name, view.Name, auditAgentRegistration(&previous), auditAgentRegistration(&view))
 	SendJSON(ctx, view)
 }
 
@@ -499,6 +499,7 @@ func (h *AgentGatewayHandler) delete(ctx *fasthttp.RequestCtx) {
 		h.managementError(ctx, saveErr)
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent.deleted", "agent", name, name, auditAgentRegistration(&previous), nil)
 	refreshErr := h.refreshAgent(workCtx, name, true)
 	// The keys are reloaded even when the agent's own refresh failed: a retried delete finds no
 	// registration, so it would never reach the keys the agent was granted to.
@@ -508,7 +509,6 @@ func (h *AgentGatewayHandler) delete(ctx *fasthttp.RequestCtx) {
 		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent deleted in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "agent.deleted", "agent", name, name, auditAgentRegistration(&previous), nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 

@@ -287,6 +287,10 @@ function ComboboxList({
 						aria-label={t("combobox.clearSearch")}
 						data-testid="combobox-search-clear"
 						className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
+						onKeyDown={(e) => {
+							// cmdk's root cancels Enter and selects the highlighted row, so keep the key on this button.
+							if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+						}}
 						onClick={() => {
 							setInputValue("");
 							inputRef.current?.focus();
