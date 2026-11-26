@@ -3424,6 +3424,10 @@ func TestStripUnsupportedFieldsFromRawBody_PerMessageOutputConfig(t *testing.T) 
 			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"system","content":[{"type":"text","text":"reminder"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
 		{name: "anthropic opus 5.5 keeps per-message effort", provider: schemas.Anthropic, model: "claude-opus-5-5", body: claudeCodeBody("claude-opus-5-5"), wantKept: true},
 		{name: "anthropic opus 5.5 keeps effort-only system message", provider: schemas.Anthropic, model: "claude-opus-5-5", body: effortOnlyBody("claude-opus-5-5"), wantKept: true},
+		{name: "anthropic haiku 5.5 keeps per-message effort", provider: schemas.Anthropic, model: "claude-haiku-5-5", body: claudeCodeBody("claude-haiku-5-5"), wantKept: true},
+		{name: "anthropic haiku 5.5 keeps effort-only system message", provider: schemas.Anthropic, model: "claude-haiku-5-5", body: effortOnlyBody("claude-haiku-5-5"), wantKept: true},
+		{name: "bedrock haiku 5.5 still strips", provider: schemas.Bedrock, model: "claude-haiku-5-5", body: effortOnlyBody("claude-haiku-5-5"),
+			wantMessages: `[{"role":"user","content":[{"type":"text","text":"hi"}]},{"role":"assistant","content":[{"type":"text","text":"ok"}]},{"role":"user","content":[{"type":"text","text":"go on"}]}]`},
 	}
 
 	for _, tt := range tests {
@@ -3595,6 +3599,22 @@ func TestStripUnsupportedFieldsFromRawBody_ToolChangeBlocks(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// BenchmarkDefaultSupportsMidConversationOutputConfig measures the per-request capability
+// gate on the request path: one call per Anthropic request, no allocation, independent of
+// body size. Haiku 5.5 is the case this PR moves from fail-soft (strip) to supported.
+func BenchmarkDefaultSupportsMidConversationOutputConfig(b *testing.B) {
+	for _, model := range []string{"claude-haiku-5-5", "claude-haiku-4-5", "claude-opus-5-5"} {
+		b.Run(model, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, model) {
+					continue
+				}
+			}
+		})
 	}
 }
 

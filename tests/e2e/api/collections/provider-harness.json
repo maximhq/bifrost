@@ -185373,6 +185373,76 @@
           }
         },
         {
+          "name": "anthropic/claude-haiku-5-5 /v1/responses per-message effort on a leading (hoisted) system item survives as an effort-only message - per-message-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// A system item carrying text AND output_config.effort can only go out natively at a valid",
+                  "// placement. On the hoist/inline fallbacks the override is re-emitted as an effort-only",
+                  "// system message, which Anthropic exempts from placement rules (PR #8018 review).",
+                  "pm.test('anthropic claude-haiku-5-5 leading system item hoisted: accepted (200 with text)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var out = Array.isArray(body.output) ? body.output : [];",
+                  "  var hasText = out.some(function (o) { return Array.isArray(o.content) && o.content.some(function (c) { return c.text; }); });",
+                  "  pm.expect(hasText, 'expected output text: ' + txt.slice(0, 300)).to.be.true;",
+                  "});",
+                  "pm.test('anthropic claude-haiku-5-5 leading system item hoisted: effort-only override reaches the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var sys = msgs.filter(function (m) { return m && m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'want exactly one effort-only system message: ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(sys[0].output_config && sys[0].output_config.effort, 'override lost: ' + JSON.stringify(sys[0])).to.eql('low');",
+                  "  pm.expect(Array.isArray(sys[0].content) && sys[0].content.length, 'effort-only message must carry an empty content array: ' + JSON.stringify(sys[0])).to.eql(0);",
+                  "  pm.expect(JSON.stringify(rr.system || ''), 'leading system text not hoisted: ' + wire.slice(0, 600)).to.include('Answer in lowercase.');",
+                  "  pm.expect(msgs[0] && msgs[0].role, 'effort-only override must be the first message: ' + wire.slice(0, 600)).to.eql('system');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{anthropicKey}}"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-5-5\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Answer in lowercase.\",\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
           "name": "anthropic/claude-opus-5-5 /v1/responses per-message effort on a placement-rejected (inlined) system item survives as an effort-only message - per-message-effort",
           "event": [
             {
