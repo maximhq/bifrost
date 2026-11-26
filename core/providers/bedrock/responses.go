@@ -5215,59 +5215,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			// Document content
 			role := convertBedrockRoleToBifrostRole(msg.Role)
 
-			// Convert document to file block
-			fileBlock := schemas.ResponsesMessageContentBlock{
-				Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
-				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
-			}
-
-			// Set filename from document name
-			if block.Document.Name != "" {
-				fileBlock.ResponsesInputMessageContentBlockFile.Filename = &block.Document.Name
-			}
-
-			fileType := "application/pdf"
-			// Set file type based on format
-			if block.Document.Format != "" {
-				switch block.Document.Format {
-				case "pdf":
-					fileType = "application/pdf"
-				case "txt":
-					fileType = "text/plain"
-				case "md":
-					fileType = "text/markdown"
-				case "html":
-					fileType = "text/html"
-				case "csv":
-					fileType = "text/csv"
-				case "doc":
-					fileType = "application/msword"
-				case "docx":
-					fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-				case "xls":
-					fileType = "application/vnd.ms-excel"
-				case "xlsx":
-					fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-				default:
-					fileType = "application/pdf" // Default to PDF
-				}
-				fileBlock.ResponsesInputMessageContentBlockFile.FileType = &fileType
-			}
-
-			// Convert document source data
-			if block.Document.Source != nil {
-				if block.Document.Source.Text != nil {
-					// Plain text content
-					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Text
-				} else if block.Document.Source.Bytes != nil {
-					// Base64 encoded bytes (PDF)
-					fileDataURL := *block.Document.Source.Bytes
-					if !strings.HasPrefix(fileDataURL, "data:") {
-						fileDataURL = fmt.Sprintf("data:%s;base64,%s", fileType, fileDataURL)
-					}
-					fileBlock.ResponsesInputMessageContentBlockFile.FileData = &fileDataURL
-				}
-			}
+			fileBlock := bedrockDocumentToFileBlock(block.Document)
 
 			bifrostMsg := schemas.ResponsesMessage{
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
@@ -5320,14 +5268,20 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			}
 
 			// A tool_reference comes only from the InvokeModel ingress, whose UnmarshalJSON yields
-			// just text, image, tool_use and tool_reference inside a tool_result, so these output
-			// blocks hold everything that can be decoded. The envelope above is no fallback here: it
-			// drops the json:"-" reference and only the Converse egress decodes it. If that ingress
-			// learns document or search_result, map them here as well.
+			// just text, image, document, tool_use and tool_reference inside a tool_result, so these
+			// output blocks hold everything that can be decoded. The envelope above is no fallback
+			// here: it drops the json:"-" reference and only the Converse egress decodes it. If that
+			// ingress learns search_result, map it here as well. A document is carried too, because
+			// flattening the result to its first text would send the model a result without it.
+			// An envelope stays authoritative: output blocks cannot carry its searchResult or video.
 			var outputBlocks []schemas.ResponsesMessageContentBlock
-			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool { return c.AnthropicToolReference != nil }) {
+			if !hasUnrepresentableBlock && slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool {
+				return c.AnthropicToolReference != nil || c.Document != nil
+			}) {
 				for _, c := range block.ToolResult.Content {
-					if c.AnthropicToolReference != nil {
+					if c.Document != nil {
+						outputBlocks = append(outputBlocks, bedrockDocumentToFileBlock(c.Document))
+					} else if c.AnthropicToolReference != nil {
 						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
 							Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
 							ToolName: c.AnthropicToolReference,
@@ -5336,6 +5290,11 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
 							Type: schemas.ResponsesInputMessageContentBlockTypeText,
 							Text: c.Text,
+						})
+					} else if c.JSON != nil {
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr(string(c.JSON)),
 						})
 					} else if c.Image != nil && c.Image.Source.Bytes != nil {
 						dataURL := bedrockImageDataURL(c.Image.Format, *c.Image.Source.Bytes)
@@ -5910,4 +5869,65 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 	}
 
 	return blocks, nil
+}
+
+// bedrockDocumentToFileBlock converts a Converse document block into the neutral file content
+// block. It is shared by top-level documents and documents nested in a tool_result.
+func bedrockDocumentToFileBlock(doc *BedrockDocumentSource) schemas.ResponsesMessageContentBlock {
+	fileBlock := schemas.ResponsesMessageContentBlock{
+		Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+		ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
+	}
+
+	// Set filename from document name
+	if doc.Name != "" {
+		fileBlock.ResponsesInputMessageContentBlockFile.Filename = &doc.Name
+	}
+
+	fileType := "application/pdf"
+	// Set file type based on format
+	if doc.Format != "" {
+		switch doc.Format {
+		case "pdf":
+			fileType = "application/pdf"
+		case "txt":
+			fileType = "text/plain"
+		case "md":
+			fileType = "text/markdown"
+		case "html":
+			fileType = "text/html"
+		case "csv":
+			fileType = "text/csv"
+		case "doc":
+			fileType = "application/msword"
+		case "docx":
+			fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		case "xls":
+			fileType = "application/vnd.ms-excel"
+		case "xlsx":
+			fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		default:
+			fileType = "application/pdf" // Default to PDF
+		}
+		fileBlock.ResponsesInputMessageContentBlockFile.FileType = &fileType
+	}
+
+	// Convert document source data
+	if doc.Source != nil {
+		if doc.Source.URL != nil {
+			// An Anthropic url source from the invoke ingress; the Converse egress fetches it.
+			fileBlock.ResponsesInputMessageContentBlockFile.FileURL = doc.Source.URL
+		} else if doc.Source.Text != nil {
+			// Plain text content
+			fileBlock.ResponsesInputMessageContentBlockFile.FileData = doc.Source.Text
+		} else if doc.Source.Bytes != nil {
+			// Base64 encoded bytes (PDF)
+			fileDataURL := *doc.Source.Bytes
+			if !strings.HasPrefix(fileDataURL, "data:") {
+				fileDataURL = fmt.Sprintf("data:%s;base64,%s", fileType, fileDataURL)
+			}
+			fileBlock.ResponsesInputMessageContentBlockFile.FileData = &fileDataURL
+		}
+	}
+	return fileBlock
 }

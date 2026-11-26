@@ -107,12 +107,15 @@ func (r *BedrockInvokeRequest) UnmarshalJSON(data []byte) error {
 					var contentStr string
 					if err := sonic.Unmarshal(rm.Content, &contentStr); err == nil {
 						msg.Content = []BedrockContentBlock{{Text: &contentStr}}
-					} else {
-						// Fall back to standard content blocks
+					} else if len(rm.Content) > 0 {
+						// Fall back to standard content blocks. A block that fails to
+						// decode is the caller's error: dropping it here sent the message
+						// upstream with its content silently gone.
 						var blocks []BedrockContentBlock
-						if err := sonic.Unmarshal(rm.Content, &blocks); err == nil {
-							msg.Content = blocks
+						if err := sonic.Unmarshal(rm.Content, &blocks); err != nil {
+							return fmt.Errorf("invalid message content: %w", err)
 						}
+						msg.Content = blocks
 					}
 					r.Messages = append(r.Messages, msg)
 				}
@@ -165,9 +168,12 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 	aux := &struct {
 		Type   *string `json:"type,omitempty"`
 		Source *struct {
+			Type      string `json:"type,omitempty"`
 			MediaType string `json:"media_type,omitempty"`
 			Data      string `json:"data,omitempty"`
+			URL       string `json:"url,omitempty"`
 		} `json:"source,omitempty"`
+		Title     *string         `json:"title,omitempty"`
 		ID        *string         `json:"id,omitempty"`
 		Name      *string         `json:"name,omitempty"`
 		Input     json.RawMessage `json:"input,omitempty"`
@@ -210,6 +216,20 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 			Format: format,
 			Source: BedrockImageSourceData{Bytes: &imgData},
 		}
+	case "document":
+		sourceType, mediaType, data, sourceURL := "", "", "", ""
+		if aux.Source != nil {
+			sourceType, mediaType, data, sourceURL = aux.Source.Type, aux.Source.MediaType, aux.Source.Data, aux.Source.URL
+		}
+		title := ""
+		if aux.Title != nil {
+			title = *aux.Title
+		}
+		document, err := anthropicDocumentToBedrock(sourceType, mediaType, data, sourceURL, title)
+		if err != nil {
+			return err
+		}
+		b.Document = document
 	case "tool_use":
 		if aux.ID == nil || aux.Name == nil {
 			return nil
@@ -281,6 +301,64 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// anthropicDocumentToBedrock maps an Anthropic-native document block's source onto a
+// Converse DocumentBlock. The base64 and text sources are inlined here. A url source is
+// carried on the block and fetched by the Converse egress (materializeBedrockDocument),
+// because the decoder has no request context and must not do I/O; that is the same
+// fetch-and-inline every other Bedrock file_url already gets. Any other source, or a
+// malformed one, is an error so the caller gets a 4xx rather than a request that reaches
+// the model without the document. The title becomes the document name; naming rules and
+// uniqueness are applied when the block is egressed. Errors never echo the URL: a
+// pre-signed URL's query is a bearer credential.
+func anthropicDocumentToBedrock(sourceType, mediaType, data, sourceURL, title string) (*BedrockDocumentSource, error) {
+	var format string
+	source := &BedrockDocumentSourceData{}
+	switch sourceType {
+	case "base64":
+		if data == "" {
+			return nil, fmt.Errorf("document block with a base64 source requires source.data")
+		}
+		var ok bool
+		if format, _, ok = bedrockDocumentFormat(mediaType); !ok {
+			return nil, fmt.Errorf("unsupported document media_type %q for a base64 source", mediaType)
+		}
+		source.Bytes = &data
+	case "text":
+		if data == "" {
+			return nil, fmt.Errorf("document block with a text source requires source.data")
+		}
+		format = "txt"
+		encoded := base64.StdEncoding.EncodeToString([]byte(data))
+		source.Bytes = &encoded
+	case "url":
+		if sourceURL == "" {
+			return nil, fmt.Errorf("document block with a url source requires source.url")
+		}
+		// Gate on the scheme before the egress fetches, as the other FetchAndEncodeURL
+		// callers do, so an unusable scheme is a 4xx naming the scheme rather than a
+		// low-level fetch failure.
+		parsed, err := url.Parse(sourceURL)
+		if err != nil {
+			return nil, fmt.Errorf("document block has an invalid source.url")
+		}
+		switch strings.ToLower(parsed.Scheme) {
+		case "http", "https":
+		default:
+			return nil, fmt.Errorf("unsupported document url scheme %q: only http and https are supported", parsed.Scheme)
+		}
+		if parsed.Hostname() == "" {
+			return nil, fmt.Errorf("document url has no host")
+		}
+		// The extension is only a fallback hint for a server that answers octet-stream;
+		// a recognised Content-Type from the fetch still wins.
+		format, _ = bedrockDocumentFormatFromPath(sourceURL)
+		source.URL = &sourceURL
+	default:
+		return nil, fmt.Errorf("unsupported document source type %q on the Bedrock invoke route: only base64, text and url sources are supported", sourceType)
+	}
+	return &BedrockDocumentSource{Format: format, Name: title, Source: source}, nil
 }
 
 // normalizeAnthropicToolResultContent decodes an Anthropic-native tool_result's

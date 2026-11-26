@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
 	"mime"
@@ -108,9 +109,16 @@ func applyInlinedSource(body []byte, ref urlSourceRef, mediaType, encoded string
 	return body, nil
 }
 
-// collectURLSourceRefs walks messages[].content[] and returns every url-typed source.
-// Content that is a plain string (the shorthand form) carries no sources and is skipped.
+// collectURLSourceRefs walks messages[].content[], and the content[] of each tool_result
+// in it, and returns every url-typed source. Content that is a plain string (the shorthand
+// form) carries no sources and is skipped.
 func collectURLSourceRefs(body []byte) []urlSourceRef {
+	// Every url source holds the JSON string "url" (its type and its key), unless a
+	// letter of it is written as a \uXXXX escape, which gjson decodes. A body with
+	// neither has nothing to collect and skips the walk.
+	if !bytes.Contains(body, []byte(`"url"`)) && !bytes.Contains(body, []byte(`\u`)) {
+		return nil
+	}
 	messages := gjson.GetBytes(body, "messages")
 	if !messages.IsArray() {
 		return nil
@@ -123,24 +131,42 @@ func collectURLSourceRefs(body []byte) []urlSourceRef {
 			return true
 		}
 		content.ForEach(func(blockIdx, block gjson.Result) bool {
-			source := block.Get("source")
-			if !source.Exists() || source.Get("type").String() != "url" {
+			if ref, ok := urlSourceRefOf(block); ok {
+				ref.path = fmt.Sprintf("messages.%d.content.%d.source", msgIdx.Int(), blockIdx.Int())
+				refs = append(refs, ref)
+			}
+			if block.Get("type").String() != "tool_result" {
 				return true
 			}
-			resourceURL := source.Get("url").String()
-			if resourceURL == "" {
+			nested := block.Get("content")
+			if !nested.IsArray() {
 				return true
 			}
-			refs = append(refs, urlSourceRef{
-				path:      fmt.Sprintf("messages.%d.content.%d.source", msgIdx.Int(), blockIdx.Int()),
-				url:       resourceURL,
-				blockType: block.Get("type").String(),
+			nested.ForEach(func(nestedIdx, nestedBlock gjson.Result) bool {
+				if ref, ok := urlSourceRefOf(nestedBlock); ok {
+					ref.path = fmt.Sprintf("messages.%d.content.%d.content.%d.source", msgIdx.Int(), blockIdx.Int(), nestedIdx.Int())
+					refs = append(refs, ref)
+				}
+				return true
 			})
 			return true
 		})
 		return true
 	})
 	return refs
+}
+
+// urlSourceRefOf returns the url source of one content block, without its path.
+func urlSourceRefOf(block gjson.Result) (urlSourceRef, bool) {
+	source := block.Get("source")
+	if !source.Exists() || source.Get("type").String() != "url" {
+		return urlSourceRef{}, false
+	}
+	resourceURL := source.Get("url").String()
+	if resourceURL == "" {
+		return urlSourceRef{}, false
+	}
+	return urlSourceRef{url: resourceURL, blockType: block.Get("type").String()}, true
 }
 
 // buildInlineSource renders the replacement source object. Anthropic carries text
