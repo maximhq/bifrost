@@ -604,6 +604,21 @@ provider-harness command. A change that also alters what a provider receives or 
 on a request the cache does not answer takes a provider-harness case as well, and the
 hand-over includes its provider-harness command too.
 
+**Routing issues** take routing harness cases instead of provider-harness cases: anything
+about routing rules, model routers or the complexity router, the model catalog and key
+aliases, a model named without a provider, virtual key routing and governance load
+balancing, key selection, key pins or direct keys, session affinity, fallbacks and retries,
+or `routing_info` and the routing log. Plan the cases from
+`.claude/skills/routing-harness/SKILL.md` section 3 for the kind of change (every scope,
+config, fallback source and entry point it reaches, not only the one the issue names), add
+them to `tests/e2e/api/runners/build-routing-wiring.mjs` or
+`build-model-catalog-wiring.mjs`, extending the generator in the same change when it has
+no step for a case, regenerate the collections, and run the Go tests and
+`node tests/e2e/api/collections/collection-scripts.test.mjs`. The live runs are paid, so
+hand the user those runs (skill section 5) instead of the provider-harness command, and the
+provider-harness command as well when the fix also changes what a provider receives or
+returns, or touches an existing routing folder there.
+
 ## Step 6: Present Findings
 
 Present everything to the user in this structured format:
