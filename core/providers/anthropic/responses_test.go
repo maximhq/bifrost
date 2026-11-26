@@ -12,6 +12,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 func TestWebSearchStreamQueryVariants(t *testing.T) {
@@ -729,6 +730,49 @@ func TestContextManagement_ClearToolUsesKeepsClearAtLeast(t *testing.T) {
 			}
 			if !strings.Contains(string(body), want) {
 				t.Errorf("outgoing context_management = %s, want it to contain %s", body, want)
+			}
+		})
+	}
+}
+
+// TestContextManagement_ClearAtLeastInHostEgressBody pins clear_at_least in the
+// request body each host sends. Vertex, Azure and Bedrock InvokeModel reuse the
+// Anthropic types, so the field must survive BuildAnthropicChatRequestBody for
+// all of them, not only for direct Anthropic.
+func TestContextManagement_ClearAtLeastInHostEgressBody(t *testing.T) {
+	const cm = `{"edits":[{"type":"clear_tool_uses_20250919","trigger":{"type":"input_tokens","value":15000},"keep":{"type":"tool_uses","value":2},"clear_at_least":{"type":"input_tokens","value":35000}}]}`
+
+	hosts := []struct {
+		provider schemas.ModelProvider
+		model    string
+	}{
+		{schemas.Anthropic, ""},
+		{schemas.Vertex, "claude-sonnet-4-5@20250929"},
+		{schemas.Azure, "claude-sonnet-4-5"},
+		{schemas.Bedrock, "anthropic.claude-sonnet-4-5-20250929-v1:0"},
+	}
+
+	for _, host := range hosts {
+		t.Run(string(host.provider), func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Provider: host.provider,
+				Model:    "claude-sonnet-4-5",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params:   &schemas.ChatParameters{ContextManagement: []byte(cm)},
+			}
+			body, bifrostErr := BuildAnthropicChatRequestBody(schemas.NewBifrostContext(nil, time.Time{}), req, AnthropicRequestBuildConfig{
+				Provider: host.provider,
+				Model:    host.model,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("build body: %v", bifrostErr.Error)
+			}
+			edit := gjson.GetBytes(body, "context_management.edits.0")
+			if got := edit.Get("type").String(); got != "clear_tool_uses_20250919" {
+				t.Fatalf("edit type = %q, want clear_tool_uses_20250919; body = %s", got, body)
+			}
+			if got := edit.Get("clear_at_least").Raw; got != `{"type":"input_tokens","value":35000}` {
+				t.Errorf("clear_at_least = %s, want {\"type\":\"input_tokens\",\"value\":35000}; body = %s", got, body)
 			}
 		})
 	}
