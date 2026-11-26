@@ -4085,3 +4085,37 @@ func TestInvokeRequest_NestedDocumentURLIsFetchedByTheNativeInvokeBuilder(t *tes
 		})
 	}
 }
+
+// BenchmarkInvokeIngressDocuments measures the InvokeModel ingress (decode, Converse
+// shape, neutral Responses request) for requests with and without document blocks.
+func BenchmarkInvokeIngressDocuments(b *testing.B) {
+	bodies := []struct{ name, body string }{
+		{"text only", `{"max_tokens":256,"messages":[{"role":"user","content":[{"type":"text","text":"What is the secret word?"}]}]}`},
+		{"tool_result text only", `{"max_tokens":256,"messages":[` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"ok"}]}]}]}`},
+		{"document", `{"max_tokens":256,"messages":[{"role":"user","content":[{"type":"text","text":"What is the secret word?"},` +
+			`{"type":"document","title":"Notes","source":{"type":"text","media_type":"text/plain","data":"The secret word is PINEAPPLE."}}]}]}`},
+		{"tool_result with document", `{"max_tokens":256,"messages":[` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"ok"},` +
+			`{"type":"document","title":"Notes","source":{"type":"text","media_type":"text/plain","data":"The secret word is PINEAPPLE."}}]}]}]}`},
+	}
+	for _, bc := range bodies {
+		body := []byte(bc.body)
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				var req BedrockInvokeRequest
+				if err := sonic.Unmarshal(body, &req); err != nil {
+					b.Fatal(err)
+				}
+				req.ModelID = "us.anthropic.claude-sonnet-5-5"
+				if _, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

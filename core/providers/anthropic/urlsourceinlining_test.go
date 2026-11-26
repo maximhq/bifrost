@@ -283,3 +283,26 @@ func TestInlineURLContentSourcesForwardsUnfetchableSchemes(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkCollectURLSourceRefs(b *testing.B) {
+	bodies := []struct{ name, body string }{
+		{"no url sources with tool_result", `{"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"Read the report."}]},` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"ok"}]}]}]}`},
+		{"nested url source", `{"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"Read the report."}]},` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[` +
+			`{"type":"document","source":{"type":"url","url":"https://x.invalid/a.pdf"}}]}]}]}`},
+	}
+	for _, bc := range bodies {
+		body := []byte(bc.body)
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = collectURLSourceRefs(body)
+			}
+		})
+	}
+}
