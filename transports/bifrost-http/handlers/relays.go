@@ -253,10 +253,22 @@ func (h *RelaysHandler) update(ctx *fasthttp.RequestCtx) {
 	if requireGenuineAuthForRelayChange(ctx, previous, &cfg) {
 		return
 	}
+	// Removing a route prunes it from grants (deleting a grant left naming none), so the keys
+	// holding grants are read first and reloaded after.
+	var granted []string
+	if routesRemoved(previous.Routes, cfg.Routes) {
+		if granted, err = h.manager.GrantedVirtualKeyIDs(workCtx, name); err != nil {
+			h.storeError(ctx, err)
+			return
+		}
+	}
 	updated, err := h.relayManager.UpdateRelay(workCtx, name, &cfg)
 	if err != nil {
 		h.storeError(ctx, err)
 		return
+	}
+	if len(granted) > 0 && routesRemoved(previous.Routes, updated.Routes) {
+		h.reloadGrantedVirtualKeys(workCtx, granted)
 	}
 	lib.RecordAuditChange(ctx, "relay.updated", "relay", name, name, endpointView(previous), endpointView(updated))
 	SendJSON(ctx, h.view(updated))
@@ -282,8 +294,21 @@ func (h *RelaysHandler) delete(ctx *fasthttp.RequestCtx) {
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
+// routesRemoved reports whether some route of prev has no route in next with its ID or, for a
+// route not yet given one, with its method, path and headers.
+func routesRemoved(prev, next []schemas.RelayRouteConfig) bool {
+	assigned := slices.Clone(next)
+	schemas.AssignRelayRouteIDs(prev, assigned)
+	for _, route := range prev {
+		if !slices.ContainsFunc(assigned, func(r schemas.RelayRouteConfig) bool { return r.ID == route.ID }) {
+			return true
+		}
+	}
+	return false
+}
+
 // reloadGrantedVirtualKeys refreshes the in-memory copy of each key whose grant a delete took
-// away, as the Agent Gateway handler does after an agent grant change. A failed reload is
+// away or a route removal pruned, as the Agent Gateway handler does after an agent grant change. A failed reload is
 // logged; the key is refreshed on its next reload.
 func (h *RelaysHandler) reloadGrantedVirtualKeys(ctx context.Context, ids []string) {
 	if h.vkReloader == nil {
@@ -294,7 +319,7 @@ func (h *RelaysHandler) reloadGrantedVirtualKeys(ctx context.Context, ids []stri
 			continue
 		}
 		if _, err := h.vkReloader.ReloadVirtualKey(ctx, id); err != nil {
-			logger.Error("failed to reload virtual key %s after relay delete: %v", id, err)
+			logger.Error("failed to reload virtual key %s after relay change: %v", id, err)
 		}
 	}
 }

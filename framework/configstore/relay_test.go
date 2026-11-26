@@ -214,3 +214,76 @@ func routePaths(routes []schemas.RelayRouteConfig) []string {
 	}
 	return out
 }
+
+// TestRelayGrantRoutes checks route-level virtual-key grants: an omitted list is every route, a
+// list must name routes of its relay, and a relay edit that removes routes prunes them from grants,
+// deleting a grant left naming none.
+func TestRelayGrantRoutes(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	cfg := testRelay("tavily")
+	cfg.Routes = append(cfg.Routes, schemas.RelayRouteConfig{Method: "POST", Path: "/extract"}, schemas.RelayRouteConfig{Method: "GET", Path: "/usage"})
+	require.NoError(t, store.CreateRelay(ctx, cfg, ""))
+	search, extract, usage := cfg.Routes[0].ID, cfg.Routes[1].ID, cfg.Routes[2].ID
+	for _, id := range []string{"vk-all", "vk-two", "vk-one"} {
+		require.NoError(t, store.CreateVirtualKey(ctx, &tables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar("v-" + id), IsActive: schemas.Ptr(true)}))
+	}
+	grant := func(vk string, routes schemas.WhiteList) error {
+		return store.ReplaceVirtualKeyRelayGrants(ctx, vk, []tables.TableVirtualKeyRelayGrant{{RelayName: "tavily", Routes: routes}})
+	}
+	require.NoError(t, grant("vk-all", nil))
+	require.NoError(t, grant("vk-two", schemas.WhiteList{search, extract}))
+	require.NoError(t, grant("vk-one", schemas.WhiteList{usage}))
+
+	assert.ErrorIs(t, grant("vk-one", schemas.WhiteList{}), ErrInvalidRelayGrant, "an empty list grants nothing")
+	assert.ErrorIs(t, grant("vk-one", schemas.WhiteList{"99999999-9999-4999-8999-999999999999"}), ErrInvalidRelayGrant, "a route the relay does not have")
+	assert.ErrorIs(t, grant("vk-one", schemas.WhiteList{"*", search}), ErrInvalidRelayGrant, "the wildcard stands alone")
+	assert.ErrorIs(t, grant("vk-one", schemas.WhiteList{"/search"}), ErrInvalidRelayGrant, "routes are named by ID")
+
+	routesOf := func(vk string) schemas.WhiteList {
+		var rows []tables.TableVirtualKeyRelayGrant
+		require.NoError(t, store.DB().Where("virtual_key_id = ?", vk).Find(&rows).Error)
+		if len(rows) == 0 {
+			return nil
+		}
+		return rows[0].Routes
+	}
+	assert.Equal(t, schemas.WhiteList{"*"}, routesOf("vk-all"), "an omitted list is stored as every route")
+	assert.Equal(t, schemas.WhiteList{usage}, routesOf("vk-one"), "a refused replacement leaves the grant as it was")
+	require.NoError(t, grant("vk-one", nil))
+	assert.Equal(t, schemas.WhiteList{usage}, routesOf("vk-one"), "resending a grant without routes keeps the routes it has")
+
+	// Drop /extract and /usage.
+	edit := testRelay("tavily")
+	edit.Routes = []schemas.RelayRouteConfig{{ID: search, Method: "POST", Path: "/search"}}
+	require.NoError(t, store.UpdateRelay(ctx, edit, ""))
+	assert.Equal(t, schemas.WhiteList{"*"}, routesOf("vk-all"), "an all-routes grant is untouched")
+	assert.Equal(t, schemas.WhiteList{search}, routesOf("vk-two"), "a removed route leaves the grant")
+	assert.Nil(t, routesOf("vk-one"), "a grant left naming no route is deleted")
+}
+
+// TestMigrationAddRelayGrantRoutesColumn checks grants made before routes existed become
+// all-routes grants, so no key loses access.
+func TestMigrationAddRelayGrantRoutesColumn(t *testing.T) {
+	ctx := context.Background()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE governance_virtual_key_relay_grants (virtual_key_id varchar(255), relay_name varchar(64), created_at datetime, PRIMARY KEY (virtual_key_id, relay_name))").Error)
+	require.NoError(t, db.Exec("INSERT INTO governance_virtual_key_relay_grants (virtual_key_id, relay_name, created_at) VALUES ('vk-1', 'tavily', ?)", time.Now()).Error)
+
+	require.NoError(t, migrationAddRelayGrantRoutesColumn(ctx, db, testMigrationLogger))
+
+	var routes string
+	require.NoError(t, db.Table("governance_virtual_key_relay_grants").Where("virtual_key_id = ?", "vk-1").Pluck("routes", &routes).Error)
+	assert.JSONEq(t, `["*"]`, routes)
+}
+
+// TestRelayGrantHashKeepsAllRoutesHashes checks an all-routes grant hashes as its relay name
+// alone, the form grants had before routes, so existing config.json keys do not resync.
+func TestRelayGrantHashKeepsAllRoutesHashes(t *testing.T) {
+	const b, a = "bbbbbbbb-0000-4000-8000-000000000002", "aaaaaaaa-0000-4000-8000-000000000001"
+	entries := RelayGrantHashEntries([]tables.TableVirtualKeyRelayGrant{
+		{RelayName: "tavily"}, {RelayName: "exa", Routes: schemas.WhiteList{"*"}}, {RelayName: "textract", Routes: schemas.WhiteList{b, a}},
+	})
+	assert.Equal(t, []string{"exa", "tavily", "textract=" + a + "|" + b}, entries)
+}

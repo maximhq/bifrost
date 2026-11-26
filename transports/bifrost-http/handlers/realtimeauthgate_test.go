@@ -174,7 +174,7 @@ func (usableTestPermit) ProviderPermits() []schemas.ProviderPermit { return nil 
 func (usableTestPermit) MCPPermits() []schemas.MCPPermit           { return nil }
 func (usableTestPermit) AgentPermits() []string                    { return nil }
 func (usableTestPermit) AllowsAllProviders() bool                  { return true }
-func (usableTestPermit) RelayPermits() []string                    { return nil }
+func (usableTestPermit) RelayPermits() []schemas.RelayPermit       { return nil }
 func (usableTestPermit) Level() int                                { return 0 }
 
 // newResolvedVirtualKeyContext is a context whose presented virtual key resolved to usable

@@ -970,7 +970,14 @@
 			"label": "中继访问",
 			"tooltip": "允许此密钥调用位于 <strong>/relay/&lt;name&gt;/...</strong> 的中继。每次调用的费用都会计入该密钥的预算。未授予任何中继时，该密钥不能调用任何中继。",
 			"selectRelay": "选择要添加的中继",
-			"remove": "移除 {{name}}"
+			"remove": "移除 {{name}}",
+			"allRoutes": "所有路由",
+			"allRoutesDescription": "此中继的所有路由，包括不匹配任何路由的调用",
+			"selectRoutes": "选择路由",
+			"allRoutesAllowed": "允许所有路由",
+			"noRoutesSelected": "未选择路由",
+			"deletedRoute": "已删除的路由",
+			"noRoutesError": "请为 {{name}} 至少选择一个路由，或将其移除"
 		}
 	},
 	"mcpLogs": {

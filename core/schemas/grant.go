@@ -1,5 +1,7 @@
 package schemas
 
+import "slices"
+
 // What a request has been granted: who it is made by, what it may reach, and what pays for it.
 //
 // Every request carries one Grant, reached through its context. It is an envelope of sections that
@@ -120,8 +122,8 @@ type Permit interface {
 	// AgentPermits is every Agent Gateway registration the permit allows.
 	AgentPermits() []string
 
-	// RelayPermits is every relay the permit allows by name.
-	RelayPermits() []string
+	// RelayPermits is every relay the permit allows, with the routes it allows on each.
+	RelayPermits() []RelayPermit
 
 	// AllowsAllProviders reports whether the permit grants every provider, including ones it holds no
 	// provider permit for. It coexists with ProviderPermits: a provider the permit lists still has
@@ -184,8 +186,9 @@ type Access interface {
 	// IsAgentAllowed reports whether the request may call the named Agent Gateway registration.
 	IsAgentAllowed(agentName string) bool
 
-	// IsRelayAllowed reports whether the request may call the named relay.
-	IsRelayAllowed(endpointName string) bool
+	// IsRelayAllowed reports whether the request may call routeID on the named relay. An empty
+	// routeID is a call no route matched (skip_route_check), which only an all-routes grant allows.
+	IsRelayAllowed(endpointName string, routeID string) bool
 
 	// PermitsForModel returns the permits the request answers to for model on provider: every one
 	// of the caller's permits that permits the pair, then every capping level permit that permits
@@ -233,8 +236,8 @@ type Access interface {
 	DeniedPermitsForModel(provider string, model string) []Permit
 	// DeniedPermitsForAgent is DeniedPermitsForModel for an Agent Gateway registration.
 	DeniedPermitsForAgent(agentName string) []Permit
-	// DeniedPermitsForRelay is DeniedPermitsForModel for a relay.
-	DeniedPermitsForRelay(endpointName string) []Permit
+	// DeniedPermitsForRelay is DeniedPermitsForModel for a relay route.
+	DeniedPermitsForRelay(endpointName string, routeID string) []Permit
 	// DeniedPermitsForMCPTool is DeniedPermitsForModel for an MCP tool pattern.
 	DeniedPermitsForMCPTool(toolPattern string) []Permit
 }
@@ -278,6 +281,21 @@ type MCPPermit struct {
 	ClientName string    // client name, as used in "<client>-<tool>" tool patterns
 	Tools      WhiteList // ["*"] allows every tool of the client; empty allows none. Matched
 	//                       against the tool's own name, after the "<client>-" prefix is trimmed.
+}
+
+// RelayPermit is permission to call routes of one relay.
+type RelayPermit struct {
+	Relay  string    // relay name
+	Routes WhiteList // ["*"] allows every route, and calls no route matched; otherwise only the
+	//                  listed route IDs
+}
+
+// AllowsRoute reports whether the permit allows routeID; an empty routeID needs every route.
+func (r RelayPermit) AllowsRoute(routeID string) bool {
+	if r.Routes.IsUnrestricted() {
+		return true
+	}
+	return routeID != "" && slices.Contains(r.Routes, routeID)
 }
 
 // ProviderCandidate is one way a request could be served: a provider, with the weight and keys it

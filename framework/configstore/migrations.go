@@ -616,6 +616,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_relay_routes_table"}, run: migrationAddRelayRoutesTable},
+	{IDs: []string{"add_relay_grant_routes_column"}, run: migrationAddRelayGrantRoutesColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1467,6 +1468,35 @@ func migrationAddRelayRoutesTable(ctx context.Context, db *gorm.DB, logger schem
 			return tx.Migrator().DropTable(&tables.TableRelayRoute{})
 		},
 	})
+}
+
+// migrationAddRelayGrantRoutesColumn adds the routes column to virtual-key relay grants and sets
+// every existing grant to ["*"], so a key granted a relay keeps every route of it.
+func migrationAddRelayGrantRoutesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_relay_grant_routes_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKeyRelayGrant{}, "routes"); err != nil {
+				return fmt.Errorf("add routes column: %w", err)
+			}
+			return backfillAllRoutes(tx, tables.TableVirtualKeyRelayGrant{}.TableName())
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableVirtualKeyRelayGrant{}, "routes")
+		},
+	})
+}
+
+// backfillAllRoutes sets every relay grant in table with no route list to every route.
+func backfillAllRoutes(tx *gorm.DB, table string) error {
+	if err := tx.Exec(fmt.Sprintf(`UPDATE %s SET routes = ? WHERE routes IS NULL OR routes = '' OR routes = 'null'`, table), `["*"]`).Error; err != nil {
+		return fmt.Errorf("backfill %s routes: %w", table, err)
+	}
+	return nil
 }
 
 // migrationAddAnthropicWorkloadIdentityColumn adds the anthropic_workload_identity_json column to

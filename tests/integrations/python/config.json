@@ -1866,6 +1866,9 @@
           },
           {
             "relay_name": "harness-relay-jobs"
+          },
+          {
+            "relay_name": "harness-relay-routes"
           }
         ]
       },
@@ -1877,6 +1880,20 @@
         "relay_grants": [
           {
             "relay_name": "harness-relay-alpha"
+          }
+        ]
+      },
+      {
+        "name": "Harness relay key granted one route of harness-relay-routes",
+        "id": "vk-harness-relay-route",
+        "value": "sk-bf-harness-relay-route",
+        "is_active": true,
+        "relay_grants": [
+          {
+            "relay_name": "harness-relay-routes",
+            "routes": [
+              "5e1a7c00-0000-4000-8000-00000000a11d"
+            ]
           }
         ]
       },
@@ -2080,6 +2097,30 @@
         "cost_per_request": 0.003
       },
       "skip_route_check": true
+    },
+    {
+      "name": "harness-relay-routes",
+      "description": "Harness relay (relays-e2e): pinned route IDs and skip_route_check, granted per route to vk-harness-relay-route",
+      "base_url": "http://127.0.0.1:8783",
+      "auth": {
+        "type": "none"
+      },
+      "usage": {
+        "cost_per_request": 0.001
+      },
+      "skip_route_check": true,
+      "routes": [
+        {
+          "id": "5e1a7c00-0000-4000-8000-00000000a11d",
+          "method": "POST",
+          "path": "/v1/allowed"
+        },
+        {
+          "id": "5e1a7c00-0000-4000-8000-00000000de1d",
+          "method": "POST",
+          "path": "/v1/denied"
+        }
+      ]
     },
     {
       "name": "harness-relay-forced",

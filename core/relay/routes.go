@@ -257,6 +257,50 @@ func tidyPath(requestPath string) string {
 	return b.String()
 }
 
+// pathVariants are the forms of a request path an upstream may serve as the same resource: tidied
+// slashes, ;params dropped from each segment, and lower case.
+func pathVariants(requestPath string) []string {
+	stripped := stripSegmentParams(requestPath)
+	out := []string{tidyPath(requestPath), stripped, tidyPath(stripped)}
+	for _, v := range slices.Clone(out) {
+		out = append(out, strings.ToLower(v))
+	}
+	out = append(out, strings.ToLower(requestPath))
+	return out
+}
+
+// stripSegmentParams drops the ;params from every segment of a path (/a;x/b becomes /a/b).
+func stripSegmentParams(requestPath string) string {
+	if !strings.Contains(requestPath, ";") {
+		return requestPath
+	}
+	segments := strings.Split(requestPath, "/")
+	for i, segment := range segments {
+		if at := strings.IndexByte(segment, ';'); at >= 0 {
+			segments[i] = segment[:at]
+		}
+	}
+	return strings.Join(segments, "/")
+}
+
+// shadowRouteIDs returns the routes, other than matched, that a variant of the path matches. They
+// change nothing about routing; access checks them so a grant on a broad route cannot reach a
+// narrower route through /admin/, /admin;x or /Admin.
+func (e *endpoint) shadowRouteIDs(method, requestPath string, headers map[string]string, matched *compiledRoute) []string {
+	var out []string
+	for _, variant := range pathVariants(requestPath) {
+		if variant == requestPath {
+			continue
+		}
+		alt := e.matchRoute(method, variant, headers)
+		if alt == nil || alt.id == "" || alt == matched || slices.Contains(out, alt.id) {
+			continue
+		}
+		out = append(out, alt.id)
+	}
+	return out
+}
+
 // hasDotSegment reports a "." or ".." segment in a request path, with or without ;params.
 func hasDotSegment(requestPath string) bool {
 	for segment := range strings.SplitSeq(strings.TrimPrefix(requestPath, "/"), "/") {

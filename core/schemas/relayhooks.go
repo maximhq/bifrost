@@ -14,6 +14,13 @@ type BifrostRelayRequest struct {
 	RoutePath  string            // the matched route's path glob, "" when none matched
 	RouteIndex int               // index into routes[], -1 when none matched
 	RouteID    string            // the matched route's stable ID, "" when none matched
+	// ShadowRouteIDs are the routes a variant of the path would match instead (a trailing or doubled
+	// slash, ;params, letter case), which an upstream may serve as the same resource. A grant
+	// limited to some routes must cover these too, so a broad route cannot reach a narrower one.
+	ShadowRouteIDs []string
+	// JobRouteIDs, on a caller's status check for a job Bifrost started, are the IDs of the routes
+	// that start that job, so access to the start route covers checking on it.
+	JobRouteIDs []string
 	// RouteHeaders holds, by lower-cased name, the value of each header the matched route matches
 	// on: the one that selected the route (the relay's own extra header when it sets one, else the
 	// caller's). A value the relay reads from a secret is already redacted. The logging plugin keeps

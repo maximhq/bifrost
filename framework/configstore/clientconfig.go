@@ -1698,12 +1698,7 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	// Hash relay grants only when the key declares them, so every key that predates
 	// relays keeps its hash. Grant names are sorted so file order cannot move it.
 	if vk.RelayGrants != nil {
-		names := make([]string, 0, len(vk.RelayGrants))
-		for _, g := range vk.RelayGrants {
-			names = append(names, g.RelayName)
-		}
-		sort.Strings(names)
-		hash.Write([]byte("relayGrants:" + strings.Join(names, ",")))
+		hash.Write([]byte("relayGrants:" + strings.Join(RelayGrantHashEntries(vk.RelayGrants), ",")))
 	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
@@ -2759,6 +2754,25 @@ func GenerateAgentRegistrationHash(r *schemas.AgentRegistration) (string, error)
 	hashAgentUpstreamAuth(hash, "discovery_auth", r.DiscoveryAuth)
 	hashAgentUpstreamAuth(hash, "runtime_auth", r.RuntimeAuth)
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// RelayGrantHashEntries renders relay grants for a config hash, sorted. An all-routes grant is its
+// relay name alone, the form grants had before routes, so existing hashes do not move; a grant
+// naming routes adds them, sorted.
+func RelayGrantHashEntries[G tables.RelayGrant](grants []G) []string {
+	entries := make([]string, 0, len(grants))
+	for _, g := range grants {
+		routes := tables.RelayGrantRoutes(g.GetRoutes())
+		if routes.IsUnrestricted() {
+			entries = append(entries, g.GetRelayName())
+			continue
+		}
+		ids := slices.Clone([]string(routes))
+		sort.Strings(ids)
+		entries = append(entries, g.GetRelayName()+"="+strings.Join(ids, "|"))
+	}
+	sort.Strings(entries)
+	return entries
 }
 
 // GenerateRelayHash generates a SHA256 hash of a relay as config.json declares it, the way

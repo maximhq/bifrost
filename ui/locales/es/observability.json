@@ -975,7 +975,14 @@
 			"label": "Acceso a relays",
 			"tooltip": "Permite que esta clave llame a relays en <strong>/relay/&lt;name&gt;/...</strong>. El costo de cada llamada se carga a los presupuestos de la clave. Sin ningún relay concedido, la clave no puede llamar a ninguno.",
 			"selectRelay": "Selecciona un relay para agregar",
-			"remove": "Quitar {{name}}"
+			"remove": "Quitar {{name}}",
+			"allRoutes": "Todas las rutas",
+			"allRoutesDescription": "Todas las rutas de este relay, incluidas las llamadas que no coinciden con ninguna ruta",
+			"selectRoutes": "Seleccionar rutas",
+			"allRoutesAllowed": "Todas las rutas permitidas",
+			"noRoutesSelected": "Ninguna ruta seleccionada",
+			"deletedRoute": "Ruta eliminada",
+			"noRoutesError": "Selecciona al menos una ruta para {{name}} o elimínalo"
 		}
 	},
 	"mcpLogs": {

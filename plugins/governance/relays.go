@@ -31,14 +31,14 @@ func (p *GovernancePlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schema
 		return req, &schemas.RelayPluginShortCircuit{Error: bifrostErr}, nil
 	}
 	access := ctx.Grant().Access()
-	if access != nil && !access.IsRelayAllowed(req.RelayName) {
+	if access != nil && !relayCallAllowed(access, req) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{
 			IsBifrostError: true,
 			Type:           bifrost.Ptr(string(DecisionRelayBlocked)),
 			StatusCode:     bifrost.Ptr(403),
 			Error: &schemas.ErrorField{
-				Message: denialReason(fmt.Sprintf("Relay '%s' is not allowed", req.RelayName), access.DeniedPermitsForRelay(req.RelayName)),
+				Message: denialReason(relayDenialMessage(req), access.DeniedPermitsForRelay(req.RelayName, req.RouteID)),
 			},
 			// Classified as the access denial it is (error headers, spans and metrics read it), as
 			// the other governance refusals carry their decision.
@@ -122,4 +122,31 @@ func (p *GovernancePlugin) ReportRelayUsage(ctx context.Context, report jobaccou
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// relayCallAllowed reports whether access allows this relay call: its matched route along with
+// every route a variant of its path would match, or for a status check on a job Bifrost started,
+// the route that started the job.
+func relayCallAllowed(access schemas.Access, req *schemas.BifrostRelayRequest) bool {
+	allowed := access.IsRelayAllowed(req.RelayName, req.RouteID)
+	for _, routeID := range req.ShadowRouteIDs {
+		allowed = allowed && access.IsRelayAllowed(req.RelayName, routeID)
+	}
+	if allowed {
+		return true
+	}
+	for _, routeID := range req.JobRouteIDs {
+		if access.IsRelayAllowed(req.RelayName, routeID) {
+			return true
+		}
+	}
+	return false
+}
+
+// relayDenialMessage names what was refused: the route when one matched, else the relay.
+func relayDenialMessage(req *schemas.BifrostRelayRequest) string {
+	if req.RoutePath != "" {
+		return fmt.Sprintf("Relay '%s' is not allowed for route %s %s", req.RelayName, req.Method, req.RoutePath)
+	}
+	return fmt.Sprintf("Relay '%s' is not allowed", req.RelayName)
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"gorm.io/gorm"
@@ -275,16 +276,77 @@ func (t *TableRelay) AfterFind(*gorm.DB) error {
 	return nil
 }
 
-// TableVirtualKeyRelayGrant lets a virtual key call one relay; a key with no rows
-// can call none. The composite primary key makes a grant
-// idempotent, and both foreign keys cascade so deleting either side leaves no dangling grant.
+// TableVirtualKeyRelayGrant lets a virtual key call routes of one relay; a key with no rows
+// can call none. Routes follows WhiteList semantics with route IDs: ["*"] allows every route
+// (and calls no route matched), a list allows only those routes. The composite primary key makes
+// a grant idempotent, and both foreign keys cascade so deleting either side leaves no dangling grant.
 type TableVirtualKeyRelayGrant struct {
-	VirtualKeyID string    `gorm:"primaryKey;type:varchar(255);not null" json:"virtual_key_id"`
-	RelayName    string    `gorm:"primaryKey;type:varchar(64);not null;index" json:"relay_name"`
-	CreatedAt    time.Time `gorm:"not null" json:"created_at"`
+	VirtualKeyID string            `gorm:"primaryKey;type:varchar(255);not null" json:"virtual_key_id"`
+	RelayName    string            `gorm:"primaryKey;type:varchar(64);not null;index" json:"relay_name"`
+	Routes       schemas.WhiteList `gorm:"type:text;serializer:json" json:"routes"`
+	CreatedAt    time.Time         `gorm:"not null" json:"created_at"`
 
 	// Endpoint exists to declare the cascade constraint and is never serialized.
 	Endpoint *TableRelay `gorm:"foreignKey:RelayName;references:Name;constraint:OnDelete:CASCADE" json:"-"`
+}
+
+// BeforeSave stores an unset route list as every route, the meaning a grant had before routes.
+func (g *TableVirtualKeyRelayGrant) BeforeSave(*gorm.DB) error {
+	g.Routes = RelayGrantRoutes(g.Routes)
+	return ValidateRelayGrantRoutes(g.Routes)
+}
+
+// GetRelayName implements RelayGrant.
+func (g TableVirtualKeyRelayGrant) GetRelayName() string { return g.RelayName }
+
+// GetRoutes implements RelayGrant.
+func (g TableVirtualKeyRelayGrant) GetRoutes() schemas.WhiteList { return g.Routes }
+
+// RelayGrant is one holder's grant on one relay, whatever table holds it.
+type RelayGrant interface {
+	GetRelayName() string
+	GetRoutes() schemas.WhiteList
+}
+
+// RelayGrantRoutes is a grant's route list with nil read as every route: grants written before
+// routes existed, and requests or config files that omit them, mean the whole relay.
+func RelayGrantRoutes(routes schemas.WhiteList) schemas.WhiteList {
+	if routes == nil {
+		return schemas.WhiteList{"*"}
+	}
+	return routes
+}
+
+// ValidateRelayGrantRoutes refuses a route list that grants nothing or names something other
+// than "*" or route IDs. Whether each ID belongs to the relay is checked against the store.
+func ValidateRelayGrantRoutes(routes schemas.WhiteList) error {
+	if routes == nil {
+		return nil
+	}
+	if len(routes) == 0 {
+		return fmt.Errorf("routes must name at least one route, or [\"*\"] for every route")
+	}
+	if err := routes.Validate(); err != nil {
+		return fmt.Errorf("routes: %w", err)
+	}
+	if routes.IsUnrestricted() {
+		return nil
+	}
+	for _, id := range routes {
+		if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id {
+			return fmt.Errorf("routes: %q is not a route ID", id)
+		}
+	}
+	return nil
+}
+
+// RelayGrantPermits turns a holder's relay grants into permits, each with its routes.
+func RelayGrantPermits[G RelayGrant](grants []G) []schemas.RelayPermit {
+	out := make([]schemas.RelayPermit, 0, len(grants))
+	for _, g := range grants {
+		out = append(out, schemas.RelayPermit{Relay: g.GetRelayName(), Routes: RelayGrantRoutes(g.GetRoutes())})
+	}
+	return out
 }
 
 // TableName namespaces the grant under governance, since it is an authorization record.

@@ -1753,28 +1753,28 @@ func assertPermitsAre(t *testing.T, got []schemas.Permit, want ...schemas.Permit
 }
 
 func TestIsRelayAllowed(t *testing.T) {
-	named := NewPermit(PermitVirtualKey, "vk-1", "named", true, false, nil, nil, WithRelayPermits([]string{"tavily"}))
+	named := NewPermit(PermitVirtualKey, "vk-1", "named", true, false, nil, nil, WithRelayPermits(allRoutes("tavily")))
 	// Relays have no allow-all on any holder, as agents have none: a wide permit names every relay.
-	all := NewPermit(PermitAccessProfile, "ap-2", "all", true, false, nil, nil, WithRelayPermits([]string{"tavily", "textract"}))
+	all := NewPermit(PermitAccessProfile, "ap-2", "all", true, false, nil, nil, WithRelayPermits(allRoutes("tavily", "textract")))
 	none := NewPermit(PermitVirtualKey, "vk-3", "none", true, false, nil, nil)
 
 	access := NewAccess(held(named), "", nil, "", nil)
-	if !access.IsRelayAllowed("tavily") || access.IsRelayAllowed("textract") {
+	if !access.IsRelayAllowed("tavily", "") || access.IsRelayAllowed("textract", "") {
 		t.Fatalf("a named grant allows exactly that endpoint")
 	}
-	if denied := access.DeniedPermitsForRelay("textract"); len(denied) != 1 || denied[0] != named {
+	if denied := access.DeniedPermitsForRelay("textract", ""); len(denied) != 1 || denied[0] != named {
 		t.Fatalf("the refusal names the permit that denied it, got %v", denied)
 	}
-	if !NewAccess(held(all), "", nil, "", nil).IsRelayAllowed("textract") {
+	if !NewAccess(held(all), "", nil, "", nil).IsRelayAllowed("textract", "") {
 		t.Fatalf("a permit naming the endpoint grants it")
 	}
-	if NewAccess(held(none), "", nil, "", nil).IsRelayAllowed("tavily") {
+	if NewAccess(held(none), "", nil, "", nil).IsRelayAllowed("tavily", "") {
 		t.Fatalf("no grant denies by default")
 	}
-	if NewAccess(held(all), "", none, Intersect, nil).IsRelayAllowed("tavily") {
+	if NewAccess(held(all), "", none, Intersect, nil).IsRelayAllowed("tavily", "") {
 		t.Fatalf("an intersecting scope without the endpoint denies it")
 	}
-	if !NewAccess(held(none), "", named, Union, nil).IsRelayAllowed("tavily") {
+	if !NewAccess(held(none), "", named, Union, nil).IsRelayAllowed("tavily", "") {
 		t.Fatalf("a union scope with the endpoint allows it")
 	}
 }
@@ -2259,9 +2259,9 @@ func TestAccessLevels_MCPTools(t *testing.T) {
 // Relays are capped; agents are decided by the granting level alone.
 func TestAccessLevels_AgentsAndRelays(t *testing.T) {
 	caller := NewPermit(PermitAccessProfile, "ap1", "Member", true, false, nil, nil,
-		WithAgentPermits([]string{"agent-a", "agent-b"}), WithRelayPermits([]string{"relay-a", "relay-b"}))
+		WithAgentPermits([]string{"agent-a", "agent-b"}), WithRelayPermits(allRoutes("relay-a", "relay-b")))
 	team := atLevel(NewPermit(PermitTeamAccessProfile, "t1", "Team", true, false, nil, nil,
-		WithAgentPermits([]string{"agent-a"}), WithRelayPermits([]string{"relay-b"})), 1)
+		WithAgentPermits([]string{"agent-a"}), WithRelayPermits(allRoutes("relay-b"))), 1)
 
 	access := NewAccess(held(caller, team), Intersect, nil, "", nil)
 
@@ -2269,9 +2269,9 @@ func TestAccessLevels_AgentsAndRelays(t *testing.T) {
 	assert.True(t, access.IsAgentAllowed("agent-b"), "the team does not vote on agents")
 	assert.False(t, access.IsAgentAllowed("agent-c"))
 	assertPermitsAre(t, access.DeniedPermitsForAgent("agent-c"), caller)
-	assert.False(t, access.IsRelayAllowed("relay-a"))
-	assert.True(t, access.IsRelayAllowed("relay-b"))
-	assertPermitsAre(t, access.DeniedPermitsForRelay("relay-a"), team)
+	assert.False(t, access.IsRelayAllowed("relay-a", ""))
+	assert.True(t, access.IsRelayAllowed("relay-b", ""))
+	assertPermitsAre(t, access.DeniedPermitsForRelay("relay-a", ""), team)
 }
 
 func TestAccessLevels_ComposeWithAScope(t *testing.T) {
@@ -2339,7 +2339,7 @@ func (m matrixPermit) build(kind PermitType, level int, id string) *Permit {
 	return NewPermit(kind, id, id, true, false,
 		[]schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{model}, KeyIDs: m.keys}},
 		[]schemas.MCPPermit{{Client: "github-id", ClientName: "github", Tools: []string{tool}}},
-		WithAgentPermits([]string{agent}), WithRelayPermits([]string{relay}), WithLevel(level))
+		WithAgentPermits([]string{agent}), WithRelayPermits(allRoutes(relay)), WithLevel(level))
 }
 
 // matrixLevelKinds is the permit kind at each matrix level.
@@ -2584,7 +2584,7 @@ func TestAccessLevelsMatrix(t *testing.T) {
 			// Every capped dimension answers to the same rule; agents answer to the granting level.
 			assert.Equal(t, want, access.IsModelAllowed("openai", "gpt-4o"), "model")
 			assert.Equal(t, c.oracleAgent(), access.IsAgentAllowed("agent-a"), "agent")
-			assert.Equal(t, want, access.IsRelayAllowed("relay-a"), "relay")
+			assert.Equal(t, want, access.IsRelayAllowed("relay-a", ""), "relay")
 			assert.Equal(t, want, access.IsMCPToolAllowed("github-read_file"), "tool")
 			assert.Equal(t, want, slices.Contains(access.MCPToolIncludeList(), "github-read_file"), "tool include list")
 
@@ -2702,4 +2702,39 @@ func permitIDs(permits []schemas.Permit) []string {
 		ids = append(ids, p.ID())
 	}
 	return ids
+}
+
+// allRoutes grants every route of each named relay.
+func allRoutes(names ...string) []schemas.RelayPermit {
+	out := make([]schemas.RelayPermit, len(names))
+	for i, name := range names {
+		out[i] = schemas.RelayPermit{Relay: name, Routes: schemas.WhiteList{"*"}}
+	}
+	return out
+}
+
+// TestIsRelayAllowedPerRoute covers route-level relay grants: an all-routes grant allows every route
+// and calls no route matched, a route list allows only those routes, and the first grant for a
+// relay decides it.
+func TestIsRelayAllowedPerRoute(t *testing.T) {
+	const search, extract = "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"
+	held := func(p schemas.Permit) []schemas.Permit { return []schemas.Permit{p} }
+	every := NewPermit(PermitVirtualKey, "vk-1", "every", true, false, nil, nil, WithRelayPermits(allRoutes("tavily")))
+	some := NewPermit(PermitVirtualKey, "vk-2", "some", true, false, nil, nil,
+		WithRelayPermits([]schemas.RelayPermit{{Relay: "tavily", Routes: schemas.WhiteList{search}}, {Relay: "tavily", Routes: schemas.WhiteList{"*"}}}))
+
+	everyAccess := NewAccess(held(every), "", nil, "", nil)
+	assert.True(t, everyAccess.IsRelayAllowed("tavily", search))
+	assert.True(t, everyAccess.IsRelayAllowed("tavily", extract))
+	assert.True(t, everyAccess.IsRelayAllowed("tavily", ""), "all routes covers a call no route matched")
+
+	someAccess := NewAccess(held(some), "", nil, "", nil)
+	assert.True(t, someAccess.IsRelayAllowed("tavily", search))
+	assert.False(t, someAccess.IsRelayAllowed("tavily", extract), "the first grant for the relay decides; a later one cannot widen it")
+	assert.False(t, someAccess.IsRelayAllowed("tavily", ""), "a route list never covers an unmatched call")
+	assertPermitsAre(t, someAccess.DeniedPermitsForRelay("tavily", extract), some)
+
+	// A scoping permit naming routes narrows an all-routes caller under intersection.
+	assert.False(t, NewAccess(held(every), "", some, Intersect, nil).IsRelayAllowed("tavily", extract))
+	assert.True(t, NewAccess(held(every), "", some, Intersect, nil).IsRelayAllowed("tavily", search))
 }

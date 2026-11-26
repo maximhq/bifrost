@@ -6371,6 +6371,16 @@
         "relay_name": {
           "type": "string",
           "description": "Name of a relay this key may call"
+        },
+        "routes": {
+          "type": "array",
+          "description": "Routes of the relay this grant allows: [\"*\"] (the default when omitted) for every route, including calls no route matches, or route IDs for only those routes.",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(\\*|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$"
+          }
         }
       },
       "required": [

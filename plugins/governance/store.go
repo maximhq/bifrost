@@ -1580,10 +1580,7 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *con
 		agentPermits = append(agentPermits, agentGrant.AgentName)
 	}
 
-	endpointPermits := make([]string, 0, len(vk.RelayGrants))
-	for _, endpointGrant := range vk.RelayGrants {
-		endpointPermits = append(endpointPermits, endpointGrant.RelayName)
-	}
+	endpointPermits := configstoreTables.RelayGrantPermits(vk.RelayGrants)
 	return grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, vk.IsActiveValue(), vk.IsExpiredAt(time.Now().UTC()), providerPermits, mcpPermits,
 		grant.WithAgentPermits(agentPermits), grant.WithAllowAllProviders(vk.AllowAllProviders),
 		grant.WithRelayPermits(endpointPermits))

@@ -6173,8 +6173,8 @@ func updateGovernanceConfigInStore(
 		// The relays the file could grant, loaded once on first use: declared grants are checked
 		// against them, so a typo in one key's relay_grants is skipped with a warning rather than
 		// failing the sync.
-		var storedRelayNames map[string]bool
-		relayNamesForGrants := func() (map[string]bool, error) {
+		var storedRelayNames map[string][]string
+		relayNamesForGrants := func() (map[string][]string, error) {
 			if storedRelayNames != nil {
 				return storedRelayNames, nil
 			}
@@ -6182,9 +6182,13 @@ func updateGovernanceConfigInStore(
 			if err != nil {
 				return nil, err
 			}
-			storedRelayNames = make(map[string]bool, len(relays))
+			storedRelayNames = make(map[string][]string, len(relays))
 			for _, r := range relays {
-				storedRelayNames[r.Name] = true
+				routeIDs := make([]string, 0, len(r.Routes))
+				for _, route := range r.Routes {
+					routeIDs = append(routeIDs, route.ID)
+				}
+				storedRelayNames[r.Name] = routeIDs
 			}
 			return storedRelayNames, nil
 		}
@@ -6229,8 +6233,8 @@ func updateGovernanceConfigInStore(
 				if err != nil {
 					return fmt.Errorf("failed to list relays for virtual key relay grants: %w", err)
 				}
-				if names := grantableRelayNames(relayGrantNames(relayGrants), stored, virtualKey.ID, virtualKey.Name); len(names) > 0 {
-					if err := config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, virtualKey.ID, names, tx); err != nil {
+				if grants := grantableRelayGrants(relayGrants, stored, virtualKey.ID, virtualKey.Name); len(grants) > 0 {
+					if err := config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, virtualKey.ID, grants, tx); err != nil {
 						return fmt.Errorf("failed to create relay grants for virtual key %s: %w", virtualKey.ID, err)
 					}
 				}
@@ -6307,15 +6311,15 @@ func updateGovernanceConfigInStore(
 			// declaration as a whole, as its provider and MCP configs do: the grants it lists replace the
 			// stored ones, and a key that lists none is left with none.
 			if !governed.skipKeyLimits(virtualKey.ID) {
-				names := []string{}
+				grants := []configstoreTables.TableVirtualKeyRelayGrant{}
 				if len(virtualKey.RelayGrants) > 0 {
 					stored, err := relayNamesForGrants()
 					if err != nil {
 						return fmt.Errorf("failed to list relays for virtual key relay grants: %w", err)
 					}
-					names = grantableRelayNames(relayGrantNames(virtualKey.RelayGrants), stored, virtualKey.ID, virtualKey.Name)
+					grants = grantableRelayGrants(virtualKey.RelayGrants, stored, virtualKey.ID, virtualKey.Name)
 				}
-				if err := config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, virtualKey.ID, names, tx); err != nil {
+				if err := config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, virtualKey.ID, grants, tx); err != nil {
 					return fmt.Errorf("failed to update relay grants for virtual key %s: %w", virtualKey.ID, err)
 				}
 			}
@@ -12038,35 +12042,48 @@ func (c *Config) GetA2APrivateAllowlist() []string {
 	return slices.Clone(c.ClientConfig.A2APrivateAllowlist)
 }
 
-// grantableRelayNames returns the relay names a key's relay_grants in config.json can grant: each
-// name once, and only names with a stored relay. A repeated name is dropped silently; a name no
-// relay carries (a typo, or a declaration loadRelaysConfig skipped as invalid) is dropped with a
-// warning, as other unresolvable references on a key are, so one bad grant never fails the whole
-// governance sync. The store rejects both, and the sync treats a store error as fatal.
-func grantableRelayNames(names []string, stored map[string]bool, vkID, vkName string) []string {
-	out := make([]string, 0, len(names))
-	seen := make(map[string]bool, len(names))
-	for _, name := range names {
-		if seen[name] {
+// grantableRelayGrants returns the grants a key's relay_grants in config.json can make: each relay
+// once, only relays that are stored, and only route IDs that are routes of their relay. A repeated
+// relay is dropped silently; a relay no stored relay carries (a typo, or a declaration
+// loadRelaysConfig skipped as invalid), or a route ID it does not have, is dropped with a warning, as
+// other unresolvable references on a key are, so one bad grant never fails the whole governance
+// sync. A grant whose every route was dropped is skipped. The store rejects all of these, and the
+// sync treats a store error as fatal.
+func grantableRelayGrants(grants []configstoreTables.TableVirtualKeyRelayGrant, stored map[string][]string, vkID, vkName string) []configstoreTables.TableVirtualKeyRelayGrant {
+	out := make([]configstoreTables.TableVirtualKeyRelayGrant, 0, len(grants))
+	seen := make(map[string]bool, len(grants))
+	for _, g := range grants {
+		if seen[g.RelayName] {
 			continue
 		}
-		seen[name] = true
-		if !stored[name] {
-			logger.Warn("virtual key %s (%s): relay_grants names relay %q, which is not configured; skipping that grant", vkID, vkName, name)
+		seen[g.RelayName] = true
+		routeIDs, ok := stored[g.RelayName]
+		if !ok {
+			logger.Warn("virtual key %s (%s): relay_grants names relay %q, which is not configured; skipping that grant", vkID, vkName, g.RelayName)
 			continue
 		}
-		out = append(out, name)
+		routes := configstoreTables.RelayGrantRoutes(g.Routes)
+		if err := configstoreTables.ValidateRelayGrantRoutes(routes); err != nil {
+			logger.Warn("virtual key %s (%s): relay_grants for relay %q: %v; skipping that grant", vkID, vkName, g.RelayName, err)
+			continue
+		}
+		if !routes.IsUnrestricted() {
+			kept := make(schemas.WhiteList, 0, len(routes))
+			for _, id := range routes {
+				if slices.Contains(routeIDs, id) {
+					kept = append(kept, id)
+					continue
+				}
+				logger.Warn("virtual key %s (%s): relay_grants names route %q, which relay %q does not have; skipping that route", vkID, vkName, id, g.RelayName)
+			}
+			if len(kept) == 0 {
+				continue
+			}
+			routes = kept
+		}
+		out = append(out, configstoreTables.TableVirtualKeyRelayGrant{RelayName: g.RelayName, Routes: routes})
 	}
 	return out
-}
-
-// relayGrantNames returns the relay names a key's relay_grants declare, in file order.
-func relayGrantNames(grants []configstoreTables.TableVirtualKeyRelayGrant) []string {
-	names := make([]string, 0, len(grants))
-	for _, g := range grants {
-		names = append(names, g.RelayName)
-	}
-	return names
 }
 
 // grantableAgentNames returns the agent names a new key's agent_grants in config.json can grant:
