@@ -524,10 +524,10 @@ async function suiteAuth(ctx) {
 		{
 			id: "extra-headers",
 			auth: { type: "none" },
-			// As on a provider passthrough call: the operator's header is sent when the caller sends
-			// none (x-tenant), and the caller's own header replaces it (x-custom).
+			// The operator's header is sent whether the caller sends none (x-tenant) or its own (x-custom):
+			// a caller can never replace it.
 			extraHeaders: { "X-Custom": "operator", "X-Tenant": "acme" },
-			check: (h) => (h["x-custom"] === "caller" && h["x-tenant"] === "acme" ? null : `x-custom=${h["x-custom"]} x-tenant=${h["x-tenant"]}`),
+			check: (h) => (h["x-custom"] === "operator" && h["x-tenant"] === "acme" ? null : `x-custom=${h["x-custom"]} x-tenant=${h["x-tenant"]}`),
 		},
 	];
 	for (const v of variants) {
