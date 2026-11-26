@@ -204,8 +204,8 @@ const response = await client.chat.completions.create({
 
 // Route to Bedrock
 const bedrockResponse = await client.chat.completions.create({
-  model: formatProviderModel('bedrock', 'global.anthropic.claude-sonnet-4-20250514-v1:0'),
-  // Results in: "bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0"
+  model: formatProviderModel('bedrock', 'us.anthropic.claude-sonnet-4-6'),
+  // Results in: "bedrock/us.anthropic.claude-sonnet-4-6"
   messages: [{ role: 'user', content: 'Hello' }],
 })
 ```

@@ -248,10 +248,24 @@ describe("Typesafe SDK fidelity (#7599)", () => {
 // request natively (primary) or as a fallback, exercised through the SDK
 // (native endpoint) and the Bifrost-native /v1/decisions API (fallback).
 const LLM_DECISION_MODEL = "openai/gpt-4o-mini";
+// Decision emulation through a chat model is opt-in (compat convert_decision_to_responses).
+const EMULATION_COMPAT_HEADER = { "x-bf-compat": '["convert_decision_to_responses"]' };
 
 describe("Decision LLM emulation", () => {
+	let emulatingClient: TypeSafeClient;
+
+	beforeAll(() => {
+		const baseUrl = process.env.BIFROST_BASE_URL || "http://localhost:8080";
+		const vk = isVirtualKeyConfigured() ? getVirtualKey() : "";
+		emulatingClient = new TypeSafeClient({
+			baseURL: `${baseUrl}/typesafe`,
+			apiKey: vk || "dummy-key-bifrost-injects-the-real-one",
+			defaultHeaders: { ...EMULATION_COMPAT_HEADER, ...(vk ? { "x-bf-vk": vk } : {}) },
+		});
+	});
+
 	it("an LLM emulates the decision as the primary model", async () => {
-		const response = await client.systemOne({
+		const response = await emulatingClient.systemOne({
 			state: STATE,
 			model: LLM_DECISION_MODEL,
 			questions: {
@@ -273,7 +287,7 @@ describe("Decision LLM emulation", () => {
 	it("falls through to an LLM fallback when the primary fails", async () => {
 		// /v1/decisions is Bifrost's native format (no upstream SDK) - HTTP directly.
 		const baseUrl = process.env.BIFROST_BASE_URL || "http://localhost:8080";
-		const headers: Record<string, string> = { "Content-Type": "application/json" };
+		const headers: Record<string, string> = { "Content-Type": "application/json", ...EMULATION_COMPAT_HEADER };
 		if (isVirtualKeyConfigured()) headers["x-bf-vk"] = getVirtualKey();
 		const response = await fetch(`${baseUrl}/v1/decisions`, {
 			method: "POST",
@@ -302,8 +316,8 @@ describe("Decision LLM emulation", () => {
 			}),
 			urgency: score("Rate urgency", ["low", "medium", "high"]),
 		};
-		const native = await client.systemOne({ state: STATE, model: "jev-1.13.0", questions });
-		const emulated = await client.systemOne({ state: STATE, model: LLM_DECISION_MODEL, questions });
+		const native = await emulatingClient.systemOne({ state: STATE, model: "jev-1.13.0", questions });
+		const emulated = await emulatingClient.systemOne({ state: STATE, model: LLM_DECISION_MODEL, questions });
 
 		const read = (r: any, name: string) => {
 			const k = r.answers[name].type;
@@ -328,7 +342,7 @@ describe("Decision LLM emulation", () => {
 		// (object, string, null, and array shaped) carry meaning, so a correct
 		// pick on a clearly-billing state proves the rubrics reached the LLM
 		// rather than being dropped or rejected as non-string.
-		const response = await client.systemOne({
+		const response = await emulatingClient.systemOne({
 			state: STATE,
 			model: LLM_DECISION_MODEL,
 			questions: {
@@ -460,7 +474,7 @@ async function postRaw(
 	deadline: number,
 ): Promise<{ response: Response; latencyMs: number }> {
 	const baseUrl = process.env.BIFROST_BASE_URL || "http://localhost:8080";
-	const headers: Record<string, string> = { "Content-Type": "application/json" };
+	const headers: Record<string, string> = { "Content-Type": "application/json", ...EMULATION_COMPAT_HEADER };
 	if (isVirtualKeyConfigured()) headers["x-bf-vk"] = getVirtualKey();
 	const start = Date.now();
 	const response = await fetch(`${baseUrl}/v1/decisions`, {

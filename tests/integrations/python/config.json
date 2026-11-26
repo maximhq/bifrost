@@ -852,7 +852,7 @@
           "use_for_batch_api": false,
           "aliases": {
             "deepseek-v4-flash-anthropic": {
-              "model_id": "deepseek-v4-flash",
+              "model_id": "deepseek-flash",
               "use_anthropic_endpoints": true
             },
             "deepseek-v4-pro-anthropic": {
