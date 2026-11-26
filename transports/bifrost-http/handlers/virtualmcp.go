@@ -317,13 +317,13 @@ func (h *VirtualMCPHandler) deleteVirtualMCP(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+	lib.RecordAuditChange(ctx, "virtual_mcp.deleted", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, h.toResponse(def, nil), nil)
 	h.removeDefinition(ctx, id)
 	if err := reloadGrantingVirtualKeys(ctx, h.governanceManager, assigned); err != nil {
 		h.logger.Error("failed to reload the virtual keys assigned virtual MCP %d after delete: %v", id, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Virtual MCP deleted in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "virtual_mcp.deleted", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, h.toResponse(def, nil), nil)
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
@@ -363,12 +363,12 @@ func (h *VirtualMCPHandler) attachVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+	lib.RecordAuditChange(ctx, "virtual_mcp.virtual_key_attached", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, nil, map[string]any{"virtual_key_id": vkID, "virtual_key_name": vk.Name})
 	if err := h.refreshAttachment(ctx, vkID, id, true); err != nil {
 		h.logger.Error("failed to reload VK %s after attaching virtual MCP %d: %v", vkID, id, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Virtual MCP assignment attached in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "virtual_mcp.virtual_key_attached", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, nil, map[string]any{"virtual_key_id": vkID, "virtual_key_name": vk.Name})
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
@@ -399,12 +399,12 @@ func (h *VirtualMCPHandler) detachVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
+	lib.RecordAuditChange(ctx, "virtual_mcp.virtual_key_detached", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, map[string]any{"virtual_key_id": vkID, "virtual_key_name": vkName}, nil)
 	if err := h.refreshAttachment(ctx, vkID, id, false); err != nil {
 		h.logger.Error("failed to reload VK %s after detaching virtual MCP %d: %v", vkID, id, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Virtual MCP assignment detached in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "virtual_mcp.virtual_key_detached", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, map[string]any{"virtual_key_id": vkID, "virtual_key_name": vkName}, nil)
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
