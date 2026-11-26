@@ -39,9 +39,8 @@ func TestConnectConfiguredClients_ReportsEachClientAsItFinishes(t *testing.T) {
 		upstream.ServeHTTP(w, r)
 	}))
 	t.Cleanup(slow.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
-		bootClient("slow", slow.URL), bootClient("fast", fast.URL),
-	}}, nil, &MockLogger{}, nil)
+	account := newTestAccount(bootClient("slow", slow.URL), bootClient("fast", fast.URL))
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, account, nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	var mu sync.Mutex
@@ -62,7 +61,7 @@ func TestConnectConfiguredClients_FailedDialIsKeptAndRecovered(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{bootClient("down", ts.URL)}}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(bootClient("down", ts.URL)), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	m.ConnectConfiguredClients(context.Background(), nil)
@@ -101,7 +100,7 @@ func TestConnectConfiguredClients_ClientRemovedDuringTheDialStaysRemoved(t *test
 			close(release)
 		}
 	})
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{bootClient("removed", ts.URL)}}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(bootClient("removed", ts.URL)), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	dialDone := make(chan struct{})
@@ -114,6 +113,8 @@ func TestConnectConfiguredClients_ClientRemovedDuringTheDialStaysRemoved(t *test
 	case <-time.After(10 * time.Second):
 		t.Fatal("the boot dial never reached the upstream")
 	}
+	// An admin deletes the client: its record goes, then the manager's entry.
+	accountOf(m).remove("removed")
 	require.NoError(t, m.RemoveClient("removed"))
 	close(release)
 	select {

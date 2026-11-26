@@ -61,7 +61,7 @@ func catalogMatcher(catalog *modelcatalog.ModelCatalog, source *fakeProviderConf
 		if ok {
 			cfgPtr = &cfg
 		}
-		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, cfgPtr, schemas.WhiteList(allowed))
+		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, cfgPtr, nil, schemas.WhiteList(allowed))
 	}
 }
 
@@ -84,6 +84,16 @@ func permitWithModels(permitType PermitType, id, name, provider string, models .
 		Provider:      provider,
 		AllowedModels: models,
 		KeyIDs:        []string{"*"},
+	}}, nil)
+}
+
+// permitWithBlacklist builds a permit allowing the listed models of one provider and blocking others.
+func permitWithBlacklist(permitType PermitType, id, name, provider string, allowed []string, blocked ...string) *Permit {
+	return NewPermit(permitType, id, name, true, false, []schemas.ProviderPermit{{
+		Provider:          provider,
+		AllowedModels:     allowed,
+		BlacklistedModels: blocked,
+		KeyIDs:            []string{"*"},
 	}}, nil)
 }
 

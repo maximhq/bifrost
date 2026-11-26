@@ -1,3 +1,5 @@
+import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
+import WarpBifrostMCPNotice from "@/components/warp/warpBifrostMCPNotice";
 import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +14,7 @@ import { Switch } from "@/components/ui/switch";
 import { AutoSizeTextarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { formatWarpUsage } from "@/components/warp/warpStream.utils";
-import { getErrorMessage } from "@/lib/store";
+import { getErrorMessage, useGetCoreConfigQuery } from "@/lib/store";
 import { useGetProviderKeysQuery, useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import {
 	useCancelWarpBackfillMutation,
@@ -21,12 +23,18 @@ import {
 	useStartWarpBackfillMutation,
 	useUpdateWarpConfigMutation,
 } from "@/lib/store/apis/warpApi";
-import { WARP_MAX_TEMPERATURE, WARP_MIN_TEMPERATURE, WARP_REASONING_EFFORTS, type WarpConfigInput } from "@/lib/types/warp";
+import {
+	WARP_MAX_TEMPERATURE,
+	WARP_MIN_TEMPERATURE,
+	WARP_REASONING_EFFORTS,
+	type WarpConfigInput,
+	type WarpManagementWrite,
+} from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { AlertTriangle, ArrowRight, CheckCircle2, Database, Info, Loader2, Plus, Trash2, TriangleAlert } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle2, Database, Info, Loader2, Plus, Trash2, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
@@ -38,12 +46,14 @@ import {
 	validateWarpEmbedding,
 	validateWarpModelRows,
 	WARP_MAX_ADDITIONAL_MODELS,
+	warpManagementWritesChanged,
 	warpModelRowsChanged,
 	warpModelRowsFromConfig,
 	warpModelsPayload,
 	type WarpEmbeddingFields,
 	type WarpModelRow,
 } from "./warpConfig.utils";
+import WarpManagementToolsSection from "./warpManagementToolsSection";
 import WarpTopicsSection from "./warpTopicsSection";
 import {
 	isFiniteNumber,
@@ -87,6 +97,8 @@ interface WarpFormState {
 	enabled: boolean;
 	// The first row is the default; the rest are the additional models the panel may switch to.
 	models: WarpModelRow[];
+	// The virtual key Warp's calls present for a caller with no user identity; "" is none.
+	virtualKeyID: string;
 	maxIterations: number;
 	requestTimeoutSeconds: number;
 	historyRetentionDays: number;
@@ -106,11 +118,14 @@ interface WarpFormState {
 	threshold: number;
 	searchLimit: number;
 	discoveryMinRequests: number;
+	// Kinds of configuration change Warp may offer; empty is reads only.
+	managementWrites: WarpManagementWrite[];
 }
 
 const EMPTY_FORM: WarpFormState = {
 	enabled: false,
 	models: [{ id: "default", provider: "", model: "", apiKeyID: "" }],
+	virtualKeyID: "",
 	maxIterations: DEFAULT_MAX_ITERATIONS,
 	requestTimeoutSeconds: DEFAULT_TIMEOUT_SECONDS,
 	historyRetentionDays: DEFAULT_HISTORY_RETENTION_DAYS,
@@ -125,6 +140,7 @@ const EMPTY_FORM: WarpFormState = {
 	threshold: DEFAULT_SEARCH_THRESHOLD,
 	searchLimit: DEFAULT_SEARCH_LIMIT,
 	discoveryMinRequests: DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS,
+	managementWrites: [],
 };
 
 /**
@@ -151,6 +167,9 @@ export default function WarpView() {
 		refetch: refetchProviders,
 	} = useGetProvidersQuery();
 	const [updateWarpConfig, { isLoading: isSaving }] = useUpdateWarpConfigMutation();
+	// Read the way the prompt playground reads it: whether a key is needed at all.
+	const { data: coreConfig } = useGetCoreConfigQuery({});
+	const inferenceAuthEnforced = coreConfig?.client_config?.enforce_auth_on_inference ?? false;
 	const [startWarpBackfill, { isLoading: isStartingBackfill }] = useStartWarpBackfillMutation();
 	const [cancelWarpBackfill, { isLoading: isCancellingBackfill }] = useCancelWarpBackfillMutation();
 
@@ -337,6 +356,7 @@ export default function WarpView() {
 		setForm({
 			enabled: config.enabled,
 			models: warpModelRowsFromConfig(config),
+			virtualKeyID: config.virtual_key_id ?? "",
 			maxIterations: config.max_iterations || DEFAULT_MAX_ITERATIONS,
 			requestTimeoutSeconds: config.request_timeout_seconds || DEFAULT_TIMEOUT_SECONDS,
 			historyRetentionDays: config.history_retention_days || DEFAULT_HISTORY_RETENTION_DAYS,
@@ -355,6 +375,7 @@ export default function WarpView() {
 			threshold: config.semantic_search_threshold || DEFAULT_SEARCH_THRESHOLD,
 			searchLimit: config.semantic_search_limit || DEFAULT_SEARCH_LIMIT,
 			discoveryMinRequests: config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS,
+			managementWrites: config.management_writes ?? [],
 		});
 	}, [config]);
 
@@ -391,6 +412,7 @@ export default function WarpView() {
 		!!config &&
 		(form.enabled !== config.enabled ||
 			warpModelRowsChanged(form.models, config) ||
+			form.virtualKeyID !== (config.virtual_key_id ?? "") ||
 			// The same fallback hydration applied, or a config stored without these
 			// fields reads as dirty the moment it loads and Save lights up before
 			// anyone has touched anything.
@@ -409,7 +431,8 @@ export default function WarpView() {
 			form.namespace !== (config.log_vector_store_namespace || DEFAULT_VECTOR_NAMESPACE) ||
 			form.threshold !== (config.semantic_search_threshold || DEFAULT_SEARCH_THRESHOLD) ||
 			form.searchLimit !== (config.semantic_search_limit || DEFAULT_SEARCH_LIMIT) ||
-			form.discoveryMinRequests !== (config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS));
+			form.discoveryMinRequests !== (config.topic_discovery_min_requests || DEFAULT_TOPIC_DISCOVERY_MIN_REQUESTS) ||
+			warpManagementWritesChanged(form.managementWrites, config.management_writes));
 
 	// The server enforces the same rules; checking here only saves a round trip.
 	const defaultModel = form.models[0];
@@ -474,6 +497,7 @@ export default function WarpView() {
 		const payload: WarpConfigInput = {
 			enabled: form.enabled,
 			...warpModelsPayload(form.models),
+			virtual_key_id: form.virtualKeyID,
 			max_iterations: form.maxIterations,
 			request_timeout_seconds: form.requestTimeoutSeconds,
 			history_retention_days: form.historyRetentionDays,
@@ -491,6 +515,7 @@ export default function WarpView() {
 			semantic_search_threshold: form.threshold,
 			semantic_search_limit: form.searchLimit,
 			topic_discovery_min_requests: form.discoveryMinRequests,
+			management_writes: form.managementWrites,
 		};
 		try {
 			await updateWarpConfig(payload).unwrap();
@@ -546,6 +571,11 @@ export default function WarpView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
+			<WarpBifrostMCPNotice
+				bifrostMCPEnabled={!!config?.bifrost_mcp_enabled}
+				warpEnabled={!!config?.enabled}
+				bifrostMCPAvailable={!!config?.bifrost_mcp_available}
+			/>
 			<form onSubmit={onSubmit} className="space-y-4">
 				{/* i18n-ignore: product name */}
 				<PageTitle title="Warp">{t("warp.pageDescription")}</PageTitle>
@@ -667,6 +697,41 @@ export default function WarpView() {
 							</div>
 						</WarpSection>
 
+						<WarpSection title={t("warp.inferenceAccess")} description={t("warp.inferenceAccessHelp")}>
+							<WarpField label={t("warp.virtualKey")} htmlFor="warp-virtual-key" hint={t("warp.virtualKeyHint")}>
+								<div className="flex items-center gap-2" data-testid="warp-virtual-key-select">
+									<div className="min-w-0 flex-1">
+										<VirtualKeySelector
+											id="warp-virtual-key"
+											value={form.virtualKeyID}
+											onChange={(value) => update("virtualKeyID", value)}
+											fallbackOption={config?.virtual_key_id ? { value: config.virtual_key_id, label: config.virtual_key_id } : null}
+											disabled={!hasWarpUpdateAccess}
+											fullWidth
+										/>
+									</div>
+									{form.virtualKeyID && (
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon"
+											onClick={() => update("virtualKeyID", "")}
+											disabled={!hasWarpUpdateAccess}
+											aria-label={t("warp.virtualKeyClear")}
+											data-testid="warp-virtual-key-clear-btn"
+										>
+											<X className="size-4" />
+										</Button>
+									)}
+								</div>
+								{inferenceAuthEnforced && !form.virtualKeyID && (
+									<p className="text-muted-foreground text-xs" data-testid="warp-virtual-key-enforced-note">
+										{t("warp.virtualKeyEnforcedNote")}
+									</p>
+								)}
+							</WarpField>
+						</WarpSection>
+
 						<WarpSection title={t("warp.behaviorAndLimits")} description={t("warp.behaviorHelp")}>
 							<div className="grid gap-x-6 gap-y-5 md:grid-cols-2">
 								<WarpField
@@ -781,6 +846,19 @@ export default function WarpView() {
 								/>
 							</WarpField>
 						</WarpSection>
+
+						{/* Only while Warp uses the Bifrost MCP; decoupled, it has no management tools to choose. */}
+						{config?.bifrost_mcp_enabled && (
+							<WarpSection title={t("warp.managementTools.title")} description={t("warp.managementTools.description")}>
+								<WarpManagementToolsSection
+									writes={form.managementWrites}
+									onChange={(writes) => update("managementWrites", writes)}
+									sizes={config?.management_tool_sizes}
+									writesAvailable={!!config?.management_writes_available}
+									disabled={!hasWarpUpdateAccess}
+								/>
+							</WarpSection>
+						)}
 
 						<WarpSection
 							title={t("warp.conversationSearch")}

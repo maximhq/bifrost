@@ -62,6 +62,11 @@ const endpoints = createTlsEndpoints({
 		if (/\/guardrail\/[^/]+\/version\/[^/]+\/apply$/.test(url)) {
 			return { status: 200, headers: { "X-Amzn-Requestid": "req-guardrail" }, body: JSON.stringify({ action: "NONE", outputs: [], assessments: [] }) };
 		}
+		// Converse on an application inference profile (the alias below): a minimal valid answer, so a case can read
+		// the request body the gateway built for an opaque profile ID from /__connects.
+		if (/^\/model\/.*application-inference-profile.*\/converse$/.test(url)) {
+			return { status: 200, headers: { "Content-Type": "application/json", "X-Amzn-Requestid": "req-converse" }, body: JSON.stringify({ output: { message: { role: "assistant", content: [{ text: "OK" }] } }, stopReason: "end_turn", usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, metrics: { latencyMs: 1 } }) };
+		}
 		return { status: 404, body: JSON.stringify({ message: "fixture does not serve " + url }) };
 	},
 });
@@ -87,6 +92,13 @@ const config = {
 						region: "us-west-2",
 						endpoints: { runtime: runtimeHost, control_plane: runtimeHost, mantle: runtimeHost, s3: s3Host, agent_runtime: agentHost },
 					},
+					// An application inference profile: the wire model is an opaque ARN, and only model_name says it is Claude.
+					aliases: {
+						"claude-app-profile": {
+							model_id: "arn:aws:bedrock:us-west-2:000000000000:application-inference-profile/fixtureprof01",
+							model_name: "anthropic.claude-sonnet-4-20250514-v1:0",
+						},
+					},
 				},
 				// An API-key-only key, for the operations AWS does not accept API keys on. Weight 0 keeps it out of random key
 				// selection; a case picks it by name with x-bf-api-key.
@@ -102,6 +114,8 @@ const config = {
 				},
 			],
 			network_config: { max_retries: 0, default_request_timeout_in_seconds: 3, ca_cert_pem: endpoints.caPem },
+			// Off by default so no other case changes; a case opts in per request with x-bf-prompt-cache-auto-inject.
+			prompt_cache: { auto_inject: false },
 		},
 	},
 };

@@ -16,7 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/lrucache"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -93,7 +93,7 @@ func newFakeConfigStore() *fakeConfigStore {
 
 // rowKey keys the fake's rows by their (mode, identity, client) binding.
 func rowKey(mode schemas.MCPAuthMode, identity, mcpClientID string) string {
-	return lrucache.EncodeKey(string(mode), identity, mcpClientID)
+	return livestore.EncodeKey(string(mode), identity, mcpClientID)
 }
 
 func (f *fakeConfigStore) GetMCPPerUserDiscoveryByMode(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {
@@ -282,7 +282,7 @@ func notesDiscovery(tools ...string) *schemas.MCPDiscovery {
 
 func TestSetDiscovery_StoresBareNamesAndServesThemPrefixed(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 
 	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search", "create_page")))
 
@@ -308,8 +308,8 @@ func TestSetDiscovery_KeepsResourcesAndPromptsWithTheTools(t *testing.T) {
 	discovery.Resources = []mcpgo.Resource{mcpgo.NewResource("file:///handbook.md", "handbook")}
 	discovery.ResourceTemplates = []mcpgo.ResourceTemplate{mcpgo.NewResourceTemplate("notes://{id}", "note")}
 	discovery.Prompts = []mcpgo.Prompt{mcpgo.NewPrompt("notes-review")}
-	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), discovery))
-	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(modeContext(schemas.MCPAuthModeUser, "bob"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), discovery))
+	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(modeContext(schemas.MCPAuthModeUser, "bob"), notesClient(), notesDiscovery("search")))
 
 	row := db.rows[rowKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
 	require.Len(t, row.Prompts, 1)
@@ -320,7 +320,7 @@ func TestSetDiscovery_KeepsResourcesAndPromptsWithTheTools(t *testing.T) {
 
 	renamed := notesClient()
 	renamed.Name = "docs"
-	got := NewPerUserStore(db, nil).GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), renamed)
+	got := newTestPerUserStore(t, db).GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), renamed)
 	require.NotNil(t, got)
 	require.Len(t, got.Prompts, 1)
 	assert.Equal(t, "docs-review", got.Prompts[0].Name, "prompts are served under the client's current name")
@@ -329,7 +329,7 @@ func TestSetDiscovery_KeepsResourcesAndPromptsWithTheTools(t *testing.T) {
 }
 
 func TestSetDiscovery_LeavesTheCallersDiscoveryUntouched(t *testing.T) {
-	store := NewPerUserStore(newFakeConfigStore(), nil)
+	store := newTestPerUserStore(t, newFakeConfigStore())
 	discovery := notesDiscovery("search")
 
 	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), discovery))
@@ -344,8 +344,8 @@ func TestSetDiscovery_StoresBareNamesForPreSerializedTools(t *testing.T) {
 	tool := serialized.Tools["notes-search"]
 	require.NoError(t, tool.EnsureSerialized())
 	serialized.Tools["notes-search"] = tool
-	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("alice"), notesClient(), serialized))
-	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("alice"), notesClient(), serialized))
+	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
 
 	row := db.rows[rowKey(schemas.MCPAuthModeUser, "alice", "client-notes")]
 	stored, err := json.Marshal(row.Tools["search"])
@@ -357,8 +357,8 @@ func TestSetDiscovery_StoresBareNamesForPreSerializedTools(t *testing.T) {
 
 func TestGetDiscovery_ACallerWithoutADiscoveryCostsNoRead(t *testing.T) {
 	db := newFakeConfigStore()
-	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
-	store := NewPerUserStore(db, nil)
+	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
+	store := newTestPerUserStore(t, db)
 
 	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
 	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
@@ -368,7 +368,7 @@ func TestGetDiscovery_ACallerWithoutADiscoveryCostsNoRead(t *testing.T) {
 
 func TestSetDiscovery_AddsTheCallerToALoadedClient(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 
 	require.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeVK, "vk-1"), notesClient()))
 	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeVK, "vk-1"), notesClient(), notesDiscovery("search")))
@@ -380,7 +380,7 @@ func TestSetDiscovery_AddsTheCallerToALoadedClient(t *testing.T) {
 }
 
 func TestGetDiscovery_RenamedClientIsServedUnderTheNewName(t *testing.T) {
-	store := NewPerUserStore(newFakeConfigStore(), nil)
+	store := newTestPerUserStore(t, newFakeConfigStore())
 	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search")))
 	require.NotNil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()))
 
@@ -396,9 +396,9 @@ func TestGetDiscovery_CallersWithTheSameDiscoveryShareOneCopy(t *testing.T) {
 	db := newFakeConfigStore()
 	callers := []*schemas.BifrostContext{userContext("alice"), userContext("bob"), vkContext("vk-1")}
 	for _, ctx := range callers {
-		require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(ctx, notesClient(), notesDiscovery("search")))
+		require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(ctx, notesClient(), notesDiscovery("search")))
 	}
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 
 	first := store.GetDiscovery(callers[0], notesClient())
 	require.NotNil(t, first)
@@ -411,7 +411,7 @@ func TestGetDiscovery_CallersWithTheSameDiscoveryShareOneCopy(t *testing.T) {
 
 func TestSetDiscovery_AChangedDiscoveryLeavesTheOldOneToItsOtherHolders(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	for _, caller := range []string{"alice", "bob", "carol"} {
 		require.NoError(t, store.SetDiscovery(userContext(caller), notesClient(), notesDiscovery("search")))
 	}
@@ -429,8 +429,8 @@ func TestSetDiscovery_AChangedDiscoveryLeavesTheOldOneToItsOtherHolders(t *testi
 
 func TestGetDiscovery_AReadThatEndsWhileTheCallersRowIsReadReturnsAtOnce(t *testing.T) {
 	db := newFakeConfigStore()
-	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	store := NewPerUserStore(db, nil)
+	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	store := newTestPerUserStore(t, db)
 	require.Nil(t, store.GetDiscovery(userContext("bob"), notesClient()))
 	h := newHold()
 	db.set(func(f *fakeConfigStore) { f.readHold = h })
@@ -450,9 +450,9 @@ func TestGetDiscovery_AReadThatEndsWhileTheCallersRowIsReadReturnsAtOnce(t *test
 func TestGetDiscovery_AWaiterWhoseLeadersRequestEndsReadsItsOwnRow(t *testing.T) {
 	db := newFakeConfigStore()
 	for _, caller := range []string{"alice", "bob"} {
-		require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext(caller), notesClient(), notesDiscovery("search")))
+		require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext(caller), notesClient(), notesDiscovery("search")))
 	}
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	require.Nil(t, store.GetDiscovery(userContext("carol"), notesClient()))
 	h := newHold()
 	db.set(func(f *fakeConfigStore) { f.readHold, f.readErr = h, context.Canceled })
@@ -546,7 +546,7 @@ func TestDiscoveryHash_CoversEveryFieldADiscoveryServes(t *testing.T) {
 
 func TestGetDiscovery_ReadErrorFailsClosedAndIsNotCached(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search")))
 
 	db.set(func(f *fakeConfigStore) { f.readErr = errors.New("database unavailable") })
@@ -558,8 +558,8 @@ func TestGetDiscovery_ReadErrorFailsClosedAndIsNotCached(t *testing.T) {
 
 func TestGetDiscovery_LoadFailureFailsTheRequestAndTheNextOneTriesAgain(t *testing.T) {
 	db := newFakeConfigStore()
-	require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-	store := NewPerUserStore(db, nil)
+	require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	store := newTestPerUserStore(t, db)
 
 	db.set(func(f *fakeConfigStore) { f.bindingsErr = errors.New("database unavailable") })
 	assert.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()), "a client whose set cannot be loaded serves no tools")
@@ -572,7 +572,7 @@ func TestGetDiscovery_LoadFailureFailsTheRequestAndTheNextOneTriesAgain(t *testi
 
 func TestRefresh_FailureKeepsTheSet(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 	require.NotNil(t, store.GetDiscovery(userContext("alice"), notesClient()))
 
@@ -596,8 +596,8 @@ func TestRefresh_FailureKeepsTheSet(t *testing.T) {
 func TestLoad_AQueryThatPanicsDoesNotWedgeTheClient(t *testing.T) {
 	t.Run("first load", func(t *testing.T) {
 		db := newFakeConfigStore()
-		require.NoError(t, NewPerUserStore(db, nil).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
-		store := NewPerUserStore(db, nil)
+		require.NoError(t, newTestPerUserStore(t, db).SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+		store := newTestPerUserStore(t, db)
 		db.set(func(f *fakeConfigStore) { f.bindingsPanic = true })
 
 		assert.Panics(t, func() { store.GetDiscovery(userContext("alice"), notesClient()) }, "the request that ran the load sees the panic")
@@ -607,10 +607,10 @@ func TestLoad_AQueryThatPanicsDoesNotWedgeTheClient(t *testing.T) {
 	})
 	t.Run("refresh", func(t *testing.T) {
 		db := newFakeConfigStore()
-		local, peer := NewPerUserStore(db, nil), NewPerUserStore(db, nil)
+		local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
 		require.NoError(t, local.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 		require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-		require.NoError(t, peer.SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
+		require.NoError(t, elsewhere.SetDiscovery(userContext("bob"), notesClient(), notesDiscovery("search")))
 		db.set(func(f *fakeConfigStore) { f.bindingsPanic = true })
 
 		dueForReload(t, local, "client-notes")
@@ -624,7 +624,7 @@ func TestLoad_AQueryThatPanicsDoesNotWedgeTheClient(t *testing.T) {
 }
 
 func TestPerUserDiscovery_BindingsAreIsolated(t *testing.T) {
-	store := NewPerUserStore(newFakeConfigStore(), nil)
+	store := newTestPerUserStore(t, newFakeConfigStore())
 	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "a"), notesClient(), notesDiscovery("search")))
 
 	assert.Nil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeVK, "a"), notesClient()), "the same identity string in another mode is another caller")
@@ -639,7 +639,7 @@ func TestPerUserDiscovery_BindingsAreIsolated(t *testing.T) {
 // callers, and the key's own binding is a third one, holding nothing either
 // user stored.
 func TestPerUserDiscovery_TwoUsersThroughOneVirtualKeyEachKeepTheirOwn(t *testing.T) {
-	store := NewPerUserStore(newFakeConfigStore(), nil)
+	store := newTestPerUserStore(t, newFakeConfigStore())
 	throughKey := func(user string) *schemas.BifrostContext {
 		ctx := userContext(user)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-shared")
@@ -665,7 +665,7 @@ func TestPerUserDiscovery_TwoUsersThroughOneVirtualKeyEachKeepTheirOwn(t *testin
 // Run with -race.
 func TestPerUserStore_ManyCallersInParallelNeverReadAnothersDiscovery(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	const callers, rounds = 24, 200
 	ownTool := func(i int) string {
 		if i%2 == 0 {
@@ -728,7 +728,7 @@ func TestPerUserStore_ManyCallersInParallelNeverReadAnothersDiscovery(t *testing
 
 func TestDiscovery_OnlyUserAndVirtualKeyCallersHaveOne(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	noCaller := map[string]context.Context{
 		"session-only":   callerContext(schemas.BifrostContextKeyMCPSessionID, "sess-1"),
 		"anonymous":      context.Background(),
@@ -743,7 +743,7 @@ func TestDiscovery_OnlyUserAndVirtualKeyCallersHaveOne(t *testing.T) {
 }
 
 func TestGetDiscovery_ReadsTheCallerThroughADerivedContext(t *testing.T) {
-	store := NewPerUserStore(newFakeConfigStore(), nil)
+	store := newTestPerUserStore(t, newFakeConfigStore())
 	require.NoError(t, store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 
 	type unrelated struct{}
@@ -756,7 +756,7 @@ func TestGetDiscovery_ReadsTheCallerThroughADerivedContext(t *testing.T) {
 
 func TestDeleteDiscovery_TakesTheCallerOutOfTheSet(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	require.NoError(t, store.SetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient(), notesDiscovery("search")))
 	require.NotNil(t, store.GetDiscovery(modeContext(schemas.MCPAuthModeUser, "alice"), notesClient()))
 
@@ -768,10 +768,10 @@ func TestDeleteDiscovery_TakesTheCallerOutOfTheSet(t *testing.T) {
 
 func TestEvictDiscovery_AnotherProcessesWriteIsReadFromTheDatabase(t *testing.T) {
 	db := newFakeConfigStore()
-	local, peer := NewPerUserStore(db, nil), NewPerUserStore(db, nil)
+	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
 	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
 
-	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()), "until told, this process does not know of the other's write")
 
 	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
@@ -782,11 +782,11 @@ func TestEvictDiscovery_AnotherProcessesWriteIsReadFromTheDatabase(t *testing.T)
 
 func TestEvictDiscovery_AnotherProcessesDeleteIsSettledByOneRead(t *testing.T) {
 	db := newFakeConfigStore()
-	local, peer := NewPerUserStore(db, nil), NewPerUserStore(db, nil)
-	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
 
-	require.NoError(t, peer.DeleteDiscovery(userContext("alice"), notesClient()))
+	require.NoError(t, elsewhere.DeleteDiscovery(userContext("alice"), notesClient()))
 	local.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
 
 	before := db.readCount()
@@ -798,7 +798,7 @@ func TestEvictDiscovery_AnotherProcessesDeleteIsSettledByOneRead(t *testing.T) {
 
 func TestEvictDiscovery_OutOfOrderMessagesNeverHideADiscovery(t *testing.T) {
 	db := newFakeConfigStore()
-	local, deleter, writer := NewPerUserStore(db, nil), NewPerUserStore(db, nil), NewPerUserStore(db, nil)
+	local, deleter, writer := newTestPerUserStore(t, db), newTestPerUserStore(t, db), newTestPerUserStore(t, db)
 	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
 
 	require.NoError(t, deleter.DeleteDiscovery(userContext("alice"), notesClient()))
@@ -812,9 +812,9 @@ func TestEvictDiscovery_OutOfOrderMessagesNeverHideADiscovery(t *testing.T) {
 
 func TestRefresh_PicksUpAWriteThisProcessWasNotToldOf(t *testing.T) {
 	db := newFakeConfigStore()
-	local, peer := NewPerUserStore(db, nil), NewPerUserStore(db, nil)
+	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
 	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 
 	dueForReload(t, local, "client-notes")
 	require.Nil(t, local.GetDiscovery(userContext("alice"), notesClient()), "the read that finds the set due is answered from it as it stands")
@@ -825,10 +825,10 @@ func TestRefresh_PicksUpAWriteThisProcessWasNotToldOf(t *testing.T) {
 
 func TestRefresh_DropsADeleteThisProcessWasNotToldOf(t *testing.T) {
 	db := newFakeConfigStore()
-	local, peer := NewPerUserStore(db, nil), NewPerUserStore(db, nil)
-	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	require.NoError(t, peer.DeleteDiscovery(userContext("alice"), notesClient()))
+	require.NoError(t, elsewhere.DeleteDiscovery(userContext("alice"), notesClient()))
 
 	dueForReload(t, local, "client-notes")
 	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
@@ -841,10 +841,10 @@ func TestRefresh_DropsADeleteThisProcessWasNotToldOf(t *testing.T) {
 
 func TestRefresh_ReplacesADiscoveryThatChangedOnAnotherProcess(t *testing.T) {
 	db := newFakeConfigStore()
-	local, peer := NewPerUserStore(db, nil), NewPerUserStore(db, nil)
-	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 	require.NotNil(t, local.GetDiscovery(userContext("alice"), notesClient()))
-	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
 
 	dueForReload(t, local, "client-notes")
 	require.NotContains(t, local.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-create_page")
@@ -857,11 +857,11 @@ func TestRefresh_ReplacesADiscoveryThatChangedOnAnotherProcess(t *testing.T) {
 
 func TestGetDiscovery_LearnsANewerHashThanTheSetHas(t *testing.T) {
 	db := newFakeConfigStore()
-	local, peer := NewPerUserStore(db, nil), NewPerUserStore(db, nil)
-	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
+	local, elsewhere := newTestPerUserStore(t, db), newTestPerUserStore(t, db)
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search")))
 	require.Nil(t, local.GetDiscovery(userContext("bob"), notesClient()), "loads the set, holding alice's first hash")
 	// alice's discovery changes on the other process, and its message never arrives.
-	require.NoError(t, peer.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
+	require.NoError(t, elsewhere.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")))
 
 	before := db.readCount()
 	require.Contains(t, local.GetDiscovery(userContext("alice"), notesClient()).Tools, "notes-create_page")
@@ -872,7 +872,7 @@ func TestGetDiscovery_LearnsANewerHashThanTheSetHas(t *testing.T) {
 func TestLoad_KeepsAWriteThatLandsWhileTheQueryRuns(t *testing.T) {
 	t.Run("first load", func(t *testing.T) {
 		db := newFakeConfigStore()
-		store := NewPerUserStore(db, nil)
+		store := newTestPerUserStore(t, db)
 		h := newHold()
 		db.set(func(f *fakeConfigStore) { f.bindingsHold = h })
 
@@ -890,7 +890,7 @@ func TestLoad_KeepsAWriteThatLandsWhileTheQueryRuns(t *testing.T) {
 	})
 	t.Run("refresh", func(t *testing.T) {
 		db := newFakeConfigStore()
-		store := NewPerUserStore(db, nil)
+		store := newTestPerUserStore(t, db)
 		require.Nil(t, store.GetDiscovery(userContext("bob"), notesClient()))
 		h := newHold()
 		db.set(func(f *fakeConfigStore) { f.bindingsHold = h })
@@ -908,7 +908,7 @@ func TestLoad_KeepsAWriteThatLandsWhileTheQueryRuns(t *testing.T) {
 
 func TestLoad_AReadDuringTheFirstLoadWaitsForIt(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	h := newHold()
 	db.set(func(f *fakeConfigStore) { f.bindingsHold = h })
 	done := make(chan struct{})
@@ -931,7 +931,7 @@ func TestLoad_AReadDuringTheFirstLoadWaitsForIt(t *testing.T) {
 
 func TestRefresh_ReadsDuringAReloadDoNotStartAnother(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	require.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
 	h := newHold()
 	db.set(func(f *fakeConfigStore) { f.bindingsHold = h })
@@ -952,7 +952,7 @@ func TestRefresh_ReadsDuringAReloadDoNotStartAnother(t *testing.T) {
 
 func TestGetDiscovery_AWriteDuringAReadThatFindsNoRowKeepsTheCaller(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	require.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
 	store.EvictDiscovery(schemas.MCPAuthModeUser, "alice", "client-notes")
 	h := newHold()
@@ -970,7 +970,7 @@ func TestGetDiscovery_AWriteDuringAReadThatFindsNoRowKeepsTheCaller(t *testing.T
 
 func TestEvictDiscoveriesByVirtualKey_ADeletedKeyLeavesTheSetOnItsNextRead(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	require.NoError(t, store.SetDiscovery(vkContext("vk-1"), notesClient(), notesDiscovery("search")))
 	require.NotNil(t, store.GetDiscovery(vkContext("vk-1"), notesClient()))
 
@@ -986,7 +986,7 @@ func TestEvictDiscoveriesByVirtualKey_ADeletedKeyLeavesTheSetOnItsNextRead(t *te
 
 func TestEvictDiscoveriesByMCPClient_ReloadsTheClientsSet(t *testing.T) {
 	db := newFakeConfigStore()
-	store := NewPerUserStore(db, nil)
+	store := newTestPerUserStore(t, db)
 	require.Nil(t, store.GetDiscovery(userContext("alice"), notesClient()))
 
 	store.EvictDiscoveriesByMCPClient("client-notes")
@@ -1022,7 +1022,7 @@ func TestEvictDiscoveries_DropOnlyTheMatchingBindings(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			db := newFakeConfigStore()
-			store := NewPerUserStore(db, nil)
+			store := newTestPerUserStore(t, db)
 			for _, b := range bindings {
 				require.NoError(t, store.SetDiscovery(modeContext(b.mode, b.identity), b.client, notesDiscovery("search")))
 				require.NotNil(t, store.GetDiscovery(modeContext(b.mode, b.identity), b.client))
@@ -1038,7 +1038,7 @@ func TestEvictDiscoveries_DropOnlyTheMatchingBindings(t *testing.T) {
 }
 
 func TestSetOnDiscoveryWritten_FiresForWritesAndDeletesOnly(t *testing.T) {
-	store := NewPerUserStore(newFakeConfigStore(), nil)
+	store := newTestPerUserStore(t, newFakeConfigStore())
 	var written []string
 	store.SetOnDiscoveryWritten(func(_ context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) {
 		written = append(written, string(mode)+"/"+identity+"/"+mcpClientID)
@@ -1065,7 +1065,7 @@ func TestStore_NilIsSafe(t *testing.T) {
 
 // A request's read of one per-user client when the caller's discovery is cached.
 func BenchmarkGetDiscovery_CacheHit(b *testing.B) {
-	store := NewPerUserStore(newFakeConfigStore(), nil)
+	store := newTestPerUserStore(b, newFakeConfigStore())
 	ctx := userContext("alice")
 	if err := store.SetDiscovery(ctx, notesClient(), notesDiscovery("search", "create_page")); err != nil {
 		b.Fatal(err)
@@ -1087,22 +1087,34 @@ func BenchmarkGetDiscovery_ThousandCallersOneDiscovery(b *testing.B) {
 	for i := range tools {
 		tools[i] = fmt.Sprintf("tool_%d", i)
 	}
+	seed := newTestPerUserStore(b, db)
 	callers := make([]*schemas.BifrostContext, 1000)
 	for i := range callers {
 		callers[i] = userContext(fmt.Sprintf("user-%d", i))
-		if err := NewPerUserStore(db, nil).SetDiscovery(callers[i], notesClient(), notesDiscovery(tools...)); err != nil {
+		if err := seed.SetDiscovery(callers[i], notesClient(), notesDiscovery(tools...)); err != nil {
 			b.Fatal(err)
 		}
 	}
 	client := notesClient()
-	pass := func() *PerUserStore {
-		store := NewPerUserStore(db, nil)
+	// pass reads every caller through a store built as a fresh process builds it and returns the
+	// number of copies its cache keeps. It closes its live store before returning, so passes do not
+	// pile up stores and their cached copies until the benchmark ends.
+	pass := func() int {
+		live, err := livestore.New()
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer live.Close()
+		store, err := NewPerUserStore(db, live, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
 		for _, ctx := range callers {
 			if store.GetDiscovery(ctx, client) == nil {
 				b.Fatal("a caller was served no discovery")
 			}
 		}
-		return store
+		return store.cache.Len()
 	}
 
 	readsBefore := db.readCount()
@@ -1110,7 +1122,7 @@ func BenchmarkGetDiscovery_ThousandCallersOneDiscovery(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		entries = pass().cache.Len()
+		entries = pass()
 	}
 	b.StopTimer()
 	b.ReportMetric(float64(db.readCount()-readsBefore)/float64(b.N), "rows/op")
@@ -1119,7 +1131,7 @@ func BenchmarkGetDiscovery_ThousandCallersOneDiscovery(b *testing.B) {
 
 // A request's read of one per-user client by a caller with no discovery on it.
 func BenchmarkGetDiscovery_NotAMember(b *testing.B) {
-	store := NewPerUserStore(newFakeConfigStore(), nil)
+	store := newTestPerUserStore(b, newFakeConfigStore())
 	if err := store.SetDiscovery(userContext("alice"), notesClient(), notesDiscovery("search", "create_page")); err != nil {
 		b.Fatal(err)
 	}
@@ -1141,4 +1153,16 @@ func sortedToolNames(d *schemas.MCPDiscovery) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// newTestPerUserStore returns a store over configStore with its cache in a live store of its own, as
+// one process builds it.
+func newTestPerUserStore(t testing.TB, configStore configstore.ConfigStore) *PerUserStore {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	store, err := NewPerUserStore(configStore, live, nil)
+	require.NoError(t, err)
+	return store
 }

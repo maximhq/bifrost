@@ -15,7 +15,6 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -105,7 +104,7 @@ func TestGrantedProvidersShapeMatchesWhatTheRouterPublishes(t *testing.T) {
 		// serve the request, and the response is filtered per model afterwards.
 		{Provider: "anthropic"},
 	}, nil)
-	access := grant.NewAccess([]schemas.Permit{permit}, nil, "", nil)
+	access := grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
 
 	granted := access.GrantedProvidersForModel("")
 	want := []string{"openai", "anthropic"}
@@ -242,11 +241,11 @@ func TestIntegrationModelRoutesEnrichFromTheCatalog(t *testing.T) {
 		"claude-test": {"provider":"anthropic","mode":"chat","base_model":"claude-test","max_input_tokens":200000,"max_output_tokens":64000},
 		"gpt-test": {"provider":"openai","mode":"chat","base_model":"gpt-test","max_input_tokens":128000,"max_output_tokens":16384}
 	}`), 0o600))
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	require.NoError(t, ds.LoadFromURLIntoMemory(t.Context()))
 	store := &mockHandlerStore{
 		availableProviders: []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic},
-		modelCatalog:       modelcatalog.NewTestCatalogWithDatasheet(ds),
+		modelCatalog:       catalogWithDatasheetForTest(t, ds),
 	}
 
 	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{

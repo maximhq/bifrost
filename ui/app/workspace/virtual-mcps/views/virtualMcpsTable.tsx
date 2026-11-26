@@ -12,6 +12,7 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alertDialog";
 import { Badge } from "@/components/ui/badge";
+import { ConfigIssuesBadge } from "@/components/ui/configIssuesAlert";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
@@ -197,7 +198,12 @@ export default function VirtualMCPsTable({
 							) : (
 								virtualMcps.map((row) => (
 									<TableRow key={row.id} className="group">
-										<TableCell className="font-medium">{row.name}</TableCell>
+										<TableCell className="font-medium">
+											<div className="flex items-center gap-2">
+												{row.name}
+												<ConfigIssuesBadge issues={row.config_issues} />
+											</div>
+										</TableCell>
 										<TableCell>
 											<EndpointCell slug={row.endpoint_slug} baseUrl={baseUrl} />
 										</TableCell>

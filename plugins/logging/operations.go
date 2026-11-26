@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
@@ -388,6 +389,17 @@ func (p *LoggerPlugin) makePostWriteCallback(enrichFn func(*logstore.Log)) func(
 	}
 }
 
+// speechSessionObject is the object of a speech session's row, which an HTTP speech stream's is not.
+const speechSessionObject = "speech.session"
+
+// applySpeechSessionInput records the text a speech session spoke as the row's input.
+func applySpeechSessionInput(entry *logstore.Log, result *schemas.BifrostResponse, contentLoggingEnabled bool) {
+	if !contentLoggingEnabled || result == nil || result.SpeechStreamResponse == nil || result.SpeechStreamResponse.SessionInput == "" {
+		return
+	}
+	entry.SpeechInputParsed = &schemas.SpeechInput{Input: result.SpeechStreamResponse.SessionInput}
+}
+
 // applyStreamingOutputToEntry applies accumulated streaming data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
 func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamResponse *streaming.ProcessedStreamResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
@@ -459,7 +471,7 @@ func (p *LoggerPlugin) applyStreamingOutputToEntry(entry *logstore.Log, streamRe
 			entry.TranscriptionOutputParsed = streamResponse.Data.TranscriptionOutput
 		}
 		// Speech output
-		if streamResponse.Data.AudioOutput != nil {
+		if streamResponse.Data.AudioOutput != nil && len(streamResponse.Data.AudioOutput.Audio) > 0 {
 			entry.SpeechOutputParsed = streamResponse.Data.AudioOutput
 		}
 		// Image generation output
@@ -1366,6 +1378,13 @@ func (p *LoggerPlugin) GetAvailableApps(ctx context.Context, limit int, query st
 // them to a 400 rather than a 500.
 var ErrInvalidUserAgentMapping = errors.New("invalid user agent mapping")
 
+// Character limits of a user-agent mapping, the column sizes of the mapping table.
+const (
+	maxUserAgentMappingPatternLen  = 512
+	maxUserAgentMappingAppLen      = 128
+	maxUserAgentMappingLogoMIMELen = 128
+)
+
 func validateUserAgentMapping(mapping *logstore.UserAgentMapping) error {
 	mapping.Pattern = strings.TrimSpace(mapping.Pattern)
 	mapping.App = strings.TrimSpace(mapping.App)
@@ -1375,6 +1394,15 @@ func validateUserAgentMapping(mapping *logstore.UserAgentMapping) error {
 	}
 	if mapping.App == "" {
 		return fmt.Errorf("%w: app cannot be empty", ErrInvalidUserAgentMapping)
+	}
+	if utf8.RuneCountInString(mapping.Pattern) > maxUserAgentMappingPatternLen {
+		return fmt.Errorf("%w: pattern exceeds %d characters", ErrInvalidUserAgentMapping, maxUserAgentMappingPatternLen)
+	}
+	if utf8.RuneCountInString(mapping.App) > maxUserAgentMappingAppLen {
+		return fmt.Errorf("%w: app exceeds %d characters", ErrInvalidUserAgentMapping, maxUserAgentMappingAppLen)
+	}
+	if mapping.LogoMime != nil && utf8.RuneCountInString(*mapping.LogoMime) > maxUserAgentMappingLogoMIMELen {
+		return fmt.Errorf("%w: logo_mime exceeds %d characters", ErrInvalidUserAgentMapping, maxUserAgentMappingLogoMIMELen)
 	}
 	switch schemas.UserAgentMappingMatchType(mapping.MatchType) {
 	case schemas.UserAgentMappingMatchTypeContains,

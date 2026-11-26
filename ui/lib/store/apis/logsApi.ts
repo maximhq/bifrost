@@ -60,6 +60,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.routing_rule_ids && filters.routing_rule_ids.length > 0) {
 		params.routing_rule_ids = filters.routing_rule_ids.join(",");
 	}
+	if (filters.model_router_ids && filters.model_router_ids.length > 0) {
+		params.model_router_ids = filters.model_router_ids.join(",");
+	}
 	if (filters.routing_engine_used && filters.routing_engine_used.length > 0) {
 		params.routing_engine_used = filters.routing_engine_used.join(",");
 	}
@@ -69,8 +72,17 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.tool_call_names && filters.tool_call_names.length > 0) {
 		params.tool_call_names = filters.tool_call_names.join(",");
 	}
-	if (filters.guardrail_outcomes && filters.guardrail_outcomes.length > 0) {
-		params.guardrail_outcomes = filters.guardrail_outcomes.join(",");
+	if (filters.guardrail_actions && filters.guardrail_actions.length > 0) {
+		params.guardrail_actions = filters.guardrail_actions.join(",");
+	}
+	if (filters.guardrail_rule_ids && filters.guardrail_rule_ids.length > 0) {
+		params.guardrail_rule_ids = filters.guardrail_rule_ids.join(",");
+	}
+	if (filters.guardrail_profile_ids && filters.guardrail_profile_ids.length > 0) {
+		params.guardrail_profile_ids = filters.guardrail_profile_ids.join(",");
+	}
+	if (filters.guardrail_phases && filters.guardrail_phases.length > 0) {
+		params.guardrail_phases = filters.guardrail_phases.join(",");
 	}
 	if (filters.complexity_tiers && filters.complexity_tiers.length > 0) {
 		params.complexity_tiers = filters.complexity_tiers.join(",");

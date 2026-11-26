@@ -36,6 +36,8 @@ export interface MCPClientConfig {
   /** Headers for auth_type 'headers'. API shape: Record<string, EnvVarLike> */
   headers?: Record<string, EnvVarLike | string>
   isCodeMode?: boolean
+  /** Code mode on the client's own /mcp/<slug>: 'inherit', 'enabled' or 'disabled' */
+  serverTypeOnSlug?: 'inherit' | 'enabled' | 'disabled'
   isPingAvailable?: boolean
   /** Max protocol version option: 'global', 'auto' or a version */
   maxProtocolVersion?: string
@@ -376,6 +378,22 @@ export class MCPRegistryPage extends BasePage {
     return ((await this.storedClientConfig(request, name)).max_protocol_version as string | undefined) ?? ''
   }
 
+  /** The stored server_type_on_slug of the named client over the API. */
+  async storedServerTypeOnSlug(request: APIRequestContext, name: string): Promise<string | undefined> {
+    return (await this.storedClientConfig(request, name)).server_type_on_slug as string | undefined
+  }
+
+  /** The stored endpoint_slug of the named client over the API. */
+  async storedEndpointSlug(request: APIRequestContext, name: string): Promise<string> {
+    return (await this.storedClientConfig(request, name)).endpoint_slug as string
+  }
+
+  /** Picks a slug code mode option in the open add form or detail sheet. */
+  async selectServerTypeOnSlug(scope: Locator, value: string): Promise<void> {
+    await scope.getByTestId('mcp-client-server-type-on-slug-select').click()
+    await this.page.getByTestId(`mcp-client-server-type-on-slug-${value}`).click()
+  }
+
   /** Picks a max protocol version option in the open add form or detail sheet. */
   async selectMaxProtocolVersion(scope: Locator, value: string): Promise<void> {
     await scope.getByTestId('mcp-client-max-protocol-version-select').click()
@@ -409,6 +427,10 @@ export class MCPRegistryPage extends BasePage {
         const expectedState = config.isCodeMode ? 'checked' : 'unchecked'
         await expect(this.codeModeSwitch).toHaveAttribute('data-state', expectedState, { timeout: 3000 })
       }
+    }
+
+    if (config.serverTypeOnSlug) {
+      await this.selectServerTypeOnSlug(this.sheet, config.serverTypeOnSlug)
     }
 
     // Toggle ping available if specified (Radix Switch)
@@ -966,6 +988,10 @@ export class MCPRegistryPage extends BasePage {
 
     if (updates.maxProtocolVersion) {
       await this.selectMaxProtocolVersion(this.detailSheet, updates.maxProtocolVersion)
+    }
+
+    if (updates.serverTypeOnSlug) {
+      await this.selectServerTypeOnSlug(this.detailSheet, updates.serverTypeOnSlug)
     }
 
     // Save changes

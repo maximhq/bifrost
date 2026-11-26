@@ -50,7 +50,8 @@
 			"budgetLimits": "Limiti di budget",
 			"updateAction": "Aggiorna cliente",
 			"createAction": "Crea cliente",
-			"calendarAlignHelp": "L'abilitazione dell'allineamento al calendario reimposterà l'utilizzo del budget a <bold0>$0.00</bold0> e i contatori dei limiti di frequenza di token/richieste a <bold1>0</bold1> per questo cliente, quindi allineerà ciascuna data di reimpostazione all'inizio del relativo periodo corrente (es. inizio del giorno, della settimana, del mese o dell'anno). L'azzeramento dell'utilizzo non può essere annullato, ma l'allineamento al calendario potrà essere disattivato in seguito. Questa modifica avrà effetto quando salvi."
+			"calendarAlignHelp": "L'abilitazione dell'allineamento al calendario reimposterà l'utilizzo del budget a <bold0>$0.00</bold0> e i contatori dei limiti di frequenza di token/richieste a <bold1>0</bold1> per questo cliente, quindi allineerà ciascuna data di reimpostazione all'inizio del relativo periodo corrente (es. inizio del giorno, della settimana, del mese o dell'anno). L'azzeramento dell'utilizzo non può essere annullato, ma l'allineamento al calendario potrà essere disattivato in seguito. Questa modifica avrà effetto quando salvi.",
+			"limitsCheckFailed": "Impossibile verificare cosa regola la spesa di questo cliente, quindi budget e limite di frequenza non possono ancora essere mostrati."
 		},
 		"detail": {
 			"title": "Dettagli cliente",
@@ -409,6 +410,24 @@
 		"unlockTitle": "Sblocca i progetti per circoscrivere accesso e spesa",
 		"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Un progetto è un elemento a cui una richiesta sceglie di aderire: concede l'accesso in aggiunta a ciò di cui il chiamante già dispone e stabilisce su quale registro viene addebitata la spesa."
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "Visualizza la spesa IA di tutti i provider in un unico posto",
+			"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. FinOps legge i costi fatturati dai tuoi account dei provider e mostra quanta parte di quella spesa è passata da Bifrost."
+		},
+		"connections": {
+			"unlockTitle": "Collega gli account di fatturazione dei provider",
+			"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Collega la fatturazione di OpenAI, Anthropic, AWS Bedrock, Vertex AI e Azure OpenAI con accesso in sola lettura."
+		},
+		"explorer": {
+			"unlockTitle": "Scomponi la spesa IA per modello e account",
+			"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Confronta la spesa fatturata con ciò che Bifrost ha registrato, modello per modello."
+		},
+		"forecast": {
+			"unlockTitle": "Prevedi la spesa IA e individua le anomalie",
+			"unlockDescription": "Questa funzionalità fa parte della licenza Enterprise di Bifrost. Prevedi il mese rispetto ai tuoi budget e ricevi un avviso quando la spesa ha un picco."
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "Sblocca le classifiche degli utenti per una maggiore visibilità"
 	},
@@ -475,7 +494,12 @@
 		"maximumSpend": "Spesa massima (USD)",
 		"noBudgetLimits": "Nessun limite di budget configurato.",
 		"removeBudgetAria": "Rimuovi budget {{number}}",
-		"duplicateResetPeriod": "Periodo di ripristino duplicato; ogni riga di budget deve usare un intervallo diverso."
+		"duplicateResetPeriod": "Periodo di ripristino duplicato; ogni riga di budget deve usare un intervallo diverso.",
+		"contentLogging": "Log dei contenuti",
+		"contentLoggingInherit": "Eredita",
+		"contentLoggingOff": "Disattivato per questo team",
+		"contentLoggingOn": "Attivato per questo team",
+		"contentLoggingHelp": "Se il contenuto di richiesta e risposta viene salvato nei log del traffico di questo team. Il team prevale sulle sue chiavi virtuali e chiavi provider, quindi una chiave non può riattivare il contenuto che il team ha disattivato. «Disattivato» toglie il contenuto anche dagli export dei connettori. L'header per richiesta resta valido quando le sostituzioni per richiesta sono consentite."
 	},
 	"filters": {
 		"filters": "Filtri",

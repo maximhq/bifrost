@@ -248,12 +248,15 @@ type MCPCredentialStore interface {
 
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
+// The MCP clients themselves come from the Account (GetConfiguredMCPClients and
+// GetConfigForMCPClient), not from this struct.
 type MCPConfig struct {
-	ClientConfigs     []*MCPClientConfig    `json:"client_configs,omitempty"`      // Per-client execution configurations
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 	// MaxProtocolVersion caps the MCP protocol version offered to upstreams ("" or "auto" = newest supported).
 	MaxProtocolVersion string `json:"max_protocol_version,omitempty"`
+	// ServerMaxProtocolVersion caps the MCP protocol version Bifrost's own /mcp serves to clients ("" or "auto" = newest supported).
+	ServerMaxProtocolVersion string `json:"server_max_protocol_version,omitempty"`
 
 	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
 	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
@@ -651,6 +654,28 @@ func ValidateMCPMaxProtocolVersion(field, v string) error {
 	return fmt.Errorf("%s must be one of %s, got %q", field, strings.Join(MCPMaxProtocolVersions, ", "), v)
 }
 
+// MCPProtocolVersionsUpTo returns the protocol versions the SDK implements at or below maxVersion,
+// newest first, or nil when maxVersion is "", "auto" or invalid (uncapped).
+func MCPProtocolVersionsUpTo(maxVersion string) []string {
+	if maxVersion == "" || maxVersion == MCPMaxProtocolVersionAuto || !IsValidMCPMaxProtocolVersion(maxVersion) {
+		return nil
+	}
+	versions := make([]string, 0, len(mcp.ValidProtocolVersions))
+	for _, v := range mcp.ValidProtocolVersions {
+		if v <= maxVersion {
+			versions = append(versions, v)
+		}
+	}
+	return versions
+}
+
+// MCPAllowsClientMetadataDocuments reports whether a server capped at maxVersion offers Client ID
+// Metadata Documents, which arrived in 2025-11-25.
+func MCPAllowsClientMetadataDocuments(maxVersion string) bool {
+	versions := MCPProtocolVersionsUpTo(maxVersion)
+	return versions == nil || versions[0] >= MCPProtocolVersion20251125
+}
+
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
 
@@ -1036,6 +1061,9 @@ type MCPClientConfig struct {
 	// Stored values are plaintext; env-var-reference resolution is not
 	// applied to fields inside this block.
 	PendingOAuthConfig *OAuth2Config `json:"oauth_config,omitempty"`
+
+	// ServerTypeOnSlug is code mode on the client's own /mcp/<slug>; empty inherits IsCodeModeClient.
+	ServerTypeOnSlug MCPServerTypeOnSlug `json:"server_type_on_slug"`
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and
@@ -1107,6 +1135,83 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	}
 	c.AllowByDefault = ResolveAllowByDefault(auxStr.AllowByDefault, auxStr.AllowOnAllVirtualKeys)
 	return nil
+}
+
+// MCPServerTypeOnSlug is whether a client serves its own /mcp/<slug> in code mode. The empty value
+// inherits is_code_mode_client and is written as "inherit" on the wire.
+type MCPServerTypeOnSlug string
+
+const (
+	MCPServerTypeOnSlugInherit  MCPServerTypeOnSlug = ""
+	MCPServerTypeOnSlugEnabled  MCPServerTypeOnSlug = "enabled"
+	MCPServerTypeOnSlugDisabled MCPServerTypeOnSlug = "disabled"
+)
+
+// mcpServerTypeOnSlugInheritWire is the wire value of MCPServerTypeOnSlugInherit.
+const mcpServerTypeOnSlugInheritWire = "inherit"
+
+// ParseMCPServerTypeOnSlug converts a server_type_on_slug wire value, refusing an unknown one.
+func ParseMCPServerTypeOnSlug(value string) (MCPServerTypeOnSlug, error) {
+	switch mode := MCPServerTypeOnSlug(value); mode {
+	case mcpServerTypeOnSlugInheritWire:
+		return MCPServerTypeOnSlugInherit, nil
+	case MCPServerTypeOnSlugEnabled, MCPServerTypeOnSlugDisabled:
+		return mode, nil
+	}
+	return MCPServerTypeOnSlugInherit, fmt.Errorf("invalid server_type_on_slug %q: must be one of %q, %q, %q", value, mcpServerTypeOnSlugInheritWire, MCPServerTypeOnSlugEnabled, MCPServerTypeOnSlugDisabled)
+}
+
+// String returns the wire value.
+func (m MCPServerTypeOnSlug) String() string {
+	if m == MCPServerTypeOnSlugInherit {
+		return mcpServerTypeOnSlugInheritWire
+	}
+	return string(m)
+}
+
+// CodeModeOverride returns the code mode the setting forces on the client's slug, and false when it inherits.
+func (m MCPServerTypeOnSlug) CodeModeOverride() (codeMode, overrides bool) {
+	return m == MCPServerTypeOnSlugEnabled, m != MCPServerTypeOnSlugInherit
+}
+
+// MarshalJSON writes the wire value.
+func (m MCPServerTypeOnSlug) MarshalJSON() ([]byte, error) {
+	return json.Marshal(m.String())
+}
+
+// UnmarshalJSON reads a wire value, refusing an unknown one.
+func (m *MCPServerTypeOnSlug) UnmarshalJSON(data []byte) error {
+	var value string
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("invalid server_type_on_slug: %w", err)
+	}
+	mode, err := ParseMCPServerTypeOnSlug(value)
+	if err != nil {
+		return err
+	}
+	*m = mode
+	return nil
+}
+
+// CodeModeFor reports whether the client runs in code mode on ctx's request: server_type_on_slug on its
+// own /mcp/<slug>, is_code_mode_client everywhere else.
+func (c *MCPClientConfig) CodeModeFor(ctx context.Context) bool {
+	if codeMode, overrides := c.ServerTypeOnSlug.CodeModeOverride(); overrides && ctx != nil {
+		if client, _ := ctx.Value(BifrostContextKeyMCPGatewayClient).(string); client == c.Name {
+			return codeMode
+		}
+	}
+	return c.IsCodeModeClient
+}
+
+// UsesCodeModeGlobalOrSlug reports whether the client runs in code mode on /mcp or on its own slug.
+func (c *MCPClientConfig) UsesCodeModeGlobalOrSlug() bool {
+	return c.IsCodeModeClient || c.ServerTypeOnSlug == MCPServerTypeOnSlugEnabled
+}
+
+// ServesOwnToolsGlobalOrSlug reports whether /mcp or the client's own slug lists its tools directly (not behind code mode).
+func (c *MCPClientConfig) ServesOwnToolsGlobalOrSlug() bool {
+	return !c.IsCodeModeClient || c.ServerTypeOnSlug == MCPServerTypeOnSlugDisabled
 }
 
 // ResolveAllowByDefault settles the flag from the two keys the wire accepts for it: allow_by_default,
@@ -1329,53 +1434,6 @@ func (c *MCPOpenAPIConfig) HasSpecSource() bool {
 		return true
 	}
 	return c.SpecURL != nil && strings.TrimSpace(*c.SpecURL) != ""
-}
-
-// Clone returns a copy that shares no mutable state with c: the string
-// pointers, the credential map and its secrets are all copied.
-func (c *MCPOpenAPIConfig) Clone() *MCPOpenAPIConfig {
-	if c == nil {
-		return nil
-	}
-	out := *c
-	out.SpecURL = cloneStringPtr(c.SpecURL)
-	out.SpecFile = cloneStringPtr(c.SpecFile)
-	out.BaseURL = cloneStringPtr(c.BaseURL)
-	if c.SecurityCredentials != nil {
-		out.SecurityCredentials = make(map[string]MCPOpenAPICredential, len(c.SecurityCredentials))
-		for name, cred := range c.SecurityCredentials {
-			out.SecurityCredentials[name] = MCPOpenAPICredential{
-				Value:    cloneSecretVarPtr(cred.Value),
-				Username: cloneSecretVarPtr(cred.Username),
-				Password: cloneSecretVarPtr(cred.Password),
-			}
-		}
-	}
-	return &out
-}
-
-func cloneStringPtr(s *string) *string {
-	if s == nil {
-		return nil
-	}
-	v := *s
-	return &v
-}
-
-func cloneSecretVarPtr(s *SecretVar) *SecretVar {
-	if s == nil {
-		return nil
-	}
-	v := *s
-	return &v
-}
-
-// Clone returns a copy of t that shares no mutable state with it.
-func (t *MCPTLSConfig) Clone() *MCPTLSConfig {
-	if t == nil {
-		return nil
-	}
-	return &MCPTLSConfig{InsecureSkipVerify: t.InsecureSkipVerify, CACertPEM: cloneSecretVarPtr(t.CACertPEM)}
 }
 
 // MarshalForStorage serializes MCPTLSConfig for DB persistence.

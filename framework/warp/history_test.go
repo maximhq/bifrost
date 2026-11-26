@@ -86,6 +86,20 @@ func (m *memoryConversations) AppendWarpMessages(_ context.Context, ownerID, con
 	return nil
 }
 
+func (m *memoryConversations) SwapWarpQuestion(_ context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	thread, ok := m.threads[conversationID]
+	if !ok || thread.OwnerID != ownerID {
+		return false, nil
+	}
+	for i := range thread.Messages {
+		if thread.Messages[i].ID == messageID && thread.Messages[i].QuestionJSON == expected {
+			thread.Messages[i].QuestionJSON = replacement
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (m *memoryConversations) DeleteWarpConversation(_ context.Context, ownerID, id string) error {
 	if _, err := m.GetWarpConversation(context.Background(), ownerID, id); err != nil {
 		return err
@@ -180,8 +194,8 @@ func (m *memoryConversations) CountWarpMessages(_ context.Context, ids []string)
 	return counts, nil
 }
 
-func historyService(store *memoryConversations) *Service {
-	return NewService(nil, WithConversationStore(store))
+func historyService(t testing.TB, store *memoryConversations) *Service {
+	return serviceForTest(t, nil, WithConversationStore(store))
 }
 
 func ownerCtx(userID string) context.Context {
@@ -191,7 +205,7 @@ func ownerCtx(userID string) context.Context {
 // A turn that produced nothing must not leave an empty thread behind.
 func TestWarpRecordTurnSkipsEmptyTurns(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	// A new thread that was never written back must not hand its generated id to
 	// the client: the next request would send it as an existing conversation,
 	// skip the create, and have nothing to append to.
@@ -210,7 +224,7 @@ func TestWarpRecordTurnSkipsEmptyTurns(t *testing.T) {
 // the owner's backlog, and files both turns.
 func TestWarpRecordTurnCreatesThreadOnFirstTurn(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-1", IsNew: true, question: "how much did we spend?"}, ChatResponse{
 		Answer:    "$12.",
 		ToolCalls: []ChatToolCall{{Name: "query_metrics", DurationMs: 3, TextOffset: 4}},
@@ -231,7 +245,7 @@ func TestWarpRecordTurnCreatesThreadOnFirstTurn(t *testing.T) {
 // A later turn appends to the named thread rather than starting another.
 func TestWarpRecordTurnAppendsToExistingThread(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	first := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-1", IsNew: true, question: "q1"}, ChatResponse{Answer: "a1"})
 	second := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: first, question: "q2"}, ChatResponse{Answer: "a2"})
 	require.Equal(t, first, second)
@@ -243,7 +257,7 @@ func TestWarpRecordTurnAppendsToExistingThread(t *testing.T) {
 // reopened thread shows what happened.
 func TestWarpRecordTurnFilesErrorTurns(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-err", IsNew: true, question: "q"}, ChatResponse{Error: &ChatError{Code: ErrUpstream, Message: "boom"}})
 	require.NotEmpty(t, id)
 	detail, err := service.GetConversation(context.Background(), schemas.WarpOwnerID("u1"), id)
@@ -257,7 +271,7 @@ func TestWarpRecordTurnFilesErrorTurns(t *testing.T) {
 // your budget".
 func TestWarpReopenedErrorTurnKeepsItsCode(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	message := "This deployment's governance rules refused Warp's model call for your account: user budget exceeded: 0.0600 >= 0.0500 dollars"
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-code", IsNew: true, question: "q"}, ChatResponse{Error: &ChatError{Code: ErrBudgetExceeded, Message: message}})
 	require.NotEmpty(t, id)
@@ -288,7 +302,7 @@ func TestWarpReopenedErrorTurnKeepsItsCode(t *testing.T) {
 // was produced, and the reader who left may come back for it.
 func TestWarpRecordTurnSurvivesCancelledContext(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	ctx, cancel := context.WithCancel(ownerCtx("u1"))
 	cancel()
 	id := service.recordTurn(ctx, &Turn{ConversationID: "t-c", IsNew: true, question: "q"}, ChatResponse{Answer: "a"})
@@ -297,7 +311,7 @@ func TestWarpRecordTurnSurvivesCancelledContext(t *testing.T) {
 
 func TestWarpListConversationsUsesCounts(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-u1", IsNew: true, question: "q"}, ChatResponse{Answer: "a"})
 	service.recordTurn(ownerCtx("u2"), &Turn{ConversationID: "t-u2", IsNew: true, question: "other"}, ChatResponse{Answer: "a"})
 
@@ -320,7 +334,7 @@ func TestWarpListConversationsUsesCounts(t *testing.T) {
 }
 
 func TestWarpHistoryWithoutStoreIsUnavailable(t *testing.T) {
-	service := NewService(nil)
+	service := serviceForTest(t, nil)
 	require.False(t, service.HasHistory())
 	_, err := service.ListConversations(context.Background(), "u1", 10)
 	require.ErrorIs(t, err, ErrUnavailable)
@@ -386,7 +400,7 @@ func TestWarpOwnerIDReservesTheGlobalSentinel(t *testing.T) {
 // the exchange looks saved and is not.
 func TestWarpRecordTurnReturnsNoIDWhenPersistenceFails(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 
 	// A store that refuses the append. An id the caller supplied but that never
 	// reached storage must not come back as though the turn were filed - the
@@ -405,7 +419,7 @@ func TestWarpRecordTurnReturnsNoIDWhenPersistenceFails(t *testing.T) {
 // assistant's words attributed to the person who asked.
 func TestWarpRecordTurnPreservesFinalMessageRole(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 
 	turn := &Turn{question: "how much did we spend?", questionRole: "assistant"}
 	saved := service.recordTurn(ownerCtx("u-1"), turn, ChatResponse{Answer: "$412."})
@@ -423,7 +437,7 @@ func TestWarpRecordTurnPreservesFinalMessageRole(t *testing.T) {
 func TestWarpRecordTurnLeavesNoEmptyThreadWhenAppendFails(t *testing.T) {
 	store := newMemoryConversations()
 	store.failAppend = errors.New("append exploded")
-	service := historyService(store)
+	service := historyService(t, store)
 
 	turn := &Turn{question: "how much did we spend?"}
 	saved := service.recordTurn(ownerCtx("u-1"), turn, ChatResponse{Answer: "$412."})
@@ -435,7 +449,7 @@ func TestWarpRecordTurnLeavesNoEmptyThreadWhenAppendFails(t *testing.T) {
 // The sweep expires threads on the configured retention, and on nothing else.
 func TestWarpSweepHistoryUsesConfiguredRetention(t *testing.T) {
 	store := newMemoryConversations()
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
 			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
 			HistoryRetentionDays: 7,
@@ -470,7 +484,7 @@ func TestWarpSweepHistoryUsesConfiguredRetention(t *testing.T) {
 // A deployment with no history store, or none configured, must not error - the
 // cleanup loop runs on a timer and would otherwise log on every tick.
 func TestWarpSweepHistoryWithoutStoreIsUnavailable(t *testing.T) {
-	_, err := NewService(nil).SweepHistory(context.Background())
+	_, err := serviceForTest(t, nil).SweepHistory(context.Background())
 	require.ErrorIs(t, err, ErrUnavailable)
 }
 
@@ -483,7 +497,7 @@ func TestWarpSweepHistoryWithoutStoreIsUnavailable(t *testing.T) {
 // applies to the first thousand is not the setting the operator chose.
 func TestWarpSweepHistoryDrainsEveryBatch(t *testing.T) {
 	store := newMemoryConversations()
-	service := NewService(nil,
+	service := serviceForTest(t, nil,
 		WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{
 			ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
 			HistoryRetentionDays: 7,
@@ -532,7 +546,7 @@ func TestWarpHistoryCleanupStartRacesShutdownSafely(t *testing.T) {
 	for range 50 {
 		// Both dependencies, or StartHistoryCleanup returns at its nil guard and
 		// the test exercises nothing - which is exactly what it did at first.
-		service := NewService(nil,
+		service := serviceForTest(t, nil,
 			WithConversationStore(newMemoryConversations()),
 			WithConfigStore(&recordingStore{row: &tables.TableWarpConfig{ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o"}}),
 		)
@@ -565,7 +579,7 @@ func TestWarpFailedFirstAppendAtCapPreservesExistingThreads(t *testing.T) {
 		}
 	}
 	store.failAppend = errors.New("append exploded")
-	service := historyService(store)
+	service := historyService(t, store)
 
 	saved := service.recordTurn(ownerCtx("u-1"), &Turn{ConversationID: "t-new", IsNew: true, question: "how much did we spend?"}, ChatResponse{Answer: "$412."})
 
@@ -582,7 +596,7 @@ func TestWarpFailedFirstAppendAtCapPreservesExistingThreads(t *testing.T) {
 // client renders a bounded transcript as bounded rather than complete.
 func TestWarpConversationDetailReportsTruncation(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-b", IsNew: true, question: "q"}, ChatResponse{Answer: "a"})
 	require.NotEmpty(t, id)
 	// Stand in for the repository bound: the store reports more messages than
@@ -614,7 +628,7 @@ func TestWarpConversationDetailReportsTruncation(t *testing.T) {
 // then typed arrived as the opening line of an empty thread.
 func TestWarpRecordTurnFilesClarifyingQuestions(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 
 	id := service.recordTurn(ownerCtx("u1"), &Turn{question: "how much did we spend?"}, ChatResponse{
 		FinishReason: "question",
@@ -654,7 +668,7 @@ func TestWarpRecordTurnFilesClarifyingQuestions(t *testing.T) {
 // check has to narrow, not disappear.
 func TestWarpRecordTurnStillSkipsTrulyEmptyTurns(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	require.Empty(t, service.recordTurn(ownerCtx("u1"), &Turn{question: "anything?"}, ChatResponse{}))
 	require.Empty(t, store.threads)
 }
@@ -664,7 +678,7 @@ func TestWarpRecordTurnStillSkipsTrulyEmptyTurns(t *testing.T) {
 // half-checked figure as a settled one.
 func TestWarpRecordTurnKeepsFinishReason(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-partial", IsNew: true, question: "q"}, ChatResponse{
 		Answer: "About $12.", FinishReason: FinishReasonPartial,
 	})
@@ -681,7 +695,7 @@ func TestWarpRecordTurnKeepsFinishReason(t *testing.T) {
 // history can show spend per conversation without loading transcripts.
 func TestWarpRecordTurnFilesUsageAndListsTotals(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	usage := func(tokens int, cost float64) *schemas.BifrostLLMUsage {
 		return &schemas.BifrostLLMUsage{TotalTokens: tokens, Cost: &schemas.BifrostCost{TotalCost: cost}}
 	}
@@ -713,7 +727,7 @@ func TestWarpRecordTurnFilesUsageAndListsTotals(t *testing.T) {
 // about the window or the scope first.
 func TestWarpRecordTurnFilesQuestionTurns(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-q", IsNew: true, question: "what did we spend?"}, ChatResponse{
 		FinishReason: "question",
 		Question:     &Question{Question: "Which time range?", Options: []QuestionOpt{{Label: "Last 7 days", Hint: "-7d"}}},
@@ -732,7 +746,7 @@ func TestWarpRecordTurnFilesQuestionTurns(t *testing.T) {
 // reopened thread should show as this turn's content.
 func TestWarpRecordTurnQuestionWinsOverPreambleAnswer(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-preamble", IsNew: true, question: "what did we spend?"}, ChatResponse{
 		Answer:       "Let me check a few things first.",
 		FinishReason: "question",
@@ -750,7 +764,7 @@ func TestWarpRecordTurnQuestionWinsOverPreambleAnswer(t *testing.T) {
 // split the question at an unrelated point when the thread is reopened.
 func TestWarpRecordTurnQuestionTurnsDropAnswerOffsets(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-offset", IsNew: true, question: "what did we spend?"}, ChatResponse{
 		Answer:    "Let me check a few things first.",
 		ToolCalls: []ChatToolCall{{Name: "query_metrics", DurationMs: 3, TextOffset: 12}},
@@ -779,7 +793,7 @@ func TestWarpFoldCarriesQuestion(t *testing.T) {
 // server minted, and a dropped turn is a silently lost conversation.
 func TestWarpRecordTurnRecreatesMissingThread(t *testing.T) {
 	store := newMemoryConversations()
-	service := historyService(store)
+	service := historyService(t, store)
 	id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "t-lost", IsNew: false, question: "-7d"}, ChatResponse{Answer: "$12."})
 	require.Equal(t, "t-lost", id)
 	thread := store.threads["t-lost"]
@@ -811,7 +825,7 @@ func TestWarpRecordTurnCleanupSparesAConcurrentAppend(t *testing.T) {
 	t.Run("deletes a thread that is still empty", func(t *testing.T) {
 		store := newMemoryConversations()
 		store.failAppend = errors.New("append failed")
-		service := historyService(store)
+		service := historyService(t, store)
 		id := service.recordTurn(ownerCtx("u1"), &Turn{ConversationID: "c-1", IsNew: true, question: "how much?"},
 			ChatResponse{Answer: "a lot"})
 		require.Empty(t, id)
@@ -821,7 +835,7 @@ func TestWarpRecordTurnCleanupSparesAConcurrentAppend(t *testing.T) {
 	t.Run("keeps a thread another request has already written to", func(t *testing.T) {
 		store := newMemoryConversations()
 		store.failAppend = errors.New("append failed")
-		service := historyService(store)
+		service := historyService(t, store)
 		// The racing request got its messages in before this one's append failed.
 		store.onCreate = func(conversation *logstore.WarpConversation) {
 			conversation.Messages = []logstore.WarpMessage{{ID: "m-1", Role: "user", Content: "from the other request"}}
@@ -841,7 +855,7 @@ func TestWarpRecordTurnCleanupSparesAConcurrentAppend(t *testing.T) {
 func TestWarpRecordTurnCleanupSparesAnAppendDuringCleanup(t *testing.T) {
 	store := newMemoryConversations()
 	store.failAppend = errors.New("append failed")
-	service := historyService(store)
+	service := historyService(t, store)
 	store.onCleanupCheck = func(conversation *logstore.WarpConversation) {
 		conversation.Messages = append(conversation.Messages, logstore.WarpMessage{ID: "m-1", Role: "user", Content: "from the other request"})
 	}
@@ -867,7 +881,7 @@ func TestWarpGetConversationUsageCoversTheWholeThread(t *testing.T) {
 			{ID: "m3", Role: "assistant", TotalTokens: 30, Cost: 0.003, CreatedAt: now},
 		},
 	}
-	service := historyService(store)
+	service := historyService(t, store)
 
 	detail, err := service.GetConversation(context.Background(), "u1", "c-long")
 	require.NoError(t, err)

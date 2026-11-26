@@ -42,9 +42,9 @@ func (r *BifrostSpeechResponse) BackfillParams(request *BifrostSpeechRequest) {
 
 // SpeechAlignment represents character-level timing information for audio-text synchronization
 type SpeechAlignment struct {
-	CharStartTimesMs []float64 `json:"char_start_times_ms"` // Start time in milliseconds for each character
-	CharEndTimesMs   []float64 `json:"char_end_times_ms"`   // End time in milliseconds for each character
-	Characters       []string  `json:"characters"`          // Characters corresponding to timing info
+	CharacterStartTimesSeconds []float64 `json:"character_start_times_seconds"` // Start time in seconds for each character
+	CharacterEndTimesSeconds   []float64 `json:"character_end_times_seconds"`   // End time in seconds for each character
+	Characters                 []string  `json:"characters"`                    // Characters corresponding to timing info
 }
 
 // SpeechInput represents the input for a speech request.
@@ -143,10 +143,11 @@ const (
 )
 
 type BifrostSpeechStreamResponse struct {
-	Type        SpeechStreamResponseType   `json:"type"`
-	Audio       []byte                     `json:"audio"`
-	Usage       *SpeechUsage               `json:"usage"`
-	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
+	Type         SpeechStreamResponseType   `json:"type"`
+	Audio        []byte                     `json:"audio"`
+	Usage        *SpeechUsage               `json:"usage"`
+	SessionInput string                     `json:"-"` // the text a speech session spoke, known only at its end, which the log keeps as its input
+	ExtraFields  BifrostResponseExtraFields `json:"extra_fields"`
 }
 
 func (r *BifrostSpeechStreamResponse) BackfillParams(request *BifrostSpeechRequest) {

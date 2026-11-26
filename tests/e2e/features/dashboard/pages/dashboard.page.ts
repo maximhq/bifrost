@@ -9,6 +9,8 @@ export class DashboardPage extends BasePage {
   // Main elements
   readonly pageTitle: Locator
   readonly dateTimePicker: Locator
+  readonly refreshButton: Locator
+  readonly exportTrigger: Locator
 
   // Chart cards
   readonly logVolumeChart: Locator
@@ -32,6 +34,8 @@ export class DashboardPage extends BasePage {
     // Main elements
     this.pageTitle = page.getByRole('heading', { name: /Dashboard/i })
     this.dateTimePicker = page.locator('[data-testid="dashboard-date-picker"]')
+    this.refreshButton = page.getByTestId('dashboard-refresh-btn')
+    this.exportTrigger = page.getByTestId('dashboard-export-trigger')
 
     // Chart cards - using data-testid for robust selectors
     this.logVolumeChart = page.locator('[data-testid="chart-log-volume"]')
@@ -50,6 +54,15 @@ export class DashboardPage extends BasePage {
     // Model filters - select trigger inside each chart's actions area (opens dropdown; Radix uses role=combobox or data-slot=select-trigger)
     this.costModelFilter = page.locator('[data-testid="chart-cost-total-actions"]').locator('[role="combobox"], [data-slot="select-trigger"]').first()
     this.usageModelFilter = page.locator('[data-testid="chart-model-usage-actions"]').locator('[role="combobox"], [data-slot="select-trigger"]').first()
+  }
+
+  /**
+   * Starts a PDF export of every tab from the export menu. Resolves once the item is clicked, not when the file lands.
+   */
+  async startPdfExportAllTabs(): Promise<void> {
+    await this.exportTrigger.click()
+    await this.page.getByTestId('export-pdf-item').hover()
+    await this.page.getByTestId('export-pdf-all-tabs').click()
   }
 
   /**

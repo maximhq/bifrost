@@ -130,6 +130,7 @@ type sessionHeaders struct {
 	virtualKey    string
 	apiKey        string
 	googAPIKey    string
+	xiAPIKey      string
 	baggage       string
 	headers       map[string][]string
 }
@@ -141,6 +142,7 @@ func captureSessionHeaders(ctx *fasthttp.RequestCtx) *sessionHeaders {
 		virtualKey:    string(ctx.Request.Header.Peek("x-bf-vk")),
 		apiKey:        string(ctx.Request.Header.Peek("x-api-key")),
 		googAPIKey:    string(ctx.Request.Header.Peek("x-goog-api-key")),
+		xiAPIKey:      string(ctx.Request.Header.Peek("xi-api-key")),
 		baggage:       string(ctx.Request.Header.Peek("baggage")),
 		headers:       make(map[string][]string),
 	}
@@ -204,8 +206,8 @@ func (h *WSResponsesHandler) handleResponseCreate(session *bfws.Session, setupHe
 		return
 	}
 
-	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(provider); cfgErr == nil &&
-		providerCfg.OpenAIConfig != nil && providerCfg.OpenAIConfig.DisableStore {
+	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(provider)); ok &&
+		stored.Config.OpenAIConfig != nil && stored.Config.OpenAIConfig.DisableStore {
 		event.Store = schemas.Ptr(false)
 	} else {
 		event.Store = schemas.Ptr(true)
@@ -319,8 +321,8 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 	upstreamFromPool := true
 
 	var proxyConfig *schemas.ProxyConfig
-	if providerCfg, cfgErr := h.config.GetProviderConfigRaw(req.Provider); cfgErr == nil && providerCfg != nil {
-		proxyConfig = providerCfg.ProxyConfig
+	if stored, ok := h.config.LiveStore.Collections.Providers.Get(string(req.Provider)); ok {
+		proxyConfig = stored.Config.ProxyConfig
 	}
 
 	// Validate the pinned upstream matches the current request's provider/key.
@@ -564,9 +566,9 @@ func (h *WSResponsesHandler) tryNativeWSUpstream(
 func resolveWSStreamIdleTimeout(config *lib.Config, provider schemas.ModelProvider) time.Duration {
 	idleTimeoutSeconds := schemas.DefaultStreamIdleTimeoutInSeconds
 	if config != nil {
-		if providerCfg, err := config.GetProviderConfigRaw(provider); err == nil && providerCfg != nil &&
-			providerCfg.NetworkConfig != nil && providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds > 0 {
-			idleTimeoutSeconds = providerCfg.NetworkConfig.StreamIdleTimeoutInSeconds
+		if stored, ok := config.LiveStore.Collections.Providers.Get(string(provider)); ok &&
+			stored.Config.NetworkConfig != nil && stored.Config.NetworkConfig.StreamIdleTimeoutInSeconds > 0 {
+			idleTimeoutSeconds = stored.Config.NetworkConfig.StreamIdleTimeoutInSeconds
 		}
 	}
 	if idleTimeoutSeconds <= 0 {
@@ -822,6 +824,9 @@ func (h *WSResponsesHandler) convertEventToRequest(event *schemas.WebSocketRespo
 			params.Text = &text
 		}
 	}
+	if event.AccessPrograms != nil {
+		params.AccessPrograms = event.AccessPrograms
+	}
 	if event.Metadata != nil {
 		var metadata map[string]any
 		if err := sonic.Unmarshal(event.Metadata, &metadata); err == nil {
@@ -882,6 +887,11 @@ func createBifrostContextFromHeaders(handlerStore lib.HandlerStore, setupHeaders
 	if setupHeaders.googAPIKey != "" {
 		if strings.HasPrefix(setupHeaders.googAPIKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.googAPIKey)
+		}
+	}
+	if setupHeaders.xiAPIKey != "" {
+		if strings.HasPrefix(setupHeaders.xiAPIKey, "sk-bf-") {
+			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, setupHeaders.xiAPIKey)
 		}
 	}
 	// The caller's own provider key, under the same gate as on HTTP, set before the identity
@@ -945,7 +955,7 @@ func isSecurityDeniedExtraHeader(name string) bool {
 	}
 	switch name {
 	case "authorization", "proxy-authorization", "cookie", "host", "content-length", "connection", "transfer-encoding",
-		"upgrade", "origin", "x-api-key", "x-goog-api-key", "x-bf-api-key", "x-bf-api-key-id", "x-bf-vk":
+		"upgrade", "origin", "x-api-key", "x-goog-api-key", "xi-api-key", "x-bf-api-key", "x-bf-api-key-id", "x-bf-vk":
 		return true
 	default:
 		return false
@@ -1039,23 +1049,33 @@ func (h *WSResponsesHandler) executeHTTPBridge(
 // writeWSError sends a JSON error event to a WebSocket write target.
 // Accepts either a raw *ws.Conn (pre-session) or a *bfws.Session (mutex-protected).
 func writeWSError(w wsWriter, status int, code, message string) {
-	event := schemas.WebSocketErrorEvent{
-		Type:   schemas.WSEventError,
-		Status: status,
-		Error: &schemas.WebSocketErrorBody{
-			Code:    code,
-			Message: message,
-		},
-	}
-	data, err := sonic.Marshal(event)
+	data, err := wsErrorEvent(status, code, message)
 	if err != nil {
 		return
 	}
 	w.WriteMessage(ws.TextMessage, data)
 }
 
+// wsErrorEvent encodes the JSON error event writeWSError sends.
+func wsErrorEvent(status int, code, message string) ([]byte, error) {
+	return sonic.Marshal(schemas.WebSocketErrorEvent{
+		Type:   schemas.WSEventError,
+		Status: status,
+		Error: &schemas.WebSocketErrorBody{
+			Code:    code,
+			Message: message,
+		},
+	})
+}
+
 // writeWSBifrostError converts a BifrostError to a WS error event.
 func writeWSBifrostError(w wsWriter, bifrostErr *schemas.BifrostError) {
+	status, code, msg := wsBifrostErrorFields(bifrostErr)
+	writeWSError(w, status, code, msg)
+}
+
+// wsBifrostErrorFields is the status, code and message a BifrostError is sent as on a WS error event.
+func wsBifrostErrorFields(bifrostErr *schemas.BifrostError) (int, string, string) {
 	status := 500
 	if bifrostErr.StatusCode != nil && *bifrostErr.StatusCode > 0 {
 		status = *bifrostErr.StatusCode
@@ -1072,7 +1092,7 @@ func writeWSBifrostError(w wsWriter, bifrostErr *schemas.BifrostError) {
 			msg = bifrostErr.Error.Message
 		}
 	}
-	writeWSError(w, status, code, msg)
+	return status, code, msg
 }
 
 // wsResponsesKnownFields lists the fields explicitly handled by WebSocketResponsesEvent.
@@ -1093,6 +1113,7 @@ var wsResponsesKnownFields = map[string]bool{
 	"metadata":             true,
 	"text":                 true,
 	"truncation":           true,
+	"access_programs":      true,
 }
 
 // rewriteUpstreamEvent modifies the raw JSON event for upstream consumption:

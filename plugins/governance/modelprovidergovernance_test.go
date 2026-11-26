@@ -18,19 +18,21 @@ import (
 // Store Tests - Provider Budget
 // ============================================================================
 
+// TestStore_CheckProviderBudget_NoConfig checks that a provider with no governance config is allowed.
 func TestStore_CheckProviderBudget_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	_, err = checkDeploymentBudgets(store, context.Background(), schemas.OpenAI, "", nil)
 	assert.NoError(t, err, "Should allow when no provider config exists")
 }
 
+// TestStore_CheckProviderBudget_NoBudget checks that a provider with no budget is allowed.
 func TestStore_CheckProviderBudget_NoBudget(t *testing.T) {
 	logger := NewMockLogger()
 	provider := buildProviderWithGovernance("openai", nil, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 	}, nil, nil)
 	require.NoError(t, err)
@@ -39,11 +41,12 @@ func TestStore_CheckProviderBudget_NoBudget(t *testing.T) {
 	assert.NoError(t, err, "Should allow when provider has no budget")
 }
 
+// TestStore_CheckProviderBudget_WithinLimit checks that a provider budget within its limit allows the request.
 func TestStore_CheckProviderBudget_WithinLimit(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -53,11 +56,12 @@ func TestStore_CheckProviderBudget_WithinLimit(t *testing.T) {
 	assert.NoError(t, err, "Should allow when budget is within limit")
 }
 
+// TestStore_CheckProviderBudget_Exceeded checks that an exhausted provider budget refuses the request.
 func TestStore_CheckProviderBudget_Exceeded(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -68,11 +72,12 @@ func TestStore_CheckProviderBudget_Exceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
+// TestStore_CheckProviderBudget_WithBaseline checks that usage plus a baseline past the provider budget's limit refuses the request.
 func TestStore_CheckProviderBudget_WithBaseline(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 90.0, "1h")
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -89,9 +94,10 @@ func TestStore_CheckProviderBudget_WithBaseline(t *testing.T) {
 // Store Tests - Provider Rate Limit
 // ============================================================================
 
+// TestStore_CheckProviderRateLimit_NoConfig checks that a provider with no governance config passes the rate limit check.
 func TestStore_CheckProviderRateLimit_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	decision, err := checkDeploymentRateLimits(store, context.Background(), schemas.OpenAI, "", nil, nil)
@@ -99,10 +105,11 @@ func TestStore_CheckProviderRateLimit_NoConfig(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 }
 
+// TestStore_CheckProviderRateLimit_NoRateLimit checks that a provider with no rate limit passes the rate limit check.
 func TestStore_CheckProviderRateLimit_NoRateLimit(t *testing.T) {
 	logger := NewMockLogger()
 	provider := buildProviderWithGovernance("openai", nil, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 	}, nil, nil)
 	require.NoError(t, err)
@@ -112,11 +119,12 @@ func TestStore_CheckProviderRateLimit_NoRateLimit(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 }
 
+// TestStore_CheckProviderRateLimit_TokenLimitExceeded checks that an exhausted provider token limit refuses the request.
 func TestStore_CheckProviderRateLimit_TokenLimitExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -128,11 +136,12 @@ func TestStore_CheckProviderRateLimit_TokenLimitExceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "token limit exceeded")
 }
 
+// TestStore_CheckProviderRateLimit_RequestLimitExceeded checks that an exhausted provider request limit refuses the request.
 func TestStore_CheckProviderRateLimit_RequestLimitExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -144,11 +153,12 @@ func TestStore_CheckProviderRateLimit_RequestLimitExceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "request limit exceeded")
 }
 
+// TestStore_CheckProviderRateLimit_BothLimitsExceeded checks that exhausted provider token and request limits refuse the request.
 func TestStore_CheckProviderRateLimit_BothLimitsExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 1000) // Both at max
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -160,11 +170,12 @@ func TestStore_CheckProviderRateLimit_BothLimitsExceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "rate limit")
 }
 
+// TestStore_CheckProviderRateLimit_WithinLimits checks that provider rate limits within their limits allow the request.
 func TestStore_CheckProviderRateLimit_WithinLimits(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 5000, 1000, 500) // Both within limits
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -179,9 +190,10 @@ func TestStore_CheckProviderRateLimit_WithinLimits(t *testing.T) {
 // Store Tests - Model Budget
 // ============================================================================
 
+// TestStore_CheckModelBudget_NoConfig checks that a model with no model config is allowed.
 func TestStore_CheckModelBudget_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -189,11 +201,12 @@ func TestStore_CheckModelBudget_NoConfig(t *testing.T) {
 	assert.NoError(t, err, "Should allow when no model config exists")
 }
 
+// TestStore_CheckModelBudget_ModelOnly_WithinLimit checks that a model-only budget within its limit allows the request.
 func TestStore_CheckModelBudget_ModelOnly_WithinLimit(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -204,11 +217,12 @@ func TestStore_CheckModelBudget_ModelOnly_WithinLimit(t *testing.T) {
 	assert.NoError(t, err, "Should allow when model budget is within limit")
 }
 
+// TestStore_CheckModelBudget_ModelOnly_Exceeded checks that an exhausted model-only budget refuses the request.
 func TestStore_CheckModelBudget_ModelOnly_Exceeded(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -236,12 +250,13 @@ func buildModelConfigMultiBudget(id, model string, provider *string, budgets []*
 	return mc
 }
 
+// TestStore_CheckModelBudget_MultiBudget_OneExceededBlocks checks that one exhausted budget among several on a model config refuses the request.
 func TestStore_CheckModelBudget_MultiBudget_OneExceededBlocks(t *testing.T) {
 	logger := NewMockLogger()
 	within := buildBudget("b-day", 100.0, "1d")                  // plenty of headroom
 	exceeded := buildBudgetWithUsage("b-hour", 10.0, 10.0, "1h") // at limit
 	mc := buildModelConfigMultiBudget("mc-multi", "gpt-4", nil, []*configstoreTables.TableBudget{within, exceeded})
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*within, *exceeded},
 	}, nil, nil)
@@ -252,12 +267,13 @@ func TestStore_CheckModelBudget_MultiBudget_OneExceededBlocks(t *testing.T) {
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
+// TestStore_CheckModelBudget_MultiBudget_AllWithinPasses checks that several budgets on a model config, all within their limits, allow the request.
 func TestStore_CheckModelBudget_MultiBudget_AllWithinPasses(t *testing.T) {
 	logger := NewMockLogger()
 	b1 := buildBudget("b-day", 100.0, "1d")
 	b2 := buildBudget("b-hour", 10.0, "1h")
 	mc := buildModelConfigMultiBudget("mc-multi", "gpt-4", nil, []*configstoreTables.TableBudget{b1, b2})
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*b1, *b2},
 	}, nil, nil)
@@ -267,12 +283,13 @@ func TestStore_CheckModelBudget_MultiBudget_AllWithinPasses(t *testing.T) {
 	assert.NoError(t, err, "all budgets within limit should pass")
 }
 
+// TestStore_UpdateModelBudgetUsage_MultiBudget_BumpsAll checks that charging a model config charges every budget it holds.
 func TestStore_UpdateModelBudgetUsage_MultiBudget_BumpsAll(t *testing.T) {
 	logger := NewMockLogger()
 	b1 := buildBudget("b-day", 100.0, "1d")
 	b2 := buildBudget("b-hour", 50.0, "1h")
 	mc := buildModelConfigMultiBudget("mc-multi", "gpt-4", nil, []*configstoreTables.TableBudget{b1, b2})
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*b1, *b2},
 	}, nil, nil)
@@ -288,12 +305,13 @@ func TestStore_UpdateModelBudgetUsage_MultiBudget_BumpsAll(t *testing.T) {
 	}
 }
 
+// TestStore_CheckModelBudget_ModelWithProvider_WithinLimit checks that a model and provider budget within its limit allows the request.
 func TestStore_CheckModelBudget_ModelWithProvider_WithinLimit(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4", &providerStr, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -304,12 +322,13 @@ func TestStore_CheckModelBudget_ModelWithProvider_WithinLimit(t *testing.T) {
 	assert.NoError(t, err, "Should allow when model+provider budget is within limit")
 }
 
+// TestStore_CheckModelBudget_ModelWithProvider_Exceeded checks that an exhausted model and provider budget refuses the request.
 func TestStore_CheckModelBudget_ModelWithProvider_Exceeded(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4", &providerStr, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -321,6 +340,7 @@ func TestStore_CheckModelBudget_ModelWithProvider_Exceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
+// TestStore_CheckModelBudget_BothModelAndModelProvider_ChecksBoth checks that an exhausted model-only budget refuses the request even when the model and provider budget has room.
 func TestStore_CheckModelBudget_BothModelAndModelProvider_ChecksBoth(t *testing.T) {
 	logger := NewMockLogger()
 	// Model-only budget (exceeded)
@@ -330,7 +350,7 @@ func TestStore_CheckModelBudget_BothModelAndModelProvider_ChecksBoth(t *testing.
 	budget2 := buildBudget("budget2", 200.0, "1h")
 	providerStr := "openai"
 	modelConfig2 := buildModelConfig("mc2", "gpt-4", &providerStr, budget2, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		Budgets:      []configstoreTables.TableBudget{*budget1, *budget2},
 	}, nil, nil)
@@ -342,13 +362,14 @@ func TestStore_CheckModelBudget_BothModelAndModelProvider_ChecksBoth(t *testing.
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
+// TestStore_CheckModelBudget_ProviderSpecific_DifferentProvider_Passes checks that a provider-specific model budget does not govern another provider.
 func TestStore_CheckModelBudget_ProviderSpecific_DifferentProvider_Passes(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has budget (exceeded)
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -364,9 +385,10 @@ func TestStore_CheckModelBudget_ProviderSpecific_DifferentProvider_Passes(t *tes
 // Store Tests - Model Rate Limit
 // ============================================================================
 
+// TestStore_CheckModelRateLimit_NoConfig checks that a model with no model config passes the rate limit check.
 func TestStore_CheckModelRateLimit_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -375,11 +397,12 @@ func TestStore_CheckModelRateLimit_NoConfig(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 }
 
+// TestStore_CheckModelRateLimit_ModelOnly_TokenLimitExceeded checks that an exhausted model-only token limit refuses the request.
 func TestStore_CheckModelRateLimit_ModelOnly_TokenLimitExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -392,11 +415,12 @@ func TestStore_CheckModelRateLimit_ModelOnly_TokenLimitExceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "token limit exceeded")
 }
 
+// TestStore_CheckModelRateLimit_ModelOnly_RequestLimitExceeded checks that an exhausted model-only request limit refuses the request.
 func TestStore_CheckModelRateLimit_ModelOnly_RequestLimitExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -409,12 +433,13 @@ func TestStore_CheckModelRateLimit_ModelOnly_RequestLimitExceeded(t *testing.T) 
 	assert.Contains(t, err.Error(), "request limit exceeded")
 }
 
+// TestStore_CheckModelRateLimit_ModelWithProvider_WithinLimits checks that model and provider rate limits within their limits allow the request.
 func TestStore_CheckModelRateLimit_ModelWithProvider_WithinLimits(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 5000, 1000, 500) // Within limits
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4", &providerStr, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -426,6 +451,7 @@ func TestStore_CheckModelRateLimit_ModelWithProvider_WithinLimits(t *testing.T) 
 	assert.Equal(t, DecisionAllow, decision)
 }
 
+// TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth checks that an exhausted model-only token limit refuses the request even when the model and provider limit has room.
 func TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth(t *testing.T) {
 	logger := NewMockLogger()
 	// Model-only rate limit (exceeded)
@@ -435,7 +461,7 @@ func TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth(t *testi
 	rateLimit2 := buildRateLimitWithUsage("rl2", 20000, 5000, 2000, 500)
 	providerStr := "openai"
 	modelConfig2 := buildModelConfig("mc2", "gpt-4", &providerStr, nil, rateLimit2)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit1, *rateLimit2},
 	}, nil, nil)
@@ -448,6 +474,7 @@ func TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth(t *testi
 	assert.Contains(t, err.Error(), "token limit exceeded")
 }
 
+// TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth_RequestLimit checks the same for an exhausted model-only request limit.
 func TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	// Model-only rate limit (request limit exceeded)
@@ -457,7 +484,7 @@ func TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth_RequestL
 	rateLimit2 := buildRateLimitWithUsage("rl2", 20000, 5000, 2000, 500)
 	providerStr := "openai"
 	modelConfig2 := buildModelConfig("mc2", "gpt-4", &providerStr, nil, rateLimit2)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit1, *rateLimit2},
 	}, nil, nil)
@@ -470,13 +497,14 @@ func TestStore_CheckModelRateLimit_BothModelAndModelProvider_ChecksBoth_RequestL
 	assert.Contains(t, err.Error(), "request limit exceeded")
 }
 
+// TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes checks that a provider-specific model token limit does not govern another provider.
 func TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has rate limit (exceeded)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -489,13 +517,14 @@ func TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes(t *
 	assert.Equal(t, DecisionAllow, decision)
 }
 
+// TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes_RequestLimit checks that a provider-specific model request limit does not govern another provider.
 func TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has rate limit (request limit exceeded)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -512,20 +541,22 @@ func TestStore_CheckModelRateLimit_ProviderSpecific_DifferentProvider_Passes_Req
 // Store Tests - Update Provider Budget Usage
 // ============================================================================
 
+// TestStore_UpdateProviderBudgetUsage_NoConfig checks that charging a provider with no governance config is not an error.
 func TestStore_UpdateProviderBudgetUsage_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	err = chargeDeploymentBudgets(store, context.Background(), "", schemas.OpenAI, 10.0)
 	assert.NoError(t, err, "Should not error when no provider config exists")
 }
 
+// TestStore_UpdateProviderBudgetUsage_UpdatesUsage checks that charging a provider adds the cost to its budget.
 func TestStore_UpdateProviderBudgetUsage_UpdatesUsage(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -552,20 +583,22 @@ func TestStore_UpdateProviderBudgetUsage_UpdatesUsage(t *testing.T) {
 // Store Tests - Update Provider Rate Limit Usage
 // ============================================================================
 
+// TestStore_UpdateProviderRateLimitUsage_NoConfig checks that counting usage against a provider with no governance config is not an error.
 func TestStore_UpdateProviderRateLimitUsage_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	err = chargeDeploymentRateLimits(store, context.Background(), "", schemas.OpenAI, 1000, true, true)
 	assert.NoError(t, err, "Should not error when no provider config exists")
 }
 
+// TestStore_UpdateProviderRateLimitUsage_UpdatesTokens checks that counting tokens against a provider adds them to its rate limit.
 func TestStore_UpdateProviderRateLimitUsage_UpdatesTokens(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimit("rl1", 10000, 1000)
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -590,11 +623,12 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesTokens(t *testing.T) {
 	assert.Contains(t, err.Error(), "token limit exceeded")
 }
 
+// TestStore_UpdateProviderRateLimitUsage_UpdatesRequests checks that counting a request against a provider adds it to its rate limit.
 func TestStore_UpdateProviderRateLimitUsage_UpdatesRequests(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimit("rl1", 10000, 1000)
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -628,9 +662,10 @@ func TestStore_UpdateProviderRateLimitUsage_UpdatesRequests(t *testing.T) {
 // Store Tests - Update Model Budget Usage
 // ============================================================================
 
+// TestStore_UpdateModelBudgetUsage_NoConfig checks that charging a model with no model config is not an error.
 func TestStore_UpdateModelBudgetUsage_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -638,11 +673,12 @@ func TestStore_UpdateModelBudgetUsage_NoConfig(t *testing.T) {
 	assert.NoError(t, err, "Should not error when no model config exists")
 }
 
+// TestStore_UpdateModelBudgetUsage_ModelOnly_UpdatesUsage checks that charging a model adds the cost to its model-only budget.
 func TestStore_UpdateModelBudgetUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -666,6 +702,7 @@ func TestStore_UpdateModelBudgetUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
+// TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth checks that charging a model on a provider adds the cost to both the model-only and the model and provider budgets.
 func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T) {
 	logger := NewMockLogger()
 	// Model-only budget
@@ -675,7 +712,7 @@ func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T
 	budget2 := buildBudget("budget2", 200.0, "1h")
 	providerStr := "openai"
 	modelConfig2 := buildModelConfig("mc2", "gpt-4", &providerStr, budget2, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		Budgets:      []configstoreTables.TableBudget{*budget1, *budget2},
 	}, nil, nil)
@@ -704,9 +741,10 @@ func TestStore_UpdateModelBudgetUsage_ModelWithProvider_UpdatesBoth(t *testing.T
 // Store Tests - Update Model Rate Limit Usage
 // ============================================================================
 
+// TestStore_UpdateModelRateLimitUsage_NoConfig checks that counting usage against a model with no model config is not an error.
 func TestStore_UpdateModelRateLimitUsage_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	provider := schemas.OpenAI
@@ -714,11 +752,12 @@ func TestStore_UpdateModelRateLimitUsage_NoConfig(t *testing.T) {
 	assert.NoError(t, err, "Should not error when no model config exists")
 }
 
+// TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage checks that counting tokens against a model adds them to its model-only rate limit.
 func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimit("rl1", 10000, 1000)
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -744,6 +783,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage(t *testing.T) {
 	assert.Contains(t, err.Error(), "token limit exceeded")
 }
 
+// TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage checks that counting tokens against a model on a provider adds them to both the model-only and the model and provider rate limits.
 func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage(t *testing.T) {
 	logger := NewMockLogger()
 	// Model-only rate limit
@@ -753,7 +793,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage(t *testi
 	rateLimit2 := buildRateLimit("rl2", 20000, 2000)
 	providerStr := "openai"
 	modelConfig2 := buildModelConfig("mc2", "gpt-4", &providerStr, nil, rateLimit2)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit1, *rateLimit2},
 	}, nil, nil)
@@ -779,11 +819,12 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage(t *testi
 	assert.Contains(t, err.Error(), "token limit exceeded")
 }
 
+// TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage_RequestLimit checks that counting a request against a model adds it to its model-only rate limit.
 func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimit("rl1", 10000, 1000)
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -814,6 +855,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelOnly_UpdatesUsage_RequestLimit(t *
 	assert.Contains(t, err.Error(), "request limit exceeded")
 }
 
+// TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestLimit checks that counting a request against a model on a provider adds it to both rate limits.
 func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	// Model-only rate limit
@@ -823,7 +865,7 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestL
 	rateLimit2 := buildRateLimit("rl2", 20000, 2000)
 	providerStr := "openai"
 	modelConfig2 := buildModelConfig("mc2", "gpt-4", &providerStr, nil, rateLimit2)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig1, *modelConfig2},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit1, *rateLimit2},
 	}, nil, nil)
@@ -858,29 +900,31 @@ func TestStore_UpdateModelRateLimitUsage_ModelWithProvider_UpdatesUsage_RequestL
 // Resolver Tests - evaluateProviderAndModelLimits
 // ============================================================================
 
+// TestResolver_evaluateProviderAndModelLimits_NoConfigs checks that a request nothing governs is allowed.
 func TestResolver_evaluateProviderAndModelLimits_NoConfigs(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
 	assertDecision(t, DecisionAllow, result)
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderBudgetExceeded checks that an exhausted provider budget refuses the request.
 func TestResolver_evaluateProviderAndModelLimits_ProviderBudgetExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -888,17 +932,18 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderBudgetExceeded(t *testi
 	assert.Contains(t, result.Reason, "Budget exceeded")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitExceeded checks that an exhausted provider rate limit refuses the request.
 func TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -906,17 +951,18 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitExceeded(t *te
 	assert.Contains(t, result.Reason, "Rate limit exceeded")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ModelBudgetExceeded checks that an exhausted model budget refuses the request.
 func TestResolver_evaluateProviderAndModelLimits_ModelBudgetExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -924,17 +970,18 @@ func TestResolver_evaluateProviderAndModelLimits_ModelBudgetExceeded(t *testing.
 	assert.Contains(t, result.Reason, "Budget exceeded")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ModelRateLimitExceeded checks that an exhausted model token limit refuses the request.
 func TestResolver_evaluateProviderAndModelLimits_ModelRateLimitExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -942,17 +989,18 @@ func TestResolver_evaluateProviderAndModelLimits_ModelRateLimitExceeded(t *testi
 	assert.Contains(t, result.Reason, "Rate limit exceeded")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ModelRateLimitExceeded_RequestLimit checks that an exhausted model request limit refuses the request.
 func TestResolver_evaluateProviderAndModelLimits_ModelRateLimitExceeded_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -960,6 +1008,7 @@ func TestResolver_evaluateProviderAndModelLimits_ModelRateLimitExceeded_RequestL
 	assert.Contains(t, result.Reason, "Rate limit exceeded")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderBudgetThenModelBudget checks that an exhausted provider budget refuses the request before the model budget is reached.
 func TestResolver_evaluateProviderAndModelLimits_ProviderBudgetThenModelBudget(t *testing.T) {
 	logger := NewMockLogger()
 	// Provider budget exceeded
@@ -968,14 +1017,14 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderBudgetThenModelBudget(t
 	// Model budget within limit
 	modelBudget := buildBudget("budget2", 200.0, "1h")
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -984,6 +1033,7 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderBudgetThenModelBudget(t
 	assert.Contains(t, result.Reason, "Budget exceeded")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitThenModelRateLimit checks that an exhausted provider token limit refuses the request before the model limit is reached.
 func TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitThenModelRateLimit(t *testing.T) {
 	logger := NewMockLogger()
 	// Provider rate limit exceeded
@@ -992,14 +1042,14 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitThenModelRateL
 	// Model rate limit within limit
 	modelRateLimit := buildRateLimit("rl2", 20000, 2000)
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, modelRateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*providerRateLimit, *modelRateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -1008,6 +1058,7 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitThenModelRateL
 	assert.Contains(t, result.Reason, "Rate limit exceeded")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitThenModelRateLimit_RequestLimit checks the same for an exhausted provider request limit.
 func TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitThenModelRateLimit_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	// Provider rate limit exceeded (request limit)
@@ -1016,14 +1067,14 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitThenModelRateL
 	// Model rate limit within limit
 	modelRateLimit := buildRateLimit("rl2", 20000, 2000)
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, modelRateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*providerRateLimit, *modelRateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -1032,6 +1083,7 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderRateLimitThenModelRateL
 	assert.Contains(t, result.Reason, "Rate limit exceeded")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_AllChecksPass checks that provider and model limits with room allow the request.
 func TestResolver_evaluateProviderAndModelLimits_AllChecksPass(t *testing.T) {
 	logger := NewMockLogger()
 	// Provider budget and rate limit within limits
@@ -1042,7 +1094,7 @@ func TestResolver_evaluateProviderAndModelLimits_AllChecksPass(t *testing.T) {
 	modelBudget := buildBudget("budget2", 200.0, "1h")
 	modelRateLimit := buildRateLimit("rl2", 20000, 2000)
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, modelRateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
@@ -1050,7 +1102,7 @@ func TestResolver_evaluateProviderAndModelLimits_AllChecksPass(t *testing.T) {
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	result := evaluateDeploymentLimits(resolver, ctx, schemas.OpenAI, "gpt-4")
@@ -1058,17 +1110,18 @@ func TestResolver_evaluateProviderAndModelLimits_AllChecksPass(t *testing.T) {
 	assert.Contains(t, result.Reason, "spending checks passed")
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderOnly_NoModel checks that a request naming no model answers only to its provider's limits.
 func TestResolver_evaluateProviderAndModelLimits_ProviderOnly_NoModel(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	// No model provided
@@ -1083,13 +1136,13 @@ func TestGovernancePlugin_Evaluate_SkipFlagBypassesProviderBudget(t *testing.T) 
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin := &GovernancePlugin{store: store, resolver: NewBudgetResolver(store, nil, logger, nil)}
+	plugin := &GovernancePlugin{store: store, resolver: budgetResolverForTest(t, store, nil, logger)}
 
 	ctx := emptyCtx()
 	_, bifrostErr := plugin.Evaluate(ctx, &EvaluationRequest{
@@ -1114,13 +1167,13 @@ func TestGovernancePlugin_Evaluate_SkipFlagBypassesProviderRateLimit(t *testing.
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin := &GovernancePlugin{store: store, resolver: NewBudgetResolver(store, nil, logger, nil)}
+	plugin := &GovernancePlugin{store: store, resolver: budgetResolverForTest(t, store, nil, logger)}
 
 	ctx := emptyCtx()
 	_, bifrostErr := plugin.Evaluate(ctx, &EvaluationRequest{
@@ -1139,17 +1192,18 @@ func TestGovernancePlugin_Evaluate_SkipFlagBypassesProviderRateLimit(t *testing.
 	assertDecision(t, DecisionAllow, result)
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ModelOnly_NoProvider checks that a request naming no provider answers only to its model's limits.
 func TestResolver_evaluateProviderAndModelLimits_ModelOnly_NoProvider(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudget("budget1", 100.0, "1h")
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	// No provider provided
@@ -1157,19 +1211,20 @@ func TestResolver_evaluateProviderAndModelLimits_ModelOnly_NoProvider(t *testing
 	assertDecision(t, DecisionAllow, result)
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderSpecificBudget_DifferentProvider_Passes checks that a provider-specific model budget does not refuse a request to another provider.
 func TestResolver_evaluateProviderAndModelLimits_ProviderSpecificBudget_DifferentProvider_Passes(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has budget (exceeded)
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	// Request with Azure (different provider) for same model should pass
@@ -1177,19 +1232,20 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderSpecificBudget_Differen
 	assertDecision(t, DecisionAllow, result)
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderSpecificRateLimit_DifferentProvider_Passes checks that a provider-specific model token limit does not refuse a request to another provider.
 func TestResolver_evaluateProviderAndModelLimits_ProviderSpecificRateLimit_DifferentProvider_Passes(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has rate limit (exceeded)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	// Request with Azure (different provider) for same model should pass
@@ -1197,19 +1253,20 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderSpecificRateLimit_Diffe
 	assertDecision(t, DecisionAllow, result)
 }
 
+// TestResolver_evaluateProviderAndModelLimits_ProviderSpecificRateLimit_DifferentProvider_Passes_RequestLimit checks the same for a provider-specific model request limit.
 func TestResolver_evaluateProviderAndModelLimits_ProviderSpecificRateLimit_DifferentProvider_Passes_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has rate limit (request limit exceeded)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	resolver := NewBudgetResolver(store, nil, logger, nil)
+	resolver := budgetResolverForTest(t, store, nil, logger)
 	ctx := emptyCtx()
 
 	// Request with Azure (different provider) for same model should pass
@@ -1221,17 +1278,18 @@ func TestResolver_evaluateProviderAndModelLimits_ProviderSpecificRateLimit_Diffe
 // End-to-End Tests - PreLLMHook Integration
 // ============================================================================
 
+// TestPreLLMHook_ProviderBudgetExceeded_NoVirtualKey checks that a request with no virtual key is short-circuited by an exhausted provider budget.
 func TestPreLLMHook_ProviderBudgetExceeded_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1248,17 +1306,18 @@ func TestPreLLMHook_ProviderBudgetExceeded_NoVirtualKey(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
 
+// TestPreLLMHook_ProviderRateLimitExceeded_NoVirtualKey checks that a request with no virtual key is short-circuited by an exhausted provider rate limit.
 func TestPreLLMHook_ProviderRateLimitExceeded_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1275,17 +1334,18 @@ func TestPreLLMHook_ProviderRateLimitExceeded_NoVirtualKey(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
+// TestPreLLMHook_ModelBudgetExceeded_NoVirtualKey checks that a request with no virtual key is short-circuited by an exhausted model budget.
 func TestPreLLMHook_ModelBudgetExceeded_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1302,17 +1362,18 @@ func TestPreLLMHook_ModelBudgetExceeded_NoVirtualKey(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
 
+// TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey checks that a request with no virtual key is short-circuited by an exhausted model token limit.
 func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1329,17 +1390,18 @@ func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
+// TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit checks the same for an exhausted model request limit.
 func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1356,6 +1418,7 @@ func TestPreLLMHook_ModelRateLimitExceeded_NoVirtualKey_RequestLimit(t *testing.
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
+// TestPreLLMHook_AllChecksPass_NoVirtualKey checks that a request with no virtual key passes when every provider and model limit has room.
 func TestPreLLMHook_AllChecksPass_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// Provider budget and rate limit within limits
@@ -1366,7 +1429,7 @@ func TestPreLLMHook_AllChecksPass_NoVirtualKey(t *testing.T) {
 	modelBudget := buildBudget("budget2", 200.0, "1h")
 	modelRateLimit := buildRateLimit("rl2", 20000, 2000)
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, modelRateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
@@ -1374,7 +1437,7 @@ func TestPreLLMHook_AllChecksPass_NoVirtualKey(t *testing.T) {
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1391,6 +1454,7 @@ func TestPreLLMHook_AllChecksPass_NoVirtualKey(t *testing.T) {
 	assert.NotNil(t, result)
 }
 
+// TestPreLLMHook_ProviderBudgetThenModelBudget_NoVirtualKey checks that an exhausted provider budget short-circuits a request with no virtual key before its model budget is reached.
 func TestPreLLMHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// Provider budget exceeded
@@ -1399,14 +1463,14 @@ func TestPreLLMHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
 	// Model budget within limit
 	modelBudget := buildBudget("budget2", 200.0, "1h")
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, modelBudget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*providerBudget, *modelBudget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1424,19 +1488,20 @@ func TestPreLLMHook_ProviderBudgetThenModelBudget_NoVirtualKey(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
 
+// TestPreLLMHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtualKey checks that a provider-specific model budget does not short-circuit a request to another provider.
 func TestPreLLMHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has budget (exceeded)
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1453,19 +1518,20 @@ func TestPreLLMHook_ProviderSpecificModelBudget_DifferentProvider_Passes_NoVirtu
 	assert.NotNil(t, result)
 }
 
+// TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey checks that a provider-specific model token limit does not short-circuit a request to another provider.
 func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has rate limit (exceeded)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // Tokens at max
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1482,19 +1548,20 @@ func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVi
 	assert.NotNil(t, result)
 }
 
+// TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey_RequestLimit checks the same for a provider-specific model request limit.
 func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVirtualKey_RequestLimit(t *testing.T) {
 	logger := NewMockLogger()
 	// OpenAI GPT-4O has rate limit (request limit exceeded)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 0, 1000, 1000) // Requests at max
 	providerStr := "openai"
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	ctx := emptyCtx()
@@ -1515,19 +1582,20 @@ func TestPreLLMHook_ProviderSpecificModelRateLimit_DifferentProvider_Passes_NoVi
 // End-to-End Tests - PreLLMHook Integration with Virtual Key Fallback
 // ============================================================================
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded checks that an exhausted key budget short-circuits a request whose provider and model limits have room.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key budget exceeded
 	vkBudget := buildBudgetWithUsage("vk-budget1", 100.0, 100.1, "1h") // Over limit
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", vkBudget)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*vkBudget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1546,19 +1614,20 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "budget exceeded")
 }
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token checks that an exhausted key token limit short-circuits a request whose provider and model limits have room.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key rate limit exceeded (token)
 	vkRateLimit := buildRateLimitWithUsage("vk-rl1", 10000, 10000, 1000, 0) // Tokens at max
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", vkRateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*vkRateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1577,19 +1646,20 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Token(t *testi
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request checks that an exhausted key request limit short-circuits a request whose provider and model limits have room.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key rate limit exceeded (request)
 	vkRateLimit := buildRateLimitWithUsage("vk-rl1", 10000, 0, 1000, 1000) // Requests at max
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", vkRateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*vkRateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1608,6 +1678,7 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyRateLimitExceeded_Request(t *tes
 	assert.Contains(t, shortCircuit.Error.Error.Message, "rate limit")
 }
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyChecksPass checks that a request passes when its provider, model and key limits all have room.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
@@ -1616,12 +1687,12 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyChecksPass(t *testing.T) {
 	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{
 		buildProviderConfig("openai", []string{"*"}),
 	}
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1649,7 +1720,7 @@ func TestPreLLMHook_SkipKeySelection(t *testing.T) {
 	// Valid VK whose budget is already exceeded, so enforcement is observable when it runs.
 	vkBudget := buildBudgetWithUsage("vk-budget1", 100.0, 100.1, "1h")
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", vkBudget)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*vkBudget},
 	}, nil, nil)
@@ -1672,7 +1743,7 @@ func TestPreLLMHook_SkipKeySelection(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(tc.isVkMandatory)}, logger, store, nil, nil, nil, nil)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(tc.isVkMandatory)}, logger, store, nil, nil, nil, store.live)
 			require.NoError(t, err)
 
 			parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-1")
@@ -1710,13 +1781,13 @@ func TestPreLLMHook_SkipKeySelection(t *testing.T) {
 // short-circuit — a path that was unreachable while SkipKeySelection bypassed governance.
 func TestPreLLMHook_RequiredHeaders_SkipKeySelection(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	plugin, err := InitFromStore(context.Background(), &Config{
 		IsVkMandatory:   boolPtr(false),
 		RequiredHeaders: &[]string{"x-required-header"},
-	}, logger, store, nil, nil, nil, nil)
+	}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -1757,14 +1828,15 @@ func TestPreLLMHook_RequiredHeaders_SkipKeySelection(t *testing.T) {
 	}
 }
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyNotFound checks that an unknown virtual key short-circuits a request whose provider and model limits have room.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyNotFound(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key not found
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-nonexistent")
@@ -1783,17 +1855,18 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyNotFound(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "not found")
 }
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyBlocked checks that an inactive virtual key short-circuits a request whose provider and model limits have room.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyBlocked(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
 	// Virtual key is inactive
 	vk := buildVirtualKey("vk1", "sk-bf-test", "Test VK", false) // Inactive
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1812,6 +1885,7 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyBlocked(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "inactive")
 }
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyProviderBlocked checks that a key that does not grant the provider short-circuits the request.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
@@ -1820,12 +1894,12 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
 		buildProviderConfig("anthropic", []string{"claude-3-sonnet"}), // Only Anthropic allowed
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1844,6 +1918,7 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyProviderBlocked(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
 }
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked checks that a key that does not grant the model short-circuits the request.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (no limits)
@@ -1852,12 +1927,12 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
 		buildProviderConfig("openai", []string{"gpt-4", "gpt-4-turbo"}), // Only these models allowed
 	}
 	vk := buildVirtualKeyWithProviders("vk1", "sk-bf-test", "Test VK", providerConfigs)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1876,6 +1951,7 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
 }
 
+// TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelPermitProviderLimits checks that an exhausted key budget short-circuits the request when the key's provider configs carry limits too.
 func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelPermitProviderLimits(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (within limits)
@@ -1886,7 +1962,7 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelPermitPr
 	// Virtual key budget exceeded
 	vkBudget := buildBudgetWithUsage("vk-budget1", 100.0, 100.1, "1h") // Over limit
 	vk := buildVirtualKeyWithBudget("vk1", "sk-bf-test", "Test VK", vkBudget)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:    []configstoreTables.TableProvider{*provider},
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
@@ -1894,7 +1970,7 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelPermitPr
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	parentCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyVirtualKey, "sk-bf-test")
@@ -1917,19 +1993,20 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelPermitPr
 // End-to-End Tests - PostHook Integration (Usage Tracking)
 // ============================================================================
 
+// TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey checks that the post hook charges a provider budget for a request with no virtual key.
 func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// Set budget with initial usage close to limit to test the flow
 	// Note: Without model catalog, cost will be 0, so we test the flow even if budget isn't actually updated
 	budget := buildBudgetWithUsage("budget1", 100.0, 50.0, "1h")
 	provider := buildProviderWithGovernance("openai", budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers: []configstoreTables.TableProvider{*provider},
 		Budgets:   []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	// First request: PreLLMHook should pass, PostHook updates usage
@@ -1985,6 +2062,7 @@ func TestPostHook_UpdatesProviderBudgetUsage_NoVirtualKey(t *testing.T) {
 	assert.Nil(t, shortCircuit2, "Second request should pass PreLLMHook (cost is 0 without model catalog)")
 }
 
+// TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey checks that the post hook counts a request with no virtual key against its provider rate limit.
 func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// Set rate limit: 10000 tokens, 1000 requests
@@ -1992,13 +2070,13 @@ func TestPostHook_UpdatesProviderRateLimitUsage_NoVirtualKey(t *testing.T) {
 	// Second request: Should fail because we're already at the limit
 	rateLimit := buildRateLimit("rl1", 10000, 1000)
 	provider := buildProviderWithGovernance("openai", nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		Providers:  []configstoreTables.TableProvider{*provider},
 		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	// First request: PreLLMHook should pass, PostHook updates usage to 10000
@@ -2059,13 +2137,13 @@ func TestPostHook_TracksVirtualKeyUsageWhenUserIDPresent(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	defer plugin.Cleanup()
 
@@ -2113,13 +2191,13 @@ func TestPostHook_SkipVirtualKeyUsageTrackingFlag(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	defer plugin.Cleanup()
 
@@ -2171,13 +2249,13 @@ func TestPostMCPHook_TracksVirtualKeyUsageWhenUserIDPresent(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	defer plugin.Cleanup()
 
@@ -2213,13 +2291,13 @@ func TestPostMCPHook_SkipVirtualKeyUsageTrackingFlag(t *testing.T) {
 	logger := NewMockLogger()
 	rateLimit := buildRateLimitWithUsage("vk-rl", 10000, 0, 1000, 0)
 	vk := buildVirtualKeyWithRateLimit("vk1", "sk-bf-test", "Test VK", rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		RateLimits:  []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 	defer plugin.Cleanup()
 
@@ -2248,19 +2326,20 @@ func TestPostMCPHook_SkipVirtualKeyUsageTrackingFlag(t *testing.T) {
 	assert.Equal(t, "user1", bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID))
 }
 
+// TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey checks that the post hook charges a model budget for a request with no virtual key.
 func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// Set budget with initial usage close to limit to test the flow
 	// Note: Without model catalog, cost will be 0, so we test the flow even if budget isn't actually updated
 	budget := buildBudgetWithUsage("budget1", 100.0, 50.0, "1h")
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	// First request: PreLLMHook should pass, PostHook updates usage
@@ -2316,6 +2395,7 @@ func TestPostHook_UpdatesModelBudgetUsage_NoVirtualKey(t *testing.T) {
 	assert.Nil(t, shortCircuit2, "Second request should pass PreLLMHook (cost is 0 without model catalog)")
 }
 
+// TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey checks that the post hook counts a request with no virtual key against its model rate limit.
 func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
 	logger := NewMockLogger()
 	// Set rate limit: 10000 tokens, 1000 requests
@@ -2323,13 +2403,13 @@ func TestPostHook_UpdatesModelRateLimitUsage_NoVirtualKey(t *testing.T) {
 	// Second request: Should fail because we're already at the limit
 	rateLimit := buildRateLimit("rl1", 10000, 1000)
 	modelConfig := buildModelConfig("mc1", "gpt-4", nil, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
 	require.NoError(t, err)
 
-	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, nil)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, store, nil, nil, nil, store.live)
 	require.NoError(t, err)
 
 	// First request: PreLLMHook should pass, PostHook updates usage to 10000
@@ -2396,7 +2476,7 @@ func TestStore_CheckModelBudget_CrossProviderModelMatch(t *testing.T) {
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
 
 	mc := newTestModelCatalog(t)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, mc, nil)
@@ -2416,7 +2496,7 @@ func TestStore_CheckModelBudget_CrossProviderModelMatch_WithinLimit(t *testing.T
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
 
 	mc := newTestModelCatalog(t)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, mc, nil)
@@ -2434,7 +2514,7 @@ func TestStore_CheckModelRateLimit_CrossProviderModelMatch(t *testing.T) {
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, nil, rateLimit)
 
 	mc := newTestModelCatalog(t)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, mc, nil)
@@ -2454,7 +2534,7 @@ func TestStore_UpdateModelBudgetUsage_CrossProviderModelMatch(t *testing.T) {
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
 
 	mc := newTestModelCatalog(t)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, mc, nil)
@@ -2482,7 +2562,7 @@ func TestStore_UpdateModelRateLimitUsage_CrossProviderModelMatch(t *testing.T) {
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, nil, rateLimit)
 
 	mc := newTestModelCatalog(t)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, mc, nil)
@@ -2508,7 +2588,7 @@ func TestStore_CheckModelBudget_ModelWithProvider_ExactMatchOnly(t *testing.T) {
 	modelConfig := buildModelConfig("mc1", "gpt-4o", &providerStr, budget, nil)
 
 	mc := newTestModelCatalog(t)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, mc, nil)
@@ -2532,7 +2612,7 @@ func TestStore_CheckModelBudget_NoCatalog_NoMatch(t *testing.T) {
 	modelConfig := buildModelConfig("mc1", "gpt-4o", nil, budget, nil)
 
 	// No model catalog passed (nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*modelConfig},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -2563,7 +2643,7 @@ func TestStore_CheckModelBudget_AllModelsOnProvider_Exceeded(t *testing.T) {
 	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // exceeded
 	providerStr := "openai"
 	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -2582,7 +2662,7 @@ func TestStore_CheckModelBudget_AllModelsOnProvider_OtherProviderPasses(t *testi
 	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // exceeded
 	providerStr := "openai"
 	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -2600,7 +2680,7 @@ func TestStore_UpdateProviderModelUsage_BumpsAllModelsWildcard(t *testing.T) {
 	rateLimit := buildRateLimitWithUsage("rl1", 100, 0, 1000000, 0) // 100-token cap
 	providerStr := "openai"
 	mc := buildModelConfig("mc-provider", configstoreTables.ModelConfigAllModels, &providerStr, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -2624,9 +2704,10 @@ func TestStore_UpdateProviderModelUsage_BumpsAllModelsWildcard(t *testing.T) {
 // Store Tests - Per-VK-Scoped Model Budget / Rate Limit
 // ============================================================================
 
+// TestStore_CheckVirtualKeyScopedModelBudget_NilVK checks that a key-scoped model budget check with no key allows the request.
 func TestStore_CheckVirtualKeyScopedModelBudget_NilVK(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	decision, err := checkScopedBudgets(store, context.Background(), grant.PermitType(""), "", schemas.OpenAI, "gpt-4", nil)
@@ -2634,9 +2715,10 @@ func TestStore_CheckVirtualKeyScopedModelBudget_NilVK(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 }
 
+// TestStore_CheckVirtualKeyScopedModelBudget_NoConfig checks that a key with no key-scoped model config passes the budget check.
 func TestStore_CheckVirtualKeyScopedModelBudget_NoConfig(t *testing.T) {
 	logger := NewMockLogger()
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{}, nil, nil)
 	require.NoError(t, err)
 
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
@@ -2645,12 +2727,13 @@ func TestStore_CheckVirtualKeyScopedModelBudget_NoConfig(t *testing.T) {
 	assert.Equal(t, DecisionAllow, decision)
 }
 
+// TestStore_CheckVirtualKeyScopedModelBudget_WithinLimit checks that a key-scoped model budget within its limit allows the request.
 func TestStore_CheckVirtualKeyScopedModelBudget_WithinLimit(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
 	budget := buildBudget("b1", 100.0, "1h")
 	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, vk.ID, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -2660,12 +2743,13 @@ func TestStore_CheckVirtualKeyScopedModelBudget_WithinLimit(t *testing.T) {
 	assert.NoError(t, err, "Should allow when per-VK model budget is within limit")
 }
 
+// TestStore_CheckVirtualKeyScopedModelBudget_Exceeded checks that an exhausted key-scoped model budget refuses the request.
 func TestStore_CheckVirtualKeyScopedModelBudget_Exceeded(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
 	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // At limit
 	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, vk.ID, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -2676,13 +2760,14 @@ func TestStore_CheckVirtualKeyScopedModelBudget_Exceeded(t *testing.T) {
 	assert.Contains(t, err.Error(), "budget exceeded")
 }
 
+// TestStore_CheckVirtualKeyScopedModelBudget_OnlyAppliesToMatchingVK checks that a key-scoped model budget governs only the key it is scoped to.
 func TestStore_CheckVirtualKeyScopedModelBudget_OnlyAppliesToMatchingVK(t *testing.T) {
 	logger := NewMockLogger()
 	ownerVK := buildVirtualKey("vk1", "vk1-value", "vk1", true)
 	otherVK := buildVirtualKey("vk2", "vk2-value", "vk2", true)
 	budget := buildBudgetWithUsage("b1", 100.0, 100.0, "1h") // exceeded
 	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, ownerVK.ID, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -2703,7 +2788,7 @@ func TestStore_ScopedAndGlobalModelBudgetsBothApply(t *testing.T) {
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
 	exhausted := buildBudgetWithUsage("b1", 100.0, 100.0, "1h")
 	globalMC := buildModelConfig("mc-global", "gpt-4", nil, exhausted, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*globalMC},
 		Budgets:      []configstoreTables.TableBudget{*exhausted},
 	}, nil, nil)
@@ -2720,12 +2805,13 @@ func TestStore_ScopedAndGlobalModelBudgetsBothApply(t *testing.T) {
 	assert.Error(t, err, "the deployment's exhausted model budget refuses the request")
 }
 
+// TestStore_CheckVirtualKeyScopedModelRateLimit_TokenLimitExceeded checks that an exhausted key-scoped model token limit refuses the request.
 func TestStore_CheckVirtualKeyScopedModelRateLimit_TokenLimitExceeded(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 10000, 1000, 0) // tokens at max
 	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, vk.ID, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -2736,12 +2822,13 @@ func TestStore_CheckVirtualKeyScopedModelRateLimit_TokenLimitExceeded(t *testing
 	assert.Equal(t, DecisionTokenLimited, decision)
 }
 
+// TestStore_CheckVirtualKeyScopedModelRateLimit_WithinLimit checks that a key-scoped model rate limit within its limits allows the request.
 func TestStore_CheckVirtualKeyScopedModelRateLimit_WithinLimit(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
 	rateLimit := buildRateLimitWithUsage("rl1", 10000, 100, 1000, 10) // well within limits
 	mc := buildVKScopedModelConfig("mc1", "gpt-4", nil, vk.ID, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -2760,7 +2847,7 @@ func TestStore_VirtualKeyScopedModel_RecordThenCheck_TokenLimitTrips(t *testing.
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
 	rateLimit := buildRateLimitWithUsage("rl1", 100, 0, 1000000, 0) // 100 token cap, request cap effectively unlimited
 	mc := buildVKScopedModelConfig("mc1", "claude-opus-4-7", nil, vk.ID, nil, rateLimit)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		RateLimits:   []configstoreTables.TableRateLimit{*rateLimit},
 	}, nil, nil)
@@ -2781,12 +2868,13 @@ func TestStore_VirtualKeyScopedModel_RecordThenCheck_TokenLimitTrips(t *testing.
 	assert.Equal(t, DecisionTokenLimited, decision)
 }
 
+// TestStore_VirtualKeyScopedModel_RecordThenCheck_BudgetTrips checks that charging a key-scoped model budget past its cap makes the next check refuse.
 func TestStore_VirtualKeyScopedModel_RecordThenCheck_BudgetTrips(t *testing.T) {
 	logger := NewMockLogger()
 	vk := buildVirtualKey("vk1", "vk1-value", "vk1", true)
 	budget := buildBudget("b1", 10.0, "1h") // $10 cap, 0 usage
 	mc := buildVKScopedModelConfig("mc1", "claude-opus-4-7", nil, vk.ID, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
 	}, nil, nil)
@@ -2813,7 +2901,7 @@ func TestStore_VKGovernanceBudget_NoDoubleCount(t *testing.T) {
 	budget := buildBudget("vkb", 100.0, "1h")
 	// Owned by the VK-scoped all-models wildcard (provider=nil), not by the VK directly.
 	mc := buildVKScopedModelConfig("mc-vk", "*", nil, vk.ID, budget, nil)
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*budget},
@@ -2822,7 +2910,7 @@ func TestStore_VKGovernanceBudget_NoDoubleCount(t *testing.T) {
 
 	// Mirror tracker.UpdateUsage: scoped-model path + hierarchy path, same request/cost.
 	require.NoError(t, chargeScopedBudgets(store, context.Background(), configstoreTables.ModelConfigScopeVirtualKey, vk.ID, "gpt-4", schemas.OpenAI, 10.0))
-	require.NoError(t, chargeGrantBudgets(store, context.Background(), vk, schemas.OpenAI, 10.0))
+	require.NoError(t, chargeGrantBudgets(store, context.Background(), storedVirtualKey(t, store, vk.ID), schemas.OpenAI, 10.0))
 
 	b := store.LoadBudget(context.Background(), "vkb")
 	require.NotNil(t, b)
@@ -2848,7 +2936,7 @@ func TestStore_CheckVirtualKeyScopedModelBudget_MultiBudget_OneExceededBlocks(t 
 		b.ModelConfigID = &mcID
 		mc.Budgets = append(mc.Budgets, *b)
 	}
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*within, *exceeded},
 	}, nil, nil)

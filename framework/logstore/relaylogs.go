@@ -713,9 +713,14 @@ func (s *RDBLogStore) GetRelayFilterData(ctx context.Context, dimensions []strin
 		}
 	}
 	out := &RelayFilterData{}
+	// Bounded to recent rows like the LLM and MCP filter data, so opening the page does not scan
+	// every relay row ever logged.
+	cutoff := time.Now().UTC().AddDate(0, 0, -defaultFilterDataCutoffDays)
 	values := func(column string) ([]string, error) {
 		rows := []string{}
-		q := s.ScopedDB(ctx).Model(&RelayLog{}).Distinct().Where(column + " IS NOT NULL AND " + column + " <> ''")
+		q := s.ScopedDB(ctx).Model(&RelayLog{}).Distinct().
+			Where(column+" IS NOT NULL AND "+column+" <> ''").
+			Where("timestamp >= ?", cutoff)
 		if err := like(q, column).Order(column).Limit(limit).Pluck(column, &rows).Error; err != nil {
 			return nil, err
 		}
@@ -737,8 +742,9 @@ func (s *RDBLogStore) GetRelayFilterData(ctx context.Context, dimensions []strin
 			queryID, queryName = "dim_id", "dim_name"
 			src.FannedOut = true
 		}
-		q = q.Select(queryID + " AS id, MAX(" + queryName + ") AS name").
-			Where(queryID + " IS NOT NULL AND " + queryID + " <> ''")
+		q = q.Select(queryID+" AS id, MAX("+queryName+") AS name").
+			Where(queryID+" IS NOT NULL AND "+queryID+" <> ''").
+			Where("timestamp >= ?", cutoff)
 		q = applyDimensionCeiling(ctx, q, src, idColumn)
 		q = like(q, queryName)
 		if err := q.Group(queryID).Order("name").Limit(limit).Scan(&rows).Error; err != nil {

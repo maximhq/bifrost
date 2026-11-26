@@ -1,11 +1,43 @@
 package schemas
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDocumentCitationsDeepCopyIsolation(t *testing.T) {
+	const content = `[{"type":"text","text":"Budget: $4.2M."}]`
+	chat := ChatMessage{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+		Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileContent: json.RawMessage(content)},
+		Citations: &Citations{Enabled: Ptr(true)},
+	}}}}
+	copiedChat := DeepCopyChatMessage(chat)
+	require.Equal(t, chat, copiedChat)
+	copiedChat.Content.ContentBlocks[0].File.FileContent[0] = ' '
+	require.Equal(t, content, string(chat.Content.ContentBlocks[0].File.FileContent))
+
+	responses := chat.ToResponsesMessages()[0]
+	copiedResponses := DeepCopyResponsesMessage(responses)
+	require.Equal(t, responses, copiedResponses)
+	copiedResponses.Content.ContentBlocks[0].FileContent[0] = ' '
+	require.Equal(t, content, string(responses.Content.ContentBlocks[0].FileContent))
+
+	output := ResponsesMessage{Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
+		Type: ResponsesOutputMessageContentTypeText,
+		ResponsesOutputMessageContentText: &ResponsesOutputMessageContentText{Annotations: []ResponsesOutputMessageContentTextAnnotation{{
+			Type: "content_block_location", Index: Ptr(0), StartBlockIndex: Ptr(0), EndBlockIndex: Ptr(1),
+			SourceContent: []string{"Budget: ", "$4.2M."}, Source: Ptr("pack"),
+		}}},
+	}}}}
+	copiedOutput := DeepCopyResponsesMessage(output)
+	require.Equal(t, output, copiedOutput)
+	annotation := &copiedOutput.Content.ContentBlocks[0].Annotations[0]
+	annotation.SourceContent[0] = "changed"
+	require.Equal(t, []string{"Budget: ", "$4.2M."}, output.Content.ContentBlocks[0].Annotations[0].SourceContent)
+}
 
 func TestSanitizeImageURLDefaultRejectsNonHTTPSchemes(t *testing.T) {
 	// The no-args overload must keep the historical http/https-only policy. Providers
@@ -236,6 +268,24 @@ func TestIsClefModel(t *testing.T) {
 	}
 	for _, model := range []string{"Clef-Flash", "cloudflare/clef", "@cf/meta/llama-4-scout-17b-16e-instruct", ""} {
 		assert.False(t, IsClefModel(model), model)
+	}
+}
+
+func TestIsBasetenDecisionModel(t *testing.T) {
+	for _, model := range []string{"decision-models/baseten-joey-2b-latest", "decision-models/baseten-elephant-9b-latest", "Decision-Models/baseten-mammoth-27b-latest"} {
+		assert.True(t, IsBasetenDecisionModel(model), model)
+	}
+	for _, model := range []string{"zai-org/GLM-5.3", "baseten/decision-models/baseten-joey-2b-latest", "decision-models", ""} {
+		assert.False(t, IsBasetenDecisionModel(model), model)
+	}
+}
+
+func TestIsGeminiDecisionModel(t *testing.T) {
+	for _, model := range []string{"gemini-decision-1", "models/gemini-decision-1", "Gemini-Decision-2-preview"} {
+		assert.True(t, IsGeminiDecisionModel(model), model)
+	}
+	for _, model := range []string{"gemini-3-flash", "gemini-2.5-flash-lite", "gemini/gemini-decision-1", "gemini-decision", ""} {
+		assert.False(t, IsGeminiDecisionModel(model), model)
 	}
 }
 
