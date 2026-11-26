@@ -47,6 +47,21 @@ func (a elevenlabsAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas
 	return &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: a.baseURL, AllowPrivateNetwork: true}}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a elevenlabsAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a elevenlabsAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a elevenlabsAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // elevenlabsUpstreamRequest is what reached the fake ElevenLabs.
 type elevenlabsUpstreamRequest struct {
 	method, path, query, body string

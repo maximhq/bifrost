@@ -107,13 +107,15 @@ const (
 )
 
 // convertAccResultToProcessedStreamResponse converts StreamAccumulatorResult to ProcessedStreamResponse
-func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumulatorResult) *streaming.ProcessedStreamResponse {
+func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumulatorResult, requestType schemas.RequestType) *streaming.ProcessedStreamResponse {
 	if accResult == nil {
 		return nil
 	}
-	// Determine StreamType based on the response content
+	// Determine StreamType based on the request type and the response content
 	streamType := streaming.StreamTypeChat
-	if accResult.AudioOutput != nil {
+	if requestType == schemas.TextCompletionRequest || requestType == schemas.TextCompletionStreamRequest {
+		streamType = streaming.StreamTypeText
+	} else if accResult.AudioOutput != nil {
 		streamType = streaming.StreamTypeAudio
 	} else if accResult.TranscriptionOutput != nil {
 		streamType = streaming.StreamTypeTranscription
@@ -133,6 +135,7 @@ func convertAccResultToProcessedStreamResponse(accResult *schemas.StreamAccumula
 			Latency:             accResult.Latency,
 			TimeToFirstToken:    accResult.TimeToFirstToken,
 			OutputMessage:       accResult.OutputMessage,
+			OutputChoices:       accResult.OutputChoices,
 			OutputMessages:      accResult.OutputMessages,
 			TokenUsage:          accResult.TokenUsage,
 			Cost:                accResult.Cost,
@@ -638,7 +641,7 @@ func (plugin *Plugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.B
 			if err == nil && tracer != nil && bifrostTraceID != "" {
 				accResult := tracer.ProcessStreamingChunk(ctx, bifrostTraceID, isFinalChunk, result, bifrostErr)
 				if accResult != nil {
-					streamResponse = convertAccResultToProcessedStreamResponse(accResult)
+					streamResponse = convertAccResultToProcessedStreamResponse(accResult, requestType)
 				}
 			}
 

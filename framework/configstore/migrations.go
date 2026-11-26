@@ -5,13 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
-	"slices"
-	"strconv"
-	"strings"
-	"time"
-	"unicode"
-
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -25,6 +18,12 @@ import (
 	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"log"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
 )
 
 // addColumnIfNotExists is a package-local alias for migrator.AddColumnIfNotExists,
@@ -611,6 +610,10 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_mcp_config_issues_column"}, run: migrationAddVirtualMCPConfigIssuesColumn},
 	{IDs: []string{"add_disable_content_logging_columns"}, run: migrationAddDisableContentLoggingColumns},
 	{IDs: []string{"add_key_disable_content_logging_column"}, run: migrationAddKeyDisableContentLoggingColumn},
+	{IDs: []string{"add_warp_virtual_key_id_column"}, run: migrationAddWarpVirtualKeyIDColumn},
+	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
+	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
+	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1227,6 +1230,59 @@ func migrationAddNotificationsTable(ctx context.Context, db *gorm.DB, logger sch
 		},
 		Rollback: func(tx *gorm.DB) error {
 			return tx.WithContext(ctx).Migrator().DropTable(&tables.TableNotification{})
+		},
+	})
+}
+
+// notificationSubjectResolutionColumns let a producer tag a notification with
+// the thing it is about and later mark it resolved once that thing is handled.
+var notificationSubjectResolutionColumns = []string{"subject_type", "subject_id", "resolved_at", "resolution"}
+
+func migrationAddNotificationSubjectResolutionColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_notification_subject_resolution_columns"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			for _, column := range notificationSubjectResolutionColumns {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableNotification{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			for _, column := range notificationSubjectResolutionColumns {
+				if err := dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableNotification{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	})
+}
+
+// migrationAddNotificationSubjectIndex builds the subject lookup index outside a
+// transaction, so postgres can build it concurrently.
+func migrationAddNotificationSubjectIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_notification_subject_index"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	const name = "idx_notifications_subject"
+	return RunSingleMigration(ctx, &noTxOpts, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return ensureIndexConcurrently(tx.WithContext(ctx), "notifications", name, "subject_type, subject_id", false)
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropIndexConcurrently(tx.WithContext(ctx), "notifications", name)
 		},
 	})
 }
@@ -8602,7 +8658,7 @@ func migrationAddOllamaSGLConfigColumns(ctx context.Context, db *gorm.DB, logger
 					newKey.SGLKeyConfig = &schemas.SGLKeyConfig{URL: urlSecretVar}
 				}
 
-				schemaKey := schemaKeyFromTableKey(newKey)
+				schemaKey := SchemaKeyFromTableKey(newKey)
 				hash, err := GenerateKeyHash(schemaKey)
 				if err != nil {
 					return fmt.Errorf("failed to generate hash for new key on provider %s: %w", p.Name, err)
@@ -17832,4 +17888,54 @@ func migrationAddVirtualMCPConfigIssuesColumn(ctx context.Context, db *gorm.DB, 
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableVirtualMCP{}, "config_issues")
 		},
 	})
+}
+
+// migrationAddWarpVirtualKeyIDColumn adds the virtual key Warp's model calls
+// present for a caller with no user identity of their own.
+func migrationAddWarpVirtualKeyIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_virtual_key_id_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "virtual_key_id"); err != nil {
+				return fmt.Errorf("add virtual_key_id column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column such a caller's calls carry no credential, as before.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "virtual_key_id")
+		},
+	})
+}
+
+// migrationAddGovernanceUsageResetEpochs preserves actual reset evidence across
+// restarts. LastReset also advances on calendar adoption, so legacy rows retain
+// zero unknown evidence. Rollback would discard evidence and is not supported.
+func migrationAddGovernanceUsageResetEpochs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	const migrationName = "add_governance_usage_reset_epochs"
+	migration := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableBudget{}, "UsageResetEpoch"); err != nil {
+				return err
+			}
+			for _, field := range []string{"TokenUsageResetEpoch", "RequestUsageResetEpoch"} {
+				if err := addColumnIfNotExists(tx, logger, &tables.TableRateLimit{}, field); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("%s cannot be rolled back without losing reset evidence", migrationName)
+		},
+	}})
+	return migration.Migrate()
 }

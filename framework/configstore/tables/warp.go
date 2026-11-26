@@ -25,6 +25,8 @@ type TableWarpConfig struct {
 	// not a credential, which is why this table needs no encryption hooks: there
 	// is nothing here worth encrypting.
 	APIKeyID string `gorm:"type:varchar(255)" json:"api_key_id,omitempty"`
+	// VirtualKeyID names a governance virtual key row; a reference, like APIKeyID.
+	VirtualKeyID string `gorm:"type:varchar(255);default:''" json:"virtual_key_id,omitempty"`
 
 	// AdditionalModels is a JSON array of schemas.WarpModel, nil when there are none.
 	AdditionalModels *string `gorm:"type:text" json:"additional_models,omitempty"`

@@ -35,6 +35,8 @@ func ClassifyPassthroughPath(method, path string) schemas.RequestType {
 		return schemas.TextCompletionRequest
 	case strings.HasSuffix(path, "/responses"):
 		return schemas.ResponsesRequest
+	case strings.HasSuffix(path, "/responses/compact"):
+		return schemas.CompactionRequest
 	case strings.HasSuffix(path, "/embeddings"):
 		return schemas.EmbeddingRequest
 	case strings.HasSuffix(path, "/audio/speech"):

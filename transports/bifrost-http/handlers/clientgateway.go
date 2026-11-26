@@ -20,6 +20,8 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -139,16 +141,19 @@ func clientGatewayDeviceApprovedURL(issuer string) string {
 // client gateway; token cache entries are keyed by audience, so they never cross.
 type ClientGatewayHandler struct {
 	store            *lib.Config
+	live             *livestore.Store
 	issuance         *OAuth2IssuanceHandler
 	tempTokens       *temptoken.Service     // optional; nil = consent page needs a dashboard session
 	identityResolver OAuth2IdentityResolver // optional; nil = vk and session identities only
-	vkCache          VirtualKeyCache        // optional; nil = virtual keys read from the config store
 
 	deviceAuthLimiter *ipRateLimiter
 	verifyLimiter     *ipRateLimiter
 	polls             *devicePollTracker
 	tokens            *gatewayTokenCache
 	telemetry         *telemetryForwarder
+	// tables names the live-store tables this handler created; failed and Close
+	// drop only these, so they never touch tables another handler holds.
+	tables []string
 
 	endpoints []*clientGatewayEndpoint
 }
@@ -160,33 +165,85 @@ type clientGatewayEndpoint struct {
 }
 
 // NewClientGatewayHandler creates the client gateway handler for profiles, or
-// for every built-in profile when none are given. tempTokens, identityResolver
-// and vkCache may each be nil.
-func NewClientGatewayHandler(store *lib.Config, tempTokens *temptoken.Service, identityResolver OAuth2IdentityResolver, vkCache VirtualKeyCache, profiles ...ClientGatewayProfile) *ClientGatewayHandler {
+// for every built-in profile when none are given. tempTokens and identityResolver
+// may each be nil. The sign-in limiters, the poll tracker and the verified-token
+// cache keep their entries in tables of store's live store, which is required;
+// Close drops them, so a later handler on the same store can create them again.
+func NewClientGatewayHandler(store *lib.Config, tempTokens *temptoken.Service, identityResolver OAuth2IdentityResolver, profiles ...ClientGatewayProfile) (*ClientGatewayHandler, error) {
+	if store == nil || store.LiveStore == nil {
+		return nil, fmt.Errorf("client gateway: %w", livestore.ErrNoLiveStore)
+	}
 	if len(profiles) == 0 {
 		profiles = clientGatewayProfiles
 	}
+	live := store.LiveStore
 	h := &ClientGatewayHandler{
-		store:             store,
-		issuance:          NewOAuth2IssuanceHandler(store, tempTokens, identityResolver),
-		tempTokens:        tempTokens,
-		identityResolver:  identityResolver,
-		vkCache:           vkCache,
-		deviceAuthLimiter: newIPRateLimiter(clientGatewayDeviceAuthorizationLimit, clientGatewayRateLimitWindow),
-		verifyLimiter:     newIPRateLimiter(clientGatewayDeviceVerifyLimit, clientGatewayRateLimitWindow),
-		polls:             newDevicePollTracker(),
-		tokens:            newGatewayTokenCache(clientGatewayTokenCacheMaxEntries),
-		telemetry:         newTelemetryForwarder(telemetryHTTPClient(store.HTTPClientFactory)),
+		store:            store,
+		live:             live,
+		issuance:         NewOAuth2IssuanceHandler(store, tempTokens, identityResolver),
+		tempTokens:       tempTokens,
+		identityResolver: identityResolver,
 	}
+	var err error
+	if h.deviceAuthLimiter, err = newIPRateLimiter(live, clientGatewayDeviceAuthWindowsTable, clientGatewayDeviceAuthorizationLimit, clientGatewayRateLimitWindow); err != nil {
+		return nil, h.failed(err)
+	}
+	h.tables = append(h.tables, clientGatewayDeviceAuthWindowsTable)
+	if h.verifyLimiter, err = newIPRateLimiter(live, clientGatewayDeviceVerifyWindowsTable, clientGatewayDeviceVerifyLimit, clientGatewayRateLimitWindow); err != nil {
+		return nil, h.failed(err)
+	}
+	h.tables = append(h.tables, clientGatewayDeviceVerifyWindowsTable)
+	if h.polls, err = newDevicePollTracker(live); err != nil {
+		return nil, h.failed(err)
+	}
+	h.tables = append(h.tables, clientGatewayDevicePollsTable)
+	if h.tokens, err = newGatewayTokenCache(live, clientGatewayTokenCacheMaxEntries); err != nil {
+		return nil, h.failed(err)
+	}
+	h.tables = append(h.tables, clientGatewayVerifiedTokensTable)
+	identityLimiter, err := newIPRateLimiter(live, clientGatewayTelemetryWindowsTable, clientGatewayTelemetryIdentityLimit, time.Minute)
+	if err != nil {
+		return nil, h.failed(err)
+	}
+	h.tables = append(h.tables, clientGatewayTelemetryWindowsTable)
+	h.telemetry = newTelemetryForwarder(telemetryHTTPClient(store.HTTPClientFactory), identityLimiter)
 	for _, p := range profiles {
 		h.endpoints = append(h.endpoints, &clientGatewayEndpoint{ClientGatewayHandler: h, profile: p})
 	}
-	return h
+	return h, nil
 }
 
-// Close stops forwarding telemetry and drains what is queued, until ctx ends.
+// Live-store tables the client gateway keeps its sign-in pacing and verified tokens in, one each
+// per process.
+const (
+	clientGatewayDeviceAuthWindowsTable   = "client_gateway_device_authorization_windows"
+	clientGatewayDeviceVerifyWindowsTable = "client_gateway_device_verify_windows"
+	clientGatewayTelemetryWindowsTable    = "client_gateway_telemetry_identity_windows"
+	clientGatewayDevicePollsTable         = "client_gateway_device_polls"
+	clientGatewayVerifiedTokensTable      = "client_gateway_verified_tokens"
+)
+
+// failed drops the tables the constructor created before err, so a retry can create them again, and
+// returns err. A table it could not create belongs to another handler and stays.
+func (h *ClientGatewayHandler) failed(err error) error {
+	h.dropTables()
+	return err
+}
+
+// dropTables drops the live-store tables this handler created and forgets them, so a second call
+// drops nothing.
+func (h *ClientGatewayHandler) dropTables() {
+	for _, name := range h.tables {
+		_ = h.live.DropTable(context.Background(), name)
+	}
+	h.tables = nil
+}
+
+// Close stops the telemetry forwarder and drops the handler's live-store tables. Closing again
+// drops nothing, so it never touches the tables of a handler created after the first Close.
 func (h *ClientGatewayHandler) Close(ctx context.Context) {
 	h.telemetry.Close(ctx)
+	h.dropTables()
 }
 
 // Closed reports whether Close has run.
@@ -713,18 +770,18 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 		if oauth2ServerCfg(ep.store).DisableVKIdentity && ep.identityResolver != nil && ep.identityResolver.IsUserModeAvailable() {
 			return fasthttp.StatusUnauthorized, "virtual-key sign-in is no longer accepted; " + hint
 		}
-		vk, err := ep.virtualKeyByID(ctx, claims.Subject)
+		vk, err := ep.virtualKeyByID(claims.Subject)
 		if err != nil {
 			return fasthttp.StatusServiceUnavailable, "failed to verify virtual key"
 		}
-		if vk == nil || !vk.IsActiveValue() {
+		if vk == nil || !vk.Active {
 			return fasthttp.StatusUnauthorized, "the virtual key behind this session is no longer active; " + hint
 		}
 		if vk.IsExpiredAt(now) {
 			return fasthttp.StatusUnauthorized, "the virtual key behind this session has expired; " + hint
 		}
 		stripGatewayCredentials(ctx)
-		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), vk.Value.GetValue())
+		ctx.Request.Header.Set(string(schemas.BifrostContextKeyVirtualKey), vk.Value)
 	case schemas.MCPAuthModeUser:
 		if ep.identityResolver != nil {
 			active, err := ep.identityResolver.IsUserActive(ctx, claims.Subject)
@@ -760,24 +817,16 @@ func (ep *clientGatewayEndpoint) authenticate(ctx *fasthttp.RequestCtx) (int, st
 	return 0, ""
 }
 
-// virtualKeyByID resolves the key a vk-mode token names, preferring the
-// governance in-memory store. It returns (nil, nil) when the key is gone and an
-// error only for a transient lookup failure, so a database blip is a retriable
-// 503 rather than a sign-out.
-func (h *ClientGatewayHandler) virtualKeyByID(ctx context.Context, id string) (*configtables.TableVirtualKey, error) {
-	if h.vkCache != nil {
-		if vk, ok := h.vkCache.GetVirtualKeyByID(ctx, id); ok && vk != nil {
-			return vk, nil
-		}
-	}
-	if h.store.ConfigStore == nil {
-		return nil, fmt.Errorf("config store unavailable")
-	}
-	vk, err := h.store.ConfigStore.GetVirtualKey(ctx, id)
-	if errors.Is(err, configstore.ErrNotFound) {
+// virtualKeyByID resolves the key a vk-mode token names from the live store, which every key write
+// refreshes, so a key it does not hold is gone: (nil, nil), as is a key whose value could not be
+// resolved. The gateway is never built without a live store, so the error is always nil; it stays
+// in the signature for the callers that answer a failed lookup with a retriable 503.
+func (h *ClientGatewayHandler) virtualKeyByID(id string) (*registry.VirtualKey, error) {
+	vk, ok := h.store.LiveStore.Collections.VirtualKeys.Get(id)
+	if !ok || vk.Value == "" {
 		return nil, nil
 	}
-	return vk, err
+	return vk, nil
 }
 
 // stripGatewayCredentials removes every header that could carry a credential
@@ -838,29 +887,34 @@ const clientGatewayTokenCacheMaxEntries = 4096
 // revocation of their own (refresh tokens do); the identity a token names is
 // re-checked by the caller on every request, cached or not.
 type gatewayTokenCache struct {
-	mu        sync.RWMutex
+	mu        sync.Mutex // serialises put: the size check, the sweep and the store
 	max       int
 	lastSweep time.Time
-	entries   map[string]gatewayTokenEntry
+	size      int // tokens the table holds; only put and its sweep change it
+	entries   *livestore.Table[string, gatewayTokenEntry]
 }
 
+// gatewayTokenEntry is one verified token: the resource it was verified for, when it expires and
+// its parsed claims.
 type gatewayTokenEntry struct {
 	resource string
 	expires  time.Time
 	claims   *jwtMCPClaims
 }
 
-// newGatewayTokenCache creates a cache holding at most max tokens.
-func newGatewayTokenCache(max int) *gatewayTokenCache {
-	return &gatewayTokenCache{max: max, entries: make(map[string]gatewayTokenEntry)}
+// newGatewayTokenCache creates a cache holding at most max tokens, in a table of live.
+func newGatewayTokenCache(live *livestore.Store, max int) (*gatewayTokenCache, error) {
+	entries, err := live.NewTable[string, gatewayTokenEntry](context.Background(), clientGatewayVerifiedTokensTable)
+	if err != nil {
+		return nil, err
+	}
+	return &gatewayTokenCache{max: max, entries: entries}, nil
 }
 
 // get returns the verified claims for rawToken if it was verified for resource
 // and has not expired, otherwise nil.
 func (c *gatewayTokenCache) get(rawToken, resource string, now time.Time) *jwtMCPClaims {
-	c.mu.RLock()
-	e, ok := c.entries[rawToken]
-	c.mu.RUnlock()
+	e, ok := c.entries.Get(rawToken)
 	if !ok || e.resource != resource || !now.Before(e.expires) {
 		return nil
 	}
@@ -877,20 +931,30 @@ func (c *gatewayTokenCache) put(rawToken, resource string, claims *jwtMCPClaims,
 	expires := claims.ExpiresAt.Time
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.entries[rawToken]; !ok && len(c.entries) >= c.max {
+	_, held := c.entries.Get(rawToken)
+	if !held && c.size >= c.max {
 		if now.Sub(c.lastSweep) >= time.Minute {
 			c.lastSweep = now
-			for k, e := range c.entries {
+			var expired []string
+			c.entries.Range(func(k string, e gatewayTokenEntry) bool {
 				if !now.Before(e.expires) {
-					delete(c.entries, k)
+					expired = append(expired, k)
 				}
+				return true
+			})
+			for _, k := range expired {
+				c.entries.Delete(k)
+				c.size--
 			}
 		}
-		if len(c.entries) >= c.max {
+		if c.size >= c.max {
 			return
 		}
 	}
-	c.entries[rawToken] = gatewayTokenEntry{resource: resource, expires: expires, claims: claims}
+	if !held {
+		c.size++
+	}
+	c.entries.Put(rawToken, gatewayTokenEntry{resource: resource, expires: expires, claims: claims})
 }
 
 // --- Rate limiting and poll pacing ---
@@ -913,40 +977,51 @@ const clientGatewayRateLimiterMaxKeys = 10000
 // Refusing beats evicting here: eviction would hand a fresh budget to whichever
 // address was dropped, which is exactly what an address-rotating caller wants.
 type ipRateLimiter struct {
-	mu        sync.Mutex
+	mu        sync.Mutex // serialises allow: the read, the count and the sweep
 	limit     int
 	window    time.Duration
 	maxKeys   int
 	lastSweep time.Time
-	windows   map[string]*rateWindow
+	size      int // windows the table holds; only allow and its sweep change it
+	windows   *livestore.Table[string, rateWindow]
 }
 
+// rateWindow is one key's current window: when it started and the hits it has counted.
 type rateWindow struct {
 	start time.Time
 	count int
 }
 
-// newIPRateLimiter allows limit hits per key within each window.
-func newIPRateLimiter(limit int, window time.Duration) *ipRateLimiter {
-	return &ipRateLimiter{limit: limit, window: window, maxKeys: clientGatewayRateLimiterMaxKeys, windows: make(map[string]*rateWindow)}
+// newIPRateLimiter allows limit hits per key within each window, keeping the windows in live's
+// table name.
+func newIPRateLimiter(live *livestore.Store, name string, limit int, window time.Duration) (*ipRateLimiter, error) {
+	windows, err := live.NewTable[string, rateWindow](context.Background(), name)
+	if err != nil {
+		return nil, err
+	}
+	return &ipRateLimiter{limit: limit, window: window, maxKeys: clientGatewayRateLimiterMaxKeys, windows: windows}, nil
 }
 
 // allow records a hit for key and reports whether it is within the limit.
 func (l *ipRateLimiter) allow(key string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	w, ok := l.windows[key]
+	w, ok := l.windows.Get(key)
 	if ok && now.Sub(w.start) < l.window {
 		w.count++
+		l.windows.Put(key, w)
 		return w.count <= l.limit
 	}
-	if !ok && len(l.windows) >= l.maxKeys {
+	if !ok && l.size >= l.maxKeys {
 		l.sweepLocked(now)
-		if len(l.windows) >= l.maxKeys {
+		if l.size >= l.maxKeys {
 			return false
 		}
 	}
-	l.windows[key] = &rateWindow{start: now, count: 1}
+	if !ok {
+		l.size++
+	}
+	l.windows.Put(key, rateWindow{start: now, count: 1})
 	return true
 }
 
@@ -956,10 +1031,16 @@ func (l *ipRateLimiter) sweepLocked(now time.Time) {
 		return
 	}
 	l.lastSweep = now
-	for k, w := range l.windows {
+	var expired []string
+	l.windows.Range(func(k string, w rateWindow) bool {
 		if now.Sub(w.start) >= l.window {
-			delete(l.windows, k)
+			expired = append(expired, k)
 		}
+		return true
+	})
+	for _, k := range expired {
+		l.windows.Delete(k)
+		l.size--
 	}
 }
 
@@ -970,14 +1051,18 @@ func (l *ipRateLimiter) sweepLocked(now time.Time) {
 // device-authorization limiter lets through; stale entries (finished elsewhere,
 // or abandoned) are swept at most once per device-code lifetime.
 type devicePollTracker struct {
-	mu        sync.Mutex
+	mu        sync.Mutex // serialises tooSoon: the sweep, the read and the store
 	lastSweep time.Time
-	last      map[string]time.Time
+	last      *livestore.Table[string, time.Time]
 }
 
-// newDevicePollTracker creates an empty poll tracker.
-func newDevicePollTracker() *devicePollTracker {
-	return &devicePollTracker{last: make(map[string]time.Time)}
+// newDevicePollTracker creates an empty poll tracker, its entries in a table of live.
+func newDevicePollTracker(live *livestore.Store) (*devicePollTracker, error) {
+	last, err := live.NewTable[string, time.Time](context.Background(), clientGatewayDevicePollsTable)
+	if err != nil {
+		return nil, err
+	}
+	return &devicePollTracker{last: last}, nil
 }
 
 // tooSoon records a poll and reports whether it came well inside the interval.
@@ -987,20 +1072,25 @@ func (t *devicePollTracker) tooSoon(deviceCodeHash string, now time.Time, interv
 	defer t.mu.Unlock()
 	if now.Sub(t.lastSweep) >= clientGatewayDeviceCodeTTL {
 		t.lastSweep = now
-		for k, at := range t.last {
+		var stale []string
+		t.last.Range(func(k string, at time.Time) bool {
 			if now.Sub(at) > clientGatewayDeviceCodeTTL {
-				delete(t.last, k)
+				stale = append(stale, k)
 			}
+			return true
+		})
+		for _, k := range stale {
+			t.last.Delete(k)
 		}
 	}
-	prev, seen := t.last[deviceCodeHash]
-	t.last[deviceCodeHash] = now
+	prev, seen := t.last.Get(deviceCodeHash)
+	t.last.Put(deviceCodeHash, now)
 	return seen && now.Sub(prev) < interval-time.Second
 }
 
 // forget drops a finished device code.
 func (t *devicePollTracker) forget(deviceCodeHash string) {
 	t.mu.Lock()
-	delete(t.last, deviceCodeHash)
+	t.last.Delete(deviceCodeHash)
 	t.mu.Unlock()
 }

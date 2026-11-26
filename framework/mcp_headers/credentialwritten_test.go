@@ -46,7 +46,7 @@ func userHeaderCredential(id, value string) *schemas.MCPHeadersUserCredential {
 // fresh ID, but the store reuses the binding's row, so the callback gets that
 // row's ID, the one other processes have cached.
 func TestOnCredentialWrittenReportsStoredRowID(t *testing.T) {
-	p := newTestProvider(newTestConfigStore())
+	p := newTestProvider(t, newTestConfigStore())
 	rec := &writtenRecorder{}
 	p.SetOnCredentialWritten(rec.record)
 	ctx := context.Background()
@@ -65,7 +65,7 @@ func TestOnCredentialWrittenReportsStoredRowID(t *testing.T) {
 // EvictCredentialByID, resubmissions and deletions reach it.
 func TestOnCredentialWrittenReachesAnotherProcess(t *testing.T) {
 	store := newTestConfigStore()
-	writer, reader := newTestProvider(store), newTestProvider(store)
+	writer, reader := newTestProvider(t, store), newTestProvider(t, store)
 	ctx := context.Background()
 	read := func() (*schemas.MCPHeadersUserCredential, error) {
 		return reader.GetCredentialByMode(ctx, schemas.MCPAuthModeUser, "user-1", "client-1")
@@ -99,7 +99,7 @@ func TestOnCredentialWrittenReachesAnotherProcess(t *testing.T) {
 // process's eviction must not announce it again, or processes would echo it
 // back and forth.
 func TestEvictCredentialByIDDoesNotCallOnCredentialWritten(t *testing.T) {
-	p := newTestProvider(newTestConfigStore())
+	p := newTestProvider(t, newTestConfigStore())
 	rec := &writtenRecorder{}
 	p.SetOnCredentialWritten(rec.record)
 
