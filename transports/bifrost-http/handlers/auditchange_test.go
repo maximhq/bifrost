@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -1892,5 +1894,186 @@ func TestCommitPoint_ConfigCompatReloadFailure(t *testing.T) {
 				t.Fatalf("after compat = %+v, saved compat = %+v, want the saved all-off config", after.Compat, saved.Compat)
 			}
 		})
+	}
+}
+
+// flushFailingStore saves auth config but fails to flush sessions after it.
+type flushFailingStore struct {
+	configstore.ConfigStore
+}
+
+func (flushFailingStore) FlushSessions(context.Context) error {
+	return errCommitPointInjected
+}
+
+// authWriteFailingManager fails every auth config write.
+type authWriteFailingManager struct {
+	stubConfigManager
+}
+
+func (authWriteFailingManager) UpdateAuthConfig(context.Context, *configstore.AuthConfig) error {
+	return errCommitPointInjected
+}
+
+// changeNamed returns the one live change named eventName.
+func changeNamed(t *testing.T, ctx *fasthttp.RequestCtx, eventName string) configstore.AuditChange {
+	t.Helper()
+	var found []configstore.AuditChange
+	for _, c := range liveAuditChanges(ctx) {
+		if c.EventName == eventName {
+			found = append(found, c)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want one %s change, got %+v", eventName, liveAuditChanges(ctx))
+	}
+	return found[0]
+}
+
+func seedStoredAdmin(t *testing.T, store configstore.ConfigStore, password string) string {
+	t.Helper()
+	hash, err := encrypt.Hash(password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if err := store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{AdminUserName: schemas.NewSecretVar("admin"), AdminPassword: schemas.NewSecretVar(hash), IsEnabled: false}); err != nil {
+		t.Fatalf("seed auth config: %v", err)
+	}
+	return hash
+}
+
+func TestCommitPoint_AuthConfigRecordedWhenSessionFlushFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const newPass = "Replacement-Pass-5678!"
+	store := newRealOAuth2Store(t)
+	storedHash := seedStoredAdmin(t, store, "Current-Pass-1234!")
+	cfg := newTestOAuth2Config(t, flushFailingStore{store}, configstoreTables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"` + newPass + `"}}`)
+	h.updateConfig(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	stored, err := store.GetAuthConfig(context.Background())
+	if err != nil || stored == nil || !stored.IsEnabled {
+		t.Fatalf("auth config should be saved before the flush fails: %+v %v", stored, err)
+	}
+	change := changeNamed(t, ctx, "auth_config.updated")
+	if string(change.Before) != `{"is_enabled":false}` || string(change.After) != `{"admin_password_changed":true,"is_enabled":true}` {
+		t.Fatalf("before=%s after=%s", change.Before, change.After)
+	}
+	for _, secret := range []string{newPass, storedHash, stored.AdminPassword.GetValue(), `"admin"`} {
+		if strings.Contains(string(change.Before)+string(change.After), secret) {
+			t.Fatalf("snapshot carries a credential %q", secret)
+		}
+	}
+}
+
+func TestCommitPoint_FrameworkConfigRecordedWhenAuthWriteFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	seedStoredAdmin(t, store, "Current-Pass-1234!")
+	cfg := newTestOAuth2Config(t, store, configstoreTables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: authWriteFailingManager{}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_sync_interval":7200},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"Replacement-Pass-5678!"}}`)
+	h.updateConfig(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := changeNamed(t, ctx, "framework_config.updated")
+	var after map[string]any
+	if err := json.Unmarshal(change.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if after["pricing_sync_interval"] != float64(7200) {
+		t.Fatalf("after = %s, want the saved interval", change.After)
+	}
+	for _, c := range liveAuditChanges(ctx) {
+		if c.EventName == "auth_config.updated" {
+			t.Fatalf("a failed auth write must not be recorded: %+v", c)
+		}
+	}
+}
+
+// TestAuditFrameworkConfigUnparseableURLRedacted pins that a stored URL whose credentials the
+// redactor cannot locate (one url.Parse rejects, or an opaque one it accepts) never reaches the
+// framework_config.updated snapshots verbatim, even on a save that changes only an interval.
+func TestAuditFrameworkConfigUnparseableURLRedacted(t *testing.T) {
+	for name, stored := range map[string]string{
+		"unparseable": "https://operator:p%zzsecret@catalog.example/pricing.json",
+		"opaque":      "https:operator:secret@catalog.example/pricing.json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := url.Parse(stored); (err != nil) != (name == "unparseable") {
+				t.Fatalf("fixture %q: url.Parse error = %v", stored, err)
+			}
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			seedStoredAdmin(t, store, "Current-Pass-1234!")
+			pricingURL, interval := stored, int64(3600)
+			if err := store.UpdateFrameworkConfig(context.Background(), &configstoreTables.TableFrameworkConfig{PricingURL: &pricingURL, PricingSyncInterval: &interval}); err != nil {
+				t.Fatalf("seed framework config: %v", err)
+			}
+			cfg := newTestOAuth2Config(t, store, configstoreTables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store}}
+
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_sync_interval":7200}}`)
+			h.updateConfig(ctx)
+
+			requireStatus(t, ctx, fasthttp.StatusOK)
+			change := changeNamed(t, ctx, "framework_config.updated")
+			for _, snap := range []json.RawMessage{change.Before, change.After} {
+				if strings.Contains(string(snap), "secret") || strings.Contains(string(snap), "operator") {
+					t.Fatalf("snapshot carries the stored URL's credentials: before=%s after=%s", change.Before, change.After)
+				}
+			}
+			var after map[string]any
+			if err := json.Unmarshal(change.After, &after); err != nil {
+				t.Fatalf("decode after: %v", err)
+			}
+			if after["pricing_sync_interval"] != float64(7200) || after["pricing_url"] == nil {
+				t.Fatalf("after = %s, want the saved interval and a placeholder pricing_url", change.After)
+			}
+		})
+	}
+}
+
+// TestRecordAuthConfigChangeComparesReferences pins that swapping the admin username to another
+// reference records a change even when both resolve to the same value, as the handler saves it.
+func TestRecordAuthConfigChangeComparesReferences(t *testing.T) {
+	t.Setenv("BF_AUDIT_ADMIN_A", "admin")
+	t.Setenv("BF_AUDIT_ADMIN_B", "admin")
+	pass := schemas.NewSecretVar("Current-Pass-1234!")
+	before := &configstore.AuthConfig{IsEnabled: true, AdminUserName: schemas.NewSecretVar("env.BF_AUDIT_ADMIN_A"), AdminPassword: pass}
+
+	ctx := newTestRequestCtx("")
+	recordAuthConfigChange(ctx, before, &configstore.AuthConfig{IsEnabled: true, AdminUserName: schemas.NewSecretVar("env.BF_AUDIT_ADMIN_B"), AdminPassword: pass})
+	change := requireSingleAuditChange(t, ctx, "auth_config.updated")
+	if !strings.Contains(string(change.After), `"admin_username_changed":true`) || strings.Contains(string(change.After), "BF_AUDIT_ADMIN") {
+		t.Fatalf("after = %s, want admin_username_changed and no reference", change.After)
+	}
+
+	ctx = newTestRequestCtx("")
+	recordAuthConfigChange(ctx, before, &configstore.AuthConfig{IsEnabled: true, AdminUserName: schemas.NewSecretVar("env.BF_AUDIT_ADMIN_A"), AdminPassword: pass})
+	if changes := liveAuditChanges(ctx); len(changes) != 0 {
+		t.Fatalf("resubmitting the same reference must record nothing, got %+v", changes)
+	}
+}
+
+func TestCommitPoint_AuthConfigUnchangedSaveRecordsNothing(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	seedStoredAdmin(t, store, "Current-Pass-1234!")
+	cfg := newTestOAuth2Config(t, store, configstoreTables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":false}}`)
+	h.updateConfig(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusOK)
+	for _, c := range liveAuditChanges(ctx) {
+		if c.EventName == "auth_config.updated" {
+			t.Fatalf("a save that resubmits the stored auth config must not record: %+v", c)
+		}
 	}
 }
