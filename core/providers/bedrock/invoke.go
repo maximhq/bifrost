@@ -1967,6 +1967,8 @@ func toBedrockInvokeAI21Response(resp *schemas.BifrostResponsesResponse) *Bedroc
 	if resp.IncompleteDetails != nil {
 		finishReason = resp.IncompleteDetails.Reason
 		// AI21's vocabulary is stop/length; max_output_tokens is Bifrost's internal reason.
+		// content_filter (including guardrail blocks) is passed through on purpose, so a
+		// blocked reply is not reported as a normal stop.
 		if finishReason == schemas.ResponsesResponseIncompleteReasonMaxOutputTokens {
 			finishReason = "length"
 		}
