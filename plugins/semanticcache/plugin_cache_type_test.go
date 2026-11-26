@@ -2,6 +2,7 @@ package semanticcache
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -977,6 +978,216 @@ func TestCacheSeparatesRequestFamilies(t *testing.T) {
 			t.Fatal("expected the chat request to hit its own cached entry")
 		}
 	})
+}
+
+type cacheIdentity struct {
+	params  string
+	request string
+}
+
+func cacheIdentityForTest(tb testing.TB, plugin *Plugin, req *schemas.BifrostRequest) cacheIdentity {
+	tb.Helper()
+	metadata, err := plugin.buildRequestMetadataForCaching(plugin.createCacheState("req"), req)
+	if err != nil {
+		tb.Fatalf("buildRequestMetadataForCaching failed: %v", err)
+	}
+	paramsHash, err := hashMap(metadata)
+	if err != nil {
+		tb.Fatalf("hashMap failed: %v", err)
+	}
+	requestHash, err := plugin.generateRequestHash(req, metadata)
+	if err != nil {
+		tb.Fatalf("generateRequestHash failed: %v", err)
+	}
+	return cacheIdentity{params: paramsHash, request: requestHash}
+}
+
+func chatIdentityRequest(params *schemas.ChatParameters) *schemas.BifrostRequest {
+	prompt := "Write a one-line tagline for a coffee shop"
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &prompt},
+			}},
+			Params: params,
+		},
+	}
+}
+
+func responsesIdentityRequest(params *schemas.ResponsesParameters) *schemas.BifrostRequest {
+	prompt := "Extract the fields from this invoice: ACME Corp, #4411, $120.00, due 2026-12-01"
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o-mini",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: &prompt},
+			}},
+			Params: params,
+		},
+	}
+}
+
+// assertCacheIdentityDiffers checks that identical params share a cache identity and that
+// the changed params get their own params hash and request hash.
+func assertCacheIdentityDiffers(t *testing.T, plugin *Plugin, name string, a, b *schemas.BifrostRequest) {
+	t.Helper()
+	first := cacheIdentityForTest(t, plugin, a)
+	if first != cacheIdentityForTest(t, plugin, a) {
+		t.Fatalf("%s: identical params must hash the same", name)
+	}
+	second := cacheIdentityForTest(t, plugin, b)
+	if first.params == second.params {
+		t.Errorf("%s change must change the params hash used by the semantic lookup", name)
+	}
+	if first.request == second.request {
+		t.Errorf("%s change must change the request hash used by the exact lookup", name)
+	}
+}
+
+func TestChatParamsHashIncludesOutputShapingParams(t *testing.T) {
+	plugin := &Plugin{config: getDefaultTestConfig(), logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+	audio := func(voice, format string) *schemas.ChatParameters {
+		return &schemas.ChatParameters{
+			Modalities: []string{"text", "audio"},
+			Audio:      &schemas.ChatAudioParameters{Voice: voice, Format: format},
+		}
+	}
+	reasoning := func(r schemas.ChatReasoning) *schemas.ChatParameters {
+		return &schemas.ChatParameters{Reasoning: &r}
+	}
+	mcpServer := func(name, url string, token *string) schemas.ChatMCPServer {
+		return schemas.ChatMCPServer{Type: "url", Name: name, URL: url, AuthorizationToken: token}
+	}
+	mcpServers := func(servers ...schemas.ChatMCPServer) *schemas.ChatParameters {
+		return &schemas.ChatParameters{MCPServers: servers}
+	}
+	container := func(c schemas.ChatContainer) *schemas.ChatParameters {
+		return &schemas.ChatParameters{Container: &c}
+	}
+	skills := func(ids ...string) schemas.ChatContainer {
+		object := &schemas.ChatContainerObject{}
+		for _, id := range ids {
+			object.Skills = append(object.Skills, schemas.ChatContainerSkill{SkillID: id, Type: "anthropic"})
+		}
+		return schemas.ChatContainer{ContainerObject: object}
+	}
+	webSearch := func(size string) *schemas.ChatParameters {
+		return &schemas.ChatParameters{WebSearchOptions: &schemas.ChatWebSearchOptions{SearchContextSize: schemas.Ptr(size)}}
+	}
+	docs := mcpServer("docs", "https://docs.example.com/mcp", nil)
+	tickets := mcpServer("tickets", "https://tickets.example.com/mcp", nil)
+	tests := []struct {
+		name string
+		a, b *schemas.ChatParameters
+	}{
+		{"n", &schemas.ChatParameters{N: schemas.Ptr(1)}, &schemas.ChatParameters{N: schemas.Ptr(3)}},
+		{"audio", audio("alloy", "wav"), audio("verse", "mp3")},
+		{"top_k", &schemas.ChatParameters{TopK: schemas.Ptr(1)}, &schemas.ChatParameters{TopK: schemas.Ptr(200)}},
+		{"reasoning.max_tokens", reasoning(schemas.ChatReasoning{MaxTokens: schemas.Ptr(1024)}), reasoning(schemas.ChatReasoning{MaxTokens: schemas.Ptr(16000)})},
+		{"reasoning.summary", reasoning(schemas.ChatReasoning{Summary: schemas.Ptr("concise")}), reasoning(schemas.ChatReasoning{Summary: schemas.Ptr("detailed")})},
+		{"reasoning.display", reasoning(schemas.ChatReasoning{Display: schemas.Ptr("summarized")}), reasoning(schemas.ChatReasoning{Display: schemas.Ptr("omitted")})},
+		{"reasoning.mode", reasoning(schemas.ChatReasoning{Mode: schemas.Ptr("standard")}), reasoning(schemas.ChatReasoning{Mode: schemas.Ptr("pro")})},
+		{"reasoning.type", reasoning(schemas.ChatReasoning{Effort: schemas.Ptr("high")}), reasoning(schemas.ChatReasoning{Effort: schemas.Ptr("high"), Type: schemas.Ptr("between_tools")})},
+		{"web_search_options", webSearch("low"), webSearch("high")},
+		{"mcp_servers url", mcpServers(docs), mcpServers(mcpServer("docs", "https://docs-staging.example.com/mcp", nil))},
+		{"mcp_servers authorization_token", mcpServers(mcpServer("docs", docs.URL, schemas.Ptr("tenant-a"))), mcpServers(mcpServer("docs", docs.URL, schemas.Ptr("tenant-b")))},
+		{"mcp_servers added server", mcpServers(docs), mcpServers(docs, tickets)},
+		{"container id", container(schemas.ChatContainer{ContainerStr: schemas.Ptr("container_a")}), container(schemas.ChatContainer{ContainerStr: schemas.Ptr("container_b")})},
+		{"container skills", container(skills("pptx")), container(skills("xlsx"))},
+	}
+	for _, tt := range tests {
+		assertCacheIdentityDiffers(t, plugin, tt.name, chatIdentityRequest(tt.a), chatIdentityRequest(tt.b))
+	}
+
+	// MCP servers are a set, so the order a client lists them in must not split the cache.
+	inOrder := cacheIdentityForTest(t, plugin, chatIdentityRequest(mcpServers(docs, tickets)))
+	if reordered := cacheIdentityForTest(t, plugin, chatIdentityRequest(mcpServers(tickets, docs))); inOrder != reordered {
+		t.Error("reordering mcp_servers must keep the same cache identity")
+	}
+}
+
+func TestResponsesParamsHashIncludesOutputShapingParams(t *testing.T) {
+	plugin := &Plugin{config: getDefaultTestConfig(), logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+	jsonSchema := func(name string, strict bool, required ...string) *schemas.ResponsesParameters {
+		return &schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+			Type:       "json_schema",
+			Name:       schemas.Ptr(name),
+			Strict:     schemas.Ptr(strict),
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{Type: schemas.Ptr("object"), Required: required},
+		}}}
+	}
+	reasoning := func(r schemas.ResponsesParametersReasoning) *schemas.ResponsesParameters {
+		return &schemas.ResponsesParameters{Reasoning: &r}
+	}
+	tests := []struct {
+		name string
+		a, b *schemas.ResponsesParameters
+	}{
+		{"text.format schema", jsonSchema("invoice", true, "vendor", "total"), jsonSchema("invoice", true, "invoice_number", "due_date")},
+		{"text.format name", jsonSchema("invoice", true, "vendor", "total"), jsonSchema("due_date", true, "vendor", "total")},
+		{"text.format strict", jsonSchema("invoice", true, "vendor", "total"), jsonSchema("invoice", false, "vendor", "total")},
+		{"reasoning.mode", reasoning(schemas.ResponsesParametersReasoning{Mode: schemas.Ptr("standard")}), reasoning(schemas.ResponsesParametersReasoning{Mode: schemas.Ptr("pro")})},
+		{"reasoning.context", reasoning(schemas.ResponsesParametersReasoning{Context: schemas.Ptr("current_turn")}), reasoning(schemas.ResponsesParametersReasoning{Context: schemas.Ptr("all_turns")})},
+		{"reasoning.type", reasoning(schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high")}), reasoning(schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high"), Type: schemas.Ptr("between_tools")})},
+	}
+	for _, tt := range tests {
+		assertCacheIdentityDiffers(t, plugin, tt.name, responsesIdentityRequest(tt.a), responsesIdentityRequest(tt.b))
+	}
+}
+
+// BenchmarkCacheIdentity measures the params hash and request hash a cached request pays for,
+// including Responses requests that carry a large text.format JSON schema.
+func BenchmarkCacheIdentity(b *testing.B) {
+	plugin := &Plugin{config: getDefaultTestConfig(), logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+	jsonSchema := func(approxBytes int) *schemas.ResponsesParameters {
+		properties := schemas.NewOrderedMap()
+		for i := range approxBytes / 80 {
+			properties.Set("field_"+strconv.Itoa(i), map[string]any{"type": "string", "description": "A field of the extracted invoice record."})
+		}
+		return &schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+			Type:       "json_schema",
+			Name:       schemas.Ptr("invoice"),
+			Strict:     schemas.Ptr(true),
+			JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{Type: schemas.Ptr("object"), Properties: properties},
+		}}}
+	}
+	allChatParams := &schemas.ChatParameters{
+		N:                schemas.Ptr(2),
+		TopK:             schemas.Ptr(40),
+		Modalities:       []string{"text", "audio"},
+		Audio:            &schemas.ChatAudioParameters{Voice: "alloy", Format: "wav"},
+		Reasoning:        &schemas.ChatReasoning{MaxTokens: schemas.Ptr(2048), Summary: schemas.Ptr("auto"), Display: schemas.Ptr("summarized"), Mode: schemas.Ptr("pro"), Type: schemas.Ptr("between_tools")},
+		WebSearchOptions: &schemas.ChatWebSearchOptions{SearchContextSize: schemas.Ptr("high")},
+		MCPServers:       []schemas.ChatMCPServer{{Type: "url", Name: "docs", URL: "https://docs.example.com/mcp"}},
+		Container:        &schemas.ChatContainer{ContainerStr: schemas.Ptr("container_a")},
+	}
+	cases := []struct {
+		name string
+		req  *schemas.BifrostRequest
+	}{
+		{"responses/text_format_unset", responsesIdentityRequest(&schemas.ResponsesParameters{})},
+		{"responses/text_format_text", responsesIdentityRequest(&schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{Type: "text"}}})},
+		{"responses/json_schema_1KB", responsesIdentityRequest(jsonSchema(1 << 10))},
+		{"responses/json_schema_64KB", responsesIdentityRequest(jsonSchema(64 << 10))},
+		{"responses/json_schema_1MB", responsesIdentityRequest(jsonSchema(1 << 20))},
+		{"chat/new_params_unset", chatIdentityRequest(&schemas.ChatParameters{Temperature: schemas.Ptr(0.5)})},
+		{"chat/new_params_set", chatIdentityRequest(allChatParams)},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				cacheIdentityForTest(b, plugin, c.req)
+			}
+		})
+	}
 }
 
 func TestGetOrCreateStreamAccumulatorUsesSingleAccumulatorPerRequest(t *testing.T) {

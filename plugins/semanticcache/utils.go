@@ -1038,6 +1038,23 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
 		putIfSet(metadata, "reasoning_max_tokens", params.Reasoning.MaxTokens)
 		putIfSet(metadata, "reasoning_summary", params.Reasoning.Summary)
+		putIfSet(metadata, "reasoning_display", params.Reasoning.Display)
+		putIfSet(metadata, "reasoning_mode", params.Reasoning.Mode)
+		putIfSet(metadata, "reasoning_type", params.Reasoning.Type)
+	}
+	putIfSet(metadata, "web_search_options", params.WebSearchOptions)
+	putIfSet(metadata, "container", params.Container)
+	if len(params.MCPServers) > 0 {
+		// MCP servers are an order-insensitive set, hashed once like tools. On a
+		// marshal error the raw servers go in instead, so hashMap fails the same
+		// way and the request skips the cache rather than sharing an entry.
+		if mcpServersHash, err := hashSortedSet(params.MCPServers, func(s schemas.ChatMCPServer) string {
+			return s.Name
+		}); err != nil {
+			metadata["mcp_servers"] = params.MCPServers
+		} else if mcpServersHash != "" {
+			metadata["mcp_servers_hash"] = mcpServersHash
+		}
 	}
 	if params.ResponseFormat != nil {
 		// ResponseFormat is a struct pointer that callers expect to round-trip
@@ -1099,13 +1116,26 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
 		putIfSet(metadata, "reasoning_max_tokens", params.Reasoning.MaxTokens)
 		putIfSet(metadata, "reasoning_summary", params.Reasoning.Summary)
+		putIfSet(metadata, "reasoning_mode", params.Reasoning.Mode)
+		putIfSet(metadata, "reasoning_context", params.Reasoning.Context)
+		putIfSet(metadata, "reasoning_type", params.Reasoning.Type)
 	}
 	putIfSet(metadata, "safety_identifier", params.SafetyIdentifier)
 	putIfSet(metadata, "service_tier", params.ServiceTier)
 	putIfSet(metadata, "store", params.Store)
 	if params.Text != nil {
 		putIfSet(metadata, "text_verbosity", params.Text.Verbosity)
-		putIfSet(metadata, "text_format", params.Text.Format)
+		if params.Text.Format != nil {
+			// A JSON schema can be large, so it is marshaled once into a hash here
+			// instead of being walked again by both the params and request hashes.
+			// On a marshal error the raw format goes in instead, so hashMap fails the
+			// same way and the request skips the cache rather than sharing an entry.
+			if data, err := schemas.MarshalDeeplySorted(params.Text.Format); err != nil {
+				metadata["text_format"] = params.Text.Format
+			} else {
+				metadata["text_format_hash"] = fmt.Sprintf("%x", xxhash.Sum64(data))
+			}
+		}
 	}
 	putIfSet(metadata, "top_logprobs", params.TopLogProbs)
 	putIfSet(metadata, "truncation", params.Truncation)
