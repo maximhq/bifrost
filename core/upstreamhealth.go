@@ -117,38 +117,23 @@ func recordsUpstreamFailure(class schemas.FailureClass) bool {
 	return false
 }
 
-// upstreamFinalFailure classifies the final error of one provider attempt chain. When core
-// ends the chain with its synthetic 502 upstream_credentials_exhausted (every key in the pool
-// was refused), that error carries no upstream class of its own, so the class of the last
-// upstream answer in the attempt trail stands for it. Core resets the trail on the chain's first
-// attempt and returns that error only after attempts on it, so the trail is this chain's.
-// When every key was refused (poolRefused), the pool is free again when its soonest key is, so
-// the Retry-After returned is the smallest left in the trail for the failure's class, falling
-// back to the final error's own hint when the trail has none.
-func upstreamFinalFailure(ctx *schemas.BifrostContext, err *schemas.BifrostError, poolRefused bool, now time.Time) (schemas.FailureClass, *int, int64) {
+// upstreamFinalFailure classifies the final error of one provider attempt chain and returns its
+// own Retry-After hint. When core ends the chain with its synthetic 502
+// upstream_credentials_exhausted (every key in the pool was refused), that error carries no
+// upstream class or hint of its own, so the class of the last upstream answer in the attempt
+// trail stands for it. trail is the chain's attempt trail: core resets it on a keyed chain's first
+// attempt and returns that error only after attempts on it; a chain without keys neither resets
+// nor writes it, and its caller passes none.
+func upstreamFinalFailure(trail []schemas.KeyAttemptRecord, err *schemas.BifrostError) (schemas.FailureClass, *int, int64) {
 	class := ClassifyFailure(err)
 	statusCode := err.StatusCode
 	retryAfter := err.ExtraFields.RetryAfter
-	if ctx == nil {
-		return class, statusCode, retryAfter
-	}
-	trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
 	if err.ExtraFields.ErrorType == schemas.ErrorTypeProviderCredentialsExhausted {
-		found := false
 		for i := len(trail) - 1; i >= 0; i-- {
 			if recordsUpstreamFailure(trail[i].FailureClass) {
-				class, statusCode, retryAfter, found = trail[i].FailureClass, trail[i].StatusCode, 0, true
-				break
+				return trail[i].FailureClass, trail[i].StatusCode, 0
 			}
 		}
-		if !found {
-			return class, statusCode, retryAfter
-		}
-	} else if !poolRefused {
-		return class, statusCode, retryAfter
-	}
-	if hint := soonestTrailHint(trail, class, now); hint > 0 {
-		retryAfter = hint
 	}
 	return class, statusCode, retryAfter
 }
@@ -193,6 +178,39 @@ func soonestTrailHint(trail []schemas.KeyAttemptRecord, class schemas.FailureCla
 	return hint
 }
 
+// upstreamPoolCooldown is how long a pool whose every key was refused stays unavailable after a
+// chain that ended on a failure of class carrying retryAfterMs: until its soonest key is free
+// again. Each key's latest per-key refusal in the trail gives that key's cooldown by its own
+// class, from the smallest hint left among the keys refused for that class (see
+// soonestTrailHint), so a key rate limited for 15 seconds frees the pool then even when the last
+// key's credential was rejected. A failure that is no per-key refusal, or a trail that holds none,
+// cools down by the final failure alone.
+func upstreamPoolCooldown(trail []schemas.KeyAttemptRecord, class schemas.FailureClass, retryAfterMs int64, consecutive int, now time.Time) (time.Duration, bool) {
+	if !class.IsPerKey() {
+		return upstreamCooldown(class, retryAfterMs, consecutive)
+	}
+	soonest, found := time.Duration(0), false
+	// The trail is bounded by the retry budget, so recomputing a class's hint for each of its keys
+	// costs less than collecting the distinct classes first.
+	for j := range trail {
+		keyClass := trail[j].FailureClass
+		if !keyClass.IsPerKey() || keyAnsweredLater(trail, j) {
+			continue
+		}
+		hint := soonestTrailHint(trail, keyClass, now)
+		if hint == 0 && keyClass == class {
+			hint = retryAfterMs
+		}
+		if d, ok := upstreamCooldown(keyClass, hint, consecutive); ok && (!found || d < soonest) {
+			soonest, found = d, true
+		}
+	}
+	if !found {
+		return upstreamCooldown(class, retryAfterMs, consecutive)
+	}
+	return soonest, true
+}
+
 // recordSuccess marks a pair as serving. Pairs never seen failing are not tracked, so the
 // success path takes only a read lock. Chains take now before locking the pair, so a success can
 // arrive after a newer success or failure; such a success changes nothing, since moving
@@ -223,6 +241,14 @@ func (t *upstreamHealthTracker) recordSuccess(provider schemas.ModelProvider, mo
 // to the pair's cooldown. A stream that failed after reaching the client ends it: that counts as
 // a failure, but no other key could have taken over and the upstream did serve the pair.
 func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, model string, class schemas.FailureClass, statusCode *int, retryAfterMs int64, effect upstreamCooldownEffect, now time.Time) {
+	t.recordFailureWith(provider, model, class, statusCode, effect, now, func(consecutive int) (time.Duration, bool) {
+		return upstreamCooldown(class, retryAfterMs, consecutive)
+	})
+}
+
+// recordFailureWith is recordFailure with the cooldown a cooldownStart sets given by cooldown,
+// from the pair's consecutive failures including this one.
+func (t *upstreamHealthTracker) recordFailureWith(provider schemas.ModelProvider, model string, class schemas.FailureClass, statusCode *int, effect upstreamCooldownEffect, now time.Time, cooldown func(consecutive int) (time.Duration, bool)) {
 	if model == "" || !recordsUpstreamFailure(class) {
 		return
 	}
@@ -293,7 +319,7 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 	case cooldownKeep:
 		return
 	}
-	if d, ok := upstreamCooldown(class, retryAfterMs, st.consecutiveFailures); ok {
+	if d, ok := cooldown(st.consecutiveFailures); ok {
 		st.cooldownUntil = now.Add(d)
 	}
 }
@@ -414,13 +440,21 @@ func (bifrost *Bifrost) recordUpstreamOutcome(ctx *schemas.BifrostContext, provi
 		bifrost.upstreamHealth.recordSuccess(provider, model, now)
 		return
 	}
-	refused := upstreamPoolRefused(ctx, poolSize)
-	class, statusCode, retryAfter := upstreamFinalFailure(ctx, err, refused, now)
-	effect := cooldownStart
-	if !refused {
-		effect = cooldownKeep
+	// A chain without keys (a keyless provider) neither resets nor writes the attempt trail, so
+	// whatever the context's trail holds belongs to an earlier chain that ran on the same context;
+	// only the chain's own answer speaks for it.
+	var trail []schemas.KeyAttemptRecord
+	if ctx != nil && poolSize > 0 {
+		trail, _ = ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord)
 	}
-	bifrost.upstreamHealth.recordFailure(provider, model, class, statusCode, retryAfter, effect, now)
+	class, statusCode, retryAfter := upstreamFinalFailure(trail, err)
+	if !upstreamPoolRefused(ctx, poolSize) {
+		bifrost.upstreamHealth.recordFailure(provider, model, class, statusCode, retryAfter, cooldownKeep, now)
+		return
+	}
+	bifrost.upstreamHealth.recordFailureWith(provider, model, class, statusCode, cooldownStart, now, func(consecutive int) (time.Duration, bool) {
+		return upstreamPoolCooldown(trail, class, retryAfter, consecutive, now)
+	})
 }
 
 // upstreamPoolRefused reports whether a refusal came back from every key of a poolSize-key pool

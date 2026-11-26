@@ -77,8 +77,8 @@ func TestUpstreamHealthCredentialsExhaustedUsesAttemptTrail(t *testing.T) {
 	b := &Bifrost{}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
-		{Attempt: 0, FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 40_000},
-		{Attempt: 1, FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 15_000},
+		{Attempt: 0, KeyID: "key-a", FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 40_000},
+		{Attempt: 1, KeyID: "key-b", FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 15_000},
 	})
 	exhausted := &schemas.BifrostError{
 		StatusCode:  schemas.Ptr(502),
@@ -86,7 +86,7 @@ func TestUpstreamHealthCredentialsExhaustedUsesAttemptTrail(t *testing.T) {
 		Error:       &schemas.ErrorField{Type: schemas.Ptr("upstream_credentials_exhausted"), Message: "all keys dead"},
 		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeProviderCredentialsExhausted},
 	}
-	b.recordUpstreamOutcome(ctx, schemas.Gemini, "gemini-x", exhausted, 0)
+	b.recordUpstreamOutcome(ctx, schemas.Gemini, "gemini-x", exhausted, 2)
 
 	h := findUpstreamHealth(t, b.UpstreamHealthSnapshot(time.Now()), schemas.Gemini, "gemini-x")
 	if h.Available || h.FailureClass != schemas.FailureClassRateLimit || h.StatusCode == nil || *h.StatusCode != 429 {
@@ -101,27 +101,27 @@ func TestUpstreamHealthCredentialsExhaustedUsesAttemptTrail(t *testing.T) {
 // on later keys comes off it, so the pair cools down no later than that answer plus its hint.
 func TestUpstreamHealthTrailHintCountsFromAnswer(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+	trail := []schemas.KeyAttemptRecord{
 		{Attempt: 0, FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 20_000, AnsweredAt: t0},
 		{Attempt: 1, FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 30_000, AnsweredAt: t0.Add(15 * time.Second)},
-	})
+	}
 	exhausted := &schemas.BifrostError{
 		StatusCode:  schemas.Ptr(502),
 		Error:       &schemas.ErrorField{Message: "all keys dead"},
 		ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypeProviderCredentialsExhausted},
 	}
 	end := t0.Add(18 * time.Second)
-	class, status, hint := upstreamFinalFailure(ctx, exhausted, true, end)
-	if class != schemas.FailureClassRateLimit || status == nil || *status != 429 {
-		t.Fatalf("expected the trail's rate limit, got %s %v", class, status)
+	class, status, hint := upstreamFinalFailure(trail, exhausted)
+	if class != schemas.FailureClassRateLimit || status == nil || *status != 429 || hint != 0 {
+		t.Fatalf("expected the trail's rate limit and no hint of the synthetic error's own, got %s %v %d", class, status, hint)
 	}
-	if hint != 2_000 {
-		t.Fatalf("expected the first key's hint less the 18s since its answer (2000 ms), got %d ms", hint)
+	d, ok := upstreamPoolCooldown(trail, class, hint, 1, end)
+	if !ok || d != 2*time.Second {
+		t.Fatalf("expected the first key's hint less the 18s since its answer (2s), got %s", d)
 	}
 
 	var tracker upstreamHealthTracker
-	tracker.recordFailure(schemas.Gemini, "gemini-x", class, status, hint, cooldownStart, end)
+	tracker.recordFailure(schemas.Gemini, "gemini-x", class, status, d.Milliseconds(), cooldownStart, end)
 	if h := findUpstreamHealth(t, tracker.snapshot(t0.Add(20*time.Second-time.Millisecond)), schemas.Gemini, "gemini-x"); h.Available {
 		t.Fatalf("expected cooling down before the first answer plus its hint, got %+v", h)
 	}
@@ -131,8 +131,61 @@ func TestUpstreamHealthTrailHintCountsFromAnswer(t *testing.T) {
 
 	// A hint whose wait has fully passed still stands for the provider's wait, not the hintless
 	// escalating cooldown.
-	if _, _, hint := upstreamFinalFailure(ctx, exhausted, true, t0.Add(time.Minute)); hint != 1 {
-		t.Fatalf("expected an elapsed hint to leave 1 ms, got %d ms", hint)
+	if d, _ := upstreamPoolCooldown(trail, class, hint, 1, t0.Add(time.Minute)); d != time.Millisecond {
+		t.Fatalf("expected an elapsed hint to leave 1 ms, got %s", d)
+	}
+}
+
+// A pool is free again when its soonest key is, whatever the last key answered: a key rate limited
+// for 15s frees the pair after 15s even when the chain ended on another key's rejected credential,
+// which alone would hold the pair for the ten-minute refusal cooldown.
+func TestUpstreamHealthMixedRefusalsCoolDownUntilSoonestKey(t *testing.T) {
+	b := &Bifrost{}
+	now := time.Now()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+		{Attempt: 0, KeyID: "key-a", FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 15_000, AnsweredAt: now},
+		{Attempt: 1, KeyID: "key-b", FailureClass: schemas.FailureClassCredential, StatusCode: schemas.Ptr(401), AnsweredAt: now},
+	})
+	b.recordUpstreamOutcome(ctx, schemas.OpenAI, "gpt-x", upstreamError(401, "invalid_api_key", 0), 2)
+
+	h := findUpstreamHealth(t, b.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-x")
+	if h.Available || h.FailureClass != schemas.FailureClassCredential || h.StatusCode == nil || *h.StatusCode != 401 {
+		t.Fatalf("expected the refused pool to cool down and report the last key's credential failure, got %+v", h)
+	}
+	if h.CooldownUntil == nil || h.CooldownUntil.After(now.Add(15*time.Second)) {
+		t.Fatalf("expected the cooldown to end by the rate-limited key's 15s hint, got %+v", h)
+	}
+
+	// With every key's credential rejected, no key frees the pool before the refusal cooldown.
+	other := &Bifrost{}
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+		{Attempt: 0, KeyID: "key-a", FailureClass: schemas.FailureClassCredential, StatusCode: schemas.Ptr(401), AnsweredAt: now},
+		{Attempt: 1, KeyID: "key-b", FailureClass: schemas.FailureClassCredential, StatusCode: schemas.Ptr(401), AnsweredAt: now},
+	})
+	other.recordUpstreamOutcome(ctx, schemas.OpenAI, "gpt-x", upstreamError(401, "invalid_api_key", 0), 2)
+	h = findUpstreamHealth(t, other.UpstreamHealthSnapshot(time.Now()), schemas.OpenAI, "gpt-x")
+	if h.CooldownUntil == nil || h.CooldownUntil.Before(now.Add(upstreamRefusalCooldown)) {
+		t.Fatalf("expected the refusal cooldown when every key's credential was rejected, got %+v", h)
+	}
+}
+
+// A chain without keys (a keyless provider) neither resets nor writes the attempt trail, so a
+// trail on its context was left by an earlier chain on another provider. The keyless pair cools
+// down by its own answer's hint, never by that trail's.
+func TestUpstreamHealthKeylessChainIgnoresEarlierTrail(t *testing.T) {
+	b := &Bifrost{}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyAttemptTrail, []schemas.KeyAttemptRecord{
+		{Attempt: 0, KeyID: "key-a", FailureClass: schemas.FailureClassRateLimit, StatusCode: schemas.Ptr(429), RetryAfter: 60_000, AnsweredAt: time.Now()},
+	})
+	start := time.Now()
+	b.recordUpstreamOutcome(ctx, schemas.ModelProvider("my-local"), "local-x", upstreamError(429, "rate_limit_error", 5_000), 0)
+
+	h := findUpstreamHealth(t, b.UpstreamHealthSnapshot(time.Now()), schemas.ModelProvider("my-local"), "local-x")
+	if h.Available || h.CooldownUntil == nil || h.CooldownUntil.After(time.Now().Add(5*time.Second)) || h.CooldownUntil.Before(start.Add(5*time.Second)) {
+		t.Fatalf("expected the keyless pair to cool down by its own 5s hint, got %+v", h)
 	}
 }
 

@@ -14,6 +14,7 @@ syncmap	core	Bifrost.waitGroups	core: OSS core cannot import livestore
 lockedmap	core	PluginPipeline.postHookTimings	core: OSS core cannot import livestore
 lockedmap	core	PluginPipeline.streamScopedCtxs	core: OSS core cannot import livestore
 pkgsyncmap	core	pluginSpanNameCache	core: OSS core cannot import livestore
+lockedmap	core	upstreamHealthTracker.entries	core: OSS core cannot import livestore
 lockedmap	core/agent	Manager.oauthFingerprints	decided: relies on a size cap that livestore.Cache has no option for; goes with the agent OAuth token cache
 lockedmap	core/agent	Manager.oauthTokens	decided: relies on a size cap that livestore.Cache has no option for
 syncmap	core/agent	runtimeRegistry.entries	core: OSS core cannot import livestore
