@@ -484,6 +484,14 @@ func (m *Manager) Serve(ctx *schemas.BifrostContext, in Request) (*Result, *sche
 	// A created body keeps a JSON content type the caller or operator already set (application/x-amz-json-1.1).
 	// Set before the status check test, so it sees the content type that is sent with the body.
 	if created && !isJSONBodyType(contentType) {
+		// The relay's own Content-Type wins on the wire, so a JSON body created under a non-JSON one
+		// would reach the API mislabelled; it is refused rather than sent.
+		if relayType, set := e.operatorHeaders["content-type"]; set {
+			if !p.allowed {
+				return nil, noRoute()
+			}
+			return nil, statusError(http.StatusBadRequest, fmt.Sprintf("this route creates a JSON body for its forced fields, but the relay's extra headers set Content-Type to %q", relayType))
+		}
 		in.Headers = withJSONContentType(in.Headers)
 		contentType = "application/json"
 	}
