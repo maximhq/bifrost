@@ -282,8 +282,14 @@ func geminiResponseEmbeddings(resp *GeminiEmbeddingResponse) []GeminiEmbedding {
 
 // ToBifrostEmbeddingResponse converts a Gemini embedding response to BifrostEmbeddingResponse format
 func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model string) *schemas.BifrostEmbeddingResponse {
+	if geminiResp == nil {
+		return nil
+	}
 	embeddings := geminiResponseEmbeddings(geminiResp)
-	if len(embeddings) == 0 {
+	hasUsageMetadata := geminiResp.UsageMetadata != nil && (geminiResp.UsageMetadata.PromptTokenCount > 0 || geminiResp.UsageMetadata.TotalTokenCount > 0)
+	// An unusable embedding result can still report billable work. Preserve that
+	// usage without inventing a vector or treating an unmeasured response as free.
+	if len(embeddings) == 0 && !hasUsageMetadata && geminiResp.Metadata == nil {
 		return nil
 	}
 
@@ -310,7 +316,7 @@ func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model strin
 			break
 		}
 	}
-	if um := geminiResp.UsageMetadata; um != nil && (um.PromptTokenCount > 0 || um.TotalTokenCount > 0) {
+	if um := geminiResp.UsageMetadata; hasUsageMetadata {
 		prompt := int(um.PromptTokenCount)
 		total := int(um.TotalTokenCount)
 		if prompt == 0 {

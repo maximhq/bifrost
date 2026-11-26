@@ -1,12 +1,53 @@
 package vertex
 
 import (
+	"context"
+	"crypto/tls"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
+
+func TestVertexGeminiEmbeddingEmptyResultRetainsUsage(t *testing.T) {
+	requests := make(chan string, 1)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Path + " " + r.URL.Query().Get("key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"usageMetadata":{"promptTokenCount":12,"totalTokenCount":12}}`))
+	}))
+	defer upstream.Close()
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	require.NoError(t, err)
+	// Vertex chooses a cloud host internally; route only this test's client to
+	// the isolated upstream, without global transport or environment changes.
+	provider.client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+	provider.client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+
+	response, bifrostErr := provider.Embedding(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.Key{Value: *schemas.NewSecretVar("test-key"), VertexKeyConfig: &schemas.VertexKeyConfig{
+			ProjectID: *schemas.NewSecretVar("fixture-project"), Region: *schemas.NewSecretVar("us-central1"),
+		}},
+		&schemas.BifrostEmbeddingRequest{
+			Provider: schemas.Vertex, Model: "gemini-embedding-2-preview",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hello")}}}},
+		},
+	)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, response)
+	require.Empty(t, response.Data)
+	require.NotNil(t, response.Usage)
+	require.Equal(t, 12, response.Usage.PromptTokens)
+	require.Equal(t, 12, response.Usage.TotalTokens)
+	require.Equal(t, "/v1/projects/fixture-project/locations/us-central1/publishers/google/models/gemini-embedding-2-preview:embedContent test-key", <-requests)
+}
 
 // Vertex resolves gs:// through fileData.fileUri, the only way to embed media too large to
 // inline. The embedding path used to run image URLs through the http/https-only allowlist,

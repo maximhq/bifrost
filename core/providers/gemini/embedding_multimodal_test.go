@@ -1,7 +1,10 @@
 package gemini
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -9,6 +12,35 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestGeminiEmbeddingEmptyResultRetainsUsage(t *testing.T) {
+	requests := make(chan string, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Path + " " + r.Header.Get("x-goog-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"embeddings":[],"usageMetadata":{"promptTokenCount":12,"totalTokenCount":12}}`))
+	}))
+	defer upstream.Close()
+	provider := NewGeminiProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL},
+	}, testNoopLogger{})
+
+	response, bifrostErr := provider.Embedding(
+		schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		schemas.Key{Value: *schemas.NewSecretVar("test-key")},
+		&schemas.BifrostEmbeddingRequest{
+			Provider: schemas.Gemini, Model: "gemini-embedding-001",
+			Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("hello")}}}},
+		},
+	)
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, response)
+	require.Empty(t, response.Data)
+	require.NotNil(t, response.Usage)
+	require.Equal(t, 12, response.Usage.PromptTokens)
+	require.Equal(t, 12, response.Usage.TotalTokens)
+	require.Equal(t, "/models/gemini-embedding-001:batchEmbedContents test-key", <-requests)
+}
 
 func TestToGeminiEmbeddingRequestBatchContentUsesBatchRequest(t *testing.T) {
 	one := "one"
