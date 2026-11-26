@@ -29,6 +29,7 @@ func TestSpeechContentType(t *testing.T) {
 		{"elevenlabs mp3 format", "mp3_44100_128", raw, "audio/mpeg"},
 		{"elevenlabs pcm format", "pcm_16000", raw, "application/octet-stream"},
 		{"elevenlabs ulaw format", "ulaw_8000", raw, "application/octet-stream"},
+		{"xai mulaw format", "mulaw", raw, "application/octet-stream"},
 		{"empty format keeps the mp3 default", "", raw, "audio/mpeg"},
 		{"unknown format keeps the mp3 default", "weird", raw, "audio/mpeg"},
 		{"empty audio", "wav", nil, "audio/wav"},
@@ -43,7 +44,7 @@ func TestSpeechContentType(t *testing.T) {
 func TestSpeechAttachmentFilename(t *testing.T) {
 	for format, want := range map[string]string{
 		"": "speech.mp3", "mp3": "speech.mp3", "mp3_22050_32": "speech.mp3", "opus": "speech.opus", "aac": "speech.aac",
-		"flac": "speech.flac", "wav": "speech.wav", "pcm_16000": "speech.pcm", "ulaw_8000": "speech.ulaw", "alaw_8000": "speech.alaw", "weird": "speech.mp3",
+		"flac": "speech.flac", "wav": "speech.wav", "pcm_16000": "speech.pcm", "ulaw_8000": "speech.ulaw", "mulaw": "speech.ulaw", "alaw_8000": "speech.alaw", "weird": "speech.mp3",
 	} {
 		assert.Equal(t, want, SpeechAttachmentFilename(format), "format %q", format)
 	}
