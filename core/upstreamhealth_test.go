@@ -398,8 +398,32 @@ func TestUpstreamHealthFailureOlderThanSuccessKeepsPairAvailable(t *testing.T) {
 	if !h.Available || h.CooldownUntil != nil {
 		t.Fatalf("expected the newer success to keep the pair available, got %+v", h)
 	}
-	if h.ConsecutiveFailures != 1 || h.RecentFailures != 2 {
-		t.Fatalf("expected the older failure still counted, got %+v", h)
+	if h.Status != schemas.UpstreamHealthAvailable || h.ConsecutiveFailures != 0 || h.RecentFailures != 2 {
+		t.Fatalf("expected the older failure counted in the window but not in the streak the success ended, got %+v", h)
+	}
+}
+
+// A success that arrives after a newer failure, or after a newer success, must not move the pair's
+// state back: the newer failure's cooldown stands, and lastSuccessAt never regresses, so a failure
+// between the two successes stays older than the last success.
+func TestUpstreamHealthOlderSuccessDoesNotRewindPair(t *testing.T) {
+	var tracker upstreamHealthTracker
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	tracker.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 60_000, cooldownStart, t0.Add(time.Second))
+	tracker.recordSuccess(schemas.OpenAI, "gpt-x", t0)
+	h := findUpstreamHealth(t, tracker.snapshot(t0.Add(2*time.Second)), schemas.OpenAI, "gpt-x")
+	if h.Available || h.CooldownUntil == nil || !h.CooldownUntil.Equal(t0.Add(61*time.Second)) || h.ConsecutiveFailures != 1 || h.LastSuccessAt != nil {
+		t.Fatalf("expected the newer failure's cooldown to survive an older success, got %+v", h)
+	}
+
+	var other upstreamHealthTracker
+	other.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 60_000, cooldownStart, t0)
+	other.recordSuccess(schemas.OpenAI, "gpt-x", t0.Add(3*time.Second))
+	other.recordSuccess(schemas.OpenAI, "gpt-x", t0.Add(time.Second))
+	other.recordFailure(schemas.OpenAI, "gpt-x", schemas.FailureClassRateLimit, schemas.Ptr(429), 60_000, cooldownStart, t0.Add(2*time.Second))
+	h = findUpstreamHealth(t, other.snapshot(t0.Add(4*time.Second)), schemas.OpenAI, "gpt-x")
+	if !h.Available || h.CooldownUntil != nil || h.LastSuccessAt == nil || !h.LastSuccessAt.Equal(t0.Add(3*time.Second)) {
+		t.Fatalf("expected the newest success to keep the pair available, got %+v", h)
 	}
 }
 

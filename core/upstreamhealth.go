@@ -194,7 +194,10 @@ func soonestTrailHint(trail []schemas.KeyAttemptRecord, class schemas.FailureCla
 }
 
 // recordSuccess marks a pair as serving. Pairs never seen failing are not tracked, so the
-// success path takes only a read lock.
+// success path takes only a read lock. Chains take now before locking the pair, so a success can
+// arrive after a newer success or failure; such a success changes nothing, since moving
+// lastSuccessAt back would let a failure between the two count as current again, and clearing
+// the pair would drop a newer failure's cooldown.
 func (t *upstreamHealthTracker) recordSuccess(provider schemas.ModelProvider, model string, now time.Time) {
 	if model == "" {
 		return
@@ -206,6 +209,10 @@ func (t *upstreamHealthTracker) recordSuccess(provider schemas.ModelProvider, mo
 		return
 	}
 	st.mu.Lock()
+	if now.Before(st.lastSuccessAt) || now.Before(st.lastFailureAt) {
+		st.mu.Unlock()
+		return
+	}
 	st.lastSuccessAt = now
 	st.consecutiveFailures = 0
 	st.cooldownUntil = time.Time{}
@@ -248,10 +255,14 @@ func (t *upstreamHealthTracker) recordFailure(provider schemas.ModelProvider, mo
 		t.mu.Unlock()
 	}
 	defer st.mu.Unlock()
-	st.consecutiveFailures++
 	// Chains take now before locking the pair, so two finishing together can arrive out of order.
-	// An older answer still counts as a failure, but a newer failure already set the pair's state
-	// and cooldown, and a newer success already cleared it, so the older one must not replace them.
+	// An older answer still counts as a failure in the window, but a newer failure already set the
+	// pair's state and cooldown, and a newer success already cleared it, so the older one must not
+	// replace them. A failure older than the last success also does not extend the streak that
+	// success ended.
+	if !now.Before(st.lastSuccessAt) {
+		st.consecutiveFailures++
+	}
 	stale := now.Before(st.lastFailureAt) || now.Before(st.lastSuccessAt)
 	if !stale {
 		st.failureClass = class
