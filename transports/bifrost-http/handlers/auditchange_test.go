@@ -1,11 +1,18 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/scanner"
+	"go/token"
+	"net/url"
+	"os"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +21,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -1893,4 +1901,576 @@ func TestCommitPoint_ConfigCompatReloadFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+// flushFailingStore saves auth config but fails to flush sessions after it.
+type flushFailingStore struct {
+	configstore.ConfigStore
+}
+
+func (flushFailingStore) FlushSessions(context.Context) error {
+	return errCommitPointInjected
+}
+
+// authWriteFailingManager fails every auth config write.
+type authWriteFailingManager struct {
+	stubConfigManager
+}
+
+func (authWriteFailingManager) UpdateAuthConfig(context.Context, *configstore.AuthConfig) error {
+	return errCommitPointInjected
+}
+
+// changeNamed returns the one live change named eventName.
+func changeNamed(t *testing.T, ctx *fasthttp.RequestCtx, eventName string) configstore.AuditChange {
+	t.Helper()
+	var found []configstore.AuditChange
+	for _, c := range liveAuditChanges(ctx) {
+		if c.EventName == eventName {
+			found = append(found, c)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want one %s change, got %+v", eventName, liveAuditChanges(ctx))
+	}
+	return found[0]
+}
+
+func seedStoredAdmin(t *testing.T, store configstore.ConfigStore, password string) string {
+	t.Helper()
+	hash, err := encrypt.Hash(password)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if err := store.UpdateAuthConfig(context.Background(), &configstore.AuthConfig{AdminUserName: schemas.NewSecretVar("admin"), AdminPassword: schemas.NewSecretVar(hash), IsEnabled: false}); err != nil {
+		t.Fatalf("seed auth config: %v", err)
+	}
+	return hash
+}
+
+func TestCommitPoint_AuthConfigRecordedWhenSessionFlushFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	const newPass = "Replacement-Pass-5678!"
+	store := newRealOAuth2Store(t)
+	storedHash := seedStoredAdmin(t, store, "Current-Pass-1234!")
+	cfg := newTestOAuth2Config(t, flushFailingStore{store}, configstoreTables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"` + newPass + `"}}`)
+	h.updateConfig(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	stored, err := store.GetAuthConfig(context.Background())
+	if err != nil || stored == nil || !stored.IsEnabled {
+		t.Fatalf("auth config should be saved before the flush fails: %+v %v", stored, err)
+	}
+	change := changeNamed(t, ctx, "auth_config.updated")
+	if string(change.Before) != `{"is_enabled":false}` || string(change.After) != `{"admin_password_changed":true,"is_enabled":true}` {
+		t.Fatalf("before=%s after=%s", change.Before, change.After)
+	}
+	for _, secret := range []string{newPass, storedHash, stored.AdminPassword.GetValue(), `"admin"`} {
+		if strings.Contains(string(change.Before)+string(change.After), secret) {
+			t.Fatalf("snapshot carries a credential %q", secret)
+		}
+	}
+}
+
+func TestCommitPoint_FrameworkConfigRecordedWhenAuthWriteFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	seedStoredAdmin(t, store, "Current-Pass-1234!")
+	cfg := newTestOAuth2Config(t, store, configstoreTables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: authWriteFailingManager{}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_sync_interval":7200},"auth_config":{"is_enabled":true,"admin_username":"admin","admin_password":"Replacement-Pass-5678!"}}`)
+	h.updateConfig(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusInternalServerError)
+	change := changeNamed(t, ctx, "framework_config.updated")
+	var after map[string]any
+	if err := json.Unmarshal(change.After, &after); err != nil {
+		t.Fatalf("decode after: %v", err)
+	}
+	if after["pricing_sync_interval"] != float64(7200) {
+		t.Fatalf("after = %s, want the saved interval", change.After)
+	}
+	for _, c := range liveAuditChanges(ctx) {
+		if c.EventName == "auth_config.updated" {
+			t.Fatalf("a failed auth write must not be recorded: %+v", c)
+		}
+	}
+}
+
+// TestAuditFrameworkConfigUnparseableURLRedacted pins that a stored URL whose credentials the
+// redactor cannot locate (one url.Parse rejects, or an opaque one it accepts) never reaches the
+// framework_config.updated snapshots verbatim, even on a save that changes only an interval.
+func TestAuditFrameworkConfigUnparseableURLRedacted(t *testing.T) {
+	for name, stored := range map[string]string{
+		"unparseable": "https://operator:p%zzsecret@catalog.example/pricing.json",
+		"opaque":      "https:operator:secret@catalog.example/pricing.json",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := url.Parse(stored); (err != nil) != (name == "unparseable") {
+				t.Fatalf("fixture %q: url.Parse error = %v", stored, err)
+			}
+			SetLogger(&mockLogger{})
+			store := newRealOAuth2Store(t)
+			seedStoredAdmin(t, store, "Current-Pass-1234!")
+			pricingURL, interval := stored, int64(3600)
+			if err := store.UpdateFrameworkConfig(context.Background(), &configstoreTables.TableFrameworkConfig{PricingURL: &pricingURL, PricingSyncInterval: &interval}); err != nil {
+				t.Fatalf("seed framework config: %v", err)
+			}
+			cfg := newTestOAuth2Config(t, store, configstoreTables.MCPServerAuthModeHeaders, false)
+			h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store}}
+
+			ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"framework_config":{"pricing_sync_interval":7200}}`)
+			h.updateConfig(ctx)
+
+			requireStatus(t, ctx, fasthttp.StatusOK)
+			change := changeNamed(t, ctx, "framework_config.updated")
+			for _, snap := range []json.RawMessage{change.Before, change.After} {
+				if strings.Contains(string(snap), "secret") || strings.Contains(string(snap), "operator") {
+					t.Fatalf("snapshot carries the stored URL's credentials: before=%s after=%s", change.Before, change.After)
+				}
+			}
+			var after map[string]any
+			if err := json.Unmarshal(change.After, &after); err != nil {
+				t.Fatalf("decode after: %v", err)
+			}
+			if after["pricing_sync_interval"] != float64(7200) || after["pricing_url"] == nil {
+				t.Fatalf("after = %s, want the saved interval and a placeholder pricing_url", change.After)
+			}
+		})
+	}
+}
+
+// TestRecordAuthConfigChangeComparesReferences pins that swapping the admin username to another
+// reference records a change even when both resolve to the same value, as the handler saves it.
+func TestRecordAuthConfigChangeComparesReferences(t *testing.T) {
+	t.Setenv("BF_AUDIT_ADMIN_A", "admin")
+	t.Setenv("BF_AUDIT_ADMIN_B", "admin")
+	pass := schemas.NewSecretVar("Current-Pass-1234!")
+	before := &configstore.AuthConfig{IsEnabled: true, AdminUserName: schemas.NewSecretVar("env.BF_AUDIT_ADMIN_A"), AdminPassword: pass}
+
+	ctx := newTestRequestCtx("")
+	recordAuthConfigChange(ctx, before, &configstore.AuthConfig{IsEnabled: true, AdminUserName: schemas.NewSecretVar("env.BF_AUDIT_ADMIN_B"), AdminPassword: pass})
+	change := requireSingleAuditChange(t, ctx, "auth_config.updated")
+	if !strings.Contains(string(change.After), `"admin_username_changed":true`) || strings.Contains(string(change.After), "BF_AUDIT_ADMIN") {
+		t.Fatalf("after = %s, want admin_username_changed and no reference", change.After)
+	}
+
+	ctx = newTestRequestCtx("")
+	recordAuthConfigChange(ctx, before, &configstore.AuthConfig{IsEnabled: true, AdminUserName: schemas.NewSecretVar("env.BF_AUDIT_ADMIN_A"), AdminPassword: pass})
+	if changes := liveAuditChanges(ctx); len(changes) != 0 {
+		t.Fatalf("resubmitting the same reference must record nothing, got %+v", changes)
+	}
+}
+
+func TestCommitPoint_AuthConfigUnchangedSaveRecordsNothing(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	seedStoredAdmin(t, store, "Current-Pass-1234!")
+	cfg := newTestOAuth2Config(t, store, configstoreTables.MCPServerAuthModeHeaders, false)
+	h := &ConfigHandler{store: cfg, configManager: authConfigTestManager{store: store}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7},"auth_config":{"is_enabled":false}}`)
+	h.updateConfig(ctx)
+
+	requireStatus(t, ctx, fasthttp.StatusOK)
+	for _, c := range liveAuditChanges(ctx) {
+		if c.EventName == "auth_config.updated" {
+			t.Fatalf("a save that resubmits the stored auth config must not record: %+v", c)
+		}
+	}
+}
+
+// savedThenFailedMessage matches the messages handlers send when a write is saved but a later step fails.
+var savedThenFailedMessage = regexp.MustCompile(`(in database but|in the database but|saved but|committed but|stored but)`)
+
+// funcDeclName captures a function or method name from its declaration line.
+var funcDeclName = regexp.MustCompile(`^func (?:\([^)]*\) )?([A-Za-z0-9_]+)\(`)
+
+// commitPointFunc is one top-level function of the handlers package.
+type commitPointFunc struct {
+	file, name string
+	start      int
+	body       []string
+}
+
+// handlerSignature marks a route handler, which is never treated as a helper.
+const handlerSignature = "(ctx *fasthttp.RequestCtx) {"
+
+// sendsSavedThenFailed reports whether body[i] starts a call that answers a saved-then-failed 500
+// inline. The call is read through to its closing parenthesis, so a message on a later line counts.
+func sendsSavedThenFailed(body []string, i int) bool {
+	line := body[i]
+	if isCommentLine(line) {
+		return false
+	}
+	if !strings.Contains(line, "SendError(") && !strings.Contains(line, "sendAgentGatewayError(") {
+		return false
+	}
+	call := line
+	for depth, j := strings.Count(line, "(")-strings.Count(line, ")"), i+1; depth > 0 && j < len(body); j++ {
+		call += " " + strings.TrimSpace(body[j])
+		depth += strings.Count(body[j], "(") - strings.Count(body[j], ")")
+	}
+	compact := strings.Join(strings.Fields(call), "")
+	is500 := strings.Contains(compact, "StatusInternalServerError") || strings.Contains(compact, "(ctx,500,")
+	return is500 && savedThenFailedMessage.MatchString(call)
+}
+
+// stripGoComments blanks every // and /* */ comment in src, keeping newlines so line numbers
+// hold, so text inside a comment never reads as a call. String literals are left as they are.
+func stripGoComments(src string) string {
+	out := []byte(src)
+	fset := token.NewFileSet()
+	var sc scanner.Scanner
+	sc.Init(fset.AddFile("", fset.Base(), len(out)), out, nil, scanner.ScanComments)
+	for {
+		pos, tok, lit := sc.Scan()
+		if tok == token.EOF {
+			return string(out)
+		}
+		if tok != token.COMMENT {
+			continue
+		}
+		// The scanner drops \r from a comment's text, so the span is measured in the source.
+		start := fset.Position(pos).Offset
+		end := len(out)
+		if strings.HasPrefix(lit, "//") {
+			if nl := bytes.IndexByte(out[start:], '\n'); nl >= 0 {
+				end = start + nl
+			}
+		} else if close := bytes.Index(out[start+2:], []byte("*/")); close >= 0 {
+			end = start + 2 + close + 2
+		}
+		for i := start; i < end; i++ {
+			if out[i] != '\n' && out[i] != '\r' {
+				out[i] = ' '
+			}
+		}
+	}
+}
+
+// isCommentLine reports whether line is a // comment, which calls nothing.
+func isCommentLine(line string) bool { return strings.HasPrefix(strings.TrimSpace(line), "//") }
+
+// recordsAudit reports whether line records an audit change, directly or through a wrapper in recorders.
+func recordsAudit(line string, recorders map[string]bool) bool {
+	return !isCommentLine(line) && (strings.Contains(line, "RecordAuditChange(") || callsAny(line, recorders) != "")
+}
+
+// callsAny returns the first helper in names that line calls, or "".
+func callsAny(line string, names map[string]bool) string {
+	if isCommentLine(line) {
+		return ""
+	}
+	for name := range names {
+		if strings.Contains(line, "."+name+"(") || strings.Contains(line, " "+name+"(") || strings.Contains(line, "\t"+name+"(") || strings.Contains(line, "!"+name+"(") || strings.Contains(line, "("+name+"(") {
+			return name
+		}
+	}
+	return ""
+}
+
+// TestCommitPointRule fails when a handler answers a saved-then-failed 500 before its first audit
+// record, which means the change it saved reaches the audit log only as a failed request. A 500
+// sent through a helper (refreshPrompts, sendMCPClientReloadError) counts, and so does a record
+// made through a wrapper (recordMCPClientAction).
+func TestCommitPointRule(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read handlers dir: %v", err)
+	}
+	files := map[string]string{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		files[name] = string(data)
+	}
+	for _, v := range commitPointViolations(files) {
+		t.Error(v)
+	}
+}
+
+// TestCommitPointRuleFixtures runs the rule over small sources, so a guard that stops finding
+// helpers, wrappers, or calls split across lines fails here even while every real handler is right.
+func TestCommitPointRuleFixtures(t *testing.T) {
+	const helpers = `func refreshThing(ctx *fasthttp.RequestCtx) bool {
+	SendError(ctx, fasthttp.StatusInternalServerError, "Thing saved but reload failed")
+	return false
+}
+
+func recordThing(ctx *fasthttp.RequestCtx, id string) {
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`
+	for _, tc := range []struct {
+		name, src string
+		flagged   bool
+	}{
+		{"error helper before a record wrapper", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if !refreshThing(ctx) {
+		return
+	}
+	recordThing(ctx, "id")
+}
+`, true},
+		{"record wrapper before an error helper", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	recordThing(ctx, "id")
+	if !refreshThing(ctx) {
+		return
+	}
+}
+`, false},
+		{"helper that sends before it records is checked itself", `func saveAndRecord(ctx *fasthttp.RequestCtx, err error) {
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Thing saved but reload failed")
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, true},
+		{"multiline saved-then-failed error before the record", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError,
+			"Thing saved but reload failed")
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, true},
+		{"multiline saved-then-failed error after the record", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError,
+			"Thing saved but reload failed")
+		return
+	}
+}
+`, false},
+		{"multiline numeric 500 before the record", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		SendError(
+			ctx,
+			500,
+			"Thing saved but reload failed",
+		)
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, true},
+		{"multiline numeric 503 before the record", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		SendError(
+			ctx,
+			503,
+			"Thing saved but reload failed",
+		)
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, false},
+		{"free sender with a ctx-only signature before the record", `func sendReloadError(ctx *fasthttp.RequestCtx) {
+	SendError(ctx, fasthttp.StatusInternalServerError, "Thing saved but reload failed")
+}
+
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		sendReloadError(ctx)
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, true},
+		{"handler that answers a saved-then-failed error and never records", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Thing saved but reload failed")
+		return
+	}
+	SendJSON(ctx, nil)
+}
+`, true},
+		{"commented-out error helper before the record", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	// refreshThing(ctx)
+	recordThing(ctx, "id")
+}
+`, false},
+		{"commented-out record before an error helper", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	// recordThing(ctx, "id")
+	if !refreshThing(ctx) {
+		return
+	}
+	recordThing(ctx, "id")
+}
+`, true},
+		{"error helper inside the record's own arguments", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	recordThing(ctx, fmt.Sprint(refreshThing(ctx)))
+}
+`, true},
+		{"record in a trailing comment before an error helper", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	doWork() // recordThing(ctx, "id")
+	if !refreshThing(ctx) {
+		return
+	}
+	recordThing(ctx, "id")
+}
+`, true},
+		{"error helper in a block comment before the record", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	/* refreshThing(ctx)
+	   refreshThing(ctx) */
+	recordThing(ctx, "id")
+}
+`, false},
+		{"error helper in a long CRLF block comment before the record", strings.ReplaceAll(helpers+`
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	/* A long comment: the scanner drops each \r from its text, so blanking by
+	   that text's length would stop one byte short per line and leave the
+	   call on the last line visible.`+strings.Repeat("\n\t   filler", 30)+`
+	   refreshThing(ctx) */
+	recordThing(ctx, "id")
+}
+`, "\n", "\r\n"), false},
+		{"error helper in a later argument line of the record", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	recordThing(
+		ctx,
+		fmt.Sprint(refreshThing(ctx)),
+	)
+}
+`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := commitPointViolations(map[string]string{"fixture.go": tc.src})
+			if tc.flagged && len(got) == 0 {
+				t.Fatalf("want a violation, got none")
+			}
+			if !tc.flagged && len(got) != 0 {
+				t.Fatalf("want none, got %v", got)
+			}
+		})
+	}
+}
+
+// commitPointViolations runs the commit-point rule over Go sources keyed by file name and
+// returns one message per saved-then-failed 500 answered before the function's first record.
+func commitPointViolations(files map[string]string) []string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var funcs []commitPointFunc
+	for _, name := range names {
+		lines := strings.Split(stripGoComments(files[name]), "\n")
+		start := -1
+		for i := 0; i <= len(lines); i++ {
+			if i < len(lines) && !strings.HasPrefix(lines[i], "func ") {
+				continue
+			}
+			if start >= 0 {
+				if m := funcDeclName.FindStringSubmatch(lines[start]); m != nil {
+					funcs = append(funcs, commitPointFunc{file: name, name: m[1], start: start, body: lines[start:i]})
+				}
+			}
+			start = i
+		}
+	}
+	// Helpers are non-handler functions. Recorders are settled first, so a helper that both
+	// records and sends (completePerUserOAuthAdminRepair) is a recorder and is checked itself.
+	// A route handler is a method; a free function with the same ctx-only signature is a helper.
+	isHandler := func(f commitPointFunc) bool {
+		return strings.HasPrefix(f.body[0], "func (") && strings.HasSuffix(strings.TrimSpace(f.body[0]), handlerSignature)
+	}
+	recorders, senders := map[string]bool{}, map[string]bool{}
+	grow := func(set map[string]bool, joins func(f commitPointFunc) bool) {
+		for changed := true; changed; {
+			changed = false
+			for _, f := range funcs {
+				if !isHandler(f) && !set[f.name] && joins(f) {
+					set[f.name], changed = true, true
+				}
+			}
+		}
+	}
+	grow(recorders, func(f commitPointFunc) bool {
+		for _, line := range f.body[1:] {
+			if recordsAudit(line, recorders) {
+				return true
+			}
+		}
+		return false
+	})
+	grow(senders, func(f commitPointFunc) bool {
+		if recorders[f.name] {
+			return false
+		}
+		for i, line := range f.body[1:] {
+			if sendsSavedThenFailed(f.body, i+1) || callsAny(line, senders) != "" {
+				return true
+			}
+		}
+		return false
+	})
+
+	var violations []string
+	for _, f := range funcs {
+		if senders[f.name] {
+			continue
+		}
+		firstRecord := -1
+		for i, line := range f.body[1:] {
+			i++
+			if recordsAudit(line, recorders) {
+				firstRecord = i
+				break
+			}
+		}
+		if firstRecord < 0 {
+			if !isHandler(f) {
+				continue
+			}
+			// A handler that answers a saved-then-failed error and never records loses the change.
+			for i, line := range f.body[1:] {
+				if via := callsAny(line, senders); sendsSavedThenFailed(f.body, i+1) || via != "" {
+					violations = append(violations, fmt.Sprintf("%s:%d: %s answers a saved-then-failed error but never records the change; record right after the write commits (AGENTS.md)", f.file, f.start+i+2, strings.TrimSpace(f.body[0])))
+					break
+				}
+			}
+			continue
+		}
+		// The record call is scanned through its closing parenthesis: a sender in its arguments
+		// runs before the record does.
+		recordEnd := firstRecord
+		for depth := strings.Count(f.body[firstRecord], "(") - strings.Count(f.body[firstRecord], ")"); depth > 0 && recordEnd+1 < len(f.body); {
+			recordEnd++
+			depth += strings.Count(f.body[recordEnd], "(") - strings.Count(f.body[recordEnd], ")")
+		}
+		for i, line := range f.body[:recordEnd+1] {
+			via := callsAny(line, senders)
+			if sendsSavedThenFailed(f.body, i) || via != "" {
+				if via != "" {
+					via = " (through " + via + ")"
+				}
+				violations = append(violations, fmt.Sprintf("%s:%d: %s answers a saved-then-failed error%s before recording the change; record right after the write commits (AGENTS.md)", f.file, f.start+i+1, strings.TrimSpace(f.body[0]), via))
+			}
+		}
+	}
+	return violations
 }

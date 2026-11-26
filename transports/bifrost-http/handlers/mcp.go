@@ -504,6 +504,10 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to link OAuth config to MCP client: %v", err))
 		return
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.verification_initiated", clientConfig.ID, clientConfig.Name, map[string]any{
+		"auth_type":       clientConfig.AuthType,
+		"oauth_config_id": flowInitiation.OauthConfigID,
+	})
 	if err := h.refreshMCPClientRow(ctx, clientConfig.ID); err != nil {
 		sendMCPClientReloadError(ctx, "linking its OAuth config", err)
 		return
@@ -511,10 +515,6 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 
 	completeURL := lib.WithBasePath(fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID))
 	statusURL := lib.WithBasePath(fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID))
-	h.recordMCPClientAction(ctx, "mcp_client.verification_initiated", clientConfig.ID, clientConfig.Name, map[string]any{
-		"auth_type":       clientConfig.AuthType,
-		"oauth_config_id": flowInitiation.OauthConfigID,
-	})
 	SendJSON(ctx, map[string]any{
 		"status":          "pending_oauth",
 		"oauth_config_id": flowInitiation.OauthConfigID,
@@ -885,6 +885,10 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.headers_verified", clientConfig.ID, clientConfig.Name, map[string]any{
+		"tools_count": len(tools),
+		"header_keys": canonKeys,
+	})
 	// A row written but not read back into memory cannot be redone by a retry:
 	// the tools stored above, or the verification recorded below, make the
 	// client read as verified, so a retry stops at the replay guard. The
@@ -935,10 +939,6 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	h.recordMCPClientAction(ctx, "mcp_client.headers_verified", clientConfig.ID, clientConfig.Name, map[string]any{
-		"tools_count": len(tools),
-		"header_keys": canonKeys,
-	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Each user will submit their own header values on first tool use.", len(tools)),
@@ -1105,6 +1105,9 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.exchange_verified", clientConfig.ID, clientConfig.Name, map[string]any{
+		"tools_count": len(tools),
+	})
 	// A failed reload is handled as in verify-headers: the remaining steps
 	// run, since a retry would stop at the replay guard, and the reload is
 	// reported once they have.
@@ -1145,9 +1148,6 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	h.recordMCPClientAction(ctx, "mcp_client.exchange_verified", clientConfig.ID, clientConfig.Name, map[string]any{
-		"tools_count": len(tools),
-	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Callers' identity tokens are exchanged automatically on each tool use.", len(tools)),
@@ -4805,6 +4805,12 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 			clientConfig.ID, err,
 		))
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", clientConfig.ID, clientConfig.Name, map[string]any{
+		"auth_type":       clientConfig.AuthType,
+		"oauth_config_id": oauthConfigID,
+		"outcome":         "admin_credential_repaired",
+		"tools_count":     len(tools),
+	})
 	// A failed reload is reported only after the runtime gets the discovery:
 	// the credential is already promoted, so a retried complete-oauth answers
 	// 409 and could not hand it over again.
@@ -4826,12 +4832,6 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		return
 	}
 
-	h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", clientConfig.ID, clientConfig.Name, map[string]any{
-		"auth_type":       clientConfig.AuthType,
-		"oauth_config_id": oauthConfigID,
-		"outcome":         "admin_credential_repaired",
-		"tools_count":     len(tools),
-	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("Admin discovery credential repaired successfully. %d tools discovered.", len(tools)),
@@ -5102,7 +5102,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			if err := h.updateMCPClientWithRetry(bifrostCtx, mcpClientConfig.ID, mcpClientConfig); err != nil {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
-					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
+					// The update stays saved but the bootstrap record was never cleared, so no bootstrap outcome.
+					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(tools))
 				}
 				if refreshErr := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); refreshErr != nil {
 					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", mcpClientConfig.ID, refreshErr))
@@ -5185,17 +5186,20 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		// drift until a restart re-parks the client. The replay guard reads
 		// the record, which is still set, so re-running verification
 		// retries the whole flow including this clear.
-		if configBootstrap {
-			if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
-				logger.Error(fmt.Sprintf(
-					"[PARTIAL SUCCESS] Per-user OAuth MCP client %s was verified and activated but clearing the pending bootstrap config failed: %v. "+
-						"Runtime and database state have drifted: the client works now but will return to pending_verification on restart. Re-run verification to retry.",
-					mcpClientConfig.ID, err,
-				))
-				h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client verified and activated but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
-				return
-			}
+		if !configBootstrap {
+			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(tools))
+		} else if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
+			// The verification committed but the bootstrap record did not clear, so it is recorded without the bootstrap outcome.
+			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(tools))
+			logger.Error(fmt.Sprintf(
+				"[PARTIAL SUCCESS] Per-user OAuth MCP client %s was verified and activated but clearing the pending bootstrap config failed: %v. "+
+					"Runtime and database state have drifted: the client works now but will return to pending_verification on restart. Re-run verification to retry.",
+				mcpClientConfig.ID, err,
+			))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client verified and activated but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
+			return
+		} else {
+			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, true, len(tools))
 			if err := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); err != nil {
 				sendMCPClientReloadError(ctx, "clearing its pending bootstrap config", err)
 				return
@@ -5207,7 +5211,6 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		if isUpdateFlow {
 			message = fmt.Sprintf("OAuth credentials updated and verified successfully. %d tools discovered.", len(tools))
 		}
-		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
 		SendJSON(ctx, map[string]any{"status": "success", "message": message, "tools_count": len(tools)})
 		return
 	}
@@ -5264,7 +5267,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			} else {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
-					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
+					// The update stays saved but the bootstrap record was never cleared, so no bootstrap outcome.
+					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(mcpClientConfig.DiscoveredTools))
 				}
 				if refreshErr := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); refreshErr != nil {
 					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", mcpClientConfig.ID, refreshErr))
@@ -5322,17 +5326,20 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	// would hide the drift until a restart re-parks the connected client.
 	// The record is still set, so re-running verification retries the
 	// whole flow including this clear.
-	if configBootstrap {
-		if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
-			logger.Error(fmt.Sprintf(
-				"[PARTIAL SUCCESS] OAuth MCP client %s completed authorization but clearing the pending bootstrap config failed: %v. "+
-					"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. Re-run verification to retry.",
-				mcpClientConfig.ID, err,
-			))
-			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client connected but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
-			return
-		}
+	if !configBootstrap {
+		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(mcpClientConfig.DiscoveredTools))
+	} else if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
+		// The verification committed but the bootstrap record did not clear, so it is recorded without the bootstrap outcome.
+		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(mcpClientConfig.DiscoveredTools))
+		logger.Error(fmt.Sprintf(
+			"[PARTIAL SUCCESS] OAuth MCP client %s completed authorization but clearing the pending bootstrap config failed: %v. "+
+				"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. Re-run verification to retry.",
+			mcpClientConfig.ID, err,
+		))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client connected but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
+		return
+	} else {
+		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, true, len(mcpClientConfig.DiscoveredTools))
 		if err := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); err != nil {
 			sendMCPClientReloadError(ctx, "clearing its pending bootstrap config", err)
 			return
@@ -5344,7 +5351,6 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	if isUpdateFlow {
 		message = "MCP client OAuth credentials updated successfully"
 	}
-	h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
 	SendJSON(ctx, map[string]any{"status": "success", "message": message})
 }
 
