@@ -672,6 +672,36 @@ func TestExactRawIdentifierBindsItsOwnTool(t *testing.T) {
 	}
 }
 
+// A hyphen alias that executeToolCode binds documents the tool it calls, not
+// another tool whose alias only matches when case is ignored: crm.Get_User
+// calls crm-Get-User, whichever order the server lists the two tools in.
+func TestBoundHyphenAliasDocumentsItsOwnTool(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	byEmail := discoveryTestTool("crm-GET-USER", "Fetch a user by email", "email")
+	byID := discoveryTestTool("crm-Get-User", "Look up a user record", "id")
+	for _, tools := range [][]schemas.ChatTool{{byEmail, byID}, {byID, byEmail}} {
+		manager.tools["crm"] = tools
+		var called string
+		result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = crm.Get_User()",
+			map[string][]string{"crm": {tools[0].Function.Name, tools[1].Function.Name}},
+			func(_ context.Context, _, tool string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+				called = tool
+				return "ok", nil
+			})
+		if result.Errors != nil || called != "crm-Get-User" {
+			t.Fatalf("crm.Get_User() called %q (errors %+v), want crm-Get-User", called, result.Errors)
+		}
+		if doc := getToolDocsContent(t, mode, "crm", "Get_User"); !strings.Contains(doc, "Look up a user record") {
+			t.Fatalf("getToolDocs(Get_User) documents another tool:\n%s", doc)
+		}
+		if stub := readFileContent(t, mode, "servers/crm/Get_User.pyi"); !strings.Contains(stub, "Look up a user record") {
+			t.Fatalf("readToolFile(servers/crm/Get_User.pyi) reads another tool:\n%s", stub)
+		}
+	}
+}
+
 // Servers whose names differ only by case: the path or server name discovery
 // returns reads that exact server's file and docs, not an ambiguity error or
 // whichever server map iteration reaches first.
