@@ -123800,16 +123800,6 @@
           "403": {
             "description": "Caller lacks `WarpSession` View (enterprise)"
           },
-          "409": {
-            "description": "Warp's settings name a virtual key (`virtual_key_id`) that no longer\nexists, and the caller has no identity of their own to use instead.\nAn administrator chooses another key in Warp's settings.\n",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
           "413": {
             "description": "Conversation exceeds the server's history limit",
             "content": {
@@ -168209,10 +168199,6 @@
             "type": "string",
             "description": "Which of the provider's configured keys the default model uses. A\nreference, not a credential, so it round-trips in the clear - there is\nnothing here worth redacting. Empty when the provider needs no key.\n"
           },
-          "virtual_key_id": {
-            "type": "string",
-            "description": "ID of the virtual key Warp's model calls present when the person asking\nhas no user identity of their own: the local admin, or a deployment\nwithout an identity provider. A reference, not the key. Absent when\nnone is set.\n"
-          },
           "additional_models": {
             "type": "array",
             "description": "The other models an operator has exposed. A chat request may name any of\nthem, or the default, by `provider` and `model`; nothing else is\naccepted. Omitted when only the default is configured.\n",
@@ -168394,10 +168380,6 @@
           "api_key_id": {
             "type": "string",
             "description": "Which of the provider's configured keys Warp should use. Empty is valid\nand common: a provider on a trusted network, or one using ambient IAM\ncredentials, needs no key at all.\n"
-          },
-          "virtual_key_id": {
-            "type": "string",
-            "description": "ID of a virtual key Warp's model calls present when the person asking\nhas no user identity of their own: the local admin, or a deployment\nwithout an identity provider. Needed for that caller while\n`enforce_auth_on_inference` is on; signed-in users are governed as\nthemselves and never use it. Omitted keeps the stored value, and `\"\"`\nclears it. A key that does not exist, or is inactive, is rejected with\n`400` when the value changes.\n"
           },
           "additional_models": {
             "type": "array",
