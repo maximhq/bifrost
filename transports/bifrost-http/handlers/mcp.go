@@ -504,6 +504,10 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to link OAuth config to MCP client: %v", err))
 		return
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.verification_initiated", clientConfig.ID, clientConfig.Name, map[string]any{
+		"auth_type":       clientConfig.AuthType,
+		"oauth_config_id": flowInitiation.OauthConfigID,
+	})
 	if err := h.refreshMCPClientRow(ctx, clientConfig.ID); err != nil {
 		sendMCPClientReloadError(ctx, "linking its OAuth config", err)
 		return
@@ -511,10 +515,6 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 
 	completeURL := lib.WithBasePath(fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID))
 	statusURL := lib.WithBasePath(fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID))
-	h.recordMCPClientAction(ctx, "mcp_client.verification_initiated", clientConfig.ID, clientConfig.Name, map[string]any{
-		"auth_type":       clientConfig.AuthType,
-		"oauth_config_id": flowInitiation.OauthConfigID,
-	})
 	SendJSON(ctx, map[string]any{
 		"status":          "pending_oauth",
 		"oauth_config_id": flowInitiation.OauthConfigID,
@@ -885,6 +885,10 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.headers_verified", clientConfig.ID, clientConfig.Name, map[string]any{
+		"tools_count": len(tools),
+		"header_keys": canonKeys,
+	})
 	// A row written but not read back into memory cannot be redone by a retry:
 	// the tools stored above, or the verification recorded below, make the
 	// client read as verified, so a retry stops at the replay guard. The
@@ -935,10 +939,6 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	h.recordMCPClientAction(ctx, "mcp_client.headers_verified", clientConfig.ID, clientConfig.Name, map[string]any{
-		"tools_count": len(tools),
-		"header_keys": canonKeys,
-	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Each user will submit their own header values on first tool use.", len(tools)),
@@ -1105,6 +1105,9 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client activated but discovered tools could not be persisted. Retry this endpoint to re-run verification and persist: %v", err))
 		return
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.exchange_verified", clientConfig.ID, clientConfig.Name, map[string]any{
+		"tools_count": len(tools),
+	})
 	// A failed reload is handled as in verify-headers: the remaining steps
 	// run, since a retry would stop at the replay guard, and the reload is
 	// reported once they have.
@@ -1145,9 +1148,6 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	h.recordMCPClientAction(ctx, "mcp_client.exchange_verified", clientConfig.ID, clientConfig.Name, map[string]any{
-		"tools_count": len(tools),
-	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Callers' identity tokens are exchanged automatically on each tool use.", len(tools)),
@@ -4240,18 +4240,29 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Reload every VK currently referencing this MCP client so the governance
-	// cache's preloaded MCPClient relation picks up the rename / tool / header
-	// changes. The VK-assignment-change block below does its own targeted
-	// reload, but only fires when req.VKConfigs != nil — a name-only update
-	// otherwise leaves every cached VK pointing at the old MCPClient.Name and
-	// the per-VK allowlist check rejects tool calls under the new prefix.
-	h.refreshMCPClientOnAssignedVirtualKeys(ctx, id, oldDBConfig.ID)
+	// Every VK currently referencing this MCP client is reloaded below so the
+	// governance cache's preloaded MCPClient relation picks up the rename / tool
+	// / header changes; otherwise every cached VK keeps pointing at the old
+	// MCPClient.Name and the per-VK allowlist check rejects tool calls under the
+	// new prefix. With vk_configs they reload after its transaction, in the one
+	// batch that also covers every key whose assignment changes, and the answer
+	// comes from that batch alone.
+	var keysReloadErr error
 
 	// Manage VK assignments if vk_configs was provided
 	if req.VKConfigs != nil && h.store.ConfigStore != nil {
+		// reloadAssigned is for a vk_configs step that fails: the client's own
+		// row is already saved, so the keys still assigned to it reload to see
+		// it, as after an update without vk_configs. The request fails either
+		// way, so a reload error is only logged.
+		reloadAssigned := func() {
+			if err := h.refreshMCPClientOnAssignedVirtualKeys(ctx, oldDBConfig.ID); err != nil {
+				logger.Error(fmt.Sprintf("failed to reload the virtual keys granting MCP client %s after its VK assignment update failed: %v", id, err))
+			}
+		}
 		current, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, oldDBConfig.ID)
 		if err != nil {
+			reloadAssigned()
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get current VK MCP configs: %v", err))
 			return
 		}
@@ -4296,6 +4307,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			// NOTE: Partial success — the MCP client config was already updated in DB and memory above.
 			// Only the VK assignment changes failed. The VK assignments remain unchanged in DB.
 			// The MCP client update is idempotent, so retrying the full request is safe.
+			reloadAssigned()
 			logger.Error(fmt.Sprintf(
 				"[PARTIAL SUCCESS] MCP client %s was updated successfully but VK assignment update failed: %v. "+
 					"VK assignments remain unchanged. Retry the request to apply VK changes.",
@@ -4304,22 +4316,21 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("MCP client was updated but VK assignment update failed: %v", err))
 			return
 		}
-		// Reload all affected VKs in memory so governance enforcement reflects the new MCP assignments.
-		// requestedByVKID and currentByVKID together cover the full affected set (no duplicates since both are maps).
-		if h.governanceManager != nil {
-			for vkID := range requestedByVKID {
-				if _, err := h.governanceManager.ReloadVirtualKey(ctx, vkID); err != nil {
-					logger.Error(fmt.Sprintf("failed to reload virtual key %s in memory after MCP VK assignment update: %v", vkID, err))
-				}
-			}
-			for vkID := range currentByVKID {
-				if _, alreadyReloaded := requestedByVKID[vkID]; !alreadyReloaded {
-					if _, err := h.governanceManager.ReloadVirtualKey(ctx, vkID); err != nil {
-						logger.Error(fmt.Sprintf("failed to reload virtual key %s in memory after MCP VK assignment update: %v", vkID, err))
-					}
-				}
-			}
+		// Reload every affected VK in memory, in one batch, so governance enforcement reflects the new
+		// MCP assignments and the client's new row. requestedByVKID and currentByVKID together cover the
+		// full affected set; currentByVKID holds every key that was assigned the client, the keys an
+		// update without vk_configs reloads.
+		affected := make([]string, 0, len(requestedByVKID)+len(currentByVKID))
+		for vkID := range requestedByVKID {
+			affected = append(affected, vkID)
 		}
+		for vkID := range currentByVKID {
+			affected = append(affected, vkID)
+		}
+		sort.Strings(affected)
+		keysReloadErr = reloadGrantingVirtualKeys(ctx, h.governanceManager, affected)
+	} else {
+		keysReloadErr = h.refreshMCPClientOnAssignedVirtualKeys(ctx, oldDBConfig.ID)
 	}
 
 	// Per-user credential reconciliation for changes that mutate who can
@@ -4358,6 +4369,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		case !wasPerCallConnection && isPerCallConnection:
 			message += ". This client now connects per call instead of maintaining a persistent connection: the existing shared connection was closed."
 		}
+	}
+	if keysReloadErr != nil {
+		logger.Error(fmt.Sprintf("failed to reload the virtual keys granting MCP client %s after update: %v", id, keysReloadErr))
+		SendError(ctx, fasthttp.StatusInternalServerError, "MCP client updated in database but failed to reload in-memory state")
+		return
 	}
 	// The partial-success sentences follow message as sentences of their own,
 	// whether or not message already ends with one.
@@ -4424,12 +4440,18 @@ func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	// The row is gone even if the runtime removal below fails.
 	lib.RecordAuditChange(ctx, "mcp_client.deleted", "mcp_client", id, targetName, before, nil)
-	h.reloadVirtualKeysForMCPClient(ctx, id, grantingVKs)
+	keysReloadErr := reloadGrantingVirtualKeys(ctx, h.governanceManager, grantingVKs)
 	// RemoveMCPClient also evicts the client's cached OAuth access tokens
 	// and header credentials internally, covering the rows the database
-	// delete above cascaded over.
+	// delete above cascaded over. It runs whether or not the keys reloaded, so
+	// the deleted client is never left connected.
 	if err := h.mcpManager.RemoveMCPClient(ctx, id); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to remove MCP client: %v", err))
+		return
+	}
+	if keysReloadErr != nil {
+		logger.Error(fmt.Sprintf("failed to reload the virtual keys granting MCP client %s after delete: %v", id, keysReloadErr))
+		SendError(ctx, fasthttp.StatusInternalServerError, "MCP client deleted in database but failed to reload in-memory state")
 		return
 	}
 	SendJSON(ctx, map[string]any{
@@ -4783,6 +4805,12 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 			clientConfig.ID, err,
 		))
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", clientConfig.ID, clientConfig.Name, map[string]any{
+		"auth_type":       clientConfig.AuthType,
+		"oauth_config_id": oauthConfigID,
+		"outcome":         "admin_credential_repaired",
+		"tools_count":     len(tools),
+	})
 	// A failed reload is reported only after the runtime gets the discovery:
 	// the credential is already promoted, so a retried complete-oauth answers
 	// 409 and could not hand it over again.
@@ -4804,12 +4832,6 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 		return
 	}
 
-	h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", clientConfig.ID, clientConfig.Name, map[string]any{
-		"auth_type":       clientConfig.AuthType,
-		"oauth_config_id": oauthConfigID,
-		"outcome":         "admin_credential_repaired",
-		"tools_count":     len(tools),
-	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("Admin discovery credential repaired successfully. %d tools discovered.", len(tools)),
@@ -5080,7 +5102,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			if err := h.updateMCPClientWithRetry(bifrostCtx, mcpClientConfig.ID, mcpClientConfig); err != nil {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
-					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
+					// The update stays saved but the bootstrap record was never cleared, so no bootstrap outcome.
+					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(tools))
 				}
 				if refreshErr := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); refreshErr != nil {
 					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", mcpClientConfig.ID, refreshErr))
@@ -5163,17 +5186,20 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		// drift until a restart re-parks the client. The replay guard reads
 		// the record, which is still set, so re-running verification
 		// retries the whole flow including this clear.
-		if configBootstrap {
-			if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
-				logger.Error(fmt.Sprintf(
-					"[PARTIAL SUCCESS] Per-user OAuth MCP client %s was verified and activated but clearing the pending bootstrap config failed: %v. "+
-						"Runtime and database state have drifted: the client works now but will return to pending_verification on restart. Re-run verification to retry.",
-					mcpClientConfig.ID, err,
-				))
-				h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
-				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client verified and activated but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
-				return
-			}
+		if !configBootstrap {
+			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(tools))
+		} else if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
+			// The verification committed but the bootstrap record did not clear, so it is recorded without the bootstrap outcome.
+			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(tools))
+			logger.Error(fmt.Sprintf(
+				"[PARTIAL SUCCESS] Per-user OAuth MCP client %s was verified and activated but clearing the pending bootstrap config failed: %v. "+
+					"Runtime and database state have drifted: the client works now but will return to pending_verification on restart. Re-run verification to retry.",
+				mcpClientConfig.ID, err,
+			))
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client verified and activated but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
+			return
+		} else {
+			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, true, len(tools))
 			if err := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); err != nil {
 				sendMCPClientReloadError(ctx, "clearing its pending bootstrap config", err)
 				return
@@ -5185,7 +5211,6 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		if isUpdateFlow {
 			message = fmt.Sprintf("OAuth credentials updated and verified successfully. %d tools discovered.", len(tools))
 		}
-		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
 		SendJSON(ctx, map[string]any{"status": "success", "message": message, "tools_count": len(tools)})
 		return
 	}
@@ -5242,7 +5267,8 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			} else {
 				if rollbackErr := h.store.ConfigStore.UpdateMCPClientConfig(ctx, mcpClientConfig.ID, &oldDBConfig); rollbackErr != nil {
 					logger.Error(fmt.Sprintf("Failed to rollback MCP client DB update: %v. please restart bifrost to keep core and database in sync", rollbackErr))
-					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
+					// The update stays saved but the bootstrap record was never cleared, so no bootstrap outcome.
+					h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(mcpClientConfig.DiscoveredTools))
 				}
 				if refreshErr := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); refreshErr != nil {
 					logger.Error(fmt.Sprintf("failed to reload MCP client %s after rolling back its update: %v", mcpClientConfig.ID, refreshErr))
@@ -5300,17 +5326,20 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	// would hide the drift until a restart re-parks the connected client.
 	// The record is still set, so re-running verification retries the
 	// whole flow including this clear.
-	if configBootstrap {
-		if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
-			logger.Error(fmt.Sprintf(
-				"[PARTIAL SUCCESS] OAuth MCP client %s completed authorization but clearing the pending bootstrap config failed: %v. "+
-					"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. Re-run verification to retry.",
-				mcpClientConfig.ID, err,
-			))
-			h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client connected but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
-			return
-		}
+	if !configBootstrap {
+		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(mcpClientConfig.DiscoveredTools))
+	} else if err := h.store.ConfigStore.ClearMCPClientPendingVerification(ctx, mcpClientConfig.ID); err != nil {
+		// The verification committed but the bootstrap record did not clear, so it is recorded without the bootstrap outcome.
+		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, false, len(mcpClientConfig.DiscoveredTools))
+		logger.Error(fmt.Sprintf(
+			"[PARTIAL SUCCESS] OAuth MCP client %s completed authorization but clearing the pending bootstrap config failed: %v. "+
+				"Runtime and database state have drifted: the client is connected now but will return to pending_verification on restart. Re-run verification to retry.",
+			mcpClientConfig.ID, err,
+		))
+		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Client connected but clearing the pending bootstrap config failed, so it will return to pending_verification on restart. Re-run verification to retry: %v", err))
+		return
+	} else {
+		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, true, len(mcpClientConfig.DiscoveredTools))
 		if err := h.refreshMCPClientRow(ctx, mcpClientConfig.ID); err != nil {
 			sendMCPClientReloadError(ctx, "clearing its pending bootstrap config", err)
 			return
@@ -5322,7 +5351,6 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	if isUpdateFlow {
 		message = "MCP client OAuth credentials updated successfully"
 	}
-	h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
 	SendJSON(ctx, map[string]any{"status": "success", "message": message})
 }
 
@@ -5493,23 +5521,17 @@ func (h *MCPHandler) deleteMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 	})
 }
 
-// refreshMCPClientOnAssignedVirtualKeys makes every cached virtual key that
-// references the updated MCP client see its new row (name, tools, headers).
-//
-// The assigned keys are reloaded through one batched ReloadVirtualKeys call,
-// which does for each key exactly what ReloadVirtualKey does (re-read with
-// every relation, VK-scoped model configs, token and credential eviction) and
-// which a clustered deployment propagates to peers. It replaces a
-// ReloadVirtualKey per assigned key: at 100k assigned keys that was well over a
-// million queries, run synchronously inside the request. If the batched reload
-// fails, each key is reloaded on its own as before.
-func (h *MCPHandler) refreshMCPClientOnAssignedVirtualKeys(ctx context.Context, clientID string, dbID uint) {
+// refreshMCPClientOnAssignedVirtualKeys makes every cached virtual key that references the updated
+// MCP client see its new row (name, tools, headers), through one batched reload of the keys granting
+// it (reloadGrantingVirtualKeys): at 100k assigned keys a reload per key was well over a million
+// queries, run inside the request. A failure to list or reload the keys is returned for the caller to
+// answer; the client's own row is already saved.
+func (h *MCPHandler) refreshMCPClientOnAssignedVirtualKeys(ctx context.Context, dbID uint) error {
 	ids, err := h.virtualKeysGrantingMCPClient(ctx, dbID)
 	if err != nil {
-		logger.Error(fmt.Sprintf("failed to fetch VK assignments for MCP client %s: %v", clientID, err))
-		return
+		return fmt.Errorf("failed to list the virtual keys granting the MCP client: %w", err)
 	}
-	h.reloadVirtualKeysForMCPClient(ctx, clientID, ids)
+	return reloadGrantingVirtualKeys(ctx, h.governanceManager, ids)
 }
 
 // virtualKeysGrantingMCPClient lists the virtual keys holding a grant of the MCP client whose row id is
@@ -5527,24 +5549,6 @@ func (h *MCPHandler) virtualKeysGrantingMCPClient(ctx context.Context, dbID uint
 		ids = append(ids, av.VirtualKeyID)
 	}
 	return ids, nil
-}
-
-// reloadVirtualKeysForMCPClient reloads the cached virtual keys ids after a change to the MCP client
-// they grant, in one batched ReloadVirtualKeys call, falling back to one reload per key if that fails.
-func (h *MCPHandler) reloadVirtualKeysForMCPClient(ctx context.Context, clientID string, ids []string) {
-	if len(ids) == 0 || h.governanceManager == nil {
-		return
-	}
-	err := h.governanceManager.ReloadVirtualKeys(ctx, ids)
-	if err == nil {
-		return
-	}
-	logger.Error(fmt.Sprintf("batched virtual key reload for MCP client %s failed, falling back to per-key reload: %v", clientID, err))
-	for _, id := range ids {
-		if _, err := h.governanceManager.ReloadVirtualKey(ctx, id); err != nil {
-			logger.Error(fmt.Sprintf("failed to reload virtual key %s after a change to MCP client %s: %v", id, clientID, err))
-		}
-	}
 }
 
 // recordMCPClientAction records an action-style audit event against an MCP client, naming it from the in-memory config when available.

@@ -13,7 +13,8 @@
 // Verification:
 //   * sync — on success assert extra_fields.routing_info {provider, model, key,
 //     resolved_key_alias}; on rejection assert the error message (routing_info is
-//     empty on errors). Each routing request is sent once and judged once: before a
+//     empty on errors raised before a route is chosen, and names the route on
+//     errors after one is). Each routing request is sent once and judged once: before a
 //     scenario's first inference request, a polling step waits for the model
 //     catalog to list every provider's models (live discovery), and asserts nothing
 //     about routing, so a route that only shows up on a retry fails.

@@ -1232,6 +1232,7 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.Latency = processedResp.Data.Latency
 		accResult.TimeToFirstToken = processedResp.Data.TimeToFirstToken
 		accResult.OutputMessage = processedResp.Data.OutputMessage
+		accResult.OutputChoices = processedResp.Data.OutputChoices
 		accResult.OutputMessages = processedResp.Data.OutputMessages
 		accResult.TokenUsage = processedResp.Data.TokenUsage
 		// Speed and InferenceGeo ride along inside TokenUsage (providers set them on

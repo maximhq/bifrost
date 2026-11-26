@@ -288,7 +288,7 @@ func TestAliasNamesForProvider(t *testing.T) {
 		{"blocked", []schemas.Key{{ID: "k1", Models: schemas.WhiteList{"*"}, BlacklistedModels: schemas.BlackList{"beta"}, Aliases: aliases("alpha", "beta")}}, []string{"alpha"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mc := NewTestCatalog(nil)
+			mc, _ := NewTestCatalog(nil)
 			mc.SetKeyConfigForProvider(schemas.Bedrock, tc.keys)
 			mc.UpsertLive(schemas.Bedrock, "k1", true, []string{"listed-model"})
 
