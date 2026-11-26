@@ -9442,6 +9442,10 @@
                   "use_openai_endpoints": {
                     "type": "boolean",
                     "description": "Per-alias override of use_openai_endpoints."
+                  },
+                  "force_fixed_budget_thinking": {
+                    "type": "boolean",
+                    "description": "Anthropic models: when true, effort-based reasoning uses thinking {type: enabled, budget_tokens: N} even when the resolved model also supports adaptive thinking. Ignored for adaptive-only models (Opus 4.7+, Sonnet 5+, Fable/Mythos). Unset keeps the default."
                   }
                 },
                 "required": ["model_id"],

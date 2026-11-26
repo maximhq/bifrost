@@ -82,6 +82,8 @@ export interface AliasConfig {
 	deployment_url?: SecretVar;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
+	// Anthropic: keep budget_tokens thinking when the resolved model also supports adaptive thinking
+	force_fixed_budget_thinking?: boolean;
 }
 
 export interface VertexEndpoint {
