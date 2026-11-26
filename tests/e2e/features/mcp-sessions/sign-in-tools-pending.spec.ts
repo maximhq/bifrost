@@ -10,23 +10,26 @@ const SUBMITTED = { status: 'success', credential_id: 'cred-1', updated_at: '202
 
 // stubHeadersFlow serves a pending headers flow "flow-1" for the client "notes"
 // to an anonymous visitor holding the flow's link, and answers its submit with
-// submitResponse.
-async function stubHeadersFlow(page: Page, submitResponse: object) {
+// submitResponse; detail overrides the flow detail's fields. It returns the submitted bodies.
+async function stubHeadersFlow(page: Page, submitResponse: object, detail: object = {}) {
+  const submitted: unknown[] = []
   await page.route('**/api/**', async route => {
     if (route.request().url().includes('/mcp/per-user-headers/flows/flow-1')) {
       if (route.request().method() === 'PUT') {
+        submitted.push(route.request().postDataJSON())
         await route.fulfill({ json: submitResponse })
         return
       }
       await route.fulfill({ json: {
         id: 'flow-1', flow_mode: 'user', status: 'pending', mcp_client: { client_id: 'client-notes', name: 'notes' },
         user_id: 'alice', expires_at: '2099-01-01T00:00:00Z', created_at: '2026-10-26T00:00:00Z',
-        required_header_keys: ['x-api-key'], has_active_credential: false,
+        required_header_keys: ['x-api-key'], has_active_credential: false, ...detail,
       } })
       return
     }
     await route.fulfill({ json: { is_auth_enabled: true, has_valid_token: false } })
   })
+  return submitted
 }
 
 async function submitHeaders(page: Page) {
@@ -62,6 +65,17 @@ test.describe('public sign-in pages', () => {
     await stubHeadersFlow(page, SUBMITTED)
     await submitHeaders(page)
     await expect(page.getByTestId('mcp-sessions-tools-pending-alert')).toHaveCount(0)
+  })
+
+  test('updating stored headers marks only the key an admin added as New, and saves with just that value', async ({ page }) => {
+    const submitted = await stubHeadersFlow(page, SUBMITTED, { required_header_keys: ['x-api-key', 'x-org'], submitted_keys: ['x-api-key'] })
+    await page.goto('/workspace/mcp-sessions/auth?flow=flow-1&kind=headers#t=temp-token-1')
+    await expect(page.getByTestId('mcp-headers-submit-new-x-org')).toHaveText('New')
+    await expect(page.getByTestId('mcp-headers-submit-new-x-api-key')).toHaveCount(0)
+    await page.getByTestId('mcp-headers-submit-input-x-org').fill('acme')
+    await page.getByTestId('mcp-headers-submit-submit-btn').click()
+    await expect(page.getByRole('heading', { name: 'Headers saved' })).toBeVisible()
+    expect(submitted).toEqual([{ headers: { 'x-org': 'acme' } }])
   })
 })
 

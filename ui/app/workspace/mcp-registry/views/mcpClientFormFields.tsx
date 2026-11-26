@@ -60,6 +60,7 @@ import { OAuthAdvancedFields } from "./oauthAdvancedFields";
 import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreviewPanel";
 import { OpenAPISpecSource } from "./openApiSpecSource";
 import { CodeModeServerLabel, ServerTypeOnSlugLabel } from "./codeModeFields";
+import { authScopeOf, type MCPAuthScope } from "./mcpClientsTable.utils";
 import { SectionHeader } from "./sectionHeader";
 import { ServerTypeOnSlugSelect } from "./serverTypeOnSlugSelect";
 import { TLSConfigFields } from "./tlsConfigFields";
@@ -78,7 +79,6 @@ import { exchangesAsSSOApplication, TokenExchangeFields, tokenExchangeProfilePay
 const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 export type MCPAuthKind = "none" | "headers" | "oauth" | "token_exchange" | "client_credentials" | "aws_sigv4";
-export type MCPAuthScope = "shared" | "per_user";
 
 /** Resolve the wire `auth_type` back into the two dropdowns the UI splits it into. */
 export function authKindOf(authType: MCPAuthType | undefined): MCPAuthKind {
@@ -103,24 +103,6 @@ export function authKindOf(authType: MCPAuthType | undefined): MCPAuthKind {
 /** authKindHasScope reports whether a kind has both a shared and a per-user variant to pick from. */
 export function authKindHasScope(kind: MCPAuthKind): boolean {
 	return kind === "oauth" || kind === "headers";
-}
-
-export function authScopeOf(authType: MCPAuthType | undefined): MCPAuthScope {
-	return authType === "per_user_oauth" || authType === "per_user_headers" ? "per_user" : "shared";
-}
-
-// authScopeLabel is how the servers table and the server view name a scope.
-// token_exchange carries the caller's own token on every call, so it is
-// per-user even though the form does not expose a scope dropdown for it.
-// Everything else, including "none", resolves through authScopeOf so the
-// label agrees with the form.
-export function authScopeLabel(authType: MCPAuthType | undefined): string {
-	if (authType === "token_exchange") {
-		return i18n.t("registry.form.perUser", { ns: "mcp" });
-	}
-	return authScopeOf(authType) === "per_user"
-		? i18n.t("registry.form.perUser", { ns: "mcp" })
-		: i18n.t("registry.form.shared", { ns: "mcp" });
 }
 
 /**
