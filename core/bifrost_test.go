@@ -11013,3 +11013,54 @@ func BenchmarkApplyKeyServiceTier_KeyTier(b *testing.B) {
 		}
 	}
 }
+
+// TestResolveRawAdvisorToolAliases_AllocationScaling pins that resolving aliased advisor tool models
+// stays linear in the number of advisor tools instead of rewriting the whole body once per tool.
+func TestResolveRawAdvisorToolAliases_AllocationScaling(t *testing.T) {
+	aliases := schemas.KeyAliases{"advisor-alias": {ModelID: "claude-opus-4-8"}}
+	memtest.AssertAllocScaling(t, func(tools int) []byte {
+		var b strings.Builder
+		b.WriteString(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"tools":[`)
+		for i := range tools {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, `{"type":"advisor_20260301","name":"advisor_%d","model":"advisor-alias","description":"%s"}`, i, strings.Repeat("x", 300))
+		}
+		b.WriteString(`]}`)
+		return []byte(b.String())
+	}, func(body []byte) {
+		if resolveRawAdvisorToolAliases(aliases, body) == nil {
+			t.Fatal("expected the advisor aliases to resolve")
+		}
+	})
+}
+
+// TestResolveRawAdvisorToolAliases_NoMatchDoesNotAllocatePerTool pins that a request with no aliased
+// advisor tool pays nothing proportional to its tools array: nothing is built until a match is found.
+func TestResolveRawAdvisorToolAliases_NoMatchDoesNotAllocatePerTool(t *testing.T) {
+	aliases := schemas.KeyAliases{"advisor-alias": {ModelID: "claude-opus-4-8"}}
+	build := func(tools int) []byte {
+		var b strings.Builder
+		b.WriteString(`{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"hi"}],"tools":[`)
+		for i := range tools {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, `{"type":"function","name":"tool_%d","description":"%s","input_schema":{"type":"object"}}`, i, strings.Repeat("x", 200))
+		}
+		b.WriteString(`]}`)
+		return []byte(b.String())
+	}
+	allocs := func(body []byte) float64 {
+		return testing.AllocsPerRun(50, func() {
+			if resolveRawAdvisorToolAliases(aliases, body) != nil {
+				t.Fatal("no advisor alias matches, so the body must not be rewritten")
+			}
+		})
+	}
+	one, many := allocs(build(1)), allocs(build(200))
+	if many > one {
+		t.Fatalf("no-match allocations grew with the tools array: %.0f allocs for 1 tool, %.0f for 200", one, many)
+	}
+}

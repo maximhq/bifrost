@@ -4,6 +4,7 @@
 package bifrost
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9127,28 +9128,46 @@ func resolveRawAdvisorToolAliases(aliases schemas.KeyAliases, body []byte) []byt
 	if !tools.IsArray() {
 		return nil
 	}
-	var paths, models []string
-	index := 0
-	tools.ForEach(func(_, tool gjson.Result) bool {
-		if model := tool.Get("model"); model.Type == gjson.String && strings.HasPrefix(tool.Get("type").String(), "advisor") {
-			if resolved, ok := resolveToolModelAlias(aliases, model.Str); ok {
-				paths = append(paths, fmt.Sprintf("tools.%d.model", index))
-				models = append(models, resolved)
-			}
+	aliasedModel := func(tool gjson.Result) (string, bool) {
+		model := tool.Get("model")
+		if model.Type != gjson.String || !strings.HasPrefix(tool.Get("type").String(), "advisor") {
+			return "", false
 		}
-		index++
-		return true
+		return resolveToolModelAlias(aliases, model.Str)
+	}
+	// Find a match before building anything, so a request with no aliased advisor tool allocates
+	// nothing proportional to its tools.
+	matched := false
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		_, matched = aliasedModel(tool)
+		return !matched
 	})
-	if len(paths) == 0 {
+	if !matched {
 		return nil
 	}
-	out := body
-	for i := range paths {
-		updated, err := providerUtils.SetJSONField(out, paths[i], models[i])
-		if err != nil {
-			return nil
+	// Each aliased tool is rewritten in its own bytes and the tools array is set once, so N advisor
+	// tools cost one body copy rather than N.
+	elems := make([][]byte, 0, len(tools.Array()))
+	failed := false
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		raw := []byte(tool.Raw)
+		if resolved, ok := aliasedModel(tool); ok {
+			updated, err := providerUtils.SetJSONField(raw, "model", resolved)
+			if err != nil {
+				failed = true
+				return false
+			}
+			raw = updated
 		}
-		out = updated
+		elems = append(elems, raw)
+		return true
+	})
+	if failed {
+		return nil
+	}
+	out, err := providerUtils.SetRawJSONField(body, "tools", append(append([]byte{'['}, bytes.Join(elems, []byte{','})...), ']'))
+	if err != nil {
+		return nil
 	}
 	return out
 }

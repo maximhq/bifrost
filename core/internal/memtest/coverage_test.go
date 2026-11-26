@@ -96,6 +96,22 @@ var reviewedSites = map[string]siteReview{
 	// this way.
 	//
 	// --- payload-scaling: N grows with the request, so these need assertions ---
+	"gemini.geminiToolSearchResultToResponsesTools": {
+		status: elementSized,
+		reason: "each write rewrites one tool-search result entry's own bytes; the list is marshaled once after the loop",
+	},
+	"relay.applyBodyOverrides": {
+		status: bounded,
+		reason: "loops over the relay route's configured body overrides (operator config), not over the request payload",
+	},
+	"utils.flattenLoadedTools": {
+		status: elementSized,
+		reason: "each write rewrites one namespace member's own bytes; the flattened list is joined once after the loop",
+	},
+	"vertex.rewritePassthroughBody": {
+		status: bounded,
+		reason: "loops over the fixed 3-element vertexPassthroughResourceFields package var",
+	},
 	"anthropic.MarshalJSON": {
 		status: bounded,
 		reason: "AnthropicUsage.MarshalJSON loops over the 4-entry anthropicPromptCounterKeys package var and edits only the small usage object, never a request body",

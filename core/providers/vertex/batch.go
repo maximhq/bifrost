@@ -169,6 +169,9 @@ func ToVertexBatchCreateRequest(ctx *schemas.BifrostContext, request *schemas.Bi
 			publisher = "anthropic"
 		}
 		model = "publishers/" + publisher + "/models/" + model
+	} else if publisher, id, ok := strings.Cut(model, "/"); ok && publisher != "publishers" && publisher != "projects" && id != "" && !strings.Contains(id, "/") {
+		// A <publisher>/<id> name (e.g. meta/llama-3.3-70b-instruct-maas) names a partner model.
+		model = "publishers/" + publisher + "/models/" + id
 	}
 
 	req := &VertexBatchCreateRequest{
