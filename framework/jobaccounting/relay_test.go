@@ -969,3 +969,45 @@ func TestRelayFailedPollUpdatesTheListedCount(t *testing.T) {
 	assert.Equal(t, 20, listed.PollAttempts, "the listed copy has the attempt just sent")
 	assert.Equal(t, 20, store.jobs[job.ID].PollAttempts, "counted once on the row")
 }
+
+// A job settled before its start call's row reaches the store (a caller's check moments after the
+// start) still carries the start's route, app and names, from the details stored with the job.
+func TestRelayJobRowFallsBackToTheDetailsStoredAtStart(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeAccountingStore()
+	job := seedEndpointJob(t, store)
+	start := &logstore.RelayLog{ID: "req-1", RoutePath: "/v1/textract", App: schemas.Ptr("curl"),
+		UserAgent: schemas.Ptr("curl/8.7.1"), VirtualKeyName: schemas.Ptr("team-key")}
+	params := WithRelayJobStart(*job.Params, start)
+	job.Params = &params
+	_, err := relay.ParseJobSnapshot(params)
+	require.NoError(t, err, "the snapshot still reads with the details beside it")
+	logs := newFakeEndpointLogs()
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}, logs, &fakeEndpointReporter{}).SweepOnce(ctx)
+	row := logs.rows[relayRowID(job)]
+	require.NotNil(t, row)
+	assert.Equal(t, "/v1/textract", row.RoutePath)
+	require.NotNil(t, row.UserAgent)
+	assert.Equal(t, "curl/8.7.1", *row.UserAgent)
+	require.NotNil(t, row.VirtualKeyName)
+	assert.Equal(t, "team-key", *row.VirtualKeyName)
+
+	// A job recorded before the details were stored still gets its route from the job's endpoint.
+	store = newFakeAccountingStore()
+	old := seedEndpointJob(t, store)
+	old.Endpoint = "/v1/older"
+	logs = newFakeEndpointLogs()
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}, logs, &fakeEndpointReporter{}).SweepOnce(ctx)
+	require.NotNil(t, logs.rows[relayRowID(old)])
+	assert.Equal(t, "/v1/older", logs.rows[relayRowID(old)].RoutePath)
+
+	// When the start call's row is found it wins, as the richest source.
+	store = newFakeAccountingStore()
+	found := seedEndpointJob(t, store)
+	found.Params = &params
+	logs = newFakeEndpointLogs()
+	logs.rows["req-1"] = &logstore.RelayLog{ID: "req-1", RoutePath: "/v1/from-row", VirtualKeyName: schemas.Ptr("row-key")}
+	relaySweeper(store, &fakeEndpointPoller{status: 200, body: `{"status":"SUCCEEDED","pages":3}`}, logs, &fakeEndpointReporter{}).SweepOnce(ctx)
+	require.NotNil(t, logs.rows[relayRowID(found)])
+	assert.Equal(t, "/v1/from-row", logs.rows[relayRowID(found)].RoutePath)
+}
