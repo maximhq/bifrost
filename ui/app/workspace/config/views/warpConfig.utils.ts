@@ -19,11 +19,15 @@ export interface WarpEmbeddingFields {
 	searchLimit: number;
 }
 
+// supportsWarpEmbedding reports a provider that can serve Warp's embeddings: its
+// type (a custom provider's base) is listed in EmbeddingSupportedProviders, and a
+// custom provider's allowed_requests allows embedding. A custom provider with no
+// allowed_requests block at all is unrestricted, as the gateway reads it.
 export const supportsWarpEmbedding = (provider: ModelProvider): boolean => {
-	if (provider.custom_provider_config) {
-		return provider.custom_provider_config.allowed_requests?.embedding === true;
-	}
-	return (EmbeddingSupportedProviders as readonly string[]).includes(provider.name);
+	const providerType = provider.custom_provider_config?.base_provider_type ?? provider.name;
+	if (!(EmbeddingSupportedProviders as readonly string[]).includes(providerType)) return false;
+	const allowed = provider.custom_provider_config?.allowed_requests;
+	return !allowed || allowed.embedding === true;
 };
 
 export const validateWarpEmbedding = (fields: WarpEmbeddingFields, enabled: boolean, vectorStoreConnected: boolean): string | null => {

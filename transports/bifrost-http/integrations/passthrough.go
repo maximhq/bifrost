@@ -2,6 +2,7 @@ package integrations
 
 import (
 	"errors"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -311,8 +313,115 @@ func registerPassthroughTextRewriters(ctx *schemas.BifrostContext, route passthr
 		rewriter = rewriteGenAIRawRequestBody
 	case schemas.OpenAI:
 		rewriter = openAIRawRequestBodyRewriter(route.RequestType)
+	case passthroughparse.WireGeminiInteractions:
+		rewriter = rewriteGeminiInteractionsRawRequestBody
+	case schemas.Runware:
+		rewriter = rewriteRunwareRawRequestBody
+	case schemas.SageMaker:
+		rewriter = rewriteSageMakerRawRequestBody
+	case schemas.Bedrock:
+		rewriter = rewriteBedrockAgentRawRequestBody
 	}
 	if rewriter != nil {
 		ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, rewriter)
 	}
+}
+
+// rewriteRunwareRawRequestBody applies runtime replacements to the task texts a Runware passthrough call is read for.
+func rewriteRunwareRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectRunwareRawRequestTextPaths)
+}
+
+// collectRunwareRawRequestTextPaths selects the texts of a Runware task array (or single task) that passthroughparse
+// reads, by walking the same fields its reader does (passthroughparse.RunwareTaskTexts).
+func collectRunwareRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	collectTask := func(task gjson.Result, path string) {
+		passthroughparse.RunwareTaskTexts(task, func(field string, _ schemas.ChatMessageRole, text gjson.Result) {
+			if path != "" {
+				field = path + "." + field
+			}
+			appendRawRequestTextPath(&paths, text, field)
+		})
+	}
+	if root.IsObject() {
+		collectTask(root, "")
+		return paths, nil
+	}
+	root.ForEach(func(index, task gjson.Result) bool {
+		collectTask(task, rawRequestArrayPath("", int(index.Int())))
+		return true
+	})
+	return paths, nil
+}
+
+// rewriteSageMakerRawRequestBody applies runtime replacements to the texts a SageMaker invocation is read for.
+func rewriteSageMakerRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectSageMakerRawRequestTextPaths)
+}
+
+// collectSageMakerRawRequestTextPaths selects the texts of a SageMaker invocation that passthroughparse reads: every one
+// of the OpenAI chat messages, the OpenAI completion prompt, and the string inputs of a TGI, LMI or TEI call that the
+// body carries, since containers choose among them in different orders.
+func collectSageMakerRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if root.Get("messages").IsArray() {
+		chatPaths, err := collectOpenAIChatRawRequestTextPaths(root, replacements)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, chatPaths...)
+	}
+	if prompt := root.Get("prompt"); prompt.Exists() && prompt.Type != gjson.Null {
+		promptPaths, err := collectOpenAITextCompletionRawRequestTextPaths(root, replacements)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, promptPaths...)
+	}
+	inputs := root.Get("inputs")
+	appendRawRequestTextPath(&paths, inputs, "inputs")
+	if inputs.IsArray() {
+		inputs.ForEach(func(index, input gjson.Result) bool {
+			appendRawRequestTextPath(&paths, input, rawRequestArrayPath("inputs", int(index.Int())))
+			return true
+		})
+	}
+	return paths, nil
+}
+
+// rewriteBedrockAgentRawRequestBody applies runtime replacements to the texts a Bedrock InvokeAgent call is read for.
+func rewriteBedrockAgentRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectBedrockAgentRawRequestTextPaths)
+}
+
+// collectBedrockAgentRawRequestTextPaths selects the texts of an InvokeAgent body that passthroughparse reads: the
+// prompt session attributes, the input text, the conversation history's text blocks, and the bodies of returned tool
+// results.
+func collectBedrockAgentRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	root.Get("sessionState.promptSessionAttributes").ForEach(func(key, value gjson.Result) bool {
+		appendRawRequestTextPath(&paths, value, rawRequestObjectPath("sessionState.promptSessionAttributes", key.String()))
+		return true
+	})
+	appendRawRequestTextPath(&paths, root.Get("inputText"), "inputText")
+	root.Get("sessionState.conversationHistory.messages").ForEach(func(messageIndex, message gjson.Result) bool {
+		message.Get("content").ForEach(func(blockIndex, block gjson.Result) bool {
+			path := fmt.Sprintf("sessionState.conversationHistory.messages.%d.content.%d.text", messageIndex.Int(), blockIndex.Int())
+			appendRawRequestTextPath(&paths, block.Get("text"), path)
+			return true
+		})
+		return true
+	})
+	root.Get("sessionState.returnControlInvocationResults").ForEach(func(resultIndex, result gjson.Result) bool {
+		for _, kind := range []string{"functionResult", "apiResult"} {
+			bodiesPath := fmt.Sprintf("sessionState.returnControlInvocationResults.%d.%s.responseBody", resultIndex.Int(), kind)
+			result.Get(kind + ".responseBody").ForEach(func(contentType, content gjson.Result) bool {
+				appendRawRequestTextPath(&paths, content.Get("body"), rawRequestObjectPath(rawRequestObjectPath(bodiesPath, contentType.String()), "body"))
+				return true
+			})
+		}
+		return true
+	})
+	return paths, nil
 }

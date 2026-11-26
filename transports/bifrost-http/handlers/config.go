@@ -428,6 +428,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get framework config from store: %v", err))
 		return
 	}
+	frameworkBefore := auditFrameworkConfig(frameworkConfig)
 	var storedPricingURL, storedModelParametersURL, storedMCPLibraryURL *string
 	if frameworkConfig != nil {
 		storedPricingURL, storedModelParametersURL, storedMCPLibraryURL = frameworkConfig.PricingURL, frameworkConfig.ModelParametersURL, frameworkConfig.MCPLibraryURL
@@ -1265,6 +1266,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save framework configuration: %v", err))
 			return
 		}
+		lib.RecordAuditChange(ctx, "framework_config.updated", "framework_config", "framework_config", "Framework config", frameworkBefore, auditFrameworkConfig(frameworkConfig))
 		// Publish the new config under the write lock: other request goroutines
 		// read this pointer through LiveModelsSyncInterval and UpdateSyncConfig.
 		// A whole new struct is swapped in rather than mutated in place, which is
@@ -1372,6 +1374,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
 			}
+			recordAuthConfigChange(ctx, authConfig, &payload.AuthConfig.AuthConfig)
 		} else if authConfig != nil {
 			// Auth is being disabled (or kept disabled) over an existing config - preserve the
 			// credentials that were not resubmitted and update the disabled state.
@@ -1401,6 +1404,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
 			}
+			recordAuthConfigChange(ctx, authConfig, &payload.AuthConfig.AuthConfig)
 		}
 
 		// Flush all existing sessions if auth details have been changed
