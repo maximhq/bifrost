@@ -74,9 +74,10 @@ func semanticClassifyTestPlugin(t *testing.T) *RoutingPlugin {
 func semanticClassifyTestPluginWithFallback(t *testing.T, fallback string, decide DecisionRequestExecutor) *RoutingPlugin {
 	t.Helper()
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(context.Background(), logger, nil)
+	ruleStore, err := rules.NewTestRules(context.Background(), t.TempDir(), logger)
 	require.NoError(t, err)
-	p, err := InitFromStore(context.Background(), nil, logger, nil, ruleStore, NewMockGovernance())
+	t.Cleanup(ruleStore.Close)
+	p, err := InitFromStore(context.Background(), nil, logger, nil, ruleStore.Store, NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, p.Cleanup()) })
 	p.SetEmbeddingRequestExecutor(classifyTestEmbeddings)

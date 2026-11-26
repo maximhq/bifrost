@@ -15,7 +15,7 @@ func (a *MyAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
     return []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Mistral}, nil
 }
 
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{{
@@ -46,6 +46,9 @@ func (a *MyAccount) GetConfigForProvider(provider schemas.ModelProvider) (*schem
             ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize,
     }, nil
 }
+
+// An Account also serves its MCP clients: GetConfiguredMCPClients, GetConfigForMCPClient and
+// GetConfigForMCPClientByName, as in the setup guide (an app with none returns none).
 ```
 
 > If Bifrost receives a new provider at runtime (i.e., one that is not returned by `GetConfiguredProviders()` initially on `bifrost.Init()`), it will set up the provider at runtime using `GetConfigForProvider()`, which may cause a delay in the first request to that provider.
@@ -83,7 +86,7 @@ export COHERE_API_KEY="your-cohere-api-key"
 Distribute requests across multiple API keys or providers based on custom weights. This example shows how to split traffic 70/30 between two OpenAI keys, useful for managing rate limits or costs across different accounts.
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{{
@@ -107,7 +110,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 Use different API keys for specific models, allowing you to manage access controls and billing separately. This example uses a premium key for advanced reasoning models (o1-preview, o1-mini) and a standard key for regular GPT models.
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     switch provider {
     case schemas.OpenAI:
         return []schemas.Key{
@@ -496,7 +499,7 @@ response, err := client.ChatCompletionRequest(schemas.NewBifrostContext(ctx, sch
 Keys are fetched from your `GetKeysForProvider` implementation on every request. Ensure your implementation is optimized for speed to avoid adding latency:
 
 ```go
-func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
+func (a *MyAccount) GetKeysForProvider(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
     // ✅ Good: Fast in-memory lookup
     switch provider {
     case schemas.OpenAI:

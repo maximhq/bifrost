@@ -748,10 +748,11 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	return out
 }
 
-// ProviderConfig represents the configuration for a specific AI model provider.
-// It includes API keys, network settings, and concurrency settings.
+// ProviderConfig is a provider's configuration: network, concurrency, proxy and the rest of its
+// settings. It holds no keys: a provider's keys are rows of their own, and inside Bifrost they
+// travel as a separate []schemas.Key, read where they are kept, and passed only where they are
+// needed. A format that nests keys inside a provider (config.json) splits them off as it is read.
 type ProviderConfig struct {
-	Keys                     []schemas.Key                     `json:"keys"`                                  // API keys for the provider with UUIDs
 	NetworkConfig            *schemas.NetworkConfig            `json:"network_config,omitempty"`              // Network-related settings
 	ConcurrencyAndBufferSize *schemas.ConcurrencyAndBufferSize `json:"concurrency_and_buffer_size,omitempty"` // Concurrency settings
 	ProxyConfig              *schemas.ProxyConfig              `json:"proxy_config,omitempty"`                // Proxy configuration
@@ -769,9 +770,9 @@ type ProviderConfig struct {
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
 }
 
-// Redacted returns a redacted copy of the provider configuration.
+// Redacted returns a redacted copy of the provider configuration: network and proxy secrets
+// masked, every other field carried as is. Keys are redacted on their own by RedactedKeys.
 func (p *ProviderConfig) Redacted() *ProviderConfig {
-	// Create redacted config with same structure but redacted values
 	var redactedNetworkConfig *schemas.NetworkConfig
 	if p.NetworkConfig != nil {
 		redactedNetworkConfig = p.NetworkConfig.Redacted()
@@ -792,258 +793,271 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		Status:                   p.Status,
 		Description:              p.Description,
 	}
-
 	if p.ProxyConfig != nil {
 		redactedConfig.ProxyConfig = p.ProxyConfig.Redacted()
 	}
+	return &redactedConfig
+}
 
-	// Create redacted keys
-	redactedConfig.Keys = make([]schemas.Key, len(p.Keys))
-	for i, key := range p.Keys {
-		models := key.Models
-		if models == nil {
-			models = []string{} // Ensure models is never nil in JSON response
-		}
-		blacklistedModels := key.BlacklistedModels
-		if blacklistedModels == nil {
-			blacklistedModels = []string{} // Match models: empty JSON array, not null
-		}
-		redactedConfig.Keys[i] = schemas.Key{
-			ID:                key.ID,
-			Name:              key.Name,
-			Models:            models,
-			BlacklistedModels: blacklistedModels,
-			Weight:            key.Weight,
-			ConfigHash:        key.ConfigHash,
-		}
-		if key.Enabled != nil {
-			enabled := *key.Enabled
-			redactedConfig.Keys[i].Enabled = &enabled
-		}
-		if key.Aliases != nil {
-			redactedConfig.Keys[i].Aliases = make(schemas.KeyAliases, len(key.Aliases))
-			for name, alias := range key.Aliases {
-				redactedConfig.Keys[i].Aliases[name] = alias.Redacted()
-			}
-		}
-		redactedConfig.Keys[i].Value = *key.Value.Redacted()
-		// Add back use for batch api
-		if key.UseForBatchAPI != nil {
-			redactedConfig.Keys[i].UseForBatchAPI = key.UseForBatchAPI
-		} else {
-			redactedConfig.Keys[i].UseForBatchAPI = new(false)
-		}
-		// Add back use anthropic endpoints
-		if key.UseAnthropicEndpoints != nil {
-			redactedConfig.Keys[i].UseAnthropicEndpoints = key.UseAnthropicEndpoints
-		} else {
-			redactedConfig.Keys[i].UseAnthropicEndpoints = new(false)
-		}
-		// Add back use openai endpoints
-		if key.UseOpenAIEndpoints != nil {
-			redactedConfig.Keys[i].UseOpenAIEndpoints = key.UseOpenAIEndpoints
-		} else {
-			redactedConfig.Keys[i].UseOpenAIEndpoints = new(false)
-		}
-
-		// Add model discovery status and error
-		redactedConfig.Keys[i].Status = key.Status
-		redactedConfig.Keys[i].Description = key.Description
-
-		// Redact Azure key config if present
-		if key.AzureKeyConfig != nil {
-			azureConfig := &schemas.AzureKeyConfig{}
-			// The endpoint is a hostname, not a credential — surface it in plaintext.
-			azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.RedactedIfSecret()
-			if key.AzureKeyConfig.ClientID != nil {
-				azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
-			}
-			if key.AzureKeyConfig.ClientSecret != nil {
-				azureConfig.ClientSecret = key.AzureKeyConfig.ClientSecret.Redacted()
-			}
-			if key.AzureKeyConfig.TenantID != nil {
-				azureConfig.TenantID = key.AzureKeyConfig.TenantID.Redacted()
-			}
-			if len(key.AzureKeyConfig.Scopes) > 0 {
-				azureConfig.Scopes = key.AzureKeyConfig.Scopes
-			}
-			azureConfig.UseSpeechEndpoints = key.AzureKeyConfig.UseSpeechEndpoints
-			azureConfig.UseVoiceLiveEndpoints = key.AzureKeyConfig.UseVoiceLiveEndpoints
-			redactedConfig.Keys[i].AzureKeyConfig = azureConfig
-		}
-
-		// Redact Vertex key config if present
-		if key.VertexKeyConfig != nil {
-			vertexConfig := &schemas.VertexKeyConfig{}
-			vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
-			vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
-			// The region is a public identifier, not a credential — surface it in plaintext.
-			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
-			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
-			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
-			vertexConfig.UseSessionRouting = key.VertexKeyConfig.UseSessionRouting
-			vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
-			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
-		}
-
-		// Redact Bedrock key config if present
-		if key.BedrockKeyConfig != nil {
-			bedrockConfig := &schemas.BedrockKeyConfig{}
-			bedrockConfig.AccessKey = *key.BedrockKeyConfig.AccessKey.Redacted()
-			bedrockConfig.SecretKey = *key.BedrockKeyConfig.SecretKey.Redacted()
-			if key.BedrockKeyConfig.SessionToken != nil {
-				bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
-			}
-			// The region is a public identifier, not a credential — surface it in plaintext.
-			if key.BedrockKeyConfig.Region != nil {
-				bedrockConfig.Region = key.BedrockKeyConfig.Region.RedactedIfSecret()
-			}
-			if key.BedrockKeyConfig.ARN != nil {
-				bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
-			}
-			if key.BedrockKeyConfig.RoleARN != nil {
-				bedrockConfig.RoleARN = key.BedrockKeyConfig.RoleARN.Redacted()
-			}
-			if key.BedrockKeyConfig.ExternalID != nil {
-				bedrockConfig.ExternalID = key.BedrockKeyConfig.ExternalID.Redacted()
-			}
-			if key.BedrockKeyConfig.RoleSessionName != nil {
-				bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
-			}
-			if key.BedrockKeyConfig.BatchRoleARN != nil {
-				bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
-			}
-			// Preserve literal identifiers, but mask resolved secret references.
-			if key.BedrockKeyConfig.ProjectID != nil {
-				bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID.RedactedIfSecret()
-			}
-			// Add back s3 config
-			if key.BedrockKeyConfig.BatchS3Config != nil {
-				bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
-			}
-			bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints.Redacted()
-			redactedConfig.Keys[i].BedrockKeyConfig = bedrockConfig
-		}
-
-		// Redact Bedrock Mantle key config if present
-		if key.BedrockMantleKeyConfig != nil {
-			mantleConfig := &schemas.BedrockMantleKeyConfig{}
-			mantleConfig.AccessKey = *key.BedrockMantleKeyConfig.AccessKey.Redacted()
-			mantleConfig.SecretKey = *key.BedrockMantleKeyConfig.SecretKey.Redacted()
-			if key.BedrockMantleKeyConfig.SessionToken != nil {
-				mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
-			}
-			// The region is a public identifier, not a credential — surface it in plaintext.
-			if key.BedrockMantleKeyConfig.Region != nil {
-				mantleConfig.Region = key.BedrockMantleKeyConfig.Region.RedactedIfSecret()
-			}
-			if key.BedrockMantleKeyConfig.RoleARN != nil {
-				mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
-			}
-			if key.BedrockMantleKeyConfig.ExternalID != nil {
-				mantleConfig.ExternalID = key.BedrockMantleKeyConfig.ExternalID.Redacted()
-			}
-			if key.BedrockMantleKeyConfig.RoleSessionName != nil {
-				mantleConfig.RoleSessionName = key.BedrockMantleKeyConfig.RoleSessionName.Redacted()
-			}
-			// Preserve literal identifiers, but mask resolved secret references.
-			if key.BedrockMantleKeyConfig.ProjectID != nil {
-				mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID.RedactedIfSecret()
-			}
-			mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints.Redacted()
-			redactedConfig.Keys[i].BedrockMantleKeyConfig = mantleConfig
-		}
-
-		// Redact SageMaker key config if present
-		if key.SageMakerKeyConfig != nil {
-			smConfig := &schemas.SageMakerKeyConfig{}
-			smConfig.AccessKey = *key.SageMakerKeyConfig.AccessKey.Redacted()
-			smConfig.SecretKey = *key.SageMakerKeyConfig.SecretKey.Redacted()
-			if key.SageMakerKeyConfig.SessionToken != nil {
-				smConfig.SessionToken = key.SageMakerKeyConfig.SessionToken.Redacted()
-			}
-			if key.SageMakerKeyConfig.Region != nil {
-				smConfig.Region = key.SageMakerKeyConfig.Region.RedactedIfSecret()
-			}
-			if key.SageMakerKeyConfig.RoleARN != nil {
-				smConfig.RoleARN = key.SageMakerKeyConfig.RoleARN.Redacted()
-			}
-			if key.SageMakerKeyConfig.ExternalID != nil {
-				smConfig.ExternalID = key.SageMakerKeyConfig.ExternalID.Redacted()
-			}
-			if key.SageMakerKeyConfig.RoleSessionName != nil {
-				smConfig.RoleSessionName = key.SageMakerKeyConfig.RoleSessionName.Redacted()
-			}
-			smConfig.Endpoints = key.SageMakerKeyConfig.Endpoints.Redacted()
-			redactedConfig.Keys[i].SageMakerKeyConfig = smConfig
-		}
-
-		if key.VLLMKeyConfig != nil {
-			vllmConfig := &schemas.VLLMKeyConfig{
-				ModelName: key.VLLMKeyConfig.ModelName,
-			}
-			// The URL is a service address, not a credential — surface it in plaintext.
-			vllmConfig.URL = *key.VLLMKeyConfig.URL.RedactedIfSecret()
-			redactedConfig.Keys[i].VLLMKeyConfig = vllmConfig
-		}
-
-		if key.ReplicateKeyConfig != nil {
-			replicateConfig := &schemas.ReplicateKeyConfig{
-				UseDeploymentsEndpoint: key.ReplicateKeyConfig.UseDeploymentsEndpoint,
-			}
-			redactedConfig.Keys[i].ReplicateKeyConfig = replicateConfig
-		}
-
-		if key.OllamaKeyConfig != nil {
-			ollamaConfig := &schemas.OllamaKeyConfig{}
-			// The URL is a service address, not a credential — surface it in plaintext.
-			ollamaConfig.URL = *key.OllamaKeyConfig.URL.RedactedIfSecret()
-			redactedConfig.Keys[i].OllamaKeyConfig = ollamaConfig
-		}
-
-		if key.SGLKeyConfig != nil {
-			sglConfig := &schemas.SGLKeyConfig{}
-			// The URL is a service address, not a credential — surface it in plaintext.
-			sglConfig.URL = *key.SGLKeyConfig.URL.RedactedIfSecret()
-			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
-		}
-
-		if key.CloudflareKeyConfig != nil {
-			cloudflareConfig := &schemas.CloudflareKeyConfig{}
-			// The account ID is an identifier, not a credential — surface it in plaintext.
-			cloudflareConfig.AccountID = *key.CloudflareKeyConfig.AccountID.RedactedIfSecret()
-			redactedConfig.Keys[i].CloudflareKeyConfig = cloudflareConfig
-		}
-
-		if key.AnthropicKeyConfig != nil {
-			// Identifiers readable unless secret-backed; the identity token always masked.
-			redactedConfig.Keys[i].AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
-		}
-
-		// Redact Databricks key config if present
-		if key.DatabricksKeyConfig != nil {
-			databricksConfig := &schemas.DatabricksKeyConfig{
-				APIFormat:          key.DatabricksKeyConfig.APIFormat,
-				ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
-				Scopes:             slices.Clone(key.DatabricksKeyConfig.Scopes),
-			}
-			// The workspace URL is a hostname, not a credential — surface it in
-			// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
-			databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.RedactedIfSecret()
-			if key.DatabricksKeyConfig.ClientID != nil {
-				databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
-			}
-			if key.DatabricksKeyConfig.ClientSecret != nil {
-				databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
-			}
-			redactedConfig.Keys[i].DatabricksKeyConfig = databricksConfig
-		}
-
-		if key.OAuthKeyConfig != nil {
-			redactedConfig.Keys[i].OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
+// RedactedKey returns a copy of key as the API shows it: identifiers readable, credentials masked,
+// Models and BlacklistedModels never nil (an empty JSON array, not null), and Enabled copied rather
+// than shared. key itself, which may be shared, is left untouched.
+func RedactedKey(key schemas.Key) schemas.Key {
+	models := key.Models
+	if models == nil {
+		models = []string{} // Ensure models is never nil in JSON response
+	}
+	blacklistedModels := key.BlacklistedModels
+	if blacklistedModels == nil {
+		blacklistedModels = []string{} // Match models: empty JSON array, not null
+	}
+	redacted := schemas.Key{
+		ID:                key.ID,
+		Name:              key.Name,
+		Models:            models,
+		BlacklistedModels: blacklistedModels,
+		Weight:            key.Weight,
+		ConfigHash:        key.ConfigHash,
+	}
+	if key.Enabled != nil {
+		enabled := *key.Enabled
+		redacted.Enabled = &enabled
+	}
+	if key.Aliases != nil {
+		redacted.Aliases = make(schemas.KeyAliases, len(key.Aliases))
+		for name, alias := range key.Aliases {
+			redacted.Aliases[name] = alias.Redacted()
 		}
 	}
-	return &redactedConfig
+	redacted.Value = *key.Value.Redacted()
+	// Carried as is: nil is inherit, so it must not be defaulted like the flags below.
+	redacted.DisableContentLogging = key.DisableContentLogging
+	// Add back use for batch api
+	if key.UseForBatchAPI != nil {
+		redacted.UseForBatchAPI = key.UseForBatchAPI
+	} else {
+		redacted.UseForBatchAPI = new(false)
+	}
+	// Add back use anthropic endpoints
+	if key.UseAnthropicEndpoints != nil {
+		redacted.UseAnthropicEndpoints = key.UseAnthropicEndpoints
+	} else {
+		redacted.UseAnthropicEndpoints = new(false)
+	}
+	// Add back use openai endpoints
+	if key.UseOpenAIEndpoints != nil {
+		redacted.UseOpenAIEndpoints = key.UseOpenAIEndpoints
+	} else {
+		redacted.UseOpenAIEndpoints = new(false)
+	}
+
+	// Add model discovery status and error
+	redacted.Status = key.Status
+	redacted.Description = key.Description
+
+	// Redact Azure key config if present
+	if key.AzureKeyConfig != nil {
+		azureConfig := &schemas.AzureKeyConfig{}
+		// The endpoint is a hostname, not a credential: surface it in plaintext.
+		azureConfig.Endpoint = *key.AzureKeyConfig.Endpoint.RedactedIfSecret()
+		if key.AzureKeyConfig.ClientID != nil {
+			azureConfig.ClientID = key.AzureKeyConfig.ClientID.Redacted()
+		}
+		if key.AzureKeyConfig.ClientSecret != nil {
+			azureConfig.ClientSecret = key.AzureKeyConfig.ClientSecret.Redacted()
+		}
+		if key.AzureKeyConfig.TenantID != nil {
+			azureConfig.TenantID = key.AzureKeyConfig.TenantID.Redacted()
+		}
+		if len(key.AzureKeyConfig.Scopes) > 0 {
+			azureConfig.Scopes = key.AzureKeyConfig.Scopes
+		}
+		azureConfig.UseSpeechEndpoints = key.AzureKeyConfig.UseSpeechEndpoints
+		azureConfig.UseVoiceLiveEndpoints = key.AzureKeyConfig.UseVoiceLiveEndpoints
+		redacted.AzureKeyConfig = azureConfig
+	}
+
+	// Redact Vertex key config if present
+	if key.VertexKeyConfig != nil {
+		vertexConfig := &schemas.VertexKeyConfig{}
+		vertexConfig.ProjectID = *key.VertexKeyConfig.ProjectID.Redacted()
+		vertexConfig.ProjectNumber = *key.VertexKeyConfig.ProjectNumber.Redacted()
+		// The region is a public identifier, not a credential: surface it in plaintext.
+		vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
+		vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
+		vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
+		vertexConfig.UseSessionRouting = key.VertexKeyConfig.UseSessionRouting
+		vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
+		redacted.VertexKeyConfig = vertexConfig
+	}
+
+	// Redact Bedrock key config if present
+	if key.BedrockKeyConfig != nil {
+		bedrockConfig := &schemas.BedrockKeyConfig{}
+		bedrockConfig.AccessKey = *key.BedrockKeyConfig.AccessKey.Redacted()
+		bedrockConfig.SecretKey = *key.BedrockKeyConfig.SecretKey.Redacted()
+		if key.BedrockKeyConfig.SessionToken != nil {
+			bedrockConfig.SessionToken = key.BedrockKeyConfig.SessionToken.Redacted()
+		}
+		// The region is a public identifier, not a credential: surface it in plaintext.
+		if key.BedrockKeyConfig.Region != nil {
+			bedrockConfig.Region = key.BedrockKeyConfig.Region.RedactedIfSecret()
+		}
+		if key.BedrockKeyConfig.ARN != nil {
+			bedrockConfig.ARN = key.BedrockKeyConfig.ARN.Redacted()
+		}
+		if key.BedrockKeyConfig.RoleARN != nil {
+			bedrockConfig.RoleARN = key.BedrockKeyConfig.RoleARN.Redacted()
+		}
+		if key.BedrockKeyConfig.ExternalID != nil {
+			bedrockConfig.ExternalID = key.BedrockKeyConfig.ExternalID.Redacted()
+		}
+		if key.BedrockKeyConfig.RoleSessionName != nil {
+			bedrockConfig.RoleSessionName = key.BedrockKeyConfig.RoleSessionName.Redacted()
+		}
+		if key.BedrockKeyConfig.BatchRoleARN != nil {
+			bedrockConfig.BatchRoleARN = key.BedrockKeyConfig.BatchRoleARN.Redacted()
+		}
+		// Preserve literal identifiers, but mask resolved secret references.
+		if key.BedrockKeyConfig.ProjectID != nil {
+			bedrockConfig.ProjectID = key.BedrockKeyConfig.ProjectID.RedactedIfSecret()
+		}
+		// Add back s3 config
+		if key.BedrockKeyConfig.BatchS3Config != nil {
+			bedrockConfig.BatchS3Config = key.BedrockKeyConfig.BatchS3Config
+		}
+		bedrockConfig.Endpoints = key.BedrockKeyConfig.Endpoints.Redacted()
+		redacted.BedrockKeyConfig = bedrockConfig
+	}
+
+	// Redact Bedrock Mantle key config if present
+	if key.BedrockMantleKeyConfig != nil {
+		mantleConfig := &schemas.BedrockMantleKeyConfig{}
+		mantleConfig.AccessKey = *key.BedrockMantleKeyConfig.AccessKey.Redacted()
+		mantleConfig.SecretKey = *key.BedrockMantleKeyConfig.SecretKey.Redacted()
+		if key.BedrockMantleKeyConfig.SessionToken != nil {
+			mantleConfig.SessionToken = key.BedrockMantleKeyConfig.SessionToken.Redacted()
+		}
+		// The region is a public identifier, not a credential: surface it in plaintext.
+		if key.BedrockMantleKeyConfig.Region != nil {
+			mantleConfig.Region = key.BedrockMantleKeyConfig.Region.RedactedIfSecret()
+		}
+		if key.BedrockMantleKeyConfig.RoleARN != nil {
+			mantleConfig.RoleARN = key.BedrockMantleKeyConfig.RoleARN.Redacted()
+		}
+		if key.BedrockMantleKeyConfig.ExternalID != nil {
+			mantleConfig.ExternalID = key.BedrockMantleKeyConfig.ExternalID.Redacted()
+		}
+		if key.BedrockMantleKeyConfig.RoleSessionName != nil {
+			mantleConfig.RoleSessionName = key.BedrockMantleKeyConfig.RoleSessionName.Redacted()
+		}
+		// Preserve literal identifiers, but mask resolved secret references.
+		if key.BedrockMantleKeyConfig.ProjectID != nil {
+			mantleConfig.ProjectID = key.BedrockMantleKeyConfig.ProjectID.RedactedIfSecret()
+		}
+		mantleConfig.Endpoints = key.BedrockMantleKeyConfig.Endpoints.Redacted()
+		redacted.BedrockMantleKeyConfig = mantleConfig
+	}
+
+	// Redact SageMaker key config if present
+	if key.SageMakerKeyConfig != nil {
+		smConfig := &schemas.SageMakerKeyConfig{}
+		smConfig.AccessKey = *key.SageMakerKeyConfig.AccessKey.Redacted()
+		smConfig.SecretKey = *key.SageMakerKeyConfig.SecretKey.Redacted()
+		if key.SageMakerKeyConfig.SessionToken != nil {
+			smConfig.SessionToken = key.SageMakerKeyConfig.SessionToken.Redacted()
+		}
+		if key.SageMakerKeyConfig.Region != nil {
+			smConfig.Region = key.SageMakerKeyConfig.Region.RedactedIfSecret()
+		}
+		if key.SageMakerKeyConfig.RoleARN != nil {
+			smConfig.RoleARN = key.SageMakerKeyConfig.RoleARN.Redacted()
+		}
+		if key.SageMakerKeyConfig.ExternalID != nil {
+			smConfig.ExternalID = key.SageMakerKeyConfig.ExternalID.Redacted()
+		}
+		if key.SageMakerKeyConfig.RoleSessionName != nil {
+			smConfig.RoleSessionName = key.SageMakerKeyConfig.RoleSessionName.Redacted()
+		}
+		smConfig.Endpoints = key.SageMakerKeyConfig.Endpoints.Redacted()
+		redacted.SageMakerKeyConfig = smConfig
+	}
+
+	if key.VLLMKeyConfig != nil {
+		vllmConfig := &schemas.VLLMKeyConfig{
+			ModelName: key.VLLMKeyConfig.ModelName,
+		}
+		// The URL is a service address, not a credential: surface it in plaintext.
+		vllmConfig.URL = *key.VLLMKeyConfig.URL.RedactedIfSecret()
+		redacted.VLLMKeyConfig = vllmConfig
+	}
+
+	if key.ReplicateKeyConfig != nil {
+		replicateConfig := &schemas.ReplicateKeyConfig{
+			UseDeploymentsEndpoint: key.ReplicateKeyConfig.UseDeploymentsEndpoint,
+		}
+		redacted.ReplicateKeyConfig = replicateConfig
+	}
+
+	if key.OllamaKeyConfig != nil {
+		ollamaConfig := &schemas.OllamaKeyConfig{}
+		// The URL is a service address, not a credential: surface it in plaintext.
+		ollamaConfig.URL = *key.OllamaKeyConfig.URL.RedactedIfSecret()
+		redacted.OllamaKeyConfig = ollamaConfig
+	}
+
+	if key.SGLKeyConfig != nil {
+		sglConfig := &schemas.SGLKeyConfig{}
+		// The URL is a service address, not a credential: surface it in plaintext.
+		sglConfig.URL = *key.SGLKeyConfig.URL.RedactedIfSecret()
+		redacted.SGLKeyConfig = sglConfig
+	}
+
+	if key.CloudflareKeyConfig != nil {
+		cloudflareConfig := &schemas.CloudflareKeyConfig{}
+		// The account ID is an identifier, not a credential: surface it in plaintext.
+		cloudflareConfig.AccountID = *key.CloudflareKeyConfig.AccountID.RedactedIfSecret()
+		redacted.CloudflareKeyConfig = cloudflareConfig
+	}
+
+	if key.AnthropicKeyConfig != nil {
+		// Identifiers readable unless secret-backed; the identity token always masked.
+		redacted.AnthropicKeyConfig = key.AnthropicKeyConfig.Redacted()
+	}
+
+	// Redact Databricks key config if present
+	if key.DatabricksKeyConfig != nil {
+		databricksConfig := &schemas.DatabricksKeyConfig{
+			APIFormat:          key.DatabricksKeyConfig.APIFormat,
+			ForwardGatewayTags: key.DatabricksKeyConfig.ForwardGatewayTags,
+			Scopes:             slices.Clone(key.DatabricksKeyConfig.Scopes),
+		}
+		// The workspace URL is a hostname, not a credential: surface it in
+		// plaintext so the UI can round-trip it, mirroring the Azure endpoint.
+		databricksConfig.WorkspaceURL = *key.DatabricksKeyConfig.WorkspaceURL.RedactedIfSecret()
+		if key.DatabricksKeyConfig.ClientID != nil {
+			databricksConfig.ClientID = key.DatabricksKeyConfig.ClientID.Redacted()
+		}
+		if key.DatabricksKeyConfig.ClientSecret != nil {
+			databricksConfig.ClientSecret = key.DatabricksKeyConfig.ClientSecret.Redacted()
+		}
+		redacted.DatabricksKeyConfig = databricksConfig
+	}
+
+	if key.OAuthKeyConfig != nil {
+		redacted.OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
+	}
+	return redacted
+}
+
+// RedactedKeys returns RedactedKey of each of keys, in order. It is the key half of what the API
+// redacts; ProviderConfig.Redacted is the provider half.
+func RedactedKeys(keys []schemas.Key) []schemas.Key {
+	redactedKeys := make([]schemas.Key, len(keys))
+	for i, key := range keys {
+		redactedKeys[i] = RedactedKey(key)
+	}
+	return redactedKeys
 }
 
 // GenerateConfigHash generates a SHA256 hash of the provider configuration.
@@ -1581,6 +1595,15 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	if key.Enabled != nil && *key.Enabled {
 		hash.Write([]byte("enabled:true"))
 	}
+	// Hash DisableContentLogging only when the key says something, so every key that predates the
+	// field keeps the hash it already has and config sync sees no drift on upgrade.
+	if key.DisableContentLogging != nil {
+		if *key.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
+	}
 	// Hash UseForBatchAPI (nil = default false for new keys)
 	useForBatchAPI := false
 	if key.UseForBatchAPI != nil {
@@ -1998,6 +2021,15 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 	// Only when set, so a team declaring none keeps the hash it had before the field existed.
 	if t.AccessProfile != "" {
 		hash.Write([]byte("accessProfile:" + t.AccessProfile))
+	}
+	// Hash DisableContentLogging only when the team says something, so every team that predates
+	// the column keeps the hash it already has and config sync sees no drift on upgrade.
+	if t.DisableContentLogging != nil {
+		if *t.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -2553,19 +2585,43 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 		hash.Write([]byte("per_user_discovery:true"))
 	}
 
+	// Hash tool_pricing in tool order, so a price edited in config.json drifts the hash and syncs like any
+	// other field. Each entry is length-framed. An empty map contributes nothing, so a client without prices
+	// keeps its earlier hash; MCPClientHashMatchesLegacy recognises a priced client's earlier hash.
+	for _, tool := range slices.Sorted(maps.Keys(m.ToolPricing)) {
+		price := strconv.FormatFloat(m.ToolPricing[tool], 'g', -1, 64)
+		fmt.Fprintf(hash, "tool_pricing:%d:%s=%s;", len(tool), tool, price)
+	}
+
 	// will enable it in the future with a migration
 	// hash.Write([]byte("disabled:" + strconv.FormatBool(m.Disabled)))
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-// MCPClientHashMatchesLegacyCodeMode reports whether storedHash is this client's hash under the formula of
-// builds that did not hash is_code_mode_client. GenerateMCPClientHash now does when it is true, so the
-// first restart after the upgrade sees a mismatch for every such client even when config.json is untouched;
-// reconciliation calls this before treating that mismatch as a file edit, so UI and API edits survive.
-// storedCodeMode must be true too: without code mode both formulas agree, so a stored client without it
-// that now declares it is a file edit, not an old hash.
-func MCPClientHashMatchesLegacyCodeMode(m tables.TableMCPClient, storedHash string, storedCodeMode bool) (bool, error) {
-	if storedHash == "" || !m.IsCodeModeClient || !storedCodeMode {
+// MCPClientHashMatchesLegacy reports whether storedHash is this client's hash under the formula of an older
+// build. Builds before tool_pricing was hashed left out the prices, and builds before is_code_mode_client was
+// hashed left out code mode as well; no build hashed prices without code mode, so that form is never tried.
+// The first restart after each change sees a mismatch for every affected client even when config.json is
+// untouched, so reconciliation calls this before treating a mismatch as a file edit: UI and API edits
+// survive, and the caller adds the file's prices for tools the stored row does not price, since those builds
+// never stored a file client's prices at create. The code-mode form also needs storedCodeMode: without code
+// mode both formulas agree, so a stored client without it that now declares it is a file edit, not an old hash.
+func MCPClientHashMatchesLegacy(m tables.TableMCPClient, storedHash string, storedCodeMode bool) (bool, error) {
+	if storedHash == "" {
+		return false, nil
+	}
+	priced := len(m.ToolPricing) > 0
+	m.ToolPricing = nil
+	if priced {
+		legacy, err := GenerateMCPClientHash(m)
+		if err != nil {
+			return false, err
+		}
+		if legacy == storedHash {
+			return true, nil
+		}
+	}
+	if !m.IsCodeModeClient || !storedCodeMode {
 		return false, nil
 	}
 	m.IsCodeModeClient = false

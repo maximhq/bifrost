@@ -90,8 +90,8 @@ func (ep *clientGatewayEndpoint) telemetryIdentity(ctx *fasthttp.RequestCtx) *cl
 	id := &clientGatewayIdentity{Mode: claims.BfMode, Subject: claims.Subject}
 	if claims.BfMode == "vk" {
 		id.VKID = claims.Subject
-		if vk, err := ep.virtualKeyByID(ctx, claims.Subject); err == nil && vk != nil {
-			id.VKName, id.TeamID, id.CustomerID = vk.Name, derefString(vk.TeamID), derefString(vk.CustomerID)
+		if vk, err := ep.virtualKeyByID(claims.Subject); err == nil && vk != nil {
+			id.VKName, id.TeamID, id.CustomerID = vk.Name, vk.TeamID, vk.CustomerID
 		}
 	}
 	return id
@@ -410,8 +410,8 @@ type telemetryForwarder struct {
 
 // newTelemetryForwarder creates the forwarder; its workers start with the first
 // queued export. httpClient, when non-nil, supplies the outbound client (the
-// proxy-aware factory in a running server).
-func newTelemetryForwarder(httpClient func() *http.Client) *telemetryForwarder {
+// proxy-aware factory in a running server). identityLimiter paces exports per identity.
+func newTelemetryForwarder(httpClient func() *http.Client, identityLimiter *ipRateLimiter) *telemetryForwarder {
 	if httpClient == nil {
 		fallback := &http.Client{Timeout: clientGatewayTelemetryExportTimeout}
 		httpClient = func() *http.Client { return fallback }
@@ -420,7 +420,7 @@ func newTelemetryForwarder(httpClient func() *http.Client) *telemetryForwarder {
 		queue:           make(chan telemetryItem, clientGatewayTelemetryQueueItems),
 		maxBytes:        clientGatewayTelemetryQueueBytes,
 		client:          httpClient,
-		identityLimiter: newIPRateLimiter(clientGatewayTelemetryIdentityLimit, time.Minute),
+		identityLimiter: identityLimiter,
 		metrics:         newTelemetryMetrics(),
 		done:            make(chan struct{}),
 	}
@@ -598,12 +598,4 @@ func newTelemetryMetrics() *telemetryMetrics {
 	}
 	m.registry.MustRegister(m.exports, m.forwards, m.queueDepth, m.queueBytes)
 	return m
-}
-
-// derefString returns *s, or "" for nil.
-func derefString(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
 }

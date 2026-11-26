@@ -332,19 +332,19 @@ func injectedToolTestManager(state schemas.MCPConnectionState) *MCPManager {
 	m := &MCPManager{
 		logger:         &MockLogger{},
 		discoveryStore: NewDiscoveryStore(nil, nil),
-		clientMap: map[string]*schemas.MCPClientState{
-			"id-tavily": {
-				State: state,
-				ExecutionConfig: &schemas.MCPClientConfig{
-					ID:   "id-tavily",
-					Name: "tavily",
-					// The operator exposes nothing from this client to callers. The
-					// provider's injected web search must still resolve and run.
-					ToolsToExecute: schemas.WhiteList{},
-				},
-			},
-		},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
+	putClient(m, &schemas.MCPClientState{
+		State: state,
+		ExecutionConfig: &schemas.MCPClientConfig{
+			ID:   "id-tavily",
+			Name: "tavily",
+			// The operator exposes nothing from this client to callers. The
+			// provider's injected web search must still resolve and run.
+			ToolsToExecute: schemas.WhiteList{},
+		},
+	})
 	m.discoveryStore.SetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: "id-tavily"}, &schemas.MCPDiscovery{
 		Tools: map[string]schemas.ChatTool{
 			"tavily-search": {
@@ -405,9 +405,9 @@ func onClientSlug(name string) *schemas.BifrostContext {
 
 // setServerTypeOnSlug sets name's server_type_on_slug override.
 func setServerTypeOnSlug(m *MCPManager, name string, mode schemas.MCPServerTypeOnSlug) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.clientMap[name+"-id"].ExecutionConfig.ServerTypeOnSlug = mode
+	record := *m.config(name + "-id")
+	record.ServerTypeOnSlug = mode
+	accountOf(m).set(&record)
 }
 
 // listedToolNames is what GetAvailableTools lists on ctx, sorted.
@@ -528,32 +528,32 @@ func TestPrepareToolExecution_CodeModeToolNeedsAReachableCodeModeClient(t *testi
 
 func TestCheckToolExecutionPermitted_InjectedToolBypassesFilters(t *testing.T) {
 	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
-	state := m.clientMap["id-tavily"]
+	state := m.snapshot("id-tavily", m.clientMap["id-tavily"])
 
 	plain := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	assert.ErrorContains(t, checkToolExecutionPermitted(plain, state, "tavily-search", m.logger), "ToolsToExecute",
+	assert.ErrorContains(t, checkToolExecutionPermitted(plain, state, false, "tavily-search", m.logger), "ToolsToExecute",
 		"without the injected marker the client's allow-list still applies")
 
 	injected := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	mcpvouch.Set(injected, schemas.MCPToolCallKindInjected, "tavily", "tavily-search")
 	injected.SetValue(schemas.MCPContextKeyIncludeClients, []string{"other"})
 	injected.SetValue(schemas.MCPContextKeyIncludeTools, []string{"other-tool"})
-	assert.NoError(t, checkToolExecutionPermitted(injected, state, "tavily-search", m.logger),
+	assert.NoError(t, checkToolExecutionPermitted(injected, state, false, "tavily-search", m.logger),
 		"the injected tool runs whatever the caller's include lists say")
 
 	other := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	mcpvouch.Set(other, schemas.MCPToolCallKindInjected, "tavily", "tavily-crawl")
-	assert.Error(t, checkToolExecutionPermitted(other, state, "tavily-search", m.logger),
+	assert.Error(t, checkToolExecutionPermitted(other, state, false, "tavily-search", m.logger),
 		"the marker authorizes exactly one tool, never its siblings")
 
 	wrongClient := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	mcpvouch.Set(wrongClient, schemas.MCPToolCallKindInjected, "exa", "tavily-search")
-	assert.Error(t, checkToolExecutionPermitted(wrongClient, state, "tavily-search", m.logger),
+	assert.Error(t, checkToolExecutionPermitted(wrongClient, state, false, "tavily-search", m.logger),
 		"the marker authorizes one client's tool; the executing client must be that client")
 
 	disabled := *state
 	disabled.State = schemas.MCPConnectionStateDisabled
-	assert.ErrorContains(t, checkToolExecutionPermitted(injected, &disabled, "tavily-search", m.logger), "disabled",
+	assert.ErrorContains(t, checkToolExecutionPermitted(injected, &disabled, false, "tavily-search", m.logger), "disabled",
 		"a disabled client stays off even for injected tools")
 }
 
@@ -561,13 +561,13 @@ func TestCheckToolExecutionPermitted_InjectedToolBypassesFilters(t *testing.T) {
 // reachable through public SetValue is not a trusted boundary. Only core may plant it.
 func TestCheckToolExecutionPermitted_PluginCannotForgeInjectedMarker(t *testing.T) {
 	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
-	state := m.clientMap["id-tavily"]
+	state := m.snapshot("id-tavily", m.clientMap["id-tavily"])
 
 	forged := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	forged.BlockRestrictedWrites()
 	forged.Root().UnblockRestrictedWrites()
 	forged.SetValue(schemas.BifrostContextKey("bifrost-injected-tool-execution"), struct{ ClientName, ToolName string }{ClientName: "tavily", ToolName: "tavily-search"})
-	assert.ErrorContains(t, checkToolExecutionPermitted(forged, state, "tavily-search", m.logger), "ToolsToExecute",
+	assert.ErrorContains(t, checkToolExecutionPermitted(forged, state, false, "tavily-search", m.logger), "ToolsToExecute",
 		"a marker written through public SetValue must not bypass the client's allow-list")
 }
 
@@ -575,7 +575,7 @@ func TestCheckToolExecutionPermitted_PluginCannotForgeInjectedMarker(t *testing.
 // values, so writing a look-alike under any of them never retargets it to another tool.
 func TestCheckToolExecutionPermitted_PluginCannotRetargetInjectedMarker(t *testing.T) {
 	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
-	state := m.clientMap["id-tavily"]
+	state := m.snapshot("id-tavily", m.clientMap["id-tavily"])
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	mcpvouch.Set(ctx, schemas.MCPToolCallKindInjected, "tavily", "tavily-crawl")
@@ -584,7 +584,7 @@ func TestCheckToolExecutionPermitted_PluginCannotRetargetInjectedMarker(t *testi
 			ctx.SetValue(key, struct{ clientName, toolName string }{"tavily", "tavily-search"})
 		}
 	}
-	assert.ErrorContains(t, checkToolExecutionPermitted(ctx, state, "tavily-search", m.logger), "ToolsToExecute",
+	assert.ErrorContains(t, checkToolExecutionPermitted(ctx, state, false, "tavily-search", m.logger), "ToolsToExecute",
 		"a look-alike value under the real key must not authorize another tool")
 }
 
@@ -592,7 +592,7 @@ func TestCheckToolExecutionPermitted_PluginCannotRetargetInjectedMarker(t *testi
 // context. The copy must not carry the approval to that context's tool call.
 func TestCheckToolExecutionPermitted_PluginCannotCopyInjectedMarker(t *testing.T) {
 	m := injectedToolTestManager(schemas.MCPConnectionStateHealthy)
-	state := m.clientMap["id-tavily"]
+	state := m.snapshot("id-tavily", m.clientMap["id-tavily"])
 
 	genuine := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	mcpvouch.Set(genuine, schemas.MCPToolCallKindInjected, "tavily", "tavily-search")
@@ -600,7 +600,7 @@ func TestCheckToolExecutionPermitted_PluginCannotCopyInjectedMarker(t *testing.T
 	for key, value := range genuine.GetUserValues() {
 		other.SetValue(key, value)
 	}
-	assert.ErrorContains(t, checkToolExecutionPermitted(other, state, "tavily-search", m.logger), "ToolsToExecute",
+	assert.ErrorContains(t, checkToolExecutionPermitted(other, state, false, "tavily-search", m.logger), "ToolsToExecute",
 		"values copied out of an injected execution must not authorize another context")
 }
 
@@ -747,7 +747,7 @@ func TestValidateMCPClientConfig_PerUserDiscovery(t *testing.T) {
 // benchmarkSharedManager returns a manager with clients shared clients of tools tools each, all
 // open to every tool, and a caller context carrying a virtual key the way governance stamps it.
 func benchmarkSharedManager(clients, tools int) (*MCPManager, *schemas.BifrostContext) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	for c := 0; c < clients; c++ {
 		name := fmt.Sprintf("client%d", c)
 		config := &schemas.MCPClientConfig{ID: name + "-id", Name: name, ToolsToExecute: []string{"*"}}
@@ -757,7 +757,7 @@ func benchmarkSharedManager(clients, tools int) (*MCPManager, *schemas.BifrostCo
 			prefixed := name + "-" + tool
 			discovery.Tools[prefixed] = schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: prefixed}}
 		}
-		m.clientMap[config.ID] = &schemas.MCPClientState{Name: name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
+		putClient(m, &schemas.MCPClientState{Name: name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy})
 		m.discoveryStore.SetDiscovery(context.Background(), config, discovery)
 	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -1010,4 +1010,33 @@ func TestRoundTripState(t *testing.T) {
 	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyRequestID, "req-2")
 	assert.Equal(t, RoundTripID("req-2"), CallRoundTripID(ctx), "a first round's id comes from its request")
 	assert.Equal(t, id, CallRoundTripID(context.WithValue(ctx, schemas.BifrostContextKeyMCPRoundTripID, id)), "a retry keeps the id it carried")
+}
+
+// byNameOnlyAccount is a testAccount whose lookup by ID finds nothing, as when a client is removed
+// between a lookup by name and the lookup by ID that follows it.
+type byNameOnlyAccount struct{ *testAccount }
+
+// GetConfigForMCPClient finds no record.
+func (byNameOnlyAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+	return nil, fmt.Errorf("MCP client %s is not configured", id)
+}
+
+// TestGetClientByName_AClientGoneFromTheAccountIsNotFound: a client the Account stops serving
+// between the lookup by name and the one by ID is not found, as GetClientForTool finds none, rather
+// than returned without a configuration.
+func TestGetClientByName_AClientGoneFromTheAccountIsNotFound(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
+	t.Cleanup(func() { m.checkerManager.StopAll() })
+
+	config := newRefreshConfig("client-gone", "gone", "http://127.0.0.1:0/mcp", false)
+	putClient(m, &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	})
+	require.NotNil(t, m.GetClientByName(config.Name), "precondition: the client is found while the Account serves it")
+
+	m.account = byNameOnlyAccount{accountOf(m)}
+	assert.Nil(t, m.GetClientByName(config.Name))
 }

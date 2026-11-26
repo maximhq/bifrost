@@ -503,6 +503,11 @@
 	"configSyncAlert": {
 		"message": "This config is synced from <code0>config.json</code0>. Any future updates to config.json will overwrite UI changes. If you are using config.json to bootstrap the initial config, you can ignore this alert."
 	},
+	"configIssuesAlert": {
+		"title": "Part of the config.json declaration was not applied",
+		"badge": "Config issues",
+		"hint": "The rest of the declaration is applied. Each item above clears on its own once what it names exists, for example when the missing MCP client is registered."
+	},
 	"breadcrumb": {
 		"label": "breadcrumb",
 		"more": "More"
@@ -595,8 +600,7 @@
 		"toggle": "Toggle Sidebar"
 	},
 	"sheet": {
-		"collapse": "Collapse",
-		"expand": "Expand"
+		"resizeHandle": "Resize panel"
 	},
 	"tabs": {
 		"showMore_one": "Show {{count}} more tab",

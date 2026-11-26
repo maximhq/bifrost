@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,9 +25,9 @@ func newInteractionPricingManager(t *testing.T) *modelcatalog.ModelCatalog {
 	path := filepath.Join(t.TempDir(), "pricing.json")
 	sheet := `{"` + testInteractionAgent + `":{"provider":"gemini","mode":"responses","input_cost_per_token":2e-06,"output_cost_per_token":1.2e-05}}`
 	require.NoError(t, os.WriteFile(path, []byte(sheet), 0o600))
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + path})
 	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 // sendInteractionRead drives one passthrough request through the plugin the way the gateway does,
@@ -225,3 +226,18 @@ func TestPostLLMHookSettlesAStreamedInteractionWhenItEnds(t *testing.T) {
 	assert.Equal(t, testInteractionAgent, streamRow.Model)
 	assert.True(t, streamRow.Cost == nil || *streamRow.Cost == 0, "the stream's own row is not billed for the run: cost=%v", streamRow.Cost)
 }
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New

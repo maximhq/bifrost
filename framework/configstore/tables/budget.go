@@ -44,6 +44,9 @@ type TableBudget struct {
 	LastReset     time.Time `gorm:"index" json:"last_reset"`                         // Last time budget was reset
 	CurrentUsage  float64   `gorm:"default:0" json:"current_usage"`                  // Current usage in dollars
 
+	// UsageResetEpoch records window-clearing resets in Unix nanoseconds; zero means unknown.
+	UsageResetEpoch int64 `gorm:"type:bigint;not null;default:0" json:"usage_reset_epoch"`
+
 	// OverrideAmount is added to MaxLimit while the override is active.
 	OverrideAmount float64 `gorm:"not null;default:0" json:"override_amount,omitempty"`
 	// OverrideMode distinguishes finite cycle-based overrides from permanent overrides.

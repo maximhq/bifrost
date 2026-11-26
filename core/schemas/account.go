@@ -161,6 +161,12 @@ type Key struct {
 	UseForBatchAPI         *bool                   `json:"use_for_batch_api,omitempty"`         // Whether this key can be used for batch API operations (default:false for new keys, migrated keys default to true)
 	UseAnthropicEndpoints  *bool                   `json:"use_anthropic_endpoints,omitempty"`   // Whether to use anthropic endpoints for this key
 	UseOpenAIEndpoints     *bool                   `json:"use_openai_endpoints,omitempty"`      // Whether to use OpenAI-compatible endpoints for this key
+	// DisableContentLogging is the key's own content-logging decision: nil inherits, true turns
+	// content off and false turns it on, each subject to the tier order. It sits in the credential
+	// tier with the virtual key and access profile, below every org layer, so a business unit, team
+	// or user that decides outranks either value; inside the tier any true wins, so false holds only
+	// when no peer says true. It is stamped when core selects the key.
+	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
 	ConfigHash             string                  `json:"config_hash,omitempty"`               // Hash of config.json version, used for change detection
 	Status                 KeyStatusType           `json:"status,omitempty"`                    // Status of key
 	Description            string                  `json:"description,omitempty"`               // Description of key
@@ -1564,4 +1570,21 @@ type Account interface {
 	// This includes network settings, authentication details, and other provider-specific
 	// configurations.
 	GetConfigForProvider(providerKey ModelProvider) (*ProviderConfig, error)
+
+	// GetConfiguredMCPClients returns the IDs of the MCP clients configured in the account.
+	// Bifrost dials them when ConnectConfiguredMCPClients runs.
+	GetConfiguredMCPClients() ([]string, error)
+
+	// GetConfigForMCPClient returns the configuration of the MCP client with this ID. Bifrost
+	// keeps the returned value without copying it and compares it with the next one when the
+	// client is updated, so the value must never be edited in place. To change a client's
+	// configuration, serve the changed configuration as a new value, then call UpdateMCPClient.
+	// An implementation may return the value it stores, as long as it replaces that value rather
+	// than editing it.
+	GetConfigForMCPClient(clientID string) (*MCPClientConfig, error)
+
+	// GetConfigForMCPClientByName returns the configuration of the MCP client with this name, the
+	// same value GetConfigForMCPClient returns and under the same rules: kept without copying,
+	// never edited in place. Bifrost resolves a tool call's client by name with it.
+	GetConfigForMCPClientByName(name string) (*MCPClientConfig, error)
 }

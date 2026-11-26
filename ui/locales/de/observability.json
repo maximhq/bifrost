@@ -521,7 +521,6 @@
 				"allowed": "Erlaubt",
 				"blocked": "Blockiert",
 				"redacted": "Geschwärzt",
-				"transformed": "Transformiert",
 				"monitored": "Überwacht",
 				"detected": "Erkannt"
 			},
@@ -577,11 +576,9 @@
 			"toolTypeCount_other": "{{type}} · {{count}} Tools",
 			"guardrailHints": {
 				"blocked": "Die Regel hat die Anfrage gestoppt.",
-				"redacted": "Die Regel hat den übereinstimmenden Inhalt entfernt und die Anfrage wurde fortgesetzt.",
-				"transformed": "Die Regel hat den übereinstimmenden Inhalt umgeschrieben und die Anfrage wurde fortgesetzt.",
+				"redacted": "Die Regel hat den übereinstimmenden Inhalt maskiert oder umgeschrieben und die Anfrage wurde fortgesetzt.",
 				"monitoredWouldBlock": "Die Regel überwacht nur: Sie hätte dies blockiert, die Anfrage wurde aber unverändert fortgesetzt.",
 				"monitoredWouldRedact": "Die Regel überwacht nur: Sie hätte dies geschwärzt, die Anfrage wurde aber unverändert fortgesetzt.",
-				"monitoredWouldTransform": "Die Regel überwacht nur: Sie hätte dies umgewandelt, die Anfrage wurde aber unverändert fortgesetzt.",
 				"monitored": "Die Regel überwacht nur: Die Anfrage wurde unverändert fortgesetzt.",
 				"detected": "Die Regel hat die Anfrage markiert und sie unverändert fortgesetzt."
 			},

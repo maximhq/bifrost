@@ -111,9 +111,7 @@ func (mc *ModelCatalog) ReloadDatasheetOverrides(ctx context.Context) error {
 
 // notifyDatasheetChanged drops capability records and asks peers to reload.
 func (mc *ModelCatalog) notifyDatasheetChanged(ctx context.Context) {
-	if mc.capabilities != nil {
-		mc.capabilities.Flush()
-	}
+	mc.capabilities.Flush()
 	if mc.afterSyncHook != nil {
 		mc.afterSyncHook(ctx)
 	}
