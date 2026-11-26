@@ -2290,6 +2290,7 @@ func TestOpenAIStreamingSequentialConnectionReuse(t *testing.T) {
 
 	t.Run("HandleOpenAIChatCompletionStreaming", func(t *testing.T) {
 		var reqCount atomic.Int32
+		release := make(chan struct{})
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			n := reqCount.Add(1)
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -2315,8 +2316,16 @@ func TestOpenAIStreamingSequentialConnectionReuse(t *testing.T) {
 				}
 				flusher.Flush()
 			}
+			// Delay returning briefly after flushing [DONE] so the terminating 0-length
+			// chunk lands in a separate socket read after ReadDataLine stops on [DONE].
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Millisecond):
+			}
 		}))
 		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
 
 		client, counter := newOpenAITestStreamingClient(8)
 		auth := BearerAuthHeader(testKey())
@@ -2372,6 +2381,7 @@ func TestOpenAIStreamingSequentialConnectionReuse(t *testing.T) {
 
 	t.Run("HandleOpenAITextCompletionStreaming", func(t *testing.T) {
 		var reqCount atomic.Int32
+		release := make(chan struct{})
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			n := reqCount.Add(1)
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -2396,8 +2406,17 @@ func TestOpenAIStreamingSequentialConnectionReuse(t *testing.T) {
 				}
 				flusher.Flush()
 			}
+			// Delay returning briefly after flushing [DONE] so the terminating 0-length
+			// chunk lands in a separate socket read after ReadDataLine stops on [DONE],
+			// ensuring this subtest fails on base rather than riding a coalesced read.
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Millisecond):
+			}
 		}))
 		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
 
 		client, counter := newOpenAITestStreamingClient(8)
 		auth := BearerAuthHeader(testKey())
@@ -2454,6 +2473,54 @@ func TestOpenAIStreamingSequentialConnectionReuse(t *testing.T) {
 		}
 		if got := counter.open(); got != 1 {
 			t.Fatalf("open pooled connections = %d, want 1", got)
+		}
+	})
+
+	t.Run("LargeResponseThresholdClosesConnection", func(t *testing.T) {
+		const thresholdStreams = 20
+		var connCloseSeen atomic.Int32
+		stop := "stop"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.EqualFold(r.Header.Get("Connection"), "close") {
+				connCloseSeen.Add(1)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, chatChunk("hello", nil)+chatChunk("", &stop)+chatUsageOnlyChunk+"data: [DONE]\n\n")
+			flusher.Flush()
+		}))
+		t.Cleanup(srv.Close)
+
+		client, counter := newOpenAITestStreamingClient(32)
+		auth := BearerAuthHeader(testKey())
+
+		for i := 1; i <= thresholdStreams; i++ {
+			ctx := newStreamTestContext()
+			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1024))
+			stream, bifrostErr := HandleOpenAIChatCompletionStreaming(
+				ctx, client, srv.URL, basicChatRequest(), auth, nil, 30,
+				false, false, schemas.OpenAI, passthroughPostHook,
+				nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("iteration %d setup failed: %v", i, bifrostErr)
+			}
+			for c := range stream {
+				if c != nil && c.BifrostError != nil {
+					t.Fatalf("iteration %d chunk error: %+v", i, c.BifrostError)
+				}
+			}
+		}
+
+		if got := connCloseSeen.Load(); got != thresholdStreams {
+			t.Fatalf("server observed Connection: close on %d requests, want %d", got, thresholdStreams)
+		}
+		if got := counter.totalDialed(); got != thresholdStreams {
+			t.Fatalf("totalDialed = %d, want %d", got, thresholdStreams)
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d after large-response streams, want 0 (leaked into per-request client pools)", got)
 		}
 	})
 }

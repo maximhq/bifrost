@@ -1077,7 +1077,12 @@ func HandleAnthropicChatCompletionStreaming(
 
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	// PrepareResponseStreaming clones a one-shot client with an empty pool when a large-response
+	// threshold is set, so close the socket at EOS instead of stranding it in that disposable pool.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	if activeClient != client {
+		req.SetConnectionClose()
+	}
 
 	startTime := time.Now()
 	// Make the request
@@ -1745,7 +1750,12 @@ func HandleAnthropicResponsesStream(
 
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	// PrepareResponseStreaming clones a one-shot client with an empty pool when a large-response
+	// threshold is set, so close the socket at EOS instead of stranding it in that disposable pool.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	if activeClient != client {
+		req.SetConnectionClose()
+	}
 
 	startTime := time.Now()
 	// Make the request

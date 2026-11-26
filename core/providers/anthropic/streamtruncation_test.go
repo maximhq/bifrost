@@ -964,6 +964,92 @@ func TestAnthropicStreamingSequentialConnectionReuse(t *testing.T) {
 			t.Fatalf("open pooled connections = %d, want 1", got)
 		}
 	})
+
+	// When BifrostContextKeyLargeResponseThreshold is set, PrepareResponseStreaming
+	// builds a one-shot per-request client clone with its own empty pool; both
+	// handlers must set Connection: close so sockets are closed at EOS instead of
+	// sitting idle in a disposable pool until MaxIdleConnDuration.
+	t.Run("HandleAnthropicChatCompletionStreaming_LargeResponseThresholdClosesConn", func(t *testing.T) {
+		const thresholdStreams = 20
+		var connCloseSeen, reqCount atomic.Int32
+		srv := newServer(t, &connCloseSeen, &reqCount)
+		client, counter := newAnthropicTestStreamingClient(32, 30*time.Second)
+
+		for i := 1; i <= thresholdStreams; i++ {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1024))
+			stream, bifrostErr := HandleAnthropicChatCompletionStreaming(
+				ctx, client, srv.URL, body, headers, nil, 30, nil,
+				false, false, schemas.Anthropic, truncationPassthroughPostHook,
+				nil, nil, truncationTestLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("iteration %d setup failed: %v", i, bifrostErr)
+			}
+			chunks := collectTruncationChunks(t, stream)
+			for idx, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("iteration %d chunk %d error: %+v", i, idx, c.BifrostError)
+				}
+			}
+			wantText := fmt.Sprintf("turn-%d", i)
+			if !chunksContainContent(chunks, wantText) {
+				t.Fatalf("iteration %d missing expected delta %q in %d chunks", i, wantText, len(chunks))
+			}
+		}
+
+		if got := reqCount.Load(); got != thresholdStreams {
+			t.Fatalf("server received %d requests, want %d", got, thresholdStreams)
+		}
+		if got := connCloseSeen.Load(); got != thresholdStreams {
+			t.Fatalf("server observed Connection: close on %d requests, want %d", got, thresholdStreams)
+		}
+		if got := counter.totalDialed(); got != thresholdStreams {
+			t.Fatalf("totalDialed = %d, want %d", got, thresholdStreams)
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d after large-response streams, want 0 (leaked into per-request client pools)", got)
+		}
+	})
+
+	t.Run("HandleAnthropicResponsesStream_LargeResponseThresholdClosesConn", func(t *testing.T) {
+		const thresholdStreams = 20
+		var connCloseSeen, reqCount atomic.Int32
+		srv := newServer(t, &connCloseSeen, &reqCount)
+		client, counter := newAnthropicTestStreamingClient(32, 30*time.Second)
+
+		for i := 1; i <= thresholdStreams; i++ {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1024))
+			stream, bifrostErr := HandleAnthropicResponsesStream(
+				ctx, client, srv.URL, body, headers, nil, 30, nil,
+				false, false, schemas.Anthropic, truncationPassthroughPostHook,
+				nil, nil, truncationTestLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("iteration %d setup failed: %v", i, bifrostErr)
+			}
+			chunks := collectTruncationChunks(t, stream)
+			for idx, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("iteration %d chunk %d error: %+v", i, idx, c.BifrostError)
+				}
+			}
+		}
+
+		if got := reqCount.Load(); got != thresholdStreams {
+			t.Fatalf("server received %d requests, want %d", got, thresholdStreams)
+		}
+		if got := connCloseSeen.Load(); got != thresholdStreams {
+			t.Fatalf("server observed Connection: close on %d requests, want %d", got, thresholdStreams)
+		}
+		if got := counter.totalDialed(); got != thresholdStreams {
+			t.Fatalf("totalDialed = %d, want %d", got, thresholdStreams)
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d after large-response streams, want 0 (leaked into per-request client pools)", got)
+		}
+	})
 }
 
 func newAnthropicMultiChunkSSEServer(t *testing.T, deltaCount int, interval time.Duration) *httptest.Server {
