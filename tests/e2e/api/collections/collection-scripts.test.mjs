@@ -1184,8 +1184,9 @@ test("catalog-wiring: the Bedrock alias limit checks read each route's own row a
   const [v1, anthropic] = checks;
   assert.match(v1.request.url.raw, /\/v1\/models\?provider=bedrock$/);
   assert.match(anthropic.request.url.raw, /\/anthropic\/v1\/models$/);
-  const v1Row = { id: "bedrock/catwiring-bedrock-profile-run7", alias: arn, max_input_tokens: 200000, max_output_tokens: 64000 };
+  const v1Row = { id: "bedrock/catwiring-bedrock-profile-run7", alias: arn, context_length: 200000, max_input_tokens: 200000, max_output_tokens: 64000 };
   assertNow(v1, v1Row);
+  assert.throws(() => assertNow(v1, { ...v1Row, context_length: undefined }), /no context_length/);
   assert.throws(() => assertNow(v1, { ...v1Row, max_input_tokens: undefined, max_output_tokens: undefined }), /no max_input_tokens/);
   assert.throws(() => assertNow(v1, { ...v1Row, max_output_tokens: undefined, max_tokens: 64000 }), /no max_output_tokens/);
   assert.throws(() => assertNow(v1, { ...v1Row, alias: "anthropic.claude-haiku-4-5-20251001-v1:0" }), /alias/);

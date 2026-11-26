@@ -162,15 +162,15 @@ function baseModelsAssertLines(target) {
 }
 
 // One key alias's row on a models route and the context limits the catalog
-// enriched it with. /v1/models lists provider-prefixed ids and reports the
-// alias's model_id as `alias`; /anthropic/v1/models lists bare ids and names
-// the output limit max_tokens.
+// enriched it with. /v1/models lists provider-prefixed ids, reports the
+// alias's model_id as `alias` and carries context_length; /anthropic/v1/models
+// lists bare ids and names the output limit max_tokens.
 function modelLimitsAssertLines(provider, route, alias, aliasModelId) {
   const anthropic = route === "anthropic";
   return [
     `var wantId = pm.variables.replaceIn(${JSON.stringify(anthropic ? alias : `${provider}/${alias}`)});`,
     `var wantAlias = ${anthropic ? "null" : JSON.stringify(aliasModelId)};`,
-    `var limitFields = ${JSON.stringify(["max_input_tokens", anthropic ? "max_tokens" : "max_output_tokens"])};`,
+    `var limitFields = ${JSON.stringify(anthropic ? ["max_input_tokens", "max_tokens"] : ["context_length", "max_input_tokens", "max_output_tokens"])};`,
     "if (pm.response.code !== 200) { throw new Error('list models status ' + pm.response.code + ' body ' + pm.response.text()); }",
     "var model = ((pm.response.json() || {}).data || []).filter(function (m) { return m.id === wantId; })[0];",
     "if (!model) { throw new Error(wantId + ' is not listed: ' + pm.response.text().slice(0, 500)); }",
