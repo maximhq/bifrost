@@ -125,6 +125,16 @@ func RunListModelsTest(t *testing.T, client *bifrost.Bifrost, ctx context.Contex
 			t.Logf("✅ OpenRouter ListModels response includes embedding models")
 		}
 
+		// vLLM reports each served model's context window as max_model_len.
+		if testConfig.Provider == schemas.VLLM {
+			for _, model := range response.Data {
+				if model.ContextLength == nil || *model.ContextLength <= 0 {
+					t.Fatalf("❌ vLLM model %s has no context_length (max_model_len not mapped)", model.ID)
+				}
+			}
+			t.Logf("✅ vLLM ListModels response reports context_length for every model")
+		}
+
 		// Validate latency is reasonable (non-negative and not absurdly high)
 		if response.ExtraFields.Latency < 0 {
 			t.Fatalf("❌ Invalid latency: %d ms (should be non-negative)", response.ExtraFields.Latency)
