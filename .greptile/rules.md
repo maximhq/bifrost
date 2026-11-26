@@ -72,6 +72,19 @@ Every MCP change a client can observe ships with cases in the MCP harness, `test
 - A new value on an axis (an upstream auth type, connection type, discovery or credential kind, inbound auth mode, caller credential, surface) is also added to every existing test that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new tests.
 - Harness conventions: one folder per test named by its ID, every request titled with the ID, independent tests that restore what they change, exact assertions, no early return on an error status, no 500 as the expected answer, a known bug asserted with `A.skip(...)`.
 
+## Semantic Cache Wiring
+
+Every semantic cache change a client can observe ships with rows in the semantic cache wiring suite, `tests/e2e/api/runners/build-semantic-cache-wiring.mjs`. AGENTS.md ("Every semantic cache change ships with semantic cache wiring cases") and `.claude/skills/semantic-cache-wiring/SKILL.md` hold the full rules and, in section 3, the cases each kind of change needs. Review only behaviour a PR adds or changes against them:
+
+- Semantic cache behaviour covers the `semantic_cache` plugin and its config, what a request writes, hits or misses and what a hit replays, direct and semantic mode on every cacheable request type and route, streams, the `x-bf-cache-*` request headers, `extra_fields.cache_debug` and the `x-bifrost-cache-*` response headers, identity scoping, the `/api/cache` clear endpoints, the vector stores and the cache fields on log rows, logs filters and stats. Its cases go in the semantic cache wiring suite, never in `provider-harness.json`.
+- A config field is covered with its default, `null` on a PUT, its exact 400s on create and update, GET echoing it, and its effect in direct and semantic mode.
+- A cache key input is covered with a hit on the same request, a miss with only that input changed when it must keep entries apart, and a hit on the first entry when it must not (reordered tools, letter case, surrounding whitespace), in both modes, streamed and not, plus the paraphrase in semantic mode.
+- A request type, route or replay change covers a write, a hit and a miss on that type and its stream, a replay equal to the original, the body `cache_debug` and headers agreeing on `/v1` and `/openai` (headers only, with no body `cache_debug`, on the other SDK routes), and the log row.
+- A vector store change passes the same rows on Redis and on Weaviate, plus that store's own test file.
+- Flag rows that cover one cache mode, request type, route or stream when the change reaches more and the PR does not say why the others are out of reach.
+- A new value on an axis (a request type, route, config field, request header, `cache_debug` field or response header, vector store, caller identity, cache key input) is also added to every existing row that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new rows.
+- Suite conventions: the collection is regenerated from the generator and never hand-edited; every request of a case is named by its ID; reads that must hit go through `hit()` and are polled with `x-bf-cache-no-store`; a miss runs only after its isolation hit; keys and namespaces carry the run ID; a row that changes the plugin restores the folder's baseline; exact assertions, no early return on an error status, no 500 as the expected answer.
+
 ## Path-Specific Checks
 
 For `core/providers/**`:
@@ -100,6 +113,11 @@ For `transports/bifrost-http/handlers/**`:
 - Verify handler changes keep SDK integration behavior compatible with OpenAI, Anthropic, Bedrock, Google GenAI, LangChain, LiteLLM, and PydanticAI where relevant.
 - Check request parsing, error status codes, and middleware ordering.
 - Configuration changes go to the database first and memory follows (see Live Store above). A create or update re-reads the written record; if that read fails, memory keeps the record's previous version and the handler answers 500 saying the write was saved but not reloaded. A delete removes its record without a read; if the holders' re-read then fails, the holders keep their previous records and the handler answers 500, while the deleted record stays removed. Do not ask for a rollback of the committed write.
+
+For `plugins/semanticcache/**` and `framework/vectorstore/**`:
+
+- Every vector store gives the same answer for the same rows: similarity is cosine on every store, and a store-specific change ships with the cosine check in that store's test file.
+- Ask for semantic cache wiring rows for observable behaviour changes (see Semantic Cache Wiring above).
 
 For `plugins/governance/**`:
 
