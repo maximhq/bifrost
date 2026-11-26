@@ -97,12 +97,12 @@ func (h *MCPHandler) getMCPClientOpenAPISpec(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
 	}
-	// Copied out under the MCP config lock: a concurrent update replaces the
-	// block this reads.
+	// The live store's record is never changed, so the spec read here is the one stored.
 	var spec string
-	var isOpenAPI bool
-	if h.store != nil {
-		spec, isOpenAPI, _ = h.store.GetMCPClientOpenAPISpec(id)
+	client := findMCPClientConfig(h.store, id)
+	isOpenAPI := client != nil && client.ConnectionType == schemas.MCPConnectionTypeOpenAPI
+	if isOpenAPI && client.OpenAPIConfig != nil {
+		spec = client.OpenAPIConfig.Spec
 	}
 	if !isOpenAPI {
 		SendError(ctx, fasthttp.StatusNotFound, "OpenAPI MCP client not found")

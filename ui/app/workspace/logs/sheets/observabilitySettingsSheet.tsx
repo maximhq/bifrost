@@ -11,7 +11,11 @@ export function ObservabilitySettingsSheet({ open, onOpenChange }: Observability
 	const { t } = useTranslation("observability");
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent side="right" className="flex w-full flex-col overflow-x-hidden px-4 pt-6 sm:max-w-3xl md:px-8">
+			<SheetContent
+				resizeKey="observability-settings"
+				side="right"
+				className="flex w-full flex-col overflow-x-hidden px-4 pt-6 sm:max-w-3xl md:px-8"
+			>
 				<SheetHeader className="">
 					<SheetTitle className="text-lg font-semibold">{t("logs.loggingSettings")}</SheetTitle>
 				</SheetHeader>

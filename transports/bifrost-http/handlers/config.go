@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -124,15 +125,17 @@ func NewConfigHandler(configManager ConfigManager, store *lib.Config) *ConfigHan
 }
 
 // RegisterRoutes registers the configuration-related routes.
-// It adds the `PUT /api/config` endpoint.
+// GET /api/config and GET /api/version stay open with the config store disabled, since the
+// dashboard loads them first; every other route answers 503 from RequireConfigStoreMiddleware.
 func (h *ConfigHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	configRoutes := append(slices.Clip(middlewares), RequireConfigStoreMiddleware(h.store.ConfigStore))
 	r.GET("/api/config", lib.ChainMiddlewares(h.getConfig, middlewares...))
-	r.PUT("/api/config", lib.ChainMiddlewares(h.updateConfig, middlewares...))
-	r.POST("/api/config/metadata", lib.ChainMiddlewares(h.updateMetadata, middlewares...))
+	r.PUT("/api/config", lib.ChainMiddlewares(h.updateConfig, configRoutes...))
+	r.POST("/api/config/metadata", lib.ChainMiddlewares(h.updateMetadata, configRoutes...))
 	r.GET("/api/version", lib.ChainMiddlewares(h.getVersion, middlewares...))
-	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, middlewares...))
-	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, middlewares...))
-	r.POST("/api/pricing/force-sync", lib.ChainMiddlewares(h.forceSyncPricing, middlewares...))
+	r.GET("/api/proxy-config", lib.ChainMiddlewares(h.getProxyConfig, configRoutes...))
+	r.PUT("/api/proxy-config", lib.ChainMiddlewares(h.updateProxyConfig, configRoutes...))
+	r.POST("/api/pricing/force-sync", lib.ChainMiddlewares(h.forceSyncPricing, configRoutes...))
 }
 
 // getVersion handles GET /api/version - Get the current version
@@ -270,10 +273,6 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 // are removed. Intended for UI/admin preferences (onboarding state, dismissed
 // tooltips, etc.) and is auth-gated by the same middleware as the rest of /api/config.
 func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
 	var patch map[string]any
 	if err := json.Unmarshal(ctx.PostBody(), &patch); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -333,10 +332,6 @@ type authConfigWithSetupToken struct {
 // Currently, it supports hot-reloading of the `drop_excess_requests` setting.
 // Note that settings like `prometheus_labels` cannot be changed at runtime.
 func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Config store not initialized")
-		return
-	}
 	// Overlapping saves would each snapshot the same live config and race its
 	// publication, so a later save could undo an earlier one.
 	h.saveMu.Lock()
@@ -433,6 +428,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get framework config from store: %v", err))
 		return
 	}
+	frameworkBefore := auditFrameworkConfig(frameworkConfig)
 	var storedPricingURL, storedModelParametersURL, storedMCPLibraryURL *string
 	if frameworkConfig != nil {
 		storedPricingURL, storedModelParametersURL, storedMCPLibraryURL = frameworkConfig.PricingURL, frameworkConfig.ModelParametersURL, frameworkConfig.MCPLibraryURL
@@ -684,12 +680,18 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// of this handler, so a rejection here must happen before any of that
 	// runs — otherwise a 400 would leave runtime state changed with nothing
 	// persisted.
-	if payload.ClientConfig.DualCredentialConflictBehavior == configstoreTables.DualCredentialConflictBehaviorError && h.store.MCPConfig != nil {
-		for _, mcpClient := range h.store.MCPConfig.ClientConfigs {
-			if mcpClient.AuthType == schemas.MCPAuthTypeTokenExchange {
-				SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("dual_credential_conflict_behavior cannot be set to 'error' while MCP client %q uses auth_type 'token_exchange'; delete that client first or choose 'prefer_idp'/'prefer_vk'", mcpClient.Name))
-				return
+	if payload.ClientConfig.DualCredentialConflictBehavior == configstoreTables.DualCredentialConflictBehaviorError {
+		var exchanging *registry.MCPClient
+		h.store.LiveStore.Collections.MCPClients.Range(func(mcpClient *registry.MCPClient) bool {
+			if mcpClient.Config.AuthType == schemas.MCPAuthTypeTokenExchange {
+				exchanging = mcpClient
+				return false
 			}
+			return true
+		})
+		if exchanging != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("dual_credential_conflict_behavior cannot be set to 'error' while MCP client %q uses auth_type 'token_exchange'; delete that client first or choose 'prefer_idp'/'prefer_vk'", exchanging.Config.Name))
+			return
 		}
 	}
 
@@ -1091,6 +1093,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		if err := h.configManager.ReloadPlugin(ctx, compat.PluginName, nil, compatCfg, nil, nil); err != nil {
 			logger.Warn("failed to load compat plugin: %v", err)
 			if rollbackErr := h.store.ConfigStore.UpdateClientConfig(ctx, currentConfig); rollbackErr != nil {
+				lib.RecordAuditChange(ctx, "config.updated", "config", "client_config", "client_config", before, updatedConfig.Redacted())
 				logger.Error("failed to restore configuration after compat plugin reload failure, stored config now differs from the running gateway: %v", rollbackErr)
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to load compat plugin (%v) and the previous configuration could not be restored (%v); stored settings now differ from the running gateway, retry the save or restart", err, rollbackErr))
 				return
@@ -1263,6 +1266,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to save framework configuration: %v", err))
 			return
 		}
+		lib.RecordAuditChange(ctx, "framework_config.updated", "framework_config", "framework_config", "Framework config", frameworkBefore, auditFrameworkConfig(frameworkConfig))
 		// Publish the new config under the write lock: other request goroutines
 		// read this pointer through LiveModelsSyncInterval and UpdateSyncConfig.
 		// A whole new struct is swapped in rather than mutated in place, which is
@@ -1370,6 +1374,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
 			}
+			recordAuthConfigChange(ctx, authConfig, &payload.AuthConfig.AuthConfig)
 		} else if authConfig != nil {
 			// Auth is being disabled (or kept disabled) over an existing config - preserve the
 			// credentials that were not resubmitted and update the disabled state.
@@ -1399,6 +1404,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 				SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update auth config: %v", err))
 				return
 			}
+			recordAuthConfigChange(ctx, authConfig, &payload.AuthConfig.AuthConfig)
 		}
 
 		// Flush all existing sessions if auth details have been changed
@@ -1432,11 +1438,6 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 
 // forceSyncPricing triggers an immediate pricing sync and resets the pricing sync timer
 func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
-
 	if err := h.configManager.ForceReloadPricing(ctx); err != nil {
 		logger.Warn("failed to force pricing sync: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to force pricing sync: %v", err))
@@ -1453,10 +1454,6 @@ func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
 
 // getProxyConfig handles GET /api/proxy-config - Get the current proxy configuration
 func (h *ConfigHandler) getProxyConfig(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
-		return
-	}
 	proxyConfig, err := h.store.ConfigStore.GetProxyConfig(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to get proxy config: %v", err))
@@ -1480,11 +1477,6 @@ func (h *ConfigHandler) getProxyConfig(ctx *fasthttp.RequestCtx) {
 
 // updateProxyConfig handles PUT /api/proxy-config - Update the proxy configuration
 func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "config store not initialized")
-		return
-	}
-
 	var payload configstoreTables.GlobalProxyConfig
 	if err := json.Unmarshal(ctx.PostBody(), &payload); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")

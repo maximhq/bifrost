@@ -5,8 +5,6 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
 // TestCloneBifrostReq_OriginalUntouched guards the copy-on-write clone: core
@@ -66,12 +64,12 @@ func TestCloneBifrostReq_OriginalUntouched(t *testing.T) {
 // attempt runs PreLLMHook against the same Params the primary attempt saw. The
 // tool rewrites made for the primary provider must not reach the fallback.
 func TestCloneBifrostReq_FallbackSeesOriginalTools(t *testing.T) {
-	ds := datasheet.NewTestStore(nil)
+	ds := testDatasheet(t, nil)
 	ds.SetSupportedParamsForTest(map[string][]string{
 		"primary-model":  {"tools"},
 		"fallback-model": {"tools", "web_search", "cache_control", "tool_choice"},
 	})
-	p, err := Init(Config{ShouldDropParams: true, ShouldConvertParams: true}, bifrost.NewNoOpLogger(), modelcatalog.NewTestCatalogWithDatasheet(ds))
+	p, err := Init(Config{ShouldDropParams: true, ShouldConvertParams: true}, bifrost.NewNoOpLogger(), catalogWithDatasheetForTest(t, ds))
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}

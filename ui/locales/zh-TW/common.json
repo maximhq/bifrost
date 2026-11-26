@@ -503,6 +503,11 @@
 	"configSyncAlert": {
 		"message": "此配置是從 <code0>config.json</code0> 同步而來。日後對 config.json 的任何更新都會覆蓋在 UI 中所做的更改。如果你只是用 config.json 引導初始配置，可以忽略此提示。"
 	},
+	"configIssuesAlert": {
+		"title": "config.json 宣告的部分內容未被套用",
+		"badge": "設定問題",
+		"hint": "宣告的其餘部分已套用。上面的每一項會在其參照的對象存在後自動消失，例如註冊缺少的 MCP 用戶端之後。"
+	},
 	"breadcrumb": {
 		"label": "導覽路徑",
 		"more": "更多"
@@ -595,8 +600,7 @@
 		"toggle": "切換側邊欄"
 	},
 	"sheet": {
-		"collapse": "收合",
-		"expand": "展開"
+		"resizeHandle": "調整面板大小"
 	},
 	"tabs": {
 		"showMore_one": "再顯示 {{count}} 個分頁",

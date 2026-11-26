@@ -300,18 +300,26 @@ type BedrockImageSourceData struct {
 
 // BedrockDocumentSource represents document content
 type BedrockDocumentSource struct {
-	Format string                     `json:"format"` // Required: Document format (pdf, csv, doc, docx, xls, xlsx, html, txt, md)
-	Name   string                     `json:"name"`   // Required: Document name
-	Source *BedrockDocumentSourceData `json:"source"` // Required: Document source data
+	Format    string                     `json:"format,omitempty"` // Omitted for custom-content documents
+	Name      string                     `json:"name"`             // Required: Document name
+	Source    *BedrockDocumentSourceData `json:"source"`           // Required: Document source data
+	Citations *BedrockCitationsConfig    `json:"citations,omitempty"`
+}
+
+// BedrockDocumentContentBlock is the text union used for custom document content
+// and the generated/source text fragments in citation blocks.
+type BedrockDocumentContentBlock struct {
+	Text *string `json:"text,omitempty"`
 }
 
 // BedrockDocumentSourceData represents the source of document data.
-// This is a tagged union — exactly one of Bytes, Text or S3Location should be set.
+// This is a tagged union — exactly one of Bytes, Text, Content or S3Location should be set.
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
 type BedrockDocumentSourceData struct {
-	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded document bytes
-	Text       *string            `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
-	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
+	Bytes      *string                       `json:"bytes,omitempty"`      // Base64-encoded document bytes
+	Text       *string                       `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
+	S3Location *BedrockS3Location            `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
+	Content    []BedrockDocumentContentBlock `json:"content,omitempty"`
 }
 
 // BedrockVideoBlock represents a video content block.
@@ -367,7 +375,7 @@ type BedrockSearchResultContent struct {
 	Text string `json:"text"` // Required: actual text content
 }
 
-// BedrockCitationsConfig represents citations configuration for a search result.
+// BedrockCitationsConfig represents citations configuration for documents and search results.
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CitationsConfig.html
 type BedrockCitationsConfig struct {
 	Enabled bool `json:"enabled"` // Required: whether citations are enabled
@@ -878,7 +886,14 @@ type BedrockInvokeMessagesUsage struct {
 	OutputTokens             int                                       `json:"output_tokens"`
 	CacheCreationInputTokens int                                       `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int                                       `json:"cache_read_input_tokens,omitempty"`
+	CacheCreation            *BedrockInvokeMessagesCacheCreation       `json:"cache_creation,omitempty"`
 	OutputTokensDetails      *BedrockInvokeMessagesOutputTokensDetails `json:"output_tokens_details,omitempty"` // Extended-thinking breakdown; absent on non-thinking responses
+}
+
+// BedrockInvokeMessagesCacheCreation breaks down cache writes by their TTL.
+type BedrockInvokeMessagesCacheCreation struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 }
 
 // BedrockInvokeMessagesOutputTokensDetails breaks down output_tokens for extended-thinking responses.
@@ -995,17 +1010,32 @@ type BedrockWebCitationLocation struct {
 
 // BedrockCitationLocation represents the location of a citation (union type)
 type BedrockCitationLocation struct {
-	Web *BedrockWebCitationLocation `json:"web,omitempty"`
+	Web           *BedrockWebCitationLocation      `json:"web,omitempty"`
+	DocumentChunk *BedrockDocumentCitationLocation `json:"documentChunk,omitempty"`
+	DocumentChar  *BedrockDocumentCitationLocation `json:"documentChar,omitempty"`
+	DocumentPage  *BedrockDocumentCitationLocation `json:"documentPage,omitempty"`
 }
 
-// BedrockCitation represents a single citation returned by nova_grounding
+// BedrockDocumentCitationLocation carries the identical index/range fields of
+// the documentChunk, documentChar and documentPage location unions.
+type BedrockDocumentCitationLocation struct {
+	DocumentIndex *int `json:"documentIndex,omitempty"`
+	Start         *int `json:"start,omitempty"`
+	End           *int `json:"end,omitempty"`
+}
+
+// BedrockCitation represents a document or web citation.
 type BedrockCitation struct {
-	Location BedrockCitationLocation `json:"location"`
+	Location      BedrockCitationLocation       `json:"location"`
+	Title         *string                       `json:"title,omitempty"`
+	Source        *string                       `json:"source,omitempty"`
+	SourceContent []BedrockDocumentContentBlock `json:"sourceContent,omitempty"`
 }
 
 // BedrockCitationsContent represents the citations block embedded in a text content block
 type BedrockCitationsContent struct {
-	Citations []BedrockCitation `json:"citations"`
+	Citations []BedrockCitation             `json:"citations"`
+	Content   []BedrockDocumentContentBlock `json:"content,omitempty"`
 }
 
 // BedrockToolUseDelta represents incremental tool use content

@@ -191,8 +191,7 @@
 		"toggle": "Seitenleiste umschalten"
 	},
 	"sheet": {
-		"collapse": "Einklappen",
-		"expand": "Ausklappen"
+		"resizeHandle": "Panelgröße ändern"
 	},
 	"tabs": {
 		"showMore_one": "{{count}} weiteren Tab anzeigen",
@@ -303,6 +302,11 @@
 	},
 	"configSyncAlert": {
 		"message": "Diese Konfiguration wird aus <code0>config.json</code0> synchronisiert. Künftige Änderungen an config.json überschreiben Änderungen in der Oberfläche. Wenn Du config.json nur zum Bootstrappen der Anfangskonfiguration verwendest, kannst Du diesen Hinweis ignorieren."
+	},
+	"configIssuesAlert": {
+		"title": "Ein Teil der config.json-Deklaration wurde nicht angewendet",
+		"badge": "Konfigurationsprobleme",
+		"hint": "Der Rest der Deklaration ist angewendet. Jeder Eintrag oben verschwindet von selbst, sobald das Genannte existiert, zum Beispiel wenn der fehlende MCP-Client registriert wird."
 	},
 	"breadcrumb": {
 		"label": "Brotkrümelnavigation",

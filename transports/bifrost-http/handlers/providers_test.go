@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -16,10 +17,14 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -45,6 +50,7 @@ type mockModelsManager struct {
 	narrowCalls  int
 	// reloadNew is, for each reload, whether it was told the provider was just added.
 	reloadNew []bool
+	remove    func(context.Context, schemas.ModelProvider) error // stands in for the server's config removal
 }
 
 func (m *mockModelsManager) ResolveAccess(_ *schemas.BifrostContext) (schemas.Access, error) {
@@ -78,7 +84,10 @@ func (m *mockModelsManager) ReloadProvider(_ context.Context, provider schemas.M
 	return nil, nil
 }
 
-func (m *mockModelsManager) RemoveProvider(_ context.Context, _ schemas.ModelProvider) error {
+func (m *mockModelsManager) RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error {
+	if m.remove != nil {
+		return m.remove(ctx, provider)
+	}
 	return nil
 }
 
@@ -122,17 +131,25 @@ func (m *mockModelsManager) RefreshLiveModelsForAllKeys(_ context.Context, provi
 	return m.refreshErr
 }
 
+// newBareRequestCtx returns an empty request context, as &fasthttp.RequestCtx{} is, but with
+// fasthttp's stand-in server behind it, so a handler can hand it to the database as a
+// context.Context: a bare one panics when the driver checks Done.
+func newBareRequestCtx() *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&fasthttp.Request{}, nil, nil)
+	return ctx
+}
+
 // providerHandlerForTest builds a handler with fixed provider config and model sets.
-func providerHandlerForTest(provider schemas.ModelProvider, keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
+func providerHandlerForTest(t testing.TB, provider schemas.ModelProvider, keys []schemas.Key, filtered, unfiltered []string) *ProviderHandler {
 	return &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				provider: {
-					Keys: keys,
-				},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			provider: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			provider: keys,
+		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				provider: filtered,
@@ -150,7 +167,7 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 
 	modelsManager := &mockModelsManager{}
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: modelsManager,
 	}
 
@@ -165,7 +182,7 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetRequestURI("/api/providers")
 	ctx.Request.SetBody(body)
@@ -178,7 +195,7 @@ func TestAddProvider_ReloadsRuntimeEvenWhenModelDiscoveryIsSkipped(t *testing.T)
 	if len(modelsManager.reloadCalls) != 1 || modelsManager.reloadCalls[0] != "mock-openai" {
 		t.Fatalf("expected provider reload for mock-openai, got %#v", modelsManager.reloadCalls)
 	}
-	if _, exists := h.inMemoryStore.Providers["mock-openai"]; !exists {
+	if _, exists := libtest.Providers(h.config)["mock-openai"]; !exists {
 		t.Fatalf("expected provider to be added to in-memory store")
 	}
 }
@@ -191,9 +208,11 @@ func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
 
 	const name = schemas.ModelProvider("harness-zero-key-direct")
 	t.Cleanup(func() { schemas.UnregisterKnownProvider(name) })
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil)
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
-		modelsManager: &mockModelsManager{},
+		config: cfg,
+		// The server removes the configuration, which is what unregisters the prefix.
+		modelsManager: &mockModelsManager{remove: cfg.RemoveProvider},
 	}
 	body, err := sonic.Marshal(providerCreatePayload{
 		Provider:             name,
@@ -202,7 +221,8 @@ func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
-	ctx := &fasthttp.RequestCtx{}
+	// The create reaches the config store, which needs an initialized request context.
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetRequestURI("/api/providers")
 	ctx.Request.SetBody(body)
@@ -216,7 +236,8 @@ func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
 		t.Fatalf("after create: ParseModelString = (%q, %q), want (%q, %q)", provider, model, name, "gpt-4o-mini")
 	}
 
-	delCtx := &fasthttp.RequestCtx{}
+	// The delete reaches the config store too.
+	delCtx := newBareRequestCtx()
 	delCtx.Request.Header.SetMethod(fasthttp.MethodDelete)
 	delCtx.SetUserValue("provider", string(name))
 	h.deleteProvider(delCtx)
@@ -224,6 +245,61 @@ func TestAddProvider_ZeroKeyCustomProviderResolvesByPrefix(t *testing.T) {
 	if provider, _ := schemas.ParseModelString(string(name)+"/gpt-4o-mini", ""); provider != "" {
 		t.Fatalf("after delete: prefix still resolves to %q", provider)
 	}
+}
+
+// TestDeleteProvider_AnswersServerErrorWhenTheDeleteFails pins that a provider delete that fails,
+// in the database or in memory, answers 500 instead of reporting the provider deleted.
+func TestDeleteProvider_AnswersServerErrorWhenTheDeleteFails(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	h := &ProviderHandler{
+		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
+		modelsManager: &mockModelsManager{remove: func(context.Context, schemas.ModelProvider) error {
+			return lib.ErrNoConfigStore
+		}},
+	}
+	ctx := newBareRequestCtx()
+	ctx.Request.Header.SetMethod(fasthttp.MethodDelete)
+	ctx.SetUserValue("provider", string(schemas.OpenAI))
+	h.deleteProvider(ctx)
+
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+}
+
+// TestUpdateProvider_MergesOntoTheStoredProvider pins that a provider update fills the settings its
+// body leaves out from the provider as stored, not from the live record: a setting written
+// elsewhere that this node has not re-read yet survives the update.
+func TestUpdateProvider_MergesOntoTheStoredProvider(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	ctx := context.Background()
+
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "k1", Name: "first", Value: *schemas.NewSecretVar("sk-1"), Models: schemas.WhiteList{"*"}, Weight: 1}},
+	})
+	// Written elsewhere: this node's live record does not have it.
+	require.NoError(t, cfg.ConfigStore.UpdateProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{OpenAIConfig: &schemas.OpenAIConfig{DisableStore: true}}))
+	h := &ProviderHandler{config: cfg, modelsManager: &mockModelsManager{}}
+	attachBifrostClient(t, cfg)
+
+	reqCtx := newBareRequestCtx()
+	reqCtx.Request.Header.SetMethod(fasthttp.MethodPut)
+	reqCtx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}}`))
+	reqCtx.SetUserValue("provider", string(schemas.OpenAI))
+	h.updateProvider(reqCtx)
+	require.Equal(t, fasthttp.StatusOK, reqCtx.Response.StatusCode(), string(reqCtx.Response.Body()))
+
+	stored, err := cfg.ConfigStore.GetProviderConfig(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	require.NotNil(t, stored.OpenAIConfig, "the update kept the stored setting it was not given")
+	require.True(t, stored.OpenAIConfig.DisableStore)
+	require.Equal(t, 2, stored.ConcurrencyAndBufferSize.Concurrency)
+	storedKeys, err := cfg.ConfigStore.GetProviderKeys(ctx, schemas.OpenAI)
+	require.NoError(t, err)
+	require.Len(t, storedKeys, 1, "a settings update leaves the keys alone")
 }
 
 // TestAddProvider_CustomProviderBaseTypes pins which base_provider_type values
@@ -244,7 +320,7 @@ func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 				modelsManager: &mockModelsManager{},
 			}
 			body, err := sonic.Marshal(providerCreatePayload{
@@ -254,7 +330,7 @@ func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to marshal request body: %v", err)
 			}
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 			ctx.Request.SetRequestURI("/api/providers")
 			ctx.Request.SetBody(body)
@@ -264,7 +340,7 @@ func TestAddProvider_CustomProviderBaseTypes(t *testing.T) {
 			if ctx.Response.StatusCode() != tc.wantStatus {
 				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
 			}
-			_, exists := h.inMemoryStore.Providers[tc.provider]
+			_, exists := libtest.Providers(h.config)[tc.provider]
 			if exists != (tc.wantStatus == fasthttp.StatusOK) {
 				t.Fatalf("provider persisted=%v, want %v", exists, tc.wantStatus == fasthttp.StatusOK)
 			}
@@ -278,7 +354,7 @@ func TestAddProvider_RejectsBaseURLComponents(t *testing.T) {
 	for _, suffix := range []string{"?x=", "?", "#ignored", "#"} {
 		t.Run(suffix, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 				modelsManager: &mockModelsManager{},
 			}
 			body, err := schemas.MarshalSorted(providerCreatePayload{
@@ -289,13 +365,13 @@ func TestAddProvider_RejectsBaseURLComponents(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.SetBody(body)
 			h.addProvider(ctx)
 			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "base URL must not contain") {
 				t.Fatalf("expected base URL rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 			}
-			if len(h.inMemoryStore.Providers) != 0 {
+			if len(libtest.Providers(h.config)) != 0 {
 				t.Fatal("invalid provider was persisted")
 			}
 		})
@@ -313,19 +389,18 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
 			modelsManager := &mockModelsManager{}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{
+				config: libtest.WithProviders(t, &lib.Config{
 					ClientConfig: &configstore.ClientConfig{},
-					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						"mock-openai": {
-							NetworkConfig:            &schemas.NetworkConfig{BaseURL: storedURL},
-							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
-							CustomProviderConfig:     customConfig,
-						},
+				}, map[schemas.ModelProvider]configstore.ProviderConfig{
+					"mock-openai": {
+						NetworkConfig:            &schemas.NetworkConfig{BaseURL: storedURL},
+						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+						CustomProviderConfig:     customConfig,
 					},
-				},
+				}, nil),
 				modelsManager: modelsManager,
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 
 			body, err := schemas.MarshalSorted(providerUpdatePayload{
 				NetworkConfig:            schemas.NetworkConfig{BaseURL: storedURL + suffix},
@@ -335,7 +410,7 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 			ctx.Request.SetRequestURI("/api/providers/mock-openai")
 			ctx.Request.SetBody(body)
@@ -346,7 +421,7 @@ func TestUpdateProvider_RejectsBaseURLComponents(t *testing.T) {
 			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), "base URL must not contain") {
 				t.Fatalf("expected base URL rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 			}
-			stored := h.inMemoryStore.Providers["mock-openai"]
+			stored := libtest.Providers(h.config)["mock-openai"]
 			if stored.NetworkConfig.BaseURL != storedURL || stored.ConcurrencyAndBufferSize.Concurrency != 1 {
 				t.Fatalf("rejected update changed the stored provider: base_url=%q concurrency=%d", stored.NetworkConfig.BaseURL, stored.ConcurrencyAndBufferSize.Concurrency)
 			}
@@ -375,16 +450,16 @@ func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 	for name, tc := range blocks {
 		t.Run("add/"+name, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 				modelsManager: &mockModelsManager{},
 			}
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.SetBody([]byte(`{"provider": "mock-openai", "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "injected_tools": ` + tc.body + `}`))
 			h.addProvider(ctx)
 			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
 				t.Fatalf("expected injected_tools rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 			}
-			if len(h.inMemoryStore.Providers) != 0 {
+			if len(libtest.Providers(h.config)) != 0 {
 				t.Fatal("invalid provider was persisted")
 			}
 		})
@@ -392,19 +467,18 @@ func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
 			modelsManager := &mockModelsManager{}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{
+				config: libtest.WithProviders(t, &lib.Config{
 					ClientConfig: &configstore.ClientConfig{},
-					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						"mock-openai": {
-							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
-							CustomProviderConfig:     customConfig,
-						},
+				}, map[schemas.ModelProvider]configstore.ProviderConfig{
+					"mock-openai": {
+						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+						CustomProviderConfig:     customConfig,
 					},
-				},
+				}, nil),
 				modelsManager: modelsManager,
 			}
-			attachBifrostClient(t, h.inMemoryStore)
-			ctx := &fasthttp.RequestCtx{}
+			attachBifrostClient(t, h.config)
+			ctx := newBareRequestCtx()
 			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 			ctx.Request.SetRequestURI("/api/providers/mock-openai")
 			ctx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}, "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "injected_tools": ` + tc.body + `}`))
@@ -413,7 +487,7 @@ func TestProviderWrites_RejectMalformedInjectedTools(t *testing.T) {
 			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
 				t.Fatalf("expected injected_tools rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 			}
-			if got := h.inMemoryStore.Providers["mock-openai"].ConcurrencyAndBufferSize.Concurrency; got != 1 {
+			if got := libtest.Providers(h.config)["mock-openai"].ConcurrencyAndBufferSize.Concurrency; got != 1 {
 				t.Fatalf("rejected update changed the stored provider: concurrency=%d", got)
 			}
 			if len(modelsManager.reloadCalls) != 0 {
@@ -443,35 +517,34 @@ func TestProviderWrites_RejectMalformedPassthrough(t *testing.T) {
 	for name, tc := range blocks {
 		t.Run("add/"+name, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+				config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 				modelsManager: &mockModelsManager{},
 			}
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.SetBody([]byte(`{"provider": "mock-openai", "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "passthrough": ` + tc.body + `}`))
 			h.addProvider(ctx)
 			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
 				t.Fatalf("expected passthrough rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 			}
-			if len(h.inMemoryStore.Providers) != 0 {
+			if len(libtest.Providers(h.config)) != 0 {
 				t.Fatal("invalid provider was persisted")
 			}
 		})
 		t.Run("update/"+name, func(t *testing.T) {
 			modelsManager := &mockModelsManager{}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{
+				config: libtest.WithProviders(t, &lib.Config{
 					ClientConfig: &configstore.ClientConfig{},
-					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						"mock-openai": {
-							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
-							CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
-						},
+				}, map[schemas.ModelProvider]configstore.ProviderConfig{
+					"mock-openai": {
+						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+						CustomProviderConfig:     &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 					},
-				},
+				}, nil),
 				modelsManager: modelsManager,
 			}
-			attachBifrostClient(t, h.inMemoryStore)
-			ctx := &fasthttp.RequestCtx{}
+			attachBifrostClient(t, h.config)
+			ctx := newBareRequestCtx()
 			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 			ctx.Request.SetRequestURI("/api/providers/mock-openai")
 			ctx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}, "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}, "passthrough": ` + tc.body + `}`))
@@ -480,7 +553,7 @@ func TestProviderWrites_RejectMalformedPassthrough(t *testing.T) {
 			if ctx.Response.StatusCode() != fasthttp.StatusBadRequest || !strings.Contains(string(ctx.Response.Body()), tc.reason) {
 				t.Fatalf("expected passthrough rejection, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 			}
-			if got := h.inMemoryStore.Providers["mock-openai"].ConcurrencyAndBufferSize.Concurrency; got != 1 {
+			if got := libtest.Providers(h.config)["mock-openai"].ConcurrencyAndBufferSize.Concurrency; got != 1 {
 				t.Fatalf("rejected update changed the stored provider: concurrency=%d", got)
 			}
 			if len(modelsManager.reloadCalls) != 0 {
@@ -500,7 +573,7 @@ func TestProviderWrites_StorePassthrough(t *testing.T) {
 		{Methods: []string{"POST"}, Path: "/v1/models/*/predict"},
 	}}
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		config:        libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: &mockModelsManager{},
 	}
 	body, err := sonic.Marshal(providerCreatePayload{
@@ -511,7 +584,7 @@ func TestProviderWrites_StorePassthrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetRequestURI("/api/providers")
 	ctx.Request.SetBody(body)
@@ -526,12 +599,12 @@ func TestProviderWrites_StorePassthrough(t *testing.T) {
 	if !reflect.DeepEqual(created.Passthrough, policy) {
 		t.Fatalf("add response passthrough %+v, want %+v", created.Passthrough, policy)
 	}
-	if got := h.inMemoryStore.Providers["mock-openai"].Passthrough; !reflect.DeepEqual(got, policy) {
+	if got := libtest.Providers(h.config)["mock-openai"].Passthrough; !reflect.DeepEqual(got, policy) {
 		t.Fatalf("stored passthrough %+v, want %+v", got, policy)
 	}
 
-	attachBifrostClient(t, h.inMemoryStore)
-	ctx = &fasthttp.RequestCtx{}
+	attachBifrostClient(t, h.config)
+	ctx = newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 	ctx.Request.SetRequestURI("/api/providers/mock-openai")
 	ctx.Request.SetBody([]byte(`{"concurrency_and_buffer_size": {"concurrency": 2, "buffer_size": 4}, "custom_provider_config": {"base_provider_type": "openai", "is_key_less": true}}`))
@@ -540,7 +613,7 @@ func TestProviderWrites_StorePassthrough(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusOK {
 		t.Fatalf("update status %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if got := h.inMemoryStore.Providers["mock-openai"].Passthrough; !reflect.DeepEqual(got, policy) {
+	if got := libtest.Providers(h.config)["mock-openai"].Passthrough; !reflect.DeepEqual(got, policy) {
 		t.Fatalf("an update without passthrough changed it to %+v", got)
 	}
 }
@@ -554,7 +627,7 @@ func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: &mockModelsManager{},
 	}
 
@@ -573,7 +646,7 @@ func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetRequestURI("/api/providers")
 	ctx.Request.SetBody(body)
@@ -584,7 +657,7 @@ func TestAddProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
 		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
+	if _, exists := libtest.Providers(h.config)["mock-openai"]; exists {
 		t.Fatalf("expected provider not to be persisted")
 	}
 }
@@ -597,7 +670,7 @@ func TestAddProvider_RejectsAllowPrivateNetworkWhenAuthBypassed(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: &mockModelsManager{},
 	}
 
@@ -609,7 +682,7 @@ func TestAddProvider_RejectsAllowPrivateNetworkWhenAuthBypassed(t *testing.T) {
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetRequestURI("/api/providers")
 	ctx.Request.SetBody(body)
@@ -620,7 +693,7 @@ func TestAddProvider_RejectsAllowPrivateNetworkWhenAuthBypassed(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
 		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if _, exists := h.inMemoryStore.Providers[schemas.Ollama]; exists {
+	if _, exists := libtest.Providers(h.config)[schemas.Ollama]; exists {
 		t.Fatalf("expected provider not to be persisted")
 	}
 }
@@ -678,23 +751,20 @@ func TestProviderInterceptionGuardWhenAuthBypassed(t *testing.T) {
 				}
 			}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, Providers: providers},
+				config:        libtest.WithProviders(t, &lib.Config{ClientConfig: &configstore.ClientConfig{}}, providers, nil),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 
 			nc := schemas.NetworkConfig{}
 			proxy := schemas.ProxyConfig{Type: schemas.HTTPProxy}
 			if !tc.create {
-				redacted, err := h.inMemoryStore.GetProviderConfigRedacted("mock-openai")
-				if err != nil {
-					t.Fatalf("failed to get redacted config: %v", err)
-				}
-				proxy = *redacted.ProxyConfig
+				stored := libtest.Providers(h.config)["mock-openai"]
+				proxy = *stored.Redacted().ProxyConfig
 			}
 			tc.mutate(&nc, &proxy)
 
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 			var body []byte
 			var err error
@@ -734,7 +804,7 @@ func TestProviderInterceptionGuardWhenAuthBypassed(t *testing.T) {
 			if got403 != tc.want403 {
 				t.Fatalf("got status %d, want403=%v; body=%s", ctx.Response.StatusCode(), tc.want403, ctx.Response.Body())
 			}
-			stored, exists := h.inMemoryStore.Providers["mock-openai"]
+			stored, exists := libtest.Providers(h.config)["mock-openai"]
 			switch {
 			case tc.want403 && tc.create:
 				if exists {
@@ -772,13 +842,11 @@ func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	lib.SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				"mock-openai": {
-					CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
-				},
+		config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+			"mock-openai": {
+				CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true},
 			},
-		},
+		}, nil),
 		modelsManager: &mockModelsManager{},
 	}
 
@@ -799,7 +867,7 @@ func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 	ctx.Request.SetRequestURI("/api/providers/mock-openai")
 	ctx.Request.SetBody(body)
@@ -811,7 +879,7 @@ func TestUpdateProvider_RejectsBaseURLWhenAuthBypassed(t *testing.T) {
 	if ctx.Response.StatusCode() != fasthttp.StatusForbidden {
 		t.Fatalf("status got %d, want 403; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
-	if got := h.inMemoryStore.Providers["mock-openai"].NetworkConfig; got != nil && got.BaseURL == "http://169.254.169.254/" {
+	if got := libtest.Providers(h.config)["mock-openai"].NetworkConfig; got != nil && got.BaseURL == "http://169.254.169.254/" {
 		t.Fatalf("expected base URL not to be persisted")
 	}
 }
@@ -869,19 +937,18 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			customConfig := &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{
+				config: libtest.WithProviders(t, &lib.Config{
 					ClientConfig: &configstore.ClientConfig{},
-					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						"mock-openai": {
-							NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.storedBaseURL, AllowPrivateNetwork: tc.storedAllowPrivate},
-							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
-							CustomProviderConfig:     customConfig,
-						},
+				}, map[schemas.ModelProvider]configstore.ProviderConfig{
+					"mock-openai": {
+						NetworkConfig:            &schemas.NetworkConfig{BaseURL: tc.storedBaseURL, AllowPrivateNetwork: tc.storedAllowPrivate},
+						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+						CustomProviderConfig:     customConfig,
 					},
-				},
+				}, nil),
 				modelsManager: &mockModelsManager{},
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 
 			body, err := sonic.Marshal(providerUpdatePayload{
 				NetworkConfig:            schemas.NetworkConfig{BaseURL: tc.baseURL, AllowPrivateNetwork: tc.allowPrivateNetwork},
@@ -892,7 +959,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 				t.Fatalf("failed to marshal request body: %v", err)
 			}
 
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 			ctx.Request.SetRequestURI("/api/providers/mock-openai")
 			ctx.Request.SetBody(body)
@@ -906,7 +973,7 @@ func TestUpdateProvider_BaseURLGuardComparesStoredConfigWhenAuthBypassed(t *test
 			if ctx.Response.StatusCode() != tc.wantStatus {
 				t.Fatalf("status got %d, want %d; body=%s", ctx.Response.StatusCode(), tc.wantStatus, ctx.Response.Body())
 			}
-			stored := h.inMemoryStore.Providers["mock-openai"]
+			stored := libtest.Providers(h.config)["mock-openai"]
 			if got := stored.ConcurrencyAndBufferSize.Concurrency; got != tc.wantConcurrency {
 				t.Fatalf("stored concurrency got %d, want %d", got, tc.wantConcurrency)
 			}
@@ -941,28 +1008,28 @@ func TestProviderWrites_TellTheReloadWhetherTheyAdded(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mgr := &mockModelsManager{}
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{
+				config: libtest.WithProviders(t, &lib.Config{
 					ClientConfig: &configstore.ClientConfig{},
-					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						schemas.OpenAI: {
-							Keys:                     []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-stored"), Weight: 1}},
-							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
-						},
-						"mock-openai": {
-							ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
-							CustomProviderConfig:     keyless,
-						},
+				}, map[schemas.ModelProvider]configstore.ProviderConfig{
+					schemas.OpenAI: {
+						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
 					},
-				},
+					"mock-openai": {
+						ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 4},
+						CustomProviderConfig:     keyless,
+					},
+				}, map[schemas.ModelProvider][]schemas.Key{
+					schemas.OpenAI: {{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-stored"), Weight: 1}},
+				}),
 				modelsManager: mgr,
 			}
-			attachBifrostClient(t, h.inMemoryStore)
+			attachBifrostClient(t, h.config)
 
 			body, err := sonic.Marshal(tc.body)
 			if err != nil {
 				t.Fatalf("failed to marshal request body: %v", err)
 			}
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 			ctx.Request.SetRequestURI("/api/providers/" + string(tc.provider))
 			ctx.Request.SetBody(body)
@@ -980,12 +1047,12 @@ func TestProviderWrites_TellTheReloadWhetherTheyAdded(t *testing.T) {
 	}
 
 	mgr := &mockModelsManager{}
-	h := &ProviderHandler{inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}}, modelsManager: mgr}
+	h := &ProviderHandler{config: libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil), modelsManager: mgr}
 	body, err := sonic.Marshal(providerCreatePayload{Provider: "mock-new", CustomProviderConfig: keyless})
 	if err != nil {
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetRequestURI("/api/providers")
 	ctx.Request.SetBody(body)
@@ -1004,7 +1071,7 @@ func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 
 	modelsManager := &mockModelsManager{reloadErr: context.DeadlineExceeded}
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{}},
+		config:        libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{}, nil),
 		modelsManager: modelsManager,
 	}
 
@@ -1019,7 +1086,7 @@ func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 	ctx.Request.SetRequestURI("/api/providers")
 	ctx.Request.SetBody(body)
@@ -1042,8 +1109,11 @@ func TestAddProvider_ReturnsErrorWhenRuntimeReloadFails(t *testing.T) {
 	if bifrostErr.Error.Message != "Failed to initialize provider after add: context deadline exceeded" {
 		t.Fatalf("unexpected error message: %q", bifrostErr.Error.Message)
 	}
-	if _, exists := h.inMemoryStore.Providers["mock-openai"]; exists {
+	if _, exists := libtest.Providers(h.config)["mock-openai"]; exists {
 		t.Fatalf("expected provider rollback after reload failure")
+	}
+	if schemas.IsKnownProvider("mock-openai") {
+		t.Fatal("failed reload left a registered provider prefix")
 	}
 }
 
@@ -1066,12 +1136,13 @@ func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
 		Weight:            0.8,
 	}
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI: {Keys: []schemas.Key{existingKey}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {existingKey},
+		}),
 		modelsManager: &mockModelsManager{},
 	}
 
@@ -1095,7 +1166,7 @@ func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
 		t.Fatalf("failed to marshal request body: %v", err)
 	}
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 	ctx.Request.SetRequestURI("/api/providers/openai")
 	ctx.Request.SetBody(body)
@@ -1119,13 +1190,14 @@ func TestUpdateProvider_RejectsKeysInBody(t *testing.T) {
 	}
 
 	// In-memory cache must NOT have been mutated by the rejected request.
-	stored, ok := h.inMemoryStore.Providers[schemas.OpenAI]
-	if !ok || len(stored.Keys) != 1 {
+	_, ok := libtest.Providers(h.config)[schemas.OpenAI]
+	stored := h.config.GetProviderKeys(schemas.OpenAI)
+	if !ok || len(stored) != 1 {
 		t.Fatalf("expected provider to retain its single existing key, got %#v", stored)
 	}
-	if stored.Keys[0].Weight != 0.8 || len(stored.Keys[0].BlacklistedModels) != 1 || stored.Keys[0].BlacklistedModels[0] != "gpt-3.5-turbo" {
+	if stored[0].Weight != 0.8 || len(stored[0].BlacklistedModels) != 1 || stored[0].BlacklistedModels[0] != "gpt-3.5-turbo" {
 		t.Fatalf("expected key to be untouched (weight=0.8, blacklisted=[gpt-3.5-turbo]); got weight=%v blacklisted=%v",
-			stored.Keys[0].Weight, stored.Keys[0].BlacklistedModels)
+			stored[0].Weight, stored[0].BlacklistedModels)
 	}
 }
 
@@ -1179,16 +1251,17 @@ func TestUpdateProvider_PassesThroughForEmptyOrAbsentKeys(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &ProviderHandler{
-				inMemoryStore: &lib.Config{
+				config: libtest.WithProviders(t, &lib.Config{
 					ClientConfig: &configstore.ClientConfig{},
-					Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-						schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-existing"}}},
-					},
-				},
+				}, map[schemas.ModelProvider]configstore.ProviderConfig{
+					schemas.OpenAI: {},
+				}, map[schemas.ModelProvider][]schemas.Key{
+					schemas.OpenAI: {{ID: "key-existing"}},
+				}),
 				modelsManager: &mockModelsManager{},
 			}
 
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 			ctx.Request.SetRequestURI("/api/providers/openai")
 			ctx.Request.SetBody([]byte(tc.body))
@@ -1227,17 +1300,17 @@ func TestProviderHandler_RejectsUnrestorableMaskedHeaders(t *testing.T) {
 
 	newHandler := func() *ProviderHandler {
 		return &ProviderHandler{
-			inMemoryStore: &lib.Config{
+			config: libtest.WithProviders(t, &lib.Config{
 				ClientConfig: &configstore.ClientConfig{},
-				Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-					schemas.OpenAI: {
-						Keys: []schemas.Key{{ID: "key-existing"}},
-						NetworkConfig: &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
-							"Authorization": *schemas.NewSecretVar("Bearer real-token"),
-						}},
-					},
+			}, map[schemas.ModelProvider]configstore.ProviderConfig{
+				schemas.OpenAI: {
+					NetworkConfig: &schemas.NetworkConfig{ExtraHeaders: map[string]schemas.SecretVar{
+						"Authorization": *schemas.NewSecretVar("Bearer real-token"),
+					}},
 				},
-			},
+			}, map[schemas.ModelProvider][]schemas.Key{
+				schemas.OpenAI: {{ID: "key-existing"}},
+			}),
 			modelsManager: &mockModelsManager{},
 		}
 	}
@@ -1257,7 +1330,7 @@ func TestProviderHandler_RejectsUnrestorableMaskedHeaders(t *testing.T) {
 
 	t.Run("update with a case-only rename", func(t *testing.T) {
 		h := newHandler()
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod(fasthttp.MethodPut)
 		ctx.Request.SetRequestURI("/api/providers/openai")
 		ctx.Request.SetBody([]byte(`{
@@ -1269,14 +1342,14 @@ func TestProviderHandler_RejectsUnrestorableMaskedHeaders(t *testing.T) {
 		h.updateProvider(ctx)
 
 		assertMaskedHeaderError(t, ctx, "authorization")
-		if stored := h.inMemoryStore.Providers[schemas.OpenAI].NetworkConfig.ExtraHeaders["Authorization"]; stored.GetValue() != "Bearer real-token" {
+		if stored := libtest.Providers(h.config)[schemas.OpenAI].NetworkConfig.ExtraHeaders["Authorization"]; stored.GetValue() != "Bearer real-token" {
 			t.Fatalf("stored header changed to %q", stored.GetValue())
 		}
 	})
 
 	t.Run("add with a masked value", func(t *testing.T) {
 		h := newHandler()
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
 		ctx.Request.SetRequestURI("/api/providers")
 		ctx.Request.SetBody([]byte(`{
@@ -1354,24 +1427,24 @@ func modelCatalogForPricingJSON(t *testing.T, pricingJSON []byte) *modelcatalog.
 	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
 		t.Fatalf("write pricing testdata: %v", err)
 	}
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	ds := datasheetForTest(t, nil, nil, datasheet.Config{URL: "file://" + pricingPath})
 	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
 		t.Fatalf("load pricing testdata: %v", err)
 	}
-	return modelcatalog.NewTestCatalogWithDatasheet(ds)
+	return catalogWithDatasheetForTest(t, ds)
 }
 
 func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=missing")
 
@@ -1402,7 +1475,7 @@ func TestListModels_UnknownKeysDoNotFilter(t *testing.T) {
 func TestListModels_ReturnsExactAccessibleByKeysAndSkipsDisabledKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"gpt-4o"}},
@@ -1413,7 +1486,7 @@ func TestListModels_ReturnsExactAccessibleByKeysAndSkipsDisabledKeys(t *testing.
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=key-a,key-b,key-disabled")
 
@@ -1448,14 +1521,14 @@ func TestListModels_ReturnsExactAccessibleByKeysAndSkipsDisabledKeys(t *testing.
 func TestListModels_AppliesQueryAndLimitAfterFiltering(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"},
 		[]string{"gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet"},
 	)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&query=gpt&limit=1")
 
@@ -1488,9 +1561,9 @@ func TestListModels_DecisionsKeepsOnlyDecisionModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	models := []string{"gpt-4o", "gpt-6-luna", "gpt-6-luna-2026-09-01"}
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&decisions=true&limit=10")
 
@@ -1526,12 +1599,12 @@ func TestListModels_DecisionsResolvesKeyAliases(t *testing.T) {
 	}}
 	// The listing names key aliases as models alongside the catalog's.
 	listed := []string{"complexity-judge", "named-judge", "fast-chat", "gpt-4o"}
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{key}, listed, listed)
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{key}, listed, listed)
 	catalog := modelCatalogForPricingJSON(t, []byte(`{"openai/gpt-4o": {"provider":"openai","mode":"chat"}}`))
 	catalog.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{key})
-	h.inMemoryStore.ModelCatalog = catalog
+	h.config.ModelCatalog = catalog
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&decisions=true&limit=10")
 
@@ -1562,14 +1635,14 @@ func TestListModels_DecisionsKeepsTypesafeBasedModels(t *testing.T) {
 
 	for _, provider := range []schemas.ModelProvider{schemas.Typesafe, "laya"} {
 		models := []string{"english", "multilingual"}
-		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		h := providerHandlerForTest(t, provider, []schemas.Key{{ID: "key-a"}}, models, models)
 		if provider != schemas.Typesafe {
-			config := h.inMemoryStore.Providers[provider]
+			config := libtest.Providers(h.config)[provider]
 			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Typesafe, IsKeyLess: true}
-			h.inMemoryStore.Providers[provider] = config
+			libtest.SetProvider(t, h.config, provider, config, nil)
 		}
 
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
 		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
 		h.listModels(ctx)
@@ -1606,9 +1679,9 @@ func TestListModels_DecisionsOpenRouterFollowsDatasheet(t *testing.T) {
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
 	models := []string{"microsoft/decision-1", "typesafe/jev-router", "typesafe/jev-1.13", "openai/gpt-6-luna-decisions", "openai/gpt-6-luna-pro", "openai/gpt-6-luna", "openai/gpt-4o"}
-	h := providerHandlerForTest(schemas.OpenRouter, []schemas.Key{{ID: "key-a"}}, models, models)
+	h := providerHandlerForTest(t, schemas.OpenRouter, []schemas.Key{{ID: "key-a"}}, models, models)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openrouter&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1646,9 +1719,9 @@ func TestListModels_DecisionsCloudflareListsClef(t *testing.T) {
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
 	models := []string{"@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "@cf/meta/llama-4-scout-17b-16e-instruct", "@cf/baai/bge-large-en-v1.5"}
-	h := providerHandlerForTest(schemas.Cloudflare, []schemas.Key{{ID: "key-a"}}, models, models)
+	h := providerHandlerForTest(t, schemas.Cloudflare, []schemas.Key{{ID: "key-a"}}, models, models)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=cloudflare&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1677,9 +1750,9 @@ func TestListModels_DecisionsPerplexityListsDeciders(t *testing.T) {
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
 	models := []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "sonar-pro"}
-	h := providerHandlerForTest(schemas.Perplexity, []schemas.Key{{ID: "key-a"}}, models, models)
+	h := providerHandlerForTest(t, schemas.Perplexity, []schemas.Key{{ID: "key-a"}}, models, models)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=perplexity&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1709,9 +1782,9 @@ func TestListModels_DecisionsOllamaListsSystemOneModels(t *testing.T) {
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
 	models := []string{"nimble", "tev1:0.8b", "clef-flash", "llama3.1:latest"}
-	h := providerHandlerForTest(schemas.Ollama, []schemas.Key{{ID: "key-a"}}, models, models)
+	h := providerHandlerForTest(t, schemas.Ollama, []schemas.Key{{ID: "key-a"}}, models, models)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=ollama&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1742,9 +1815,9 @@ func TestListModels_DecisionsBasetenListsDecisionModels(t *testing.T) {
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
 	models := []string{"decision-models/baseten-joey-2b-latest", "decision-models/baseten-elephant-9b-latest", "zai-org/GLM-5.3"}
-	h := providerHandlerForTest(schemas.Baseten, []schemas.Key{{ID: "key-a"}}, models, models)
+	h := providerHandlerForTest(t, schemas.Baseten, []schemas.Key{{ID: "key-a"}}, models, models)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=baseten&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1777,14 +1850,14 @@ func TestListModels_DecisionsGeminiListsDecisionModels(t *testing.T) {
 
 	for _, provider := range []schemas.ModelProvider{schemas.Gemini, "my-gemini"} {
 		models := []string{"gemini-decision-1", "gemini-3-flash", "gemini-embedding-001"}
-		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		h := providerHandlerForTest(t, provider, []schemas.Key{{ID: "key-a"}}, models, models)
 		if provider != schemas.Gemini {
-			config := h.inMemoryStore.Providers[provider]
+			config := libtest.Providers(h.config)[provider]
 			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
-			h.inMemoryStore.Providers[provider] = config
+			libtest.SetProvider(t, h.config, provider, config, nil)
 		}
 
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
 		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
 		h.listModels(ctx)
@@ -1814,9 +1887,9 @@ func TestListModels_DecisionsVLLMListsEveryModel(t *testing.T) {
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
 	models := []string{"clef-flash", "Qwen/Qwen3-0.6B"}
-	h := providerHandlerForTest(schemas.VLLM, []schemas.Key{{ID: "key-a"}}, models, models)
+	h := providerHandlerForTest(t, schemas.VLLM, []schemas.Key{{ID: "key-a"}}, models, models)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=vllm&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1850,9 +1923,9 @@ func TestListModels_DecisionsVLLMIgnoresNegativeRows(t *testing.T) {
 
 	for _, provider := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
 		models := []string{"clef-flash", "Qwen/Qwen3-0.6B"}
-		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		h := providerHandlerForTest(t, provider, []schemas.Key{{ID: "key-a"}}, models, models)
 
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
 		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
 		h.listModels(ctx)
@@ -1882,9 +1955,9 @@ func TestListModels_DecisionsSGLListsEveryModel(t *testing.T) {
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
 	models := []string{"clef-flash", "jaredpalmer/kev-4b"}
-	h := providerHandlerForTest(schemas.SGL, []schemas.Key{{ID: "key-a"}}, models, models)
+	h := providerHandlerForTest(t, schemas.SGL, []schemas.Key{{ID: "key-a"}}, models, models)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=sgl&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1919,12 +1992,12 @@ func TestListModels_DecisionsAzureListsDecisionModels(t *testing.T) {
 		"Microsoft-Decision-1": {ModelID: "Decision-1"},
 	}}
 	listed := []string{"Microsoft-Decision-1", "microsoft-decision-2", "gpt-6-luna", "gpt-6-luna-2026-09-22", "gpt-4o"}
-	h := providerHandlerForTest(schemas.Azure, []schemas.Key{key}, listed, listed)
+	h := providerHandlerForTest(t, schemas.Azure, []schemas.Key{key}, listed, listed)
 	catalog := modelCatalogForPricingJSON(t, []byte(`{"azure/gpt-4o": {"provider":"azure","mode":"chat"}}`))
 	catalog.SetKeyConfigForProvider(schemas.Azure, []schemas.Key{key})
-	h.inMemoryStore.ModelCatalog = catalog
+	h.config.ModelCatalog = catalog
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=azure&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1959,9 +2032,9 @@ func TestListModels_DecisionsDatabricksListsDecisionModels(t *testing.T) {
 		"ai_decide", "system.ai.openjev-qwen35-4b", "system.ai.typesafeai-jev-1-14-0",
 		"databricks-openjev-qwen35-4b", "databricks-claude-sonnet-4", "databricks-gpt-oss-120b",
 	}
-	h := providerHandlerForTest(schemas.Databricks, []schemas.Key{{ID: "key-a"}}, listed, listed)
+	h := providerHandlerForTest(t, schemas.Databricks, []schemas.Key{{ID: "key-a"}}, listed, listed)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=databricks&decisions=true&limit=10")
 	h.listModels(ctx)
@@ -1992,9 +2065,9 @@ func TestListModels_DecisionsGPT6LunaOnlyOnOpenAI(t *testing.T) {
 
 	for provider, wantListed := range map[schemas.ModelProvider]bool{schemas.OpenAI: true, schemas.Groq: false} {
 		models := []string{"gpt-6-luna", "gpt-4o"}
-		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		h := providerHandlerForTest(t, provider, []schemas.Key{{ID: "key-a"}}, models, models)
 
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
 		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
 		h.listModels(ctx)
@@ -2024,12 +2097,12 @@ func TestListModels_DecisionsListsEveryModelOnCustomOpenAIBase(t *testing.T) {
 
 	for name, allowed := range map[string]*schemas.AllowedRequests{"decisions on": {ListModels: true, Decision: true}, "unset": nil} {
 		models := []string{"my-decider", "gpt-6-luna"}
-		h := providerHandlerForTest("kserve", []schemas.Key{{ID: "key-a"}}, models, models)
-		config := h.inMemoryStore.Providers["kserve"]
+		h := providerHandlerForTest(t, "kserve", []schemas.Key{{ID: "key-a"}}, models, models)
+		config := libtest.Providers(h.config)["kserve"]
 		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true, AllowedRequests: allowed}
-		h.inMemoryStore.Providers["kserve"] = config
+		libtest.SetProvider(t, h.config, "kserve", config, nil)
 
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
 		ctx.Request.SetRequestURI("/api/models?provider=kserve&decisions=true&limit=10")
 		h.listModels(ctx)
@@ -2057,12 +2130,12 @@ func TestListModels_DecisionsListsEveryModelOnCustomEngineBase(t *testing.T) {
 
 	for _, base := range []schemas.ModelProvider{schemas.VLLM, schemas.SGL} {
 		models := []string{"clef-flash", "Qwen/Qwen3-0.6B"}
-		h := providerHandlerForTest("my-engine", []schemas.Key{{ID: "key-a"}}, models, models)
-		config := h.inMemoryStore.Providers["my-engine"]
+		h := providerHandlerForTest(t, "my-engine", []schemas.Key{{ID: "key-a"}}, models, models)
+		config := libtest.Providers(h.config)["my-engine"]
 		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: base, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
-		h.inMemoryStore.Providers["my-engine"] = config
+		libtest.SetProvider(t, h.config, "my-engine", config, nil)
 
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
 		ctx.Request.SetRequestURI("/api/models?provider=my-engine&decisions=true&limit=10")
 		h.listModels(ctx)
@@ -2089,12 +2162,12 @@ func TestListModels_DecisionsSkipsProvidersDenyingDecisions(t *testing.T) {
 
 	for provider, base := range map[schemas.ModelProvider]schemas.ModelProvider{"my-openai": schemas.OpenAI, "laya": schemas.Typesafe} {
 		models := []string{"gpt-6-luna", "english"}
-		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
-		config := h.inMemoryStore.Providers[provider]
+		h := providerHandlerForTest(t, provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		config := libtest.Providers(h.config)[provider]
 		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: base, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true}}
-		h.inMemoryStore.Providers[provider] = config
+		libtest.SetProvider(t, h.config, provider, config, nil)
 
-		ctx := &fasthttp.RequestCtx{}
+		ctx := newBareRequestCtx()
 		ctx.Request.Header.SetMethod("GET")
 		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
 		h.listModels(ctx)
@@ -2115,7 +2188,7 @@ func TestListModels_DecisionsSkipsProvidersDenyingDecisions(t *testing.T) {
 func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"deprecated-model", "current-model", "another-current-model"},
@@ -2127,9 +2200,9 @@ func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 		"current-model": {"provider":"openai","mode":"chat","base_model":"current-model"},
 		"another-current-model": {"provider":"openai","mode":"chat","base_model":"another-current-model"}
 	}`)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, pricingJSON)
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, pricingJSON)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	// Searched, because an unsearched listing drops deprecated models outright.
 	ctx.Request.SetRequestURI("/api/models?provider=openai&query=model&limit=10")
@@ -2165,18 +2238,18 @@ func TestListModels_MarksDeprecatedModelsWithoutFiltering(t *testing.T) {
 func TestListBaseModels_IncludesDeprecatedPricingRows(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		nil,
 		nil,
 	)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
 		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-base","is_deprecated":true},
 		"current-model": {"provider":"openai","mode":"chat","base_model":"current-base"}
 	}`))
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models/base?limit=10")
 
@@ -2229,7 +2302,7 @@ func TestEnrichListModelsResponse_MarksDeprecatedPricingRows(t *testing.T) {
 func TestListModels_UnfilteredIgnoresKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-b", Models: []string{"gpt-4o-mini"}},
@@ -2238,7 +2311,7 @@ func TestListModels_UnfilteredIgnoresKeys(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=key-b&unfiltered=true")
 
@@ -2267,7 +2340,7 @@ func TestListModels_UnfilteredIgnoresKeys(t *testing.T) {
 func TestListModels_UnfilteredWithoutKeysReturnsAllUnfilteredModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-b", Models: []string{"gpt-4o-mini"}},
@@ -2276,7 +2349,7 @@ func TestListModels_UnfilteredWithoutKeysReturnsAllUnfilteredModels(t *testing.T
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&unfiltered=true")
 
@@ -2305,14 +2378,14 @@ func TestListModels_UnfilteredWithoutKeysReturnsAllUnfilteredModels(t *testing.T
 func TestListModelDetails_ErrorsWhenModelCatalogUnavailable(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o"},
 		[]string{"gpt-4o"},
 	)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models/details?provider=openai")
 
@@ -2326,15 +2399,15 @@ func TestListModelDetails_ErrorsWhenModelCatalogUnavailable(t *testing.T) {
 func TestListModelDetails_UnknownKeysDoNotFilter(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	h.config.ModelCatalog = catalogForTest(t, nil)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models/details?provider=openai&keys=missing")
 
@@ -2357,15 +2430,15 @@ func TestListModelDetails_UnknownKeysDoNotFilter(t *testing.T) {
 func TestListModelDetails_SkipsUnknownKeysAndFiltersWithValid(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a", Models: []string{"gpt-4o"}}},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	h.config.ModelCatalog = catalogForTest(t, nil)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models/details?provider=openai&keys=key-a,missing")
 
@@ -2391,7 +2464,7 @@ func TestListModelDetails_SkipsUnknownKeysAndFiltersWithValid(t *testing.T) {
 func TestListModelDetails_SkipsDisabledKeysAndFiltersWithValid(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"gpt-4o"}},
@@ -2400,9 +2473,9 @@ func TestListModelDetails_SkipsDisabledKeysAndFiltersWithValid(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	h.config.ModelCatalog = catalogForTest(t, nil)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models/details?provider=openai&keys=key-a,key-disabled")
 
@@ -2428,7 +2501,7 @@ func TestListModelDetails_SkipsDisabledKeysAndFiltersWithValid(t *testing.T) {
 func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-b", Models: []string{"gpt-4o-mini"}},
@@ -2436,9 +2509,9 @@ func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 		[]string{"gpt-4o"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+	h.config.ModelCatalog = catalogForTest(t, nil)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models/details?provider=openai&keys=key-b&unfiltered=true")
 
@@ -2461,13 +2534,13 @@ func TestListModelDetails_UnfilteredIgnoresKeys(t *testing.T) {
 func TestListModelDetails_IncludesPricing(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o"},
 		[]string{"gpt-4o"},
 	)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
 		"gpt-4o": {
 			"provider": "openai",
 			"mode": "chat",
@@ -2480,7 +2553,7 @@ func TestListModelDetails_IncludesPricing(t *testing.T) {
 		}
 	}`))
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models/details?provider=openai&limit=100")
 
@@ -2608,8 +2681,8 @@ func TestListModelDetails_ResolvesCatalogPricing(t *testing.T) {
 			}
 			catalog := modelCatalogForPricingJSON(t, []byte(test.pricingJSON))
 			catalog.SetKeyConfigForProvider(test.provider, []schemas.Key{key})
-			h := providerHandlerForTest(test.provider, []schemas.Key{key}, []string{test.model}, []string{test.model})
-			h.inMemoryStore.ModelCatalog = catalog
+			h := providerHandlerForTest(t, test.provider, []schemas.Key{key}, []string{test.model}, []string{test.model})
+			h.config.ModelCatalog = catalog
 
 			resp, _ := listModelDetailsForTest(t, h, "/api/models/details?provider="+string(test.provider)+"&limit=100")
 			if resp.Total != 1 || len(resp.Models) != 1 {
@@ -2652,7 +2725,7 @@ const gpt4oPricingJSON = `{
 // also returning the raw body so tests can assert on omitted JSON keys.
 func listModelDetailsForTest(t *testing.T, h *ProviderHandler, uri string) (ListModelDetailsResponse, string) {
 	t.Helper()
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI(uri)
 
@@ -2672,9 +2745,9 @@ func listModelDetailsForTest(t *testing.T, h *ProviderHandler, uri string) (List
 func TestListModelDetails_AppliesGlobalOverrideWithoutMutatingBase(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
-	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.config.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
 		ID:               "global-1",
 		Name:             "Negotiated rate",
 		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
@@ -2723,14 +2796,14 @@ func TestListModelDetails_AppliesGlobalOverrideWithoutMutatingBase(t *testing.T)
 func TestListModelDetails_OverrideIndexIsDeduplicated(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 		[]string{"gpt-4o", "gpt-4o-mini"},
 	)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
-	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.config.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
 		ID:               "wildcard-1",
 		Name:             "All GPT models",
 		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
@@ -2760,8 +2833,8 @@ func TestListModelDetails_OverrideIndexIsDeduplicated(t *testing.T) {
 func TestListModelDetails_NoOverridesOmitsNewFields(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
 
 	_, body := listModelDetailsForTest(t, h, "/api/models/details?provider=openai&limit=100")
 
@@ -2775,9 +2848,9 @@ func TestListModelDetails_NoOverridesOmitsNewFields(t *testing.T) {
 func TestListModelDetails_PatchToSameValueIsNotMarkedOverridden(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
-	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.config.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
 		ID:               "noop-1",
 		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
 		MatchType:        string(modelcatalog.MatchTypeExact),
@@ -2806,14 +2879,14 @@ func TestListModelDetails_PatchToSameValueIsNotMarkedOverridden(t *testing.T) {
 func TestListModelDetails_OverrideWithoutBaseCatalogRow(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{{ID: "key-a"}},
 		[]string{"custom-model"},
 		[]string{"custom-model"},
 	)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
-	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.config.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
 		ID:               "custom-1",
 		ScopeKind:        string(modelcatalog.ScopeKindGlobal),
 		MatchType:        string(modelcatalog.MatchTypeExact),
@@ -2840,9 +2913,9 @@ func TestListModelDetails_VirtualKeyScopedOverrideIsInformationalOnly(t *testing
 	SetLogger(&mockLogger{})
 
 	vkID := "vk-1"
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
-	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.config.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{{
 		ID:               "vk-scoped",
 		ScopeKind:        string(modelcatalog.ScopeKindVirtualKey),
 		VirtualKeyID:     &vkID,
@@ -2875,9 +2948,9 @@ func TestListModelDetails_AppliesProviderScopedOverride(t *testing.T) {
 
 	openaiID := "openai"
 	anthropicID := "anthropic"
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
-	if err := h.inMemoryStore.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, []string{"gpt-4o"}, []string{"gpt-4o"})
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(gpt4oPricingJSON))
+	if err := h.config.ModelCatalog.SetPricingOverrides([]configstoreTables.TablePricingOverride{
 		{
 			ID:               "provider-openai",
 			Name:             "OpenAI rate",
@@ -2997,7 +3070,7 @@ func TestParseVKValueFromRequest(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			tc.setup(ctx)
 			got := governanceplugin.ParseVirtualKeyFromFastHTTPRequest(ctx)
 			gotValue := ""
@@ -3035,13 +3108,15 @@ func TestListModels_VKFilterListsProviderAllowedOnlyByAllowAll(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
-				schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI:    {},
+			schemas.Anthropic: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI:    {{ID: "key-a"}},
+			schemas.Anthropic: {{ID: "key-b"}},
+		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI:    {"gpt-4o"},
@@ -3062,7 +3137,7 @@ func TestListModels_VKFilterListsProviderAllowedOnlyByAllowAll(t *testing.T) {
 		t.Fatal("control failed: allow-all must permit a provider it holds no permit for")
 	}
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3081,12 +3156,13 @@ func TestListModels_VKFilterHidesBlacklistedModel(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "key-a"}},
+		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini"},
@@ -3104,7 +3180,7 @@ func TestListModels_VKFilterHidesBlacklistedModel(t *testing.T) {
 		}),
 	}
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3119,12 +3195,13 @@ func TestListModels_VKFilterUnionsDuplicateProviderConfigs(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "key-a"}},
+		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
@@ -3141,7 +3218,7 @@ func TestListModels_VKFilterUnionsDuplicateProviderConfigs(t *testing.T) {
 		),
 	}
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3161,13 +3238,15 @@ func TestListModels_VKFilterRestrictsToAllowedProviderAndModels(t *testing.T) {
 
 	// Two providers configured; VK only allows openai with specific models.
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI:    {Keys: []schemas.Key{{ID: "key-a"}}},
-				schemas.Anthropic: {Keys: []schemas.Key{{ID: "key-b"}}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI:    {},
+			schemas.Anthropic: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI:    {{ID: "key-a"}},
+			schemas.Anthropic: {{ID: "key-b"}},
+		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI:    {"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
@@ -3182,7 +3261,7 @@ func TestListModels_VKFilterRestrictsToAllowedProviderAndModels(t *testing.T) {
 		Access:      accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"gpt-4o", "gpt-4o-mini"}}),
 	}
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3215,12 +3294,13 @@ func TestListModels_VKFilterAllowsAllModelsWithWildcard(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "key-a"}},
+		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
@@ -3234,7 +3314,7 @@ func TestListModels_VKFilterAllowsAllModelsWithWildcard(t *testing.T) {
 		Access:      accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"*"}}),
 	}
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3250,12 +3330,13 @@ func TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty(t *testing.T) 
 	SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-a"}}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI: {{ID: "key-a"}},
+		}),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI: {"gpt-4o", "gpt-4o-mini"},
@@ -3269,7 +3350,7 @@ func TestListModels_VKFilterDeniesAllModelsWhenAllowedModelsEmpty(t *testing.T) 
 		Access:      accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{}}),
 	}
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3284,13 +3365,12 @@ func TestListModels_VKFilterNoProviderConfigsDeniesAll(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI:    {},
-				schemas.Anthropic: {},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI:    {},
+			schemas.Anthropic: {},
+		}, nil),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI:    {"gpt-4o"},
@@ -3305,7 +3385,7 @@ func TestListModels_VKFilterNoProviderConfigsDeniesAll(t *testing.T) {
 		Access:      accessForProviderPermits(), // a caller granted no provider
 	}
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3318,13 +3398,12 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 	SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI:    {},
-				schemas.Anthropic: {},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI:    {},
+			schemas.Anthropic: {},
+		}, nil),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI:    {"gpt-4o"},
@@ -3333,7 +3412,7 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 		},
 	}
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=anthropic")
 	query, ok := h.parseModelListQuery(ctx, requestContextForTest(ctx), 5)
@@ -3343,7 +3422,7 @@ func TestListModels_VKFilterBlockedExplicitProviderReturnsEmptyResult(t *testing
 	query.HasVKFilter = true
 	query.Access = accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"*"}})
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3361,14 +3440,13 @@ func requestContextForTest(ctx *fasthttp.RequestCtx) *schemas.BifrostContext {
 
 // modelListQueryHandlerForTest builds a handler that answers a management model listing from
 // the given models manager.
-func modelListQueryHandlerForTest(manager *mockModelsManager) *ProviderHandler {
+func modelListQueryHandlerForTest(t testing.TB, manager *mockModelsManager) *ProviderHandler {
 	return &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.FileOnly(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI: {},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {},
+		}, nil),
 		modelsManager: manager,
 	}
 }
@@ -3380,9 +3458,9 @@ func TestParseModelListQuery_VKAppliesResolvedAccess(t *testing.T) {
 
 	access := accessForProviderPermits(schemas.ProviderPermit{Provider: "openai", AllowedModels: []string{"*"}})
 	manager := &mockModelsManager{access: access}
-	h := modelListQueryHandlerForTest(manager)
+	h := modelListQueryHandlerForTest(t, manager)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models")
 	ctx.Request.Header.Set("x-bf-vk", "sk-bf-test-virtual-key")
@@ -3418,9 +3496,9 @@ func TestParseModelListQuery_LeavesListingUnfilteredWhenNothingResolved(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			manager := &mockModelsManager{}
-			h := modelListQueryHandlerForTest(manager)
+			h := modelListQueryHandlerForTest(t, manager)
 
-			ctx := &fasthttp.RequestCtx{}
+			ctx := newBareRequestCtx()
 			ctx.Request.Header.SetMethod("GET")
 			ctx.Request.SetRequestURI("/api/models")
 			if tc.vkValue != "" {
@@ -3511,16 +3589,16 @@ func TestListModels_UnfilteredListingSkipsCallerAccess(t *testing.T) {
 			{name: "model details", path: "/api/models/details", handle: (*ProviderHandler).listModelDetails},
 		} {
 			t.Run(route.name+", "+tc.name, func(t *testing.T) {
-				h := providerHandlerForTest(
+				h := providerHandlerForTest(t,
 					schemas.OpenAI,
 					[]schemas.Key{{ID: "key-a", Models: []string{"gpt-4o", "gpt-4o-mini"}}},
 					[]string{"gpt-4o", "gpt-4o-mini"},
 					[]string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"},
 				)
-				h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(nil)
+				h.config.ModelCatalog = catalogForTest(t, nil)
 				h.modelsManager.(*mockModelsManager).access = tc.access
 
-				ctx := &fasthttp.RequestCtx{}
+				ctx := newBareRequestCtx()
 				ctx.Request.Header.SetMethod("GET")
 				ctx.Request.SetRequestURI(route.path + "?" + tc.query)
 				tc.caller(ctx)
@@ -3556,13 +3634,12 @@ func TestListModels_NoVKFilterReturnsAll(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.WithProviders(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI:    {},
-				schemas.Anthropic: {},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI:    {},
+			schemas.Anthropic: {},
+		}, nil),
 		modelsManager: &mockModelsManager{
 			filtered: map[schemas.ModelProvider][]string{
 				schemas.OpenAI:    {"gpt-4o"},
@@ -3576,7 +3653,7 @@ func TestListModels_NoVKFilterReturnsAll(t *testing.T) {
 		HasVKFilter: false, // no filter
 	}
 
-	models, total, err := h.listManagementModels(query)
+	models, total, err := h.listManagementModels(context.Background(), query)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3588,7 +3665,7 @@ func TestListModels_NoVKFilterReturnsAll(t *testing.T) {
 func TestListModels_UsesCatalogAwareAliasMatchingForKeyAllowlist(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"gpt-4o-2024-08-06"}},
@@ -3596,11 +3673,11 @@ func TestListModels_UsesCatalogAwareAliasMatchingForKeyAllowlist(t *testing.T) {
 		[]string{"gpt-4o"},
 		[]string{"gpt-4o"},
 	)
-	h.inMemoryStore.ModelCatalog = modelcatalog.NewTestCatalog(map[string]string{
+	h.config.ModelCatalog = catalogForTest(t, map[string]string{
 		"gpt-4o-2024-08-06": "gpt-4o",
 	})
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=key-a")
 
@@ -3625,7 +3702,7 @@ func TestListModels_UsesCatalogAwareAliasMatchingForKeyAllowlist(t *testing.T) {
 func TestListModels_KeyModelAllowlistIsCaseInsensitive(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-a", Models: []string{"GPT-4O", "GPT-4O-MINI"}},
@@ -3634,7 +3711,7 @@ func TestListModels_KeyModelAllowlistIsCaseInsensitive(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
 	)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=key-a&limit=10")
 
@@ -3669,7 +3746,7 @@ func TestListModels_KeyModelAllowlistIsCaseInsensitive(t *testing.T) {
 func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 	SetLogger(&mockLogger{})
 
-	h := providerHandlerForTest(
+	h := providerHandlerForTest(t,
 		schemas.OpenAI,
 		[]schemas.Key{
 			{ID: "key-a", BlacklistedModels: []string{"GPT-3.5-TURBO"}},
@@ -3678,7 +3755,7 @@ func TestListModels_KeyBlacklistIsCaseInsensitive(t *testing.T) {
 		[]string{"gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"},
 	)
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models?provider=openai&keys=key-a&limit=10")
 
@@ -3707,8 +3784,8 @@ func TestListModels_UnsearchedListingOmitsDeprecatedModels(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	models := []string{"old-a", "old-b", "current-a", "current-b"}
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
 		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
 		"old-b": {"provider":"openai","mode":"chat","base_model":"old-b","is_deprecated":true},
 		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"},
@@ -3732,8 +3809,8 @@ func TestListModels_SearchIncludesDeprecatedModelsBelowLiveOnes(t *testing.T) {
 
 	// The deprecated models sort first by name, so an unordered listing would lead with them.
 	models := []string{"gpt-old-a", "gpt-old-b", "gpt-zed"}
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
 		"gpt-old-a": {"provider":"openai","mode":"chat","base_model":"gpt-old-a","is_deprecated":true},
 		"gpt-old-b": {"provider":"openai","mode":"chat","base_model":"gpt-old-b","is_deprecated":true},
 		"gpt-zed": {"provider":"openai","mode":"chat","base_model":"gpt-zed"}
@@ -3759,8 +3836,8 @@ func TestListModels_IncludeDeprecatedOptsOutOfHiding(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	models := []string{"old-a", "current-a"}
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
 		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
 		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"}
 	}`))
@@ -3779,13 +3856,13 @@ func TestListModelDetails_KeepsDeprecatedModelsWhenUnsearched(t *testing.T) {
 	SetLogger(&mockLogger{})
 
 	models := []string{"old-a", "current-a"}
-	h := providerHandlerForTest(schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
-	h.inMemoryStore.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{{ID: "key-a"}}, models, models)
+	h.config.ModelCatalog = modelCatalogForPricingJSON(t, []byte(`{
 		"old-a": {"provider":"openai","mode":"chat","base_model":"old-a","is_deprecated":true},
 		"current-a": {"provider":"openai","mode":"chat","base_model":"current-a"}
 	}`))
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI("/api/models/details?provider=openai&limit=10")
 
@@ -3809,7 +3886,7 @@ func TestListModelDetails_KeepsDeprecatedModelsWhenUnsearched(t *testing.T) {
 func listModelsForTest(t *testing.T, h *ProviderHandler, uri string) ListModelsResponse {
 	t.Helper()
 
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Request.Header.SetMethod("GET")
 	ctx.Request.SetRequestURI(uri)
 
@@ -3866,12 +3943,20 @@ func datasheetHandlerForTest(t *testing.T) *ProviderHandler {
 	t.Cleanup(func() { _ = cs.Close(ctx) })
 	pricingURL, paramsURL := "file://"+pricingPath, "file://"+paramsPath
 	disabled := int64(0)
-	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, bifrost.NewNoOpLogger())
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(live.Close)
+	if err := live.LoadAll(ctx, cs.DB()); err != nil {
+		t.Fatal(err)
+	}
+	mc, err := modelcatalog.Init(ctx, &modelcatalog.Config{PricingURL: &pricingURL, ModelParametersURL: &paramsURL, MCPLibrarySyncInterval: &disabled}, cs, live, bifrost.NewNoOpLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = mc.Cleanup() })
-	return &ProviderHandler{inMemoryStore: &lib.Config{ModelCatalog: mc}, dbStore: cs}
+	return &ProviderHandler{config: &lib.Config{ModelCatalog: mc}, configStore: cs}
 }
 
 // datasheetRequest builds a RequestCtx through Init so it carries a server and
@@ -3883,7 +3968,7 @@ func datasheetRequest(method, uri, body string) *fasthttp.RequestCtx {
 	if body != "" {
 		req.SetBodyString(body)
 	}
-	ctx := &fasthttp.RequestCtx{}
+	ctx := newBareRequestCtx()
 	ctx.Init(&req, nil, nil)
 	return ctx
 }
@@ -3931,7 +4016,7 @@ func TestDatasheetOverrideHandlers_SaveListResetDelete(t *testing.T) {
 	if typo.Response.StatusCode() != fasthttp.StatusBadRequest {
 		t.Fatalf("unknown field: %d, want 400: %s", typo.Response.StatusCode(), typo.Response.Body())
 	}
-	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 64000 {
+	if got := *h.config.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 64000 {
 		t.Fatalf("context_length after rejected save = %d, want the override's 64000", got)
 	}
 
@@ -3942,7 +4027,7 @@ func TestDatasheetOverrideHandlers_SaveListResetDelete(t *testing.T) {
 	if reset.Response.StatusCode() != fasthttp.StatusOK {
 		t.Fatalf("reset: %d %s", reset.Response.StatusCode(), reset.Response.Body())
 	}
-	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 128000 {
+	if got := *h.config.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 128000 {
 		t.Fatalf("context_length after reset = %d, want upstream 128000", got)
 	}
 
@@ -3965,7 +4050,7 @@ func TestDatasheetOverrideHandlers_SaveListResetDelete(t *testing.T) {
 	if err := json.Unmarshal(again.Response.Body(), &live); err != nil {
 		t.Fatal(err)
 	}
-	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 32000 {
+	if got := *h.config.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 32000 {
 		t.Fatalf("context_length before delete = %d, want 32000", got)
 	}
 	del := datasheetRequest("DELETE", "/api/models/datasheet/overrides/"+live.Override.ID, "")
@@ -3974,7 +4059,7 @@ func TestDatasheetOverrideHandlers_SaveListResetDelete(t *testing.T) {
 	if del.Response.StatusCode() != fasthttp.StatusOK {
 		t.Fatalf("delete: %d %s", del.Response.StatusCode(), del.Response.Body())
 	}
-	if got := *h.inMemoryStore.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 128000 {
+	if got := *h.config.ModelCatalog.GetModelCapabilityEntryForModel("gpt-4o", schemas.OpenAI).ContextLength; got != 128000 {
 		t.Fatalf("context_length after delete = %d, want upstream 128000", got)
 	}
 	repeat := datasheetRequest("DELETE", "/api/models/datasheet/overrides/"+live.Override.ID, "")
@@ -3986,8 +4071,8 @@ func TestDatasheetOverrideHandlers_SaveListResetDelete(t *testing.T) {
 
 	// Without a model catalog or a config store, delete is unavailable.
 	for name, unavailable := range map[string]*ProviderHandler{
-		"no catalog": {inMemoryStore: &lib.Config{}, dbStore: h.dbStore},
-		"no store":   {inMemoryStore: h.inMemoryStore},
+		"no catalog": {config: &lib.Config{}, configStore: h.configStore},
+		"no store":   {config: h.config},
 	} {
 		req := datasheetRequest("DELETE", "/api/models/datasheet/overrides/x", "")
 		req.SetUserValue("id", "x")
@@ -4038,5 +4123,417 @@ func TestDatasheetOverrideHandlers_RejectInvalidBodies(t *testing.T) {
 	h.getDatasheetEntry(missing)
 	if missing.Response.StatusCode() != fasthttp.StatusNotFound {
 		t.Fatalf("entry for unknown model: %d, want 404", missing.Response.StatusCode())
+	}
+}
+
+// TestListModels_IncludeAliases lists key aliases only when an unfiltered listing asks for them.
+func TestListModels_IncludeAliases(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		want      []string
+		wantTotal int
+	}{
+		{"unfiltered alone", "unfiltered=true&limit=10", []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"}, 3},
+		{"unfiltered with aliases", "unfiltered=true&include_aliases=true&limit=10", []string{"fast-chat", "gpt-4.1", "gpt-4o", "gpt-4o-mini", "team-gpt"}, 5},
+		{"searching for an alias", "unfiltered=true&include_aliases=true&query=TEAM&limit=10", []string{"team-gpt"}, 1},
+		{"first page", "unfiltered=true&include_aliases=true&limit=2", []string{"fast-chat", "gpt-4.1"}, 5},
+		{"last page", "unfiltered=true&include_aliases=true&limit=2&offset=4", []string{"team-gpt"}, 5},
+		{"without unfiltered the listing is narrowed as before", "include_aliases=true&limit=10", []string{"gpt-4o"}, 1},
+		{"false", "unfiltered=true&include_aliases=false&limit=10", []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"}, 3},
+	} {
+		for _, route := range []struct {
+			name   string
+			path   string
+			handle func(*ProviderHandler, *fasthttp.RequestCtx)
+		}{
+			{name: "models", path: "/api/models", handle: (*ProviderHandler).listModels},
+			{name: "model details", path: "/api/models/details", handle: (*ProviderHandler).listModelDetails},
+		} {
+			t.Run(route.name+", "+tc.name, func(t *testing.T) {
+				// gpt-4o is an alias name and a listed model, so it must appear once.
+				keys := []schemas.Key{{ID: "key-a", Models: []string{"*"}, Aliases: schemas.KeyAliases{
+					"team-gpt":        {ModelID: "unlisted-a"},
+					"fast-chat":       {ModelID: "unlisted-b"},
+					"gpt-4o":          {ModelID: "unlisted-c"},
+					"regex:claude-.*": {ModelID: "unlisted-d"},
+				}}}
+				h := providerHandlerForTest(t, schemas.OpenAI, keys, []string{"gpt-4o", "gpt-4o-mini"}, []string{"gpt-4.1", "gpt-4o", "gpt-4o-mini"})
+				catalog, err := modelcatalog.NewTestCatalog(nil)
+				require.NoError(t, err)
+				h.config.ModelCatalog = catalog
+				h.config.ModelCatalog.SetKeyConfigForProvider(schemas.OpenAI, keys)
+				permit := grant.NewPermit(grant.PermitAccessProfile, "profile-test", "Test Profile", true, false,
+					[]schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"gpt-4o"}}}, nil)
+				h.modelsManager.(*mockModelsManager).access = grant.NewAccess([]schemas.Permit{permit}, "", nil, "", nil)
+
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.Header.SetMethod("GET")
+				ctx.Request.SetRequestURI(route.path + "?provider=openai&" + tc.query)
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthCredential, grant.NewCredential(grant.CredentialSessionToken, "session-token"))
+
+				route.handle(h, ctx)
+
+				if ctx.Response.StatusCode() != fasthttp.StatusOK {
+					t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+				}
+				var resp struct {
+					Models []struct {
+						Name string `json:"name"`
+					} `json:"models"`
+					Total int `json:"total"`
+				}
+				if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				got := make([]string, 0, len(resp.Models))
+				for _, model := range resp.Models {
+					got = append(got, model.Name)
+				}
+				if !slices.Equal(got, tc.want) || resp.Total != tc.wantTotal {
+					t.Fatalf("models = %v (total %d), want %v (total %d)", got, resp.Total, tc.want, tc.wantTotal)
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkListModels_Unfiltered measures the management listing the dashboard pickers read, with and without aliases.
+func BenchmarkListModels_Unfiltered(b *testing.B) {
+	SetLogger(&mockLogger{})
+	models := make([]string, 300)
+	for i := range models {
+		models[i] = fmt.Sprintf("model-%03d", i)
+	}
+	for _, aliasesPerKey := range []int{0, 10} {
+		keys := make([]schemas.Key, 4)
+		for i := range keys {
+			keys[i] = schemas.Key{ID: fmt.Sprintf("key-%d", i), Models: []string{"*"}, Aliases: schemas.KeyAliases{}}
+			for j := range aliasesPerKey {
+				keys[i].Aliases[fmt.Sprintf("alias-%d-%d", i, j)] = schemas.AliasConfig{ModelID: "unlisted"}
+			}
+		}
+		h := providerHandlerForTest(b, schemas.OpenAI, keys, models, models)
+		catalog, err := modelcatalog.NewTestCatalog(nil)
+		require.NoError(b, err)
+		h.config.ModelCatalog = catalog
+		h.config.ModelCatalog.SetKeyConfigForProvider(schemas.OpenAI, keys)
+		for _, flag := range []string{"", "&include_aliases=true"} {
+			b.Run(fmt.Sprintf("aliases=%d,include=%t", len(keys)*aliasesPerKey, flag != ""), func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					ctx := &fasthttp.RequestCtx{}
+					ctx.Request.Header.SetMethod("GET")
+					ctx.Request.SetRequestURI("/api/models?provider=openai&unfiltered=true&limit=20" + flag)
+					h.listModels(ctx)
+				}
+			})
+		}
+	}
+}
+
+// TestRedactedKeys_PreservesEnabled pins that /api/keys reports each key's enabled
+// flag. redactedKeys builds its keys field by field, and once dropped Enabled, so a
+// disabled key read as enabled to every client of the endpoint.
+func TestRedactedKeys_PreservesEnabled(t *testing.T) {
+	cfg := libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"typesafe": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"typesafe": {
+			{ID: "disabled-key", Name: "disabled", Value: *schemas.NewSecretVar("sk-disabled"), Enabled: new(false)},
+			{ID: "enabled-key", Name: "enabled", Value: *schemas.NewSecretVar("sk-enabled"), Enabled: new(true)},
+			{ID: "unset-key", Name: "unset", Value: *schemas.NewSecretVar("sk-unset")},
+		},
+	})
+
+	keys := redactedKeys(map[schemas.ModelProvider][]schemas.Key{"typesafe": cfg.GetProviderKeys("typesafe")})
+	byID := make(map[string]configstoreTables.TableKey, len(keys))
+	for _, key := range keys {
+		byID[key.KeyID] = key
+	}
+
+	if got := byID["disabled-key"].Enabled; got == nil || *got {
+		t.Fatalf("disabled key: expected Enabled=false, got %v", got)
+	}
+	if got := byID["enabled-key"].Enabled; got == nil || !*got {
+		t.Fatalf("enabled key: expected Enabled=true, got %v", got)
+	}
+	// Unset stays unset: the field is omitted and clients read it as enabled.
+	if got := byID["unset-key"].Enabled; got != nil {
+		t.Fatalf("unset key: expected Enabled=nil, got %v", *got)
+	}
+
+	// The flag is what clients act on, so pin it on the wire too.
+	body, err := json.Marshal(byID["disabled-key"])
+	if err != nil {
+		t.Fatalf("marshal disabled key: %v", err)
+	}
+	if !strings.Contains(string(body), `"enabled":false`) {
+		t.Fatalf("disabled key JSON should carry \"enabled\":false, got %s", body)
+	}
+}
+
+// TestRedactedKeys_RedactsAnthropicWorkloadIdentity pins that /api/keys carries a federated key's
+// workload identity block with the identity token masked and the identifiers readable.
+func TestRedactedKeys_RedactsAnthropicWorkloadIdentity(t *testing.T) {
+	const jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"
+	cfg := libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Anthropic: {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Anthropic: {{ID: "wif-key", Name: "wif", AnthropicKeyConfig: &schemas.AnthropicKeyConfig{
+			WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+				FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+				OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+				ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+				IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar(jwt)},
+			},
+		}}},
+	})
+
+	keys := redactedKeys(map[schemas.ModelProvider][]schemas.Key{schemas.Anthropic: cfg.GetProviderKeys(schemas.Anthropic)})
+	require.Len(t, keys, 1)
+	require.True(t, keys[0].AnthropicKeyConfig.HasWorkloadIdentity())
+	wif := keys[0].AnthropicKeyConfig.WorkloadIdentity
+	assert.Equal(t, "svac_01def", wif.ServiceAccountID.GetValue())
+	assert.True(t, wif.IdentitySource.Token.IsMaskedPlaceholder())
+	body, err := json.Marshal(keys[0])
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), jwt)
+	assert.Contains(t, string(body), `"anthropic_key_config"`)
+	assert.Equal(t, jwt, cfg.GetProviderKeys(schemas.Anthropic)[0].AnthropicKeyConfig.WorkloadIdentity.IdentitySource.Token.GetValue(), "the live config is untouched")
+}
+
+// TestRedactedKeys_MasksBedrockBatchRoleAndEndpoints pins that /api/keys masks a Bedrock key the
+// way the providers API does: the batch role ARN, the env-backed endpoints and project ID, and the
+// credentials come back masked, while the key ID, name, provider and region stay readable.
+func TestRedactedKeys_MasksBedrockBatchRoleAndEndpoints(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	t.Setenv("BEDROCK_KEYS_TEST_ENDPOINT", "https://bedrock-runtime.internal.example.com")
+	t.Setenv("BEDROCK_KEYS_TEST_PROJECT", "bedrock-project-secret-0123")
+	const batchRole = "arn:aws:iam::123456789012:role/bedrock-batch-example"
+	key := schemas.Key{ID: "bedrock-key", Name: "bedrock", Models: schemas.WhiteList{"*"}, BedrockKeyConfig: &schemas.BedrockKeyConfig{
+		AccessKey:    *schemas.NewSecretVar("AKIAEXAMPLEBEDROCK01"),
+		SecretKey:    *schemas.NewSecretVar("bedrock-secret-key-example"),
+		Region:       schemas.NewSecretVar("us-east-1"),
+		BatchRoleARN: schemas.NewSecretVar(batchRole),
+		ProjectID:    schemas.NewSecretVar("env.BEDROCK_KEYS_TEST_PROJECT"),
+		Endpoints:    &schemas.BedrockEndpoints{Runtime: schemas.NewSecretVar("env.BEDROCK_KEYS_TEST_ENDPOINT")},
+	}}
+	cfg := libtest.FileOnly(t, &lib.Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {}}, map[schemas.ModelProvider][]schemas.Key{schemas.Bedrock: {key}})
+	h := &ProviderHandler{config: cfg}
+
+	ctx := keyRouteRequest(h.listKeys, schemas.Bedrock, "")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	body := string(ctx.Response.Body())
+	for _, secret := range []string{batchRole, "bedrock-runtime.internal.example.com", "bedrock-project-secret-0123", "AKIAEXAMPLEBEDROCK01", "bedrock-secret-key-example"} {
+		assert.NotContains(t, body, secret)
+	}
+	assert.Contains(t, body, "env.BEDROCK_KEYS_TEST_ENDPOINT", "the endpoint's reference stays visible")
+	var listed []struct {
+		KeyID            string `json:"key_id"`
+		Name             string `json:"name"`
+		Provider         string `json:"provider"`
+		BedrockKeyConfig struct {
+			Region struct {
+				Value string `json:"value"`
+			} `json:"region"`
+		} `json:"bedrock_key_config"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &listed))
+	require.Len(t, listed, 1)
+	assert.Equal(t, "bedrock-key", listed[0].KeyID)
+	assert.Equal(t, "bedrock", listed[0].Name)
+	assert.Equal(t, string(schemas.Bedrock), listed[0].Provider)
+	assert.Equal(t, "us-east-1", listed[0].BedrockKeyConfig.Region.Value, "the region is an identifier, not a credential")
+	assert.Equal(t, batchRole, cfg.GetProviderKeys(schemas.Bedrock)[0].BedrockKeyConfig.BatchRoleARN.GetValue(), "the live key is untouched")
+}
+
+// TestListKeys_NeverReturnsASecretValue pins that GET /api/keys, read from the database and from
+// memory, masks every credential a key config can hold, whether it is a literal, an env reference
+// or a vault reference. A reference stays visible and its resolved value is masked, identifiers
+// included; a literal identifier reads back as stored. Each value is unique, so a leak names its
+// field, and the count of masks proves every field reached the body.
+func TestListKeys_NeverReturnsASecretValue(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+	vaultValues := map[string]string{}
+	previousHook := schemas.VaultResolveHook
+	schemas.VaultResolveHook = func(_ context.Context, value *string) error {
+		resolved, ok := vaultValues[*value]
+		if !ok {
+			return fmt.Errorf("unknown vault reference %q", *value)
+		}
+		*value = resolved
+		return nil
+	}
+	t.Cleanup(func() { schemas.VaultResolveHook = previousHook })
+	// Redacted keeps the first and last four characters, so every value starts and ends the same
+	// and its mask is this string.
+	const mask = "head************************tail"
+
+	for _, source := range []string{"literal", "env", "vault"} {
+		t.Run(source, func(t *testing.T) {
+			type field struct {
+				name, value, ref string
+				credential       bool
+			}
+			var fields []field
+			// secret returns a SecretVar for one field, from source. A credential is masked even as a
+			// literal; an identifier is masked only when it comes from a reference.
+			secret := func(name string, credential bool) *schemas.SecretVar {
+				value := "head-" + source + "-" + name + "-tail"
+				input := value
+				switch source {
+				case "env":
+					input = "env.LISTKEYS_" + strings.ToUpper(strings.NewReplacer(".", "_", "-", "_").Replace(name))
+					t.Setenv(strings.TrimPrefix(input, "env."), value)
+				case "vault":
+					input = "vault.listkeys/" + name
+					vaultValues[input] = value
+				}
+				ref := ""
+				if source != "literal" {
+					ref = input
+				}
+				fields = append(fields, field{name: name, value: value, ref: ref, credential: credential})
+				sv := schemas.NewSecretVar(input)
+				// An unresolved reference would otherwise make the leak check pass.
+				require.Equal(t, value, sv.GetValue(), "setup: %s must resolve", name)
+				return sv
+			}
+			const cred, ident = true, false
+			endpoints := func(prefix string) *schemas.BedrockEndpoints {
+				return &schemas.BedrockEndpoints{
+					Runtime: secret(prefix+".endpoints.runtime", ident), ControlPlane: secret(prefix+".endpoints.control_plane", ident),
+					Mantle: secret(prefix+".endpoints.mantle", ident), AgentRuntime: secret(prefix+".endpoints.agent_runtime", ident),
+					S3: secret(prefix+".endpoints.s3", ident),
+				}
+			}
+			// extra_params values are literal strings, never resolved, and always masked.
+			extraParam := "head-" + source + "-oauth.extra_param-tail"
+			fields = append(fields, field{name: "oauth.extra_param", value: extraParam, credential: true})
+			keys := map[schemas.ModelProvider][]schemas.Key{
+				schemas.OpenAI: {{ID: "openai-key", Name: "openai", Models: schemas.WhiteList{"*"},
+					Value: *secret("openai.value", cred),
+					OAuthKeyConfig: &schemas.OAuthKeyConfig{
+						GrantType: schemas.OAuthGrantClientCredentials, TokenURL: *secret("oauth.token_url", ident),
+						ClientID: secret("oauth.client_id", cred), ClientSecret: secret("oauth.client_secret", cred),
+						PrivateKey: secret("oauth.private_key", cred), ExtraParams: map[string]string{"client_assertion": extraParam},
+					},
+				}},
+				schemas.Azure: {{ID: "azure-key", Name: "azure", Models: schemas.WhiteList{"*"},
+					AzureKeyConfig: &schemas.AzureKeyConfig{
+						Endpoint: *secret("azure.endpoint", ident), ClientID: secret("azure.client_id", cred),
+						ClientSecret: secret("azure.client_secret", cred), TenantID: secret("azure.tenant_id", cred),
+					},
+					Aliases: schemas.KeyAliases{"gpt": {ModelID: "gpt-deployment", AzureAliasCfg: &schemas.AzureAliasCfg{Endpoint: secret("azure.alias.endpoint", ident)}}},
+				}},
+				schemas.Vertex: {{ID: "vertex-key", Name: "vertex", Models: schemas.WhiteList{"*"},
+					VertexKeyConfig: &schemas.VertexKeyConfig{
+						ProjectID: *secret("vertex.project_id", cred), ProjectNumber: *secret("vertex.project_number", cred),
+						Region: *secret("vertex.region", ident), AuthCredentials: *secret("vertex.auth_credentials", cred),
+						AWSWorkloadIdentity: &schemas.VertexAWSWorkloadIdentityConfig{
+							Audience: *secret("vertex.wif.audience", ident), ServiceAccountEmail: secret("vertex.wif.service_account_email", ident),
+							AWSRegion: secret("vertex.wif.aws_region", ident), AWSRoleARN: secret("vertex.wif.aws_role_arn", cred),
+						},
+					},
+					Aliases: schemas.KeyAliases{
+						"gemini": {ModelID: "gemini-model", Region: secret("vertex.alias.region", ident), ProjectID: secret("vertex.alias.project_id", ident),
+							VertexAliasCfg: &schemas.VertexAliasCfg{ProjectNumber: secret("vertex.alias.project_number", ident)}},
+						// MarshalJSON promotes the deprecated project ID; it must be masked before that.
+						"legacy": {ModelID: "legacy-model", VertexAliasCfg: &schemas.VertexAliasCfg{ProjectID: secret("vertex.alias.legacy_project_id", ident)}},
+					},
+				}},
+				schemas.Bedrock: {{ID: "bedrock-key", Name: "bedrock", Models: schemas.WhiteList{"*"},
+					BedrockKeyConfig: &schemas.BedrockKeyConfig{
+						AccessKey: *secret("bedrock.access_key", cred), SecretKey: *secret("bedrock.secret_key", cred),
+						SessionToken: secret("bedrock.session_token", cred), Region: secret("bedrock.region", ident),
+						ARN: secret("bedrock.arn", cred), RoleARN: secret("bedrock.role_arn", cred),
+						ExternalID: secret("bedrock.external_id", cred), RoleSessionName: secret("bedrock.session_name", cred),
+						BatchRoleARN: secret("bedrock.batch_role_arn", cred), ProjectID: secret("bedrock.project_id", ident),
+						BatchS3Config: &schemas.BatchS3Config{Buckets: []schemas.S3BucketConfig{{BucketName: "listkeys-batch-bucket", IsDefault: true}}},
+						Endpoints:     endpoints("bedrock"),
+					},
+					Aliases: schemas.KeyAliases{"claude": {ModelID: "claude-model", BedrockAliasCfg: &schemas.BedrockAliasCfg{InferenceProfileARN: secret("bedrock.alias.inference_profile_arn", ident)}}},
+				}},
+				schemas.BedrockMantle: {{ID: "mantle-key", Name: "mantle", Models: schemas.WhiteList{"*"},
+					BedrockMantleKeyConfig: &schemas.BedrockMantleKeyConfig{
+						AccessKey: *secret("mantle.access_key", cred), SecretKey: *secret("mantle.secret_key", cred),
+						SessionToken: secret("mantle.session_token", cred), Region: secret("mantle.region", ident),
+						RoleARN: secret("mantle.role_arn", cred), ExternalID: secret("mantle.external_id", cred),
+						RoleSessionName: secret("mantle.session_name", cred), ProjectID: secret("mantle.project_id", ident),
+						Endpoints: endpoints("mantle"),
+					},
+				}},
+				schemas.SageMaker: {{ID: "sagemaker-key", Name: "sagemaker", Models: schemas.WhiteList{"*"},
+					SageMakerKeyConfig: &schemas.SageMakerKeyConfig{
+						AccessKey: *secret("sagemaker.access_key", cred), SecretKey: *secret("sagemaker.secret_key", cred),
+						SessionToken: secret("sagemaker.session_token", cred), Region: secret("sagemaker.region", ident),
+						RoleARN: secret("sagemaker.role_arn", cred), ExternalID: secret("sagemaker.external_id", cred),
+						RoleSessionName: secret("sagemaker.session_name", cred),
+						Endpoints:       &schemas.SageMakerEndpoints{Runtime: secret("sagemaker.endpoints.runtime", ident)},
+					},
+				}},
+				schemas.VLLM:       {{ID: "vllm-key", Name: "vllm", Models: schemas.WhiteList{"*"}, VLLMKeyConfig: &schemas.VLLMKeyConfig{URL: *secret("vllm.url", ident), ModelName: "served-model"}}},
+				schemas.Ollama:     {{ID: "ollama-key", Name: "ollama", Models: schemas.WhiteList{"*"}, OllamaKeyConfig: &schemas.OllamaKeyConfig{URL: *secret("ollama.url", ident)}}},
+				schemas.SGL:        {{ID: "sgl-key", Name: "sgl", Models: schemas.WhiteList{"*"}, SGLKeyConfig: &schemas.SGLKeyConfig{URL: *secret("sgl.url", ident)}}},
+				schemas.Cloudflare: {{ID: "cloudflare-key", Name: "cloudflare", Models: schemas.WhiteList{"*"}, CloudflareKeyConfig: &schemas.CloudflareKeyConfig{AccountID: *secret("cloudflare.account_id", ident)}}},
+				schemas.Databricks: {{ID: "databricks-key", Name: "databricks", Models: schemas.WhiteList{"*"},
+					DatabricksKeyConfig: &schemas.DatabricksKeyConfig{
+						WorkspaceURL: *secret("databricks.workspace_url", ident),
+						ClientID:     secret("databricks.client_id", cred), ClientSecret: secret("databricks.client_secret", cred),
+					},
+				}},
+				schemas.Anthropic: {{ID: "anthropic-key", Name: "anthropic", Models: schemas.WhiteList{"*"},
+					AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: &schemas.AnthropicWorkloadIdentityConfig{
+						FederationRuleID: *secret("anthropic.federation_rule_id", ident), OrganizationID: *secret("anthropic.organization_id", ident),
+						ServiceAccountID: *secret("anthropic.service_account_id", ident), WorkspaceID: secret("anthropic.workspace_id", ident),
+						// Only one of path and token is valid at once; both are set to check both.
+						IdentitySource: &schemas.IdentitySource{Type: schemas.IdentitySourceInline,
+							Path: secret("anthropic.identity_path", ident), Token: secret("anthropic.identity_token", cred)},
+					}},
+				}},
+				schemas.Baseten: {{ID: "baseten-key", Name: "baseten", Models: schemas.WhiteList{"*"},
+					Aliases: schemas.KeyAliases{"dedicated": {ModelID: "dedicated-model", BasetenAliasCfg: &schemas.BasetenAliasCfg{DeploymentURL: secret("baseten.alias.deployment_url", ident)}}},
+				}},
+			}
+			providers := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(keys))
+			for provider := range keys {
+				providers[provider] = configstore.ProviderConfig{}
+			}
+			withStore := libtest.Config(t, providers, keys)
+
+			for name, h := range map[string]*ProviderHandler{
+				"database": {config: withStore, configStore: withStore.ConfigStore},
+				"memory":   {config: libtest.FileOnly(t, &lib.Config{}, providers, keys)},
+			} {
+				t.Run(name, func(t *testing.T) {
+					ctx := keyRouteRequest(h.listKeys, "", "")
+					require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body %s", ctx.Response.Body())
+					body := string(ctx.Response.Body())
+					var listed []map[string]any
+					require.NoError(t, json.Unmarshal(ctx.Response.Body(), &listed))
+					require.Len(t, listed, len(keys))
+					masks := 0
+					for _, f := range fields {
+						if f.credential || f.ref != "" {
+							// The middle is what the mask hides; the whole value contains it.
+							assert.NotContains(t, body, f.value[4:len(f.value)-4], "%s leaked", f.name)
+							masks++
+						} else {
+							assert.Contains(t, body, `"`+f.value+`"`, "the literal identifier %s reads back as stored", f.name)
+						}
+						if f.ref != "" {
+							assert.Contains(t, body, `"`+f.ref+`"`, "the reference of %s stays visible", f.name)
+						}
+					}
+					assert.Equal(t, masks, strings.Count(body, `"`+mask+`"`), "every masked field reaches the body once: %s", body)
+					assert.Contains(t, body, `"listkeys-batch-bucket"`, "the batch bucket is not a secret")
+				})
+			}
+		})
 	}
 }

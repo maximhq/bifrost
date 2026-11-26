@@ -219,9 +219,9 @@ func signedInExport(t *testing.T, h *clientGatewayEndpoint, vk *configtables.Tab
 // {endpoint}/v1/{signal} as protobuf with the configured header, stamped with
 // the virtual key it signed in with and stripped of the dropped attributes.
 func TestClientGateway_TelemetryForwarding(t *testing.T) {
-	h, _, store, _ := newClaudeCodeGateway(t, true)
+	h, _, _, cfg := newClaudeCodeGateway(t, true)
 	t.Cleanup(func() { h.Close(context.Background()) })
-	vk := seedGatewayVK(t, store, "vk-telemetry", "sk-bf-telemetry")
+	vk := seedGatewayVK(t, cfg, "vk-telemetry", "sk-bf-telemetry")
 	collector := newTelemetryCollector(t, http.StatusOK)
 	enableTelemetry(t, h, collector, "prompt")
 
@@ -258,9 +258,9 @@ func TestClientGateway_TelemetryForwarding(t *testing.T) {
 // 413, a malformed one is 400, and a full queue drops the export but still
 // acknowledges it, so the client never retries into a struggling gateway.
 func TestClientGateway_TelemetryOutcomes(t *testing.T) {
-	h, _, store, _ := newClaudeCodeGateway(t, true)
+	h, _, _, cfg := newClaudeCodeGateway(t, true)
 	t.Cleanup(func() { h.Close(context.Background()) })
-	vk := seedGatewayVK(t, store, "vk-telemetry", "sk-bf-telemetry")
+	vk := seedGatewayVK(t, cfg, "vk-telemetry", "sk-bf-telemetry")
 	body, err := proto.Marshal(sampleMetricsExport())
 	require.NoError(t, err)
 	counter := func(outcome string) float64 {
@@ -290,9 +290,9 @@ func TestClientGateway_TelemetryOutcomes(t *testing.T) {
 // TestTelemetryForwarder_CollectorErrorsAreCounted pins that a collector refusing
 // an export is counted as a forwarding error and does not stall the queue.
 func TestTelemetryForwarder_CollectorErrorsAreCounted(t *testing.T) {
-	h, _, store, _ := newClaudeCodeGateway(t, true)
+	h, _, _, cfg := newClaudeCodeGateway(t, true)
 	t.Cleanup(func() { h.Close(context.Background()) })
-	vk := seedGatewayVK(t, store, "vk-telemetry", "sk-bf-telemetry")
+	vk := seedGatewayVK(t, cfg, "vk-telemetry", "sk-bf-telemetry")
 	collector := newTelemetryCollector(t, http.StatusServiceUnavailable)
 	enableTelemetry(t, h, collector)
 	body, err := proto.Marshal(sampleMetricsExport())
@@ -312,8 +312,8 @@ func TestTelemetryForwarder_CollectorErrorsAreCounted(t *testing.T) {
 // TestTelemetryForwarder_CloseDrainsQueue pins what every shutdown path relies on: Close forwards
 // the exports already queued before it returns, and refuses new ones after.
 func TestTelemetryForwarder_CloseDrainsQueue(t *testing.T) {
-	h, _, store, _ := newClaudeCodeGateway(t, true)
-	vk := seedGatewayVK(t, store, "vk-telemetry", "sk-bf-telemetry")
+	h, _, _, cfg := newClaudeCodeGateway(t, true)
+	vk := seedGatewayVK(t, cfg, "vk-telemetry", "sk-bf-telemetry")
 	collector := newTelemetryCollector(t, http.StatusOK)
 	enableTelemetry(t, h, collector)
 	body, err := proto.Marshal(sampleMetricsExport())
