@@ -349470,7 +349470,7 @@
     },
     {
       "name": "380. A caller-declared code mode tool is not run by agent mode (codemode-declared) [SERIAL]",
-      "description": "Agent mode auto-executes the code mode meta-tools only when Bifrost added them to the request. A caller can declare a tool named executeToolCode (or listToolFiles, readToolFile, getToolDocs) in its own request; that call must come back to the caller instead of being run. The second case pins that a tool Bifrost injected still runs. SERIAL because it provisions its own code mode client against the SSE fixture and deletes it afterwards. The models run at temperature 0 with explicit instructions; the exact auto-execution of an injected tool is pinned by the Go tests in core/mcp.",
+      "description": "Agent mode auto-executes the code mode meta-tools only when Bifrost added them to the request. A caller can declare a tool named executeToolCode (or listToolFiles, readToolFile, getToolDocs) in its own request; that call must come back to the caller instead of being run. The second case pins that a tool Bifrost injected still runs. SERIAL because it provisions its own code mode client against the SSE fixture and deletes it afterwards. The model runs at temperature 0 with explicit instructions, and the second case asserts the tool call and its tool-result message on the upstream request.",
       "item": [
         {
           "name": "[EXPECT-200] openai codemode-declared provision a code-mode client on the SSE fixture",
@@ -349597,8 +349597,16 @@
                   "    var body = pm.response.json();",
                   "    var choice = (body.choices || [])[0] || {};",
                   "    var calls = (choice.message || {}).tool_calls || [];",
-                  "    var raw = JSON.stringify((body.extra_fields || {}).raw_request || {});",
-                  "    pm.expect(raw, 'Bifrost sends its own executeToolCode upstream').to.include('executeToolCode');",
+                  "    var rr = (body.extra_fields || {}).raw_request;",
+                  "    pm.expect(rr, 'raw_request missing - send_back_raw_request not honored: ' + pm.response.text().slice(0, 300)).to.be.an('object');",
+                  "    var wire = JSON.stringify(rr).slice(0, 600);",
+                  "    var messages = rr.messages || [];",
+                  "    var declared = (rr.tools || []).map(function (t) { return (t.function || {}).name; });",
+                  "    pm.expect(declared, 'Bifrost did not declare executeToolCode upstream: ' + wire).to.include('executeToolCode');",
+                  "    var toolCallers = messages.filter(function (m) { return m.role === 'assistant' && (m.tool_calls || []).some(function (c) { return (c.function || {}).name === 'executeToolCode'; }); });",
+                  "    var toolResults = messages.filter(function (m) { return m.role === 'tool'; });",
+                  "    pm.expect(toolCallers.length, 'the model never called executeToolCode: ' + wire).to.be.at.least(1);",
+                  "    pm.expect(toolResults.length, 'no tool result was sent back, so the agent loop did not run the tool: ' + wire).to.be.at.least(1);",
                   "    pm.expect(choice.finish_reason, 'the agent loop completed: ' + pm.response.text()).to.equal('stop');",
                   "    pm.expect(calls.length, 'no tool call left for the caller').to.equal(0);",
                   "});"
