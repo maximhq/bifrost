@@ -1921,6 +1921,54 @@ func TestReadToolFileTotalLinesHeaderMatchesLinesReturned(t *testing.T) {
 	}
 }
 
+// BenchmarkReadToolFile measures one readToolFile call (stub generation, the Total lines header
+// and the startLine/endLine split) on a server stub with 1, 100 and 1000 tools, read whole and
+// paged.
+func BenchmarkReadToolFile(b *testing.B) {
+	for _, toolCount := range []int{1, 100, 1000} {
+		tools := make([]schemas.ChatTool, toolCount)
+		for i := range tools {
+			tools[i] = schemas.ChatTool{Function: &schemas.ChatToolFunction{
+				Name:        "bench-tool" + strconv.Itoa(i),
+				Description: schemas.Ptr("Benchmark tool number " + strconv.Itoa(i)),
+			}}
+		}
+		mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
+			BindingLevel:         schemas.CodeModeBindingLevelServer,
+			ToolExecutionTimeout: time.Second,
+		}, nil)
+		mode.clientManager = &testClientManager{
+			clients: map[string]*schemas.MCPClientState{
+				"bench": {
+					Name:            "bench",
+					ExecutionConfig: &schemas.MCPClientConfig{ID: "bench-id", Name: "bench", IsCodeModeClient: true},
+				},
+			},
+			tools: map[string][]schemas.ChatTool{"bench": tools},
+		}
+		for _, read := range []struct {
+			name string
+			args string
+		}{
+			{"full", `{"fileName":"servers/bench.pyi"}`},
+			{"paged", `{"fileName":"servers/bench.pyi","startLine":2,"endLine":10}`},
+		} {
+			call := schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("bench-call"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: read.args},
+			}
+			b.Run("tools="+strconv.Itoa(toolCount)+"/"+read.name, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := mode.handleReadToolFile(context.Background(), call); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
 // A per-call client (per-user OAuth, per-user headers, token exchange) gets its tools back from
 // the config store after a restart instead of from a live tools/list. That decode turns every
 // nested schema object into *OrderedMap, where live discovery keeps plain maps, and the stubs
