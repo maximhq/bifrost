@@ -75,6 +75,7 @@
 - **Empty Transcriptions** - Transcribing silence with `text`, `srt` or `vtt` output returns empty text instead of a 500
 - **Unsupported Streaming Speech Models** - Streaming speech on OpenAI `tts-1` and `tts-1-hd` returns a 400 instead of a 500
 - **GenAI Audio by URL** - A `/genai` request with an audio `fileData` URL is answered as a multimodal prompt instead of being rejected as a transcription
+- **Gemini Transcription Models** - `/v1/audio/transcriptions` on `gemini/gemini-3.5-transcribe`, and a `/genai` `generateContent` with inline audio for that model, returned an empty `text` while the audio was still billed, because the model answers with an `audioTranscription` part instead of a text part. The transcript is now returned, streaming included (thanks [@Xytronix](https://github.com/Xytronix)!)
 - **Vertex Model Listing** - Model listing on `us` and `eu` keys uses the same regional endpoint host as inference, and token errors show the underlying cause
 - **allowed_models and Key Aliases** - A virtual key that allows a model also allows a key alias that resolves to it (thanks [@aharshit123456](https://github.com/aharshit123456)!)
 - **Unprefixed Models on Keyless Providers** - Catalog-based provider resolution honours `SkipKeySelection`, so bare Claude Code model names work on the Anthropic passthrough (thanks [@cgtarmenta](https://github.com/cgtarmenta)!)

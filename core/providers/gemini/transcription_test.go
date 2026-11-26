@@ -1,8 +1,11 @@
 package gemini
 
 import (
+	"strings"
 	"testing"
+	"unsafe"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -77,4 +80,137 @@ func TestToGeminiTranscriptionRequest_ExtraParamsSurviveRetries(t *testing.T) {
 	assert.Contains(t, bifrostReq.Params.ExtraParams, "cached_content")
 	assert.Contains(t, bifrostReq.Params.ExtraParams, "labels")
 	assert.Len(t, bifrostReq.Params.ExtraParams, 4)
+}
+
+// geminiTranscribeResponse is a gemini-3.5-transcribe :generateContent response as
+// returned by the Gemini Developer API: the transcript sits in
+// parts[].audioTranscription.text and there is no text part.
+const geminiTranscribeResponse = `{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "audioTranscription": {
+              "text": "The quick brown fox jumps over the lazy dog."
+            }
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 79,
+    "candidatesTokenCount": 10,
+    "totalTokenCount": 89,
+    "promptTokensDetails": [
+      {"modality": "TEXT", "tokenCount": 7},
+      {"modality": "AUDIO", "tokenCount": 72}
+    ],
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3.5-transcribe",
+  "responseId": "-0T3aub7Mei8kdUPqtjb2QQ"
+}`
+
+func TestToBifrostTranscriptionResponseReadsAudioTranscriptionPart(t *testing.T) {
+	var resp GenerateContentResponse
+	require.NoError(t, sonic.Unmarshal([]byte(geminiTranscribeResponse), &resp))
+
+	got := resp.ToBifrostTranscriptionResponse()
+	assert.Equal(t, "The quick brown fox jumps over the lazy dog.", got.Text)
+	require.NotNil(t, got.Task)
+	assert.Equal(t, "transcribe", *got.Task)
+	require.NotNil(t, got.Usage)
+	require.NotNil(t, got.Usage.InputTokens)
+	assert.Equal(t, 79, *got.Usage.InputTokens)
+}
+
+func TestToBifrostTranscriptionResponseFallsBackToTextParts(t *testing.T) {
+	resp := &GenerateContentResponse{
+		Candidates: []*Candidate{{Content: &Content{Role: string(RoleModel), Parts: []*Part{
+			{Text: "Hello "},
+			nil,
+			{AudioTranscription: &PartAudioTranscription{}},
+			{Text: "world."},
+		}}}},
+	}
+	assert.Equal(t, "Hello world.", resp.ToBifrostTranscriptionResponse().Text)
+}
+
+// The streaming endpoint sends the transcript in an audioTranscription chunk and
+// then a closing chunk with an empty text part and finishReason STOP.
+func TestTranscriptionStreamChunksReadAudioTranscriptionPart(t *testing.T) {
+	chunks := []string{
+		`{"candidates": [{"content": {"parts": [{"audioTranscription": {"text": "The quick brown fox jumps over the lazy dog."}}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 79,"candidatesTokenCount": 10,"totalTokenCount": 89},"modelVersion": "gemini-3.5-transcribe"}`,
+		`{"candidates": [{"content": {"parts": [{"text": ""}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 79,"candidatesTokenCount": 10,"totalTokenCount": 89},"modelVersion": "gemini-3.5-transcribe"}`,
+	}
+	var full string
+	for _, c := range chunks {
+		resp, err := processGeminiStreamChunk([]byte(c))
+		require.NoError(t, err)
+		full += resp.transcriptText()
+	}
+	assert.Equal(t, "The quick brown fox jumps over the lazy dog.", full)
+}
+
+func TestPartAudioTranscriptionRoundTrips(t *testing.T) {
+	in := Part{AudioTranscription: &PartAudioTranscription{Text: "hi"}}
+	data, err := sonic.Marshal(in)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"audioTranscription":{"text":"hi"}}`, string(data))
+
+	var out Part
+	require.NoError(t, sonic.Unmarshal(data, &out))
+	require.NotNil(t, out.AudioTranscription)
+	assert.Equal(t, "hi", out.AudioTranscription.Text)
+}
+
+// A single-part response, the common case, must hand back the part's string
+// without copying the transcript.
+func TestTranscriptTextSinglePartIsZeroCopy(t *testing.T) {
+	transcript := strings.Repeat("The quick brown fox jumps over the lazy dog. ", 1024)
+	for _, part := range []*Part{
+		{AudioTranscription: &PartAudioTranscription{Text: transcript}},
+		{Text: transcript},
+	} {
+		resp := &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Parts: []*Part{part}}}}}
+		got := resp.transcriptText()
+		require.Equal(t, transcript, got)
+		assert.Same(t, unsafe.StringData(transcript), unsafe.StringData(got), "single-part transcript was copied")
+		assert.Zero(t, testing.AllocsPerRun(10, func() { _ = resp.transcriptText() }))
+	}
+}
+
+func benchmarkTranscriptionResponse(parts int, size int) *GenerateContentResponse {
+	chunk := strings.Repeat("a", size/parts)
+	ps := make([]*Part, parts)
+	for i := range ps {
+		ps[i] = &Part{AudioTranscription: &PartAudioTranscription{Text: chunk}}
+	}
+	return &GenerateContentResponse{Candidates: []*Candidate{{Content: &Content{Role: string(RoleModel), Parts: ps}}}}
+}
+
+func BenchmarkToBifrostTranscriptionResponse(b *testing.B) {
+	for _, bc := range []struct {
+		name  string
+		parts int
+		size  int
+	}{
+		{"1part_1KB", 1, 1 << 10},
+		{"1part_1MB", 1, 1 << 20},
+		{"4parts_1KB", 4, 1 << 10},
+		{"4parts_1MB", 4, 1 << 20},
+	} {
+		resp := benchmarkTranscriptionResponse(bc.parts, bc.size)
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = resp.ToBifrostTranscriptionResponse()
+			}
+		})
+	}
 }
