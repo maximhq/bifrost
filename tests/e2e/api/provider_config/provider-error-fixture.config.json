@@ -22,6 +22,8 @@
             "upstream-ok",
             "upstream-fixed-length-short",
             "upstream-fixed-length-ok",
+            "upstream-usage-missing",
+            "upstream-usage-zero",
             "upstream-extra-content",
             "upstream-zero-cost",
             "upstream-transcribe-empty",

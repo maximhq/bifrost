@@ -1575,9 +1575,6 @@ func HandleOpenAIChatCompletionStreaming(
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
-		// Register the accumulating usage handle so a mid-stream
-		// cancel/timeout can bill for tokens the provider already processed.
-		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
 
 		lastChunkTime := startTime
 
@@ -1764,7 +1761,10 @@ func HandleOpenAIChatCompletionStreaming(
 
 				// Accumulate usage across chunks; attached to final event below.
 				if response.Usage != nil {
-					usageSeen = true
+					if !usageSeen {
+						usageSeen = true
+						ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+					}
 					// Presence is sticky once any frame reports zero; counts still merge by max.
 					usage.PromptTokensExplicitZero = usage.PromptTokensExplicitZero || response.Usage.PromptTokensExplicitZero
 					usage.CompletionTokensExplicitZero = usage.CompletionTokensExplicitZero || response.Usage.CompletionTokensExplicitZero
@@ -1913,9 +1913,12 @@ func HandleOpenAIChatCompletionStreaming(
 					if response.Usage.Cost != nil {
 						usage.Cost = response.Usage.Cost
 					}
-					// usageSeen is deliberately not set here: it belongs to the Responses
-					// fallback branch above, which is the only reader (the Mantle exit and the
-					// terminal-event usage attach). This branch gates on trailingUsageSeen.
+					// Retain only observed usage, including an explicit zero receipt. An
+					// allocated accumulator alone does not establish provider measurements.
+					if !usageSeen {
+						usageSeen = true
+						ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
+					}
 					usageInFrame = true
 					response.Usage = nil
 				}
@@ -2060,7 +2063,11 @@ func HandleOpenAIChatCompletionStreaming(
 			if forwardedTerminalFinishReason {
 				finalFinishReason = nil
 			}
-			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, usage, finalFinishReason, chunkIndex, modelName, created)
+			var reportedUsage *schemas.BifrostLLMUsage
+			if usageSeen {
+				reportedUsage = usage
+			}
+			response := providerUtils.CreateBifrostChatCompletionChunkResponse(messageID, reportedUsage, finalFinishReason, chunkIndex, modelName, created)
 			if postResponseConverter != nil {
 				response = postResponseConverter(response)
 			}
