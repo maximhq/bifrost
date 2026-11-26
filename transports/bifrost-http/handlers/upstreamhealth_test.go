@@ -27,7 +27,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 		}},
 	}}
 
-	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch, nil)
+	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch, literalModelAccess, nil)
 	if len(got) != 2 || got[0].Model != "claude-a" || got[1].Model != "claude-b" {
 		t.Fatalf("expected only the reachable anthropic pairs, got %+v", got)
 	}
@@ -37,7 +37,7 @@ func TestVKUpstreamHealthFiltersReachablePairsAndFoldsStaticLimits(t *testing.T)
 	if got[1].EffectiveRemainingFraction != 0.25 {
 		t.Fatalf("expected the per-model request limit (25%% left) to bound the pair, got %v", got[1].EffectiveRemainingFraction)
 	}
-	if len(vkUpstreamHealth(snapshot, nil, false, nil, canonicalModelConfigMatch, nil)) != 0 {
+	if len(vkUpstreamHealth(snapshot, nil, false, nil, canonicalModelConfigMatch, literalModelAccess, nil)) != 0 {
 		t.Fatal("a key with no provider configs reaches nothing")
 	}
 }
@@ -56,11 +56,11 @@ func TestVKUpstreamHealthAllowAllProvidersReachesUnnamedProviders(t *testing.T) 
 		AllowAllKeys:      true,
 		BlacklistedModels: schemas.BlackList{"claude-blocked"},
 	}}
-	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch, nil)
+	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch, literalModelAccess, nil)
 	if len(got) != 2 || got[0].Model != "gpt-x" || got[1].Model != "claude-a" {
 		t.Fatalf("expected the unnamed provider and the named provider's allowed model, got %+v", got)
 	}
-	if got := vkUpstreamHealth(snapshot, nil, true, nil, canonicalModelConfigMatch, nil); len(got) != 3 {
+	if got := vkUpstreamHealth(snapshot, nil, true, nil, canonicalModelConfigMatch, literalModelAccess, nil); len(got) != 3 {
 		t.Fatalf("a key allowing all providers with no configs reaches every pair, got %+v", got)
 	}
 }
@@ -85,7 +85,7 @@ func TestVKUpstreamHealthFoldsLimitsTheMatcherGoverns(t *testing.T) {
 	match := func(configModel string, _ *string, _ schemas.ModelProvider, model string, _ schemas.WhiteList) bool {
 		return configModel == "gpt-4o" && model == "gpt-4o-2024-08-06"
 	}
-	got := vkUpstreamHealth(snapshot, configs, false, models, match, nil)
+	got := vkUpstreamHealth(snapshot, configs, false, models, match, literalModelAccess, nil)
 	if len(got) != 2 || got[0].EffectiveRemainingFraction != 0 || got[1].EffectiveRemainingFraction != 1 {
 		t.Fatalf("expected the exhausted gpt-4o budget to bound only its dated model, got %+v", got)
 	}
@@ -110,7 +110,7 @@ func TestVKUpstreamHealthMatchesThroughTheConfigsKeys(t *testing.T) {
 		// key-opus maps claude-sonnet to opus; key-sonnet does not.
 		return configModel == "opus" && provider == schemas.Bedrock && keyIDs.IsAllowed("key-opus")
 	}
-	got := vkUpstreamHealth(snapshot, configs, true, models, match, nil)
+	got := vkUpstreamHealth(snapshot, configs, true, models, match, literalModelAccess, nil)
 	if len(got) != 2 || got[0].EffectiveRemainingFraction != 1 {
 		t.Fatalf("expected the key-sonnet route to keep its capacity, got %+v", got)
 	}
@@ -128,7 +128,7 @@ func TestVKUpstreamHealthFoldsProviderScopedLimitWithoutProviderConfig(t *testin
 		{Provider: schemas.Azure, Model: "gpt-4o", Status: schemas.UpstreamHealthDegraded, Available: true, EffectiveRemainingFraction: 1},
 	}
 	models := []quotaModelUsage{{ModelName: "gpt-4o", Provider: schemas.Ptr("openai"), Budgets: []configstoreTables.TableBudget{{MaxLimit: 10, CurrentUsage: 10}}}}
-	got := vkUpstreamHealth(snapshot, nil, true, models, canonicalModelConfigMatch, nil)
+	got := vkUpstreamHealth(snapshot, nil, true, models, canonicalModelConfigMatch, literalModelAccess, nil)
 	if len(got) != 2 || got[0].EffectiveRemainingFraction != 0 || got[1].EffectiveRemainingFraction != 1 {
 		t.Fatalf("expected the exhausted openai/gpt-4o limit to bound only the openai pair, got %+v", got)
 	}
@@ -146,7 +146,7 @@ func TestVKUpstreamHealthSkipsDenyAllProviderConfig(t *testing.T) {
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
 		{Provider: "anthropic", AllowedModels: schemas.WhiteList{"*"}, Keys: []configstoreTables.TableKey{{KeyID: "key-1"}}},
 	}
-	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch, nil)
+	got := vkUpstreamHealth(snapshot, configs, true, nil, canonicalModelConfigMatch, literalModelAccess, nil)
 	if len(got) != 1 || got[0].Provider != schemas.Anthropic {
 		t.Fatalf("expected only the provider whose config allows a key, got %+v", got)
 	}
@@ -165,8 +165,38 @@ func TestVKUpstreamHealthKeylessProviderIgnoresKeyRestriction(t *testing.T) {
 		{Provider: "openai", AllowedModels: schemas.WhiteList{"*"}},
 	}
 	keyless := func(provider schemas.ModelProvider) bool { return provider == keylessProvider }
-	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch, keyless)
+	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch, literalModelAccess, keyless)
 	if len(got) != 1 || got[0].Provider != keylessProvider {
 		t.Fatalf("expected only the keyless provider's pair, got %+v", got)
+	}
+}
+
+// A provider config's model lists decide a pair through the access check, as inference decides a
+// request, so a key alias the config's keys map to an allowed model is reachable though the list
+// does not name it, and the check sees the model lists and the keys the config allows. A cooling
+// alias pair dropped here would look available, since clients read an absent pair as healthy.
+func TestVKUpstreamHealthDecidesModelsThroughTheAccessCheck(t *testing.T) {
+	snapshot := []schemas.UpstreamHealth{
+		{Provider: schemas.OpenAI, Model: "friendly", Status: schemas.UpstreamHealthCoolingDown},
+		{Provider: schemas.OpenAI, Model: "blocked-alias", Status: schemas.UpstreamHealthCoolingDown},
+	}
+	configs := []configstoreTables.TableVirtualKeyProviderConfig{{
+		Provider:          "openai",
+		AllowedModels:     schemas.WhiteList{"gpt-4o"},
+		BlacklistedModels: schemas.BlackList{"gpt-4o-mini"},
+		Keys:              []configstoreTables.TableKey{{KeyID: "key-1"}},
+	}}
+	// key-1 maps friendly to the allowed gpt-4o and blocked-alias to the blacklisted gpt-4o-mini.
+	targets := map[string]string{"friendly": "gpt-4o", "blocked-alias": "gpt-4o-mini"}
+	access := func(_ schemas.ModelProvider, model string, allowed schemas.WhiteList, blacklisted schemas.BlackList, keyIDs schemas.WhiteList) bool {
+		target := targets[model]
+		return keyIDs.IsAllowed("key-1") && allowed.IsAllowed(target) && !blacklisted.IsBlocked(target)
+	}
+	got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch, access, nil)
+	if len(got) != 1 || got[0].Model != "friendly" {
+		t.Fatalf("expected the alias whose target is allowed to stay and the blacklisted target's alias to go, got %+v", got)
+	}
+	if got := vkUpstreamHealth(snapshot, configs, false, nil, canonicalModelConfigMatch, literalModelAccess, nil); len(got) != 0 {
+		t.Fatalf("expected name-only matching to drop both aliases, got %+v", got)
 	}
 }

@@ -2379,6 +2379,25 @@ func TestGovernanceStore_ModelConfigGovernsMatchesRequestLookup(t *testing.T) {
 	assert.False(t, store.ModelConfigGoverns(opus, &bedrock, schemas.Bedrock, "claude-sonnet", nil))
 }
 
+// ModelAccessAllows answers what inference's model check does for a provider config: a key alias
+// the usable keys map to an allowed model is allowed though the list does not name it, one only an
+// unusable key maps is not, and an alias whose target the config blacklists is refused.
+func TestGovernanceStore_ModelAccessAllowsKeyAliases(t *testing.T) {
+	store, h := modelKeyStore(t)
+	all := schemas.WhiteList{"*"}
+	h.setProviders(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: {{ID: "key-1", Models: all, Aliases: schemas.KeyAliases{"friendly": {ModelID: "gpt-4o"}}}},
+	})
+	assert.True(t, store.ModelAccessAllows(schemas.OpenAI, "gpt-4o", schemas.WhiteList{"gpt-4o"}, nil, all))
+	assert.True(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o"}, nil, all))
+	assert.True(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o"}, nil, schemas.WhiteList{"key-1"}))
+	assert.False(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o"}, nil, schemas.WhiteList{"key-2"}))
+	assert.False(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o-mini"}, nil, all))
+	assert.False(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o", "friendly"}, schemas.BlackList{"gpt-4o"}, all))
+	assert.True(t, store.ModelAccessAllows(schemas.OpenAI, "friendly", schemas.WhiteList{"gpt-4o", "friendly"}, schemas.BlackList{"gpt-4o"}, schemas.WhiteList{"key-2"}))
+	assert.False(t, store.ModelAccessAllows(schemas.OpenAI, "gpt-4o", schemas.WhiteList{"gpt-4o"}, schemas.BlackList{"gpt-4o"}, all))
+}
+
 // The spelling an operator stores a provider-scoped config under is canonicalised the same way a
 // request is, on both the load path and the refresh path that follows a write, so existing rows keep
 // matching without a migration.

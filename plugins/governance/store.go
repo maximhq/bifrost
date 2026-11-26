@@ -2430,6 +2430,44 @@ func (gs *LocalGovernanceStore) ModelConfigGoverns(configModel string, configPro
 	return found
 }
 
+// ModelAccessAllows reports whether a provider config allowing allowed and blacklisting blacklisted
+// lets a request for model on provider through, sent through the keys keyIDs allows, as inference's
+// model check decides it (GovernancePlugin.modelMatcher, then the access's alias-target blacklist):
+// by name through the model catalog, or as a key alias those keys map to an allowed model, and
+// refused when the name, or a model those keys' aliases map it to, is blacklisted. Without a
+// catalog names match as written, as they do for inference.
+func (gs *LocalGovernanceStore) ModelAccessAllows(provider schemas.ModelProvider, model string, allowed schemas.WhiteList, blacklisted schemas.BlackList, keyIDs schemas.WhiteList) bool {
+	if blacklisted.IsBlocked(model) {
+		return false
+	}
+	var keys []schemas.Key
+	if list, ok := gs.live.Views.ProviderKeyLists.Get(string(provider)); ok {
+		keys = *list
+	}
+	if gs.modelCatalog == nil {
+		if !allowed.IsAllowed(model) {
+			return false
+		}
+	} else {
+		var providerConfig *configstore.ProviderConfig
+		if stored, ok := gs.live.Collections.Providers.Get(string(provider)); ok {
+			config := stored.Config
+			providerConfig = &config
+		}
+		if !allowedThroughKeys(nil, gs.modelCatalog, provider, model, providerConfig, keys, allowed, keyIDs) {
+			return false
+		}
+	}
+	if blacklisted.IsEmpty() || !modelcatalog.HasKeyAliases(keys) || !modelcatalog.MayBeKeyAlias(provider, model, keys) {
+		return true
+	}
+	ok := true
+	modelcatalog.KeyAliasTargets(model, keys, keyIDs, func(target string) {
+		ok = ok && !blacklisted.IsBlocked(target)
+	})
+	return ok
+}
+
 // modelConfigIndexKey is the key a model config is indexed under: its scope, then the model name
 // lookups ask for (the catalog base name for a provider-less config, the canonical spelling
 // otherwise), then its provider.

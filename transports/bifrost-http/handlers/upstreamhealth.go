@@ -18,6 +18,12 @@ type UpstreamHealthSource func(now time.Time) []schemas.UpstreamHealth
 // aliases map it to.
 type ModelConfigMatcher func(configModel string, configProvider *string, provider schemas.ModelProvider, model string, keyIDs schemas.WhiteList) bool
 
+// ModelAccessCheck reports whether a provider config with allowed and blacklisted models lets a
+// request for model on provider through, sent through the keys keyIDs allows, the way inference
+// decides it: by name through the model catalog, or as a key alias those keys map to an allowed
+// model, and refused when the name or a model those keys' aliases map it to is blacklisted.
+type ModelAccessCheck func(provider schemas.ModelProvider, model string, allowed schemas.WhiteList, blacklisted schemas.BlackList, keyIDs schemas.WhiteList) bool
+
 // SetUpstreamHealthSource wires the snapshot the virtual-key quota endpoint reports as
 // upstream_health. Without it the field is reported empty.
 func (h *GovernanceHandler) SetUpstreamHealthSource(source UpstreamHealthSource) {
@@ -40,10 +46,22 @@ func (h *GovernanceHandler) SetModelConfigMatcher(match ModelConfigMatcher) {
 	h.modelConfigMatcher = match
 }
 
+// SetModelAccessCheck wires how upstream_health decides which of a provider config's pairs the key
+// reaches. Without it a pair is reached when the config's lists allow its model by name.
+func (h *GovernanceHandler) SetModelAccessCheck(check ModelAccessCheck) {
+	h.modelAccessCheck = check
+}
+
 // canonicalModelConfigMatch is the matcher used without the governance store: a limit applies to
 // the model it names, in any spelling that canonicalises to it.
 func canonicalModelConfigMatch(configModel string, configProvider *string, _ schemas.ModelProvider, model string, _ schemas.WhiteList) bool {
 	return governance.CanonicalModelConfigName(configModel, configProvider) == governance.CanonicalModelConfigName(model, configProvider)
+}
+
+// literalModelAccess is the access check used without the governance store: the lists decide the
+// model by the name it was dispatched under.
+func literalModelAccess(_ schemas.ModelProvider, model string, allowed schemas.WhiteList, blacklisted schemas.BlackList, _ schemas.WhiteList) bool {
+	return allowed.IsAllowed(model) && !blacklisted.IsBlocked(model)
 }
 
 // allProviderKeys is the key restriction on a provider granted by allow_all_providers: none.
@@ -53,38 +71,39 @@ var allProviderKeys = schemas.WhiteList{"*"}
 // can reach, with each pair's EffectiveRemainingFraction narrowed by the static budgets and rate
 // limits the key has on that provider, on that model under it (with or without a provider
 // config), and on that model across all providers (a model config with no provider, which
-// governance enforces on every provider). A pair is reachable through a provider config that allows the model and at least one key (any config on a provider keyless says needs none), or, when the key allows all
-// providers, through any provider it names no config for: inference grants those with every
-// model. Every pair in the snapshot was dispatched to, so its provider is configured. match
-// decides which per-model limits govern a pair, through the keys the key's provider config allows
-// (every key on a provider granted by allow_all_providers).
-func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []configstoreTables.TableVirtualKeyProviderConfig, allowAllProviders bool, models []quotaModelUsage, match ModelConfigMatcher, keyless KeylessProviderCheck) []schemas.UpstreamHealth {
+// governance enforces on every provider). A pair is reachable through a provider config whose
+// model lists let it through (access decides, as inference does, through the keys the config
+// allows) and that allows at least one key (any config on a provider keyless says needs none),
+// or, when the key allows all providers, through any provider it names no config for: inference
+// grants those with every model. Every pair in the snapshot was dispatched to, so its provider is
+// configured. match decides which per-model limits govern a pair, through the keys the key's
+// provider config allows (every key on a provider granted by allow_all_providers).
+func vkUpstreamHealth(snapshot []schemas.UpstreamHealth, providerConfigs []configstoreTables.TableVirtualKeyProviderConfig, allowAllProviders bool, models []quotaModelUsage, match ModelConfigMatcher, access ModelAccessCheck, keyless KeylessProviderCheck) []schemas.UpstreamHealth {
 	out := make([]schemas.UpstreamHealth, 0, len(snapshot))
 	for _, entry := range snapshot {
 		var pc *configstoreTables.TableVirtualKeyProviderConfig
-		named := false
 		for i := range providerConfigs {
 			if schemas.ModelProvider(providerConfigs[i].Provider) == entry.Provider {
-				pc, named = &providerConfigs[i], true
+				pc = &providerConfigs[i]
 				break
 			}
 		}
-		if pc != nil && (!pc.AllowedModels.IsAllowed(entry.Model) || pc.BlacklistedModels.IsBlocked(entry.Model)) {
+		if pc == nil && !allowAllProviders {
 			continue
 		}
-		// A config that allows no keys (deny-by-default) serves nothing on a provider that needs
-		// keys; a keyless provider skips key selection, so the restriction does not apply.
-		if pc != nil && len(pc.KeyIDs()) == 0 && (keyless == nil || !keyless(entry.Provider)) {
-			continue
-		}
-		if !named && !allowAllProviders {
-			continue
+		keyIDs := allProviderKeys
+		if pc != nil {
+			keyIDs = pc.KeyIDs()
+			// A config that allows no keys (deny-by-default) serves nothing on a provider that
+			// needs keys; a keyless provider skips key selection, so the restriction does not apply.
+			if len(keyIDs) == 0 && (keyless == nil || !keyless(entry.Provider)) {
+				continue
+			}
+			if !access(entry.Provider, entry.Model, pc.AllowedModels, pc.BlacklistedModels, keyIDs) {
+				continue
+			}
 		}
 		if entry.Available {
-			keyIDs := allProviderKeys
-			if pc != nil {
-				keyIDs = pc.KeyIDs()
-			}
 			if pc != nil {
 				entry.EffectiveRemainingFraction = min(entry.EffectiveRemainingFraction, staticRemainingFraction(pc.Budgets, pc.RateLimit))
 				for j := range pc.ModelBudgets {
