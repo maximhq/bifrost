@@ -8,7 +8,6 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
-	"github.com/maximhq/bifrost/core/mcp/codemode/starlark"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,39 +18,16 @@ import (
 // =============================================================================
 
 // setupMCPManagerWithRequestIDFunc creates an MCP manager with a custom request ID generator
-func setupMCPManagerWithRequestIDFunc(t *testing.T, fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string, clientConfigs ...schemas.MCPClientConfig) *mcp.MCPManager {
+func setupMCPManagerWithRequestIDFunc(t *testing.T, fetchNewRequestIDFunc func(ctx *schemas.BifrostContext) string) *mcp.MCPManager {
 	t.Helper()
 
-	logger := newTestLogger(t)
-
-	// Convert to pointer slice for MCPConfig
-	clientConfigPtrs := make([]*schemas.MCPClientConfig, len(clientConfigs))
-	for i := range clientConfigs {
-		clientConfigPtrs[i] = &clientConfigs[i]
-	}
-
 	// Create MCP config with request ID function
-	mcpConfig := &schemas.MCPConfig{
-		ClientConfigs:         clientConfigPtrs,
+	mcpConfig := schemas.MCPConfig{
 		FetchNewRequestIDFunc: fetchNewRequestIDFunc,
 	}
 
-	// Create Starlark CodeMode
-	codeMode := starlark.NewStarlarkCodeMode(nil, logger)
-
-	// Create MCP manager - dependencies are injected automatically
-	manager := mcp.NewMCPManager(context.Background(), *mcpConfig, nil, logger, codeMode)
-
-	// Cleanup
-	t.Cleanup(func() {
-		// Remove all clients
-		clients := manager.GetClients()
-		for _, client := range clients {
-			_ = manager.RemoveClient(client.ExecutionConfig.ID)
-		}
-	})
-
-	return manager
+	// Create MCP manager with Starlark CodeMode - dependencies are injected automatically
+	return newTestManager(t, mcpConfig, newTestAccount())
 }
 
 // =============================================================================
@@ -569,13 +545,9 @@ func (r *mcpLogIDRecorder) PostMCPHook(_ *schemas.BifrostContext, resp *schemas.
 func TestCodeMode_NestedCallsGetTheirOwnMCPLogID(t *testing.T) {
 	manager := setupMCPManager(t)
 	require.NoError(t, RegisterEchoTool(manager))
-	for _, client := range manager.GetClients() {
-		if client.ExecutionConfig.ID == mcp.BifrostMCPClientKey {
-			config := client.ExecutionConfig
-			config.IsCodeModeClient = true
-			require.NoError(t, manager.UpdateClient(config.ID, config))
-		}
-	}
+	require.NoError(t, editInternalClient(manager, func(config *schemas.MCPClientConfig) {
+		config.IsCodeModeClient = true
+	}))
 
 	recorder := &mcpLogIDRecorder{ids: map[string][]string{}}
 	bf, err := bifrost.Init(context.Background(), schemas.BifrostConfig{

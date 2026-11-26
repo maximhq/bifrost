@@ -36,7 +36,7 @@ func TestCollectHierarchy_ScopedCustomerSkipsScalarTeamCustomer(t *testing.T) {
 	vk.TeamID = &team.ID
 	vk.Team = team
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*vkBudget, *teamBudget, *customerBudget},
 		RateLimits:  []configstoreTables.TableRateLimit{*customerRL},
@@ -45,7 +45,7 @@ func TestCollectHierarchy_ScopedCustomerSkipsScalarTeamCustomer(t *testing.T) {
 	}, nil, nil)
 	require.NoError(t, err)
 
-	vk, _ = store.GetVirtualKey(context.Background(), "sk-bf-test")
+	rec, _ := store.GetVirtualKey(context.Background(), "sk-bf-test")
 
 	// Which customer pays is decided when the holder's limits are resolved, so that is what this reads.
 	holds := func(limits []schemas.Limit, id string) bool {
@@ -57,7 +57,7 @@ func TestCollectHierarchy_ScopedCustomerSkipsScalarTeamCustomer(t *testing.T) {
 		return false
 	}
 	holderLimits := func(ctx *schemas.BifrostContext) ([]schemas.Limit, []schemas.Limit) {
-		return store.HolderLimits(ctx, store.permitForVirtualKey(ctx, vk))
+		return store.HolderLimits(ctx, store.permitForVirtualKey(ctx, rec))
 	}
 	hasCustomerBudget := func(ctx *schemas.BifrostContext) bool {
 		budgets, _ := holderLimits(ctx)
@@ -112,7 +112,7 @@ func TestEvaluate_ScopedCustomerSkipsScalarTeamCustomerEnforcement(t *testing.T)
 	vk.TeamID = &team.ID
 	vk.Team = team
 
-	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
 		Budgets:     []configstoreTables.TableBudget{*vkBudget, *teamBudget, *customerBudget},
 		Teams:       []configstoreTables.TableTeam{*team},
@@ -123,7 +123,7 @@ func TestEvaluate_ScopedCustomerSkipsScalarTeamCustomerEnforcement(t *testing.T)
 	p := &GovernancePlugin{
 		logger:   logger,
 		store:    store,
-		resolver: NewBudgetResolver(store, nil, logger, nil),
+		resolver: budgetResolverForTest(t, store, nil, logger),
 	}
 
 	evaluate := func(scope string) *EvaluationResult {

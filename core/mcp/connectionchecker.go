@@ -139,7 +139,7 @@ func (c *ClientConnectionChecker) Start() {
 	var name string
 	if exists {
 		onSteady = clientState.State == schemas.MCPConnectionStateHealthy
-		name = clientState.ExecutionConfig.Name
+		name = clientState.Name
 	}
 	c.manager.mu.RUnlock()
 
@@ -298,7 +298,7 @@ func (c *ClientConnectionChecker) performCheck() (time.Duration, bool) {
 		isDisabled = clientState.State == schemas.MCPConnectionStateDisabled
 		needsReauth = clientState.State == schemas.MCPConnectionStateNeedsReauth
 		pendingVerification = clientState.State == schemas.MCPConnectionStatePendingVerification
-		config = clientState.ExecutionConfig
+		config = c.manager.config(c.clientID)
 		connGeneration = clientState.ConnGeneration
 	}
 	c.manager.mu.RUnlock()
@@ -569,10 +569,7 @@ func (c *ClientConnectionChecker) setState(state schemas.MCPConnectionState, con
 	}
 	oldState := clientState.State
 	stateChanged := oldState != state
-	name := ""
-	if clientState.ExecutionConfig != nil {
-		name = clientState.ExecutionConfig.Name
-	}
+	name := clientState.Name
 	var recorded *schemas.MCPConnectionFailure
 	if state == schemas.MCPConnectionStateHealthy {
 		markClientHealthy(clientState)

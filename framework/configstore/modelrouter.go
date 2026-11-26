@@ -404,6 +404,42 @@ func (s *RDBConfigStore) GetModelRouters(ctx context.Context) ([]ModelRouter, er
 	return routers, nil
 }
 
+// ReadModelRouters reads the routers where selects from db, each with its targets. A router stored
+// in a form this version cannot read is left out of routers and reported in unreadable, under its
+// ID, with an error matching ErrConfigUnreadable.
+func ReadModelRouters(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.DB) (routers []ModelRouter, unreadable map[string]error, err error) {
+	var rows []tables.TableModelRouter
+	if err := where(db.WithContext(ctx)).Find(&rows).Error; err != nil {
+		return nil, nil, err
+	}
+	unreadable = make(map[string]error)
+	if len(rows) == 0 {
+		return nil, unreadable, nil
+	}
+	ids := make([]string, len(rows))
+	for i := range rows {
+		ids[i] = rows[i].ID
+	}
+	targets, unreadableTargets, err := loadModelRouterTargets(ctx, db, ids...)
+	if err != nil {
+		return nil, nil, err
+	}
+	routers = make([]ModelRouter, 0, len(rows))
+	for i := range rows {
+		router, err := decodeModelRouterRow(&rows[i])
+		if err == nil {
+			err = unreadableTargets[rows[i].ID]
+		}
+		if err != nil {
+			unreadable[rows[i].ID] = err
+			continue
+		}
+		router.Targets = targets[router.ID]
+		routers = append(routers, *router)
+	}
+	return routers, unreadable, nil
+}
+
 // GetModelRouter returns one router. It is ErrNotFound when no row exists, or
 // when the row-visibility scope on ctx hides it (see GetModelRouters), and
 // ErrConfigUnreadable when the row exists but this version cannot run it.
@@ -466,7 +502,7 @@ func prepareModelRouter(router *ModelRouter) (ModelRouter, error) {
 // default routing when it has none: off, global, and last among the global
 // routers. A taken id or name is ErrAlreadyExists, and a priority another
 // router in the scope holds is ErrModelRouterPriorityTaken. Targets are left
-// for SetModelRouterTargets.
+// for SetModelRouterTargets. The stored routing is set on router.
 func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error {
 	r, err := prepareModelRouter(router)
 	if err != nil {
@@ -479,7 +515,7 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 		}
 		r.Routing = &routing
 	}
-	return s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
+	if err := s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
 		db := txDB.WithContext(ctx)
 		var taken int64
 		if err := db.Model(&tables.TableModelRouter{}).Where("id = ? OR name = ?", r.ID, r.Name).Count(&taken).Error; err != nil {
@@ -510,7 +546,11 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 			return err
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	router.Routing = r.Routing
+	return nil
 }
 
 // UpdateModelRouter replaces a router's name, description and config, leaving

@@ -135,7 +135,7 @@ export const governanceApi = baseApi.injectEndpoints({
 			invalidatesTags: ["VirtualKeys", "ModelConfigs"],
 		}),
 
-		rotateVirtualKey: builder.mutation<{ message: string; virtual_key: VirtualKey }, string>({
+		rotateVirtualKey: builder.mutation<{ message: string; warning?: string; virtual_key: VirtualKey }, string>({
 			query: (vkId) => ({
 				url: `/governance/virtual-keys/${vkId}/rotate`,
 				method: "POST",

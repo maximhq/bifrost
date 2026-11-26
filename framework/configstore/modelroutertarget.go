@@ -13,6 +13,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 	"gorm.io/gorm"
 )
 
@@ -109,7 +110,9 @@ func ModelRouterTargetsHash(targets []tables.TableModelRouterTarget) string {
 // then by weight DESC and provider, model and key, so every read lists them
 // the same way. A router with a target this version cannot decode is left out
 // of the targets and reported in unreadable, wrapping ErrConfigUnreadable, so
-// one damaged row affects only its own router.
+// one damaged row affects only its own router. The router ids bind as one
+// argument, so a read of any number of routers stays within the statement
+// parameter limit.
 func loadModelRouterTargets(ctx context.Context, db *gorm.DB, routerIDs ...string) (targets map[string][]tables.TableModelRouterTarget, unreadable map[string]error, err error) {
 	query := db.WithContext(ctx).
 		Order("tier ASC").
@@ -118,7 +121,7 @@ func loadModelRouterTargets(ctx context.Context, db *gorm.DB, routerIDs ...strin
 		Order("COALESCE(model, '') ASC").
 		Order("COALESCE(key_id, '') ASC")
 	if len(routerIDs) > 0 {
-		query = query.Where("router_id IN ?", routerIDs)
+		query = query.Where(queryscope.InStrings(db, "router_id", routerIDs))
 	}
 	var rows []tables.TableModelRouterTarget
 	if err := query.Find(&rows).Error; err != nil {

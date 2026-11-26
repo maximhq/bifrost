@@ -494,7 +494,12 @@
 		"maximumSpend": "Dépense maximale (USD)",
 		"noBudgetLimits": "Aucune limite de budget configurée.",
 		"removeBudgetAria": "Supprimer le budget {{number}}",
-		"duplicateResetPeriod": "Période de réinitialisation en double ; chaque ligne de budget doit utiliser un intervalle différent."
+		"duplicateResetPeriod": "Période de réinitialisation en double ; chaque ligne de budget doit utiliser un intervalle différent.",
+		"contentLogging": "Journalisation du contenu",
+		"contentLoggingInherit": "Hériter",
+		"contentLoggingOff": "Désactivé pour cette équipe",
+		"contentLoggingOn": "Activé pour cette équipe",
+		"contentLoggingHelp": "Indique si le contenu des requêtes et des réponses est enregistré dans les journaux du trafic de cette équipe. L'équipe prime sur ses clés virtuelles et ses clés de fournisseur : une clé ne peut pas réactiver un contenu que l'équipe a désactivé. « Désactivé » retire aussi le contenu des exports des connecteurs. L'en-tête par requête s'applique toujours lorsque les remplacements par requête sont autorisés."
 	},
 	"filters": {
 		"filters": "Filtres",

@@ -200,6 +200,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 
 	// PreHooks. preReq is the (possibly mutated) request for the op. Their spans chain under
 	// the /mcp HTTP span — no op span exists yet.
+	ctx.SetValue(schemas.BifrostContextKeyMCPRequestStartTime, time.Now())
 	preReq, shortCircuit, preCount := pipeline.RunMCPPreHooks(ctx, req)
 
 	if preReq != nil {
@@ -568,15 +569,16 @@ func (m *MCPManager) connectionTypeForClientName(name string) schemas.MCPConnect
 	if name == "" {
 		return ""
 	}
+	config := m.configByName(name)
+	if config == nil {
+		return ""
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for _, state := range m.clientMap {
-		// Match on ExecutionConfig.Name, as GetClientByName does.
-		if state != nil && state.ExecutionConfig != nil && state.ExecutionConfig.Name == name {
-			return state.ExecutionConfig.ConnectionType
-		}
+	if _, ok := m.clientMap[config.ID]; !ok {
+		return ""
 	}
-	return ""
+	return config.ConnectionType
 }
 
 // mcpErrorType classifies a failed MCP op into a low-cardinality error.type for the

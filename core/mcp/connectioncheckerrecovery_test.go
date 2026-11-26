@@ -182,7 +182,7 @@ type jsonRPCFault struct {
 // connection. Sticky clients hold one connection; the rest connect per call.
 func connectUnreliableClient(t *testing.T, u *unreliableUpstream, id string, sticky bool) (*MCPManager, *schemas.MCPClientConfig) {
 	t.Helper()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID:                     id,
@@ -193,7 +193,7 @@ func connectUnreliableClient(t *testing.T, u *unreliableUpstream, id string, sti
 		NeedsSessionStickiness: schemas.Ptr(sticky),
 		ToolsToExecute:         []string{"*"},
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	state, ok := snapshotClientState(m, id)
 	require.True(t, ok)
 	require.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
