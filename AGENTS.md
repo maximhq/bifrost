@@ -627,13 +627,14 @@ Any issue fix or code change lands together with regression tests that pin the n
 
 - **Unit tests wherever possible**, added to the existing test file per the convention below.
 - **A provider-harness case for every wire-visible change** (next sections).
+- **MCP harness cases for every MCP behaviour change** ("Every MCP change ships with MCP harness cases" below). MCP cases go in the MCP harness, not the provider harness.
 - **E2E coverage for `ui/` changes** (`tests/e2e/`) - the harness cannot see the UI.
 
 The only exemptions: no wire-visible effect AND no testable behavior change (comments, internal renames, log lines). An exempt change must say so explicitly in the PR.
 
 ### Bug fixes: red before green
 
-Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development.
+Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development. For MCP bugs, the end-to-end pin is an MCP harness case instead (`.claude/skills/mcp-harness/SKILL.md`), run red and green with `TESTS=<ID> make run-mcp-harness-test`.
 
 ### Add tests to existing test files, never new ones
 
@@ -641,7 +642,7 @@ Do not create a new `_test.go` file for a package that already has one. Put the 
 
 ### Every wire-visible change ships with a provider-harness case
 
-Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one.
+Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one. MCP behaviour is the exception: its cases go in the MCP harness ("Every MCP change ships with MCP harness cases"); only a change to how a provider converts tool definitions or tool calls also needs a provider-harness case.
 
 These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
 
@@ -657,6 +658,20 @@ node tests/e2e/api/runners/filter-collection.mjs --source tmp/harness-augmented.
 Insert into the collection surgically (a script that splices the new object in, never a whole-file reserialize) — the file is ~50k lines and a reformat buries the actual change.
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
+
+### Every MCP change ships with MCP harness cases
+
+Any change to MCP behaviour a client can observe lands together with cases in the MCP harness, `tests/e2e/api/runners/build-mcp-harness.mjs` (see `.claude/skills/mcp-harness/SKILL.md`). MCP behaviour covers MCP clients and their upstream auth, connection types, `/mcp` and `/mcp/<slug>`, `/v1/mcp/tool/execute`, MCP tools in inference and code mode, tool filtering at every level, virtual keys' MCP grants and Virtual MCPs, per-user discovery and the sessions API, MCP logs and pricing, the MCP library, Bifrost's OAuth server and the Bifrost MCP on `/v1/mcp`. These cases never go in `provider-harness.json`.
+
+The skill lists, for each kind of MCP change, every case it needs: a new upstream auth type is checked on every connection type that can carry it, on each inbound auth mode, through expiry and refresh, per caller and shared, and on every surface that calls tools; a filtering change is checked at each level and on every surface that lists or calls tools. Cover every value the change reaches, not only the one named in the issue, and state in the PR any the change cannot reach.
+
+The MCP harness is hermetic: it boots its own Bifrost and an mcpchaos fleet and calls nothing outside the machine. Run it yourself, scoped to your cases, and report the IDs and results (new or changed cases red before the change and green after, the existing tests the change reaches green before and after):
+
+```bash
+TESTS=<ID>,<ID> make run-mcp-harness-test
+```
+
+The same harness rules as above apply: never skip an error status in a test script, assert exact statuses and messages, and never assert a 500 as the expected answer; a known bug is asserted with `A.skip(...)` until its fix lands.
 
 ### Provider-native features are tested on every route that reaches the provider
 
@@ -761,6 +776,8 @@ Categories: `agent_*_test.go`, `tool_*_test.go`, `connection_*_test.go`, `codemo
 
 Run: `make test-mcp TESTCASE=<TestName>`
 
+These prove the logic; the end-to-end MCP cases live in the MCP harness ("Every MCP change ships with MCP harness cases").
+
 ### E2E Tests (`tests/e2e/`)
 
 Playwright tests with page objects, data factories, fixtures:
@@ -795,6 +812,9 @@ Variants:
 ### `/harness-test-writer <PR# | issue# | URL>`
 Add regression test cases to the provider harness (`tests/e2e/api/collections/provider-harness.json`) from a merged PR or GitHub issue. Traces the affected wire path, checks existing coverage, designs cases per harness conventions, inserts them surgically without reformatting the file, and validates via the augment and filter scripts. This is the skill the Testing section's harness-case rule points at.
 
+### `mcp-harness`
+Which MCP harness cases each kind of MCP change needs (upstream auth, connection types, inbound auth on `/mcp`, filtering and Virtual MCPs, tool execution, MCP tools in inference, per-user discovery, logs, the library, the Bifrost MCP), where they go in `tests/e2e/api/runners/build-mcp-harness.mjs`, how to write them and how to run them. This is the skill the Testing section's MCP harness rule points at.
+
 ### `/investigate-issue <issue-id>`
 Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, plans the required regression tests (unit/harness/LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
 
@@ -826,7 +846,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 3. Add to `go.work`
 4. Register in transport layer or Bifrost config
 5. Add test targets to `Makefile`
-6. Add unit tests; add a provider-harness regression case if the plugin's behavior is wire-visible
+6. Add unit tests, plus the end-to-end cases its wire-visible behaviour needs: MCP harness cases for MCP behaviour (an `MCPPlugin`, tool filtering, MCP logs), otherwise a provider-harness regression case (see the Testing section)
 
 ### Modify a UI feature
 1. Find workspace page: `ui/app/workspace/<feature>/`

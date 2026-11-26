@@ -135,6 +135,10 @@ red → green, **including findings about comments and documentation**:
 1. **Write the failing test first**, expressing the reviewer's scenario as concretely as
    the finding allows — the exact retry count, the exact tool type, the exact message
    shape. Prefer extending the harness the PR already added over inventing a new one.
+   A finding about MCP behaviour gets its end-to-end case in the MCP harness, following
+   `.claude/skills/mcp-harness/SKILL.md`, not in the provider harness. If the fix also
+   changes how a provider converts tool definitions or tool calls, add a provider-harness
+   case as well.
 2. **Run it and confirm it is red for the right reason.** A test that fails on a compile
    error, a missing import, or an assertion earlier than the one under test has proved
    nothing. Read the failure message and check it names the behavior in the finding. If it

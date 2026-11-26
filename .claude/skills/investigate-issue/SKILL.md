@@ -574,6 +574,18 @@ every issue type -- bug, feature, refactor -- not only bugs.
 If the change is exempt (no wire-visible effect, or behaviour no HTTP request can reach),
 say so explicitly in the report instead of silently omitting the case.
 
+**MCP issues** take MCP harness cases instead of provider-harness cases: anything about MCP
+clients and their upstream auth, connection types, `/mcp` and `/mcp/<slug>`, tool
+execution, MCP tools in inference or code mode, filtering, Virtual MCPs, per-user
+discovery and sessions, MCP logs or the Bifrost MCP. A fix that also changes how a
+provider converts tool definitions or tool calls needs a provider-harness case as well.
+Plan the cases from
+`.claude/skills/mcp-harness/SKILL.md` section 3 for the kind of change (every connection
+type, auth mode and surface it reaches, not only the one the issue names), add them to
+`tests/e2e/api/runners/build-mcp-harness.mjs`, and run them red before the fix and green
+after with `TESTS=<ID>,<ID> make run-mcp-harness-test`. The MCP harness is hermetic, so
+this run is yours, not the user's.
+
 ## Step 6: Present Findings
 
 Present everything to the user in this structured format:
@@ -825,7 +837,13 @@ Once all approved changes are applied:
    make run-e2e FLOW=<feature>
    ```
 
-2. Run the provider harness (mandatory for every non-exempt wire-visible change, always scoped;
+   For an MCP change, also run its MCP harness cases from Step 5g here
+   (`TESTS=<ID>,<ID> make run-mcp-harness-test`). That harness is hermetic, so the run is
+   yours and needs no spend approval. An MCP change skips item 2 unless it also changes how
+   a provider converts tool definitions or tool calls.
+
+2. Run the provider harness (mandatory for every non-exempt wire-visible change except MCP
+   behaviour, always scoped;
    the exemptions are AGENTS.md's: no wire-visible effect, or behaviour no HTTP request can
    reach, and an exempt change must say so in the report). It is a paid live sweep
    against real provider accounts: the unfiltered collection is ~1,900 requests. The scope keeps

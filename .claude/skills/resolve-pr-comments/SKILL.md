@@ -244,6 +244,8 @@ make test-core PROVIDER=<provider> TESTCASE=<leaf-subtest-name>
 
 Report which scope ran, with pass and fail counts. A bare `make test-core PROVIDER=<provider>` runs only the live `Test<Provider>` e2e umbrella and skips every standalone unit test in that package, so it is never a substitute for a scoped run.
 
+A fix to MCP behaviour (MCP clients, `/mcp`, tool execution, MCP tools in inference, filtering, Virtual MCPs, per-user discovery, MCP logs) needs MCP harness cases instead of a provider-harness case: write them from `.claude/skills/mcp-harness/SKILL.md` and run them yourself with `TESTS=<ID>,<ID> make run-mcp-harness-test`, since that harness is hermetic. Report the IDs and results; hand over the provider-harness block below only when the fix also changes how a provider converts tool definitions or tool calls.
+
 Close the report with this block. Both commands must be final and copy-pasteable: the `make dev` line that starts the server, and the single-line `make run-provider-harness-test` line that runs against it. Do not draw a box around them, since border characters make the commands impossible to select.
 
 **RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
