@@ -71,6 +71,28 @@ export async function assertToast(
 }
 
 /**
+ * Fail the list request at apiPath with a 500 and reload. The page must show the
+ * load error with the server's message instead of its empty state.
+ */
+export async function expectListLoadError(
+  page: Page,
+  apiPath: string,
+  loadErrorTestId: string,
+  emptyStateTestId: string
+): Promise<void> {
+  await page.route(
+    (url) => url.pathname === apiPath,
+    (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: { message: 'database is down' } }) })
+        : route.fallback()
+  )
+  await page.reload()
+  await expect(page.getByTestId(loadErrorTestId)).toContainText(/database is down/i)
+  await expect(page.getByTestId(emptyStateTestId)).toHaveCount(0)
+}
+
+/**
  * Assert that page URL matches expected pattern
  */
 export async function assertUrl(page: Page, pattern: string | RegExp): Promise<void> {
@@ -170,4 +192,17 @@ export async function screenshotOnError(
     await page.screenshot({ path: `./screenshots/error-${testName}-${Date.now()}.png` })
     throw error
   }
+}
+
+/**
+ * Opens the ⌘K palette, pressing again until it shows: right after a navigation the
+ * shortcut listener may not be attached yet, so a single keypress can be lost.
+ */
+export async function openCommandPalette(page: Page) {
+  const palette = page.getByTestId('command-palette')
+  await expect(async () => {
+    if (!(await palette.isVisible())) await page.keyboard.press('ControlOrMeta+k')
+    await expect(palette).toBeVisible({ timeout: 1000 })
+  }).toPass({ timeout: 15000 })
+  return page.getByTestId('command-palette-input')
 }

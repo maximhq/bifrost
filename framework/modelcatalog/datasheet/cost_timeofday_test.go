@@ -51,8 +51,8 @@ func utc(t *testing.T, s string) time.Time {
 // TestOffPeak_DeepSeekSchedule walks DeepSeek's real windows. 2026-08-17 is a
 // Monday, so 08-15 is Saturday and 08-16 is Sunday.
 func TestOffPeak_DeepSeekSchedule(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("deepseek-v4-flash", "deepseek", "chat"): deepSeekPricing(),
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"): deepSeekPricing(),
 	})
 
 	// 1000 prompt + 1000 completion at peak:
@@ -90,8 +90,8 @@ func TestOffPeak_DeepSeekSchedule(t *testing.T) {
 // TestOffPeak_DiscountsCacheReads verifies the discount reaches the cache-hit
 // rate, not just the plain input rate — DeepSeek halves all three categories.
 func TestOffPeak_DiscountsCacheReads(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("deepseek-v4-flash", "deepseek", "chat"): deepSeekPricing(),
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"): deepSeekPricing(),
 	})
 
 	usage := &schemas.BifrostLLMUsage{
@@ -127,8 +127,8 @@ func TestOffPeak_FlatFeesAreNotDiscounted(t *testing.T) {
 	pricing.CostPerRequest = bifrost.Ptr(0.01)
 	pricing.WebSearchCostPerRequest = bifrost.Ptr(0.005)
 
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("deepseek-v4-flash", "deepseek", "chat"): pricing,
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"): pricing,
 	})
 
 	queries := 2
@@ -209,8 +209,8 @@ func TestOffPeak_FailsClosed(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pricing := deepSeekPricing()
 			fn(&pricing)
-			s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-				makeKey("deepseek-v4-flash", "deepseek", "chat"): pricing,
+			s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+				makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"): pricing,
 			})
 			resp := makeChatResponse(schemas.DeepSeek, "deepseek-v4-flash", &schemas.BifrostLLMUsage{
 				PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000,
@@ -233,8 +233,8 @@ func TestOffPeak_MidnightWrappingWindow(t *testing.T) {
 			{Days: []int{1}, Start: "22:00", End: "02:00"}, // Monday 22:00 -> Tuesday 02:00
 		},
 	}
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("deepseek-v4-flash", "deepseek", "chat"): pricing,
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"): pricing,
 	})
 
 	const peakCost = 0.00176
@@ -270,8 +270,8 @@ func TestOffPeak_NonUTCSchedule(t *testing.T) {
 			{Days: []int{1}, Start: "09:00", End: "17:00"},
 		},
 	}
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("deepseek-v4-flash", "deepseek", "chat"): pricing,
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"): pricing,
 	})
 
 	const peakCost = 0.00176
@@ -292,8 +292,8 @@ func TestOffPeak_NonUTCSchedule(t *testing.T) {
 // TestOffPeak_AppliesToNonTextModalities confirms the single application site
 // in computeCostFromInput reaches modalities other than chat.
 func TestOffPeak_AppliesToNonTextModalities(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("embed-model", "deepseek", "embedding"): {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("embed-model", "deepseek", "embedding"): {
 			Model: "embed-model", Provider: "deepseek", Mode: "embedding",
 			InputCostPerToken:     bifrost.Ptr(0.000001),
 			OffPeakCostMultiplier: bifrost.Ptr(0.5),
@@ -366,8 +366,8 @@ func TestOffPeak_ZeroBilledAtFallsBackToWallClock(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pricing := deepSeekPricing()
 			pricing.PeakHours = tc.sched
-			s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-				makeKey("deepseek-v4-flash", "deepseek", "chat"): pricing,
+			s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+				makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"): pricing,
 			})
 			resp := makeChatResponse(schemas.DeepSeek, "deepseek-v4-flash", &schemas.BifrostLLMUsage{
 				PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000,
@@ -433,8 +433,8 @@ func TestNeverPeakWindowBracket(t *testing.T) {
 // TestOffPeak_NilScopes exercises the nil-scopes entry point, which builds an
 // empty LookupScopes and therefore a zero BilledAt.
 func TestOffPeak_NilScopes(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("deepseek-v4-flash", "deepseek", "chat"): deepSeekPricing(),
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"): deepSeekPricing(),
 	})
 	resp := makeChatResponse(schemas.DeepSeek, "deepseek-v4-flash", &schemas.BifrostLLMUsage{
 		PromptTokens: 1000, CompletionTokens: 1000, TotalTokens: 2000,
@@ -543,11 +543,11 @@ func TestOffPeak_EndToEndFromDatasheetFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "datasheet.json")
 	require.NoError(t, os.WriteFile(path, []byte(datasheet), 0o600))
 
-	s := newTestStore()
+	s := newTestStore(t)
 	s.url = "file://" + path
 	require.NoError(t, s.LoadFromURLIntoMemory(context.Background()))
 
-	pricing, ok := s.pricingData[makeKey("deepseek-v4-flash", "deepseek", "chat")]
+	pricing, ok := s.pricingData.Get(makeKeyNormalized("deepseek-v4-flash", "deepseek", "chat"))
 	require.True(t, ok, "model missing from catalog after sync")
 	require.NotNil(t, pricing.OffPeakCostMultiplier, "off_peak_cost_multiplier lost in sync")
 	assert.Equal(t, 0.5, *pricing.OffPeakCostMultiplier)

@@ -7,9 +7,7 @@
 //
 // Two presentations, picked by mode:
 //   - single / add -> SearchSelect (a popover behind a button trigger)
-//   - multi        -> AsyncMultiSelect, the react-select control already used
-//                     for association fields, so chips render inline in the
-//                     control rather than in a separate row below it.
+//   - multi        -> Combobox with chips on the trigger, matching ModelSelector.
 // Fetching, debouncing and label resolution are identical either way.
 //
 // Each entity still ships a thin wrapper, because the parts that genuinely
@@ -19,17 +17,45 @@
 //
 // Lives in OSS so the enterprise-only selectors can build on it too.
 
-import { CheckIcon, ChevronDownIcon, PlusIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, Loader2Icon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
+import type React from "react";
 import { type ComponentType, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { components } from "react-select";
+import type { ParseKeys } from "i18next";
+import { useTranslation } from "react-i18next";
 
-import { AsyncMultiSelect } from "@/components/ui/asyncMultiselect";
+const ENTITY_NOUN_KEYS: Partial<Record<string, ParseKeys<"common">>> = {
+	team: "entities.team",
+	teams: "entities.teams",
+	customer: "entities.customer",
+	customers: "entities.customers",
+	"virtual key": "entities.virtualKey",
+	"virtual keys": "entities.virtualKeys",
+	"MCP server": "entities.mcpServer",
+	"MCP servers": "entities.mcpServers",
+	"Virtual MCP": "entities.virtualMcp",
+	"Virtual MCPs": "entities.virtualMcps",
+	agent: "entities.agent",
+	agents: "entities.agents",
+	relay: "entities.relay",
+	relays: "entities.relays",
+};
+
 import { Button } from "@/components/ui/button";
-import type { Option } from "@/components/ui/multiselectUtils";
+import { Combobox, ComboboxContent, ComboboxGroup, ComboboxItem, ComboboxLabel, ComboboxList } from "@/components/ui/combobox";
+import { PopoverTrigger } from "@/components/ui/popover";
 import { SearchSelect } from "@/components/ui/searchSelect";
 import { cn } from "@/lib/utils";
 
-import { EMPTY_ENTITY_PAGES, hasMoreEntities, loadMoreNeedsRefetch, mergeEntityPage, shouldAutoLoadMore } from "./entitySelectorPaging";
+import {
+	accumulatePages,
+	chipsAfterBackspace,
+	EMPTY_ENTITY_PAGES,
+	hasMoreEntities,
+	loadMoreNeedsRefetch,
+	multiListState,
+	shouldAutoLoadMore,
+	showsLoadedRows,
+} from "./entitySelectorPaging";
 
 export const ENTITY_SEARCH_DEBOUNCE_MS = 300;
 export const ENTITY_SELECTOR_PAGE_SIZE = 20;
@@ -58,11 +84,6 @@ export interface EntityLabelResolverProps {
 	onResolved: (option: EntitySelectorOption) => void;
 }
 
-/** Carried on each react-select option so the custom option view can read it. */
-interface EntityOptionMeta {
-	description?: string;
-}
-
 /**
  * Props every wrapper re-exposes verbatim, so callers see the same surface
  * whichever entity they are picking.
@@ -71,6 +92,8 @@ export interface EntitySelectorCommonProps {
 	disabled?: boolean;
 	placeholder?: string;
 	className?: string;
+	/** Id for the default single/add trigger, so a `<label htmlFor>` names it. A caller-supplied `trigger` keeps its own. */
+	id?: string;
 	/**
 	 * Guarantees an already-selected entity renders a real label even when it
 	 * falls outside the fetched search results — callers pass the edited row's
@@ -83,7 +106,8 @@ export interface EntitySelectorCommonProps {
 	/**
 	 * Extra classes for the default combobox trigger — e.g. `h-9` to line up
 	 * with a taller control beside it. Ignored when `trigger` is supplied.
-	 * Single mode only.
+	 * In multi mode the trigger grows with its chips, so pass a min-height
+	 * (e.g. `!min-h-9`) rather than a fixed height.
 	 */
 	triggerClassName?: string;
 	/** Icon shown before the label in the default combobox trigger. Single mode only. */
@@ -106,10 +130,11 @@ export interface EntitySelectorCommonProps {
 	fullWidth?: boolean;
 	/**
 	 * Pinned below the option list — for the action a search that found nothing
-	 * leads to, typically "create a new one". Single/add only; multi mode's
-	 * react-select menu has no such slot.
+	 * leads to, typically "create a new one". Single/add only.
 	 */
 	footer?: ReactNode;
+	/** Multi mode: data-testid for the trigger; chip X gets `<testid>-chip-remove-<id>`, clear-all `<testid>-clear`, Retry `<testid>-retry`. */
+	"data-testid"?: string;
 }
 
 interface EntitySelectorSingleProps {
@@ -151,12 +176,7 @@ interface EntitySelectorChromeProps {
 	/** Lowercase noun used to build placeholders and empty/error copy. */
 	entityLabel: string;
 	entityLabelPlural: string;
-	/**
-	 * Must be referentially stable while the underlying data is unchanged —
-	 * memoize it in the wrapper. Multi mode feeds it to react-select as
-	 * `defaultOptions`, which re-syncs on identity change and would otherwise
-	 * loop.
-	 */
+	/** Memoize in the wrapper; effects key off its identity. */
 	options: EntitySelectorEntry[];
 	isFetching: boolean;
 	isError: boolean;
@@ -174,6 +194,8 @@ interface EntitySelectorChromeProps {
 	isLoadingMore?: boolean;
 	/** Retries the last failed request. */
 	onRetry?: () => void;
+	/** The search `options` were fetched for. Differs from `debouncedSearch` until the new search's first page lands. */
+	optionsSearch?: string;
 	searchPlaceholder?: string;
 	/**
 	 * Supplied by the wrapper that knows the by-id endpoint. Rendered once per
@@ -186,6 +208,7 @@ interface EntitySelectorChromeProps {
 export type EntitySelectorProps = EntitySelectorChromeProps & EntitySelectorCommonProps & EntitySelectorModeProps;
 
 export function EntitySelector(props: EntitySelectorProps) {
+	const { t } = useTranslation("common");
 	const {
 		entityLabel,
 		entityLabelPlural,
@@ -201,9 +224,11 @@ export function EntitySelector(props: EntitySelectorProps) {
 		onLoadMore,
 		isLoadingMore = false,
 		onRetry,
+		optionsSearch,
 		searchPlaceholder,
 		LabelResolver,
 		disabled = false,
+		id,
 		placeholder,
 		className,
 		fallbackOption,
@@ -216,6 +241,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 		trigger,
 		fullWidth = false,
 		footer,
+		"data-testid": testId,
 	} = props;
 
 	const isAdd = props.mode === "add";
@@ -286,8 +312,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 			loadMore?.();
 	}, [open, loadMore, isFetching, isError, visibleOptions.length]);
 
-	// Only reached by the single/add presentation; multi selection is handled
-	// by react-select's own onChange below.
+	// Only reached by the single/add presentation; multi mode toggles through toggleMulti.
 	const handleSelect = (option: EntitySelectorEntry) => {
 		cacheLabel(option);
 
@@ -299,103 +324,270 @@ export function EntitySelector(props: EntitySelectorProps) {
 		onOpenChange(false);
 	};
 
-	const resolvedPlaceholder = placeholder ?? (isMulti ? `Select ${entityLabelPlural}...` : `Select a ${entityLabel}...`);
-	const resolvedSearchPlaceholder = searchPlaceholder ?? `Search ${entityLabelPlural}...`;
-	const emptyMessage = debouncedSearch ? `No matching ${entityLabelPlural}` : `No ${entityLabelPlural} found`;
-	const errorMessage = `Failed to load ${entityLabelPlural}`;
+	const entityKey = ENTITY_NOUN_KEYS[entityLabel];
+	const entitiesKey = ENTITY_NOUN_KEYS[entityLabelPlural];
+	const entity = entityKey ? t(entityKey) : entityLabel;
+	const entities = entitiesKey ? t(entitiesKey) : entityLabelPlural;
+	const resolvedPlaceholder = placeholder ?? (isMulti ? t("selectEntities", { entity: entities }) : t("selectEntity", { entity }));
+	const resolvedSearchPlaceholder = searchPlaceholder ?? t("searchEntities", { entity: entities });
+	const emptyMessage = debouncedSearch ? t("noMatchingEntities", { entity: entities }) : t("noEntitiesFound", { entity: entities });
+	const errorMessage = t("failedToLoadEntities", { entity: entities });
 	// A failed later page keeps the rows already shown and offers a retry under them.
 	const hasRows = visibleOptions.length > 0;
 
 	// ---------------------------------------------------------------------
-	// Multi mode — react-select, so chips live inside the control.
+	// Multi mode — chips on an outline trigger, a searchable list in a popover (same pattern as ModelSelector).
 	// ---------------------------------------------------------------------
 
-	const multiOptions = useMemo<Option<EntityOptionMeta>[]>(
-		() => visibleOptions.map((option) => ({ label: option.label, value: option.value, meta: { description: option.description } })),
-		[visibleOptions],
+	const [multiSearch, setMultiSearch] = useState("");
+	const handleMultiSearch = useCallback(
+		(value: string) => {
+			setMultiSearch(value);
+			onSearchChange(value);
+		},
+		[onSearchChange],
+	);
+	const handleMultiOpenChange = useCallback(
+		(next: boolean) => {
+			if (!next) handleMultiSearch("");
+			onOpenChange(next);
+		},
+		[handleMultiSearch, onOpenChange],
 	);
 
-	const selectedValues = useMemo<Option<EntityOptionMeta>[]>(
-		() => selectedIds.map((id) => ({ label: labelCache[id] ?? fallbackLabels[id] ?? id, value: id })),
-		[selectedIds, labelCache, fallbackLabels],
+	const rowsAreCurrent = optionsSearch === undefined || optionsSearch === debouncedSearch;
+	const isBusy = isSearching || isFetching;
+	const multiRows = useMemo(
+		() => (showsLoadedRows({ rowsAreCurrent, isBusy, isError }) ? visibleOptions : []),
+		[rowsAreCurrent, isBusy, isError, visibleOptions],
 	);
 
-	// react-select asks for options through a callback, but the results arrive
-	// through RTK Query on a later render. Park the callback and settle it once
-	// the debounce has caught up and the request is done.
-	const pendingLoad = useRef<{ query: string; callback: (options: Option<EntityOptionMeta>[]) => void } | null>(null);
+	// Selected ids missing from the loaded page stay reachable (to untick) while the search is empty.
+	const pinnedIds = useMemo(() => {
+		if (!isMulti || multiSearch) return [];
+		const loaded = new Set(multiRows.map((o) => o.value));
+		return selectedIds.filter((id) => !loaded.has(id));
+	}, [isMulti, multiSearch, multiRows, selectedIds]);
 
-	const handleReload = useCallback((query: string, callback: (loaded: Option<EntityOptionMeta>[]) => void) => {
-		pendingLoad.current = { query, callback };
-	}, []);
+	const listState = multiListState({
+		isError,
+		isBusy,
+		rowCount: visibleOptions.length,
+		pinnedCount: pinnedIds.length,
+		rowsAreCurrent,
+	});
+	const rowsSelectable = listState.rowsSelectable;
 
+	// cmdk loses its highlight when a server response swaps every row, so it is held here.
+	// Rows still showing an earlier search are not navigable, so Enter cannot pick one.
+	const navigableIds = useMemo(
+		() => [...pinnedIds, ...(rowsSelectable ? multiRows.map((o) => o.value) : [])],
+		[pinnedIds, multiRows, rowsSelectable],
+	);
+	// Disabling while open, e.g. during a save, closes through the normal path so the search clears and the picker stays shut afterwards.
 	useEffect(() => {
-		const pending = pendingLoad.current;
-		if (!pending) return;
-		// `options` only answers the pending query once the debounce has settled
-		// on it and nothing is in flight.
-		if (pending.query !== debouncedSearch || isFetching) return;
-		pendingLoad.current = null;
-		pending.callback(multiOptions);
-	}, [multiOptions, isFetching, debouncedSearch]);
+		if (isMulti && disabled && open) handleMultiOpenChange(false);
+	}, [isMulti, disabled, open, handleMultiOpenChange]);
+
+	const [highlighted, setHighlighted] = useState("");
+	useEffect(() => {
+		setHighlighted((current) => (current && navigableIds.includes(current) ? current : (navigableIds[0] ?? "")));
+	}, [navigableIds]);
 
 	if (isMulti) {
+		const commitMulti = (next: string[]) => {
+			// The parent can disable the picker while its list is open, e.g. during a save.
+			if (disabled) return;
+			if (props.multiple === true) props.onChange(next);
+		};
+		const toggleMulti = (value: string) => {
+			const option = visibleOptions.find((o) => o.value === value);
+			if (option) cacheLabel(option);
+			commitMulti(selectedIds.includes(value) ? selectedIds.filter((v) => v !== value) : [...selectedIds, value]);
+		};
+		const removeLabel = (value: string) => t("combobox.removeAria", { label: labelFor(value) });
+		const retryButton = onRetry && (
+			<Button
+				type="button"
+				variant="ghost"
+				size="sm"
+				className="h-6 px-2 text-xs"
+				onClick={onRetry}
+				data-testid={testId ? `${testId}-retry` : undefined}
+				onKeyDown={(e) => {
+					// cmdk's root cancels Enter and selects the highlighted row, so keep the key on this button.
+					if (e.key === "Enter" || e.key === " ") e.stopPropagation();
+				}}
+			>
+				{t("retry")}
+			</Button>
+		);
+
 		return (
-			<>
+			<div className={cn("w-full", className)}>
 				{labelResolvers}
-				<AsyncMultiSelect<EntityOptionMeta>
-					className={className}
-					disabled={disabled}
-					placeholder={resolvedPlaceholder}
-					defaultOptions={multiOptions}
-					reload={handleReload}
-					isLoading={isSearching || (isFetching && multiOptions.length === 0)}
-					value={selectedValues}
-					onChange={(selected) => {
-						if (props.multiple !== true) return;
-						props.onChange(selected.map((option) => option.value));
-					}}
-					// Dialog's centering transform turns the menu's `position: fixed`
-					// into relative-to-dialog instead of relative-to-viewport, which
-					// clips it; portaling to body escapes that ancestor entirely.
-					menuPortalTarget={typeof document !== "undefined" ? document.body : undefined}
-					// Clearing the input never reaches `reload`, so mirror every
-					// keystroke into the search state instead.
-					onInputChange={(inputValue) => onSearchChange(inputValue)}
-					onMenuScrollToBottom={loadMore}
-					onMenuOpen={() => onOpenChange(true)}
-					onMenuClose={() => onOpenChange(false)}
-					isClearable
-					closeMenuOnSelect={false}
-					hideSelectedOptions={false}
-					noOptionsMessage={() => (isError ? errorMessage : emptyMessage)}
-					views={{
-						option: (optionProps) => {
-							const { Option } = components;
-							const data = optionProps.data as Option<EntityOptionMeta>;
-							const isLast = optionProps.options[optionProps.options.length - 1] === optionProps.data;
-							return (
-								<Option
-									{...optionProps}
-									className={cn(
-										"flex w-full cursor-pointer flex-col gap-0.5 rounded-sm p-2 text-sm",
-										optionProps.isFocused && "bg-accent",
-										isLast && "mb-2",
-									)}
-								>
-									<div className="flex items-center justify-between">
-										<span className="font-medium">{data.label}</span>
-										<CheckIcon className={cn("ml-auto size-3.5 shrink-0", optionProps.isSelected ? "opacity-100" : "opacity-0")} />
+				<Combobox
+					multiple
+					value={selectedIds}
+					open={open && !disabled}
+					onOpenChange={handleMultiOpenChange}
+					inputValue={multiSearch}
+					onInputValueChange={handleMultiSearch}
+				>
+					<PopoverTrigger asChild disabled={disabled}>
+						<Button
+							type="button"
+							variant="outline"
+							role="combobox"
+							id={id}
+							disabled={disabled}
+							data-testid={testId}
+							className={cn(
+								"h-auto min-h-8 w-full justify-between !bg-transparent py-1 font-normal active:scale-none",
+								selectedIds.length === 0 && "text-muted-foreground",
+								triggerClassName,
+							)}
+						>
+							{selectedIds.length === 0 ? (
+								<span className="min-w-0 truncate">{resolvedPlaceholder}</span>
+							) : (
+								<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+									{selectedIds.map((value) => (
+										<span
+											key={value}
+											className="bg-accent dark:bg-card flex max-w-[180px] items-center gap-1 rounded-sm px-1 py-0.5 text-xs"
+										>
+											<span className="min-w-0 truncate">{labelFor(value)}</span>
+											{/* A span, not a button: the trigger is a Button and its svgs ignore pointer events. */}
+											<span
+												role="button"
+												tabIndex={-1}
+												aria-label={removeLabel(value)}
+												data-testid={testId ? `${testId}-chip-remove-${value}` : undefined}
+												className="text-muted-foreground hover:text-foreground flex shrink-0 cursor-pointer items-center"
+												onClick={(e) => {
+													e.preventDefault();
+													e.stopPropagation();
+													toggleMulti(value);
+												}}
+												onKeyDown={(e) => {
+													if (e.key === "Enter" || e.key === " ") {
+														e.preventDefault();
+														e.stopPropagation();
+														toggleMulti(value);
+													}
+												}}
+											>
+												<XIcon className="size-3" />
+											</span>
+										</span>
+									))}
+								</span>
+							)}
+							<span className="ml-2 flex shrink-0 items-center gap-1">
+								{selectedIds.length > 0 && !disabled && (
+									// Clears every chip at once, as the react-select control did. A span for the same reason as the chip X.
+									<span
+										role="button"
+										tabIndex={-1}
+										aria-label={t("combobox.clearSelection")}
+										data-testid={testId ? `${testId}-clear` : undefined}
+										className="text-muted-foreground hover:text-foreground flex cursor-pointer items-center"
+										onClick={(e) => {
+											e.preventDefault();
+											e.stopPropagation();
+											commitMulti([]);
+										}}
+									>
+										<XIcon className="size-3.5" />
+									</span>
+								)}
+								<SearchIcon className="size-3.5 opacity-50" />
+								<ChevronDownIcon className="size-4 opacity-50" />
+							</span>
+						</Button>
+					</PopoverTrigger>
+
+					<ComboboxContent
+						className={cn("min-w-[var(--radix-popover-trigger-width)]", contentClassName)}
+						shouldFilter={false}
+						highlightedValue={highlighted}
+						onHighlightedValueChange={setHighlighted}
+					>
+						<ComboboxList
+							searchPlaceholder={resolvedSearchPlaceholder}
+							showSearchIcon
+							isSearching={isSearching}
+							className="max-h-[300px]"
+							clearableSearch
+							onInputKeyDown={(e) => {
+								if (e.key !== "Backspace") return;
+								const next = chipsAfterBackspace(selectedIds, multiSearch);
+								if (!next) return;
+								e.preventDefault();
+								commitMulti(next);
+							}}
+							onScroll={(e: React.UIEvent<HTMLDivElement>) => {
+								if (!loadMore || isFetching) return;
+								const el = e.currentTarget;
+								if (el.scrollHeight - el.scrollTop - el.clientHeight < 48) loadMore();
+							}}
+						>
+							{pinnedIds.length > 0 && (
+								<ComboboxGroup>
+									<ComboboxLabel>{t("entityAssociation.selected")}</ComboboxLabel>
+									{pinnedIds.map((value) => (
+										<ComboboxItem key={value} value={value} onSelect={() => toggleMulti(value)}>
+											<span className="min-w-0 grow truncate">{labelFor(value)}</span>
+										</ComboboxItem>
+									))}
+								</ComboboxGroup>
+							)}
+
+							{multiRows.map((option) => (
+								<ComboboxItem key={option.value} value={option.value} disabled={!rowsSelectable} onSelect={() => toggleMulti(option.value)}>
+									<div className="flex min-w-0 grow flex-col">
+										<span className="truncate">{option.label}</span>
+										{option.description && option.description !== option.label && (
+											<span className="text-muted-foreground truncate text-xs">{option.description}</span>
+										)}
 									</div>
-									{data.meta?.description && data.meta.description !== data.label && (
-										<span className="text-muted-foreground line-clamp-1 text-xs">{data.meta.description}</span>
-									)}
-								</Option>
-							);
-						},
-					}}
-				/>
-			</>
+								</ComboboxItem>
+							))}
+
+							{listState.body === "empty" && <div className="text-muted-foreground py-6 text-center text-sm">{emptyMessage}</div>}
+
+							{listState.body === "firstPageError" && (
+								<div className="text-muted-foreground flex flex-col items-center gap-2 py-6 text-center text-sm">
+									<span>{errorMessage}</span>
+									{retryButton}
+								</div>
+							)}
+
+							{listState.body === "loading" && (
+								<div className="text-muted-foreground flex items-center justify-center gap-2 py-6 text-sm">
+									<Loader2Icon className="size-3.5 animate-spin" />
+									{t("modelAccess.searching")}
+								</div>
+							)}
+
+							{(isLoadingMore || (hasMore && isFetching)) && hasRows && (
+								<div className="text-muted-foreground flex items-center justify-center gap-2 py-2 text-xs">
+									<Loader2Icon className="size-3 animate-spin" />
+									{t("modelAccess.loadingMore")}
+								</div>
+							)}
+
+							{listState.laterPageRetry && (
+								<div className="text-muted-foreground flex items-center justify-between gap-2 px-2 py-2 text-xs">
+									<span>{t("failedToLoadMoreEntities", { entity: entities })}</span>
+									{retryButton}
+								</div>
+							)}
+						</ComboboxList>
+					</ComboboxContent>
+				</Combobox>
+			</div>
 		);
 	}
 
@@ -412,13 +604,14 @@ export function EntitySelector(props: EntitySelectorProps) {
 		isAdd && !fullWidth ? (
 			<Button type="button" variant="outline" size="sm" disabled={disabled} className="h-7.5 gap-1.5 px-2 py-1 text-sm font-medium">
 				<PlusIcon className="size-4" />
-				{placeholder ?? `Add ${entityLabel}`}
+				{placeholder ?? t("addEntity", { entity })}
 			</Button>
 		) : (
 			<Button
 				type="button"
 				variant="outline"
 				role="combobox"
+				id={id}
 				disabled={disabled}
 				className={cn(
 					"h-8 w-full justify-between !bg-transparent font-normal active:scale-none",
@@ -484,7 +677,7 @@ export function EntitySelector(props: EntitySelectorProps) {
 				isLoadingMore={isLoadingMore}
 				isError={isError && !hasRows}
 				errorMessage={errorMessage}
-				loadMoreErrorMessage={isError && hasRows ? `Failed to load more ${entityLabelPlural}` : undefined}
+				loadMoreErrorMessage={isError && hasRows ? t("failedToLoadMoreEntities", { entity: entities }) : undefined}
 				onRetry={onRetry}
 				searchPlaceholder={resolvedSearchPlaceholder}
 				emptyMessage={emptyMessage}
@@ -570,22 +763,12 @@ export function useEntitySelectorPages(
 ) {
 	const { open, setOpen, setSearch, debouncedSearch, offset, setOffset, isDebouncing } = search;
 
-	// A ref rather than state: the merged list has to be ready in the same
-	// render the page lands, since multi mode settles react-select's pending
-	// load from it in an effect. The merge is idempotent, so a repeated
-	// render (StrictMode) leaves it unchanged.
+	// A ref so the merged list is ready in the same render the page lands; the merge is idempotent under StrictMode.
 	const pagesRef = useRef(EMPTY_ENTITY_PAGES);
 	const pages = useMemo(() => {
-		if (entries) {
-			pagesRef.current = mergeEntityPage(pagesRef.current, {
-				search: debouncedSearch,
-				offset,
-				entries,
-				total: totalCount ?? offset + entries.length,
-			});
-		}
+		pagesRef.current = accumulatePages(pagesRef.current, { open, search: debouncedSearch, offset, entries, total: totalCount });
 		return pagesRef.current;
-	}, [entries, totalCount, debouncedSearch, offset]);
+	}, [open, entries, totalCount, debouncedSearch, offset]);
 
 	const hasMore = pages.search === debouncedSearch && hasMoreEntities(pages);
 	const nextOffset = pages.nextOffset;
@@ -609,5 +792,6 @@ export function useEntitySelectorPages(
 		onLoadMore,
 		isLoadingMore,
 		onRetry: refetch,
+		optionsSearch: pages.search,
 	};
 }

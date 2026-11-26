@@ -108,7 +108,7 @@ By default this connection is per-call (a fresh connection per tool call, no sha
 
 - **At connect time**, Bifrost opens a persistent transport with these headers attached. The same transport is reused for every tool call.
 - **`Authorization`** is treated specially — even if you set it via `headers`, the credential-store layer overrides it with the OAuth bearer for `auth_type=oauth` clients. For `headers` clients there is no override, so the literal value goes through.
-- **Editing** headers on an existing MCP client triggers a connection reset so the new headers take effect immediately. The MCP client's `connection_type`, `auth_type`, and `connection_string` are immutable after creation.
+- **Editing** headers or `tls_config` on an existing, enabled HTTP or SSE client first tries the new values against the server. If the server rejects them, the edit answers `422` and nothing changes; otherwise the connection is reset so the new values take effect immediately. On a disabled client the edit is stored and used when the client is enabled again. The MCP client's `connection_type`, `auth_type`, and `connection_string` are immutable after creation.
 
 ---
 

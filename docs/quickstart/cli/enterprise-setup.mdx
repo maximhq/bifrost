@@ -31,7 +31,19 @@ Enterprise SSO requires [User Provisioning](/enterprise/user-provisioning) to be
     {/* SCREENSHOT TODO: Bifrost sign-in page opened by bifrost auth login, redirecting to the organization's identity provider */}
     {/* SCREENSHOT TODO: Enterprise SSO login successful in Bifrost CLI, showing the signed-in user, context, and assigned virtual key count */}
 
-    If the browser cannot open, run `bifrost auth login --no-browser` and open the printed URL **on the same machine**. The sign-in callback listens on a local `127.0.0.1` port, so the flow cannot be completed from another device.
+    If the browser cannot open, run `bifrost auth login --no-browser` and open the printed URL yourself. The sign-in callback listens on `127.0.0.1` on the machine running the CLI.
+
+    **Signing in over SSH or from a dev container.** When the browser runs on a different machine from the CLI, either:
+
+    - **Paste the callback.** After signing in, the browser is redirected to `http://127.0.0.1:<port>/callback?code=...&state=...`, which fails to load. Copy that address from the browser's address bar, paste it into the waiting `bifrost auth login`, and press Enter.
+    - **Forward a fixed port.** Pin the callback port with `--callback-port` (or `BIFROST_CALLBACK_PORT`) and forward it before signing in:
+
+      ```bash
+      ssh -L 8765:127.0.0.1:8765 devbox
+      bifrost auth login --callback-port 8765
+      ```
+
+      The CLI listens only on `127.0.0.1` and stops with an error if the port is in use. Port publishing that delivers to the container's network interface rather than its loopback, such as Docker `-p`, does not reach the listener.
   </Step>
   <Step title="Choose an assigned virtual key (optional)">
     By default, the gateway applies your access profile or a default assigned key. To pin one of your assigned keys for this context:

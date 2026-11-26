@@ -25,6 +25,8 @@ type TableWarpConfig struct {
 	// not a credential, which is why this table needs no encryption hooks: there
 	// is nothing here worth encrypting.
 	APIKeyID string `gorm:"type:varchar(255)" json:"api_key_id,omitempty"`
+	// VirtualKeyID names a governance virtual key row; a reference, like APIKeyID.
+	VirtualKeyID string `gorm:"type:varchar(255);default:''" json:"virtual_key_id,omitempty"`
 
 	// AdditionalModels is a JSON array of schemas.WarpModel, nil when there are none.
 	AdditionalModels *string `gorm:"type:text" json:"additional_models,omitempty"`
@@ -51,6 +53,8 @@ type TableWarpConfig struct {
 	LogVectorStoreNamespace         string  `gorm:"type:varchar(255);default:''" json:"log_vector_store_namespace"`
 	SemanticSearchThreshold         float64 `gorm:"default:0" json:"semantic_search_threshold"`
 	SemanticSearchLimit             int     `gorm:"default:0" json:"semantic_search_limit"`
+	TopicDiscoveryMinRequests       int     `gorm:"default:0" json:"topic_discovery_min_requests"`
+	ManagementWrites                *string `gorm:"type:text" json:"management_writes,omitempty"` // JSON list of schemas.WarpManagementWrites; null is reads only
 	RetiredLogVectorStoreNamespaces *string `gorm:"type:text" json:"-"`
 
 	CreatedAt time.Time `gorm:"not null" json:"created_at"`

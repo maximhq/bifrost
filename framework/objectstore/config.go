@@ -11,8 +11,9 @@ import (
 type StoreType string
 
 const (
-	StoreTypeS3  StoreType = "s3"
-	StoreTypeGCS StoreType = "gcs"
+	StoreTypeS3    StoreType = "s3"
+	StoreTypeGCS   StoreType = "gcs"
+	StoreTypeAzure StoreType = "azure"
 )
 
 // Object formats accepted by Config.Format.
@@ -37,8 +38,8 @@ const (
 
 // Config holds the configuration for an object store.
 type Config struct {
-	Type   StoreType         `json:"type"` // "s3" or "gcs"
-	Bucket schemas.SecretVar `json:"bucket"`
+	Type   StoreType         `json:"type"`   // "s3", "gcs", or "azure"
+	Bucket schemas.SecretVar `json:"bucket"` // Bucket name, or Azure container name.
 
 	// Common fields (apply to all store types)
 	Prefix   string `json:"prefix,omitempty"`   // Key prefix for all stored objects. Default: "bifrost".
@@ -47,9 +48,15 @@ type Config struct {
 	Format      string `json:"format,omitempty"`      // "json" (default) or "parquet".
 	Compression string `json:"compression,omitempty"` // "none", "gzip", "snappy" or "zstd".
 
+	// Endpoint is an S3-compatible endpoint or the Azure Blob service URL.
+	Endpoint *schemas.SecretVar `json:"endpoint,omitempty"`
+
+	// Azure fields (used when Type == "azure"). Omit ConnectionString to use
+	// DefaultAzureCredential with Endpoint instead.
+	ConnectionString *schemas.SecretVar `json:"connection_string,omitempty"`
+
 	// S3 fields (used when Type == "s3")
 	Region          *schemas.SecretVar `json:"region,omitempty"`
-	Endpoint        *schemas.SecretVar `json:"endpoint,omitempty"`
 	AccessKeyID     *schemas.SecretVar `json:"access_key_id,omitempty"`
 	SecretAccessKey *schemas.SecretVar `json:"secret_access_key,omitempty"`
 	SessionToken    *schemas.SecretVar `json:"session_token,omitempty"`
@@ -145,6 +152,8 @@ func NewObjectStore(ctx context.Context, cfg *Config, logger schemas.Logger) (Ob
 		return NewS3ObjectStore(ctx, cfg, logger)
 	case StoreTypeGCS:
 		return NewGCSObjectStore(ctx, cfg, logger)
+	case StoreTypeAzure:
+		return NewAzureObjectStore(ctx, cfg, logger)
 	default:
 		return nil, fmt.Errorf("objectstore: unsupported type %q", cfg.Type)
 	}

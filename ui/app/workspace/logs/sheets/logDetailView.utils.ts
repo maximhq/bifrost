@@ -1,5 +1,5 @@
 import { isReservedMetadataKey } from "@/lib/registries/logs";
-import type { LogEntry, PassthroughLogParams, ResponsesMessage } from "@/lib/types/logs";
+import type { GuardrailJudgeCall, LogEntry, PassthroughLogParams, ResponsesMessage } from "@/lib/types/logs";
 import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 
 /**
@@ -267,4 +267,50 @@ export function isParsedPassthroughLog(log: PassthroughLogShape): boolean {
 	const params = passthroughLogParams(log);
 	if (!params?.parsed_type) return false;
 	return Boolean(log.input_history?.length || log.responses_input_history?.length || log.output_message || log.responses_output?.length);
+}
+export type FallbackChainOutcome = "succeeded" | "failed" | "in_progress";
+
+// Only fallback attempts look up through parent_request_id; on an index-zero row it can be a session id.
+export function fallbackChainRootId(log: LogEntry): string {
+	return log.fallback_index > 0 && log.parent_request_id ? log.parent_request_id : log.id;
+}
+
+// The chain a row belongs to: the root request plus the fallback attempts that
+// carry its id as parent_request_id, in the order they ran.
+export function buildFallbackChain(log: LogEntry, root: LogEntry | undefined, children: LogEntry[] | undefined): LogEntry[] {
+	const rootId = fallbackChainRootId(log);
+	const byId = new Map<string, LogEntry>();
+	if (root?.id === rootId) byId.set(root.id, root);
+	for (const entry of [log, ...(children ?? [])]) {
+		if (entry.id === rootId || (entry.parent_request_id === rootId && entry.fallback_index > 0)) byId.set(entry.id, entry);
+	}
+	return [...byId.values()].sort((a, b) => a.fallback_index - b.fallback_index || a.timestamp.localeCompare(b.timestamp));
+}
+
+// What the caller actually got: the last attempt decides.
+export function fallbackChainOutcome(chain: LogEntry[]): FallbackChainOutcome {
+	const last = chain[chain.length - 1];
+	if (!last || last.status === "processing") return "in_progress";
+	return last.status === "success" ? "succeeded" : "failed";
+}
+
+// Reports whether a guardrail call went to an external guardrail service, which reports vendor
+// usage units instead of the tokens an LLM judge is priced from.
+export function isExternalGuardrailCall(call: GuardrailJudgeCall): call is GuardrailJudgeCall & { usage_units: Record<string, number> } {
+	return call.usage_units != null && Object.keys(call.usage_units).length > 0;
+}
+
+// Sums the estimated cost of external guardrail service calls. The backend never adds it to the
+// stored guardrail cost, the total, or budgets, so the detail view adds it for display only. LLM
+// judge calls are skipped: their cost is already in the stored guardrail cost.
+export function getExternalGuardrailCost(calls: GuardrailJudgeCall[] | undefined): number {
+	return (calls ?? []).reduce((sum, call) => (isExternalGuardrailCall(call) ? sum + (call.estimated_cost ?? 0) : sum), 0);
+}
+
+// Lists vendor usage units as "name: count" pairs, sorted by name so the order is stable.
+export function formatGuardrailUsageUnits(units: Record<string, number>): string {
+	return Object.entries(units)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(([name, count]) => `${name}: ${count}`)
+		.join(" · ");
 }

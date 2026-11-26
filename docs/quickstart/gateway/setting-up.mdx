@@ -29,7 +29,7 @@ Both options work perfectly - choose what fits your workflow:
 npx -y @maximhq/bifrost
 
 # Install a specific version
-npx -y @maximhq/bifrost --transport-version v1.3.9
+npx -y @maximhq/bifrost --transport-version v2.4.0
 ```
 
 #### Docker
@@ -40,9 +40,9 @@ docker pull maximhq/bifrost
 docker run -p 8080:8080 maximhq/bifrost
 
 # Pull a specific version
-docker pull maximhq/bifrost:v1.3.9
-docker pull maximhq/bifrost:v1.3.9-amd64
-docker pull maximhq/bifrost:v1.3.9-arm64
+docker pull maximhq/bifrost:v2.4.0
+docker pull maximhq/bifrost:v2.4.0-amd64
+docker pull maximhq/bifrost:v2.4.0-arm64
 ```
 
 **For Data Persistence**
@@ -166,7 +166,7 @@ Bifrost has two user-facing configuration modes:
 | Mode | When to use it | Behavior |
 |-------|------|----------|
 | Web UI / database | You want to manage configuration from the dashboard or management API | Bifrost stores configuration in SQLite or PostgreSQL. If `config.json` is also present, it seeds or reconciles the database at startup. |
-| File-only `config.json` | You want declarative, restart-based configuration with no config database | Bifrost loads configuration from the file at startup. Config-backed UI/API edits are unavailable and file changes require restart. |
+| File-only `config.json` | You want declarative, restart-based configuration with no config database | Bifrost loads configuration from the file at startup. Configuration API routes answer 503, reads included, so the UI cannot show or edit configuration; file changes require restart. |
 
 <Note>
 Omitting `config_store` does **not** mean file-only mode. If `config.json` exists and `config_store` is omitted, Bifrost creates the default SQLite config store and treats the file as DB-backed startup configuration. Set `config_store.enabled: false` only when the file should be the only configuration source.
@@ -268,7 +268,7 @@ Set `config_store.enabled` to `false` when `config.json` should be the only conf
 }
 ```
 
-- **Config UI/API edits are unavailable** - no config store is initialized
+- **Configuration UI/API unavailable** - no config store is initialized, so configuration routes answer `503`, reads included
 - **Read-only file** - Bifrost never modifies `config.json`
 - **Memory-only config** - settings are loaded into memory at startup
 - **Restart required** - changes to `config.json` apply after restart

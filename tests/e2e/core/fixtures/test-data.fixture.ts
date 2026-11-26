@@ -9,6 +9,8 @@ export interface ProviderKeyConfig {
   value: string
   models?: string[]
   weight?: number
+  /** The key's content-logging choice; omit to leave the form's current choice. */
+  contentLogging?: 'inherit' | 'disabled' | 'enabled'
 }
 
 export interface CustomProviderConfig {

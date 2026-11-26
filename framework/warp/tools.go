@@ -103,6 +103,9 @@ type ToolDeps struct {
 	// charts holds what render_chart drew this turn, so the answer's chart
 	// blocks can be expanded from it. Built per turn with the rest of deps.
 	charts *chartRegistry
+	// topics answers list_topics from the computed clusters. Nil when there
+	// is no vector store.
+	topics TopicLister
 	// clock is the turn's one reading of the time, in the asker's zone.
 	clock time.Time
 }
@@ -191,6 +194,7 @@ const FilterSchema = `{
     "user_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "business_unit_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
     "project_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50},
+    "topic_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Warp topics, by the id list_topics returns: the requests filed under any of them. The way to list, count or break down the requests behind a topic. Never guess an id - take it from a list_topics result."},
     "apps": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Include only these apps. \"Warp\" is refused: it is this assistant, not the person's traffic."},
     "min_latency": {"type": "number", "description": "Milliseconds."},
     "max_latency": {"type": "number", "description": "Milliseconds."},
@@ -200,6 +204,7 @@ const FilterSchema = `{
     "max_cost": {"type": "number"},
     "cache_hit_types": {"type": "array", "items": {"type": "string", "enum": ["direct", "semantic"]}, "minItems": 1, "description": "Local-cache hit type: direct (exact match) or semantic (fuzzy match)."},
     "routing_rule_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing rules that handled the request. Ids come from describe_filter_space or a query_usage_by routing_rule ranking - never guess one."},
+    "model_router_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model routers that classified the request for its complexity tier, by router id. Only requests a router classified have one. Ids come from a query_usage_by model_router ranking - never guess one."},
     "routing_engine_used": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Routing engines the request passed through, e.g. routing-rule, governance, loadbalancing. A request can pass through several."},
     "selected_key_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Provider API keys Bifrost picked for the request - not virtual keys. Ids come from describe_filter_space (provider_keys)."},
     "aliases": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Model aliases the request was addressed to before Bifrost resolved them to a model."},
@@ -209,12 +214,19 @@ const FilterSchema = `{
     "user_agents": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Raw User-Agent strings. Prefer apps, which groups them."},
     "metadata_filters": {"type": "object", "additionalProperties": {"type": "string"}, "minProperties": 1, "description": "Request metadata, as key to value, e.g. {\"env\": \"prod\"}. Every pair must match. Keys and values that occur are listed by describe_filter_space (metadata)."},
     "session_id": {"type": "string", "minLength": 1, "description": "Exact Bifrost session id."},
+    "agent_names": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Registered agents, by name: requests whose session one of these agents ran in. Only for an agent the person names - never guess one."},
+    "agent_correlation_id": {"type": "string", "minLength": 1, "description": "Exact agent correlation id, as the caller sent it in x-bf-agent-correlation-id."},
     "request_id": {"type": "string", "minLength": 1, "description": "Exact request id."},
     "parent_request_id": {"type": "string", "minLength": 1, "description": "Requests spawned by this request, e.g. the fallback attempts of one call."},
     "missing_cost_only": {"type": "boolean", "description": "Only successful requests whose cost could not be computed."},
     "error_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's error classification on failed requests, e.g. invalid_request_error, overloaded_error - the ids a query_usage_by error_type ranking returns. This is how to fetch the rows behind one row of that ranking."},
     "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values. overloaded_error and rate_limit_error are error types - put them in error_types, never here."},
     "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}, "minItems": 1, "maxItems": 50, "description": "HTTP status the failure came back with, e.g. 400, 429, 529. Populated on every failed request."},
+    "guardrail_outcomes": {"type": "array", "items": {"type": "string", "enum": ["blocked", "detected"]}, "minItems": 1, "description": "Requests a guardrail acted on: blocked (a guardrail stopped the request) or detected (a detect-only rule matched). Several values are OR-ed together."},
+    "guardrail_actions": {"type": "array", "items": {"type": "string", "enum": ["blocked", "redacted", "detected", "monitored"]}, "minItems": 1, "description": "What a guardrail did on one recorded match: blocked, redacted (content masked or rewritten), detected (flagged, request continued) or monitored (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on that same match."},
+    "guardrail_rule_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Guardrail rule ids, as a log's guardrail matches record them (rule_id): requests one of these rules matched."},
+    "guardrail_profile_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Guardrail profile ids, as a log's guardrail matches record them (profile_id): requests one of these profiles matched."},
+    "guardrail_phases": {"type": "array", "items": {"type": "string", "enum": ["input", "output"]}, "minItems": 1, "description": "Where the guardrail match happened: input (the request) or output (the response)."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
     "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
   }
@@ -241,6 +253,12 @@ func (e *unknownFilterFieldsError) Error() string {
 // is the worst failure mode available here: the model cannot tell, and neither
 // can the reader.
 func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, error) {
+	return parseFiltersWithLookback(raw, now, DefaultLookback)
+}
+
+// parseFiltersWithLookback is parseFilters with the window a missing
+// start_time falls back to, measured back from end_time.
+func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.Duration) (*logstore.SearchFilters, error) {
 	filters := &logstore.SearchFilters{}
 	if raw == nil {
 		raw = map[string]any{}
@@ -250,14 +268,15 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"start_time": true, "end_time": true, "providers": true, "models": true,
 		"status": true, "stop_reasons": true, "objects": true, "virtual_key_ids": true,
 		"team_ids": true, "customer_ids": true, "user_ids": true, "business_unit_ids": true,
-		"project_ids": true, "apps": true, "min_latency": true, "max_latency": true,
+		"project_ids": true, "topic_ids": true, "apps": true, "min_latency": true, "max_latency": true,
 		"min_tokens": true, "max_tokens": true, "min_cost": true, "max_cost": true,
 		"cache_hit_types": true, "content_search": true, "scope": true,
-		"error_types": true, "error_codes": true, "status_codes": true,
+		"error_types": true, "error_codes": true, "status_codes": true, "guardrail_outcomes": true,
+		"guardrail_actions": true, "guardrail_rule_ids": true, "guardrail_profile_ids": true, "guardrail_phases": true,
 		"routing_rule_ids": true, "routing_engine_used": true, "selected_key_ids": true, "aliases": true,
-		"complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
+		"model_router_ids": true, "complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
 		"metadata_filters": true, "session_id": true, "request_id": true, "parent_request_id": true,
-		"missing_cost_only": true,
+		"missing_cost_only": true, "agent_names": true, "agent_correlation_id": true,
 	}
 	unknown := []string{}
 	for key := range raw {
@@ -294,7 +313,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		end = &now
 	}
 	if start == nil {
-		defaulted := end.Add(-DefaultLookback)
+		defaulted := end.Add(-lookback)
 		start = &defaulted
 	}
 	if start.After(*end) {
@@ -315,13 +334,17 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"stop_reasons": &filters.StopReasons, "objects": &filters.Objects,
 		"virtual_key_ids": &filters.VirtualKeyIDs, "team_ids": &filters.TeamIDs,
 		"customer_ids": &filters.CustomerIDs, "user_ids": &filters.UserIDs,
-		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs,
+		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs, "topic_ids": &filters.TopicIDs,
 		"apps": &filters.Apps, "cache_hit_types": &filters.CacheHitTypes,
-		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes,
+		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes, "guardrail_outcomes": &filters.GuardrailOutcomes,
+		"guardrail_actions": &filters.GuardrailActions, "guardrail_rule_ids": &filters.GuardrailRuleIDs,
+		"guardrail_profile_ids": &filters.GuardrailProfileIDs, "guardrail_phases": &filters.GuardrailPhases,
 		"routing_rule_ids": &filters.RoutingRuleIDs, "routing_engine_used": &filters.RoutingEngineUsed,
+		"model_router_ids": &filters.ModelRouterIDs,
 		"selected_key_ids": &filters.SelectedKeyIDs, "aliases": &filters.Aliases,
 		"complexity_tiers": &filters.ComplexityTiers, "complexity_mechanisms": &filters.ComplexityMechanisms,
 		"tool_call_names": &filters.ToolCallNames, "user_agents": &filters.UserAgents,
+		"agent_names": &filters.AgentNames,
 	} {
 		values, err := stringSliceField(raw, key)
 		if err != nil {
@@ -350,6 +373,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 	}
 	for key, target := range map[string]*string{
 		"session_id": &filters.SessionID, "request_id": &filters.RequestID, "parent_request_id": &filters.ParentRequestID,
+		"agent_correlation_id": &filters.AgentCorrelationID,
 	} {
 		value, err := exactStringField(raw, key)
 		if err != nil {
@@ -670,7 +694,7 @@ func exactStringField(raw map[string]any, key string) (string, error) {
 
 // metadataFiltersField reads metadata_filters: a non-empty object of string
 // values, every pair of which must match.
-func metadataFiltersField(raw map[string]any) (map[string]string, error) {
+func metadataFiltersField(raw map[string]any) (map[string][]string, error) {
 	value, present := raw["metadata_filters"]
 	if !present {
 		return nil, nil
@@ -679,13 +703,13 @@ func metadataFiltersField(raw map[string]any) (map[string]string, error) {
 	if !ok || len(pairs) == 0 {
 		return nil, fmt.Errorf(`metadata_filters must be a non-empty object of key to value, like {"env": "prod"}; omit the field to leave it unfiltered`)
 	}
-	out := make(map[string]string, len(pairs))
+	out := make(map[string][]string, len(pairs))
 	for key, item := range pairs {
 		text, ok := item.(string)
 		if !ok || strings.TrimSpace(key) == "" {
 			return nil, fmt.Errorf("metadata_filters values must be strings, got %v for %q", item, key)
 		}
-		out[key] = text
+		out[key] = []string{text}
 	}
 	return out, nil
 }
@@ -994,11 +1018,23 @@ func truncateText(text string, limit int) string {
 	count := 0
 	for i := range text {
 		if count == limit {
-			return text[:i] + "... [truncated]"
+			return text[:i] + truncationMarker
 		}
 		count++
 	}
-	return text + "... [truncated]"
+	return text + truncationMarker
+}
+
+// truncationMarker is what truncateText appends to a value it cut.
+const truncationMarker = "... [truncated]"
+
+// fitText cuts text like truncateText, but so the result, marker included, is
+// at most limit characters.
+func fitText(text string, limit int) string {
+	if utf8.RuneCountInString(text) <= limit {
+		return text
+	}
+	return truncateText(text, max(limit-utf8.RuneCountInString(truncationMarker), 0))
 }
 
 // logRow is the projection query_logs returns. The full logstore.Log carries
@@ -1083,7 +1119,7 @@ func projectLog(entry *logstore.Log, includeContent bool, contentLimit int) logR
 		}
 	}
 	if includeContent {
-		row.Content = truncateText(logContent(entry), contentLimit)
+		row.Content = logContent(entry, contentLimit)
 	}
 	return row
 }
@@ -1096,41 +1132,76 @@ func derefFloat(value *float64) float64 {
 	return *value
 }
 
-// logContent renders a compact text view of a request.
+// logContent renders what a request was about within limit characters: the
+// person's first turn, their latest one, and the reply.
 //
 // ContentHidden is the hard gate. It means content logging was disabled for that
 // request, so the payload must never be served back through any API — a promise
 // the deployment made to whoever's data this is. Warp is an API like any other,
 // and a model is the last place a hidden payload should resurface.
 //
-// Otherwise it prefers ContentSummary, the stored last-user-message preview,
-// which is already bounded. Reconstructing the full message history would
-// reintroduce exactly the size problem this projection exists to solve.
-func logContent(entry *logstore.Log) string {
+// It reads the person's own turns, with a coding agent's envelopes taken out,
+// rather than ContentSummary. The plain store's summary is every message joined
+// from the top, and a coding agent's request opens with its system prompt and
+// the project's AGENTS.md, so a preview cut from the front showed only the
+// agent's setup and never the task. The summary is the fallback for a row that
+// carries no history, such as a non-chat request, or only a list row's last
+// element with no user turn in it.
+//
+// The first turn is usually the task and the latest says where it went, so
+// the two share most of the budget; whatever a short section leaves unused
+// passes to the ones after it.
+func logContent(entry *logstore.Log, limit int) string {
 	if entry.ContentHidden {
 		return ""
 	}
-	if entry.ContentSummary != "" {
-		return entry.ContentSummary
+	opening, last := conversationUserTexts(entry)
+	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
+	hasHistory := len(entry.InputHistoryParsed) > 0 || len(entry.ResponsesInputHistoryParsed) > 0
+	if !hasHistory && assistant == "" {
+		return fitText(summaryTurnText(entry.ContentSummary, isCodexLog(entry)), limit)
 	}
-	// ChatMessage.Content is a pointer and is routinely nil - a tool-call turn
-	// carries none, and an offloaded payload leaves the parsed history empty.
-	// Every access below is guarded because this walks logged traffic, which is
-	// the least predictable data in the system.
-	var builder strings.Builder
-	for _, message := range entry.InputHistoryParsed {
-		if message.Content != nil && message.Content.ContentStr != nil {
-			builder.WriteString(string(message.Role))
-			builder.WriteString(": ")
-			builder.WriteString(*message.Content.ContentStr)
-			builder.WriteString("\n")
+	lastLabel := "user"
+	if opening != "" {
+		lastLabel = "user (latest turn)"
+	}
+	sections := [...]struct {
+		label, text string
+		share       int
+	}{
+		{"user (first turn)", opening, 2},
+		{lastLabel, last, 2},
+		{"assistant", assistant, 1},
+	}
+	// The labels and the newlines between sections come out of the limit
+	// first, so what is shared out is only what the text can use.
+	shares, remaining := 0, limit
+	for _, section := range sections {
+		if section.text != "" {
+			if shares > 0 {
+				remaining--
+			}
+			shares += section.share
+			remaining -= utf8.RuneCountInString(section.label) + len(": ")
 		}
 	}
-	if entry.OutputMessageParsed != nil && entry.OutputMessageParsed.Content != nil && entry.OutputMessageParsed.Content.ContentStr != nil {
-		builder.WriteString("assistant: ")
-		builder.WriteString(*entry.OutputMessageParsed.Content.ContentStr)
+	remaining = max(remaining, 0)
+	var builder strings.Builder
+	for _, section := range sections {
+		if section.text == "" {
+			continue
+		}
+		text := fitText(section.text, remaining*section.share/shares)
+		shares -= section.share
+		remaining -= utf8.RuneCountInString(text)
+		if builder.Len() > 0 {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString(section.label)
+		builder.WriteString(": ")
+		builder.WriteString(text)
 	}
-	return strings.TrimSpace(builder.String())
+	return builder.String()
 }
 
 // bucketSize picks the bucket width, reusing the same helper the dashboard
@@ -1142,8 +1213,7 @@ func bucketSize(filters *logstore.SearchFilters) (int64, error) {
 	// itself (a shared helper other callers do use with a possibly-nil bound),
 	// StartTime/EndTime are never nil here.
 	bucket := logstore.DefaultBucketSize(filters.StartTime, filters.EndTime)
-	span := filters.EndTime.Sub(*filters.StartTime).Seconds()
-	if bucket > 0 && span/float64(bucket) > MaxHistogramBuckets {
+	if histogramBucketCount(*filters.StartTime, *filters.EndTime, bucket) > MaxHistogramBuckets {
 		return 0, fmt.Errorf("the requested time range produces more than %d buckets; use a shorter range", MaxHistogramBuckets)
 	}
 	return bucket, nil
@@ -1201,6 +1271,7 @@ func buildToolsFor(searcher *SemanticSearcher, userLimits bool) []Tool {
 		renderChartTool(),
 		describeFilterSpaceTool(),
 		describeVirtualKeyTool(),
+		listTopicsTool(),
 	)
 	if userLimits {
 		tools = append(tools, describeUserLimitsTool())
@@ -1290,4 +1361,22 @@ func filtersObject(args map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("filters must be an object mapping dimension names to values, got %T", value)
 	}
 	return raw, nil
+}
+
+// histogramBucketCount is how many buckets of bucketSeconds the inclusive range
+// [start, end] touches. The stores align buckets to the epoch, so a range that
+// starts partway through a bucket reaches one more than its length divided by
+// the bucket size, and both end buckets count.
+func histogramBucketCount(start, end time.Time, bucketSeconds int64) int64 {
+	if bucketSeconds <= 0 || end.Before(start) {
+		return 0
+	}
+	floorDiv := func(value int64) int64 {
+		quotient := value / bucketSeconds
+		if value%bucketSeconds < 0 {
+			quotient--
+		}
+		return quotient
+	}
+	return floorDiv(end.Unix()) - floorDiv(start.Unix()) + 1
 }

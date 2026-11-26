@@ -18,6 +18,7 @@ type OpenAIFileResponse struct {
 	Object        string              `json:"object"`
 	Bytes         int64               `json:"bytes"`
 	CreatedAt     int64               `json:"created_at"`
+	ExpiresAt     *int64              `json:"expires_at,omitempty"`
 	Filename      string              `json:"filename"`
 	Purpose       schemas.FilePurpose `json:"purpose"`
 	Status        string              `json:"status,omitempty"`
@@ -63,6 +64,7 @@ func (r *OpenAIFileResponse) ToBifrostFileUploadResponse(latency time.Duration, 
 		Object:         r.Object,
 		Bytes:          r.Bytes,
 		CreatedAt:      r.CreatedAt,
+		ExpiresAt:      r.ExpiresAt,
 		Filename:       r.Filename,
 		Purpose:        r.Purpose,
 		Status:         ToBifrostFileStatus(r.Status),
@@ -91,6 +93,7 @@ func (r *OpenAIFileResponse) ToBifrostFileRetrieveResponse(providerName schemas.
 		Object:         r.Object,
 		Bytes:          r.Bytes,
 		CreatedAt:      r.CreatedAt,
+		ExpiresAt:      r.ExpiresAt,
 		Filename:       r.Filename,
 		Purpose:        r.Purpose,
 		Status:         ToBifrostFileStatus(r.Status),

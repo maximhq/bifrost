@@ -227,3 +227,35 @@ func TestWarpConfigMigrationAddsAdditionalModelsColumn(t *testing.T) {
 	require.NotNil(t, config.AdditionalModels)
 	require.JSONEq(t, models, *config.AdditionalModels)
 }
+
+// An upgraded deployment gains the column Warp's own virtual key is stored in,
+// and its row comes back with none set: such a caller's calls carry no
+// credential, which is what they did before the setting existed.
+func TestWarpConfigMigrationAddsVirtualKeyIDColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: gormlogger.Default.LogMode(gormlogger.Silent)})
+	require.NoError(t, err)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableWarpConfig{}))
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableWarpConfig{}, "virtual_key_id"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "virtual_key_id"),
+		"precondition: the column must be absent to reproduce the upgrade path")
+	now := time.Now().UTC()
+	require.NoError(t, db.Exec(
+		"INSERT INTO warp_config (id, enabled, provider, model, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		tables.WarpConfigRowID, true, "openai", "gpt-4o", now, now).Error)
+
+	require.NoError(t, migrationAddWarpVirtualKeyIDColumn(ctx, db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableWarpConfig{}, "virtual_key_id"))
+
+	store := &RDBConfigStore{}
+	store.db.Store(db)
+	config, err := store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	require.Empty(t, config.VirtualKeyID, "an existing row must come back with no Warp virtual key")
+
+	config.VirtualKeyID = "vk-warp"
+	require.NoError(t, store.UpsertWarpConfig(ctx, config))
+	config, err = store.GetWarpConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "vk-warp", config.VirtualKeyID)
+}

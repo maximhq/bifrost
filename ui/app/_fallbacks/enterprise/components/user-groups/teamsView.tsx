@@ -1,11 +1,14 @@
 import TeamsTable from "@/app/workspace/governance/views/teamsTable";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { getErrorMessage, useGetTeamsQuery } from "@/lib/store";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 const POLLING_INTERVAL = 5000;
@@ -16,6 +19,7 @@ const PAGE_SIZE = 25;
 // (`virtual_key_count`), so neither needs its own unpaginated list request; the
 // customer picker in the sheet fetches its own page on open.
 export function TeamsView() {
+	const { t } = useTranslation("governance");
 	const hasTeamsAccess = useRbac(RbacResource.Teams, RbacOperation.View);
 	const shownErrorsRef = useRef(new Set<string>());
 
@@ -34,6 +38,7 @@ export function TeamsView() {
 		data: teamsData,
 		error: teamsError,
 		isLoading: teamsLoading,
+		refetch: refetchTeams,
 	} = useGetTeamsQuery(
 		{
 			limit: PAGE_SIZE,
@@ -65,11 +70,15 @@ export function TeamsView() {
 		const errorKey = `${!!teamsError}`;
 		if (shownErrorsRef.current.has(errorKey)) return;
 		shownErrorsRef.current.add(errorKey);
-		toast.error(`Failed to load teams: ${getErrorMessage(teamsError)}`);
+		toast.error(t("teams.loadFailed", { message: getErrorMessage(teamsError) }));
 	}, [teamsError]);
 
 	if (teamsLoading) {
 		return <FullPageLoader />;
+	}
+
+	if (showLoadError(teamsError, teamsData)) {
+		return <LoadErrorView entity="teams" error={teamsError} onRetry={() => void refetchTeams()} testId="teams-load-error" />;
 	}
 
 	return (

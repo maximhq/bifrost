@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/jobaccounting"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -184,12 +186,17 @@ type contentPolicy struct {
 func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 
 // resolveContentPolicy resolves content handling for this request. Three
-// layers decide whether content logging is disabled, each overriding the one
+// sources decide whether content logging is disabled, each overriding the one
 // before it in both directions:
 //  1. the static disable_content_logging client config;
-//  2. the resolved virtual key's own disable_content_logging, stamped by
-//     governance as BifrostContextKeyGovernanceDisableContentLogging (absent
-//     when the key inherits). Admin configuration, so it needs no gate;
+//  2. the admin-configured content-logging layers stamped on the context
+//     (business unit, team, user, then the credential tier of provider key,
+//     virtual key and access profile), resolved top down by
+//     schemas.ResolveAdminContentLogging. The virtual key's layer carries a
+//     project's decision when the request is scoped to one, which overrides
+//     the key's. A layer that inherits is absent, and when every layer
+//     inherits the client config stands. Admin configuration, so it needs no
+//     gate;
 //  3. the x-bf-disable-content-logging header, honored only when
 //     BifrostContextKeyAllowPerRequestStorageOverride is true in context (set
 //     by ConvertToBifrostContext from allow_per_request_content_storage_override
@@ -204,8 +211,8 @@ func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 func (p *LoggerPlugin) resolveContentPolicy(ctx *schemas.BifrostContext) contentPolicy {
 	disabled := p.disableContentLogging != nil && *p.disableContentLogging
 	if ctx != nil {
-		if virtualKeyDecision, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
-			disabled = virtualKeyDecision
+		if adminDisabled, decided := schemas.ResolveAdminContentLogging(ctx); decided {
+			disabled = adminDisabled
 		}
 		if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
 			if override, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
@@ -234,9 +241,9 @@ func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
 }
 
 // dropCapturedInput removes everything PreLLMHook captured from the request. PreLLMHook decides
-// with the policy as the context stood then; on the passthrough path governance stamps the virtual
-// key's decision only in its own PreLLMHook, after ours, so the final policy in PostLLMHook can be
-// stricter than the one the inputs were captured under.
+// with the policy as the context stood then; on the passthrough path, and for a request that names
+// a project, governance stamps the key's or project's decision only after ours has run, so the
+// final policy in PostLLMHook can be stricter than the one the inputs were captured under.
 func dropCapturedInput(entry *logstore.Log) {
 	if entry == nil {
 		return
@@ -257,20 +264,73 @@ func dropCapturedInput(entry *logstore.Log) {
 	entry.PassthroughRequestBody = ""
 }
 
-// virtualKeyStampPending reports whether the request presented a virtual key that governance has
-// not resolved onto the context yet, so the key's own content-logging decision is still unknown.
-// The presented key is read the way governance reads it: off the settled identity first, then off
-// the transport's context key.
-func virtualKeyStampPending(ctx *schemas.BifrostContext) bool {
+// contentDecisionScope says which layers can still be stamped after a pre-hook runs.
+type contentDecisionScope int
+
+const (
+	// contentScopeMCP: only the caller's layers, which governance stamps in its own pre-hook. MCP
+	// calls and relays use it, since neither picks a provider key.
+	contentScopeMCP contentDecisionScope = iota
+	// contentScopeLLM: the caller's layers, plus the provider key, which core picks after every
+	// PreLLMHook.
+	contentScopeLLM
+)
+
+// contentDecisionPending reports whether a layer stamped after our pre-hook could still change this
+// request's content decision, so whatever the pre-hook captures is provisional and the post-hook's
+// final policy keeps or drops it.
+//
+//   - An allowed x-bf-disable-content-logging header outranks every layer, so nothing stamped later
+//     can change the decision.
+//   - The caller's layers (business unit, team, user, virtual key, access profile) are pending while
+//     the request presented a caller, or named a project, that governance has not marked resolved
+//     yet. A project governance admits overrides the virtual key's decision, and governance admits it
+//     while it resolves the caller, so the same marker ends both waits.
+//   - On the LLM path the provider key is pending unless a layer already stamped leaves it nothing to
+//     change (a higher tier decided, or a peer in its tier already turned content off).
+func contentDecisionPending(ctx *schemas.BifrostContext, scope contentDecisionScope) bool {
 	if ctx == nil {
 		return false
 	}
-	if stamped, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); stamped != "" {
-		return false
+	if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
+		if _, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
+			return false
+		}
 	}
+	if !schemas.CallerContentLoggingResolved(ctx) && (callerPresented(ctx) || projectNamed(ctx)) {
+		return true
+	}
+	if scope == contentScopeLLM {
+		return schemas.ContentLoggingLayerCanChange(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging)
+	}
+	return false
+}
+
+// projectNamed reports whether the request named a project that its settled identity does not carry
+// yet. The project is read off the request headers the way the governance funnel reads it, so a header
+// that arrived empty still counts as having named one.
+func projectNamed(ctx *schemas.BifrostContext) bool {
 	if grant := ctx.Grant(); grant != nil {
-		if identity := grant.Identity(); identity != nil && identity.Credential().Kind == string(schemas.EntityVirtualKey) {
+		if identity := grant.Identity(); identity != nil && identity.Project() != nil {
+			return false
+		}
+	}
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	for _, header := range []string{schemas.HeaderGovernanceProjectID, schemas.HeaderGovernanceProjectName} {
+		if _, named := headers[header]; named {
 			return true
+		}
+	}
+	return false
+}
+
+// callerPresented reports whether the request presented a caller governance will resolve: any
+// credential or user the transport settled on the identity, or, for a context nothing settled an
+// identity on, a virtual key stamped on the context directly.
+func callerPresented(ctx *schemas.BifrostContext) bool {
+	if grant := ctx.Grant(); grant != nil {
+		if identity := grant.Identity(); identity != nil {
+			return identity.Credential().Kind != "" || identity.User() != nil
 		}
 	}
 	presented, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
@@ -287,6 +347,39 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 	entry.ApplyGovernanceContext(ctx)
 }
 
+// responsesToolResultWithoutMedia is message with each image, file and audio block of its tool output
+// replaced by a placeholder naming it; message itself is never mutated.
+func responsesToolResultWithoutMedia(message *schemas.ResponsesMessage) *schemas.ResponsesMessage {
+	if message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Output == nil {
+		return message
+	}
+	flattened, changed := schemas.FlattenResponsesToolResultMedia(message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+	if !changed {
+		return message
+	}
+	output := *message.ResponsesToolMessage.Output
+	output.ResponsesFunctionToolCallOutputBlocks = flattened
+	toolMessage := *message.ResponsesToolMessage
+	toolMessage.Output = &output
+	copied := *message
+	copied.ResponsesToolMessage = &toolMessage
+	return &copied
+}
+
+// resourceURIForLog is uri without its user info, query and fragment, where credentials ride. Commas
+// are percent-encoded (the same URI) because the log filters split tool names on them.
+func resourceURIForLog(uri string) string {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return "[unparseable resource URI]"
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		parsed.User, parsed.RawQuery, parsed.ForceQuery, parsed.Fragment, parsed.RawFragment = nil, "", false, "", ""
+		uri = parsed.String()
+	}
+	return strings.ReplaceAll(uri, ",", "%2C")
+}
+
 func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
 	if ctx == nil || entry == nil {
 		return
@@ -300,6 +393,60 @@ func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logsto
 	}
 }
 
+// applyMCPRoundTrip records an MCP multi round-trip on entry: an input_required round's status and what it
+// asked, the answers a retry carried (content-gated, like arguments), and round_trip_id, which every round
+// of one gateway tool call shares (see mcp.CallRoundTripID).
+func applyMCPRoundTrip(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog, resp *schemas.BifrostMCPResponse, contentVisible bool) {
+	if carried, _ := ctx.Value(schemas.BifrostContextKeyMCPRoundTripID).(string); carried != "" {
+		entry.RoundTripID = &carried
+	}
+	if answers := mcp.InputResumptionForLog(ctx); answers != nil && contentVisible {
+		setMCPLogMetadata(entry, "input_responses", answers)
+	}
+	if resp == nil {
+		return
+	}
+	asked, ok := mcp.InputRequiredForLog(resp.ChatMessage)
+	if !ok {
+		return
+	}
+	entry.Status = logStatusInputRequired
+	entry.ResultParsed = nil
+	if asked == nil {
+		setMCPLogMetadata(entry, "retry_later", true)
+	} else if contentVisible {
+		entry.ResultParsed = asked
+	}
+	if entry.RoundTripID == nil {
+		id := mcp.CallRoundTripID(ctx)
+		entry.RoundTripID = &id
+	}
+}
+
+// applyMCPAppsMetadata marks an MCP call that involved MCP Apps: the caller hosts apps, the tool opens a
+// ui:// resource or is app-only, or the caller used the server's own tool name (as an app's code does).
+func applyMCPAppsMetadata(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
+	if mcp.CallerDeclaresApps(ctx) {
+		setMCPLogMetadata(entry, "mcp_apps", true)
+	}
+	if uri, _ := ctx.Value(schemas.BifrostContextKeyMCPToolUIResourceURI).(string); uri != "" {
+		setMCPLogMetadata(entry, "ui_resource_uri", resourceURIForLog(uri))
+	}
+	if appOnly, _ := ctx.Value(schemas.BifrostContextKeyMCPToolAppOnly).(bool); appOnly {
+		setMCPLogMetadata(entry, "app_only", true)
+	}
+	if name, _ := ctx.Value(schemas.BifrostContextKeyMCPRequestedToolName).(string); name != "" {
+		setMCPLogMetadata(entry, "requested_name", name)
+	}
+}
+
+func setMCPLogMetadata(entry *logstore.MCPToolLog, key string, value any) {
+	if entry.MetadataParsed == nil {
+		entry.MetadataParsed = map[string]interface{}{}
+	}
+	entry.MetadataParsed[key] = value
+}
+
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
 // applyErrorBillingFromBilledUsage backfills a failed/cancelled request's log
 // entry from the usage the provider already processed before the failure
@@ -311,14 +458,14 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	if billed == nil {
 		return
 	}
-	if entry.TokenUsageParsed == nil {
+	if entry.TokenUsageParsed == nil || billed.Estimation != nil {
 		entry.TokenUsageParsed = billed.DeepCopy()
 		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
 	}
-	if entry.Cost == nil && p.pricingManager != nil {
+	if (entry.Cost == nil || billed.Estimation != nil) && p.pricingManager != nil {
 		pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(entry.Provider))
 		if bd := p.pricingManager.CalculateCostBreakdownForUsage(billed, schemas.ModelProvider(entry.Provider), entry.Model, requestType, pricingScopes); bd != nil && bd.TotalCost > 0 {
 			total := bd.TotalCost
@@ -1172,10 +1319,15 @@ type InitialLogData struct {
 	PassthroughPath        string
 	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
 	App                    string // Backend-detected client app derived from UserAgent
+	ClientIP               string // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 }
 
 // LogCallback is a function that gets called when a new log entry is created
 type LogCallback func(ctx context.Context, logEntry *logstore.Log)
+
+// LogDeleteCallback is a function that gets called with the ids of logs a
+// caller deleted, once the store has deleted them.
+type LogDeleteCallback func(ctx context.Context, ids []string)
 
 // MCPToolLogCallback is a function that gets called when a new MCP tool log entry is created or updated
 type MCPToolLogCallback func(*logstore.MCPToolLog)
@@ -1186,7 +1338,8 @@ type Config struct {
 	RetainContentInObjectStorage *bool                  `json:"retain_content_in_object_storage"` // Pointer to live config value; when true, content-disabled requests are offloaded to object storage as hidden instead of dropped
 	LoggingHeaders               *[]string              `json:"logging_headers"`                  // Pointer to live config slice; changes are reflected immediately without restart
 	Writer                       *logstore.WriterConfig `json:"writer,omitempty"`
-	ObjectStorageEnabled         bool                   `json:"-"` // Set by the server from the logstore config; required for retain_content_in_object_storage to take effect
+	ObjectStorageEnabled         bool                   `json:"-"`                 // Set by the server from the logstore config; required for retain_content_in_object_storage to take effect
+	CaptureClientIP              bool                   `json:"capture_client_ip"` // Set from logs_store.capture_client_ip; off leaves client_ip NULL
 }
 
 func validateWriterConfig(config logstore.WriterConfig) error {
@@ -1238,6 +1391,7 @@ type LoggerPlugin struct {
 	disableContentLogging        *bool
 	retainContentInObjectStorage *bool     // Pointer to live config value; when true, content-disabled requests are stored hidden instead of dropped
 	objectStorageEnabled         bool      // Log store offloads payloads to object storage; required for retain_content_in_object_storage
+	captureClientIP              bool      // logs_store.capture_client_ip; off leaves client_ip NULL
 	retainWarnOnce               sync.Once // Warns once when retention is configured without object storage
 	loggingHeaders               *[]string // Pointer to live config slice for headers to capture in metadata
 	pricingManager               *modelcatalog.ModelCatalog
@@ -1250,6 +1404,8 @@ type LoggerPlugin struct {
 	logCallback                  LogCallback
 	logSubscribers               map[uint64]LogCallback
 	nextLogSubscriberID          uint64
+	logDeleteSubscribers         map[uint64]LogDeleteCallback
+	nextLogDeleteSubscriberID    uint64
 	batchUsageReporter           jobaccounting.UsageReporter
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
@@ -1265,9 +1421,12 @@ type LoggerPlugin struct {
 	pendingClaimLocks            [pendingClaimShards]sync.Mutex // Striped by requestID; serializes eviction vs terminal PostLLMHook claiming a pending entry
 	pendingLogsToInject          sync.Map                       // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
 	pendingMCPLogsToInject       sync.Map                       // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
-	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key; attached in PostMCPHook only if content ends up visible
+	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key or named project; attached in PostMCPHook only if content ends up visible
 	pendingAgentLogs             sync.Map                       // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
+	pendingEndpointLogs          sync.Map                       // Maps request id -> *pendingRelayLog awaiting PostRelayHook
+	evictedRelayPartials         sync.Map                       // Maps request id -> evictedRelayPartial: relay partial rows persisted at eviction, awaiting reconcile in PostRelayHook
 	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
+	pendingRelayLogsToInject     sync.Map                       // Maps traceID -> *pendingRelayInjectEntries (Relay rows awaiting Inject latency backfill)
 	writerConfig                 logstore.WriterConfig          // Resolved async writer queue and batch settings
 	writeQueue                   chan *writeQueueEntry          // Buffered channel for batch write queue
 	closed                       atomic.Bool                    // Set during cleanup to prevent sends on closed writeQueue
@@ -1280,6 +1439,7 @@ type LoggerPlugin struct {
 	batchCancel                  context.CancelFunc             // Cancels batchCtx
 	batchSweeperCancel           context.CancelFunc             // Cancels the batch accounting sweeper, when enabled
 	videoSweeperCancel           context.CancelFunc             // Cancels the video accounting sweeper, when enabled
+	interactionSweeperCancel     context.CancelFunc             // Cancels the interaction accounting sweeper, when enabled
 	batchWriterDone              chan struct{}                  // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
 	recoveredBatch               []*writeQueueEntry             // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
 	userAgentMappings            atomic.Value                   // []compiledUserAgentMapping, read from request hot paths
@@ -1325,6 +1485,7 @@ func Init(ctx context.Context, config *Config, logger schemas.Logger, logsStore 
 		disableContentLogging:        config.DisableContentLogging,
 		retainContentInObjectStorage: config.RetainContentInObjectStorage,
 		objectStorageEnabled:         config.ObjectStorageEnabled,
+		captureClientIP:              config.CaptureClientIP,
 		loggingHeaders:               config.LoggingHeaders,
 		done:                         make(chan struct{}),
 		logger:                       logger,
@@ -1459,7 +1620,7 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	p.cleanupStalePendingLogs()
 }
 
-// flushStaleProcessingLogs deletes LLM, MCP and A2A rows still marked
+// flushStaleProcessingLogs deletes LLM, MCP, A2A and relay rows still marked
 // processing after 30 minutes.
 func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
@@ -1478,6 +1639,11 @@ func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Delete A2A processing logs older than 30 minutes.
 	if err := p.store.FlushAgentLogs(p.ctx, thirtyMinutesAgo); err != nil {
 		p.logger.Warn("failed to cleanup old processing A2A logs: %v", err)
+	}
+
+	// Delete relay processing logs older than 30 minutes.
+	if err := p.store.FlushRelayLogs(p.ctx, thirtyMinutesAgo); err != nil {
+		p.logger.Warn("failed to cleanup old processing relay logs: %v", err)
 	}
 }
 
@@ -1509,6 +1675,55 @@ func (p *LoggerPlugin) SubscribeLogCallback(callback LogCallback) func() {
 			delete(p.logSubscribers, id)
 			p.mu.Unlock()
 		})
+	}
+}
+
+// SubscribeLogDeleteCallback adds an observer of user-facing log deletes.
+// Retention sweeps do not notify: they are age, and an observer with
+// something to expire keeps its own clock. It returns an idempotent
+// unsubscribe function for reloads.
+func (p *LoggerPlugin) SubscribeLogDeleteCallback(callback LogDeleteCallback) func() {
+	if callback == nil {
+		return func() {}
+	}
+	p.mu.Lock()
+	p.nextLogDeleteSubscriberID++
+	id := p.nextLogDeleteSubscriberID
+	if p.logDeleteSubscribers == nil {
+		p.logDeleteSubscribers = make(map[uint64]LogDeleteCallback)
+	}
+	p.logDeleteSubscribers[id] = callback
+	p.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			p.mu.Lock()
+			delete(p.logDeleteSubscribers, id)
+			p.mu.Unlock()
+		})
+	}
+}
+
+// notifyLogDeleteCallbacks tells every observer which logs were deleted.
+func (p *LoggerPlugin) notifyLogDeleteCallbacks(ctx context.Context, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	p.mu.Lock()
+	callbacks := make([]LogDeleteCallback, 0, len(p.logDeleteSubscribers))
+	for _, callback := range p.logDeleteSubscribers {
+		callbacks = append(callbacks, callback)
+	}
+	p.mu.Unlock()
+	for _, callback := range callbacks {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil && p.logger != nil {
+					p.logger.Warn("log delete callback panicked and was recovered: %v", recovered)
+				}
+			}()
+			callback(ctx, ids)
+		}()
 	}
 }
 
@@ -1554,15 +1769,17 @@ func (p *LoggerPlugin) SetSettlementTracer(tracer schemas.Tracer) {
 	p.settlementTracer = tracer
 }
 
-func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchResultFetcher, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+// StartBatchAccountingSweeper starts the sweep that settles finished batch jobs every interval,
+// claiming each job through leases so one process settles it, and returns the function that stops it.
+func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchResultFetcher, interval time.Duration, leases *livestore.Table[string, jobaccounting.PollLease]) context.CancelFunc {
 	if fetcher == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
 			p.logger.Warn("batch accounting sweeper not started: missing fetcher, store, batch store, or pricing manager")
 		}
 		return func() {}
 	}
-	if kvStore == nil && p.logger != nil {
-		p.logger.Debug("batch accounting sweeper starting without KV store")
+	if leases == nil && p.logger != nil {
+		p.logger.Debug("batch accounting sweeper starting without poll leases")
 	}
 	ctx, cancel := context.WithCancel(p.ctx)
 	p.mu.Lock()
@@ -1589,7 +1806,7 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchRe
 	sweeper := jobaccounting.NewBatchSweeper(p.batchStore, p.store, p.pricingManager, fetcher, p, usageReporter, jobaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: claimedBy,
-		KVStore:   kvStore,
+		Leases:    leases,
 		Logger:    p.logger,
 	})
 	p.wg.Add(1)
@@ -1604,7 +1821,7 @@ func (p *LoggerPlugin) StartBatchAccountingSweeper(fetcher jobaccounting.BatchRe
 // rather than a second kind on the batch one: each kind polls its provider through
 // its own client, and the two run on very different clocks — a batch is checked
 // every few minutes for hours, a video every thirty seconds for a few minutes.
-func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.VideoRetriever, interval time.Duration, kvStore schemas.KVStore) context.CancelFunc {
+func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.VideoRetriever, interval time.Duration, leases *livestore.Table[string, jobaccounting.PollLease]) context.CancelFunc {
 	if retriever == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
 		if p.logger != nil {
 			p.logger.Warn("video accounting sweeper not started: missing retriever, store, job store, or pricing manager")
@@ -1632,7 +1849,49 @@ func (p *LoggerPlugin) StartVideoAccountingSweeper(retriever jobaccounting.Video
 	sweeper := jobaccounting.NewVideoSweeper(p.batchStore, p.store, p.pricingManager, retriever, p, usageReporter, jobaccounting.SweeperConfig{
 		Interval:  interval,
 		ClaimedBy: p.batchRunnerID("video-sweeper"),
-		KVStore:   kvStore,
+		Leases:    leases,
+		Logger:    p.logger,
+	})
+	p.wg.Add(1)
+	go func() {
+		defer p.wg.Done()
+		sweeper.Run(ctx)
+	}()
+	return cancel
+}
+
+// StartInteractionAccountingSweeper runs the interaction sweeper, which settles stored runs no
+// client read to the end. It is its own sweeper for the same reason video is: it polls through its
+// own client, and a Deep Research run is checked every minute or so for up to an hour.
+func (p *LoggerPlugin) StartInteractionAccountingSweeper(poller jobaccounting.InteractionPoller, interval time.Duration, leases *livestore.Table[string, jobaccounting.PollLease]) context.CancelFunc {
+	if poller == nil || p.store == nil || p.batchStore == nil || p.pricingManager == nil {
+		if p.logger != nil {
+			p.logger.Warn("interaction accounting sweeper not started: missing poller, store, job store, or pricing manager")
+		}
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(p.ctx)
+	p.mu.Lock()
+	// Same shutdown race as the batch sweeper: Cleanup sets closed and cancels under
+	// this lock before reaching wg.Wait().
+	if p.closed.Load() {
+		p.mu.Unlock()
+		cancel()
+		if p.logger != nil {
+			p.logger.Warn("interaction accounting sweeper not started: logging plugin is shutting down")
+		}
+		return func() {}
+	}
+	if p.interactionSweeperCancel != nil {
+		p.interactionSweeperCancel()
+	}
+	p.interactionSweeperCancel = cancel
+	usageReporter := p.batchUsageReporter
+	p.mu.Unlock()
+	sweeper := jobaccounting.NewInteractionSweeper(p.batchStore, p.store, p.pricingManager, poller, p, usageReporter, jobaccounting.SweeperConfig{
+		Interval:  interval,
+		ClaimedBy: p.batchRunnerID("interaction-sweeper"),
+		Leases:    leases,
 		Logger:    p.logger,
 	})
 	p.wg.Add(1)
@@ -1697,6 +1956,23 @@ func userAgentFromContext(ctx *schemas.BifrostContext) string {
 	}
 	ua, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
 	return ua
+}
+
+// clientIPFromContext returns the caller IP the transport set, clamped to the client_ip column, or "" when capture is off.
+func (p *LoggerPlugin) clientIPFromContext(ctx *schemas.BifrostContext) string {
+	if !p.captureClientIP {
+		return ""
+	}
+	clientIP, _ := ctx.Value(schemas.BifrostContextKeyClientIP).(string)
+	return clampString(clientIP, maxPersistedClientIPLen)
+}
+
+// optionalString returns nil for "" so absent values stay NULL.
+func optionalString(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
@@ -1767,6 +2043,15 @@ func (p *LoggerPlugin) PreRequestHook(_ *schemas.BifrostContext, _ *schemas.Bifr
 	return nil
 }
 
+// logRequestTimestamp uses the same request start as governance accounting.
+func logRequestTimestamp(ctx *schemas.BifrostContext, key schemas.BifrostContextKey) time.Time {
+	startedAt, _ := ctx.Value(key).(time.Time)
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	return startedAt.UTC()
+}
+
 // PreLLMHook is called before a request is processed - FULLY ASYNC, NO DATABASE I/O
 // Parameters:
 //   - ctx: The Bifrost context
@@ -1801,7 +2086,7 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			requestID = sessionID
 		}
 	}
-	createdTimestamp := time.Now().UTC()
+	createdTimestamp := logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime)
 
 	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
 
@@ -1826,25 +2111,32 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if liveUnit != "" {
 		initialData.Object = liveSessionObject
 	}
+	if req.RequestType == schemas.SpeechStreamRequest {
+		if speechSession, _ := ctx.Value(schemas.BifrostContextKeySpeechSession).(bool); speechSession {
+			initialData.Object = speechSessionObject
+		}
+	}
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.ClientIP = p.clientIPFromContext(ctx)
 	initialData.AgentCorrelationID = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
-	// Capture while content is on, and also while the presented virtual key is still unresolved:
-	// governance may stamp a decision that turns content on after ours runs (the passthrough path).
-	// PostLLMHook applies the final policy and drops whatever it does not allow, and the processing
-	// notification below never carries input captured this way.
+	// Capture while content is on, and also while a layer stamped after ours could still turn it on:
+	// governance resolves some callers and admits a named project after this hook (the passthrough
+	// path, and any request that names a project), and core stamps the provider key only once it picks
+	// one. PostLLMHook applies the final policy and drops whatever it does not allow, and the
+	// processing notification below never carries input captured this way.
 	if req.PassthroughRequest != nil {
 		initialData.PassthroughMethod = req.PassthroughRequest.Method
 		initialData.PassthroughPath = req.PassthroughRequest.Path
 	}
-	captureProvisional := virtualKeyStampPending(ctx)
+	captureProvisional := contentDecisionPending(ctx, contentScopeLLM)
 	requestContentPolicy := p.resolveContentPolicy(ctx)
 	if requestContentPolicy.storeContent || captureProvisional {
 		p.captureRequestInput(ctx, req, initialData)
@@ -1917,8 +2209,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// The entry does not exist in the DB yet - it will be written when PostLLMHook fires.
 	initialEntry := buildInitialLogEntry(pending)
 	if captureProvisional || !p.contentLoggingEnabled(ctx) {
-		// Subscribers see this entry before governance has decided for the key, so it carries
-		// no input until the final policy in PostLLMHook says it may.
+		// Subscribers see this entry before governance has decided for the key or project, so it
+		// carries no input until the final policy in PostLLMHook says it may.
 		dropCapturedInput(initialEntry)
 	}
 	p.notifyLogCallbacks(p.ctx, initialEntry)
@@ -2054,7 +2346,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Status:    logStatusForError(bifrostErr),
 				Object:    string(requestType),
 				Stream:    bifrost.IsStreamRequestType(requestType),
-				Timestamp: time.Now().UTC(),
+				Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime),
 				CreatedAt: time.Now().UTC(),
 			}
 			if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
@@ -2067,6 +2359,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					entry.App = &app
 				}
 			}
+			entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 			entry.MetadataParsed = mergeVirtualKeyMetadata(mergeLoadBalancerMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 				if entry.MetadataParsed == nil {
@@ -2105,6 +2398,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			if hasComplexityScore {
 				entry.ComplexityScore = &complexityScore
 			}
+			applyModelRoutingFields(ctx, entry)
 			entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentLoggingEnabled, shouldStoreRaw)
 			entry.GuardrailDebugParsed = guardrailMetadata
 			entry.RoutingMetadataParsed = routingMetadata
@@ -2203,8 +2497,8 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
 	if !contentLoggingEnabled {
-		// The final policy is stricter than the one the inputs were captured under (a virtual key
-		// stamped after our PreLLMHook, as on the passthrough path): take them back out.
+		// The final policy is stricter than the one the inputs were captured under (a virtual key or
+		// project stamped after our PreLLMHook, as on the passthrough path): take them back out.
 		dropCapturedInput(entry)
 	}
 	tagPassthroughEntry(ctx, entry, pending.InitialData, contentLoggingEnabled)
@@ -2240,6 +2534,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		}
 	}
 	applyOutputFieldsToEntry(entry, selectedKeyID, selectedKeyName, virtualKeyID, virtualKeyName, routingRuleID, routingRuleName, selectedPromptID, selectedPromptName, selectedPromptVersion, teamID, teamName, customerID, customerName, userID, userName, businessUnitID, businessUnitName, projectID, projectName, numberOfRetries, latency, upstreamLatency, overheadLatency, attemptTrail)
+	applyUserEmail(ctx, entry)
 	if complexityTier != "" {
 		entry.ComplexityTier = &complexityTier
 	}
@@ -2252,6 +2547,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if hasComplexityScore {
 		entry.ComplexityScore = &complexityScore
 	}
+	applyModelRoutingFields(ctx, entry)
 	applyResolvedAliasInfo(entry, resolvedKeyAlias)
 	// Attach cluster governance metadata for disconnected node usage recovery
 	if nodeID, _ := p.clusterNodeID.Load().(string); nodeID != "" {
@@ -2281,6 +2577,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if customerNames, ok := ctx.Value(schemas.BifrostContextKeyGovernanceCustomerNames).([]string); ok && len(customerNames) > 0 {
 		entry.CustomerNamesParsed = customerNames
 	}
+	applyGrantAttribution(ctx, entry)
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.MetadataParsed = mergeLoadBalancerMetadata(entry.MetadataParsed, ctx)
@@ -2383,6 +2680,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				if entry.RawResponse == "" {
 					if streamResponse != nil && streamResponse.Data != nil && streamResponse.Data.RawResponse != nil {
 						entry.RawResponse = *streamResponse.Data.RawResponse
+						entry.RawResponseFormat = streamResponse.Data.RawResponseFormat
 					} else if bifrostErr.ExtraFields.RawResponse != nil {
 						if rawRespBytes, err := sonic.Marshal(bifrostErr.ExtraFields.RawResponse); err == nil {
 							entry.RawResponse = string(rawRespBytes)
@@ -2415,6 +2713,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		if entry.ErrorDetailsParsed != nil {
 			entry.Status = logStatusForError(entry.ErrorDetailsParsed)
 		}
+		applySpeechSessionInput(entry, result, contentLoggingEnabled)
 		// Backfill passthrough status_code from response (streaming path)
 		if result != nil && result.PassthroughResponse != nil {
 			if params, ok := entry.ParamsParsed.(*schemas.PassthroughLogParams); ok {
@@ -2433,6 +2732,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				if cost := p.pricingManager.CalculateCost(result, pricingScopes); cost > 0 {
 					entry.Cost = &cost
 				}
+			}
+			if bifrostErr == nil && result.PassthroughResponse.ProviderJob != nil {
+				p.handleInteractionJob(ctx, entry, result)
 			}
 		}
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
@@ -2526,6 +2828,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			p.accountVideoResults(entry, result, pricingScopes)
 		}
 	}
+	if bifrostErr == nil && result != nil && result.PassthroughResponse != nil && result.PassthroughResponse.ProviderJob != nil {
+		p.handleInteractionJob(ctx, entry, result)
+	}
 
 	// Pre-apply denormalized fields for WebSocket callback enrichment
 	if entry.SelectedKeyID != "" && entry.SelectedKeyName != "" {
@@ -2560,6 +2865,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 // here since storeOrEnqueueEntry is skipped; Inject's plugin-log and overhead
 // backfill is not available on this path.
 func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry *logstore.Log, reconcileFromPartial bool) {
+	p.prepareRealtimeTranscriptLog(ctx, entry)
 	if !reconcileFromPartial {
 		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
 		return
@@ -2623,6 +2929,10 @@ func (p *LoggerPlugin) Cleanup() error {
 		if p.videoSweeperCancel != nil {
 			p.videoSweeperCancel()
 			p.videoSweeperCancel = nil
+		}
+		if p.interactionSweeperCancel != nil {
+			p.interactionSweeperCancel()
+			p.interactionSweeperCancel = nil
 		}
 		p.mu.Unlock()
 		// After closed is set, so no new row can be held behind this pass, and
@@ -2726,6 +3036,15 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 	// An output-monitor guardrail still evaluating the response holds the row at
 	// the writer hand-off (see holdForDeferredGuardrail).
 	entry.DeferredGuardrail, _ = schemas.DeferredGuardrailResultFromContext(ctx)
+	// Read now, while this attempt is still the current one on the context.
+	window, windowOK := schemas.GetAttemptWindow(ctx)
+	if windowOK && entry.Stream {
+		window.StreamBefore, _ = schemas.GetStreamAttemptStart(ctx)
+	}
+	rw := rowWindow{window: window, ok: windowOK}
+	if windowOK {
+		applyLaterAttemptWindow(entry, window)
+	}
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	if traceID == "" {
 		// Fallback: no tracing (Go SDK path), enqueue directly
@@ -2744,7 +3063,7 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 		return
 	}
 	// Append to slice for Inject() to pick up — supports multiple attempts per trace
-	existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, createdAt: time.Now()})
+	existing, loaded := p.pendingLogsToInject.LoadOrStore(traceID, &pendingInjectEntries{entries: []*logstore.Log{entry}, windows: []rowWindow{rw}, createdAt: time.Now()})
 	if !loaded {
 		// The trace may have ended between the check above and this store. Inject
 		// runs after EndTrace, so if it already drained, this fresh slot is
@@ -2773,6 +3092,7 @@ func (p *LoggerPlugin) storeOrEnqueueEntry(ctx *schemas.BifrostContext, entry *l
 		return
 	}
 	pending.entries = append(pending.entries, entry)
+	pending.windows = append(pending.windows, rw)
 	pending.mu.Unlock()
 }
 
@@ -2814,6 +3134,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	// attributes as LLM rows. Done before the LLM early-return below: an A2A
 	// trace has no pending LLM entries.
 	p.injectAgentEntries(trace, joinKey)
+	p.injectRelayEntries(trace, joinKey)
 	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(joinKey)
 	if !ok {
 		return nil
@@ -2827,6 +3148,7 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	pending.mu.Lock()
 	pending.drained = true
 	entries := pending.entries
+	windows := pending.windows
 	pending.mu.Unlock()
 	// Serialize plugin logs once for all entries
 	pluginLogsJSON := serializePluginLogs(trace.PluginLogs)
@@ -2839,6 +3161,28 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 		upstreamMs, upOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostUpstreamDurationMs)
 		overheadMs, ovOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
 	}
+	// Several rows under one trace (agent turns, fallback attempts, list_models pages),
+	// each with a measured attempt window: every row reports its own share.
+	if len(entries) > 1 && allWindowsMeasured(windows, len(entries)) {
+		measured := make([]schemas.AttemptWindow, len(entries))
+		for i := range entries {
+			measured[i] = windows[i].window
+		}
+		rows := splitTraceLatency(trace, measured, upstreamMs, upOK)
+		for i, entry := range entries {
+			entry.PluginLogs = pluginLogsJSON
+			row := rows[i]
+			entry.Latency = &row.latencyMs
+			entry.UpstreamLatency = &row.upstreamMs
+			entry.OverheadLatency = &row.overheadMs
+			if len(row.breakdown) > 0 {
+				entry.OverheadBreakdownParsed = row.breakdown
+			}
+			p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+		}
+		return nil
+	}
+
 	// Per-span self-time decomposition of overhead, attached to the same terminal
 	// row that receives the overhead number below.
 	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
@@ -3053,6 +3397,15 @@ func applyA2ATransports(entry *logstore.AgentLog, ctx *schemas.BifrostContext) {
 	}
 }
 
+// applyA2ACallerCorrelation records the delegating agent's x-bf-agent-correlation-id (its A2A task) on the
+// operation, so a subagent's work nests under its caller. A value captured earlier in the operation is kept.
+func applyA2ACallerCorrelation(entry *logstore.AgentLog, ctx *schemas.BifrostContext) {
+	if entry == nil || ctx == nil || entry.CallerCorrelationID != nil {
+		return
+	}
+	entry.CallerCorrelationID = optionalBoundedA2AValue(requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"), maxPersistedAgentCorrelationIDLen)
+}
+
 func applyA2AContentPolicy(entry *logstore.AgentLog, policy contentPolicy) {
 	if entry == nil {
 		return
@@ -3090,6 +3443,7 @@ func (p *LoggerPlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 	entry.ApplyGovernanceContext(ctx)
 	applyA2ATransports(entry, ctx)
+	applyA2ACallerCorrelation(entry, ctx)
 	entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
 	entry.RequestBody = req.RequestBody
 	applyA2ARequestCorrelation(entry, req)
@@ -3133,6 +3487,7 @@ func (p *LoggerPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	// attribution captured earlier in the operation.
 	entry.ApplyGovernanceContext(ctx)
 	applyA2ATransports(entry, ctx)
+	applyA2ACallerCorrelation(entry, ctx)
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency
@@ -3335,6 +3690,19 @@ func (p *LoggerPlugin) SetMCPToolLogCallback(callback MCPToolLogCallback) {
 	p.mcpToolLogCallback = callback
 }
 
+// isMCPConnectCall reports whether core marked this call as a client's connect tool (see
+// bifrost.MCPToolCallKindOf). toolName may come with or without the client prefix: responses name
+// the tool the upstream way, requests and errors with the prefix.
+func isMCPConnectCall(ctx *schemas.BifrostContext, clientName, toolName string) bool {
+	if clientName == "" || toolName == "" {
+		return false
+	}
+	if !strings.HasPrefix(toolName, clientName+"-") {
+		toolName = clientName + "-" + toolName
+	}
+	return bifrost.MCPToolCallKindOf(ctx, clientName, toolName) == schemas.MCPToolCallKindConnect
+}
+
 // PreMCPHook is called before an MCP tool execution - creates initial log entry
 // Parameters:
 //   - ctx: The Bifrost context
@@ -3350,10 +3718,14 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
-	// Only log for tool execute requests
-	if !req.RequestType.IsExecuteTool() {
+	// Only log tool executions and prompt or resource reads
+	isRead := req.RequestType.IsPromptOrResourceRead()
+	if !req.RequestType.IsExecuteTool() && !isRead {
 		return req, nil, nil
 	}
+	// A call named like a client's connect tool is recorded here like any other: whether it is
+	// Bifrost's connect tool or an upstream tool of that name can depend on a caller that a policy
+	// plugin registered after logging names later. PostMCPHook drops a confirmed connect call.
 
 	requestID, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
 	if !ok || requestID == "" {
@@ -3364,7 +3736,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Get parent request ID if this MCP call is part of a larger LLM request (using the MCP agent original request ID)
 	parentRequestID, _ := ctx.Value(schemas.BifrostMCPAgentOriginalRequestID).(string)
 
-	createdTimestamp := time.Now().UTC()
+	createdTimestamp := logRequestTimestamp(ctx, schemas.BifrostContextKeyMCPRequestStartTime)
 
 	// Extract tool name and arguments from the request
 	var toolName string
@@ -3372,10 +3744,24 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	fullToolName := req.GetToolName()
 	arguments := req.GetToolArguments()
+	if isRead {
+		serverLabel = req.ClientName
+		toolName = req.ReadTarget()
+		arguments = nil
+		if req.BifrostMCPGetPromptRequest != nil {
+			arguments = req.BifrostMCPGetPromptRequest.Arguments
+		}
+		// tool_name, stored whatever the content policy, holds the URI without credentials; the
+		// arguments, gated by that policy, keep it whole.
+		if req.BifrostMCPReadResourceRequest != nil {
+			toolName = resourceURIForLog(toolName)
+			arguments = map[string]string{"uri": req.BifrostMCPReadResourceRequest.URI}
+		}
+	}
 
 	// Extract server label from tool name (format: {client}-{tool_name})
 	// The first part before hyphen is the client/server label
-	if fullToolName != "" {
+	if fullToolName != "" && !isRead {
 		if idx := strings.Index(fullToolName, "-"); idx > 0 {
 			serverLabel = fullToolName[:idx]
 			toolName = fullToolName[idx+1:]
@@ -3393,7 +3779,8 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// e.g. "executeToolCode") and the suffix after the client prefix (e.g.
 	// "myclient-executeToolCode") so PreMCP and PostMCP agree on what to skip
 	// and we never leave an orphan pending row to expire via the TTL path.
-	if bifrost.IsCodemodeTool(fullToolName) || bifrost.IsCodemodeTool(toolName) {
+	// Reads are never codemode: an upstream prompt may share one of those names.
+	if !isRead && (bifrost.IsCodemodeTool(fullToolName) || bifrost.IsCodemodeTool(toolName)) {
 		return req, nil, nil
 	}
 
@@ -3408,10 +3795,14 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		ID:          mcpLogID,
 		RequestID:   requestID,
 		Timestamp:   createdTimestamp,
-		ToolName:    toolName,
+		ToolName:    clampString(toolName, maxPersistedMCPToolNameLen),
 		ServerLabel: serverLabel,
 		Status:      "processing",
 		CreatedAt:   createdTimestamp,
+	}
+	if isRead {
+		method := req.RequestType.OTelMethodName()
+		entry.Method = &method
 	}
 
 	if parentRequestID != "" {
@@ -3429,15 +3820,16 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			entry.App = &app
 		}
 	}
+	entry.ClientIP = optionalString(p.clientIPFromContext(ctx))
 
 	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
-	// request that presents a virtual key governance has not stamped yet has no final content
-	// decision: hold the arguments aside instead of putting them on the pending entry, where the
-	// pre-hook callback and the stale-entry reaper would expose them. PostMCPHook attaches them once
-	// the policy is final; a stale entry never gets them.
-	// The hold does not depend on the current policy: a key that turns content on over a disabled
+	// request whose caller (a virtual key, or a user who authenticated without one) or named project
+	// governance has not resolved yet has no final content decision: hold the arguments aside instead of putting
+	// them on the pending entry, where the pre-hook callback and the stale-entry reaper would expose
+	// them. PostMCPHook attaches them once the policy is final; a stale entry never gets them.
+	// The hold does not depend on the current policy: a caller or project that turns content on over a disabled
 	// client flag is entitled to its arguments once PostMCPHook sees the final decision.
-	if virtualKeyStampPending(ctx) {
+	if contentDecisionPending(ctx, contentScopeMCP) {
 		p.provisionalMCPArguments.Store(mcpLogID, arguments)
 	} else if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
@@ -3484,8 +3876,22 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	} else if bifrostErr != nil {
 		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
 	}
-	if !mcpReqType.IsExecuteTool() {
+	if !mcpReqType.IsExecuteTool() && !mcpReqType.IsPromptOrResourceRead() {
 		return resp, bifrostErr, nil
+	}
+	// A client's connect tool only signs the caller in and discovers their tools, and its result
+	// can carry the sign-in link, so its calls are not logged, whether they answered or failed. The
+	// caller is known by now, so the mark is settled. Only core can mark one, so an upstream tool
+	// named "connect" is still logged.
+	var connectCall bool
+	if mcpReqType.IsExecuteTool() {
+		var clientName, toolName string
+		if resp != nil {
+			clientName, toolName = resp.ExtraFields.ClientName, resp.ExtraFields.ToolName
+		} else {
+			clientName, toolName = bifrostErr.ExtraFields.MCPClientName, bifrostErr.ExtraFields.MCPToolName
+		}
+		connectCall = isMCPConnectCall(ctx, clientName, toolName)
 	}
 	// Skip logging for codemode tools (executeToolCode, listToolFiles, readToolFile)
 	if resp != nil && bifrost.IsCodemodeTool(resp.ExtraFields.ToolName) {
@@ -3504,6 +3910,16 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		mcpLogID = requestID
 	}
 
+	// A sign-in prompt is not a failed call: the caller still has to connect
+	// their account, and the sign-in link it carries must stay out of the store.
+	// Drop what PreMCPHook held so the stale sweeper does not write it either.
+	// The same goes for a connect call.
+	if connectCall || (bifrostErr != nil && bifrostErr.ExtraFields.MCPAuthRequired != nil) {
+		p.pendingMCPLogsToInject.Delete(mcpLogID)
+		p.provisionalMCPArguments.Delete(mcpLogID)
+		return resp, bifrostErr, nil
+	}
+
 	pendingVal, hasPending := p.pendingMCPLogsToInject.LoadAndDelete(mcpLogID)
 	var entry *logstore.MCPToolLog
 	if hasPending {
@@ -3515,7 +3931,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		entry = &logstore.MCPToolLog{
 			ID:        mcpLogID,
 			RequestID: requestID,
-			Timestamp: time.Now().UTC(),
+			Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyMCPRequestStartTime),
 			Status:    "processing",
 			CreatedAt: time.Now().UTC(),
 		}
@@ -3526,8 +3942,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)
 	// Resolved once here, after every pre-hook has run. PreMCPHook captured the arguments with
 	// whatever the context said at the time, and governance's PreMCPHook, which stamps the virtual
-	// key's content decision, runs after ours; a key that turns content off must take the
-	// arguments back out along with the result.
+	// key's or project's content decision, runs after ours; a decision that turns content off must
+	// take the arguments back out along with the result.
 	contentVisible := p.resolveContentPolicy(ctx).visible()
 	if held, ok := p.provisionalMCPArguments.LoadAndDelete(mcpLogID); ok && contentVisible {
 		entry.ArgumentsParsed = held
@@ -3539,6 +3955,10 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency
+		// Core may move a read to another server after the pre-hooks; log the one that answered.
+		if mcpReqType.IsPromptOrResourceRead() && resp.ExtraFields.ClientName != "" {
+			entry.ServerLabel = resp.ExtraFields.ClientName
+		}
 	}
 
 	success := resp != nil && bifrostErr == nil
@@ -3560,20 +3980,23 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		// stored when it is also visible.
 		if contentVisible {
 			var result interface{}
+			// Media a tool returned is logged as a placeholder, not as base64.
 			if resp.ChatMessage != nil {
-				if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
-					contentStr := *resp.ChatMessage.Content.ContentStr
+				message := *resp.ChatMessage
+				message.Content = schemas.FlattenToolResultMedia(resp.ChatMessage.Content, nil)
+				result = &message
+				if message.Content != nil && message.Content.ContentStr != nil {
 					var parsedContent interface{}
-					if err := sonic.Unmarshal([]byte(contentStr), &parsedContent); err == nil {
+					if err := sonic.Unmarshal([]byte(*message.Content.ContentStr), &parsedContent); err == nil {
 						result = parsedContent
-					} else {
-						result = resp.ChatMessage
 					}
-				} else {
-					result = resp.ChatMessage
 				}
 			} else if resp.ResponsesMessage != nil {
-				result = resp.ResponsesMessage
+				result = responsesToolResultWithoutMedia(resp.ResponsesMessage)
+			} else if resp.BifrostMCPGetPromptResponse != nil {
+				result = schemas.PromptForLog(resp.BifrostMCPGetPromptResponse.Prompt)
+			} else if resp.BifrostMCPReadResourceResponse != nil {
+				result = schemas.ResourceContentsForLog(resp.BifrostMCPReadResourceResponse.Resource)
 			}
 			if result != nil {
 				entry.ResultParsed = result
@@ -3588,6 +4011,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 			},
 		}
 	}
+	applyMCPRoundTrip(ctx, entry, resp, contentVisible)
+	applyMCPAppsMetadata(ctx, entry)
 
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback
@@ -3748,7 +4173,13 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 			Model:    req.PassthroughRequest.Model,
 		}
 		initialData.Params = passthroughParams
-		if len(req.PassthroughRequest.Body) > 0 {
+		if len(req.PassthroughRequest.Body) == 0 && req.PassthroughRequest.Form != nil {
+			// A streamed multipart upload: summarize its parsed form, never the file contents.
+			if summary, ok := passthroughparse.SummarizeMultipartForm(req.PassthroughRequest.Form, req.PassthroughRequest.FormTypes); ok {
+				initialData.PassthroughRequestBody = string(summary)
+				passthroughParams.MultipartSummary = true
+			}
+		} else if len(req.PassthroughRequest.Body) > 0 {
 			rawCT := req.PassthroughRequest.SafeHeaders["content-type"]
 			ct := strings.ToLower(rawCT)
 			if strings.Contains(ct, "application/json") {

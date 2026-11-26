@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -681,4 +682,80 @@ func TestPineconeStore_DeleteMissingIDSucceeds(t *testing.T) {
 
 	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, PineconeTestNamespace, PineconeTestDimension, nil))
 	assert.NoError(t, setup.Store.Delete(setup.ctx, PineconeTestNamespace, generateUUID()))
+}
+
+// laggingPineconeIndex answers deleteMatchingRounds the way a serverless index
+// can: the first query after a delete still sees the entries it removed.
+type laggingPineconeIndex struct {
+	live     map[string]bool
+	pageSize int
+	stale    []SearchResult
+}
+
+func newLaggingPineconeIndex(count, pageSize int) *laggingPineconeIndex {
+	index := &laggingPineconeIndex{live: map[string]bool{}, pageSize: pageSize}
+	for i := range count {
+		index.live[fmt.Sprintf("id-%03d", i)] = true
+	}
+	return index
+}
+
+func (l *laggingPineconeIndex) page() []SearchResult {
+	ids := make([]string, 0, len(l.live))
+	for id := range l.live {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	page := []SearchResult{}
+	for _, id := range ids[:min(len(ids), l.pageSize)] {
+		page = append(page, SearchResult{ID: id})
+	}
+	return page
+}
+
+func (l *laggingPineconeIndex) find() ([]SearchResult, error) {
+	if l.stale != nil {
+		stale := l.stale
+		l.stale = nil
+		return stale, nil
+	}
+	return l.page(), nil
+}
+
+func (l *laggingPineconeIndex) remove(ids []string) error {
+	l.stale = l.page()
+	for _, id := range ids {
+		delete(l.live, id)
+	}
+	return nil
+}
+
+// A query that runs behind the delete hands the same full page back. That is
+// not proof the filter is cleared: more matches can sit behind the page, so the
+// loop waits and asks again rather than reporting success.
+func TestPineconeDeleteMatchingOutlastsAStaleRead(t *testing.T) {
+	index := newLaggingPineconeIndex(25, 10)
+	results, err := deleteMatchingRounds(context.Background(), index.find, index.remove, 10, time.Millisecond)
+	require.NoError(t, err)
+	assert.Len(t, results, 25)
+	assert.Empty(t, index.live, "every match is deleted, not only the first page")
+}
+
+// A page with room to spare held every match there was, so a short page of
+// ids already deleted still ends the loop successfully.
+func TestPineconeDeleteMatchingStopsOnAShortStalePage(t *testing.T) {
+	index := newLaggingPineconeIndex(7, 10)
+	results, err := deleteMatchingRounds(context.Background(), index.find, index.remove, 10, time.Hour)
+	require.NoError(t, err)
+	assert.Len(t, results, 7)
+	assert.Empty(t, index.live)
+}
+
+// Running out of rounds while matches keep coming is not success: some may
+// remain, and the caller has to hear it.
+func TestPineconeDeleteMatchingReportsAnExhaustedBound(t *testing.T) {
+	index := newLaggingPineconeIndex(pineconeDeleteRounds*10+5, 10)
+	_, err := deleteMatchingRounds(context.Background(), func() ([]SearchResult, error) { return index.page(), nil }, index.remove, 10, time.Millisecond)
+	require.Error(t, err)
+	assert.NotEmpty(t, index.live)
 }

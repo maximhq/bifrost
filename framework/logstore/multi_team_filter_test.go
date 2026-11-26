@@ -91,6 +91,7 @@ func TestCanUseMatViewFilters_ExcludesTeamBU(t *testing.T) {
 	// One project per request, so the hourly view carries it as a plain scalar dimension and a
 	// project filter is served from it like a provider filter is.
 	assert.True(t, canUseMatViewFilters(SearchFilters{ProjectIDs: []string{"p1"}}), "project filter is matview-eligible")
+	assert.False(t, canUseMatViewFilters(SearchFilters{TopicIDs: []string{"topic-1"}}), "topic filter is a membership test against the assignments table and must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{ParentRequestID: "req-1"}), "parent request filter has no matview dimension and must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{SessionID: "session-1"}), "session ID is not materialized and must force the raw path")
 	assert.False(t, canUseMatViewFilters(SearchFilters{AgentCorrelationID: "agent-1"}), "agent correlation ID is not materialized and must force the raw path")

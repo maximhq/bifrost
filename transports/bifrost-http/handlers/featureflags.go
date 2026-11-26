@@ -80,6 +80,7 @@ func (h *FeatureFlagsHandler) updateFlag(ctx *fasthttp.RequestCtx) {
 	// Restore uses that to delete vs. write-back, preserving the original
 	// source (default / db / file) and timestamps exactly.
 	priorSnap, priorHad := h.store.Snapshot(id)
+	priorEnabled := h.store.IsEnabled(id)
 
 	status, err := h.store.Set(ctx, id, enabled)
 	switch {
@@ -109,5 +110,10 @@ func (h *FeatureFlagsHandler) updateFlag(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	targetName := status.DisplayName
+	if targetName == "" {
+		targetName = id
+	}
+	lib.RecordAuditChange(ctx, "feature_flag.updated", "feature_flag", id, targetName, map[string]any{"enabled": priorEnabled}, map[string]any{"enabled": status.Enabled})
 	SendJSON(ctx, status)
 }

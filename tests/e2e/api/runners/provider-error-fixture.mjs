@@ -23,16 +23,26 @@ const completionPayload = (model, usage) => ({
 // deadline always fires first and short enough to stay inside any request timeout.
 const SLOW_MS = 2000;
 
+const completionResponse = (model, extraUsage = {}) => ({
+	status: 200,
+	headers: {},
+	body: JSON.stringify({
+		id: `chatcmpl-${model}`,
+		object: "chat.completion",
+		created: 1,
+		model,
+		choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+		usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11, ...extraUsage },
+	}),
+});
+
 const behaviours = {
 	"upstream-500": () => ({ status: 500, headers: {}, body: errorBody("internal server error", "server_error", "internal_error") }),
 	"upstream-503": () => ({ status: 503, headers: {}, body: errorBody("service unavailable", "server_error", "service_unavailable") }),
 	"upstream-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
 	"upstream-429-ms": () => ({ status: 429, headers: { "retry-after-ms": "2500" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),
-	"upstream-ok": () => ({
-		status: 200,
-		headers: {},
-		body: JSON.stringify(completionPayload("upstream-ok", { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 })),
-	}),
+	"upstream-ok": () => completionResponse("upstream-ok"),
+	"upstream-zero-cost": () => completionResponse("upstream-zero-cost", { cost: 0 }),
 };
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
 behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: SLOW_MS });
@@ -144,6 +154,33 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
+	// Audio with no speech makes OpenAI answer a text, srt or vtt transcription with 200 and an empty or
+	// newline-only body. upstream-transcribe-empty answers "" and upstream-transcribe-newline answers "\n"; a
+	// JSON format gets the same empty body, which the gateway must still reject as there is nothing to decode.
+	if (req.method === "POST" && path === "/v1/audio/transcriptions") {
+		const chunks = [];
+		req.on("data", (c) => chunks.push(c));
+		req.on("end", () => {
+			const form = Buffer.concat(chunks).toString("latin1");
+			const field = (name) => {
+				const m = form.match(new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)\\r\\n`));
+				return m ? m[1] : "";
+			};
+			const model = field("model");
+			hits[model] = (hits[model] || 0) + 1;
+			if (req.headers.authorization !== "Bearer test-key") {
+				return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
+			}
+			const transcripts = { "upstream-transcribe-empty": "", "upstream-transcribe-newline": "\n" };
+			if (!Object.hasOwn(transcripts, model)) {
+				return send(404, {}, errorBody(`unknown fixture model ${model}`, "invalid_request_error", "model_not_found"));
+			}
+			const plain = ["text", "srt", "vtt"].includes(field("response_format"));
+			res.writeHead(200, { "Content-Type": plain ? "text/plain; charset=utf-8" : "application/json" });
+			res.end(transcripts[model]);
+		});
+		return;
+	}
 	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
@@ -213,6 +250,17 @@ const server = http.createServer((req, res) => {
 			return res.end(payload, () => {
 				if (truncated) socket.end(); // Graceful EOF without a Connection: close header.
 			});
+		}
+		if (model === "upstream-extra-content") {
+			const chunk = (choice) => ({ id: "chatcmpl-extra-content", object: "chat.completion.chunk", created: 1, model, choices: [{ index: 0, ...choice }] });
+			const payload = [
+				chunk({ delta: { role: "assistant", content: "hello" } }),
+				chunk({ delta: { extra_content: { spans: [[0, 5, [1, 2, 3, 4]]] } } }),
+				chunk({ delta: {}, finish_reason: "stop" }),
+				chunk({ delta: { extra_content: { spans: [[0, 5]] } } }),
+			].map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
+			res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+			return res.end(payload);
 		}
 		// The model's behaviour picks the response, so only an own entry may be looked up: "constructor" or
 		// "toString" must be an unknown model, not an inherited function.

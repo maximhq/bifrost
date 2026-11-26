@@ -32,6 +32,15 @@ func typesafeImagesHeaderAllowed(overrides map[string]bool) bool {
 	return !set || allowed
 }
 
+// SetImagesHeader adds typesafeImagesHeader to headers when the request needs it and
+// overrides (the provider's network_config.beta_header_overrides) do not turn it off.
+// Gateways that serve Typesafe models on a systemone route require it too.
+func SetImagesHeader(headers map[string]string, request *schemas.BifrostDecisionRequest, overrides map[string]bool) {
+	if usesTypesafeImages(request) && typesafeImagesHeaderAllowed(overrides) {
+		headers[typesafeImagesHeader] = "true"
+	}
+}
+
 // typesafeModel is one entry of the static model catalog.
 type typesafeModel struct {
 	ID          string

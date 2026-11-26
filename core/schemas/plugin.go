@@ -35,17 +35,25 @@ const (
 	PluginTypeMCP  PluginType = "mcp"
 	PluginTypeA2A  PluginType = "a2a"
 	PluginTypeHTTP PluginType = "http"
+
+	PluginTypeRelay PluginType = "relay"
 )
 
 // HTTPRequest is a serializable representation of an HTTP request.
 // Used for plugin HTTP transport interception (supports both native .so and WASM plugins).
 // This type is pooled for allocation control - use AcquireHTTPRequest and ReleaseHTTPRequest.
+//
+// Body holds a copy of the request body. For a multipart/form-data request (a file upload)
+// the transport does not copy the body: Body is nil and BodySource streams the form instead,
+// valid only during the hook call. A plugin that replaces the body sets Body, which the
+// transport then writes over the original request body.
 type HTTPRequest struct {
 	Method     string            `json:"method"`
 	Path       string            `json:"path"`
 	Headers    map[string]string `json:"headers"`
 	Query      map[string]string `json:"query"`
 	Body       []byte            `json:"body"`
+	BodySource BodySource        `json:"-"`           // Read-only body handle, set instead of Body for bodies too large to copy
 	PathParams map[string]string `json:"path_params"` // Path variables extracted from the URL pattern (e.g., {model})
 }
 
@@ -197,6 +205,7 @@ func ReleaseHTTPRequest(req *HTTPRequest) {
 	req.Method = ""
 	req.Path = ""
 	req.Body = nil
+	req.BodySource = nil
 	httpRequestPool.Put(req)
 }
 
@@ -447,6 +456,20 @@ type A2APlugin interface {
 
 	PreA2AHook(ctx *BifrostContext, req *BifrostA2ARequest) (*BifrostA2ARequest, *A2APluginShortCircuit, error)
 	PostA2AHook(ctx *BifrostContext, resp *BifrostA2AResponse, bifrostErr *BifrostError) (*BifrostA2AResponse, *BifrostError, error)
+}
+
+// RelayPlugin is the internal hook surface for Relays traffic
+// (/passthrough/{endpoint}/{path}); it is not a plugin users configure. It mirrors A2APlugin:
+// PreRelayHook runs in registration order and may mutate the envelope or short-circuit
+// it (governance denies an ungranted endpoint or an exhausted budget here, before any upstream
+// effect), PostRelayHook runs in reverse order for the plugins whose pre-hook ran, and
+// a returned Go error is non-blocking. For a streamed call the post-hook runs once the stream has
+// ended, with the final usage.
+type RelayPlugin interface {
+	BasePlugin
+
+	PreRelayHook(ctx *BifrostContext, req *BifrostRelayRequest) (*BifrostRelayRequest, *RelayPluginShortCircuit, error)
+	PostRelayHook(ctx *BifrostContext, resp *BifrostRelayResponse, bifrostErr *BifrostError) (*BifrostRelayResponse, *BifrostError, error)
 }
 
 // MCPConnectionPlugin is an optional, typed extension interface for handling MCP

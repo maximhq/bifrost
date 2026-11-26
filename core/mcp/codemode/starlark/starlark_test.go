@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,36 +23,59 @@ import (
 )
 
 type testClientManager struct {
-	perClientCap int
-	clients      map[string]*schemas.MCPClientState
-	tools        map[string][]schemas.ChatTool
+	perClientCap       int
+	clients            map[string]*schemas.MCPClientState
+	tools              map[string][]schemas.ChatTool
+	instructions       map[string]string            // client ID -> instructions every caller sees
+	callerInstructions map[string]map[string]string // caller -> client ID -> that caller's own instructions
 }
 
-func (m *testClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+// testCallerKey names the caller on a test context for testClientManager.
+type testCallerKey struct{}
+
+func (m *testClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
 	for clientName, tools := range m.tools {
 		for _, tool := range tools {
 			if tool.Function != nil && tool.Function.Name == toolName {
-				return m.clients[clientName]
+				return m.clients[clientName], &schemas.MCPDiscovery{}
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func (m *testClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return m.clients[clientName]
 }
 
+func (m *testClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	return nil
+}
+
+func (m *testClientManager) GetInstructionsForClient(ctx context.Context, clientID string) string {
+	if caller, ok := ctx.Value(testCallerKey{}).(string); ok {
+		if text, ok := m.callerInstructions[caller][clientID]; ok {
+			return text
+		}
+	}
+	return m.instructions[clientID]
+}
+
 func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return m.tools
 }
 
-func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
-	return codemcp.InstructionCaps{PerClient: m.perClientCap}
+// GetCallerDiscovery serves the fake's tools, with no connect tools or instructions.
+func (m *testClientManager) GetCallerDiscovery(ctx context.Context, _ bool) codemcp.CallerDiscovery {
+	return codemcp.CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
 }
 
-func (m *testClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+func (m *testClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
 	return nil
+}
+
+func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
+	return codemcp.InstructionCaps{PerClient: m.perClientCap}
 }
 
 func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
@@ -327,23 +351,6 @@ func TestGeneratePythonErrorHints(t *testing.T) {
 		}
 		if !found {
 			t.Error("Expected hint about syntax error")
-		}
-	})
-
-	t.Run("Attribute error hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("'dict' object has no attribute 'foo'", serverKeys)
-		if len(hints) == 0 {
-			t.Error("Expected hints, got none")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "attribute", "brackets", "key") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Error("Expected hint about attribute access")
 		}
 	})
 }
@@ -663,7 +670,7 @@ func TestExtractTextFromMCPResponseResultShapes(t *testing.T) {
 		{
 			name:   "text next to an image keeps its own line",
 			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("Found 2 files"), mcp.ImageContent{Data: "AAAA", MIMEType: "image/png"}}},
-			want:   "Found 2 files\n[Image Response: AAAA, MIME: image/png]",
+			want:   "Found 2 files\n[image/png, 3 bytes returned by the tool, not shown]",
 		},
 		{
 			name:   "a single block is passed through",
@@ -1017,74 +1024,6 @@ class Foo:
 func TestGeneratePythonErrorHintsNewCases(t *testing.T) {
 	serverKeys := []string{"Github", "SqLite"}
 
-	t.Run("try/except hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("code.star:3:9: got try, want primary expression", serverKeys)
-		if len(hints) == 0 {
-			t.Fatal("Expected hints for try/except error")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "try/except", "exception handling") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected hint about try/except not being supported, got: %v", hints)
-		}
-	})
-
-	t.Run("except hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("code.star:5:9: got except, want primary expression", serverKeys)
-		if len(hints) == 0 {
-			t.Fatal("Expected hints for except error")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "try/except", "exception handling") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected hint about exception handling, got: %v", hints)
-		}
-	})
-
-	t.Run("finally hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("code.star:7:9: got finally, want primary expression", serverKeys)
-		if len(hints) == 0 {
-			t.Fatal("Expected hints for finally error")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "try/except", "exception handling") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected hint about exception handling, got: %v", hints)
-		}
-	})
-
-	t.Run("raise hint", func(t *testing.T) {
-		hints := generatePythonErrorHints("code.star:2:1: got raise, want primary expression", serverKeys)
-		if len(hints) == 0 {
-			t.Fatal("Expected hints for raise error")
-		}
-		found := false
-		for _, hint := range hints {
-			if containsAny(hint, "try/except", "exception handling") {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected hint about exception handling, got: %v", hints)
-		}
-	})
-
 	t.Run("Undefined variable includes scope hint", func(t *testing.T) {
 		hints := generatePythonErrorHints("code.star:3:17: undefined: commits_n8n", serverKeys)
 		if len(hints) == 0 {
@@ -1341,8 +1280,6 @@ func TestCodeModeToolResponseSize(t *testing.T) {
 	oversized := strings.Repeat("x", schemas.DefaultCodeModeMaxValueBytes+1)
 	for _, content := range [][]mcp.Content{
 		{mcp.TextContent{Text: oversized}},
-		{mcp.ImageContent{Data: oversized}},
-		{mcp.AudioContent{Data: oversized}},
 		{mcp.ResourceLink{URI: oversized}},
 		{&mcp.TextContent{Text: oversized}},
 		{mcp.TextContent{Text: oversized[:schemas.DefaultCodeModeMaxValueBytes/2]}, mcp.TextContent{Text: oversized[:schemas.DefaultCodeModeMaxValueBytes/2+1]}},
@@ -1350,6 +1287,13 @@ func TestCodeModeToolResponseSize(t *testing.T) {
 		_, err := extractTextFromMCPResponse(&mcp.CallToolResult{Content: content}, "echo", schemas.DefaultCodeModeMaxValueBytes)
 		if err == nil {
 			t.Fatal("oversized tool response accepted")
+		}
+	}
+	// Media reaches a script as a short placeholder, never as base64, so its size does not count.
+	for _, content := range []mcp.Content{mcp.ImageContent{Data: oversized, MIMEType: "image/png"}, mcp.AudioContent{Data: oversized, MIMEType: "audio/wav"}} {
+		text, err := extractTextFromMCPResponse(&mcp.CallToolResult{Content: []mcp.Content{content}}, "echo", schemas.DefaultCodeModeMaxValueBytes)
+		if err != nil || len(text) > 100 || !strings.Contains(text, "not shown") {
+			t.Fatalf("media should become a placeholder, got %q (%v)", text, err)
 		}
 	}
 	thread := newSandboxThread(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults())
@@ -1532,8 +1476,13 @@ func TestCodeModeUnsupportedStatementHint(t *testing.T) {
 		if result.Errors == nil {
 			t.Fatalf("expected a parse error for %q", code)
 		}
-		if !strings.Contains(strings.Join(result.Errors.Hints, "\n"), "does NOT support try/except") {
+		hints := strings.Join(result.Errors.Hints, "\n")
+		if !strings.Contains(hints, "does NOT support try/except") {
 			t.Fatalf("missing try/except hint for %q: %+v", code, result.Errors)
+		}
+		// The parse error says nothing about dicts or tool calls, so generic advice only buries the hint.
+		if strings.Contains(hints, "Access dict values with brackets") {
+			t.Fatalf("generic hints follow the try/except hint for %q:\n%s", code, hints)
 		}
 	}
 }
@@ -1638,19 +1587,19 @@ func newInstructionsCodeMode(level schemas.CodeModeBindingLevel) *StarlarkCodeMo
 	mode.clientManager = &testClientManager{
 		clients: map[string]*schemas.MCPClientState{
 			"codey": {
-				Name:               "codey",
-				ExecutionConfig:    &schemas.MCPClientConfig{Name: "codey", IsCodeModeClient: true},
-				ServerInstructions: probeInstructions,
+				Name:            "codey",
+				ExecutionConfig: &schemas.MCPClientConfig{ID: "codey-id", Name: "codey", IsCodeModeClient: true},
 			},
 			"plain": {
 				Name:            "plain",
-				ExecutionConfig: &schemas.MCPClientConfig{Name: "plain", IsCodeModeClient: true},
+				ExecutionConfig: &schemas.MCPClientConfig{ID: "plain-id", Name: "plain", IsCodeModeClient: true},
 			},
 		},
 		tools: map[string][]schemas.ChatTool{
 			"codey": {{Function: &schemas.ChatToolFunction{Name: "codey-add", Description: schemas.Ptr("Adds two numbers")}}},
 			"plain": {{Function: &schemas.ChatToolFunction{Name: "plain-echo"}}},
 		},
+		instructions: map[string]string{"codey-id": probeInstructions},
 	}
 	return mode
 }
@@ -1743,10 +1692,10 @@ func TestListToolFilesOmitsNonCodeModeServersFromInstructionPointer(t *testing.T
 	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
 	manager := mode.clientManager.(*testClientManager)
 	manager.clients["direct"] = &schemas.MCPClientState{
-		Name:               "direct",
-		ExecutionConfig:    &schemas.MCPClientConfig{Name: "direct", IsCodeModeClient: false},
-		ServerInstructions: "Direct-only rule.",
+		Name:            "direct",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "direct-id", Name: "direct", IsCodeModeClient: false},
 	}
+	manager.instructions["direct-id"] = "Direct-only rule."
 	manager.tools["direct"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "direct-ping"}}}
 
 	msg, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
@@ -1756,6 +1705,109 @@ func TestListToolFilesOmitsNonCodeModeServersFromInstructionPointer(t *testing.T
 
 	if strings.Contains(content, "direct") {
 		t.Fatalf("listing named a non-code-mode server, got:\n%s", content)
+	}
+}
+
+// listToolFiles names a server only where it runs in code mode: a slug override counts on that
+// server's own /mcp/<slug> and nowhere else.
+func TestListToolFilesFollowsServerTypeOnSlug(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["codey"].ExecutionConfig.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugDisabled
+	manager.clients["direct"] = &schemas.MCPClientState{
+		Name:            "direct",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "direct-id", Name: "direct", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+	}
+	manager.tools["direct"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "direct-ping"}}}
+	list := func(ctx context.Context) string {
+		msg, err := mode.handleListToolFiles(ctx, schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("tool-call-1")})
+		return instructionsToolResponse(t, msg, err)
+	}
+	onSlug := func(name string) context.Context {
+		return context.WithValue(context.Background(), schemas.BifrostContextKeyMCPGatewayClient, name)
+	}
+
+	onMCP := list(context.Background())
+	if !strings.Contains(onMCP, "codey") || strings.Contains(onMCP, "direct") {
+		t.Fatalf("/mcp must list codey and not direct, got:\n%s", onMCP)
+	}
+	if got := list(onSlug("codey")); strings.Contains(got, "codey") {
+		t.Fatalf("codey's own slug serves it directly, so it must not be listed, got:\n%s", got)
+	}
+	if got := list(onSlug("direct")); !strings.Contains(got, "direct") {
+		t.Fatalf("direct's own slug runs it in code mode, so it must be listed, got:\n%s", got)
+	}
+}
+
+// A server served directly on its own slug has no stub, docs or binding there; /mcp still has all three.
+func TestStubsDocsAndBindingsFollowServerTypeOnSlug(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	mode.clientManager.(*testClientManager).clients["codey"].ExecutionConfig.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugDisabled
+	onCodeySlug := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	onCodeySlug.SetValue(schemas.BifrostContextKeyMCPGatewayClient, "codey")
+	onMCP := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	text := func(msg *schemas.ChatMessage, err error) string {
+		if err != nil {
+			return err.Error()
+		}
+		if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+			return ""
+		}
+		return *msg.Content.ContentStr
+	}
+	stub := func(ctx context.Context) string {
+		return text(mode.handleReadToolFile(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("tool-call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+		}))
+	}
+	docs := func(ctx context.Context) string {
+		return text(mode.handleGetToolDocs(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("tool-call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"add"}`},
+		}))
+	}
+
+	if got := stub(onMCP); !strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("/mcp must serve codey's stub, got:\n%s", got)
+	}
+	if got := stub(onCodeySlug); strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("codey is direct on its own slug, so it must have no stub there, got:\n%s", got)
+	}
+	if got := docs(onMCP); !strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("/mcp must serve codey's docs, got:\n%s", got)
+	}
+	if got := docs(onCodeySlug); strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("codey is direct on its own slug, so it must have no docs there, got:\n%s", got)
+	}
+	if keys := mode.executeCode(onMCP, "result = 1").Environment.ServerKeys; !slices.Contains(keys, "codey") {
+		t.Fatalf("/mcp must bind codey in the sandbox, got %v", keys)
+	}
+	if keys := mode.executeCode(onCodeySlug, "result = 1").Environment.ServerKeys; slices.Contains(keys, "codey") {
+		t.Fatalf("codey is direct on its own slug, so the sandbox must not bind it there, got %v", keys)
+	}
+}
+
+// The stub carries the instructions from the caller's own discovery, the same one its tools
+// come from, not a text shared by every caller of the server.
+func TestReadToolFileCarriesTheCallersOwnInstructions(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	mode.clientManager.(*testClientManager).callerInstructions = map[string]map[string]string{
+		"alice": {"codey-id": "Alice may only read."},
+	}
+
+	alice := context.WithValue(context.Background(), testCallerKey{}, "alice")
+	msg, err := mode.handleReadToolFile(alice, schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if !strings.Contains(content, "# Alice may only read.") {
+		t.Fatalf("stub did not carry the caller's own instructions, got:\n%s", content)
+	}
+	if strings.Contains(content, "Always call list_items") {
+		t.Fatalf("stub carried the shared text instead of the caller's, got:\n%s", content)
 	}
 }
 
@@ -2023,6 +2075,128 @@ func BenchmarkExtractResultFromChatMessage(b *testing.B) {
 	}
 }
 
+// Each hint is keyed on a message Starlark actually produces, so every case runs a real script
+// rather than a hand-typed message that could drift from the interpreter's wording.
+func TestGeneratePythonErrorHintsMatchStarlarkMessages(t *testing.T) {
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	server := map[string][]string{"srv": {"srv-get"}}
+	returning := func(value interface{}, err error) sandboxToolCaller {
+		return func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+			return value, err
+		}
+	}
+
+	for _, tc := range []struct {
+		name     string
+		code     string
+		bindings map[string][]string
+		call     sandboxToolCaller
+		want     []string
+		notWant  []string
+	}{
+		{
+			name: "a missing dict key", code: "d = {\"a\": 1}\nx = d[\"x\"]",
+			want: []string{`The dict has no key "x"`, `r.get("x", default)`}, notWant: []string{"Check the error message above"},
+		},
+		{
+			name: "a tool error that mentions a key", code: "r = srv.get()", bindings: server, call: returning(nil, errors.New("API key not found")),
+			notWant: []string{"Dictionary key", "dict has no key"},
+		},
+		{
+			name: "an unknown tool", code: "r = srv.gett()", bindings: server,
+			want: []string{"srv has no tool gett", "readToolFile"}, notWant: []string{"Use dict access syntax"},
+		},
+		{
+			name: "an attribute read on a dict", code: "d = {\"a\": 1}\nx = d.a",
+			want: []string{`r["a"] or r.get("a", default)`},
+		},
+		{
+			name: "a function a module lacks", code: "x = json.parse(\"{}\")",
+			want: []string{"The json module has decode, encode, indent", "floor"},
+		},
+		{
+			name: "a server bound under a module's name", code: "x = json.parse()", bindings: map[string][]string{"json": {"json-get"}},
+			want: []string{"json has no tool parse"}, notWant: []string{"json module"},
+		},
+		{
+			name: "a str method Starlark lacks", code: "x = \"name\".ljust(10)",
+			want: []string{"str has no .ljust method"}, notWant: []string{"json.decode", "server's text"},
+		},
+		{
+			name: "a dict method called on a str result", code: "r = srv.get()\nx = r.get(\"a\")", bindings: server, call: returning(`{"a": 1}`, nil),
+			want: []string{"json.decode("},
+		},
+		{
+			name: "indexing a str result", code: "r = srv.get()\nx = r[\"a\"]", bindings: server, call: returning(`{"a": 1}`, nil),
+			want: []string{"json.decode("},
+		},
+		{
+			name: "an attribute read on a failed call", code: "r = srv.get()\nx = r.email", bindings: server, call: returning(toolErrorValue{message: "not found"}, nil),
+			want: []string{`hasattr(r, "error")`}, notWant: []string{"has no tool"},
+		},
+		{
+			name: "an undefined name", code: "x = youtube.search()", bindings: server,
+			want: []string{"Variable 'youtube' is not defined."},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runSandbox(context.Background(), limits, tc.code, tc.bindings, tc.call)
+			if result.Errors == nil {
+				t.Fatalf("expected an error, got result %v", result.Result)
+			}
+			hints := strings.Join(result.Errors.Hints, "\n")
+			for _, want := range tc.want {
+				if !strings.Contains(hints, want) {
+					t.Errorf("hints for %q lack %q:\n%s", result.Errors.Message, want, hints)
+				}
+			}
+			for _, notWant := range tc.notWant {
+				if strings.Contains(hints, notWant) {
+					t.Errorf("hints for %q contain %q:\n%s", result.Errors.Message, notWant, hints)
+				}
+			}
+		})
+	}
+
+	// A name can come from tool data through getattr. The error line already carries it once, so a
+	// hint that repeated it would multiply an oversized reply; a long name gets the generic hint.
+	longName := returning(strings.Repeat("b", 100_000), nil)
+	for _, tc := range []struct{ name, code string }{
+		{name: "a long attribute name on a dict", code: "n = srv.get()\nx = getattr({\"a\": 1}, n)"},
+		{name: "a long attribute name on a server", code: "n = srv.get()\nx = getattr(srv, n)"},
+		{name: "a long method name on a str", code: "n = srv.get()\nx = getattr(\"s\", n)"},
+		{name: "a long missing key", code: "n = srv.get()\nx = {\"a\": 1}[n]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runSandbox(context.Background(), limits, tc.code, server, longName)
+			if result.Errors == nil {
+				t.Fatalf("expected an error, got result %v", result.Result)
+			}
+			if hints := strings.Join(result.Errors.Hints, "\n"); len(hints) > 1024 {
+				t.Fatalf("hints repeat the long name: %d bytes, starting %q", len(hints), hints[:200])
+			}
+		})
+	}
+}
+
+// getToolDocs describes the sandbox a script runs in: top-level control flow works, and the
+// common errors it quotes are messages Starlark really produces.
+func TestGetToolDocsMatchesTheSandbox(t *testing.T) {
+	_, docs := readSearchStubs(t, newSearchCodeMode(searchToolSchema()))
+	if strings.Contains(docs, "MUST be inside a function") {
+		t.Errorf("getToolDocs still says top-level loops must be wrapped in a function:\n%s", docs)
+	}
+	if !strings.Contains(docs, `key "x" not in dict`) {
+		t.Errorf("getToolDocs does not quote Starlark's missing-key message:\n%s", docs)
+	}
+
+	code := "total = 0\nfor i in range(3):\n    total += i\nif total == 3:\n    total += 10\nn = 0\nwhile n < 2:\n    n += 1\nresult = [total, n]"
+	result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), code, nil, nil)
+	if result.Errors != nil {
+		t.Fatalf("top-level for/if/while failed: %s", result.Errors.Message)
+	}
+}
+
 // A failed nested call reaches the script as a tool_error struct: hasattr finds .error, and
 // returned as-is it converts back to {"error": ...}. Using it as a dict raises with a hint.
 func TestCodeModeFailedCallIsAToolErrorValue(t *testing.T) {
@@ -2064,6 +2238,49 @@ func TestCodeModeFailedCallIsAToolErrorValue(t *testing.T) {
 	})
 }
 
+// The try/except hint hands the model a check to copy. Running that exact check against a failed
+// call and a successful result keeps the hint from drifting away from what a failed call is.
+func TestExceptionHandlingHintCatchesAFailedCall(t *testing.T) {
+	var variable, check string
+	for _, line := range exceptionHandlingHints() {
+		line = strings.TrimSpace(line)
+		if name, _, ok := strings.Cut(line, " = server.tool("); ok {
+			variable = name
+		}
+		if strings.HasPrefix(line, "if ") && strings.HasSuffix(line, ":") {
+			check = strings.TrimSuffix(strings.TrimPrefix(line, "if "), ":")
+		}
+	}
+	if variable == "" || check == "" {
+		t.Fatalf("the hint shows no call and check to copy: %q", exceptionHandlingHints())
+	}
+
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	bindings := map[string][]string{"srv": {"srv-get"}}
+	for _, tc := range []struct {
+		name  string
+		value interface{}
+		want  bool
+	}{
+		{name: "a failed call", value: toolErrorValue{message: "contact 7 not found"}, want: true},
+		{name: "a dict result", value: map[string]interface{}{"id": 7}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+				return tc.value, nil
+			}
+			code := variable + " = srv.get()\nfailed = bool(" + check + ")\nresult = failed"
+			result := runSandbox(context.Background(), limits, code, bindings, call)
+			if result.Errors != nil {
+				t.Fatalf("the hint's check raised: %s", result.Errors.Message)
+			}
+			if result.Result != tc.want {
+				t.Fatalf("the hint's check %q gave %v, want %v", check, result.Result, tc.want)
+			}
+		})
+	}
+}
+
 // A script that calls fail() chose to stop: the hints say so instead of generic code advice.
 func TestGeneratePythonErrorHintsForFail(t *testing.T) {
 	hints := generatePythonErrorHints("fail: update failed: permission denied", []string{"crm"})
@@ -2082,6 +2299,41 @@ func TestStubsExplainFailedCalls(t *testing.T) {
 				t.Errorf("%s does not mention %s, got:\n%s", name, want, content)
 			}
 		}
+	}
+}
+
+// The executeToolCode description is the one text every model reads before its first script, so
+// it must describe failed calls as values and list only names the sandbox resolves.
+func TestExecuteToolCodeDescriptionMatchesTheSandbox(t *testing.T) {
+	description := *newSearchCodeMode(searchToolSchema()).createExecuteToolCodeTool().Function.Description
+
+	for _, want := range []string{`hasattr(r, "error")`, "fail(r.error)", "json.decode", "math."} {
+		if !strings.Contains(description, want) {
+			t.Errorf("description does not mention %s:\n%s", want, description)
+		}
+	}
+	// A server bound under a module's name takes it, so the fixed text must say that for every module.
+	if shadowing := "a server named " + strings.Join(sandboxModules.Keys(), " or ") + " takes that name"; !strings.Contains(description, shadowing) {
+		t.Errorf("description does not say %q:\n%s", shadowing, description)
+	}
+	if strings.Contains(description, "cannot be caught") {
+		t.Errorf("description still says tool failures cannot be caught:\n%s", description)
+	}
+
+	_, rest, ok := strings.Cut(description, "AVAILABLE BUILTINS: ")
+	if !ok {
+		t.Fatalf("description lists no builtins:\n%s", description)
+	}
+	// Cut at the next section's label, not at a period, so a sentence inside the list fails below.
+	listedWithDot, _, _ := strings.Cut(rest, " MODULES:")
+	listed := strings.TrimSuffix(listedWithDot, ".")
+	names := strings.Split(listed, ", ")
+	if !slices.Contains(names, "fail") {
+		t.Errorf("builtins %q leave out fail", names)
+	}
+	result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = len(["+listed+"])", nil, nil)
+	if result.Errors != nil {
+		t.Fatalf("a listed builtin does not exist in the sandbox: %s", result.Errors.Message)
 	}
 }
 

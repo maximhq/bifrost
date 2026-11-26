@@ -1,6 +1,5 @@
-// Package objectstore provides an S3-compatible object storage abstraction.
-// It can be used by any part of the system that needs to store or retrieve
-// objects from S3, GCS (via S3 interop), MinIO, R2, or other S3-compatible stores.
+// Package objectstore provides object storage using S3-compatible backends,
+// Google Cloud Storage, and Azure Blob Storage.
 package objectstore
 
 import (
@@ -20,7 +19,7 @@ type ObjectInfo struct {
 	LastModified time.Time
 }
 
-// ObjectStore abstracts S3-compatible blob storage operations.
+// ObjectStore abstracts object storage operations.
 type ObjectStore interface {
 	// Put uploads data to the given key with optional tags.
 	// The implementation handles compression (e.g., gzip) internally.

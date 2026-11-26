@@ -186,6 +186,17 @@ func (pc *TableVirtualKeyProviderConfig) AfterFind(tx *gorm.DB) error {
 			key.BedrockMantleRoleSessionName = nil
 			key.BedrockMantleKeyConfig = nil
 
+			// Clear all SageMaker-related sensitive fields
+			key.SageMakerAccessKey = nil
+			key.SageMakerSecretKey = nil
+			key.SageMakerSessionToken = nil
+			key.SageMakerRegion = nil
+			key.SageMakerRoleARN = nil
+			key.SageMakerExternalID = nil
+			key.SageMakerRoleSessionName = nil
+			key.SageMakerEndpointsJSON = nil
+			key.SageMakerKeyConfig = nil
+
 			pc.Keys[i] = *key
 		}
 	}
@@ -252,6 +263,7 @@ type TableVirtualKey struct {
 	ProviderConfigs   []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs        []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
 	AgentGrants       []TableVirtualKeyAgentGrant     `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"agent_grants"`
+	RelayGrants       []TableVirtualKeyRelayGrant     `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"relay_grants"`
 
 	// Foreign key relationships. TeamID, CustomerID and BusinessUnitID are mutually exclusive: a
 	// key belongs to at most one owner, which is what decides whose money it spends and whose
@@ -271,8 +283,9 @@ type TableVirtualKey struct {
 	// DisableContentLogging is the key's own say on whether request and response content is
 	// persisted for its traffic. Tri-state on purpose: nil inherits client.disable_content_logging,
 	// true forces content off for every sink, false forces content on for the log store only (each
-	// observability connector keeps its own flag). No gorm default: a default tag would make GORM
-	// write the default for a nil pointer on insert and collapse "inherit" into "false".
+	// observability connector keeps its own flag). A project a request is scoped to can override it
+	// either way. No gorm default: a default tag would make GORM write the default for a nil pointer
+	// on insert and collapse "inherit" into "false".
 	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
 
 	// Metadata is free-form key/value data the operator attaches to the key (cost center, project,

@@ -340,7 +340,7 @@ A2A traces are published to the configured Kafka topic using the existing produc
 
 Operation attributes include `bifrost.a2a.operation.name`, `gen_ai.agent.name`, available task and conversation IDs, task state, transport, and governance attribution. Push operations also carry their available configuration, delivery, and attempt IDs. Trace and session identifiers retain their existing trace-level representation.
 
-Structured request and response bodies use `gen_ai.input.messages` and `gen_ai.output.messages`, including task and artifact content and accumulated streaming output. `disable_content_logging`, virtual-key content suppression, and `excluded_attributes` apply before serialization. Raw HTTP capture is not included in Kafka messages, even when it is stored locally by Agent Gateway.
+Structured request and response bodies use `gen_ai.input.messages` and `gen_ai.output.messages`, including task and artifact content and accumulated streaming output. `disable_content_logging`, virtual-key or project content suppression, and `excluded_attributes` apply before serialization. Raw HTTP capture is not included in Kafka messages, even when it is stored locally by Agent Gateway.
 
 Consume the configured topic and select traces containing `a2a.operation` spans to process A2A traffic alongside LLM and MCP traces. No separate A2A topic or connector is required.
 

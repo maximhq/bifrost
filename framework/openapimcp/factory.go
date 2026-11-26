@@ -13,12 +13,20 @@ import (
 type FactoryOption func(*factoryOptions)
 
 type factoryOptions struct {
-	configDir string
+	configDir    string
+	maxSpecBytes func() int
 }
 
 // WithConfigDir sets the directory openapi_config.spec_file paths resolve against.
 func WithConfigDir(dir string) FactoryOption {
 	return func(o *factoryOptions) { o.configDir = dir }
+}
+
+// WithMaxSpecBytes sets the spec size limit, read on every connect so a changed
+// setting applies to the next one. A nil func or a result of 0 or less means
+// MaxSpecBytes.
+func WithMaxSpecBytes(limit func() int) FactoryOption {
+	return func(o *factoryOptions) { o.maxSpecBytes = limit }
 }
 
 // Factory returns the schemas.InProcessServerFactory core calls to synthesize an
@@ -40,14 +48,26 @@ func Factory(opts ...FactoryOption) schemas.InProcessServerFactory {
 			return nil, permanent(errors.New("openapi_config is required"))
 		}
 		cfg := config.OpenAPIConfig
-		data, source, specURL, err := ResolveSpec(ctx, cfg, deps.HTTPClient, fo.configDir)
+		maxBytes := 0
+		if fo.maxSpecBytes != nil {
+			maxBytes = fo.maxSpecBytes()
+		}
+		// A copy, so the deadline sized for the spec does not reach the upstream calls
+		// the server makes with the same client; transport and proxy are shared.
+		specClient := deps.HTTPClient
+		if specClient != nil {
+			c := *specClient
+			c.Timeout = SpecFetchTimeout(maxBytes)
+			specClient = &c
+		}
+		data, source, specURL, err := ResolveSpec(ctx, cfg, specClient, fo.configDir, maxBytes)
 		if err != nil {
 			if source == "url" && !errors.Is(err, ErrSpecTooLarge) && !errors.Is(err, ErrSpecURLInvalid) {
 				return nil, fmt.Errorf("loading spec_url: %w", err)
 			}
 			return nil, permanent(err)
 		}
-		doc, err := Parse(data, ParseOptions{SpecURL: specURL})
+		doc, err := Parse(data, ParseOptions{SpecURL: specURL, MaxBytes: maxBytes})
 		if err != nil {
 			return nil, permanent(err)
 		}

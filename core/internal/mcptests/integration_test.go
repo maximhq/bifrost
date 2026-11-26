@@ -35,7 +35,7 @@ func TestIntegration_FullChatWorkflow(t *testing.T) {
 		httpConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
 		httpConfig.ID = "http-integration-test"
 		applyTestConfigHeaders(t, &httpConfig)
-		err := manager.AddClient(context.Background(), &httpConfig)
+		err := addClient(context.Background(), manager, &httpConfig)
 		if err != nil {
 			t.Logf("Could not add HTTP client: %v", err)
 		}
@@ -76,7 +76,7 @@ func TestIntegration_FullChatWorkflow(t *testing.T) {
 	// 5. Check health monitoring
 	// Verify clients have tools
 	for _, client := range clients {
-		assert.NotEmpty(t, client.ToolMap, "client %s should have tools", client.ExecutionConfig.ID)
+		assert.NotEmpty(t, clientTools(manager, client.ExecutionConfig.ID), "client %s should have tools", client.ExecutionConfig.ID)
 	}
 
 	// 6. Remove HTTP client if it was added
@@ -342,7 +342,7 @@ func TestIntegration_ReconnectDuringExecution(t *testing.T) {
 	httpConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
 	httpConfig.ID = "reconnect-test-client"
 	applyTestConfigHeaders(t, &httpConfig)
-	err := manager.AddClient(context.Background(), &httpConfig)
+	err := addClient(context.Background(), manager, &httpConfig)
 	require.NoError(t, err, "should add HTTP client")
 
 	// Wait for client to connect
