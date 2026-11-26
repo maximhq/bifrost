@@ -20,6 +20,14 @@ is tested in `tests/e2e/api/runners/build-mcp-harness.mjs`: use
 `.claude/skills/mcp-harness/SKILL.md` for those cases. Only a change to how a provider
 converts tool definitions or tool calls belongs here.
 
+Nor is it the semantic cache wiring suite. Semantic cache behaviour (what a request writes,
+hits or misses and what a hit replays, `cache_debug` and the `x-bifrost-cache-*` headers,
+the `x-bf-cache-*` request headers, identity scoping, the cache clear endpoints, the
+plugin's config, the vector stores) is tested in
+`tests/e2e/api/runners/build-semantic-cache-wiring.mjs`: use
+`.claude/skills/semantic-cache-wiring/SKILL.md` for those cases. Only a change to what a
+provider receives or returns on a request the cache does not answer belongs here.
+
 ## Step 1 - Resolve the reference
 
 The argument may be a PR number, an issue number, or a GitHub URL.
