@@ -680,3 +680,33 @@ func BenchmarkToGeminiChatCompletionRequest_Seed(b *testing.B) {
 		}
 	}
 }
+
+func responsesRequestWithSeed(seed any) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-2.5-flash",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello")},
+		}},
+		Params: &schemas.ResponsesParameters{ExtraParams: map[string]any{"seed": seed}},
+	}
+}
+
+func TestToGeminiResponsesRequest_ForwardsSeed(t *testing.T) {
+	for _, seed := range []int{0, 42, math.MaxInt32, math.MinInt32} {
+		geminiReq, err := gemini.ToGeminiResponsesRequest(nil, responsesRequestWithSeed(float64(seed)))
+		require.NoError(t, err, "seed %d", seed)
+		require.NotNil(t, geminiReq.GenerationConfig.Seed, "seed %d", seed)
+		assert.Equal(t, int32(seed), *geminiReq.GenerationConfig.Seed)
+	}
+}
+
+func TestToGeminiResponsesRequest_RejectsSeedOutsideInt32(t *testing.T) {
+	for _, seed := range []int{math.MaxInt32 + 1, math.MinInt32 - 1} {
+		_, err := gemini.ToGeminiResponsesRequest(nil, responsesRequestWithSeed(seed))
+		require.Error(t, err, "seed %d", seed)
+		assert.Contains(t, err.Error(), "seed must be between")
+		assert.True(t, providerUtils.IsInvalidRequestError(err), "seed %d must be a caller error, not an internal one", seed)
+	}
+}

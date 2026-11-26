@@ -54,3 +54,4 @@
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
 - fix: Gemini chat completions forward seed to generationConfig.seed instead of dropping it
+- fix: Gemini Responses rejects an extra_params seed outside int32 instead of wrapping it to a different value

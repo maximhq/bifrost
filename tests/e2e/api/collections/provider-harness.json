@@ -351865,7 +351865,7 @@
     },
     {
       "name": "389. Gemini chat completions seed reaches generationConfig (gemini seed) (PR #9275)",
-      "description": "A seed on a /v1/chat/completions request to Gemini was dropped by the converter, so output was never reproducible. The first two cases read the outgoing request through x-bf-send-back-raw-request and pin generationConfig.seed, including seed 0 (a falsy value that must not be omitted). The third pins that a seed outside the int32 range Gemini accepts is a 400 from the gateway, not a 5xx.",
+      "description": "A seed on a /v1/chat/completions request to Gemini was dropped by the converter, so output was never reproducible. The first two cases read the outgoing request through x-bf-send-back-raw-request and pin generationConfig.seed, including seed 0 (a falsy value that must not be omitted). The third pins that a seed outside the int32 range Gemini accepts is a 400 from the gateway, not a 5xx. The last one pins the same 400 for an extra_params seed on /v1/responses, which used to wrap around.",
       "item": [
         {
           "name": "389.1 [COMPAT-SKIP] gemini/gemini-2.5-flash chat seed reaches generationConfig.seed (gemini seed)",
@@ -352060,6 +352060,50 @@
                   "    pm.expect(gc.seed, JSON.stringify(rr).slice(0, 600)).to.equal(42);",
                   "  });",
                   "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "389.5 [EXPECT-400] gemini/gemini-2.5-flash responses seed above int32 is a client error (gemini seed)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_output_tokens\": 16,\n  \"seed\": 2147483648\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('seed outside int32 is refused as a client error, not a 5xx', function () {",
+                  "  pm.expect(pm.response.code, 'want 400: ' + pm.response.text().slice(0, 400)).to.eql(400);",
+                  "  pm.expect(pm.response.text(), 'error should name the seed: ' + pm.response.text().slice(0, 400)).to.include('seed');",
+                  "});"
                 ]
               }
             }
