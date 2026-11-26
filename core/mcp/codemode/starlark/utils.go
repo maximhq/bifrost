@@ -533,18 +533,25 @@ func matchesToolReference(requestedToolName, clientName, originalToolName string
 
 // findToolReference returns the index of the tool requestedToolName names, or
 // -1. Two raw names such as get-user and get_user share one canonical name, so
-// an exact callable name (see callableToolNames) wins, then an exact raw name,
-// then the first loose match: a listed file or a stub's name resolves to the
-// tool it was shown for.
+// an identifier executeToolCode binds (see codemcp.CodeModeBindings) wins,
+// then an exact raw name, then the first loose match: a listed file or a
+// stub's name resolves to the tool it was shown for, and a bound alias to the
+// tool it calls.
 func findToolReference(tools []schemas.ChatTool, requestedToolName, clientName string) int {
-	names := callableChatToolNames(clientName, tools)
-	raw, loose := -1, -1
+	rawNames := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Function != nil && tool.Function.Name != "" {
+			rawNames = append(rawNames, tool.Function.Name)
+		}
+	}
+	bound := codemcp.CodeModeBindings(clientName, rawNames)[requestedToolName]
+	match, raw, loose := -1, -1, -1
 	for i, tool := range tools {
 		if tool.Function == nil {
 			continue
 		}
-		if names[tool.Function.Name] == requestedToolName {
-			return i
+		if match < 0 && bound != "" && tool.Function.Name == bound {
+			match = i
 		}
 		if raw < 0 && stripClientPrefix(tool.Function.Name, clientName) == requestedToolName {
 			raw = i
@@ -553,7 +560,10 @@ func findToolReference(tools []schemas.ChatTool, requestedToolName, clientName s
 			loose = i
 		}
 	}
-	if raw >= 0 {
+	switch {
+	case match >= 0:
+		return match
+	case raw >= 0:
 		return raw
 	}
 	return loose
