@@ -824,4 +824,130 @@ await test("the relay fixture health probes bypass inherited proxies", () => {
   }
 });
 
+// release-pipeline.yml jobs keyed by name, each with its raw block, needs list and if condition.
+function releasePipelineJobs() {
+  const workflow = readFileSync(path.join(REPO_ROOT, ".github/workflows/release-pipeline.yml"), "utf8");
+  const body = workflow.slice(workflow.indexOf("\njobs:\n") + "\njobs:\n".length);
+  const jobs = new Map();
+  for (const block of body.split(/\n(?=  [A-Za-z0-9_-]+:\n)/)) {
+    const name = block.match(/^  ([A-Za-z0-9_-]+):\n/)?.[1];
+    if (!name) continue;
+    const needsRaw = block.match(/^    needs:\s*(\[[^\]]*\]|[A-Za-z0-9_-]+)/m)?.[1] ?? "";
+    const needs = needsRaw.replace(/[[\]]/g, "").split(/[\s,]+/).filter(Boolean);
+    const cond = block.match(/^    if:\s*(?:[|>]\n((?:      .*\n?)+)|(.*))/m);
+    jobs.set(name, { block, needs, cond: cond ? (cond[1] ?? cond[2]).replace(/\s+/g, " ").trim() : "" });
+  }
+  return jobs;
+}
+
+// Runs check-skip's "Resolve tests_only" step with the given trigger and returns its exit code and outputs.
+function runResolveTestsOnly({ event, testsOnly, skipTests }) {
+  const step = releasePipelineJobs().get("check-skip").block.match(/- name: Resolve tests_only\n[\s\S]*?run: \|\n((?:          .*\n?)+)/);
+  assert.ok(step, "Resolve tests_only step not found in check-skip");
+  const script = step[1]
+    .replace(/^ {10}/gm, "")
+    .replaceAll("${{ github.event_name }}", event)
+    .replaceAll("${{ inputs.tests_only }}", testsOnly)
+    .replaceAll("${{ inputs.skip_tests }}", skipTests);
+  assert.ok(!script.includes("${{"), `unsubstituted expression left in the step:\n${script}`);
+  const dir = mkdtempSync(path.join(tmpdir(), "tests-only-"));
+  const output = path.join(dir, "output");
+  writeFileSync(output, "");
+  try {
+    let code = 0;
+    try {
+      execFileSync("bash", ["-e", "-c", script], { env: { ...process.env, GITHUB_OUTPUT: output }, stdio: ["ignore", "pipe", "pipe"] });
+    } catch (err) {
+      code = err.status;
+    }
+    return { code, output: readFileSync(output, "utf8") };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+const TESTS_ONLY_OFF = "needs.check-skip.outputs.tests-only != 'true'";
+
+await test("tests_only=true on a dispatch selects the tests-only path", () => {
+  const { code, output } = runResolveTestsOnly({ event: "workflow_dispatch", testsOnly: "true", skipTests: "false" });
+  assert.strictEqual(code, 0, output);
+  assert.strictEqual(output.trim(), "tests-only=true");
+});
+
+await test("tests_only=true with skip_tests=true fails check-skip", () => {
+  const { code, output } = runResolveTestsOnly({ event: "workflow_dispatch", testsOnly: "true", skipTests: "true" });
+  assert.notStrictEqual(code, 0, "conflicting inputs must fail the step");
+  assert.ok(!output.includes("tests-only="), `no output may be written on failure: ${output}`);
+});
+
+await test("push and default dispatch runs stay off the tests-only path", () => {
+  for (const trigger of [
+    { event: "push", testsOnly: "", skipTests: "" },
+    { event: "push", testsOnly: "true", skipTests: "" },
+    { event: "workflow_dispatch", testsOnly: "false", skipTests: "false" },
+    { event: "workflow_dispatch", testsOnly: "false", skipTests: "true" },
+  ]) {
+    const { code, output } = runResolveTestsOnly(trigger);
+    assert.strictEqual(code, 0, `${JSON.stringify(trigger)}: ${output}`);
+    assert.strictEqual(output.trim(), "tests-only=false", JSON.stringify(trigger));
+  }
+});
+
+// Every test job is gated on a module's needs-release flag, so tests-only must force all of them on,
+// and otherwise pass detect-all-changes.sh's value through untouched.
+await test("tests-only forces every module's test selection on and leaves it unchanged otherwise", () => {
+  const jobs = releasePipelineJobs();
+  assert.match(jobs.get("check-skip").block, /^      tests-only: \$\{\{ steps\.tests_only\.outputs\.tests-only \}\}$/m);
+  const detect = jobs.get("detect-changes").block;
+  const flags = [...detect.matchAll(/^      ([a-z-]+-needs?-release):/gm)].map((m) => m[1]);
+  assert.deepStrictEqual(flags.sort(), ["bifrost-http-needs-release", "core-needs-release", "docker-needs-release", "framework-needs-release", "plugins-need-release"]);
+  for (const flag of flags) {
+    const line = detect.match(new RegExp(`^      ${flag}: (.*)$`, "m"))[1];
+    assert.strictEqual(line, `\${{ needs.check-skip.outputs.tests-only == 'true' && 'true' || steps.detect.outputs.${flag} }}`, flag);
+  }
+  assert.ok(jobs.get("detect-changes").needs.includes("check-skip"), "detect-changes must need check-skip to read tests-only");
+});
+
+// Anything that is not a test or the shared setup publishes something or waits on a release override,
+// so it must be gated off directly or only run after a job that is.
+await test("tests-only suppresses every release override, release, Docker, changelog and notify job", () => {
+  const jobs = releasePipelineJobs();
+  const isTestPath = (name) => /^(check-skip|approve-run|detect-changes|build-gateway|resolve-cli-versions|test-.+)$/.test(name);
+  const gated = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, job] of jobs) {
+      if (isTestPath(name) || gated.has(name)) continue;
+      if (job.cond.includes(TESTS_ONLY_OFF) || job.needs.some((n) => gated.has(n) && job.cond.includes(`needs.${n}.result == 'success'`))) {
+        gated.add(name);
+        changed = true;
+      }
+    }
+  }
+  const ungated = [...jobs.keys()].filter((name) => !isTestPath(name) && !gated.has(name));
+  assert.deepStrictEqual(ungated, [], "jobs that would still run under tests_only");
+  for (const name of ["approve-flaky-test-core", "approve-memory-regression", "core-release", "framework-release", "plugins-release", "bifrost-http-prep", "bifrost-http-release", "docker-manifest", "docker-manifest-ubi9", "push-mintlify-changelog", "notify"]) {
+    assert.ok(gated.has(name), `${name} is not gated off under tests_only`);
+  }
+  for (const name of jobs.keys()) {
+    if (isTestPath(name)) assert.ok(!jobs.get(name).cond.includes("tests-only"), `${name} changes behavior under tests-only`);
+  }
+});
+
+// The R2 report prefix is keyed by the transport version the release notes link to; a tests-only run
+// must not overwrite a published release's reports.
+await test("tests-only skips every R2 test report upload", () => {
+  const uploads = [];
+  for (const [name, job] of releasePipelineJobs()) {
+    for (const step of job.block.split(/\n(?=\s+- (?:name|uses):)/)) {
+      if (step.includes("upload-test-reports-to-r2.sh")) uploads.push({ name, step });
+    }
+  }
+  assert.ok(uploads.length >= 2, "expected the provider and CLI harness report uploads");
+  for (const { name, step } of uploads) {
+    assert.ok(step.includes(TESTS_ONLY_OFF), `${name} uploads to R2 under tests_only:\n${step}`);
+  }
+});
+
 console.log(`\n${passed} passed`);
