@@ -1,3 +1,4 @@
+- fix: vertex - passthrough keeps an explicit v1beta1 for Google publisher models instead of forcing v1; google-genai Vertex clients default to v1beta1, so their Gemini passthrough calls now reach v1beta1 (#9891) (thanks [@Xanonymous-GitHub](https://github.com/Xanonymous-GitHub)!)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)
 - feat: machgen - new provider for image generation, image edit and async video generation (submit, retrieve, download), with model listing (thanks [@nishkarsh-machgen](https://github.com/nishkarsh-machgen)!)
