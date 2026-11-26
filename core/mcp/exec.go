@@ -211,7 +211,7 @@ func (m *MCPManager) prepareToolExecution(ctx *schemas.BifrostContext, request *
 		return nil, nil, nil, nil, fmt.Errorf("tool '%s' is unavailable: client %s needs re-authorization (its admin credential expired or was revoked)", toolName, clientName)
 	}
 	var token string
-	if state.ExecutionConfig.ConnectionType != schemas.MCPConnectionTypeSTDIO {
+	if utils.CarriesOutboundToken(state.ExecutionConfig) {
 		var tokenErr error
 		token, tokenErr = utils.ResolveOutboundToken(ctx, m.toolsManager.getOutboundTokenProvider(), clientName, request.OutboundToken, m.logger)
 		if tokenErr != nil {

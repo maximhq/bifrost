@@ -344,7 +344,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		ChatAssistantMessageToolCall: &toolCallReq,
 	}
 
-	sendsHeaders := client.ExecutionConfig.ConnectionType != schemas.MCPConnectionTypeSTDIO
+	sendsHeaders := mcputils.CarriesOutboundToken(client.ExecutionConfig)
 
 	// The client's own tool_execution_timeout bounds the call, as it does a direct call, and the
 	// code mode global is only the fallback.

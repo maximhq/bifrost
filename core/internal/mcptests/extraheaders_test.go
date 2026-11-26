@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,8 +47,9 @@ const (
 // recordedRequest captures the JSON-RPC method and inbound headers of a single
 // HTTP request the upstream MCP server received.
 type recordedRequest struct {
-	method string // JSON-RPC method ("ping", "tools/list", "tools/call", ...); "" if not parseable
-	header http.Header
+	method  string // JSON-RPC method ("ping", "tools/list", "tools/call", ...); "" if not parseable
+	message string // a tools/call's "message" argument, where the server records it
+	header  http.Header
 }
 
 // headerRecorder is a thread-safe sink for inbound request headers, fronting the
@@ -61,6 +63,39 @@ func (hr *headerRecorder) add(method string, h http.Header) {
 	hr.mu.Lock()
 	defer hr.mu.Unlock()
 	hr.reqs = append(hr.reqs, recordedRequest{method: method, header: h.Clone()})
+}
+
+// addCall records a request together with its tools/call "message" argument.
+func (hr *headerRecorder) addCall(method, message string, h http.Header) {
+	hr.mu.Lock()
+	defer hr.mu.Unlock()
+	hr.reqs = append(hr.reqs, recordedRequest{method: method, message: message, header: h.Clone()})
+}
+
+// headerByMessage maps each message recorded for method to the headerName values sent with it.
+func (hr *headerRecorder) headerByMessage(method, headerName string) map[string][]string {
+	hr.mu.Lock()
+	defer hr.mu.Unlock()
+	out := map[string][]string{}
+	for _, r := range hr.reqs {
+		if r.method == method {
+			out[r.message] = append(out[r.message], r.header.Get(headerName))
+		}
+	}
+	return out
+}
+
+// headersForMethod returns headerName as sent on every recorded request of method, in order.
+func (hr *headerRecorder) headersForMethod(method, headerName string) []string {
+	hr.mu.Lock()
+	defer hr.mu.Unlock()
+	var out []string
+	for _, r := range hr.reqs {
+		if r.method == method {
+			out = append(out, r.header.Get(headerName))
+		}
+	}
+	return out
 }
 
 // valuesForMethod returns every value seen for headerName across recorded
@@ -633,6 +668,40 @@ func TestOutboundTokenProviderErrorFailsCall(t *testing.T) {
 	}
 }
 
+// TestOutboundTokenSkipsLocalTools proves a tool registered with RegisterTool never consults the
+// provider, so a provider that fails for unknown servers cannot block it.
+func TestOutboundTokenSkipsLocalTools(t *testing.T) {
+	t.Parallel()
+
+	ts, _ := buildAuthEchoServer(t)
+	var asked atomic.Int32
+	provider := funcTokenProvider(func(context.Context, string) (string, error) {
+		asked.Add(1)
+		return "", errors.New("unknown upstream")
+	})
+	manager, bf := setupOutboundTokenBifrostWithStickiness(t, provider, "outbound_local", ts.URL, false)
+	require.NoError(t, manager.RegisterTool("local_echo", "Echoes locally", func(any) (string, error) {
+		return "local-ok", nil
+	}, schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name:       "local_echo",
+			Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMap()},
+		},
+	}))
+
+	msg, bErr := bf.ExecuteChatMCPTool(createTestContext(), &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-local"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("bifrostInternal-local_echo"), Arguments: `{}`},
+	})
+	require.Nil(t, bErr, "a local tool must run whatever the provider answers")
+	require.NotNil(t, msg)
+	require.NotNil(t, msg.Content)
+	require.NotNil(t, msg.Content.ContentStr)
+	assert.Contains(t, *msg.Content.ContentStr, "local-ok")
+	assert.Zero(t, asked.Load(), "the provider must not be asked for a local tool")
+}
+
 // outboundTokenHookPlugin injects token into context via PreMCPHook.
 type outboundTokenHookPlugin struct {
 	schemas.MCPPluginNoOpHooks
@@ -1020,18 +1089,24 @@ func buildAuthEchoSSEServer(t *testing.T) (*httptest.Server, *headerRecorder) {
 	var sseSrv *server.SSEServer
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		method := ""
+		method, message := "", ""
 		if r.Method == http.MethodPost && r.Body != nil {
 			if body, err := io.ReadAll(r.Body); err == nil {
 				var probe struct {
 					Method string `json:"method"`
+					Params struct {
+						Arguments struct {
+							Message string `json:"message"`
+						} `json:"arguments"`
+					} `json:"params"`
 				}
 				_ = json.Unmarshal(body, &probe)
 				method = probe.Method
+				message = probe.Params.Arguments.Message
 				r.Body = io.NopCloser(bytes.NewReader(body))
 			}
 		}
-		rec.add(method, r.Header)
+		rec.addCall(method, message, r.Header)
 		sseSrv.ServeHTTP(w, r)
 	})
 
@@ -1096,10 +1171,11 @@ func TestOutboundTokenSSEConcurrentCallsAreIsolated(t *testing.T) {
 
 	wire := rec.valuesForMethod("tools/call", "Authorization")
 	require.Len(t, wire, len(tenants))
-	for _, tenant := range tenants {
-		assert.Contains(t, wire, "Bearer sse-token-"+tenant)
-	}
 	assert.NotContains(t, wire, outboundStaticAuth)
+	byMessage := rec.headerByMessage("tools/call", "Authorization")
+	for _, tenant := range tenants {
+		assert.Equal(t, []string{"Bearer sse-token-" + tenant}, byMessage[tenant], "%s's call must carry its own token", tenant)
+	}
 }
 
 // TestOutboundTokenCodeModeNestedCallCarriesToken proves nested code-mode tool calls carry token.
@@ -1302,21 +1378,15 @@ func TestOutboundTokenCallIsNotRetried(t *testing.T) {
 
 	_, bErr := callOutboundEcho(bf, createTestContext(), clientName, "static")
 	require.NotNil(t, bErr)
-	assert.Len(t, rec.valuesForMethod("tools/call", "Authorization"), 1+mcp.ToolCallRetryConfig.MaxRetries,
-		"a call without a token keeps the usual retries")
+	controlCalls := len(rec.headersForMethod("tools/call", "Authorization"))
+	assert.Equal(t, 1+mcp.ToolCallRetryConfig.MaxRetries, controlCalls, "a call without a token keeps the usual retries")
 
 	ctx := createTestContext()
 	ctx.SetValue(outboundTenantKey{}, "acme")
 	_, bErr = callOutboundEcho(bf, ctx, clientName, "token")
 	require.NotNil(t, bErr)
-	calls := rec.valuesForMethod("tools/call", "Authorization")
-	tokenCalls := 0
-	for _, v := range calls {
-		if v == "Bearer once-acme" {
-			tokenCalls++
-		}
-	}
-	assert.Equal(t, 1, tokenCalls, "a token-bearing call must be sent once")
+	tokenSends := rec.headersForMethod("tools/call", "Authorization")[controlCalls:]
+	assert.Equal(t, []string{"Bearer once-acme"}, tokenSends, "a token-bearing call must be sent exactly once, with its token")
 }
 
 // perMessageTokenHookPlugin sets a token derived from the call's own message argument.

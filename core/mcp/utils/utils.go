@@ -217,6 +217,22 @@ func ApplyOutboundToken(ctx context.Context, h http.Header) {
 // HasCallToken reports whether ctx carries a per-call token.
 func HasCallToken(ctx context.Context) bool { return callToken(ctx) != "" }
 
+// CallToken returns the per-call token ctx carries, or "".
+func CallToken(ctx context.Context) string { return callToken(ctx) }
+
+// CarriesOutboundToken reports whether calls to this client can carry a per-call token: HTTP,
+// SSE and openapi clients, which send an Authorization header upstream.
+func CarriesOutboundToken(config *schemas.MCPClientConfig) bool {
+	if config == nil {
+		return false
+	}
+	switch config.ConnectionType {
+	case schemas.MCPConnectionTypeHTTP, schemas.MCPConnectionTypeSSE, schemas.MCPConnectionTypeOpenAPI:
+		return true
+	}
+	return false
+}
+
 // ResolveOutboundToken returns the token for one call to serverName: the provider's
 // when it returns one, else hookToken, the value a hook set on BifrostMCPRequest.OutboundToken.
 // Provider errors are logged and returned as a fixed message that omits the provider's text.
