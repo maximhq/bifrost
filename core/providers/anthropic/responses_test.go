@@ -671,6 +671,69 @@ func TestToAnthropicResponsesRequest_ContextManagement_UnsupportedProviderExtraP
 	}
 }
 
+// TestContextManagement_ClearToolUsesKeepsClearAtLeast covers issue #10460: the
+// clear_tool_uses_20250919 edit's clear_at_least field was tagged clear_at_last,
+// so it was dropped on decode and never reached Anthropic. Every route that
+// decodes context_management into the typed struct must carry it to the
+// outgoing body.
+func TestContextManagement_ClearToolUsesKeepsClearAtLeast(t *testing.T) {
+	const cm = `{"edits":[{"type":"clear_tool_uses_20250919","trigger":{"type":"input_tokens","value":15000},"keep":{"type":"tool_uses","value":2},"clear_at_least":{"type":"input_tokens","value":35000}}]}`
+	const want = `"clear_at_least":{"type":"input_tokens","value":35000}`
+
+	routes := map[string]func(t *testing.T) *AnthropicMessageRequest{
+		"/anthropic/v1/messages": func(t *testing.T) *AnthropicMessageRequest {
+			var in AnthropicMessageRequest
+			body := `{"model":"claude-sonnet-4-5","max_tokens":100,"messages":[{"role":"user","content":"hi"}],"context_management":` + cm + `}`
+			if err := sonic.Unmarshal([]byte(body), &in); err != nil {
+				t.Fatalf("ingress unmarshal: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			out, err := ToAnthropicResponsesRequest(ctx, in.ToBifrostResponsesRequest(ctx))
+			if err != nil {
+				t.Fatalf("egress error: %v", err)
+			}
+			return out
+		},
+		"/v1/responses": func(t *testing.T) *AnthropicMessageRequest {
+			req := makeContextManagementReq(&schemas.ResponsesParameters{ContextManagement: []byte(cm)})
+			out, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(nil, time.Time{}), req)
+			if err != nil {
+				t.Fatalf("egress error: %v", err)
+			}
+			return out
+		},
+		"/v1/chat/completions": func(t *testing.T) *AnthropicMessageRequest {
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-sonnet-4-5",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params:   &schemas.ChatParameters{ContextManagement: []byte(cm)},
+			}
+			out, err := ToAnthropicChatRequest(schemas.NewBifrostContext(nil, time.Time{}), req)
+			if err != nil {
+				t.Fatalf("egress error: %v", err)
+			}
+			return out
+		},
+	}
+
+	for route, build := range routes {
+		t.Run(route, func(t *testing.T) {
+			out := build(t)
+			if out.ContextManagement == nil {
+				t.Fatal("context_management dropped")
+			}
+			body, err := sonic.Marshal(out.ContextManagement)
+			if err != nil {
+				t.Fatalf("marshal context_management: %v", err)
+			}
+			if !strings.Contains(string(body), want) {
+				t.Errorf("outgoing context_management = %s, want it to contain %s", body, want)
+			}
+		})
+	}
+}
+
 // TestAnthropicIngressLiftsServerSideToolOptIn covers issue #5679: the
 // include_server_side_tool_invocations opt-in arrives as an unregistered
 // Anthropic field (captured into ExtraParams) but the Gemini declaration-drop
