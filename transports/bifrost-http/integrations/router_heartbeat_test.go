@@ -35,7 +35,7 @@ func Test_handleStreamingSSESendsHeartbeatDuringIdleGap(t *testing.T) {
 		stream := make(chan *schemas.BifrostStreamChunk)
 		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 		ctx := &fasthttp.RequestCtx{}
-		router.handleStreaming(ctx, nil, RouteConfig{}, "", stream, func() {})
+		router.handleStreaming(ctx, nil, RouteConfig{}, "", false, stream, func() {})
 
 		bodyStream := ctx.Response.BodyStream()
 		type readResult struct {
@@ -83,7 +83,7 @@ func Test_handleStreamingGenAIEmitsNoHeartbeat(t *testing.T) {
 			}
 		}
 		require.NotNil(t, streamRoute)
-		router.handleStreaming(ctx, nil, *streamRoute, "", stream, func() {})
+		router.handleStreaming(ctx, nil, *streamRoute, "", false, stream, func() {})
 
 		bodyStream := ctx.Response.BodyStream()
 		type readResult struct {
@@ -194,7 +194,7 @@ func Test_handleStreamingRawAudioEmitsNoHeartbeat(t *testing.T) {
 		stream := make(chan *schemas.BifrostStreamChunk)
 		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 		ctx := &fasthttp.RequestCtx{}
-		router.handleStreaming(ctx, nil, rawAudioConfig(), schemas.SpeechStreamRequest, stream, func() {})
+		router.handleStreaming(ctx, nil, rawAudioConfig(), schemas.SpeechStreamRequest, false, stream, func() {})
 
 		readDone := make(chan []byte, 1)
 		go func() {

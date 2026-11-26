@@ -14,6 +14,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // TestSSEStreamReaderHeartbeatNeverSplitsDataLine is the regression test for #5905.
@@ -1474,4 +1475,188 @@ func TestRunRecovered(t *testing.T) {
 		})
 	})
 	require.True(t, ran)
+}
+
+// Measures the wire writer only; serialization and provider I/O are excluded.
+func BenchmarkSSEStreamReaderChatCompletion(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		data string
+	}{
+		{"content", `{"id":"test","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":null}],"usage":null}`},
+		{"terminal", `{"id":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`},
+		{"usage-only", `{"id":"test","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			data := []byte(tc.data)
+			var response schemas.BifrostChatResponse
+			if err := json.Unmarshal(data, &response); err != nil {
+				b.Fatal(err)
+			}
+			r := NewSSEStreamReader()
+			r.eventCh = make(chan []byte, 2)
+			b.ReportAllocs()
+			for b.Loop() {
+				if sent, err := r.SendChatCompletionEvent(&response, data); err != nil || !sent {
+					b.Fatalf("send failed: %v", err)
+				}
+				for len(r.eventCh) > 0 {
+					<-r.eventCh
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkChatUsageTerminalSize(b *testing.B) {
+	for _, size := range []int{1 << 10, 64 << 10, 1 << 20, 10 << 20, 50 << 20} {
+		data := []byte(fmt.Sprintf(`{"choices":[{"index":0,"delta":{"content":"%s"},"finish_reason":"stop"}],"usage":{"total_tokens":15},"extra_fields":{"chunk_index":3}}`, strings.Repeat("x", size)))
+		response := &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{}}, Usage: &schemas.BifrostLLMUsage{}}
+		for _, includeUsage := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%dKiB/include_usage=%t", size>>10, includeUsage), func(b *testing.B) {
+				r := NewSSEStreamReader()
+				r.eventCh = make(chan []byte, 2)
+				b.ReportAllocs()
+				for b.Loop() {
+					// Each iteration represents the terminal chunk of a fresh stream.
+					r.chatIndexOffset = 0
+					if includeUsage {
+						if sent, err := r.SendChatCompletionEvent(response, data); !sent || err != nil {
+							b.Fatalf("send failed: %v", err)
+						}
+						<-r.eventCh
+					} else {
+						r.SendEvent("", data)
+					}
+					<-r.eventCh
+				}
+			})
+		}
+	}
+}
+
+func TestSSEStreamReaderChatCompletionUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name, data string
+		count      int
+	}{
+		{"content without usage", `{"id":"test","choices":[{"index":0,"delta":{"content":"hello"}}],"usage":null}`, 1},
+		{"finish and usage", `{"id":"test","created":123,"model":"claude","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`, 2},
+		{"tool and content choices", `{"id":"test","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":"tool_calls"},{"index":1,"delta":{"content":"last text"},"finish_reason":"length"}],"usage":{"total_tokens":15},"service_tier":"priority","extra_fields":{"chunk_index":3}}`, 2},
+		{"explicit zero and cost", `{"id":"test","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0,"cost":0.25,"prompt_tokens_details":{"cached_tokens":7},"completion_tokens_details":{"reasoning_tokens":2}}}`, 2},
+		{"usage-only", `{"id":"test","choices":[],"usage":{"total_tokens":15}}`, 1},
+		{"nil choices", `{"id":"test","choices":null,"usage":{"total_tokens":15}}`, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(tc.data)
+			// Decode only routing information: the wire cost may have been flattened by
+			// an integration while the internal usage keeps its structured cost object.
+			response := schemas.BifrostChatResponse{}
+			if u := gjson.Get(tc.data, "usage"); u.Exists() && u.Raw != "null" {
+				response.Usage = &schemas.BifrostLLMUsage{}
+			}
+			if c := gjson.Get(tc.data, "choices"); c.IsArray() {
+				response.Choices = make([]schemas.BifrostResponseChoice, len(c.Array()))
+			}
+			r := NewSSEStreamReader()
+			r.eventCh = make(chan []byte, 2)
+			sent, err := r.SendChatCompletionEvent(&response, data)
+			require.NoError(t, err)
+			require.True(t, sent)
+			require.Len(t, r.eventCh, tc.count)
+			var events []string
+			for len(r.eventCh) > 0 {
+				event := string(<-r.eventCh)
+				require.True(t, strings.HasPrefix(event, "data: "))
+				require.True(t, strings.HasSuffix(event, "\n\n"))
+				events = append(events, strings.TrimSuffix(strings.TrimPrefix(event, "data: "), "\n\n"))
+			}
+			require.Equal(t, tc.data, string(data), "input buffer must not be modified")
+			if response.Usage == nil {
+				require.Equal(t, tc.data, events[0])
+				return
+			}
+			last := events[len(events)-1]
+			require.Equal(t, "[]", gjson.Get(last, "choices").Raw)
+			require.Equal(t, gjson.Get(tc.data, "usage").Raw, gjson.Get(last, "usage").Raw)
+			for _, event := range events {
+				require.Equal(t, gjson.Get(tc.data, "extra_fields").Exists(), gjson.Get(event, "extra_fields").Exists())
+				for _, field := range []string{"id", "created", "model", "service_tier"} {
+					require.Equal(t, gjson.Get(tc.data, field).Raw, gjson.Get(event, field).Raw)
+				}
+			}
+			if tc.count == 2 {
+				require.Equal(t, "null", gjson.Get(events[0], "usage").Raw)
+				require.Equal(t, gjson.Get(tc.data, "choices").Raw, gjson.Get(events[0], "choices").Raw)
+			}
+		})
+	}
+}
+
+func TestSSEStreamReaderChatCompletionUsageDisconnect(t *testing.T) {
+	r := NewSSEStreamReader()
+	r.Close()
+	sent, err := r.SendChatCompletionEvent(&schemas.BifrostChatResponse{
+		Usage: &schemas.BifrostLLMUsage{TotalTokens: 15}, Choices: []schemas.BifrostResponseChoice{{}},
+	}, []byte(`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"total_tokens":15}}`))
+	require.NoError(t, err)
+	require.False(t, sent)
+	require.Empty(t, r.eventCh)
+}
+
+func TestSSEStreamReaderChatCompletionUsageDisconnectAfterChoice(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		r := NewSSEStreamReader()
+		r.eventCh = make(chan []byte)
+		result := make(chan bool, 1)
+		go func() {
+			sent, err := r.SendChatCompletionEvent(&schemas.BifrostChatResponse{
+				Usage: &schemas.BifrostLLMUsage{TotalTokens: 15}, Choices: []schemas.BifrostResponseChoice{{}},
+			}, []byte(`{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"total_tokens":15}}`))
+			if err != nil {
+				t.Errorf("send: %v", err)
+			}
+			result <- sent
+		}()
+		first := string(<-r.eventCh)
+		require.Contains(t, first, `"finish_reason":"stop"`)
+		require.Contains(t, first, `"usage":null`)
+		r.Close()
+		require.False(t, <-result, "disconnect between events must stop the stream")
+	})
+}
+
+func TestSSEStreamReaderChatCannotSplit(t *testing.T) {
+	response := &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{}}, Usage: &schemas.BifrostLLMUsage{}}
+	for _, data := range []string{`[]`, `{"choices":[{"delta":{}}],"other":"usage was removed"}`} {
+		r := NewSSEStreamReader()
+		r.eventCh = make(chan []byte, 3)
+		sent, err := r.SendChatCompletionEvent(response, []byte(data))
+		require.Error(t, err)
+		require.True(t, sent, "a framing error must not cancel the stream")
+		require.True(t, r.SendDone())
+		r.Done()
+		wire, err := io.ReadAll(r)
+		require.NoError(t, err)
+		require.Equal(t, "data: "+data+"\n\ndata: [DONE]\n\n", string(wire))
+	}
+}
+
+func TestSSEStreamReaderChatWireIndexes(t *testing.T) {
+	r := NewSSEStreamReader()
+	r.eventCh = make(chan []byte, 5)
+	for i, usage := range []string{`{"total_tokens":1}`, `{"total_tokens":2}`, "null"} {
+		raw := fmt.Sprintf(`{"choices":[{"delta":{}}],"usage":%s,"extra_fields":{"chunk_index":%d,"other":"keep"}}`, usage, i+3)
+		var response schemas.BifrostChatResponse
+		require.NoError(t, json.Unmarshal([]byte(raw), &response))
+		sent, err := r.SendChatCompletionEvent(&response, []byte(raw))
+		require.NoError(t, err)
+		require.True(t, sent)
+		require.Equal(t, i+3, response.ExtraFields.ChunkIndex)
+	}
+	for i := 3; i < 8; i++ {
+		wire := strings.TrimPrefix(string(<-r.eventCh), "data: ")
+		require.Equal(t, int64(i), gjson.Get(wire, "extra_fields.chunk_index").Int(), "%s", wire)
+		require.Equal(t, "keep", gjson.Get(wire, "extra_fields.other").String())
+	}
 }

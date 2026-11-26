@@ -1168,7 +1168,7 @@ func Test_handleStreaming_RetentionCancelsAndLeavesNoGoroutine(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 
 	rec := newCancelRecorder()
-	router.handleStreaming(ctx, nil, RouteConfig{}, "", stream, rec.cancel)
+	router.handleStreaming(ctx, nil, RouteConfig{}, "", false, stream, rec.cancel)
 
 	// Drain the response body so the producer's SendEvent calls succeed and it reaches
 	// its normal end-of-stream path rather than the write-error path (which has always
@@ -1218,7 +1218,7 @@ func Test_handleStreaming_ConverterPanicIsRecovered(t *testing.T) {
 	}}
 
 	rec := newCancelRecorder()
-	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
+	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", false, stream, rec.cancel)
 
 	type readResult struct {
 		body []byte
@@ -1280,7 +1280,7 @@ func Test_handleStreaming_TeardownPanicsAreRecovered(t *testing.T) {
 	}}
 
 	rec := newCancelRecorder()
-	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", stream, rec.cancel)
+	router.handleStreaming(ctx, schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), route, "", false, stream, rec.cancel)
 
 	readDone := make(chan error, 1)
 	go func() {
@@ -3688,7 +3688,7 @@ func BenchmarkHandleStreamingSpeech(b *testing.B) {
 				}
 				close(stream)
 				ctx := &fasthttp.RequestCtx{}
-				router.handleStreaming(ctx, nil, config, schemas.SpeechStreamRequest, stream, func() {})
+				router.handleStreaming(ctx, nil, config, schemas.SpeechStreamRequest, false, stream, func() {})
 				_, _ = io.Copy(io.Discard, ctx.Response.BodyStream())
 			}
 		})
