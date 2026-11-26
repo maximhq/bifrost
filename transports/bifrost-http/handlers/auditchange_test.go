@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -2074,6 +2076,59 @@ func TestCommitPoint_AuthConfigUnchangedSaveRecordsNothing(t *testing.T) {
 	for _, c := range liveAuditChanges(ctx) {
 		if c.EventName == "auth_config.updated" {
 			t.Fatalf("a save that resubmits the stored auth config must not record: %+v", c)
+		}
+	}
+}
+
+// savedThenFailedMessage matches the 500 messages handlers send when a write is saved but a later step fails.
+var savedThenFailedMessage = regexp.MustCompile(`(in database but|in the database but|saved but|committed but|stored but)`)
+
+// TestCommitPointRule fails when a handler answers a saved-then-failed 500 before its first audit
+// record, which means the change it saved reaches the audit log only as a failed request.
+func TestCommitPointRule(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read handlers dir: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		lines := strings.Split(string(data), "\n")
+		start := -1
+		for i := 0; i <= len(lines); i++ {
+			if i < len(lines) && !strings.HasPrefix(lines[i], "func ") {
+				continue
+			}
+			if start >= 0 {
+				checkCommitPointFunc(t, name, start, lines[start:i])
+			}
+			start = i
+		}
+	}
+}
+
+func checkCommitPointFunc(t *testing.T, file string, start int, body []string) {
+	t.Helper()
+	firstRecord := -1
+	for i, line := range body {
+		if strings.Contains(line, "RecordAuditChange(") {
+			firstRecord = i
+			break
+		}
+	}
+	if firstRecord < 0 {
+		return
+	}
+	for i, line := range body[:firstRecord] {
+		sends := strings.Contains(line, "SendError(") || strings.Contains(line, "sendAgentGatewayError(")
+		if sends && savedThenFailedMessage.MatchString(line) {
+			t.Errorf("%s:%d: %s answers a saved-then-failed error before recording the change; record right after the write commits (AGENTS.md)", file, start+i+1, strings.TrimSpace(body[0]))
 		}
 	}
 }
