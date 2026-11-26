@@ -1,3 +1,4 @@
+- fix: gemini - `gemini-3.5-transcribe` transcriptions (unary and streaming) are sent to the Interactions API (`/v1beta/interactions`) instead of `:generateContent`, which does not serve the model (#8465) [@alfanzain](https://github.com/alfanzain)
 [fix]: preserve cache-write TTL usage on Bedrock Invoke responses [@gauravch-code](https://github.com/gauravch-code)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
 - feat: kimchi - new provider for chat, Responses, embeddings and list models (thanks [@arnasnn](https://github.com/arnasnn)!)

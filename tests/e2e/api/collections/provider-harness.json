@@ -352075,6 +352075,266 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "390. Gemini 3.5 transcribe routes through the Interactions API (gemini-3.5-transcribe interactions)",
+      "description": "gemini-3.5-transcribe is served by the Gemini Interactions API (POST /v1beta/interactions), not models/{model}:generateContent. Bifrost sent every Gemini transcription to :generateContent, so this model failed. The provider now routes exactly this model to /interactions for unary and streaming transcription; every other Gemini model keeps :generateContent.\n\nCases: (1) native /v1/audio/transcriptions returns text and token usage, and extra_fields.raw_request proves the upstream body is the Interactions shape (input[] with one audio part, no contents) with the store=false form field sent as the top-level store. (2) timestamp_granularities[]=word returns words mapped from Gemini's word_info annotations. (3) native stream runs deltas to transcript.text.done with token usage and no error. (4) OpenAI drop-in /openai/v1/audio/transcriptions reaches the same route.\n\nA stream Gemini closes before interaction.completed, or keeps open after it, cannot be produced against the live provider; both are pinned by Go tests in core/providers/gemini/transcription_test.go.\n\nRed before the fix: the generateContent endpoint rejects this model, so every case fails on status.",
+      "item": [
+        {
+          "name": "/v1/audio/transcriptions - Interactions body with store=false, text and token usage - gemini/gemini-3.5-transcribe (gemini-3.5-transcribe interactions)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Red before the fix: Bifrost sent gemini-3.5-transcribe to models/{model}:generateContent, which does not serve it.",
+                  "var body = pm.response.text();",
+                  "pm.test('status 200 - gemini-3.5-transcribe interactions', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "var j = pm.response.json();",
+                  "pm.test('returns transcript text and token usage - gemini-3.5-transcribe interactions', function () {",
+                  "  pm.expect(j.text, 'empty text: ' + body.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage, 'usage missing: ' + body.slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(j.usage.type).to.eql('tokens');",
+                  "  pm.expect(j.usage.total_tokens, 'total_tokens').to.be.above(0);",
+                  "});",
+                  "pm.test('upstream body is the Interactions shape with store=false - gemini-3.5-transcribe interactions', function () {",
+                  "  var raw = j.extra_fields && j.extra_fields.raw_request;",
+                  "  pm.expect(raw, 'raw_request missing: ' + body.slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(raw.model).to.eql('gemini-3.5-transcribe');",
+                  "  pm.expect(raw.contents, 'generateContent body leaked').to.eql(undefined);",
+                  "  pm.expect(raw.input, 'input[] missing').to.be.an('array');",
+                  "  var audio = raw.input.filter(function (p) { return p && p.type === 'audio'; });",
+                  "  pm.expect(audio.length, JSON.stringify(raw.input).slice(0, 300)).to.eql(1);",
+                  "  pm.expect(audio[0].data).to.be.a('string').and.not.empty;",
+                  "  pm.expect(audio[0].mime_type).to.match(/^audio\\//);",
+                  "  pm.expect(raw.store, 'store=false form field must reach the top-level store').to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-3.5-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                },
+                {
+                  "key": "store",
+                  "value": "false",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - word timestamps become words - gemini/gemini-3.5-transcribe (gemini-3.5-transcribe interactions)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('status 200 - gemini-3.5-transcribe interactions', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('word_info annotations become words with second offsets - gemini-3.5-transcribe interactions', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'empty text: ' + body.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.words, 'no words: ' + body.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.words[0].word).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.words[0].start).to.be.a('number');",
+                  "  pm.expect(j.words[0].end).to.be.at.least(j.words[0].start);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-3.5-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                },
+                {
+                  "key": "timestamp_granularities[]",
+                  "value": "word",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions stream - deltas then done with token usage - gemini/gemini-3.5-transcribe (gemini-3.5-transcribe interactions)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('status 200 - gemini-3.5-transcribe interactions', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('streams deltas then a done event with token usage - gemini-3.5-transcribe interactions', function () {",
+                  "  pm.expect(String(pm.response.headers.get('Content-Type')), 'content-type').to.include('text/event-stream');",
+                  "  pm.expect(text, 'no delta event: ' + text.slice(0, 500)).to.include('transcript.text.delta');",
+                  "  pm.expect(text, 'no done event: ' + text.slice(-500)).to.include('transcript.text.done');",
+                  "  pm.expect(text, 'no non-empty transcript delta: ' + text.slice(0, 500)).to.match(/\"delta\"\\s*:\\s*\"[^\"]+\"/);",
+                  "  pm.expect(text, 'no token usage: ' + text.slice(-500)).to.match(/\"total_tokens\":\\s*[1-9]/);",
+                  "  pm.expect(text, 'stream carried an error: ' + text.slice(-500)).to.not.match(/\"error\"\\s*:\\s*\\{/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-3.5-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/audio/transcriptions drop-in - returns text - gemini/gemini-3.5-transcribe (gemini-3.5-transcribe interactions)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('status 200 - gemini-3.5-transcribe interactions', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + body.slice(0, 500)).to.eql(200);",
+                  "});",
+                  "pm.test('OpenAI drop-in returns transcript text - gemini-3.5-transcribe interactions', function () {",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'empty text: ' + body.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gemini/gemini-3.5-transcribe",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
