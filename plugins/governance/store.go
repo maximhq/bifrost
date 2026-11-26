@@ -86,7 +86,7 @@ type LocalGovernanceStore struct {
 	// Reset hooks allow wrappers to observe request-time local resets.
 	resetHooksMu      sync.RWMutex
 	onBudgetsReset    func([]*configstoreTables.TableBudget)
-	onRateLimitsReset func([]*configstoreTables.TableRateLimit)
+	onRateLimitsReset func([]*RateLimitReset)
 
 	// Logger
 	logger schemas.Logger
@@ -236,20 +236,20 @@ type GovernanceStore interface {
 	// BumpBudgetUsage increment is never clobbered.
 	LoadBudget(ctx context.Context, budgetID string) *configstoreTables.TableBudget
 	BumpBudgetUsage(ctx context.Context, budgetID string, cost float64) error
-	UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget)
+	UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget, adoptCalendar bool)
 	DeleteBudget(ctx context.Context, budgetID string)
 	// Rate limit crud. UpsertRateLimitConfig carries in-memory counter state
 	// (token + request CurrentUsage/LastReset) forward across replacements —
 	// same rationale as UpsertBudgetConfig.
 	LoadRateLimit(ctx context.Context, rateLimitID string) *configstoreTables.TableRateLimit
 	BumpRateLimitUsage(ctx context.Context, rateLimitID string, tokensUsed int64, shouldUpdateTokens, shouldUpdateRequests bool) error
-	UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit)
+	UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit, adoptCalendar bool)
 	DeleteRateLimit(ctx context.Context, rateLimitID string)
 	// In-memory usage updates (for VK-level)
 	// In-memory usage updates for scoped model configs (mirror the global model updates).
 	// scope/scopeID identify the owning entity; an empty scope or scopeID is a no-op.
 	// In-memory reset checks (return items that need DB sync)
-	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit
+	ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*RateLimitReset
 	ResetExpiredBudgetsInMemory(ctx context.Context, refreshReferences bool, budgetIDs ...string) []*configstoreTables.TableBudget
 	// ResetBudgetUsageInMemory clears one budget's usage on operator request,
 	// leaving its reset boundary untouched.
@@ -262,7 +262,7 @@ type GovernanceStore interface {
 	// applying the rule to the token and request counters independently.
 	AdoptRateLimitCalendarAlignmentInMemory(ctx context.Context, rateLimitID string, now time.Time) bool
 	// DB sync for expired items
-	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error
+	ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*RateLimitReset) error
 	ResetExpiredBudgets(ctx context.Context, resetBudgets []*configstoreTables.TableBudget) error
 	// Provider and model-level usage updates (combined)
 	// Dump operations
@@ -339,7 +339,10 @@ func NewLocalGovernanceStore(ctx context.Context, logger schemas.Logger, configS
 }
 
 // SetResetHooks configures callbacks that run after successful local resets.
-func (gs *LocalGovernanceStore) SetResetHooks(onBudgetsReset func([]*configstoreTables.TableBudget), onRateLimitsReset func([]*configstoreTables.TableRateLimit)) {
+// The rate-limit hook receives which dimensions each reset actually cleared:
+// calendar adoption can move a boundary forward without a reset, so a
+// snapshot's LastReset alone does not say which counters were zeroed.
+func (gs *LocalGovernanceStore) SetResetHooks(onBudgetsReset func([]*configstoreTables.TableBudget), onRateLimitsReset func([]*RateLimitReset)) {
 	gs.resetHooksMu.Lock()
 	defer gs.resetHooksMu.Unlock()
 	gs.onBudgetsReset = onBudgetsReset
@@ -352,7 +355,7 @@ func (gs *LocalGovernanceStore) getBudgetsResetHook() func([]*configstoreTables.
 	return gs.onBudgetsReset
 }
 
-func (gs *LocalGovernanceStore) getRateLimitsResetHook() func([]*configstoreTables.TableRateLimit) {
+func (gs *LocalGovernanceStore) getRateLimitsResetHook() func([]*RateLimitReset) {
 	gs.resetHooksMu.RLock()
 	defer gs.resetHooksMu.RUnlock()
 	return gs.onRateLimitsReset
@@ -410,7 +413,13 @@ func (gs *LocalGovernanceStore) storeBudget(budgetID string, budget *configstore
 // straight from the incoming config while LastReset stayed advanced, so the
 // window's cycle could never be spent again and the override outlived its grant
 // by a different amount on every node.
-func (gs *LocalGovernanceStore) UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget) {
+//
+// adoptCalendar is set only when the owner has just switched alignment on. The flag
+// and the moved boundary must be published by one swap: with the flag alone the
+// preserved boundary reads as overdue, and a sweep or charge would clear the usage.
+// The row's own previous flag cannot signal the switch, because startup loads rows
+// before stamping it and adopting there would skip a reset that is really due.
+func (gs *LocalGovernanceStore) UpsertBudgetConfig(ctx context.Context, budgetID string, config *configstoreTables.TableBudget, adoptCalendar bool) {
 	if config == nil {
 		return
 	}
@@ -441,6 +450,9 @@ func (gs *LocalGovernanceStore) UpsertBudgetConfig(ctx context.Context, budgetID
 		merged := *config
 		merged.CurrentUsage = old.CurrentUsage
 		merged.LastReset = old.LastReset
+		if adoptCalendar {
+			merged.AdoptCalendarAlignment(time.Now())
+		}
 		merged.RefreshOverrideCyclesRemaining()
 		if gs.budgets.CompareAndSwap(budgetID, raw, &merged) {
 			return
@@ -538,7 +550,10 @@ func (gs *LocalGovernanceStore) LoadRateLimit(ctx context.Context, rateLimitID s
 // preserving in-memory token and request counter state (TokenCurrentUsage /
 // TokenLastReset / RequestCurrentUsage / RequestLastReset) from any prior
 // snapshot. Same CAS-retry contract as UpsertBudgetConfig.
-func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit) {
+//
+// adoptCalendar works as in UpsertBudgetConfig, with the token and request
+// windows adopting independently.
+func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateLimitID string, config *configstoreTables.TableRateLimit, adoptCalendar bool) {
 	if config == nil {
 		return
 	}
@@ -560,6 +575,9 @@ func (gs *LocalGovernanceStore) UpsertRateLimitConfig(ctx context.Context, rateL
 		merged.TokenLastReset = old.TokenLastReset
 		merged.RequestCurrentUsage = old.RequestCurrentUsage
 		merged.RequestLastReset = old.RequestLastReset
+		if adoptCalendar {
+			merged.AdoptCalendarAlignment(time.Now())
+		}
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &merged) {
 			return
 		}
@@ -804,15 +822,28 @@ func (gs *LocalGovernanceStore) ResetBudgetAt(ctx context.Context, budgetID stri
 	}
 }
 
+// RateLimitReset carries the snapshot and the dimensions reset by the same swap.
+type RateLimitReset struct {
+	*configstoreTables.TableRateLimit
+	tokenReset   bool
+	requestReset bool
+}
+
+// TokenReset reports whether this reset zeroed the token counter.
+func (r *RateLimitReset) TokenReset() bool { return r.tokenReset }
+
+// RequestReset reports whether this reset zeroed the request counter.
+func (r *RateLimitReset) RequestReset() bool { return r.requestReset }
+
 // ResetRateLimitAt atomically resets one or both rate-limit counters on the
 // rate limit identified by rateLimitID. A non-nil tokenNewLastReset resets the
 // token counter and advances TokenLastReset; similarly for
 // requestNewLastReset. Each reset is conditional on the corresponding
 // LastReset currently being strictly older than the supplied target, so
 // concurrent resetters collapse into a single successful write. Returns the
-// updated snapshot and true when at least one counter was reset; (nil, false)
-// otherwise.
-func (gs *LocalGovernanceStore) ResetRateLimitAt(ctx context.Context, rateLimitID string, tokenNewLastReset, requestNewLastReset *time.Time) (*configstoreTables.TableRateLimit, bool) {
+// updated snapshot and the dimensions it reset with true when at least one
+// counter was reset; (nil, false) otherwise.
+func (gs *LocalGovernanceStore) ResetRateLimitAt(ctx context.Context, rateLimitID string, tokenNewLastReset, requestNewLastReset *time.Time) (*RateLimitReset, bool) {
 	if tokenNewLastReset == nil && requestNewLastReset == nil {
 		return nil, false
 	}
@@ -826,22 +857,21 @@ func (gs *LocalGovernanceStore) ResetRateLimitAt(ctx context.Context, rateLimitI
 			return nil, false
 		}
 		clone := *old
-		didReset := false
-		if tokenNewLastReset != nil && old.TokenLastReset.Before(*tokenNewLastReset) {
+		tokenReset := tokenNewLastReset != nil && old.TokenLastReset.Before(*tokenNewLastReset)
+		requestReset := requestNewLastReset != nil && old.RequestLastReset.Before(*requestNewLastReset)
+		if tokenReset {
 			clone.TokenCurrentUsage = 0
 			clone.TokenLastReset = *tokenNewLastReset
-			didReset = true
 		}
-		if requestNewLastReset != nil && old.RequestLastReset.Before(*requestNewLastReset) {
+		if requestReset {
 			clone.RequestCurrentUsage = 0
 			clone.RequestLastReset = *requestNewLastReset
-			didReset = true
 		}
-		if !didReset {
+		if !tokenReset && !requestReset {
 			return nil, false
 		}
 		if gs.rateLimits.CompareAndSwap(rateLimitID, raw, &clone) {
-			return &clone, true
+			return &RateLimitReset{TableRateLimit: &clone, tokenReset: tokenReset, requestReset: requestReset}, true
 		}
 	}
 }
@@ -2949,7 +2979,7 @@ func (gs *LocalGovernanceStore) rateLimitResetTargets(rateLimit *configstoreTabl
 // resetExpiredRateLimitFromSnapshot applies the local side effects for an expired rate-limit snapshot.
 // Owner reference refresh is NOT done here; ResetExpiredRateLimitsInMemory batches it
 // once per sweep so a sweep costs O(owners + resets) instead of O(owners x resets).
-func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Context, rateLimit *configstoreTables.TableRateLimit, now time.Time) *configstoreTables.TableRateLimit {
+func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Context, rateLimit *configstoreTables.TableRateLimit, now time.Time) *RateLimitReset {
 	tokenNewLastReset, requestNewLastReset := gs.rateLimitResetTargets(rateLimit, now)
 	if tokenNewLastReset == nil && requestNewLastReset == nil {
 		return nil
@@ -2958,12 +2988,12 @@ func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Co
 	if !ok {
 		return nil
 	}
-	if tokenNewLastReset != nil {
+	if resetRateLimit.tokenReset {
 		gs.LastDBUsagesRateLimitsTokensMu.Lock()
 		gs.LastDBUsagesTokensRateLimits[resetRateLimit.ID] = 0
 		gs.LastDBUsagesRateLimitsTokensMu.Unlock()
 	}
-	if requestNewLastReset != nil {
+	if resetRateLimit.requestReset {
 		gs.LastDBUsagesRateLimitsRequestsMu.Lock()
 		gs.LastDBUsagesRequestsRateLimits[resetRateLimit.ID] = 0
 		gs.LastDBUsagesRateLimitsRequestsMu.Unlock()
@@ -2976,9 +3006,9 @@ func (gs *LocalGovernanceStore) resetExpiredRateLimitFromSnapshot(ctx context.Co
 // refreshReferences controls whether embedded owner references (VK, team, customer) are updated
 // after reset. Background/ticker callers pass true; request-time callers pass false to avoid
 // an O(N) scan of all owners on the hot path.
-func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*configstoreTables.TableRateLimit {
+func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Context, refreshReferences bool, rateLimitIDs ...string) []*RateLimitReset {
 	now := time.Now()
-	var resetRateLimits []*configstoreTables.TableRateLimit
+	var resetRateLimits []*RateLimitReset
 	resetOne := func(value any) {
 		rateLimit, ok := value.(*configstoreTables.TableRateLimit)
 		if !ok || rateLimit == nil {
@@ -3000,11 +3030,16 @@ func (gs *LocalGovernanceStore) ResetExpiredRateLimitsInMemory(ctx context.Conte
 			}
 		}
 	}
-	if refreshReferences {
-		gs.updateRateLimitReferences(ctx, resetRateLimits)
-	}
-	if len(resetRateLimits) > 0 {
-		if onRateLimitsReset := gs.getRateLimitsResetHook(); onRateLimitsReset != nil {
+	onRateLimitsReset := gs.getRateLimitsResetHook()
+	if len(resetRateLimits) > 0 && (refreshReferences || onRateLimitsReset != nil) {
+		snapshots := make([]*configstoreTables.TableRateLimit, 0, len(resetRateLimits))
+		for _, reset := range resetRateLimits {
+			snapshots = append(snapshots, reset.TableRateLimit)
+		}
+		if refreshReferences {
+			gs.updateRateLimitReferences(ctx, snapshots)
+		}
+		if onRateLimitsReset != nil {
 			onRateLimitsReset(resetRateLimits)
 		}
 	}
@@ -3057,22 +3092,23 @@ func (gs *LocalGovernanceStore) ResetExpiredBudgets(ctx context.Context, resetBu
 }
 
 // ResetExpiredRateLimits performs background reset of expired rate limits for both provider-level and VK-level in database
-func (gs *LocalGovernanceStore) ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*configstoreTables.TableRateLimit) error {
+func (gs *LocalGovernanceStore) ResetExpiredRateLimits(ctx context.Context, resetRateLimits []*RateLimitReset) error {
 	if gs.configStore == nil {
 		return nil
 	}
 	// Token and request counters expire independently, so the batches are built
-	// per dimension. A rate limit with no duration configured for a dimension
-	// contributes nothing to that dimension's batch.
+	// per dimension. Only dimensions the in-memory reset actually cleared are
+	// persisted: calendar adoption can advance the other dimension's boundary
+	// without clearing its usage, and writing that boundary here would zero it.
 	var tokenRows, requestRows []rateLimitBoundaryRow
 	for _, rateLimit := range resetRateLimits {
-		if rateLimit == nil {
+		if rateLimit == nil || rateLimit.TableRateLimit == nil {
 			continue
 		}
-		if rateLimit.TokenResetDuration != nil {
+		if rateLimit.tokenReset {
 			tokenRows = append(tokenRows, rateLimitBoundaryRow{ID: rateLimit.ID, Boundary: rateLimit.TokenLastReset})
 		}
-		if rateLimit.RequestResetDuration != nil {
+		if rateLimit.requestReset {
 			requestRows = append(requestRows, rateLimitBoundaryRow{ID: rateLimit.ID, Boundary: rateLimit.RequestLastReset})
 		}
 	}
@@ -3300,9 +3336,8 @@ type rateLimitBoundaryRow struct {
 // The guard is the boundary column rather than a test of whether the in-memory
 // counter is still zero: under sustained traffic a request bumps the counter
 // back above zero between the in-memory reset and this write, which used to drop
-// the whole field pair including the boundary. A dimension that was not reset in
-// this sweep is a no-op because its in-memory boundary already equals the
-// persisted one.
+// the whole field pair including the boundary. Callers pass only dimensions that
+// were actually reset; an advanced boundary alone does not mean usage was cleared.
 func (gs *LocalGovernanceStore) resetRateLimitDimensionBatch(ctx context.Context, tx *gorm.DB, usageColumn, boundaryColumn string, batch []rateLimitBoundaryRow) error {
 	if len(batch) == 0 {
 		return nil
@@ -4008,36 +4043,52 @@ func (gs *LocalGovernanceStore) CreateVirtualKeyInMemory(ctx context.Context, vk
 func (gs *LocalGovernanceStore) createVirtualKeyLocked(ctx context.Context, vk *configstoreTables.TableVirtualKey) {
 
 	clone := *vk
+	clone.Budgets = slices.Clone(clone.Budgets)
 
-	// Clone provider configs
-	if vk.ProviderConfigs != nil {
-		clone.ProviderConfigs = make([]configstoreTables.TableVirtualKeyProviderConfig, len(vk.ProviderConfigs))
-		copy(clone.ProviderConfigs, vk.ProviderConfigs)
-	}
+	clone.ProviderConfigs = slices.Clone(clone.ProviderConfigs)
 
 	// Store budgets
 	for i := range clone.Budgets {
-		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
-		gs.storeBudget(clone.Budgets[i].ID, &clone.Budgets[i])
+		b := &clone.Budgets[i]
+		b.IsCalendarAligned = clone.CalendarAligned
+		gs.UpsertBudgetConfig(ctx, b.ID, b, false)
+		if live := gs.LoadBudget(ctx, b.ID); live != nil {
+			*b = *live
+		}
 	}
 
 	// Create associated rate limit if exists
 	if clone.RateLimit != nil {
-		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+		rateLimit := *clone.RateLimit
+		rateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, false)
+		clone.RateLimit = &rateLimit
+		if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+			clone.RateLimit = live
+		}
 	}
 
 	// Create provider config budgets and rate limits if they exist
 	if clone.ProviderConfigs != nil {
 		for i := range clone.ProviderConfigs {
 			pc := &clone.ProviderConfigs[i]
+			pc.Budgets = slices.Clone(pc.Budgets)
 			for j := range pc.Budgets {
-				pc.Budgets[j].IsCalendarAligned = clone.CalendarAligned
-				gs.storeBudget(pc.Budgets[j].ID, &pc.Budgets[j])
+				b := &pc.Budgets[j]
+				b.IsCalendarAligned = clone.CalendarAligned
+				gs.UpsertBudgetConfig(ctx, b.ID, b, false)
+				if live := gs.LoadBudget(ctx, b.ID); live != nil {
+					*b = *live
+				}
 			}
 			if pc.RateLimit != nil {
-				pc.RateLimit.IsCalendarAligned = clone.CalendarAligned
-				gs.rateLimits.Store(pc.RateLimit.ID, pc.RateLimit)
+				rateLimit := *pc.RateLimit
+				rateLimit.IsCalendarAligned = clone.CalendarAligned
+				gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, false)
+				pc.RateLimit = &rateLimit
+				if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+					pc.RateLimit = live
+				}
 			}
 		}
 	}
@@ -4084,6 +4135,9 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 
 		// Create clone to avoid modifying the original
 		clone := *vk
+		clone.Budgets = slices.Clone(clone.Budgets)
+		adoptCalendar := clone.CalendarAligned && !existingVK.CalendarAligned
+		clone.ProviderConfigs = slices.Clone(clone.ProviderConfigs)
 
 		// Collect all incoming budget IDs across VK + provider configs to avoid
 		// deleting a budget that was moved between VK-level and PC-level in one update.
@@ -4099,15 +4153,12 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 
 		// Update multi-budgets for VK
 		for i := range clone.Budgets {
-			// Preserve existing usage from memory
-			if existingBudgetValue, exists := gs.budgets.Load(clone.Budgets[i].ID); exists && existingBudgetValue != nil {
-				if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-					clone.Budgets[i].CurrentUsage = existingBudget.CurrentUsage
-					clone.Budgets[i].LastReset = existingBudget.LastReset
-				}
+			b := &clone.Budgets[i]
+			b.IsCalendarAligned = clone.CalendarAligned
+			gs.UpsertBudgetConfig(ctx, b.ID, b, adoptCalendar)
+			if live := gs.LoadBudget(ctx, b.ID); live != nil {
+				*b = *live
 			}
-			clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
-			gs.storeBudget(clone.Budgets[i].ID, &clone.Budgets[i])
 		}
 		// Delete removed multi-budgets
 		for _, oldBudget := range existingVK.Budgets {
@@ -4117,21 +4168,13 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 		}
 
 		if clone.RateLimit != nil {
-			// Preserve existing usage from memory when updating rate limit config
-			// The usage tracker maintains current usage in memory, and we only want to update
-			// the configuration fields (max_limit, reset_duration) from the database
-			if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
-				if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
-					// Preserve current usage and last reset times from existing in-memory rate limit
-					clone.RateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
-					clone.RateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
-					clone.RateLimit.TokenLastReset = existingRateLimit.TokenLastReset
-					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
-				}
+			rateLimit := *clone.RateLimit
+			rateLimit.IsCalendarAligned = clone.CalendarAligned
+			gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, adoptCalendar)
+			clone.RateLimit = &rateLimit
+			if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+				clone.RateLimit = live
 			}
-			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-			// Update the rate limit in the main rateLimits sync.Map
-			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., after AP propagation
 			// creates a fresh UUID). Without this the orphaned entry leaks memory
 			// and its stale usage pollutes gossip baselines.
@@ -4164,19 +4207,15 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 
 			// Process each new/updated provider config
 			for i, pc := range clone.ProviderConfigs {
+				clone.ProviderConfigs[i].Budgets = slices.Clone(pc.Budgets)
 				if pc.RateLimit != nil {
-					// Preserve existing usage from memory when updating provider config rate limit
-					if existingRateLimitValue, exists := gs.rateLimits.Load(pc.RateLimit.ID); exists && existingRateLimitValue != nil {
-						if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
-							// Preserve current usage and last reset times from existing in-memory rate limit
-							clone.ProviderConfigs[i].RateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
-							clone.ProviderConfigs[i].RateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
-							clone.ProviderConfigs[i].RateLimit.TokenLastReset = existingRateLimit.TokenLastReset
-							clone.ProviderConfigs[i].RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
-						}
+					rateLimit := *clone.ProviderConfigs[i].RateLimit
+					rateLimit.IsCalendarAligned = clone.CalendarAligned
+					gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, adoptCalendar)
+					clone.ProviderConfigs[i].RateLimit = &rateLimit
+					if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+						clone.ProviderConfigs[i].RateLimit = live
 					}
-					clone.ProviderConfigs[i].RateLimit.IsCalendarAligned = clone.CalendarAligned
-					gs.rateLimits.Store(clone.ProviderConfigs[i].RateLimit.ID, clone.ProviderConfigs[i].RateLimit)
 				} else {
 					// Rate limit was removed from provider config, delete it from memory if it existed
 					if existingPC, exists := existingProviderConfigs[pc.ID]; exists && existingPC.RateLimit != nil {
@@ -4187,14 +4226,11 @@ func (gs *LocalGovernanceStore) UpdateVirtualKeyInMemory(ctx context.Context, vk
 				// Update multi-budgets for provider config
 				for j := range clone.ProviderConfigs[i].Budgets {
 					b := &clone.ProviderConfigs[i].Budgets[j]
-					if existingBudgetValue, exists := gs.budgets.Load(b.ID); exists && existingBudgetValue != nil {
-						if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-							b.CurrentUsage = existingBudget.CurrentUsage
-							b.LastReset = existingBudget.LastReset
-						}
-					}
 					b.IsCalendarAligned = clone.CalendarAligned
-					gs.storeBudget(b.ID, b)
+					gs.UpsertBudgetConfig(ctx, b.ID, b, adoptCalendar)
+					if live := gs.LoadBudget(ctx, b.ID); live != nil {
+						*b = *live
+					}
 				}
 				// Delete removed multi-budgets for this provider config
 				if existingPC, exists := existingProviderConfigs[pc.ID]; exists {
@@ -4344,18 +4380,27 @@ func (gs *LocalGovernanceStore) CreateTeamInMemory(ctx context.Context, team *co
 	}
 
 	clone := *team
+	clone.Budgets = slices.Clone(clone.Budgets)
 
 	// Create associated budgets if they exist
 	for i := range clone.Budgets {
-		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
-		b := clone.Budgets[i]
-		gs.storeBudget(b.ID, &b)
+		b := &clone.Budgets[i]
+		b.IsCalendarAligned = clone.CalendarAligned
+		gs.UpsertBudgetConfig(ctx, b.ID, b, false)
+		if live := gs.LoadBudget(ctx, b.ID); live != nil {
+			*b = *live
+		}
 	}
 
 	// Create associated rate limit if exists
 	if clone.RateLimit != nil {
-		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+		rateLimit := *clone.RateLimit
+		rateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, false)
+		clone.RateLimit = &rateLimit
+		if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+			clone.RateLimit = live
+		}
 	}
 
 	gs.teams.Store(clone.ID, &clone)
@@ -4378,6 +4423,8 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 
 		// Create clone to avoid modifying the original
 		clone := *team
+		clone.Budgets = slices.Clone(clone.Budgets)
+		adoptCalendar := clone.CalendarAligned && !existingTeam.CalendarAligned
 
 		// Reconcile multi-budget slice by ID: preserve live usage on matches,
 		// evict budgets that disappeared from the team (owned-FK semantics —
@@ -4391,14 +4438,11 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 		for i := range clone.Budgets {
 			b := &clone.Budgets[i]
 			nextBudgetIDs[b.ID] = struct{}{}
-			if live, exists := gs.budgets.Load(b.ID); exists && live != nil {
-				if lb, ok := live.(*configstoreTables.TableBudget); ok && lb != nil {
-					b.CurrentUsage = lb.CurrentUsage
-					b.LastReset = lb.LastReset
-				}
-			}
 			b.IsCalendarAligned = clone.CalendarAligned
-			gs.storeBudget(b.ID, b)
+			gs.UpsertBudgetConfig(ctx, b.ID, b, adoptCalendar)
+			if live := gs.LoadBudget(ctx, b.ID); live != nil {
+				*b = *live
+			}
 		}
 		for id := range existingBudgetIDs {
 			if _, stillThere := nextBudgetIDs[id]; !stillThere {
@@ -4408,18 +4452,13 @@ func (gs *LocalGovernanceStore) UpdateTeamInMemory(ctx context.Context, team *co
 
 		// Handle rate limit updates with consistent logic
 		if clone.RateLimit != nil {
-			// Preserve existing usage from memory when updating team rate limit config
-			if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
-				if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
-					// Preserve current usage and last reset time from existing in-memory rate limit
-					clone.RateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
-					clone.RateLimit.TokenLastReset = existingRateLimit.TokenLastReset
-					clone.RateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
-					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
-				}
+			rateLimit := *clone.RateLimit
+			rateLimit.IsCalendarAligned = clone.CalendarAligned
+			gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, adoptCalendar)
+			clone.RateLimit = &rateLimit
+			if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+				clone.RateLimit = live
 			}
-			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., UUID rotation on propagation)
 			if existingTeam.RateLimit != nil && existingTeam.RateLimit.ID != clone.RateLimit.ID {
 				gs.DeleteRateLimit(ctx, existingTeam.RateLimit.ID)
@@ -4521,13 +4560,23 @@ func (gs *LocalGovernanceStore) CreateCustomerInMemory(ctx context.Context, cust
 		return // Nothing to create
 	}
 	clone := *customer
+	clone.Budgets = slices.Clone(clone.Budgets)
 	for i := range clone.Budgets {
-		clone.Budgets[i].IsCalendarAligned = clone.CalendarAligned
-		gs.storeBudget(clone.Budgets[i].ID, &clone.Budgets[i])
+		b := &clone.Budgets[i]
+		b.IsCalendarAligned = clone.CalendarAligned
+		gs.UpsertBudgetConfig(ctx, b.ID, b, false)
+		if live := gs.LoadBudget(ctx, b.ID); live != nil {
+			*b = *live
+		}
 	}
 	if clone.RateLimit != nil {
-		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+		rateLimit := *clone.RateLimit
+		rateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, false)
+		clone.RateLimit = &rateLimit
+		if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+			clone.RateLimit = live
+		}
 	}
 	gs.customers.Store(clone.ID, &clone)
 }
@@ -4545,19 +4594,18 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 		}
 		// Create clone to avoid modifying the original
 		clone := *customer
+		clone.Budgets = slices.Clone(clone.Budgets)
+		adoptCalendar := clone.CalendarAligned && !existingCustomer.CalendarAligned
 
 		// Reconcile budgets: upsert new set, delete any that were removed.
 		newBudgetIDs := make(map[string]bool, len(clone.Budgets))
 		for i := range clone.Budgets {
 			b := &clone.Budgets[i]
 			b.IsCalendarAligned = clone.CalendarAligned
-			if existingBudgetValue, exists := gs.budgets.Load(b.ID); exists && existingBudgetValue != nil {
-				if existingBudget, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && existingBudget != nil {
-					b.CurrentUsage = existingBudget.CurrentUsage
-					b.LastReset = existingBudget.LastReset
-				}
+			gs.UpsertBudgetConfig(ctx, b.ID, b, adoptCalendar)
+			if live := gs.LoadBudget(ctx, b.ID); live != nil {
+				*b = *live
 			}
-			gs.storeBudget(b.ID, b)
 			newBudgetIDs[b.ID] = true
 		}
 		for _, existing := range existingCustomer.Budgets {
@@ -4568,18 +4616,13 @@ func (gs *LocalGovernanceStore) UpdateCustomerInMemory(ctx context.Context, cust
 
 		// Handle rate limit updates with consistent logic
 		if clone.RateLimit != nil {
-			clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-			// Preserve existing usage from memory when updating customer rate limit config
-			if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
-				if existingRateLimit, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && existingRateLimit != nil {
-					// Preserve current usage and last reset time from existing in-memory rate limit
-					clone.RateLimit.TokenCurrentUsage = existingRateLimit.TokenCurrentUsage
-					clone.RateLimit.TokenLastReset = existingRateLimit.TokenLastReset
-					clone.RateLimit.RequestCurrentUsage = existingRateLimit.RequestCurrentUsage
-					clone.RateLimit.RequestLastReset = existingRateLimit.RequestLastReset
-				}
+			rateLimit := *clone.RateLimit
+			rateLimit.IsCalendarAligned = clone.CalendarAligned
+			gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, adoptCalendar)
+			clone.RateLimit = &rateLimit
+			if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+				clone.RateLimit = live
 			}
-			gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 			// Clean up old rate limit if ID changed (e.g., UUID rotation on propagation)
 			if existingCustomer.RateLimit != nil && existingCustomer.RateLimit.ID != clone.RateLimit.ID {
 				gs.DeleteRateLimit(ctx, existingCustomer.RateLimit.ID)
@@ -4676,6 +4719,39 @@ func (gs *LocalGovernanceStore) DeleteUserGovernanceInMemory(ctx context.Context
 	// Available in enterprise
 }
 
+// modelConfigSwitchesToCalendar reports whether mc turns calendar alignment on for a
+// model config already in memory. It matches by ID because an edit can also rename the
+// config, and scans only when a live limit is not yet aligned.
+func (gs *LocalGovernanceStore) modelConfigSwitchesToCalendar(mc *configstoreTables.TableModelConfig) bool {
+	if !mc.CalendarAligned {
+		return false
+	}
+	unaligned := false
+	for i := range mc.Budgets {
+		if live := gs.LoadBudget(context.Background(), mc.Budgets[i].ID); live != nil && !live.IsCalendarAligned {
+			unaligned = true
+			break
+		}
+	}
+	if !unaligned && mc.RateLimit != nil {
+		live := gs.LoadRateLimit(context.Background(), mc.RateLimit.ID)
+		unaligned = live != nil && !live.IsCalendarAligned
+	}
+	if !unaligned {
+		return false
+	}
+	switched := false
+	gs.modelConfigs.Range(func(_, value any) bool {
+		existing, ok := value.(*configstoreTables.TableModelConfig)
+		if !ok || existing == nil || existing.ID != mc.ID {
+			return true
+		}
+		switched = !existing.CalendarAligned
+		return false
+	})
+	return switched
+}
+
 // UpdateModelConfigInMemory adds or updates a model config in the in-memory store (lock-free)
 // Preserves existing usage values when updating budgets and rate limits
 // Returns the updated model config with potentially modified usage values
@@ -4687,31 +4763,27 @@ func (gs *LocalGovernanceStore) UpdateModelConfigInMemory(ctx context.Context, m
 	// Clone to avoid modifying the original
 	clone := *mc
 
-	// Store associated budgets, preserving existing in-memory usage per budget ID and
-	// stamping calendar alignment from the model config (consumed by the reset path).
+	adoptCalendar := gs.modelConfigSwitchesToCalendar(&clone)
+	clone.Budgets = slices.Clone(mc.Budgets)
 	for i := range clone.Budgets {
 		b := &clone.Budgets[i]
 		b.IsCalendarAligned = clone.CalendarAligned
-		if existingBudgetValue, exists := gs.budgets.Load(b.ID); exists && existingBudgetValue != nil {
-			if eb, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && eb != nil {
-				b.CurrentUsage = eb.CurrentUsage
-				b.LastReset = eb.LastReset
-			}
+		gs.UpsertBudgetConfig(ctx, b.ID, b, adoptCalendar)
+		if live := gs.LoadBudget(ctx, b.ID); live != nil {
+			*b = *live
 		}
-		gs.storeBudget(b.ID, b)
 	}
 
 	// Store associated rate limit if exists, preserving existing in-memory usage and
 	// stamping calendar alignment from the owning model config.
 	if clone.RateLimit != nil {
-		clone.RateLimit.IsCalendarAligned = clone.CalendarAligned
-		if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
-			if erl, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && erl != nil {
-				clone.RateLimit.TokenCurrentUsage = erl.TokenCurrentUsage
-				clone.RateLimit.RequestCurrentUsage = erl.RequestCurrentUsage
-			}
+		rateLimit := *clone.RateLimit
+		rateLimit.IsCalendarAligned = clone.CalendarAligned
+		gs.UpsertRateLimitConfig(ctx, rateLimit.ID, &rateLimit, adoptCalendar)
+		clone.RateLimit = &rateLimit
+		if live := gs.LoadRateLimit(ctx, rateLimit.ID); live != nil {
+			clone.RateLimit = live
 		}
-		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
 	}
 
 	// Index under the (scope-aware) canonical key. Scope/scope_id are part of a config's
@@ -4809,25 +4881,13 @@ func (gs *LocalGovernanceStore) UpdateProviderInMemory(ctx context.Context, prov
 	// Clone to avoid modifying the original
 	clone := *provider
 
-	// Store associated budget if exists, preserving existing in-memory usage
 	if clone.Budget != nil {
-		if existingBudgetValue, exists := gs.budgets.Load(clone.Budget.ID); exists && existingBudgetValue != nil {
-			if eb, ok := existingBudgetValue.(*configstoreTables.TableBudget); ok && eb != nil {
-				clone.Budget.CurrentUsage = eb.CurrentUsage
-			}
-		}
-		gs.storeBudget(clone.Budget.ID, clone.Budget)
+		gs.UpsertBudgetConfig(ctx, clone.Budget.ID, clone.Budget, false)
+		clone.Budget = gs.LoadBudget(ctx, clone.Budget.ID)
 	}
-
-	// Store associated rate limit if exists, preserving existing in-memory usage
 	if clone.RateLimit != nil {
-		if existingRateLimitValue, exists := gs.rateLimits.Load(clone.RateLimit.ID); exists && existingRateLimitValue != nil {
-			if erl, ok := existingRateLimitValue.(*configstoreTables.TableRateLimit); ok && erl != nil {
-				clone.RateLimit.TokenCurrentUsage = erl.TokenCurrentUsage
-				clone.RateLimit.RequestCurrentUsage = erl.RequestCurrentUsage
-			}
-		}
-		gs.rateLimits.Store(clone.RateLimit.ID, clone.RateLimit)
+		gs.UpsertRateLimitConfig(ctx, clone.RateLimit.ID, clone.RateLimit, false)
+		clone.RateLimit = gs.LoadRateLimit(ctx, clone.RateLimit.ID)
 	}
 
 	// Store under provider name

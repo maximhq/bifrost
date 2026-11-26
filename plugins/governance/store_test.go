@@ -1280,7 +1280,7 @@ func TestGovernanceStoreUpsertBudgetConfigRefreshesOverride(t *testing.T) {
 
 	refreshed := buildBudgetWithUsage(live.ID, 120, 0, "2h")
 	require.NoError(t, refreshed.SetOverride(30, configstoreTables.BudgetOverrideModeCycles, 3))
-	store.UpsertBudgetConfig(context.Background(), live.ID, refreshed)
+	store.UpsertBudgetConfig(context.Background(), live.ID, refreshed, false)
 
 	got := store.LoadBudget(context.Background(), live.ID)
 	require.NotNil(t, got)
@@ -3101,4 +3101,274 @@ func TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit(t *testing.T) {
 	final := got.(*configstoreTables.TableTeam)
 	assert.Equal(t, "customer-b", *final.CustomerID, "the edit is kept")
 	assert.Zero(t, final.Budgets[0].CurrentUsage, "and the reset still applies")
+}
+
+// TestModelConfigRefreshPreservesRateLimitResetBoundaries checks that a stale
+// model-config refresh keeps the live usage and reset boundaries of its rate
+// limit while still applying the new limits.
+func TestModelConfigRefreshPreservesRateLimitResetBoundaries(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	rate := buildRateLimit("rate", 1000, 1000)
+	rate.TokenLastReset = time.Now().UTC().Truncate(time.Hour)
+	rate.RequestLastReset = rate.TokenLastReset.Add(-time.Hour)
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+
+	incoming := buildRateLimit(rate.ID, 2000, 3000)
+	incoming.TokenLastReset = rate.TokenLastReset.Add(-24 * time.Hour)
+	incoming.RequestLastReset = incoming.TokenLastReset
+	model := &configstoreTables.TableModelConfig{ID: "model", RateLimit: incoming}
+	updated := store.UpdateModelConfigInMemory(ctx, model)
+	live := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, live, updated.RateLimit)
+	require.Equal(t, incoming.TokenMaxLimit, live.TokenMaxLimit)
+	require.Equal(t, incoming.RequestMaxLimit, live.RequestMaxLimit)
+	require.Equal(t, rate.TokenCurrentUsage, live.TokenCurrentUsage)
+	require.Equal(t, rate.RequestCurrentUsage, live.RequestCurrentUsage)
+	require.True(t, rate.TokenLastReset.Equal(live.TokenLastReset), "token boundary rolled back")
+	require.True(t, rate.RequestLastReset.Equal(live.RequestLastReset), "request boundary rolled back")
+}
+
+// TestConfigRefreshPreservesBudgetAndProviderAccounting checks that stale
+// persisted settings can change limits without changing the live accounting
+// tuple, and without the refresh writing into the caller's structs.
+func TestConfigRefreshPreservesBudgetAndProviderAccounting(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	boundary := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	modelBudget := buildBudgetWithUsage("model-budget", 100, 7, "1M")
+	modelBudget.LastReset = boundary
+	store.UpsertBudgetConfig(ctx, modelBudget.ID, modelBudget, false)
+	staleModelBudget := buildBudgetWithUsage(modelBudget.ID, 200, 42, "1M")
+	model := &configstoreTables.TableModelConfig{
+		ID: "model", Budgets: []configstoreTables.TableBudget{*staleModelBudget},
+	}
+	updatedModel := store.UpdateModelConfigInMemory(ctx, model)
+	expectedModelBudget := *modelBudget
+	expectedModelBudget.MaxLimit = staleModelBudget.MaxLimit
+	require.Equal(t, expectedModelBudget, *store.LoadBudget(ctx, modelBudget.ID))
+	require.Equal(t, expectedModelBudget, updatedModel.Budgets[0])
+	require.Equal(t, *staleModelBudget, model.Budgets[0])
+
+	providerBudget := buildBudgetWithUsage("provider-budget", 100, 9, "1M")
+	providerBudget.LastReset = boundary
+	store.UpsertBudgetConfig(ctx, providerBudget.ID, providerBudget, false)
+	rate := buildRateLimit("provider-rate", 1000, 1000)
+	rate.TokenLastReset = boundary
+	rate.RequestLastReset = boundary.Add(-time.Hour)
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+
+	provider := &configstoreTables.TableProvider{
+		Name: "provider", Budget: buildBudgetWithUsage(providerBudget.ID, 200, 42, "1M"),
+		RateLimit: buildRateLimit(rate.ID, 2000, 3000),
+	}
+	staleBudget, staleRate := *provider.Budget, *provider.RateLimit
+	updatedProvider := store.UpdateProviderInMemory(ctx, provider)
+	expectedProviderBudget := *providerBudget
+	expectedProviderBudget.MaxLimit = staleBudget.MaxLimit
+	expectedRate := *rate
+	expectedRate.TokenMaxLimit, expectedRate.RequestMaxLimit = staleRate.TokenMaxLimit, staleRate.RequestMaxLimit
+	require.Equal(t, expectedProviderBudget, *store.LoadBudget(ctx, providerBudget.ID))
+	require.Equal(t, expectedProviderBudget, *updatedProvider.Budget)
+	require.Equal(t, expectedRate, *store.LoadRateLimit(ctx, rate.ID))
+	require.Equal(t, expectedRate, *updatedProvider.RateLimit)
+	require.Equal(t, staleBudget, *provider.Budget)
+}
+
+// TestCreateInMemoryDoesNotAliasCallerLimits checks that the create paths
+// publish their own copies of budgets and rate limits, so the caller's structs
+// are neither stamped by the create nor able to change live entries afterwards.
+func TestCreateInMemoryDoesNotAliasCallerLimits(t *testing.T) {
+	creates := map[string]func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit){
+		"virtual key": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+		"provider config": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: true, ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate}}})
+		},
+		"team": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "owner", CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+		"customer": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "owner", CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+	}
+	for name, create := range creates {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			budgets := []configstoreTables.TableBudget{*buildBudgetWithUsage("budget", 100, 0, "1M")}
+			rate := buildRateLimit("rate", 1000, 1000)
+			create(ctx, store, budgets, rate)
+
+			require.False(t, budgets[0].IsCalendarAligned, "create stamped the caller's budget")
+			require.False(t, rate.IsCalendarAligned, "create stamped the caller's rate limit")
+			require.True(t, store.LoadBudget(ctx, "budget").IsCalendarAligned)
+			require.True(t, store.LoadRateLimit(ctx, "rate").IsCalendarAligned)
+
+			require.NotSame(t, rate, store.LoadRateLimit(ctx, "rate"), "live rate limit is the caller's struct")
+			budgets[0].MaxLimit = 1
+			require.Equal(t, 100.0, store.LoadBudget(ctx, "budget").MaxLimit, "caller write reached the live budget")
+		})
+	}
+}
+
+// TestConfigRefreshKeepsConcurrentCharges checks that owner refreshes racing
+// with accounting never lose a charge: every refresh must merge into the live
+// counter rather than read it and store it back later.
+func TestConfigRefreshKeepsConcurrentCharges(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	hour := "1h"
+	budget := buildBudgetWithUsage("budget", 1e9, 0, "1M")
+	rate := buildRateLimit("rate", 1e9, 1e9)
+	rate.TokenResetDuration, rate.RequestResetDuration = &hour, &hour
+	team := func() *configstoreTables.TableTeam {
+		r := *rate
+		return &configstoreTables.TableTeam{ID: "team", Budgets: []configstoreTables.TableBudget{*budget}, RateLimitID: &r.ID, RateLimit: &r}
+	}
+	store.CreateTeamInMemory(ctx, team())
+
+	const workers, charges = 8, 2000
+	stop := make(chan struct{})
+	refreshed := make(chan struct{})
+	go func() {
+		defer close(refreshed)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				store.UpdateTeamInMemory(ctx, team(), nil)
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range charges {
+				require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 1))
+				require.NoError(t, store.BumpRateLimitUsageBy(ctx, rate.ID, 1, 1))
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	<-refreshed
+
+	require.Equal(t, float64(workers*charges), store.LoadBudget(ctx, budget.ID).CurrentUsage)
+	live := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(workers*charges), live.TokenCurrentUsage)
+	require.Equal(t, int64(workers*charges), live.RequestCurrentUsage)
+}
+
+// calendarOwner reloads one kind of owner holding the given limits.
+type calendarOwner func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit)
+
+// calendarOwners lists every OSS owner whose reload stamps calendar alignment.
+func calendarOwners() map[string]calendarOwner {
+	return map[string]calendarOwner{
+		"team": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "owner", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil)
+		},
+		"customer": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "owner", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil)
+		},
+		"virtual key": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil, nil, nil)
+		},
+		"provider config": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: aligned, ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}}}, nil, nil, nil)
+		},
+		"model config": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateModelConfigInMemory(ctx, &configstoreTables.TableModelConfig{ID: "owner", ModelName: "gpt-4o", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate})
+		},
+	}
+}
+
+// openWindow returns limits with usage in a window opened before this month's boundary.
+func openWindow() (time.Time, configstoreTables.TableBudget, configstoreTables.TableRateLimit) {
+	month, day := "1M", "1d"
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	opened := monthStart.Add(-10 * 24 * time.Hour)
+	budget := configstoreTables.TableBudget{ID: "budget", MaxLimit: 100, CurrentUsage: 7, ResetDuration: month, CreatedAt: opened, LastReset: opened}
+	rate := *buildRateLimit("rate", 100, 100)
+	rate.TokenResetDuration, rate.RequestResetDuration = &month, &day
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	rate.TokenLastReset, rate.RequestLastReset = opened, opened
+	return monthStart, budget, rate
+}
+
+// TestReloadAdoptsCalendarBeforeSweep checks that a sweep running right after the
+// reload that switches alignment on finds every window current and keeps its usage.
+func TestReloadAdoptsCalendarBeforeSweep(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			reload(ctx, store, false, budget, rate)
+			reload(ctx, store, true, budget, rate)
+
+			require.Empty(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID))
+			require.Empty(t, store.ResetExpiredRateLimitsInMemory(ctx, true, rate.ID))
+			liveBudget, liveRate := store.LoadBudget(ctx, budget.ID), store.LoadRateLimit(ctx, rate.ID)
+			require.Equal(t, 7.0, liveBudget.CurrentUsage)
+			require.True(t, liveBudget.LastReset.Equal(monthStart))
+			require.Equal(t, int64(17), liveRate.TokenCurrentUsage)
+			require.Equal(t, int64(19), liveRate.RequestCurrentUsage)
+			require.True(t, liveRate.TokenLastReset.Equal(monthStart))
+		})
+	}
+}
+
+// TestReloadAdoptsCalendarWithNewDuration checks that adoption uses the duration
+// installed by the same edit, not the one it replaces.
+func TestReloadAdoptsCalendarWithNewDuration(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			hourly := budget
+			hourly.ResetDuration = "1h"
+			reload(ctx, store, false, hourly, rate)
+			reload(ctx, store, true, budget, rate)
+
+			require.Empty(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID))
+			live := store.LoadBudget(ctx, budget.ID)
+			require.Equal(t, 7.0, live.CurrentUsage)
+			require.True(t, live.LastReset.Equal(monthStart))
+		})
+	}
+}
+
+// TestReloadKeepsDueCalendarReset checks that reloading an owner that was already
+// aligned does not adopt, even when its rows were loaded without the flag, as
+// startup does. The overdue window must still reset.
+func TestReloadKeepsDueCalendarReset(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			reload(ctx, store, true, budget, rate)
+			unstampedBudget, unstampedRate := budget, rate
+			store.budgets.Store(budget.ID, &unstampedBudget)
+			store.rateLimits.Store(rate.ID, &unstampedRate)
+			reload(ctx, store, true, budget, rate)
+
+			require.True(t, store.LoadBudget(ctx, budget.ID).LastReset.Before(monthStart))
+			require.Len(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID), 1)
+			require.Len(t, store.ResetExpiredRateLimitsInMemory(ctx, true, rate.ID), 1)
+			require.Zero(t, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+			require.Zero(t, store.LoadRateLimit(ctx, rate.ID).TokenCurrentUsage)
+		})
+	}
 }

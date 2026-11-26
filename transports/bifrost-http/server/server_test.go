@@ -3203,3 +3203,64 @@ func TestGatewayServerOversizedBodyAnswered413BeforeBody(t *testing.T) {
 		t.Error("handler ran for an oversized body")
 	}
 }
+
+// usageWriteConfigStore serves one persisted model config and records every
+// unguarded usage write a reload makes.
+type usageWriteConfigStore struct {
+	configstore.ConfigStore
+	mc          *configstoreTables.TableModelConfig
+	usageWrites atomic.Int32
+}
+
+// GetModelConfigByID returns a copy of the persisted model config.
+func (s *usageWriteConfigStore) GetModelConfigByID(context.Context, string) (*configstoreTables.TableModelConfig, error) {
+	mc := *s.mc
+	mc.Budgets = slices.Clone(s.mc.Budgets)
+	rateLimit := *s.mc.RateLimit
+	mc.RateLimit = &rateLimit
+	return &mc, nil
+}
+
+// UpdateBudgetUsage records an unguarded budget usage write.
+func (s *usageWriteConfigStore) UpdateBudgetUsage(context.Context, string, float64, ...*gorm.DB) error {
+	s.usageWrites.Add(1)
+	return nil
+}
+
+// UpdateRateLimitUsage records an unguarded rate-limit usage write.
+func (s *usageWriteConfigStore) UpdateRateLimitUsage(context.Context, string, int64, int64, ...*gorm.DB) error {
+	s.usageWrites.Add(1)
+	return nil
+}
+
+// TestReloadModelConfigLeavesUsagePersistenceToAccounting checks that a model
+// config reload never writes in-memory usage to the database. Those writes had
+// no last_reset guard, so a reload racing a reset could put the old window's
+// usage into the new window's row.
+func TestReloadModelConfigLeavesUsagePersistenceToAccounting(t *testing.T) {
+	ctx := context.Background()
+	store, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	hour := "1h"
+	persisted := &configstoreTables.TableModelConfig{
+		ID:        "mc-id",
+		ModelName: "gpt-4o",
+		Budgets:   []configstoreTables.TableBudget{{ID: "budget", MaxLimit: 100, ResetDuration: "1M", LastReset: time.Now()}},
+		RateLimit: &configstoreTables.TableRateLimit{ID: "rate", TokenResetDuration: &hour, RequestResetDuration: &hour, TokenLastReset: time.Now(), RequestLastReset: time.Now()},
+	}
+	store.UpdateModelConfigInMemory(ctx, persisted)
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, "budget", 5))
+	require.NoError(t, store.BumpRateLimitUsageBy(ctx, "rate", 7, 1))
+
+	db := &usageWriteConfigStore{mc: persisted}
+	config := &lib.Config{ConfigStore: db, ClientConfig: &configstore.ClientConfig{}}
+	plugins := []schemas.BasePlugin{&reloadVirtualKeyPlugin{store: store}}
+	config.BasePlugins.Store(&plugins)
+	server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}
+
+	updated, err := server.ReloadModelConfig(ctx, persisted.ID)
+	require.NoError(t, err)
+	require.Equal(t, 5.0, updated.Budgets[0].CurrentUsage, "the reload keeps live usage in memory")
+	require.Equal(t, int64(7), updated.RateLimit.TokenCurrentUsage)
+	require.Zero(t, db.usageWrites.Load(), "the reload must not write usage to the database")
+}
