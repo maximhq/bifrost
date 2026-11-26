@@ -6,6 +6,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"math/rand"
 	"net"
 	"net/http"
@@ -391,6 +392,11 @@ type BifrostHTTPServer struct {
 	endpointSweeperCancel  context.CancelFunc
 	endpointSweeperMu      sync.Mutex // serializes sweeper restarts from concurrent plugin reloads
 	agentGatewayGRPCServer *handlers.AgentGatewayGRPCServer
+
+	// virtualKeyReloads serializes reloads of one virtual key across its database
+	// read and in-memory install, so an older read cannot install last and restore a
+	// rotated value. Striped by key ID; see lockVirtualKeyReloads.
+	virtualKeyReloads [64]sync.Mutex
 }
 
 var logger schemas.Logger
@@ -765,8 +771,31 @@ func (s *BifrostHTTPServer) getGovernancePlugin() (governance.BaseGovernancePlug
 	return lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
 }
 
+// virtualKeyReloadSeed makes a key's reload stripe stable for the process lifetime.
+var virtualKeyReloadSeed = maphash.MakeSeed()
+
+// lockVirtualKeyReloads locks the reload stripes of ids and returns their unlock.
+// Stripes are taken in index order so overlapping batches cannot deadlock.
+func (s *BifrostHTTPServer) lockVirtualKeyReloads(ids ...string) func() {
+	stripes := make([]int, 0, len(ids))
+	for _, id := range ids {
+		stripes = append(stripes, int(maphash.String(virtualKeyReloadSeed, id)%uint64(len(s.virtualKeyReloads))))
+	}
+	slices.Sort(stripes)
+	stripes = slices.Compact(stripes)
+	for _, stripe := range stripes {
+		s.virtualKeyReloads[stripe].Lock()
+	}
+	return func() {
+		for _, stripe := range stripes {
+			s.virtualKeyReloads[stripe].Unlock()
+		}
+	}
+}
+
 // ReloadVirtualKey reloads a virtual key from the in-memory store
 func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error) {
+	defer s.lockVirtualKeyReloads(id)()
 	// Load relationships for response
 	preloadedVk, err := s.Config.ConfigStore.RetryOnNotFound(ctx, func(ctx context.Context) (any, error) {
 		preloadedVk, err := s.Config.ConfigStore.GetVirtualKey(ctx, id)
@@ -870,6 +899,7 @@ func (s *BifrostHTTPServer) ReloadVirtualKeys(ctx context.Context, ids []string)
 	if err != nil {
 		return err
 	}
+	defer s.lockVirtualKeyReloads(unique...)()
 	virtualKeys, err := loader.GetVirtualKeysByIDs(ctx, unique)
 	if err != nil {
 		return fmt.Errorf("failed to load virtual keys: %w", err)

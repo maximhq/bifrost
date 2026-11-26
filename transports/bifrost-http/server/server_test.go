@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io"
 	"math"
 	"mime/multipart"
@@ -3201,6 +3202,95 @@ func TestGatewayServerOversizedBodyAnswered413BeforeBody(t *testing.T) {
 	}
 	if handlerRan {
 		t.Error("handler ran for an oversized body")
+	}
+}
+
+// rotatingKeyConfigStore holds the first key read open after it has captured its row,
+// so a test can commit a rotation while that read is still in flight.
+type rotatingKeyConfigStore struct {
+	reloadVirtualKeyConfigStore
+	value   atomic.Pointer[string]
+	reads   atomic.Int32
+	reading chan struct{}
+	release chan struct{}
+}
+
+// row returns the committed key, holding the first read open.
+func (s *rotatingKeyConfigStore) row() configstoreTables.TableVirtualKey {
+	row := configstoreTables.TableVirtualKey{ID: "vk-id", Name: "key", Value: *schemas.NewSecretVar(*s.value.Load())}
+	if s.reads.Add(1) == 1 {
+		close(s.reading)
+		<-s.release
+	}
+	return row
+}
+
+// GetVirtualKey serves the single-key reload.
+func (s *rotatingKeyConfigStore) GetVirtualKey(context.Context, string) (*configstoreTables.TableVirtualKey, error) {
+	row := s.row()
+	return &row, nil
+}
+
+// GetVirtualKeysByIDs serves the batched reload.
+func (s *rotatingKeyConfigStore) GetVirtualKeysByIDs(context.Context, []string) ([]configstoreTables.TableVirtualKey, error) {
+	return []configstoreTables.TableVirtualKey{s.row()}, nil
+}
+
+// TestOverlappingKeyReloadsKeepTheRotatedValue checks that a reload which read the key
+// before a rotation cannot install it after the rotation's own reload.
+func TestOverlappingKeyReloadsKeepTheRotatedValue(t *testing.T) {
+	handlers.SetLogger(noopTestLogger{})
+	previousLogger := logger
+	logger = noopTestLogger{}
+	t.Cleanup(func() { logger = previousLogger })
+	single := func(ctx context.Context, server *BifrostHTTPServer) error {
+		_, err := server.ReloadVirtualKey(ctx, "vk-id")
+		return err
+	}
+	batch := func(ctx context.Context, server *BifrostHTTPServer) error {
+		return server.ReloadVirtualKeys(ctx, []string{"vk-id", "vk-other"})
+	}
+	for name, reloads := range map[string][2]func(context.Context, *BifrostHTTPServer) error{
+		"single then single": {single, single},
+		"batch then single":  {batch, single},
+		"single then batch":  {single, batch},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			store, err := governance.NewLocalGovernanceStore(ctx, governance.NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+			require.NoError(t, err)
+			store.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "vk-id", Name: "key", Value: *schemas.NewSecretVar("sk-bf-old")})
+			db := &rotatingKeyConfigStore{reading: make(chan struct{}), release: make(chan struct{})}
+			before, after := "sk-bf-old", "sk-bf-rotated"
+			db.value.Store(&before)
+			config := &lib.Config{ConfigStore: db, ClientConfig: &configstore.ClientConfig{}}
+			plugins := []schemas.BasePlugin{&reloadVirtualKeyPlugin{store: store}}
+			config.BasePlugins.Store(&plugins)
+			server := &BifrostHTTPServer{Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline), Config: config}
+
+			older, newer := make(chan error, 1), make(chan error, 1)
+			go func() { older <- reloads[0](ctx, server) }()
+			<-db.reading
+			db.value.Store(&after)
+			// The older reload must hold the key's stripe while its read is in flight,
+			// or the newer reload could install first and then be overwritten. Checked
+			// directly so the result does not depend on how goroutines get scheduled.
+			stripe := &server.virtualKeyReloads[maphash.String(virtualKeyReloadSeed, "vk-id")%uint64(len(server.virtualKeyReloads))]
+			stripeHeld := !stripe.TryLock()
+			if !stripeHeld {
+				stripe.Unlock()
+			}
+			go func() { newer <- reloads[1](ctx, server) }()
+			close(db.release)
+			require.NoError(t, <-older)
+			require.NoError(t, <-newer)
+			require.True(t, stripeHeld, "the older reload must hold the key's reload stripe across its read")
+
+			_, stale := store.GetVirtualKey(ctx, before)
+			require.False(t, stale, "the rotated-out value must not authenticate")
+			_, live := store.GetVirtualKey(ctx, after)
+			require.True(t, live, "the committed value must authenticate")
+		})
 	}
 }
 
