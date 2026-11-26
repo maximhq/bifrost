@@ -282,13 +282,19 @@ func (provider *BedrockProvider) PassthroughStream(ctx *schemas.BifrostContext, 
 		return nil, bifrostErr
 	}
 
+	// An empty Accept-Encoding lets net/http request gzip and unwrap the response.
+	// Raw passthrough must relay the upstream representation, even if AWS sends gzip.
+	if httpReq.Header.Get("Accept-Encoding") == "" {
+		httpReq.Header.Set("Accept-Encoding", "identity")
+	}
+
 	startTime := time.Now()
 	resp, err := providerUtils.DoHTTPRequest(provider.streamingClient, httpReq)
 	if err != nil {
 		return nil, passthroughTransportError(err, time.Since(startTime))
 	}
 
-	headers := providerUtils.ExtractPassthroughProviderResponseHeadersFromHTTP(resp)
+	headers := providerUtils.ExtractPassthroughStreamResponseHeadersFromHTTP(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)

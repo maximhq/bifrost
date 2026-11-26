@@ -20,6 +20,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/oauth2"
@@ -1417,6 +1418,33 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 			t.Errorf("APIVersion %q %s: upstream paths %v, want %v (unary and stream)", tc.apiVersion, tc.path, got, want)
 		}
 	}
+}
+
+// A gzip stream from a Vertex publisher keeps its encoding and body.
+func TestVertexPassthroughStreamGzip(t *testing.T) {
+	wire := fasthttp.AppendGzipBytes(nil, []byte("data: [DONE]\n\n"))
+	provider, key := vertexOpenAIEndpointTestProvider(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(wire)
+	}))
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(5*time.Second))
+	defer ctx.Cancel()
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+	stream, err := provider.PassthroughStream(ctx, noHooks, nil, key, &schemas.BifrostPassthroughRequest{
+		Method: http.MethodPost, Path: "/publishers/google/models/gemini:streamGenerateContent", RawQuery: "alt=sse",
+	})
+	require.Nil(t, err)
+	var body []byte
+	for chunk := range stream {
+		require.Nil(t, chunk.BifrostError)
+		require.NotNil(t, chunk.BifrostPassthroughResponse)
+		require.Equal(t, "gzip", chunk.Headers["Content-Encoding"])
+		body = append(body, chunk.Body...)
+	}
+	require.Equal(t, wire, body)
 }
 
 // TestVertexPassthroughInteractionsReportsRun pins the Vertex route for stored interactions: a

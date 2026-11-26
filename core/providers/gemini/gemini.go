@@ -4561,7 +4561,7 @@ func (provider *GeminiProvider) PassthroughStream(
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 	}
 
-	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughStreamResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	bodyStream := resp.BodyStream()

@@ -351595,8 +351595,8 @@
       ]
     },
     {
-      "name": "388. OpenAI passthrough-encoding (#9764 / PR #9804)",
-      "description": "Local gzip regression. Raw JSON and Responses bodies retain encoding metadata. Buffered JSON remains decoded and unlabeled. The delayed gzip Responses case detects plaintext heartbeat or failure injection. Newman decodes HTTP gzip, so these cases assert the exact decoded body and response header. Go transport tests also compare raw wire bytes. A truncated gzip response before its first body byte must produce an unlabeled JSON error. No paid provider calls. Start: node tests/e2e/api/runners/run-passthrough-encoding-fixture.mjs /tmp/bifrost-passthrough-encoding. Start a gateway from this checkout: make dev PORT=3024 APP_DIR=/tmp/bifrost-passthrough-encoding. Verify port 3024 is free first and wait for /health. Log in at POST /api/session/login using encoding-fixture / fixture-only-password and export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\". Run: make run-provider-harness-test PROVIDER=openai FEATURE=\"passthrough-encoding\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3024. Stop both servers and remove the temporary profile afterward. PREVIEW keeps these fixture cases out of paid sweeps.",
+      "name": "388. Passthrough-encoding (#9764 / PR #9804)",
+      "description": "Local gzip regression. Raw JSON and Responses bodies retain encoding metadata. Buffered JSON remains decoded and unlabeled. The delayed gzip streams cover OpenAI, Anthropic, Azure, Gemini and ElevenLabs. Newman decodes HTTP gzip, so these cases assert the exact decoded body and response header. Go transport tests also compare raw wire bytes. A truncated gzip response before its first body byte must produce an unlabeled JSON error. No paid provider calls. Start: node tests/e2e/api/runners/run-passthrough-encoding-fixture.mjs /tmp/bifrost-passthrough-encoding. Start a gateway from this checkout: make dev PORT=3024 APP_DIR=/tmp/bifrost-passthrough-encoding. Verify port 3024 is free first and wait for /health. Log in at POST /api/session/login using encoding-fixture / fixture-only-password and export its token cookie as BIFROST_E2E_AUTH_HEADER=\"Bearer <token>\". Run: make run-provider-harness-test FEATURE=\"passthrough-encoding\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 BASE_URL=http://localhost:3024. Stop both servers and remove the temporary profile afterward. PREVIEW keeps these fixture cases out of paid sweeps.",
       "item": [
         {
           "name": "[PREVIEW] OpenAI passthrough-encoding raw JSON gzip (gzip-fixture) - #9764",
@@ -351756,6 +351756,142 @@
               "raw": "{\n  \"model\": \"gzip-error-fixture\",\n  \"stream\": true,\n  \"input\": \"hello\"\n}"
             },
             "url": "{{baseUrl}}/openai_passthrough/v1/responses"
+          }
+        },
+        {
+          "name": "[PREVIEW] Anthropic passthrough-encoding Messages gzip idle (gzip-fixture) - #9764",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-encoding: HTTP 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('passthrough-encoding: encoding matches bytes', function () { pm.expect(pm.response.headers.get('Content-Encoding') || '', pm.response.text()).to.eql(\"gzip\"); });",
+                  "pm.test('passthrough-encoding: complete decoded body', function () { pm.expect(pm.response.text()).to.eql(\"event: message_stop\\ndata: {\\\"type\\\":\\\"message_stop\\\"}\\n\\n\"); });",
+                  "pm.test('passthrough-encoding: safe header survives', function () { pm.expect(pm.response.headers.get('X-Request-ID')).to.eql('encoding-fixture'); });",
+                  "pm.test('passthrough-encoding: sensitive header filtered', function () { pm.expect(pm.response.headers.has('Set-Cookie')).to.eql(false); });",
+                  "pm.test('passthrough-encoding: upstream content type', function () { pm.expect(pm.response.headers.get('Content-Type').split(';')[0]).to.eql(\"text/event-stream\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gzip-fixture\",\n  \"max_tokens\": 1,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hello\"\n    }\n  ],\n  \"stream\": true\n}"
+            },
+            "url": "{{baseUrl}}/anthropic_passthrough/v1/messages"
+          }
+        },
+        {
+          "name": "[PREVIEW] Azure passthrough-encoding Responses gzip idle (gzip-fixture) - #9764",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-encoding: HTTP 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('passthrough-encoding: encoding matches bytes', function () { pm.expect(pm.response.headers.get('Content-Encoding') || '', pm.response.text()).to.eql(\"gzip\"); });",
+                  "pm.test('passthrough-encoding: complete decoded body', function () { pm.expect(pm.response.text()).to.eql(\"event: response.completed\\ndata: {\\\"type\\\":\\\"response.completed\\\",\\\"response\\\":{\\\"status\\\":\\\"completed\\\",\\\"output\\\":[],\\\"usage\\\":{\\\"input_tokens\\\":2,\\\"output_tokens\\\":1,\\\"total_tokens\\\":3}}}\\n\\n\"); });",
+                  "pm.test('passthrough-encoding: safe header survives', function () { pm.expect(pm.response.headers.get('X-Request-ID')).to.eql('encoding-fixture'); });",
+                  "pm.test('passthrough-encoding: sensitive header filtered', function () { pm.expect(pm.response.headers.has('Set-Cookie')).to.eql(false); });",
+                  "pm.test('passthrough-encoding: upstream content type', function () { pm.expect(pm.response.headers.get('Content-Type').split(';')[0]).to.eql(\"text/event-stream\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gzip-fixture\",\n  \"input\": \"hello\",\n  \"stream\": true\n}"
+            },
+            "url": "{{baseUrl}}/azure_passthrough/openai/v1/responses"
+          }
+        },
+        {
+          "name": "[PREVIEW] Gemini passthrough-encoding streamGenerateContent gzip idle (gzip-fixture) - #9764",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-encoding: HTTP 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('passthrough-encoding: encoding matches bytes', function () { pm.expect(pm.response.headers.get('Content-Encoding') || '', pm.response.text()).to.eql(\"gzip\"); });",
+                  "pm.test('passthrough-encoding: complete decoded body', function () { pm.expect(pm.response.text()).to.eql(\"data: {\\\"candidates\\\":[{\\\"finishReason\\\":\\\"STOP\\\"}]}\\n\\n\"); });",
+                  "pm.test('passthrough-encoding: safe header survives', function () { pm.expect(pm.response.headers.get('X-Request-ID')).to.eql('encoding-fixture'); });",
+                  "pm.test('passthrough-encoding: sensitive header filtered', function () { pm.expect(pm.response.headers.has('Set-Cookie')).to.eql(false); });",
+                  "pm.test('passthrough-encoding: upstream content type', function () { pm.expect(pm.response.headers.get('Content-Type').split(';')[0]).to.eql(\"text/event-stream\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"hello\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/genai_passthrough/v1beta/models/gzip-fixture:streamGenerateContent?alt=sse"
+          }
+        },
+        {
+          "name": "[PREVIEW] ElevenLabs passthrough-encoding stream with timestamps gzip idle (gzip-fixture) - #9764",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('passthrough-encoding: HTTP 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('passthrough-encoding: encoding matches bytes', function () { pm.expect(pm.response.headers.get('Content-Encoding') || '', pm.response.text()).to.eql(\"gzip\"); });",
+                  "pm.test('passthrough-encoding: complete decoded body', function () { pm.expect(pm.response.text()).to.eql(\"{\\\"audio_base64\\\":\\\"YQ==\\\",\\\"alignment\\\":null}\\n\"); });",
+                  "pm.test('passthrough-encoding: safe header survives', function () { pm.expect(pm.response.headers.get('X-Request-ID')).to.eql('encoding-fixture'); });",
+                  "pm.test('passthrough-encoding: sensitive header filtered', function () { pm.expect(pm.response.headers.has('Set-Cookie')).to.eql(false); });",
+                  "pm.test('passthrough-encoding: upstream content type', function () { pm.expect(pm.response.headers.get('Content-Type').split(';')[0]).to.eql(\"application/x-ndjson\"); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model_id\": \"gzip-fixture\",\n  \"text\": \"hello\"\n}"
+            },
+            "url": "{{baseUrl}}/elevenlabs_passthrough/v1/text-to-speech/fixture/stream/with-timestamps"
           }
         }
       ]

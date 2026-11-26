@@ -8734,14 +8734,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
 	}
 
-	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
-	// This path forwards encoded bytes unchanged; buffered Passthrough decodes them.
-	if encoding := resp.Header.ContentEncoding(); len(encoding) > 0 {
-		if headers == nil {
-			headers = make(map[string]string)
-		}
-		headers["Content-Encoding"] = string(encoding)
-	}
+	headers := providerUtils.ExtractPassthroughStreamResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	rawBodyStream := resp.BodyStream()

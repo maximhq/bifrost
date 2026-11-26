@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // capturedPassthroughRequest is what the fake AWS endpoint saw.
@@ -488,6 +490,41 @@ func TestBedrockPassthroughStreamForwardsUpstreamErrorStatus(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, first.BifrostPassthroughResponse.StatusCode)
 	assert.Equal(t, "ResourceNotFoundException", first.BifrostPassthroughResponse.Headers["X-Amzn-Errortype"])
 	assert.JSONEq(t, `{"message":"agent not found"}`, string(first.BifrostPassthroughResponse.Body))
+}
+
+// InvokeAgent preserves gzip bytes even when the upstream ignores Accept-Encoding: identity.
+func TestBedrockPassthroughStreamGzip(t *testing.T) {
+	var event bytes.Buffer
+	writeEventStreamEvent(t, &event, "chunk", []byte(`{"bytes":"aGVsbG8="}`))
+	wire := fasthttp.AppendGzipBytes(nil, event.Bytes())
+	for _, tc := range []struct {
+		name, configured, wantAcceptEncoding string
+	}{
+		{"default", "", "identity"},
+		{"explicit gzip", "gzip", "gzip"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target := newPassthroughTarget(t, http.StatusOK, string(wire), map[string]string{
+				"Content-Type": "application/vnd.amazon.eventstream", "Content-Encoding": "gzip",
+			})
+			if tc.configured != "" {
+				target.provider.networkConfig.ExtraHeaders = map[string]schemas.SecretVar{"Accept-Encoding": *schemas.NewSecretVar(tc.configured)}
+			}
+			ch, err := target.provider.PassthroughStream(passthroughCtx(t), passthroughNoHooks, nil, target.key(""), passthroughRequest(agentPassthroughPath))
+			require.Nil(t, err)
+			requests := target.requests()
+			require.Len(t, requests, 1)
+			assert.Equal(t, tc.wantAcceptEncoding, requests[0].Header.Get("Accept-Encoding"))
+			var body []byte
+			for chunk := range ch {
+				require.Nil(t, chunk.BifrostError)
+				require.NotNil(t, chunk.BifrostPassthroughResponse)
+				assert.Equal(t, "gzip", chunk.Headers["Content-Encoding"])
+				body = append(body, chunk.Body...)
+			}
+			require.Equal(t, wire, body)
+		})
+	}
 }
 
 // The streaming entry point enforces the same allow-list as the unary one.

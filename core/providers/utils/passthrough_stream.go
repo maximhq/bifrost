@@ -64,6 +64,9 @@ func StreamPassthrough(
 	rawBodyStream io.Reader,
 	params PassthroughStreamParams,
 ) chan *schemas.BifrostStreamChunk {
+	if encoding := resp.Header.ContentEncoding(); len(encoding) > 0 && !bytes.EqualFold(encoding, []byte("identity")) {
+		params.SkipFraming = true
+	}
 	return streamPassthrough(ctx, postHookRunner, postHookSpanFinalizer, func() { ReleaseStreamingResponse(ctx, resp) }, rawBodyStream, params)
 }
 

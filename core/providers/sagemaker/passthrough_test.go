@@ -14,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 type seenRequest struct {
@@ -217,6 +218,7 @@ func TestPassthroughStreamUnpacksEventStream(t *testing.T) {
 	stream := eventStream(t, []string{"data: {\"a\":1}\n\n", "data: {\"a\":2}\n\n", "data: [DONE]\n\n"}, "")
 	ts, seen := fakeRuntimeHost(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/vnd.amazon.eventstream")
+		w.Header().Set("Content-Encoding", "identity")
 		w.Header().Set("X-Amzn-SageMaker-Content-Type", "text/event-stream")
 		_, _ = w.Write(stream)
 	})
@@ -229,6 +231,7 @@ func TestPassthroughStreamUnpacksEventStream(t *testing.T) {
 
 	headers, _ := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
 	require.Equal(t, "text/event-stream", headers["Content-Type"])
+	require.NotContains(t, headers, "Content-Encoding", "the outer encoding does not describe the unwrapped payload")
 	require.Equal(t, "/endpoints/my-ep/invocations-response-stream", seen()[0].path)
 }
 
@@ -256,6 +259,24 @@ func TestPassthroughStreamRelaysUpstreamErrorBody(t *testing.T) {
 	body, bErr := drainPassthrough(t, ch)
 	require.Nil(t, bErr, "%+v", bErr)
 	require.Equal(t, `{"message":"Endpoint my-ep not found"}`, body, "a non-200 answer is not an event stream and is relayed as is")
+}
+
+// An encoded error bypasses the event stream decoder and keeps its HTTP encoding.
+func TestPassthroughStreamGzipError(t *testing.T) {
+	wire := fasthttp.AppendGzipBytes(nil, []byte(`{"message":"Endpoint my-ep not found"}`))
+	ts, _ := fakeRuntimeHost(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(wire)
+	})
+	ctx := passthroughCtx(t)
+	ch, err := newPassthroughProvider(t).PassthroughStream(ctx, noHooks, nil, passthroughKey(ts), invokeRequest("/endpoints/my-ep/invocations-response-stream", `{}`, nil))
+	require.Nil(t, err)
+	body, err := drainPassthrough(t, ch)
+	require.Nil(t, err)
+	require.Equal(t, wire, []byte(body))
+	headers := ctx.Value(schemas.BifrostContextKeyProviderResponseHeaders).(map[string]string)
+	require.Equal(t, "gzip", headers["Content-Encoding"])
 }
 
 func errString(bErr *schemas.BifrostError) string {

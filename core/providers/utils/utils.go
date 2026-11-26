@@ -1676,11 +1676,27 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	return headers
 }
 
+func shouldFilterPassthroughResponseHeader(name string, rawStream bool) bool {
+	if name == "content-type" || (rawStream && name == "content-encoding") {
+		return false
+	}
+	return shouldFilterProviderResponseHeader(name)
+}
+
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
 // fasthttp response. Transport-level and credential-bearing headers are excluded, except
 // content-type, which the passthrough response must retain. A content-type the upstream did
 // not send stays absent: fasthttp otherwise reports text/plain for it, which mislabels streams.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
+	return extractPassthroughResponseHeaders(resp, false)
+}
+
+// ExtractPassthroughStreamResponseHeaders also preserves Content-Encoding for a raw stream.
+func ExtractPassthroughStreamResponseHeaders(resp *fasthttp.Response) map[string]string {
+	return extractPassthroughResponseHeaders(resp, true)
+}
+
+func extractPassthroughResponseHeaders(resp *fasthttp.Response, rawStream bool) map[string]string {
 	if resp == nil {
 		return nil
 	}
@@ -1689,7 +1705,7 @@ func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[stri
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
 		kLower := strings.ToLower(k)
-		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
+		if shouldFilterPassthroughResponseHeader(kLower, rawStream) {
 			return
 		}
 		v := string(value)
@@ -1728,13 +1744,22 @@ func ExtractProviderResponseHeadersFromHTTP(resp *http.Response) map[string]stri
 // ExtractPassthroughProviderResponseHeaders: a passthrough caller decodes the body by the upstream
 // Content-Type, so it is kept even though the generic provider-header filter drops it.
 func ExtractPassthroughProviderResponseHeadersFromHTTP(resp *http.Response) map[string]string {
+	return extractPassthroughResponseHeadersFromHTTP(resp, false)
+}
+
+// ExtractPassthroughStreamResponseHeadersFromHTTP also preserves Content-Encoding for a raw stream.
+func ExtractPassthroughStreamResponseHeadersFromHTTP(resp *http.Response) map[string]string {
+	return extractPassthroughResponseHeadersFromHTTP(resp, true)
+}
+
+func extractPassthroughResponseHeadersFromHTTP(resp *http.Response, rawStream bool) map[string]string {
 	if resp == nil {
 		return nil
 	}
 	headers := make(map[string]string)
 	for k, values := range resp.Header {
 		kLower := strings.ToLower(k)
-		if shouldFilterProviderResponseHeader(kLower) && kLower != "content-type" {
+		if shouldFilterPassthroughResponseHeader(kLower, rawStream) {
 			continue
 		}
 		if len(values) > 0 {

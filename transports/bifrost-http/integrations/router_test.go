@@ -3665,31 +3665,69 @@ func TestHeldStreamFirstTokenDeadline(t *testing.T) {
 	}
 }
 
+// wirePassthroughAccount directs one provider to the local upstream.
+type wirePassthroughAccount struct {
+	passthroughRewriteAccount
+	provider schemas.ModelProvider
+}
+
+func (a wirePassthroughAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{a.provider}, nil
+}
+
+func (a wirePassthroughAccount) GetKeysForProvider(ctx context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if p == schemas.Azure {
+		return (azureRouteTestAccount{baseURL: a.baseURL}).GetKeysForProvider(ctx, p)
+	}
+	return a.passthroughRewriteAccount.GetKeysForProvider(ctx, p)
+}
+
 // TestPassthroughGzipWireBody checks both real HTTP connections, including the raw response bytes.
 func TestPassthroughGzipWireBody(t *testing.T) {
 	plain := []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":2,\"output_tokens\":1,\"total_tokens\":3}}}\n\n")
 	for _, tc := range []struct {
-		name    string
-		encoded bool
-		delay   time.Duration
+		name        string
+		provider    schemas.ModelProvider
+		path        string
+		contentType string
+		terminal    string
+		encoded     bool
+		delay       time.Duration
 	}{
-		{"identity", false, 0},
-		{"gzip", true, 0},
-		{"gzip_idle", true, 2 * lib.DefaultSSEHeartbeatInterval},
+		{"identity", schemas.OpenAI, "/v1/responses", "text/event-stream", "", false, 0},
+		{"gzip", schemas.OpenAI, "/v1/responses", "text/event-stream", "", true, 0},
+		{"gzip_idle", schemas.OpenAI, "/v1/responses", "text/event-stream", `{"type":"response.completed"}`, true, 2 * lib.DefaultSSEHeartbeatInterval},
+		{"anthropic", schemas.Anthropic, "/v1/messages", "text/event-stream", "", true, 0},
+		{"azure_idle_read_error", schemas.Azure, "/openai/v1/responses", "text/event-stream", "", true, 2 * lib.DefaultSSEHeartbeatInterval},
+		{"gemini", schemas.Gemini, "/models/test:streamGenerateContent", "text/event-stream", "[DONE]", true, 0},
+		{"elevenlabs", schemas.Elevenlabs, "/v1/text-to-speech/voice/stream", "audio/mpeg", "", true, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			encoded := tc.encoded
 			wire := plain
 			if encoded {
 				var compressed bytes.Buffer
-				gz := gzip.NewWriter(&compressed)
-				_, err := gz.Write(plain)
+				level := gzip.DefaultCompression
+				payload := plain
+				if tc.terminal != "" {
+					// A DEFLATE stored block exposes the literal terminal marker. A second
+					// provider read must still deliver the bytes after that marker.
+					level = gzip.NoCompression
+					payload = []byte("\n\ndata: " + tc.terminal + "\n\n: " + strings.Repeat("x", 8192) + "\n\n")
+				}
+				gz, err := gzip.NewWriterLevel(&compressed, level)
+				require.NoError(t, err)
+				_, err = gz.Write(payload)
 				require.NoError(t, err)
 				require.NoError(t, gz.Close())
 				wire = compressed.Bytes()
 			}
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Content-Type", tc.contentType)
+				if tc.provider == schemas.Azure {
+					// The connection closes one byte short, after the downstream headers commit.
+					w.Header().Set("Content-Length", fmt.Sprint(len(wire)+1))
+				}
 				if encoded {
 					w.Header().Set("Content-Encoding", "gzip")
 				}
@@ -3707,7 +3745,10 @@ func TestPassthroughGzipWireBody(t *testing.T) {
 				}
 			}))
 			defer upstream.Close()
-			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, Logger: bifrost.NewNoOpLogger()})
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: wirePassthroughAccount{passthroughRewriteAccount{baseURL: upstream.URL}, tc.provider},
+				Logger:  bifrost.NewNoOpLogger(),
+			})
 			require.NoError(t, err)
 			defer client.Shutdown()
 			g := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
@@ -3715,8 +3756,8 @@ func TestPassthroughGzipWireBody(t *testing.T) {
 			require.NoError(t, err)
 			server := &fasthttp.Server{Handler: func(ctx *fasthttp.RequestCtx) {
 				bfCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-				g.handlePassthroughStream(ctx, bfCtx, cancel, schemas.OpenAI, &schemas.BifrostPassthroughRequest{
-					Method: "POST", Path: "/v1/responses", UpstreamURL: upstream.URL,
+				g.handlePassthroughStream(ctx, bfCtx, cancel, tc.provider, &schemas.BifrostPassthroughRequest{
+					Method: "POST", Path: tc.path,
 					Body:        []byte(`{"model":"test-model","input":[],"stream":true}`),
 					SafeHeaders: map[string]string{"Content-Type": "application/json", "Accept-Encoding": "identity"},
 				})
@@ -3738,8 +3779,8 @@ func TestPassthroughGzipWireBody(t *testing.T) {
 				wantEncoding = "gzip"
 			}
 			assert.Equal(t, wantEncoding, response.Header.Get("Content-Encoding"))
-			assert.Equal(t, wire, body, "passthrough must preserve the upstream body")
-			t.Logf("upstream_bytes=%d downstream_bytes=%d encoding=%q synthetic_failure=%t", len(wire), len(body), response.Header.Get("Content-Encoding"), bytes.Contains(body, []byte("response.failed")))
+			assert.True(t, bytes.Equal(wire, body), "passthrough changed the body (%d upstream bytes, %d downstream bytes)", len(wire), len(body))
+			t.Logf("upstream_bytes=%d downstream_bytes=%d encoding=%q heartbeat=%t synthetic_failure=%t", len(wire), len(body), response.Header.Get("Content-Encoding"), bytes.Contains(body, []byte(": heartbeat")), bytes.Contains(body, []byte("response.failed")))
 		})
 	}
 }
