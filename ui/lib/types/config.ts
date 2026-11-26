@@ -642,6 +642,7 @@ export interface CustomProviderConfig {
 // OpenAIConfig holds OpenAI-specific provider configuration.
 export interface OpenAIConfig {
 	disable_store?: boolean;
+	video_generation_json?: boolean;
 }
 
 // CacheControlInjectionPoint names one place to add a cache breakpoint.

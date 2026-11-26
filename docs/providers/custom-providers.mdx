@@ -489,6 +489,26 @@ When a full URL (with scheme and host) is provided in `request_path_overrides`, 
 
 In this example, instead of using OpenAI's default `/v1/chat/completions` path, requests will be sent to `https://custom-endpoint.example.com/api/v2/chat`.
 
+### JSON video generation for OpenAI-compatible backends
+
+OpenAI-compatible backends that accept a JSON video request can opt into `openai_config.video_generation_json` on their provider configuration:
+
+```json
+{
+  "openai_config": { "video_generation_json": true },
+  "custom_provider_config": {
+    "base_provider_type": "openai",
+    "request_path_overrides": { "video_generation": "/v1/videos/regenerations" }
+  }
+}
+```
+
+The option sends the resolved model and typed video parameters as `application/json`. It preserves the supplied `size` and accepts HTTP 202 with a video job body. The gateway tracks the response as a native video job. Backends that expect OpenAI's multipart format can use the default configuration. The path override is optional.
+
+For a named custom provider, poll `GET /v1/videos/{id}` through Bifrost until the response status is `completed` or `failed`. Use the video ID returned by Bifrost and include the gateway's base path if configured. The terminal response triggers cost settlement for that job. The background sweeper covers supported built-in provider names, including `openai` when its base URL points at an OpenAI-compatible backend.
+
+Send `x-bf-passthrough-extra-params: true` to include backend-specific fields. On `/v1/videos`, send them as additional top-level properties. On `/openai/v1/videos`, use the `extra_params` object. The resolved model and known video parameters always take precedence over extensions. A source-only request on `/v1/videos` can use `video_uri` to identify its input. The backend validates the fields and dimensions it supports.
+
 ### TLS for Self-Signed or Internal Certificates
 
 When connecting to providers with HTTPS endpoints that use self-signed certificates or internal CAs (e.g., air-gapped environments, internal services), you can configure TLS in `network_config`:
