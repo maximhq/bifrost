@@ -5295,7 +5295,7 @@ func TestConvertBifrostMessagesToAnthropicMessages_ReasoningBeforeMCPResultSanit
 	// lookup must match via the same sanitization of the output's CallID.
 	expectedID := providerUtils.SanitizeAnthropicToolUseID("mcp.call/1")
 	if *blocks[0].ID != expectedID {
-		t.Fatalf("msg 1 block 0: expected sanitized id %q, got %q", expectedID, *blocks[1].ID)
+		t.Fatalf("msg 1 block 0: expected sanitized id %q, got %q", expectedID, *blocks[0].ID)
 	}
 	if msgs[2].Role != AnthropicMessageRoleAssistant {
 		t.Fatalf("msg 2: expected assistant (text), got %+v", msgs[2])
@@ -5518,7 +5518,7 @@ func TestConvertBifrostMessagesToAnthropicMessages_ReasoningAfterShellCallWithIt
 	// With invalidation (lastUnsupportedCallIndex = -1 on item reference), B is
 	// not attached to the shell_call turn and is flushed at the end.
 	if len(msgs) != 5 {
-		t.Fatalf("expected 5 messages [user, assistant(shell), user(item_ref), user(shell_output), assistant(thinking)], got %d: %+v", len(msgs), msgs)
+		t.Fatalf("expected 5 messages [user, assistant(shell), assistant(item_ref), user(shell_output), assistant(thinking)], got %d: %+v", len(msgs), msgs)
 	}
 	if msgs[0].Role != AnthropicMessageRoleUser {
 		t.Fatalf("msg 0: expected user, got %+v", msgs[0])
