@@ -246,3 +246,132 @@ func TestRateLimitResetPreservesCalendarAdoptedRequests(t *testing.T) {
 	require.Equal(t, int64(19), persisted.RequestCurrentUsage, "token-only reset zeroed the request counter")
 	require.True(t, persisted.RequestLastReset.Equal(old))
 }
+
+// TestRateLimitDumpSkipsRowsResetAfterSnapshot pins that a rate limit reset or
+// deleted between a dump's snapshot and its write is not written: the row
+// carries the usage the reset cleared.
+func TestRateLimitDumpSkipsRowsResetAfterSnapshot(t *testing.T) {
+	ctx := context.Background()
+	f := newDumpSkipFixture(t)
+	gens := f.store.rateLimitResetGensSnapshot()
+	rows := []rateLimitDumpRow{{ID: "r1"}, {ID: "r2"}, {ID: "r3"}}
+
+	next := f.store.LoadRateLimit(ctx, "r1").TokenLastReset.Add(time.Hour)
+	_, ok := f.store.ResetRateLimitAt(ctx, "r1", &next, nil)
+	require.True(t, ok)
+	f.store.DeleteRateLimit(ctx, "r2")
+
+	kept := f.store.keepUnresetRateLimitRows(rows, gens)
+	require.Equal(t, []rateLimitDumpRow{{ID: "r3"}}, kept)
+}
+
+// TestRateLimitDumpDoesNotRollBackPersistedReset pins that a dump from an older
+// window cannot overwrite a reset that is already persisted, whether this node
+// or another one persisted it.
+func TestRateLimitDumpDoesNotRollBackPersistedReset(t *testing.T) {
+	ctx := context.Background()
+	f := newDumpSkipFixture(t)
+	old := f.store.LoadRateLimit(ctx, "r1").TokenLastReset
+	next := old.Add(time.Hour)
+	require.NoError(t, f.configStore.DB().Exec(
+		"UPDATE governance_rate_limits SET token_current_usage = 0, token_last_reset = ? WHERE id = ?", next, "r1").Error)
+
+	require.NoError(t, f.store.DumpRateLimits(ctx, nil, nil))
+	rl, err := f.configStore.GetRateLimit(ctx, "r1")
+	require.NoError(t, err)
+	require.Zero(t, rl.TokenCurrentUsage, "the old window's 5 tokens came back")
+	require.True(t, rl.TokenLastReset.Equal(next), "the persisted reset boundary rolled back")
+
+	other, err := f.configStore.GetRateLimit(ctx, "r2")
+	require.NoError(t, err)
+	require.Equal(t, int64(5), other.TokenCurrentUsage, "rows in the current window still persist")
+}
+
+// TestDumpWritesRequestsPastNewerTokenWindow pins that the rate-limit pairs are
+// guarded independently: when a peer already persisted a newer token window,
+// the dump leaves that pair alone but still writes this node's request counter.
+func TestDumpWritesRequestsPastNewerTokenWindow(t *testing.T) {
+	ctx := context.Background()
+	f := newDumpSkipFixture(t)
+	require.NoError(t, f.store.DumpRateLimits(ctx, nil, nil))
+	local := f.store.LoadRateLimit(ctx, "r1")
+	require.NotNil(t, local)
+
+	peerWindow := local.TokenLastReset.Add(time.Hour)
+	require.NoError(t, f.configStore.DB().Exec("UPDATE governance_rate_limits SET token_current_usage = 3, token_last_reset = ? WHERE id = ?", peerWindow, "r1").Error)
+	clone := *local
+	clone.RequestCurrentUsage++
+	f.store.rateLimits.Store("r1", &clone)
+	require.NoError(t, f.store.DumpRateLimits(ctx, nil, nil))
+
+	rl, err := f.configStore.GetRateLimit(ctx, "r1")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), rl.RequestCurrentUsage, "the request counter was dropped behind a newer token window")
+	require.True(t, rl.RequestLastReset.Equal(local.RequestLastReset))
+	require.Equal(t, int64(3), rl.TokenCurrentUsage, "a stale token counter overwrote the peer's newer window")
+	require.True(t, rl.TokenLastReset.Equal(peerWindow), "the dump rolled the token window back")
+}
+
+// TestDumpComparesBoundariesAcrossOffsets pins that the SQLite dump guards
+// compare reset boundaries as instants. SQLite keeps a timestamp as text with
+// the writer's UTC offset, so a boundary persisted in one offset must still be
+// ordered correctly against a snapshot of the same or a nearby instant in UTC.
+// Every stored text below sorts the opposite way from the instant it encodes.
+func TestDumpComparesBoundariesAcrossOffsets(t *testing.T) {
+	ctx := context.Background()
+	ist := time.FixedZone("IST", 5*3600+1800)
+	pst := time.FixedZone("PST", -8*3600)
+	for _, tc := range []struct {
+		name        string
+		shift       time.Duration
+		zone        *time.Location
+		wantWritten bool
+	}{
+		{name: "same instant", shift: 0, zone: ist, wantWritten: true},
+		{name: "newer stored", shift: time.Hour, zone: pst, wantWritten: false},
+		{name: "older stored", shift: -time.Hour, zone: ist, wantWritten: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDumpSkipFixture(t)
+			base := f.store.LoadRateLimit(ctx, "r1").TokenLastReset.UTC()
+			stored := base.Add(tc.shift)
+			storedText := stored.In(tc.zone).Format("2006-01-02 15:04:05-07:00")
+			require.NoError(t, f.configStore.DB().Exec(
+				"UPDATE governance_rate_limits SET token_current_usage = 0, token_last_reset = ?, request_current_usage = 0, request_last_reset = ? WHERE id = ?",
+				storedText, storedText, "r1").Error)
+			require.NoError(t, f.configStore.DB().Exec(
+				"UPDATE governance_budgets SET current_usage = 0, last_reset = ? WHERE id = ?", storedText, "b1").Error)
+
+			rl := *f.store.LoadRateLimit(ctx, "r1")
+			rl.TokenLastReset, rl.RequestLastReset = base, base
+			rl.TokenCurrentUsage, rl.RequestCurrentUsage = 42, 7
+			f.store.rateLimits.Store("r1", &rl)
+			b := *f.store.LoadBudget(ctx, "b1")
+			b.LastReset, b.CurrentUsage = base, 42
+			f.store.budgets.Store("b1", &b)
+
+			require.NoError(t, f.store.DumpRateLimits(ctx, nil, nil))
+			require.NoError(t, f.store.DumpBudgets(ctx, nil))
+
+			gotRL, err := f.configStore.GetRateLimit(ctx, "r1")
+			require.NoError(t, err)
+			gotB, err := f.configStore.GetBudget(ctx, "b1")
+			require.NoError(t, err)
+			if tc.wantWritten {
+				require.Equal(t, int64(42), gotRL.TokenCurrentUsage, "token usage was not written")
+				require.Equal(t, int64(7), gotRL.RequestCurrentUsage, "request usage was not written")
+				require.True(t, gotRL.TokenLastReset.Equal(base))
+				require.True(t, gotRL.RequestLastReset.Equal(base))
+				require.Equal(t, 42.0, gotB.CurrentUsage, "budget usage was not written")
+				require.True(t, gotB.LastReset.Equal(base))
+				return
+			}
+			require.Zero(t, gotRL.TokenCurrentUsage, "an older window's tokens overwrote a newer persisted one")
+			require.Zero(t, gotRL.RequestCurrentUsage, "an older window's requests overwrote a newer persisted one")
+			require.True(t, gotRL.TokenLastReset.Equal(stored), "the token window rolled back")
+			require.True(t, gotRL.RequestLastReset.Equal(stored), "the request window rolled back")
+			require.Zero(t, gotB.CurrentUsage, "an older window's spend overwrote a newer persisted one")
+			require.True(t, gotB.LastReset.Equal(stored), "the budget window rolled back")
+		})
+	}
+}
