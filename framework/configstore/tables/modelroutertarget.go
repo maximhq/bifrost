@@ -25,19 +25,24 @@ func IsModelRouterTier(tier string) bool {
 	return false
 }
 
-// TableModelRouterTarget is one model for one tier of a model router. A tier
-// with no target keeps the request's model; one with several splits by
-// weight, and the weights sum to 1 within the tier.
+// TableModelRouterTarget is one target of a model router: one model for one
+// tier of a classifier router, or one of a conditional router's targets, which
+// carry no tier. Several targets in a tier, or in a conditional router, split
+// by weight, and their weights sum to 1. A target that names neither a
+// provider nor a model keeps the request's own, and still applies its key,
+// fallbacks and first-token deadline.
 //
 // RouterID carries no foreign key: DeleteModelRouter removes a router's
 // targets with the router, in the same transaction.
 type TableModelRouterTarget struct {
-	RouterID string  `gorm:"type:varchar(64);not null;index;uniqueIndex:idx_model_router_target_config" json:"-"`
-	Tier     string  `gorm:"type:varchar(20);not null;uniqueIndex:idx_model_router_target_config" json:"tier"`
-	Provider *string `gorm:"type:varchar(255);uniqueIndex:idx_model_router_target_config" json:"provider,omitempty"` // nil = keep the request's provider
-	Model    *string `gorm:"type:varchar(255);uniqueIndex:idx_model_router_target_config" json:"model,omitempty"`    // nil = keep the request's model
-	KeyID    *string `gorm:"type:varchar(255);uniqueIndex:idx_model_router_target_config" json:"key_id,omitempty"`   // persisted key pin
-	Weight   float64 `gorm:"not null;default:1" json:"weight"`
+	RouterID        string  `gorm:"type:varchar(255);not null;index;uniqueIndex:idx_model_router_target_config" json:"-"`
+	Tier            string  `gorm:"type:varchar(20);not null;uniqueIndex:idx_model_router_target_config" json:"tier,omitempty"` // empty for a conditional router
+	Provider        *string `gorm:"type:varchar(255);uniqueIndex:idx_model_router_target_config" json:"provider,omitempty"`     // nil = keep the request's provider
+	Model           *string `gorm:"type:varchar(255);uniqueIndex:idx_model_router_target_config" json:"model,omitempty"`        // nil = keep the request's model
+	KeyID           *string `gorm:"type:varchar(255);uniqueIndex:idx_model_router_target_config" json:"key_id,omitempty"`       // persisted key pin
+	ProviderKeyName *string `gorm:"-" json:"provider_key_name,omitempty"`                                                       // config-only alias; resolved to key_id during load
+	Weight          float64 `gorm:"not null;default:1" json:"weight"`
+	TTFTTimeoutMs   *int    `gorm:"column:ttft_timeout_ms" json:"ttft_timeout_ms,omitempty"` // streaming first-token deadline; nil = off
 
 	Fallbacks       *string           `gorm:"type:text" json:"-"` // replace the request's chain when chosen; none keeps the routing rules' chain
 	ParsedFallbacks []RoutingFallback `gorm:"-" json:"fallbacks,omitempty"`

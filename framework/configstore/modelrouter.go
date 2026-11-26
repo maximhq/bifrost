@@ -18,58 +18,61 @@ import (
 )
 
 const (
-	maxModelRouterIDLength   = 64         // matches the id column
+	maxModelRouterIDLength   = 255        // matches the id column
 	maxModelRouterNameLength = 255        // matches the name column
 	reservedModelRouterID    = "defaults" // a route of its own beside the by-id routes
 )
 
-// ModelRouter is one named complexity classifier: its identity plus the
-// classifier configuration the Complexity Router page edits, phrase
-// suggestions included. The config is embedded so a router reads, in
-// config.json and over the API, as that config with an id, a name and a
-// description beside it.
+// ModelRouter is one router: its identity, its mode, and the classifier
+// configuration the Complexity Router page edits, phrase suggestions
+// included. The config is embedded so a router reads, in config.json and over
+// the API, as that config with an id, a name and a description beside it. A
+// conditional router classifies nothing: it carries the config's defaults and
+// never reads them.
 //
 // Routers are separate from the Complexity Router page's config, which stays
 // in governance_config and is the one routing rules read complexity_tier from.
 //
-// Targets and Routing are read with the router but written on their own, so
-// saving a classifier never changes where requests go: update and reset leave
-// both alone, and create stores only Routing, or the default routing when it
-// is nil (see defaultModelRouterRouting). A config.json entry that omits
-// either leaves the stored one as it is.
+// Mode is set when the router is created and kept by every later save. Targets and Routing are read with the router but written on
+// their own, so saving a classifier never changes where requests go: update
+// and reset leave both alone, and create stores only Routing, or the default
+// routing when it is nil (see defaultModelRouterRouting). A config.json entry
+// that omits either leaves the stored one as it is.
 type ModelRouter struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	Mode        string `json:"mode,omitempty"` // "classifier" (the default) or "conditional"
 	ComplexityAnalyzerConfig
-	Targets    []tables.TableModelRouterTarget `json:"targets,omitempty"` // the model each tier gets; written by SetModelRouterTargets
+	Targets    []tables.TableModelRouterTarget `json:"targets,omitempty"` // a classifier router's model per tier, or a conditional router's targets; written by SetModelRouterTargets
 	Routing    *ModelRouterRouting             `json:"routing,omitempty"` // which requests it takes; written by SetModelRouterRouting
 	ConfigHash string                          `json:"-"`                 // hash of the config.json entry's name, description, targets and routing last applied
 }
 
 // ValidateModelRouterIdentity trims a router's id, name and description in
-// place and checks them; the store's create and update run the same check.
-// IDs are limited to letters, digits, '-' and '_' because other stores key
-// data by them (vector store namespaces, log rows), and a UUID fits. The id
-// `defaults` is reserved: GET /api/routing/model-routers/defaults serves what a
-// new router starts from, so a router with that id could not be read by id.
+// place, reads an empty mode as classifier, and checks them; the
+// store's create and update run the same check. An id is any text of up to
+// 255 characters, as a routing rule's is, so a rule keeps its id when it
+// becomes a router: stores that key data by a router's id hash it or bind it
+// as a value, and none builds a name from it. The id `defaults` is reserved:
+// GET /api/routing/model-routers/defaults serves what a new router starts
+// from, so a router with that id could not be read by id.
 func ValidateModelRouterIdentity(r *ModelRouter) error {
 	r.ID = strings.TrimSpace(r.ID)
 	r.Name = strings.TrimSpace(r.Name)
 	r.Description = strings.TrimSpace(r.Description)
+	r.Mode = tables.NormalizeModelRouterMode(strings.ToLower(strings.TrimSpace(r.Mode)))
 	if r.ID == "" {
 		return fmt.Errorf("model router id is required")
 	}
-	if len(r.ID) > maxModelRouterIDLength {
-		return fmt.Errorf("model router id must be at most %d characters, got %d", maxModelRouterIDLength, len(r.ID))
+	if n := utf8.RuneCountInString(r.ID); n > maxModelRouterIDLength {
+		return fmt.Errorf("model router id must be at most %d characters, got %d", maxModelRouterIDLength, n)
 	}
 	if r.ID == reservedModelRouterID {
 		return fmt.Errorf("model router id %q is reserved: GET /api/routing/model-routers/%s serves a new router's defaults", r.ID, reservedModelRouterID)
 	}
-	for _, ch := range r.ID {
-		if !(ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_') {
-			return fmt.Errorf("model router id %q may contain only letters, digits, '-' and '_'", r.ID)
-		}
+	if r.Mode != tables.ModelRouterModeClassifier && r.Mode != tables.ModelRouterModeConditional {
+		return fmt.Errorf("model router %q has invalid mode %q: must be one of: classifier, conditional", r.ID, r.Mode)
 	}
 	if r.Name == "" {
 		return fmt.Errorf("model router %q requires a name", r.ID)
@@ -82,11 +85,16 @@ func ValidateModelRouterIdentity(r *ModelRouter) error {
 
 // GenerateModelRouterHash hashes the fields of a config.json router entry that
 // the per-section config hashes do not cover: its name, its description and,
-// when the entry declares them, its targets and its routing.
+// when the entry declares them, its targets and its routing. A conditional
+// mode is written only when the entry has one, so the hash of
+// an entry written before they existed is unchanged.
 func GenerateModelRouterHash(r ModelRouter) string {
 	hash := sha256.New()
 	writeHashField(hash, "name", strings.TrimSpace(r.Name))
 	writeHashField(hash, "description", strings.TrimSpace(r.Description))
+	if mode := strings.ToLower(strings.TrimSpace(r.Mode)); mode == tables.ModelRouterModeConditional {
+		writeHashField(hash, "mode", mode)
+	}
 	if r.Targets != nil {
 		writeModelRouterTargetsHash(hash, r.Targets)
 	}
@@ -139,6 +147,7 @@ func modelRouterToTable(r *ModelRouter) (*tables.TableModelRouter, error) {
 		ID:                    r.ID,
 		Name:                  r.Name,
 		Description:           r.Description,
+		Mode:                  tables.NormalizeModelRouterMode(r.Mode),
 		Classifier:            cfg.Classifier,
 		SimpleMediumBoundary:  cfg.TierBoundaries.SimpleMedium,
 		MediumComplexBoundary: cfg.TierBoundaries.MediumComplex,
@@ -245,6 +254,7 @@ func modelRouterFromTable(row *tables.TableModelRouter) (*ModelRouter, error) {
 		ID:          row.ID,
 		Name:        row.Name,
 		Description: row.Description,
+		Mode:        tables.NormalizeModelRouterMode(row.Mode),
 		Routing:     modelRouterRoutingFromRow(row),
 		ConfigHash:  row.ConfigHash,
 	}
@@ -364,6 +374,11 @@ func decodeModelRouterRow(row *tables.TableModelRouter) (*ModelRouter, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A conditional router stores no classifier config (see prepareModelRouter),
+	// so there is none to normalize or check.
+	if r.Mode == tables.ModelRouterModeConditional {
+		return r, nil
+	}
 	normalized := r.ComplexityAnalyzerConfig.Normalized()
 	if err := normalized.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: invalid model router %q: %w", ErrConfigUnreadable, row.ID, err)
@@ -481,7 +496,10 @@ func (s *RDBConfigStore) getModelRouterWithDB(ctx context.Context, rowDB, db *go
 }
 
 // prepareModelRouter returns a copy of router ready to store: identity
-// trimmed and checked, and config normalized and validated.
+// trimmed and checked, and config normalized and validated. A conditional
+// router classifies nothing, so whatever classifier config it was given is
+// dropped and none is stored: a gateway holding many of them keeps no phrase
+// lists for them. Only the bookkeeping of its config.json entry is kept.
 func prepareModelRouter(router *ModelRouter) (ModelRouter, error) {
 	if router == nil {
 		return ModelRouter{}, fmt.Errorf("model router is nil")
@@ -489,6 +507,10 @@ func prepareModelRouter(router *ModelRouter) (ModelRouter, error) {
 	r := *router
 	if err := ValidateModelRouterIdentity(&r); err != nil {
 		return ModelRouter{}, err
+	}
+	if r.Mode == tables.ModelRouterModeConditional {
+		r.ComplexityAnalyzerConfig = ComplexityAnalyzerConfig{ConfigHashes: r.ConfigHashes}
+		return r, nil
 	}
 	normalized := r.ComplexityAnalyzerConfig.Normalized()
 	if err := normalized.Validate(); err != nil {
@@ -498,11 +520,37 @@ func prepareModelRouter(router *ModelRouter) (ModelRouter, error) {
 	return r, nil
 }
 
+// ModelRouterNameTaken reports whether a router other than routerID already
+// has the name in the scope. Names carry no database constraint and the
+// store's own writes never compare them, so routers a config file or a
+// migration brings in keep the names they have. The management API asks
+// before it creates or renames a router, which keeps the names people pick
+// distinct within a scope.
+func (s *RDBConfigStore) ModelRouterNameTaken(ctx context.Context, routerID, name, scope string, scopeID *string) (bool, error) {
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		scope = "global"
+	}
+	query := s.DB().WithContext(ctx).Model(&tables.TableModelRouter{}).
+		Where("name = ? AND scope = ? AND id <> ?", strings.TrimSpace(name), scope, strings.TrimSpace(routerID))
+	if scope != "global" && scopeID != nil {
+		query = query.Where("scope_id = ?", strings.TrimSpace(*scopeID))
+	} else {
+		query = query.Where("scope_id IS NULL")
+	}
+	var taken int64
+	if err := query.Count(&taken).Error; err != nil {
+		return false, err
+	}
+	return taken > 0, nil
+}
+
 // CreateModelRouter stores a new router with its routing, or with the
 // default routing when it has none: off, global, and last among the global
-// routers. A taken id or name is ErrAlreadyExists, and a priority another
-// router in the scope holds is ErrModelRouterPriorityTaken. Targets are left
-// for SetModelRouterTargets. The stored routing is set on router.
+// routers. A taken id is ErrAlreadyExists, and a priority another router in
+// the scope holds is ErrModelRouterPriorityTaken. Names are not compared (see
+// ModelRouterNameTaken). Targets are left for SetModelRouterTargets. The
+// stored routing is set on router.
 func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error {
 	r, err := prepareModelRouter(router)
 	if err != nil {
@@ -518,11 +566,11 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 	if err := s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
 		db := txDB.WithContext(ctx)
 		var taken int64
-		if err := db.Model(&tables.TableModelRouter{}).Where("id = ? OR name = ?", r.ID, r.Name).Count(&taken).Error; err != nil {
+		if err := db.Model(&tables.TableModelRouter{}).Where("id = ?", r.ID).Count(&taken).Error; err != nil {
 			return err
 		}
 		if taken > 0 {
-			return fmt.Errorf("%w: a model router with id %q or name %q", ErrAlreadyExists, r.ID, r.Name)
+			return fmt.Errorf("%w: a model router with id %q", ErrAlreadyExists, r.ID)
 		}
 		if r.Routing == nil {
 			routing, err := defaultModelRouterRouting(ctx, txDB)
@@ -538,10 +586,10 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 			return err
 		}
 		// The count and the insert do not share a lock, so a concurrent create
-		// of the same id or name can still lose at the unique index.
+		// of the same id can still lose at the primary key.
 		if err := db.Create(row).Error; err != nil {
 			if errors.Is(err, gorm.ErrDuplicatedKey) || isUniqueConstraintError(err) {
-				return fmt.Errorf("%w: a model router with id %q or name %q", ErrAlreadyExists, r.ID, r.Name)
+				return fmt.Errorf("%w: a model router with id %q", ErrAlreadyExists, r.ID)
 			}
 			return err
 		}
@@ -554,30 +602,30 @@ func (s *RDBConfigStore) CreateModelRouter(ctx context.Context, router *ModelRou
 }
 
 // UpdateModelRouter replaces a router's name, description and config, leaving
-// its targets and routing as they are. Section hashes and the config hash the
-// caller leaves empty keep their stored values, so a UI save never erases
+// its mode, targets and routing as they are. Names are not compared
+// (see ModelRouterNameTaken). Section hashes and the config hash the caller
+// leaves empty keep their stored values, so a UI save never erases
 // config.json bookkeeping. The router must already exist (ErrNotFound).
 func (s *RDBConfigStore) UpdateModelRouter(ctx context.Context, router *ModelRouter, tx ...*gorm.DB) error {
-	r, err := prepareModelRouter(router)
-	if err != nil {
-		return err
+	if router == nil {
+		return fmt.Errorf("model router is nil")
 	}
 	return s.inModelRouterTx(ctx, tx, func(txDB *gorm.DB) error {
-		// A missing router is ErrNotFound even when its new name is taken.
-		existing, err := s.lockModelRouterRow(ctx, txDB, r.ID)
+		existing, err := s.lockModelRouterRow(ctx, txDB, strings.TrimSpace(router.ID))
 		if err != nil {
 			return err
 		}
 		if existing == nil {
 			return ErrNotFound
 		}
-		var taken int64
-		if err := txDB.WithContext(ctx).Model(&tables.TableModelRouter{}).
-			Where("name = ? AND id <> ?", r.Name, r.ID).Count(&taken).Error; err != nil {
+		// The router is prepared as the mode it was created in, whatever mode
+		// the update names: that decides whether its config is checked or
+		// dropped.
+		candidate := *router
+		candidate.Mode = existing.Mode
+		r, err := prepareModelRouter(&candidate)
+		if err != nil {
 			return err
-		}
-		if taken > 0 {
-			return fmt.Errorf("%w: a model router named %q", ErrAlreadyExists, r.Name)
 		}
 		_, err = s.saveModelRouterWithTx(ctx, txDB, r, false)
 		return err
@@ -617,6 +665,8 @@ func (s *RDBConfigStore) EditModelRouter(ctx context.Context, id string, edit fu
 			result = existing
 			return nil
 		}
+		// An edit cannot change the mode; see UpdateModelRouter.
+		existing.Mode = row.Mode
 		r, err := prepareModelRouter(existing)
 		if err != nil {
 			return err
@@ -657,7 +707,9 @@ func (s *RDBConfigStore) DeleteModelRouter(ctx context.Context, id string, tx ..
 // The read and the save share one transaction under the router's row lock, so
 // a concurrent edit to a section the reset preserves cannot be overwritten by
 // a stale copy. A stored config this version cannot read resets to the
-// defaults, since that is the state reset exists to recover from.
+// defaults, since that is the state reset exists to recover from. A
+// conditional router has no phrases to restore: it is returned as stored and
+// nothing is written.
 func (s *RDBConfigStore) ResetModelRouter(ctx context.Context, id string, defaults *ComplexityAnalyzerConfig) (*ModelRouter, error) {
 	if defaults == nil {
 		return nil, fmt.Errorf("model router defaults are nil")
@@ -671,6 +723,10 @@ func (s *RDBConfigStore) ResetModelRouter(ctx context.Context, id string, defaul
 		}
 		if row == nil {
 			return ErrNotFound
+		}
+		if tables.NormalizeModelRouterMode(row.Mode) == tables.ModelRouterModeConditional {
+			persisted, err = decodeModelRouterRow(row)
+			return err
 		}
 		restored := ModelRouter{ID: row.ID, ComplexityAnalyzerConfig: *defaults}
 		existing, err := decodeModelRouterRow(row)
@@ -726,9 +782,10 @@ func (s *RDBConfigStore) lockModelRouterRow(ctx context.Context, txDB *gorm.DB, 
 // stored bookkeeping this version cannot decode must not stop a valid save.
 //
 // keepIdentity keeps the stored name and description, for saves that only
-// carry a config. The stored routing is always kept: it is written only by
-// SetModelRouterRouting. r's config must already be normalized and validated,
-// and txDB must be a transaction.
+// carry a config. The stored mode is always kept, since it is set when the
+// router is created, and so is the stored routing: it is written
+// only by SetModelRouterRouting. r's config must already be normalized and
+// validated, and txDB must be a transaction.
 func (s *RDBConfigStore) saveModelRouterWithTx(ctx context.Context, txDB *gorm.DB, r ModelRouter, keepIdentity bool) (*ModelRouter, error) {
 	existing, err := s.lockModelRouterRow(ctx, txDB, r.ID)
 	if err != nil {
@@ -745,6 +802,7 @@ func (s *RDBConfigStore) saveModelRouterWithTx(ctx context.Context, txDB *gorm.D
 	} else if r.ConfigHash == "" {
 		r.ConfigHash = existing.ConfigHash
 	}
+	r.Mode = tables.NormalizeModelRouterMode(existing.Mode)
 	r.Routing = modelRouterRoutingFromRow(existing)
 	row, err := modelRouterToTable(&r)
 	if err != nil {

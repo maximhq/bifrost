@@ -92,7 +92,7 @@ const complexitySuggestionWriteBatch = 500
 // EmbeddingSignature (the capture namespace), which is why both are stored.
 type ComplexitySuggestion struct {
 	ID                 string     `gorm:"type:varchar(36);primaryKey" json:"id"`
-	RouterID           string     `gorm:"type:varchar(64);not null;index:idx_model_routing_suggestions_router_status,priority:1" json:"router_id"`
+	RouterID           string     `gorm:"type:varchar(255);not null;index:idx_model_routing_suggestions_router_status,priority:1" json:"router_id"`
 	RouterVersion      string     `gorm:"type:varchar(64);not null" json:"router_version"` // the router version it was computed against
 	Status             string     `gorm:"type:varchar(16);not null;index:idx_model_routing_suggestions_router_status,priority:2" json:"status"`
 	Tier               string     `gorm:"type:varchar(16);not null" json:"tier"`
@@ -197,7 +197,7 @@ func encodeStringList(values []string) (string, error) {
 // ComplexitySuggestionRun is one suggestion run.
 type ComplexitySuggestionRun struct {
 	ID                 string     `gorm:"type:varchar(36);primaryKey" json:"id"`
-	RouterID           string     `gorm:"type:varchar(64);not null;index:idx_model_routing_suggestion_runs_router_started_at,priority:1" json:"router_id"`
+	RouterID           string     `gorm:"type:varchar(255);not null;index:idx_model_routing_suggestion_runs_router_started_at,priority:1" json:"router_id"`
 	RouterVersion      string     `gorm:"type:varchar(64);not null" json:"router_version"`
 	TriggeredBy        string     `gorm:"type:varchar(16);not null" json:"triggered_by"`
 	Status             string     `gorm:"type:varchar(16);not null" json:"status"`

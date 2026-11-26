@@ -112,7 +112,7 @@ func TestModelRouterTableRoundTripCoversEveryField(t *testing.T) {
 // must not read back as each other.
 func TestModelRouterTableKeepsAbsentAndZeroBlocksApart(t *testing.T) {
 	t.Run("absent blocks stay absent", func(t *testing.T) {
-		router := ModelRouter{ID: "absent", Name: "Absent", ComplexityAnalyzerConfig: ComplexityAnalyzerConfig{Classifier: ComplexityClassifierSemantic}, Routing: &ModelRouterRouting{Scope: "global"}}
+		router := ModelRouter{ID: "absent", Name: "Absent", Mode: tables.ModelRouterModeClassifier, ComplexityAnalyzerConfig: ComplexityAnalyzerConfig{Classifier: ComplexityClassifierSemantic}, Routing: &ModelRouterRouting{Scope: "global"}}
 		row, err := modelRouterToTable(&router)
 		require.NoError(t, err)
 		assert.Nil(t, row.SemanticProvider)
@@ -130,7 +130,7 @@ func TestModelRouterTableKeepsAbsentAndZeroBlocksApart(t *testing.T) {
 	})
 
 	t.Run("zero-valued blocks stay present", func(t *testing.T) {
-		router := ModelRouter{ID: "zero", Name: "Zero", ComplexityAnalyzerConfig: ComplexityAnalyzerConfig{
+		router := ModelRouter{ID: "zero", Name: "Zero", Mode: tables.ModelRouterModeClassifier, ComplexityAnalyzerConfig: ComplexityAnalyzerConfig{
 			Classifier: ComplexityClassifierSemantic,
 			Semantic:   &ComplexitySemanticConfig{},
 			Decision:   &ComplexityDecisionConfig{PreviousMessageCount: bifrost.Ptr(0)},
@@ -216,26 +216,22 @@ func TestModelRouterStoreCRUD(t *testing.T) {
 		assert.Equal(t, []string{"billing", "support"}, ids, "oldest first")
 	})
 
-	t.Run("taken id or name", func(t *testing.T) {
+	t.Run("taken id", func(t *testing.T) {
 		store := setupRDBTestStore(t)
 		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
 		require.ErrorIs(t, store.CreateModelRouter(ctx, testModelRouter("support", "Other")), ErrAlreadyExists)
-		require.ErrorIs(t, store.CreateModelRouter(ctx, testModelRouter("other", "Support")), ErrAlreadyExists)
-
-		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("billing", "Billing")))
-		rename := testModelRouter("billing", "Support")
-		require.ErrorIs(t, store.UpdateModelRouter(ctx, rename), ErrAlreadyExists)
 	})
 
 	t.Run("identity validation", func(t *testing.T) {
 		store := setupRDBTestStore(t)
+		unknownMode := testModelRouter("support", "Support")
+		unknownMode.Mode = "weighted"
 		cases := map[string]*ModelRouter{
-			"empty id":        testModelRouter("  ", "Support"),
-			"id with a space": testModelRouter("support team", "Support"),
-			"id with a slash": testModelRouter("support/team", "Support"),
-			"id too long":     testModelRouter(fmt.Sprintf("%065d", 0), "Support"),
-			"empty name":      testModelRouter("support", " "),
-			"reserved id":     testModelRouter("defaults", "Defaults"),
+			"empty id":     testModelRouter("  ", "Support"),
+			"id too long":  testModelRouter(strings.Repeat("a", 256), "Support"),
+			"empty name":   testModelRouter("support", " "),
+			"reserved id":  testModelRouter("defaults", "Defaults"),
+			"unknown mode": unknownMode,
 		}
 		for name, router := range cases {
 			t.Run(name, func(t *testing.T) {
@@ -244,6 +240,10 @@ func TestModelRouterStoreCRUD(t *testing.T) {
 		}
 		assert.NoError(t, store.CreateModelRouter(ctx, testModelRouter("b2c1a7e0-4c1f-4f7e-9a51-3f0f1d6f8b10", "Support")), "a UUID is a valid id")
 		assert.NoError(t, store.CreateModelRouter(ctx, testModelRouter("default", "Default")), "only `defaults`, a route of its own, is reserved")
+		assert.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support team/eu", "Support EU")), "an id may carry a space and a slash, as a routing rule's may")
+		got, err := store.GetModelRouter(ctx, "support team/eu")
+		require.NoError(t, err)
+		assert.Equal(t, "support team/eu", got.ID)
 	})
 
 	t.Run("invalid config is rejected", func(t *testing.T) {
@@ -261,8 +261,7 @@ func TestModelRouterStoreCRUD(t *testing.T) {
 		require.ErrorIs(t, err, ErrNotFound)
 
 		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
-		require.ErrorIs(t, store.UpdateModelRouter(ctx, testModelRouter("missing", "Support")), ErrNotFound,
-			"a missing router is not found even when the name it asks for is taken")
+		require.ErrorIs(t, store.UpdateModelRouter(ctx, testModelRouter("missing", "Support")), ErrNotFound)
 		require.NoError(t, store.DeleteModelRouter(ctx, "support"))
 		_, err = store.GetModelRouter(ctx, "support")
 		require.ErrorIs(t, err, ErrNotFound)
@@ -468,19 +467,21 @@ func TestEditModelRouterBuildsOnTheStoredRouter(t *testing.T) {
 
 // TestValidateModelRouterIdentityLimits pins the edges of the identity rules
 // the store's identity cases leave out: the longest id and name that still
-// save, a name counted in characters rather than bytes so a non-Latin name gets
-// the full 255, and the punctuation an id may and may not carry.
+// save, both counted in characters rather than bytes so a non-Latin one gets
+// the full 255, and that an id may carry any character, as a routing rule's
+// may.
 func TestValidateModelRouterIdentityLimits(t *testing.T) {
-	longestID := strings.Repeat("a", 64)
+	longestID := strings.Repeat("識", 255)   // 765 bytes
 	longestName := strings.Repeat("語", 255) // 765 bytes
 	cases := []struct {
 		name, id, routerName string
 		wantErr              string
 	}{
-		{"id of 64 characters", longestID, "Support", ""},
+		{"id of 255 multibyte characters", longestID, "Support", ""},
+		{"id of 256 multibyte characters", longestID + "識", "Support", "model router id must be at most 255 characters, got 256"},
 		{"id with dashes, underscores, digits and capitals", "Support_Team-2", "Support", ""},
-		{"id with a dot", "support.team", "Support", "may contain only letters, digits, '-' and '_'"},
-		{"id with a non-ASCII letter", "süpport", "Support", "may contain only letters, digits, '-' and '_'"},
+		{"id with a dot, a slash and a space", "support.team/eu west", "Support", ""},
+		{"id with a non-ASCII letter", "süpport", "Support", ""},
 		{"name of 255 multibyte characters", "support", longestName, ""},
 		{"name of 256 multibyte characters", "support", longestName + "語", "at most 255 characters, got 256"},
 		{"limits are checked after trimming", "  " + longestID + "  ", "  " + longestName + "  ", ""},
@@ -504,6 +505,17 @@ func TestValidateModelRouterIdentityLimits(t *testing.T) {
 		assert.Equal(t, "Tickets and chat", router.Description)
 	})
 
+	t.Run("an empty mode is a classifier, and a mode is read in any letter case", func(t *testing.T) {
+		router := ModelRouter{ID: "support", Name: "Support"}
+		require.NoError(t, ValidateModelRouterIdentity(&router))
+		assert.Equal(t, tables.ModelRouterModeClassifier, router.Mode)
+		router.Mode = " Conditional "
+		require.NoError(t, ValidateModelRouterIdentity(&router))
+		assert.Equal(t, tables.ModelRouterModeConditional, router.Mode)
+		router.Mode = "weighted"
+		require.ErrorContains(t, ValidateModelRouterIdentity(&router), `invalid mode "weighted"`)
+	})
+
 	t.Run("the longest id and name save and read back whole", func(t *testing.T) {
 		store := setupRDBTestStore(t)
 		ctx := context.Background()
@@ -515,44 +527,114 @@ func TestValidateModelRouterIdentityLimits(t *testing.T) {
 	})
 }
 
-// TestModelRouterNameUniqueness pins how two routers' names are compared.
-// Surrounding whitespace is not part of a name, so a padded copy of a taken
-// name is taken too, on create and on rename. Letter case is part of it: the
-// store keeps `Support` and `support` as two routers.
-func TestModelRouterNameUniqueness(t *testing.T) {
+// TestModelRouterNameTaken pins the one thing the store does about names:
+// answer whether another router in a scope has one. A name is taken only
+// within its scope and only by another router; surrounding whitespace is not
+// part of it, and letter case is. The store's own writes never compare names,
+// so two routers can hold the same one, as two routing rules in different
+// scopes can.
+func TestModelRouterNameTaken(t *testing.T) {
 	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouterWithRouting("team-support", "Team support",
+		ModelRouterRouting{Scope: "team", ScopeID: bifrost.Ptr("team-1")})))
 
-	t.Run("a name that differs only by surrounding whitespace is taken", func(t *testing.T) {
-		store := setupRDBTestStore(t)
-		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
-		require.ErrorIs(t, store.CreateModelRouter(ctx, testModelRouter("other", "  Support\t")), ErrAlreadyExists)
-		_, err := store.GetModelRouter(ctx, "other")
-		require.ErrorIs(t, err, ErrNotFound)
-
-		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("billing", "Billing")))
-		require.ErrorIs(t, store.UpdateModelRouter(ctx, testModelRouter("billing", " Support ")), ErrAlreadyExists)
-		got, err := store.GetModelRouter(ctx, "billing")
+	taken := func(routerID, name, scope string, scopeID *string) bool {
+		t.Helper()
+		got, err := store.ModelRouterNameTaken(ctx, routerID, name, scope, scopeID)
 		require.NoError(t, err)
-		assert.Equal(t, "Billing", got.Name, "a refused rename keeps the name")
+		return got
+	}
+	assert.True(t, taken("other", "Support", "global", nil))
+	assert.True(t, taken("other", "  Support\t", "", nil), "padding is not part of a name, and no scope is the global one")
+	assert.False(t, taken("support", "Support", "global", nil), "a router does not take its own name")
+	assert.False(t, taken("other", "support", "global", nil), "letter case is part of a name")
+	assert.False(t, taken("other", "Support", "team", bifrost.Ptr("team-1")), "a name is taken within its scope only")
+	assert.True(t, taken("other", "Team support", "team", bifrost.Ptr("team-1")))
+	assert.False(t, taken("other", "Team support", "team", bifrost.Ptr("team-2")), "another team is another scope")
+	assert.False(t, taken("other", "Team support", "customer", bifrost.Ptr("team-1")), "a customer and a team with the same id are different scopes")
+	assert.False(t, taken("other", "Team support", "global", nil))
 
-		require.ErrorIs(t, store.CreateModelRouter(ctx, testModelRouter(" support ", "Another")), ErrAlreadyExists,
-			"an id is compared trimmed as well")
-	})
-
-	t.Run("names that differ only by letter case are separate routers", func(t *testing.T) {
-		store := setupRDBTestStore(t)
-		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
-		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support-lower", "support")))
+	t.Run("the store's own writes do not compare names", func(t *testing.T) {
+		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support-copy", "Support")), "a create with a taken name is stored")
 		require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("billing", "Billing")))
-		require.NoError(t, store.UpdateModelRouter(ctx, testModelRouter("billing", "SUPPORT")))
+		require.NoError(t, store.UpdateModelRouter(ctx, testModelRouter("billing", " Support ")), "a rename to a taken name is stored")
 
 		routers, err := store.GetModelRouters(ctx)
 		require.NoError(t, err)
-		names := make(map[string]string, len(routers))
+		named := 0
 		for _, router := range routers {
-			names[router.ID] = router.Name
+			if router.Name == "Support" {
+				named++
+			}
 		}
-		assert.Equal(t, map[string]string{"support": "Support", "support-lower": "support", "billing": "SUPPORT"}, names)
+		assert.Equal(t, 3, named)
+	})
+
+	t.Run("an id is compared trimmed", func(t *testing.T) {
+		require.ErrorIs(t, store.CreateModelRouter(ctx, testModelRouter(" support ", "Another")), ErrAlreadyExists)
+	})
+}
+
+// TestModelRouterModeIsSetOnCreate pins that a router's mode is stored when it
+// is created and kept by every later save: an update, an edit and a reset do
+// not change it, whatever the router they are given says.
+func TestModelRouterModeIsSetOnCreate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	router := testModelRouter("fast-lane", "Fast lane")
+	router.Mode = tables.ModelRouterModeConditional
+	require.NoError(t, store.CreateModelRouter(ctx, router))
+	require.NoError(t, store.CreateModelRouter(ctx, testModelRouter("support", "Support")))
+
+	check := func(when string) {
+		t.Helper()
+		got, err := store.GetModelRouter(ctx, "fast-lane")
+		require.NoError(t, err)
+		assert.Equal(t, tables.ModelRouterModeConditional, got.Mode, when)
+	}
+	check("after create")
+	stored, err := store.GetModelRouter(ctx, "fast-lane")
+	require.NoError(t, err)
+	assert.Equal(t, ComplexityAnalyzerConfig{}, stored.ComplexityAnalyzerConfig,
+		"a conditional router classifies nothing, so the classifier config it was created with is not stored")
+
+	update := testModelRouter("fast-lane", "Fast lane, renamed")
+	update.Mode = tables.ModelRouterModeClassifier
+	require.NoError(t, store.UpdateModelRouter(ctx, update))
+	check("after an update that names another mode")
+
+	_, err = store.EditModelRouter(ctx, "fast-lane", func(r *ModelRouter) (bool, error) {
+		r.Description, r.Mode = "edited", tables.ModelRouterModeClassifier
+		return true, nil
+	})
+	require.NoError(t, err)
+	check("after an edit that names another mode")
+
+	_, err = store.ResetModelRouter(ctx, "fast-lane", testComplexityAnalyzerConfig())
+	require.NoError(t, err)
+	check("after a reset")
+
+	got, err := store.GetModelRouter(ctx, "support")
+	require.NoError(t, err)
+	assert.Equal(t, tables.ModelRouterModeClassifier, got.Mode, "a router created without a mode is a classifier")
+
+	t.Run("a router stored before modes existed reads as a classifier", func(t *testing.T) {
+		require.NoError(t, store.DB().Model(&tables.TableModelRouter{}).Where("id = ?", "support").UpdateColumn("mode", "").Error)
+		got, err := store.GetModelRouter(ctx, "support")
+		require.NoError(t, err)
+		assert.Equal(t, tables.ModelRouterModeClassifier, got.Mode)
+		require.NoError(t, store.SetModelRouterTargets(ctx, "support", testModelRouterTargets()), "its tiered targets still save")
+	})
+
+	t.Run("a config.json entry's hash covers a conditional mode", func(t *testing.T) {
+		bare := *testModelRouter("support", "Support")
+		classifier, conditional := bare, bare
+		classifier.Mode = tables.ModelRouterModeClassifier
+		conditional.Mode = tables.ModelRouterModeConditional
+		assert.Equal(t, GenerateModelRouterHash(bare), GenerateModelRouterHash(classifier), "naming the default mode changes nothing")
+		assert.NotEqual(t, GenerateModelRouterHash(bare), GenerateModelRouterHash(conditional))
 	})
 }
 

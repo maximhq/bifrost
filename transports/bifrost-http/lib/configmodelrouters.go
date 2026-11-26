@@ -46,19 +46,25 @@ type declaredModelRouter struct {
 
 // fileModelRouter validates one config.json router and returns it normalized,
 // with its section hashes, the targets and routing it declares, and its
-// identity hash, plus the config as written for the split-mode merge.
+// identity hash, plus the config as written for the split-mode merge. A
+// conditional router classifies nothing, so an entry in that mode has no
+// classifier settings to check: any it writes are dropped, as the store drops
+// them.
 func fileModelRouter(entry configstore.ModelRouter) (router configstore.ModelRouter, asWritten *configstore.ComplexityAnalyzerConfig, ok bool) {
 	if err := configstore.ValidateModelRouterIdentity(&entry); err != nil {
 		logger.Error("invalid model_routers entry in config file: %v", err)
 		return configstore.ModelRouter{}, nil, false
 	}
-	raw := entry.ComplexityAnalyzerConfig
-	normalized, asWritten, _, ok := complexityAnalyzerConfigFromFile(fmt.Sprintf("model router %q", entry.ID), &raw)
-	if !ok {
-		return configstore.ModelRouter{}, nil, false
+	normalized, asWritten := &configstore.ComplexityAnalyzerConfig{}, &configstore.ComplexityAnalyzerConfig{}
+	if entry.Mode != configstoreTables.ModelRouterModeConditional {
+		raw := entry.ComplexityAnalyzerConfig
+		normalized, asWritten, _, ok = complexityAnalyzerConfigFromFile(fmt.Sprintf("model router %q", entry.ID), &raw)
+		if !ok {
+			return configstore.ModelRouter{}, nil, false
+		}
 	}
 	if entry.Targets != nil {
-		if err := configstore.ValidateModelRouterTargets(entry.Targets); err != nil {
+		if err := configstore.ValidateModelRouterTargets(entry.Mode, entry.Targets); err != nil {
 			logger.Error("invalid targets for model router %q in config file: %v", entry.ID, err)
 			return configstore.ModelRouter{}, nil, false
 		}
@@ -79,6 +85,7 @@ func fileModelRouter(entry configstore.ModelRouter) (router configstore.ModelRou
 		ID:                       entry.ID,
 		Name:                     entry.Name,
 		Description:              entry.Description,
+		Mode:                     entry.Mode,
 		ComplexityAnalyzerConfig: *normalized,
 		Targets:                  entry.Targets,
 		Routing:                  entry.Routing,
@@ -86,12 +93,14 @@ func fileModelRouter(entry configstore.ModelRouter) (router configstore.ModelRou
 	}, asWritten, true
 }
 
-// resolveModelRouterFallbackKeyNames replaces each target fallback's
-// provider_key_name with the key_id of that provider's key, as a routing
-// rule's fallbacks are resolved at load, so only the key_id is stored.
-func resolveModelRouterFallbackKeyNames(ctx context.Context, store configstore.ConfigStore, router *configstore.ModelRouter) error {
+// resolveModelRouterKeyNames replaces the provider_key_name of each target,
+// and of each target fallback, with the key_id of that provider's key, as a
+// routing rule's targets and fallbacks are resolved at load, so only the
+// key_id is stored.
+func resolveModelRouterKeyNames(ctx context.Context, store configstore.ConfigStore, router *configstore.ModelRouter) error {
 	named := false
 	for _, target := range router.Targets {
+		named = named || target.ProviderKeyName != nil
 		for _, fallback := range target.ParsedFallbacks {
 			named = named || fallback.ProviderKeyName != nil
 		}
@@ -101,6 +110,29 @@ func resolveModelRouterFallbackKeyNames(ctx context.Context, store configstore.C
 	}
 	return store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		for i := range router.Targets {
+			target := &router.Targets[i]
+			keyName := ""
+			if target.ProviderKeyName != nil {
+				keyName = strings.TrimSpace(*target.ProviderKeyName)
+			}
+			target.ProviderKeyName = nil
+			if keyName != "" {
+				provider := ""
+				if target.Provider != nil {
+					provider = strings.TrimSpace(*target.Provider)
+				}
+				if target.KeyID != nil && strings.TrimSpace(*target.KeyID) != "" {
+					return fmt.Errorf("targets[%d] cannot set key_id together with provider_key_name", i)
+				}
+				if provider == "" {
+					return fmt.Errorf("targets[%d] provider_key_name requires provider to be set", i)
+				}
+				keyID, err := modelRouterFallbackKeyID(ctx, tx, provider, keyName)
+				if err != nil {
+					return fmt.Errorf("targets[%d] provider_key_name resolution failed: %w", i, err)
+				}
+				target.KeyID = &keyID
+			}
 			for j := range router.Targets[i].ParsedFallbacks {
 				fallback := &router.Targets[i].ParsedFallbacks[j]
 				keyName := ""
@@ -129,7 +161,8 @@ func resolveModelRouterFallbackKeyNames(ctx context.Context, store configstore.C
 }
 
 // modelRouterFallbackKeyID looks up the key_id of the provider's key named
-// keyName, as routing rule fallbacks resolve provider_key_name.
+// keyName, for a target or a fallback, as routing rules resolve
+// provider_key_name.
 func modelRouterFallbackKeyID(ctx context.Context, tx *gorm.DB, provider string, keyName string) (string, error) {
 	var key configstoreTables.TableKey
 	err := tx.WithContext(ctx).
@@ -472,7 +505,7 @@ func syncModelRoutersFromFile(ctx context.Context, config *Config, configData *C
 		if exists {
 			c.outcome = "keeping its last persisted version"
 		}
-		if err := resolveModelRouterFallbackKeyNames(ctx, config.ConfigStore, &c.router); err != nil {
+		if err := resolveModelRouterKeyNames(ctx, config.ConfigStore, &c.router); err != nil {
 			logger.Error("model router %s: %v; %s", c.router.ID, err, c.outcome)
 			continue
 		}

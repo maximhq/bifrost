@@ -358,6 +358,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"logs_add_model_routing_suggestion_tables"}, run: migrationAddComplexitySuggestionTables},
 	{IDs: []string{"logs_add_model_routing_columns"}, run: migrationAddModelRoutingColumns},
 	{IDs: []string{"logs_tune_retention_autovacuum"}, run: migrationTuneRetentionAutovacuum},
+	{IDs: []string{"logs_widen_model_router_id_columns"}, run: migrationWidenModelRouterIDColumns},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -4584,6 +4585,58 @@ func modelRoutingColumnsMigration(ctx context.Context, logger schemas.Logger) *m
 			return nil
 		},
 	}
+}
+
+// modelRouterIDColumns hold a model router's id in the log store.
+var modelRouterIDColumns = []struct {
+	model  any
+	table  string
+	column string
+}{
+	{&Log{}, "logs", "model_router_id"},
+	{&ComplexitySuggestion{}, "model_routing_suggestions", "router_id"},
+	{&ComplexitySuggestionRun{}, "model_routing_suggestion_runs", "router_id"},
+}
+
+// migrationWidenModelRouterIDColumns widens the columns that hold a model
+// router's id to 255 characters, the width of the id itself since a router can
+// keep the id of the routing rule it is made from. Raising a varchar's length
+// rewrites neither the table nor its indexes on Postgres, so on logs the cost
+// is the lock wait, which is bounded as for any other change to that table.
+// SQLite does not enforce varchar(n), so nothing runs there. There is no
+// rollback: narrowing would fail on an id written since.
+func migrationWidenModelRouterIDColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_widen_model_router_id_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			mg := tx.Migrator()
+			for _, c := range modelRouterIDColumns {
+				if !mg.HasTable(c.model) || !mg.HasColumn(c.model, c.column) {
+					continue
+				}
+				if err := tx.Exec("ALTER TABLE " + c.table + " ALTER COLUMN " + c.column + " TYPE varchar(255)").Error; err != nil {
+					return fmt.Errorf("widen %s.%s: %w", c.table, c.column, err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while widening model router id columns: %w", err)
+	}
+	return nil
 }
 
 // migrationAddSessionIDColumn adds the generic session identity resolved at

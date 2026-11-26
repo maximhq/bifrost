@@ -187,6 +187,17 @@ func TestGenerateModelRouterHashRouting(t *testing.T) {
 	withQuery := withRouting
 	withQuery.Routing = &ModelRouterRouting{Scope: "global", Priority: 1, Query: map[string]any{"combinator": "and"}}
 	assert.Equal(t, GenerateModelRouterHash(withRouting), GenerateModelRouterHash(withQuery))
+
+	// Chaining and passing a request on are part of the hash once set. Left
+	// unset, the hash is the one an entry had before either existed, so a
+	// file written then is not seen as changed.
+	chained := withRouting
+	chained.Routing = &ModelRouterRouting{Scope: "global", Priority: 1, Chain: true}
+	assert.NotEqual(t, GenerateModelRouterHash(withRouting), GenerateModelRouterHash(chained))
+	passesOn := withRouting
+	passesOn.Routing = &ModelRouterRouting{Scope: "global", Priority: 1, EmptyTarget: tables.ModelRouterEmptyTargetNextRouter}
+	assert.NotEqual(t, GenerateModelRouterHash(withRouting), GenerateModelRouterHash(passesOn))
+	assert.NotEqual(t, GenerateModelRouterHash(chained), GenerateModelRouterHash(passesOn))
 }
 
 // createTestModelRouters saves one router per id, each with the default
@@ -233,6 +244,25 @@ func TestValidateModelRouterRouting(t *testing.T) {
 		require.ErrorContains(t, ValidateModelRouterRouting(&ModelRouterRouting{Scope: "Global"}), `invalid scope "Global"`)
 		require.Error(t, ValidateModelRouterRouting(&ModelRouterRouting{Scope: "TEAM", ScopeID: bifrost.Ptr("team-1")}))
 	})
+
+	// empty_target has two values. original_model is what a routing without the
+	// field means, so it is kept as the empty value and a router saved before
+	// the field existed reads the same as one saved with original_model.
+	t.Run("empty_target", func(t *testing.T) {
+		for given, want := range map[string]string{
+			"":                 "",
+			"original_model":   "",
+			" Original_Model ": "",
+			"next_router":      tables.ModelRouterEmptyTargetNextRouter,
+			" NEXT_ROUTER ":    tables.ModelRouterEmptyTargetNextRouter,
+		} {
+			routing := ModelRouterRouting{Scope: "global", EmptyTarget: given}
+			require.NoError(t, ValidateModelRouterRouting(&routing), "%q", given)
+			assert.Equal(t, want, routing.EmptyTarget, "%q", given)
+		}
+		require.ErrorContains(t, ValidateModelRouterRouting(&ModelRouterRouting{Scope: "global", EmptyTarget: "skip"}),
+			`invalid empty_target "skip": must be one of: next_router, original_model`)
+	})
 }
 
 // TestModelRouterDisabledRouterHoldsItsPriority pins that turning a router off
@@ -266,22 +296,26 @@ func TestModelRouterDisabledRouterHoldsItsPriority(t *testing.T) {
 }
 
 // TestSetModelRouterRoutingReplacesTheWholeRouting pins that a routing save is
-// a replace, not a merge: moving a scoped, conditioned, enabled router back to
-// a bare global routing clears its scope id, condition, builder state and
-// enabled flag, even though each new value is a zero value.
+// a replace, not a merge: moving a scoped, conditioned, enabled, chained
+// router back to a bare global routing clears its scope id, condition,
+// builder state, enabled flag, chaining and passing on, even though each new
+// value is a zero value.
 func TestSetModelRouterRoutingReplacesTheWholeRouting(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 	createTestModelRouters(t, store, "support")
-	require.NoError(t, store.SetModelRouterRouting(ctx, " support ", ModelRouterRouting{
+	full := ModelRouterRouting{
 		Enabled:       true,
 		Scope:         "team",
 		ScopeID:       bifrost.Ptr("team-1"),
 		CelExpression: `model == "gpt-4o"`,
 		Query:         map[string]any{"combinator": "and"},
 		Priority:      3,
-	}), "the router id is trimmed")
-	require.Equal(t, "team", storedModelRouterRouting(t, store, "support").Scope)
+		Chain:         true,
+		EmptyTarget:   tables.ModelRouterEmptyTargetNextRouter,
+	}
+	require.NoError(t, store.SetModelRouterRouting(ctx, " support ", full), "the router id is trimmed")
+	require.Equal(t, full, storedModelRouterRouting(t, store, "support"), "every part of the routing is stored, chaining and passing on included")
 
 	require.NoError(t, store.SetModelRouterRouting(ctx, "support", ModelRouterRouting{Scope: "global"}))
 	assert.Equal(t, ModelRouterRouting{Scope: "global"}, storedModelRouterRouting(t, store, "support"))
@@ -375,8 +409,8 @@ func TestCreateModelRouterWithRouting(t *testing.T) {
 		require.ErrorIs(t, err, ErrNotFound)
 		assert.EqualValues(t, 1, countRouters(t, store))
 
-		// A taken name is a conflict of its own, not a priority clash.
-		err = store.CreateModelRouter(ctx, testModelRouterWithRouting("other", "Support", ModelRouterRouting{Scope: "global", Priority: 9}))
+		// A taken id is a conflict of its own, not a priority clash.
+		err = store.CreateModelRouter(ctx, testModelRouterWithRouting("support", "Other", ModelRouterRouting{Scope: "global", Priority: 9}))
 		require.ErrorIs(t, err, ErrAlreadyExists)
 		assert.NotErrorIs(t, err, ErrModelRouterPriorityTaken)
 
