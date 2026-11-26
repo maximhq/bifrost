@@ -1,6 +1,24 @@
-- feat: added Azure Blob object storage for logs and skills with connection-string or default Azure identity authentication, JSON/gzip and Parquet support
-- fix: MCP OAuth discovery uses protected resource metadata only when its resource matches the MCP server URL (RFC 9728)
-- fix: logstore builds without cgo again [@jeremym-tanium](https://github.com/jeremym-tanium)
-- chore: upgraded Go to 1.27.3 and core to v1.13.1
-- [fix]: MiniMax video jobs are settled and priced by the video job sweeper instead of being skipped
-- [feat]: BytePlus video jobs are settled and priced by the video job sweeper
+- feat: model routers - `model_routers` and `model_router_targets` tables with config.json support, and the log-store tables and columns for phrase suggestions and routed requests
+- feat: client gateways - `oauth2_server_config.gateways` and device-code columns on `oauth2_authorize_requests` for Claude Code gateway sign-in
+- feat: datasheet overrides - `governance_datasheet_overrides` table merged over the synced datasheet, surviving upstream sync
+- feat: model catalog resolves `regex:` key aliases
+- feat: MachGen video jobs are settled and priced by the video job sweeper
+- feat: openapimcp - spec size limit rises to 32 MiB by default and is configurable with `mcp_openapi_max_spec_mb`
+- feat: warp - management reads and creates through the Bifrost MCP, with confirmation before writes, and model router search filters
+- feat: MCP settings - `slug_code_mode`, `mcp_client_metadata_url` and `mcp_server_max_protocol_version` storage
+- feat: encrypt - PBKDF2-HMAC-SHA-256 key derivation and password hashing in FIPS 140-3 mode; both formats stay readable
+- feat: usage estimation settings and cost for estimated tokens
+- feat: MCP log stats with cancelled counts, a latency histogram and previous-period comparison, and user, team and customer filter data
+- fix: logstore - Postgres retention deletes shrink their batch on statement timeouts, and retention tables get tighter autovacuum settings
+- fix: logstore - ClickHouse hybrid storage updates `has_object` in batches
+- fix: logstore - Relay Logs filter values read the last 30 days, and MCP log team and customer filters match JSON array columns
+- fix: logstore - log list previews fall back to the latest tool call or result
+- fix: logstore - include stop reason in log list and session queries (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: modelcatalog - `allowed_models` accepts a key alias that resolves to an allowed model (thanks [@aharshit123456](https://github.com/aharshit123456)!)
+- fix: modelcatalog - stored model parameters survive the URL sync (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: modelcatalog - ElevenLabs Scribe works with wildcard virtual keys
+- fix: configstore - config hashes are deterministic for map fields (thanks [@rojinebrahimi](https://github.com/rojinebrahimi)!)
+- fix: configstore - customer and team saves no longer rewrite their associations
+- fix: jobaccounting - Seedance video settlements record output tokens
+- fix: openapimcp - every tool argument gets a name clients accept
+- chore: upgraded Go to 1.27.4 and core to v1.16.0

@@ -4,66 +4,76 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.46
+**Latest Version:** 2.1.49
 
 ## Changelog
 
-### Upcoming
+### 2.1.49
 
-#### ⚙️ Upgrade Notes
+- Added `serviceMonitor` to create a Prometheus Operator ServiceMonitor that scrapes Bifrost's `/metrics`. Off by default.
+- Added `serviceMonitor.basicAuth` and `serviceMonitor.authorization` for scraping when auth is enabled. `basicAuth` reuses your existing auth Secret.
+- The chart now refuses `serviceMonitor.enabled: true` when telemetry metrics are turned off.
+- The main Service now carries the `app.kubernetes.io/component: server` label, so the ServiceMonitor scrapes only that Service.
+- Added `bifrost.mcp.clientConfigs[].serverTypeOnSlug` to turn code mode on or off for a client on its own `/mcp/<slug>` endpoint.
+- Added `bifrost.client.mcpClientMetadataUrl` to host Bifrost's MCP Client ID Metadata Document elsewhere, for MCP servers that cannot reach Bifrost.
+- Added `bifrost.modelRouters` to configure model routers, which classify requests as simple, medium or complex and send each tier to a chosen model. They run after routing rules. With config.json as the source of truth, `[]` removes stored routers.
+- `bifrost.governance.complexityAnalyzerConfig.classifier` now accepts `llm`, which requires the `llm` block.
+- Added Prometheus metrics for the embedded Redis: `vectorStore.redis.metrics.enabled` runs a `redis_exporter` sidecar on port 9121.
+- Added `vectorStore.redis.metrics.serviceMonitor` to create a Prometheus Operator ServiceMonitor for the Redis exporter, with optional basic auth.
+- Added `vectorStore.redis.master.extraEnv` and `envFrom` to pass environment variables such as `REDIS_ARGS` to the embedded Redis. They work with Redis auth enabled.
+- Fixed the embedded Redis not saving its data to the persistent volume when Redis auth is enabled, which lost data whenever the pod was replaced. **Behavior change:** the Redis pod restarts once on upgrade.
+- Added `bifrost.client.usageEstimationTokenizers` to choose the tokenizers that estimate usage for cancelled or timed-out streams.
+- Added `bifrost.datasheetOverrides` for pricing and model-parameter overrides that survive datasheet syncs. With config.json as the source of truth, `[]` removes stored overrides.
+- Baseten keys now accept a per-alias `deployment_url`.
+- The semantic cache now accepts `byteplus` and `baseten` as providers.
+- Added `bifrost.client.mcpOpenapiMaxSpecMb` (`client.mcp_openapi_max_spec_mb`) to raise or lower the size limit on an openapi MCP client's spec. 0 keeps the 32 MiB default.
+- Added `bifrost.client.bifrostUrl` (`client.bifrost_url`), the gateway's public base URL including `server.basePath`. `/v1/mcp` needs it; it accepts env and vault references.
+- Added `bifrost.client.bifrostMcpAllowWrites` (`client.bifrost_mcp_allow_writes`) to stop `/v1/mcp` serving configuration changes as tools. On by default.
+- Added `bifrost.framework.pricing.openapiUrl` (`framework.pricing.openapi_url`) to point `/v1/mcp` at a local OpenAPI spec on air-gapped installs.
 
-- **GitHub Copilot keys need a token** - GitHub App authentication is gone, and Bifrost now ignores `github_copilot_key_config` (`app_id`, `installation_id`, `repository_id`, `private_key`, `github_domain`). Put a fine-grained personal access token (`github_pat_…`) or a GitHub OAuth token (`ghu_…` / `gho_…`) in the key's `value`; a key that relied on the App fields no longer authenticates.
-- **Existing MCP servers stay on protocol 2025-06-18** - Upgrading a deployment that already has MCP servers caps them at `2025-06-18`, the version they used before. Set `bifrost.mcp.maxProtocolVersion: auto` to offer the newest version.
-- **Token exchange needs a client ID** - `bifrost.mcp.clientConfigs[].tokenExchange` without `clientId` is now refused unless `useIdpCredentials: true` or `profile: id_jag`. Such a config never worked: Bifrost's own config validation rejected what the chart rendered.
+### 2.1.48
 
-#### ✨ Features
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.useClientMetadataDocument` (`use_client_metadata_document`): register with Bifrost's Client ID Metadata Document even when the authorization server does not advertise it.
+- Added `bifrost.mcp.clientConfigs[].oauthConfig.resource` (`resource`): the OAuth resource indicator, discovered when omitted.
+- Added `workloadIdentity.additionalTrustedIssuers` to every `bifrost.scim.config` provider (enterprise): issuers whose workload tokens can be mapped to service accounts.
+- Added `storage.logsStore.captureClientIp` (`logs_store.capture_client_ip`): record the caller's IP on logs. Off by default.
+- Added `bifrost.mcp.clientConfigs[].perUserDiscovery` (`per_user_discovery`): discover each caller's tools with their own credential. Needs a per-user `authType`.
+- `sse`, `stdio` and `websocket` MCP clients now refuse per-user auth types at render time.
+- `bifrost.governance.routingRules[].id` (`governance.routing_rules[].id`) is now optional: a rule without one is matched by `name`, `scope` and `scope_id`.
 
-**Storage**
+### 2.1.47
 
-- **Parquet log payloads** - Offloaded log payloads can be written as Parquet instead of JSON. Set `storage.logsStore.objectStorage.format` (`json` or `parquet`) and `.compression` (`none` or `gzip` for JSON; `none`, `gzip`, `snappy` or `zstd` for Parquet). Parquet works on S3 and Azure; GCS stays JSON-only.
-- **Azure Blob Storage** - Logs and audit-log archives can be stored in an Azure Blob container: `type: azure`, `bucket` set to the container, and either `endpoint` (Azure identity) or `connectionString`. For logs, `existingSecret` with `connectionStringKey` reads the connection string from a Kubernetes Secret.
-- **Cap temp files during log view refreshes** - `storage.logsStore.matviewRefreshTempFileLimit` (for example `"10GB"`) sets Postgres `temp_file_limit` for materialized-view refreshes. The cap applies to each Postgres process, and parallel workers each get it, so keep cap × (workers + 1) well under free disk. It needs superuser or `GRANT SET ON PARAMETER temp_file_limit`.
-- **Tune the bundled PostgreSQL** - `postgresql.primary.extraArgs` passes server settings such as `["-c", "max_connections=200"]`; changing them restarts the PostgreSQL pod. `postgresql.primary.persistence.annotations` and `.volumeAttributesClassName` add metadata to its volume claim.
+- Added `bifrost.server.basePath` (`server.base_path`) to serve Bifrost under a URL path prefix behind an ingress (e.g. `https://abc.com/bifrost`). The UI, redirects and OAuth callback URLs use the prefix. Requests are accepted with or without it, so the ingress can forward or strip it and probes stay on `/health`.
+- Added `socks5` as a `bifrost.proxyConfig.type` (`proxy_config.type`): `url` is then a `socks5://` or `socks5h://` proxy URL; a bare `host:port` takes its scheme from the type. The values schema previously rejected it, so a SOCKS5 global proxy could only be set from the dashboard.
+- `bifrost.client.oauth2ServerConfig.issuerUrl` (`client.oauth2_server_config.issuer_url`): a trailing slash is now ignored.
+- Bumped `appVersion` from `2.3.1` to `2.4.0`.
 
-**Relays**
+### 2.1.46
 
-- **Relays from values** - `bifrost.relays` declares relays: raw HTTP relays to non-LLM APIs such as Tavily, Exa or AWS Textract, served at `/relay/{name}/...`. Bifrost adds the relay's credential, prices each counted call and charges it to the caller's budgets. Entries render as top-level `relays` in config.json as written. With `sourceOfTruth: config.json`, an explicit list (including `[]`) removes stored relays it doesn't name, and their grants with them; leave the key out to keep stored relays. A repeated name fails the render. Grants are checked for identified callers only: with `bifrost.client.enforceAuthOnInference: false`, a request that carries no credential is relayed without any grant check.
-- **Relay grants** - Callers reach a relay through `relay_grants: [{relay_name: ...}]` on `bifrost.governance.virtualKeys[]`, `bifrost.governance.projects[]` or `bifrost.accessProfiles[]`. Like the rest of the entry, the list in your values is the whole list whenever that key, project or profile syncs from config.json: when its entry changes, or on every start with `sourceOfTruth: config.json`. Leaving `relay_grants` out then means no grants, so list any grant made in the dashboard that should stay. A grant naming a relay that doesn't exist is skipped with a warning on a virtual key; a project or access profile naming one is skipped as a whole. A virtual key whose team, customer or user is governed by an access profile (Enterprise) takes its relays from that profile, and its own `relay_grants` are not applied; grant the relay on the profile.
-
-**Kubernetes**
-
-- **PodDisruptionBudget** - `podDisruptionBudget.enabled: true` keeps at least `minAvailable` (default `1`) Bifrost pods running through node drains and cluster upgrades. Setting `maxUnavailable` replaces `minAvailable`, so `maxUnavailable: "100%"` lets every replica be evicted. It is rendered only in cluster mode, and needs at least 2 replicas.
-
-**Identity and access (Enterprise)**
-
-- **Cross App Access for AI clients** - `bifrost.scim.config.crossAppAccess` lets AI clients your identity provider admits sign in to Bifrost as the user, by exchanging the provider's ID-JAG for a Bifrost token. Options: `enabled`, `accessTokenTtl` (60-86400 seconds, default one day) and `provisionUsers`. It needs `bifrost.client.oauth2ServerConfig.issuerUrl`, the governance plugin, and an identity provider that issues ID-JAGs (such as Okta). Every identity provider's config accepts the setting.
-- **Cross App Access to MCP servers** - `bifrost.mcp.clientConfigs[].tokenExchange.profile: id_jag` gets an ID-JAG for the user from the identity provider and redeems it at the MCP server's authorization server. Set `audience` to that authorization server's issuer and `resourceClientId` to Bifrost's client there. `resourceTokenEndpoint` is discovered from the issuer when left empty. Add `resourceClientSecret` or `resourcePrivateKey` unless Bifrost is a public client.
-- **Token exchange host allowlist** - `bifrost.scim.config.tokenExchangeHosts` lists the hosts, besides the identity provider's own, that an MCP server's token exchange may be sent to.
-- **First-match access profile mappings** - `bifrost.scim.config.accessProfileResolutionStrategy: order` grants only the profiles of the first attribute rule a user matches. The default, `all`, grants every match.
-- **Choose which Okta users sync** - `bifrost.scim.config.syncAllUsers` (default `true`) keeps every user assigned to the Okta app except suspended and deactivated ones; `false` keeps active users only.
-- **Access profile virtual keys** - `bifrost.client.skipAccessProfileUserVirtualKeyCreation: true` stops giving users a virtual key with their first access profile. `skipAccessProfileUserVirtualKeyDeletion: true` keeps their virtual keys when their last profile is removed.
-- **Per-project content logging** - `bifrost.governance.projects[].disable_content_logging` turns request and response content logging on or off for a project's traffic, overriding the virtual key. Omit it to inherit.
-
-**MCP**
-
-- **Cap the MCP protocol version** - `bifrost.mcp.maxProtocolVersion` (`auto`, `2026-07-28`, `2025-11-25` or `2025-06-18`) sets the newest protocol version offered to MCP servers. A server can override it with its own `clientConfigs[].maxProtocolVersion`.
-- **Serve upstream prompts and resources** - `bifrost.mcp.clientConfigs[].promptsToExpose` and `.resourcesToExpose` choose which of an MCP server's prompts and resources the MCP gateway serves: `["*"]` for all, `[]` for none. A new server serves everything when the field is omitted; on an existing server, omitting it keeps the stored list.
-
-**Providers**
-
-- **Amazon SageMaker** - `bifrost.providers.sagemaker` routes requests to SageMaker real-time endpoints. Set `sagemaker_key_config.region`; leave out `access_key` and `secret_key` to use the default AWS credentials (for example IRSA). Models are endpoint names.
-- **Azure Speech and Voice Live** - In `azure_key_config`, `use_speech_endpoints: true` sends speech and transcription to Azure AI Speech, and `use_voice_live_endpoints: true` sends realtime sessions to Azure Voice Live. An alias can override either.
-- **Passthrough allow list** - `bifrost.providers.<name>.passthrough.allowed_routes` limits which HTTP passthrough routes reach a provider, by `path` (`*` and `/**` globs) and optional `methods`. An empty list forwards nothing.
-
-**Dashboard**
-
-- **Warp settings from values** - `bifrost.warp` configures the dashboard's Warp assistant: model and provider, limits, embeddings, log search and topics. Warp also needs `bifrost.featureFlags.warp.enabled: true` and a vector store.
-- **Hide the setup checklist** - `bifrost.disableOnboarding: true` hides the dashboard's setup checklist for every user. It is read from config.json on every start, so it holds on stateless deployments.
-
-#### 🐞 Fixed
-
-- **Identity provider settings rejected by validation** - `crossAppAccess`, `tokenExchangeHosts` and `accessProfileResolutionStrategy` were read by Bifrost, but both the chart's values schema and `config.schema.json` refused them, so they could only be set from the dashboard.
-- **Okta `syncAllUsers` rejected** - The values schema refused `bifrost.scim.config.syncAllUsers`, so it could only be set from the dashboard.
+- Removed GitHub App authentication from GitHub Copilot provider keys: Bifrost now ignores `github_copilot_key_config` (`app_id`, `installation_id`, `repository_id`, `private_key`, `github_domain`). **Migrate before upgrading:** put a fine-grained personal access token (`github_pat_…`, with the **Copilot Requests** account permission, from an account with an active Copilot plan or assigned Copilot seat) or a GitHub OAuth token (`ghu_…` / `gho_…`) in the key's `value`; a key that relied on the App fields no longer authenticates.
+- Added `bifrost.mcp.maxProtocolVersion` (`mcp.max_protocol_version`), one of `auto`, `2026-07-28`, `2025-11-25` or `2025-06-18`: the newest MCP protocol version offered to MCP servers. `bifrost.mcp.clientConfigs[].maxProtocolVersion` (`mcp.client_configs[].max_protocol_version`) overrides it for one server. Upgrading a deployment that already has MCP servers caps them at `2025-06-18`, the version they used before; set `auto` to offer the newest version.
+- `bifrost.mcp.clientConfigs[].tokenExchange` (`mcp.client_configs[].token_exchange`) without `clientId` is now refused unless `useIdpCredentials: true` or `profile: id_jag`. Such a config never worked: Bifrost's own config validation rejected what the chart rendered.
+- Added `profile: id_jag` to `bifrost.mcp.clientConfigs[].tokenExchange` (`mcp.client_configs[].token_exchange.profile`) for Cross App Access to MCP servers (Enterprise): Bifrost gets an ID-JAG for the user from the identity provider and redeems it at the MCP server's authorization server. Set `audience` to that authorization server's issuer and `resourceClientId` (`resource_client_id`) to Bifrost's client there. `resourceTokenEndpoint` is discovered from the issuer when left empty. Add `resourceClientSecret` or `resourcePrivateKey` unless Bifrost is a public client.
+- Added `bifrost.mcp.clientConfigs[].promptsToExpose` and `.resourcesToExpose` (`mcp.client_configs[].prompts_to_expose` / `resources_to_expose`): which of an MCP server's prompts and resources the MCP gateway serves, `["*"]` for all and `[]` for none. A new server serves everything when the field is omitted; on an existing server, omitting it keeps the stored list.
+- Added `openapi` as a `bifrost.mcp.clientConfigs[].connectionType`, configured by `openapiConfig.spec`, `.specFile`, `.specUrl`, `.baseUrl`, `.securityCredentials`, `.includeDeprecated` and `.maxResponseBytes`. Renders into `mcp.client_configs[].openapi_config.spec` / `spec_file` / `spec_url` / `base_url` / `security_credentials` / `include_deprecated` / `max_response_bytes`. Bifrost builds an MCP server from an OpenAPI or Swagger document, with each API operation as a tool; operations the document marks deprecated are skipped unless `includeDeprecated: true`. `specFile` is read relative to `bifrost.appDir`, so mount it with `volumes`/`volumeMounts`. `authType` can only be `none`, `headers` or `per_user_headers`. The connection type existed in Bifrost but had no Helm path, so it could only be added from the dashboard.
+- Added `storage.logsStore.objectStorage.format` and `.compression` (`logs_store.object_storage.format` / `compression`) to write offloaded log payloads as Parquet instead of JSON. `format` is `json` or `parquet`; `compression` is `none` or `gzip` for JSON, and `none`, `gzip`, `snappy` or `zstd` for Parquet. Parquet works on S3 and Azure; GCS stays JSON-only.
+- Added `azure` as a `type` for `storage.logsStore.objectStorage` and `bifrost.auditLogs.objectStorage` (`logs_store.object_storage` / `audit_logs.object_storage`): `bucket` is the Azure Blob container, with either `endpoint` (Azure identity) or `connectionString`. For logs, `existingSecret` with `connectionStringKey` reads the connection string from a Kubernetes Secret.
+- Added `storage.logsStore.matviewRefreshTempFileLimit` (`logs_store.config.matview_refresh_temp_file_limit`), for example `"10GB"`: Postgres `temp_file_limit` for materialized-view refreshes. The cap applies to each Postgres process, and parallel workers each get it, so keep cap × (workers + 1) well under free disk. It needs superuser or `GRANT SET ON PARAMETER temp_file_limit`.
+- Added `postgresql.primary.extraArgs` (server settings such as `["-c", "max_connections=200"]`; changing them restarts the PostgreSQL pod), `postgresql.primary.persistence.annotations` and `postgresql.primary.persistence.volumeAttributesClassName` to the bundled PostgreSQL. Pod-spec only, no config.json change.
+- Added `bifrost.relays` (top-level `relays`): raw HTTP relays to non-LLM APIs such as Tavily, Exa or AWS Textract, served at `/relay/{name}/...`. Bifrost adds the relay's credential, prices each counted call and charges it to the caller's budgets. Entries render as written. With `sourceOfTruth: config.json`, an explicit list (including `[]`) removes stored relays it doesn't name, and their grants with them; leave the key out to keep stored relays. A repeated name fails the render. Grants are checked for identified callers only: with `bifrost.client.enforceAuthOnInference: false`, a request that carries no credential is relayed without any grant check.
+- Added `relay_grants: [{relay_name: ...}]` to `bifrost.governance.virtualKeys[]`, `bifrost.governance.projects[]` and `bifrost.accessProfiles[]` (`relay_grants`), the relays a caller can reach. Like the rest of the entry, the list in your values is the whole list whenever that key, project or profile syncs from config.json: when its entry changes, or on every start with `sourceOfTruth: config.json`. Leaving `relay_grants` out then means no grants, so list any grant made in the dashboard that should stay. A grant naming a relay that doesn't exist is skipped with a warning on a virtual key; a project or access profile naming one is skipped as a whole. A virtual key whose team, customer or user is governed by an access profile (Enterprise) takes its relays from that profile, and its own `relay_grants` are not applied; grant the relay on the profile.
+- Added `podDisruptionBudget` (top-level value): `enabled: true` keeps at least `minAvailable` (default `1`) Bifrost pods running through node drains and cluster upgrades. Setting `maxUnavailable` replaces `minAvailable`, so `maxUnavailable: "100%"` lets every replica be evicted. Rendered only in cluster mode, and needs at least 2 replicas. No config.json change.
+- Added `bifrost.scim.config.crossAppAccess` (`scim_config.config.crossAppAccess`, every identity provider; Enterprise): lets AI clients your identity provider admits sign in to Bifrost as the user, by exchanging the provider's ID-JAG for a Bifrost token. Takes `enabled`, `accessTokenTtl` (60-86400 seconds, default one day) and `provisionUsers`. It needs `bifrost.client.oauth2ServerConfig.issuerUrl`, the governance plugin, and an identity provider that issues ID-JAGs (such as Okta). Previously both the values schema and config.schema.json rejected it, so it could only be set from the dashboard.
+- Added `bifrost.scim.config.tokenExchangeHosts` (`scim_config.config.tokenExchangeHosts`, Enterprise): the hosts, besides the identity provider's own, that an MCP server's token exchange may be sent to. Previously both the values schema and config.schema.json rejected it, so it could only be set from the dashboard.
+- Added `bifrost.scim.config.accessProfileResolutionStrategy` (`scim_config.config.accessProfileResolutionStrategy`, Enterprise): `order` grants only the profiles of the first attribute rule a user matches; the default, `all`, grants every match. Previously both the values schema and config.schema.json rejected it, so it could only be set from the dashboard.
+- Added `bifrost.scim.config.syncAllUsers` (`scim_config.config.syncAllUsers`, Okta, default `true`): which users Okta directory sync keeps. `true` keeps every user assigned to the Okta app except suspended and deactivated ones; `false` keeps active users only. Directory sync runs only when `apiToken` is set. Previously the values schema rejected it, so it could only be set from the dashboard.
+- Added `bifrost.client.skipAccessProfileUserVirtualKeyCreation` and `.skipAccessProfileUserVirtualKeyDeletion` (`client.skip_access_profile_user_virtual_key_creation` / `skip_access_profile_user_virtual_key_deletion`, Enterprise): `true` stops giving users a virtual key with their first access profile, and keeps their virtual keys when their last profile is removed.
+- Added `disable_content_logging` to `bifrost.governance.projects[]` (`governance.projects[].disable_content_logging`): turns request and response content logging on or off for a project's traffic, overriding the virtual key. Omit it to inherit.
+- Added the `sagemaker` provider (Amazon SageMaker real-time endpoints) to `bifrost.providers` (`providers.sagemaker`). Set `sagemaker_key_config.region`; leave out `access_key` and `secret_key` to use the default AWS credentials (for example IRSA). Models are endpoint names.
+- Added `use_speech_endpoints` and `use_voice_live_endpoints` to `azure_key_config` (`providers.azure.keys[].azure_key_config`): `true` sends speech and transcription to Azure AI Speech, and realtime sessions to Azure Voice Live. An alias can override either.
+- Added `bifrost.providers.<name>.passthrough.allowed_routes` (`providers.<name>.passthrough.allowed_routes`): limits which HTTP passthrough routes reach a provider, by `path` (`*` and `/**` globs) and optional `methods`. An empty list forwards nothing.
+- Added `bifrost.warp` (top-level `warp`): configures the dashboard's Warp assistant (model and provider, limits, embeddings, log search and topics). Warp also needs `bifrost.featureFlags.warp.enabled: true` and a vector store.
+- Added `bifrost.disableOnboarding` (`disable_onboarding`): `true` hides the dashboard's setup checklist for every user. It is read from config.json on every start, so it holds on stateless deployments.
 
 ### 2.1.45
 
@@ -1057,6 +1067,13 @@ vectorStore:
     # external:
     #   enabled: true
     #   host: "redis.example.com"
+    # master:
+    #   extraEnv: [] # Extra EnvVar entries for the Redis container, e.g. REDIS_ARGS
+    #   envFrom: [] # secretRef / configMapRef sources for the Redis container
+    metrics:
+      enabled: false # redis_exporter sidecar + `metrics` Service port (9121) + prometheus.io annotations
+      # serviceMonitor:
+      #   enabled: false # Prometheus Operator ServiceMonitor
 ```
 
 #### Qdrant
@@ -1395,6 +1412,67 @@ Bifrost exposes Prometheus metrics at `/metrics`:
 # Get metrics
 curl http://localhost:8080/metrics
 ```
+
+### Prometheus Operator (ServiceMonitor)
+
+If you run the Prometheus Operator (e.g. via [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)), enable the bundled `ServiceMonitor` so Prometheus scrapes the `/metrics` endpoint automatically:
+
+```yaml
+serviceMonitor:
+  enabled: true
+  # Must match your Prometheus instance's serviceMonitorSelector.
+  additionalLabels:
+    release: kube-prometheus-stack
+  interval: 30s
+  scrapeTimeout: 10s
+  path: /metrics
+  # Optionally drop high-cardinality series:
+  # metricRelabelings:
+  #   - sourceLabels: [__name__]
+  #     regex: "go_gc_.*"
+  #     action: drop
+```
+
+The `ServiceMonitor` targets the service's `http` port. The `monitoring.coreos.com/v1` CRDs must be installed in the cluster for the rendered manifest to apply — rendering does not require them, so `helm template` and offline GitOps tooling (Argo CD, Flux) work without cluster access. Leave `serviceMonitor.enabled: false` (the default) if you use OpenTelemetry push-based metrics or a Prometheus scrape-annotation setup instead.
+
+#### Scraping with authentication enabled
+
+Bifrost's auth middleware is global. When auth is on (`bifrost.authConfig.isEnabled` or `bifrost.governance.authConfig.isEnabled`), `/metrics` requires credentials too, as it is not one of the routes that stay open without auth (such as `/health`). **An unauthenticated scrape gets a `401` and the target silently sits at `up=0`**: the Prometheus UI shows a target, no error is logged by the chart, and no Bifrost metrics are ever stored.
+
+Enable `serviceMonitor.basicAuth` so the scrape authenticates with the admin credentials:
+
+```yaml
+bifrost:
+  authConfig:
+    isEnabled: true
+    # Prometheus reads scrape credentials from a Secret, so the admin credentials
+    # must live in one — inline adminUsername/adminPassword cannot be used for scraping.
+    existingSecret: bifrost-secrets
+    usernameKey: admin-username
+    passwordKey: admin-password
+
+serviceMonitor:
+  enabled: true
+  basicAuth:
+    enabled: true
+    # In the release namespace these fields default to the active authConfig above,
+    # so rotating the admin password rotates the scrape credentials with it.
+```
+
+The Secret must exist in the `ServiceMonitor`'s namespace. Auth-config Secret inheritance is available only when the `ServiceMonitor` uses the Helm release namespace; if you set `serviceMonitor.namespace` to another namespace, set `serviceMonitor.basicAuth.existingSecret` explicitly to a Secret there. If `basicAuth.enabled` is true and no Secret can be resolved, the render fails rather than producing a `ServiceMonitor` that would quietly scrape 401s.
+
+Prometheus picks up a changed Secret on its next scrape, but Bifrost reads the admin credentials as environment variables when the pod starts. After rotating the Secret, restart the pods (`kubectl rollout restart`); until they restart, scrapes send the new password and get `401`.
+
+The render also fails if `bifrost.plugins.telemetry.config.metrics_enabled` is `false`: `/metrics` then returns `404`, so the target would sit at `up=0` all the same.
+
+To authenticate with a bearer token instead, use `serviceMonitor.authorization` (mutually exclusive with `basicAuth`), with `credentials` pointing at the Secret that holds the token; the render fails without them. Bifrost accepts a session token or a base64-encoded `username:password` as the bearer token. Session tokens expire, so a static Secret holding one needs rotating, or scrapes start returning `401`; `basicAuth` has no such expiry.
+
+**What the scrape credentials can do.** Bifrost has no metrics-only credential: the basic-auth admin credentials, a base64 `username:password` bearer token and a session token all pass the same auth check as the dashboard and the management API. Whoever holds the scrape credentials therefore has admin access to Bifrost, not just to `/metrics`. Treat them that way:
+
+- The Prometheus Operator copies the referenced credentials into the configuration it generates for Prometheus, so they also live in the Prometheus namespace. Restrict who can read Secrets there and in the `ServiceMonitor`'s namespace.
+- With the default `http` scheme the credentials cross the pod network in plain text on every scrape. Use `scheme: https` with `tlsConfig` when Bifrost serves TLS, or a service mesh that encrypts pod-to-pod traffic.
+
+**Leaving `/metrics` unauthenticated instead.** Adding `/metrics` to `bifrost.client.whitelistedRoutes` skips scrape auth, but it opens the endpoint to every client that can reach Bifrost, not only Prometheus. The chart's default ingress routes every path (`path: /`, `pathType: Prefix`), so `/metrics` (and `/<prefix>/metrics` with `bifrost.server.basePath`) becomes reachable from outside the cluster. The metrics carry customer, team, user and virtual key names and IDs as labels, so this discloses tenant and key information. Only whitelist `/metrics` if the ingress does not expose it (a path rule or controller deny for `/metrics`) and a NetworkPolicy limits in-cluster access to Prometheus.
 
 For OpenTelemetry integration:
 

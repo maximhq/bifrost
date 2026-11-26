@@ -21,9 +21,9 @@ func azureModelRouterPricing() configstoreTables.TableModelPricing {
 }
 
 func TestCalculateCost_AzureModelRouter_ChatCompletion(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
-		makeKey("gpt-4.1-mini", "azure", "chat"): {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("model-router", "azure", "chat"): azureModelRouterPricing(),
+		makeKeyNormalized("gpt-4.1-mini", "azure", "chat"): {
 			Model: "gpt-4.1-mini", Provider: "azure", Mode: "chat",
 			InputCostPerToken:  new(0.0000004),
 			OutputCostPerToken: new(0.0000016),
@@ -45,12 +45,12 @@ func TestCalculateCost_AzureModelRouter_ChatCompletion(t *testing.T) {
 }
 
 func TestCalculateCost_AzureModelRouter_Responses(t *testing.T) {
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("model-router", "azure", "responses"): {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("model-router", "azure", "responses"): {
 			Model: "model-router", Provider: "azure", Mode: "responses",
 			InputCostPerToken: new(0.00000014),
 		},
-		makeKey("gpt-4.1-mini", "azure", "responses"): {
+		makeKeyNormalized("gpt-4.1-mini", "azure", "responses"): {
 			Model: "gpt-4.1-mini", Provider: "azure", Mode: "responses",
 			InputCostPerToken:  new(0.0000004),
 			OutputCostPerToken: new(0.0000016),
@@ -83,12 +83,12 @@ func TestCalculateCost_AzureModelRouter_ResponsesStream(t *testing.T) {
 	// Streaming Responses carries usage/model wrapped one level deeper, in
 	// ResponsesStreamResponse.Response — the shape framework/streaming/responses.go
 	// passes to CalculateCost on the final chunk.
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("model-router", "azure", "responses"): {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("model-router", "azure", "responses"): {
 			Model: "model-router", Provider: "azure", Mode: "responses",
 			InputCostPerToken: new(0.00000014),
 		},
-		makeKey("gpt-4.1-mini", "azure", "responses"): {
+		makeKeyNormalized("gpt-4.1-mini", "azure", "responses"): {
 			Model: "gpt-4.1-mini", Provider: "azure", Mode: "responses",
 			InputCostPerToken:  new(0.0000004),
 			OutputCostPerToken: new(0.0000016),
@@ -126,9 +126,9 @@ func TestCalculateCost_AzureModelRouter_TextCompletion_ConvertedToChat(t *testin
 	// ExtraFields.RequestType == TextCompletionRequest, but must still price
 	// against the catalog's "chat" mode rows (there is no "completion" mode
 	// row for either model-router or the model it routed to).
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
-		makeKey("gpt-4.1-mini", "azure", "chat"): {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("model-router", "azure", "chat"): azureModelRouterPricing(),
+		makeKeyNormalized("gpt-4.1-mini", "azure", "chat"): {
 			Model: "gpt-4.1-mini", Provider: "azure", Mode: "chat",
 			InputCostPerToken:  new(0.0000004),
 			OutputCostPerToken: new(0.0000016),
@@ -159,8 +159,8 @@ func TestCalculateCost_AzureModelRouter_TextCompletion_ConvertedToChat(t *testin
 
 func TestCalculateCost_AzureModelRouter_NoUnderlyingPricing(t *testing.T) {
 	// Only the model-router row exists — underlying model has no catalog entry.
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("model-router", "azure", "chat"): azureModelRouterPricing(),
 	})
 
 	resp := makeChatResponse(schemas.Azure, "model-router", &schemas.BifrostLLMUsage{
@@ -179,8 +179,8 @@ func TestCalculateCost_AzureModelRouter_ServedModelSameAsRouter_NoDoubleCounting
 	// Defensive: if the response echoes "model-router" as its own model (should
 	// not happen in practice), the underlying-model cost must not be added a
 	// second time on top of the surcharge.
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("model-router", "azure", "chat"): azureModelRouterPricing(),
 	})
 
 	resp := makeChatResponse(schemas.Azure, "model-router", &schemas.BifrostLLMUsage{
@@ -197,8 +197,8 @@ func TestCalculateCost_AzureModelRouter_ServedModelSameAsRouter_NoDoubleCounting
 func TestCalculateCost_AzureModelRouter_NonAzureProviderUnaffected(t *testing.T) {
 	// A model name containing "model-router" under a non-Azure provider must
 	// not trigger the surcharge-plus-underlying-model split.
-	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
-		makeKey("model-router", "openai", "chat"): {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("model-router", "openai", "chat"): {
 			Model: "model-router", Provider: "openai", Mode: "chat",
 			InputCostPerToken:  new(0.000005),
 			OutputCostPerToken: new(0.000015),
@@ -215,4 +215,76 @@ func TestCalculateCost_AzureModelRouter_NonAzureProviderUnaffected(t *testing.T)
 	cost := s.CalculateCost(resp, nil)
 	// Plain pricing: 10000*0.000005 + 2000*0.000015 = 0.05 + 0.03 = 0.08
 	assert.InDelta(t, 0.08, cost, 1e-12)
+}
+
+func TestCalculateCost_AzureModelRouter_BehindKeyAlias(t *testing.T) {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
+		makeKey("gpt-4.1-mini", "azure", "chat"): {
+			Model: "gpt-4.1-mini", Provider: "azure", Mode: "chat",
+			InputCostPerToken:  new(0.0000004),
+			OutputCostPerToken: new(0.0000016),
+		},
+	})
+	surcharge := 10000 * 0.00000014
+	underlying := 10000*0.0000004 + 2000*0.0000016
+
+	for name, tt := range map[string]struct {
+		servedModel string
+		want        float64
+	}{
+		"bills the surcharge and the served model": {"gpt-4.1-mini", surcharge + underlying},
+		"router named as served model bills once":  {"model-router", surcharge},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp := makeChatResponse(schemas.Azure, "router-prod", &schemas.BifrostLLMUsage{
+				PromptTokens:     10000,
+				CompletionTokens: 2000,
+				TotalTokens:      12000,
+			})
+			resp.ChatResponse.Model = tt.servedModel
+			resp.ChatResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: "model-router"}
+			assert.InDelta(t, tt.want, s.CalculateCost(resp, nil), 1e-12)
+		})
+	}
+}
+
+// An alias named like the router can still resolve to an ordinary model, which must bill once.
+func TestCalculateCost_AzureModelRouter_RouterNamedAliasOfOrdinaryModel(t *testing.T) {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
+		makeKey("gpt-4.1-mini", "azure", "chat"): {
+			Model: "gpt-4.1-mini", Provider: "azure", Mode: "chat",
+			InputCostPerToken:  new(0.0000004),
+			OutputCostPerToken: new(0.0000016),
+		},
+	})
+	resp := makeChatResponse(schemas.Azure, "model-router-prod", &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+	resp.ChatResponse.Model = "gpt-4.1-mini"
+	resp.ChatResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: "gpt-4.1-mini"}
+	assert.InDelta(t, 10000*0.0000004+2000*0.0000016, s.CalculateCost(resp, nil), 1e-12)
+}
+
+// A router behind an opaque deployment name is only recognizable from the alias's canonical name.
+func TestCalculateCost_AzureModelRouter_OpaqueDeploymentWithRouterModelName(t *testing.T) {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKey("model-router", "azure", "chat"): azureModelRouterPricing(),
+		makeKey("gpt-4.1-mini", "azure", "chat"): {
+			Model: "gpt-4.1-mini", Provider: "azure", Mode: "chat",
+			InputCostPerToken:  new(0.0000004),
+			OutputCostPerToken: new(0.0000016),
+		},
+	})
+	resp := makeChatResponse(schemas.Azure, "router-prod", &schemas.BifrostLLMUsage{
+		PromptTokens:     10000,
+		CompletionTokens: 2000,
+		TotalTokens:      12000,
+	})
+	resp.ChatResponse.Model = "gpt-4.1-mini"
+	resp.ChatResponse.ExtraFields.RoutingInfo.ResolvedKeyAlias = &schemas.ResolvedKeyAlias{ModelID: "dep-01", ModelName: new("model-router")}
+	assert.InDelta(t, 10000*0.00000014+10000*0.0000004+2000*0.0000016, s.CalculateCost(resp, nil), 1e-12)
 }

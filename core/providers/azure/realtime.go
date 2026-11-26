@@ -59,6 +59,10 @@ func (provider *AzureProvider) RealtimeWebSocketURL(ctx *schemas.BifrostContext,
 		if intent != "" {
 			return "", newAzureRealtimeError(fasthttp.StatusBadRequest, "invalid_request_error", "azure voice live does not take a realtime intent", nil)
 		}
+		// Voice Live turns are priced at the model's _voice_live rates.
+		if ctx != nil {
+			ctx.SetValue(schemas.BifrostContextKeyRealtimePricingSurface, schemas.PricingSurfaceVoiceLive)
+		}
 		return fmt.Sprintf("%s/voice-live/realtime?api-version=%s&model=%s", endpoint, url.QueryEscape(resolveAPIVersion(ctx, azureVoiceLiveAPIVersion)), url.QueryEscape(model)), nil
 	}
 

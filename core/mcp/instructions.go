@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -22,35 +21,6 @@ const (
 	// in prose are left alone. See instructionTagPattern.
 	instructionTagPrefix = "mcp_server"
 )
-
-// GetServerInstructions returns the initialize `instructions` of every MCP client this
-// request may see, labeled with the client they came from and ordered deterministically.
-//
-// Visibility follows GetToolPerClient, so a narrowed caller never reads the guidance of a server it
-// was not granted.
-//
-// Code mode clients are excluded: their tools are never sent, so their guidance rides in the
-// stub instead. See InstructionsCommentBlock.
-func (m *MCPManager) GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions {
-	visible := m.GetToolPerClient(ctx)
-	// Runs on every MCP-bearing request: reads three fields under the lock instead of copying client state.
-	m.mu.RLock()
-	var result []schemas.MCPServerInstructions
-	for _, client := range m.clientMap {
-		config := client.ExecutionConfig
-		if config == nil || config.IsCodeModeClient || client.ServerInstructions == "" || len(visible[config.Name]) == 0 {
-			continue
-		}
-		result = append(result, schemas.MCPServerInstructions{
-			ClientName:   config.Name,
-			Instructions: client.ServerInstructions,
-			MaxLength:    config.MaxInstructionsLength,
-		})
-	}
-	m.mu.RUnlock()
-	slices.SortFunc(result, func(a, b schemas.MCPServerInstructions) int { return strings.Compare(a.ClientName, b.ClientName) })
-	return result
-}
 
 // InstructionCaps bounds forwarded instructions in bytes. A zero field takes the built-in
 // default, so callers that do not care can pass the zero value.
@@ -225,8 +195,21 @@ func (m *MCPManager) InstructionCaps() InstructionCaps {
 	return m.toolsManager.instructionCaps()
 }
 
-// GetAggregatedServerInstructions renders the instructions of every client visible to ctx
-// into a single labeled, size-bounded block. See GetServerInstructions for the scoping rule.
+// GetAggregatedServerInstructions renders the initialize `instructions` of every MCP client
+// visible to ctx into a single labeled, size-bounded block: the Instructions of the caller's
+// CallerDiscovery, ordered by client name.
+//
+// The scoping rule, which CallerDiscovery applies: visibility is not decided for instructions on
+// their own, it rides entirely on the client's visible tools, which already apply the
+// disabled check, the caller's include-clients/include-tools lists, and the client's own
+// ToolsToExecute allow-list. A client contributing no visible tool is a client this caller
+// cannot reach at all, so its instructions are withheld too — this is what keeps a narrowed
+// caller (x-bf-mcp-include-clients, or a /mcp/<slug> Virtual MCP) from reading the guidance
+// of a server it was never granted. The text is read from the caller's discovery for each
+// client, in the same read as its tools, so a client with per_user_discovery on serves each
+// caller its own instructions with no extra wiring. Code mode clients are excluded: their
+// tools are never sent, so their guidance rides in the stub instead. See
+// InstructionsCommentBlock.
 func (m *MCPManager) GetAggregatedServerInstructions(ctx context.Context) string {
-	return AggregateServerInstructions(m.GetServerInstructions(ctx), m.toolsManager.instructionCaps())
+	return AggregateServerInstructions(m.resolveCallerDiscovery(ctx, false, true).Instructions, m.toolsManager.instructionCaps())
 }

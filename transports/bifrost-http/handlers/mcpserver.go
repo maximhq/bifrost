@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,8 +19,10 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	bifrost "github.com/maximhq/bifrost/core"
+	coremcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -62,14 +66,6 @@ type MCPGatewayAdmitter interface {
 	MCPClientToolAccess(ctx *schemas.BifrostContext, slug string, access schemas.Access) (served []string, ok bool)
 }
 
-// VirtualKeyCache resolves a virtual key by its row ID from an in-memory cache,
-// letting the JWT auth path avoid a per-request database read. Satisfied by the
-// governance plugin's in-memory store. Optional: when nil (or a cache miss), the
-// handler falls back to the config store.
-type VirtualKeyCache interface {
-	GetVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, bool)
-}
-
 // MCPServerHandler manages HTTP requests for MCP server operations
 // It implements the MCP protocol over HTTP streaming (SSE) for MCP clients
 type MCPServerHandler struct {
@@ -82,17 +78,19 @@ type MCPServerHandler struct {
 	// governance's: whether a user-mode caller still exists, and whether user mode is offered at
 	// all. Optional.
 	identityResolver OAuth2IdentityResolver
-	// vkCache serves by-ID virtual key lookups on the JWT auth path from the
-	// governance in-memory store, avoiding a per-request DB read. Optional: a nil
-	// cache or a miss falls back to the config store. See getVirtualKeyByID.
-	vkCache VirtualKeyCache
 	// mcpServer is the one server every caller is served from, for the life of the handler. What
 	// each caller sees of it is decided per request, from the tool list stamped on the request
 	// context, so nothing about it is per caller. Its tools are replaced in place on a registry change.
 	mcpServer *server.MCPServer
-	// transport speaks the Streamable HTTP rules of every protocol revision on top of mcpServer.
-	transport *server.StreamableHTTPServer
-	served    MCPResourcesAndPromptsServer // nil serves tools only
+	// transport speaks the Streamable HTTP rules of every protocol revision on top of mcpServer. It is
+	// never replaced: sessions are registered on mcpServer, so a new transport would refuse their streams.
+	transport       *server.StreamableHTTPServer
+	allowedVersions atomic.Pointer[[]string]         // versions /mcp serves, newest first; nil is uncapped
+	served          MCPResourcesAndPromptsServer     // nil serves tools only
+	perCaller       atomic.Pointer[perCallerEntries] // placeholders for clients with per_user_discovery on; nil when none (see mcpserverpercaller.go)
+	syncMu          sync.Mutex                       // orders syncs, so the newest read of the server's lists is the one installed
+	toolIndex       atomic.Pointer[gatewayToolIndex] // MCP Apps facts and server-given names of the installed tools
+	uiResources     atomic.Bool                      // the server installed namespaced ui:// resources or templates
 	// tokenValidator, when set, may refuse a verified Bifrost-issued token.
 	tokenValidator MCPTokenValidator
 }
@@ -134,17 +132,8 @@ func (h *MCPServerHandler) GatewayAudience(ctx *fasthttp.RequestCtx) string {
 	return oauth2GatewayAudience(ctx, h.config)
 }
 
-// getVirtualKeyByID resolves a virtual key by its row ID for the JWT auth path,
-// preferring the governance in-memory cache and falling back to the config store
-// on a miss (e.g. a key created since the cache last refreshed) or when no cache
-// is wired. Whether the key may be used is not decided here: governance refuses a
-// key that is inactive or expired, from the grant it resolves for it.
-func (h *MCPServerHandler) getVirtualKeyByID(ctx context.Context, vkID string) (*tables.TableVirtualKey, error) {
-	return virtualKeyByID(ctx, h.vkCache, h.config.ConfigStore, vkID)
-}
-
 // NewMCPServerHandler creates a new MCP server handler instance
-func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, admitter MCPGatewayAdmitter, identityResolver OAuth2IdentityResolver, vkCache VirtualKeyCache) (*MCPServerHandler, error) {
+func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MCPToolManager, admitter MCPGatewayAdmitter, identityResolver OAuth2IdentityResolver) (*MCPServerHandler, error) {
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -157,12 +146,12 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 		admitter:         admitter,
 		config:           config,
 		identityResolver: identityResolver,
-		vkCache:          vkCache,
 	}
 
 	handler.served, _ = toolManager.(MCPResourcesAndPromptsServer)
 	handler.mcpServer = handler.buildServer()
 	handler.transport = newMCPTransport(handler.mcpServer)
+	handler.UpdateServerMaxProtocolVersion(config.ClientConfig.MCPServerMaxProtocolVersion)
 	if err := handler.SyncMCPServer(ctx); err != nil {
 		return nil, fmt.Errorf("failed to sync all MCP servers: %w", err)
 	}
@@ -205,7 +194,11 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 
 	if refusal := h.admit(ctx, bifrostCtx); refusal != nil {
 		cancel()
-		SendError(ctx, refusal.status, refusal.message)
+		sendMCPRefusal(ctx, refusal)
+		return
+	}
+	if h.refuseVersionAboveCap(ctx) {
+		cancel()
 		return
 	}
 
@@ -341,14 +334,46 @@ func runMCPStreamCompleter(completerSlot *atomic.Value) []schemas.PluginLogEntry
 // SyncMCPServer replaces the server's tools with those currently available. Called whenever the set
 // of MCP clients or their tools changes; the server tells listening clients the list changed. Every
 // caller is served from this one server; what each of them sees is decided per request.
-func (h *MCPServerHandler) SyncMCPServer(ctx context.Context) error {
-	availableTools := h.toolManager.GetAvailableMCPTools(ctx)
-	h.mcpServer.SetTools(h.serverTools(availableTools)...)
-	logger.Debug("Synced MCP server with %d tools", len(availableTools))
-	if h.served != nil {
-		h.syncResourcesAndPrompts(ctx)
+//
+// The lists are read without the trigger's identity: some syncs run on an admin's request,
+// and a client with per_user_discovery on would otherwise publish that admin's own discovery to
+// every caller. Such a client is served through placeholders instead (see mcpserverpercaller.go).
+func (h *MCPServerHandler) SyncMCPServer(_ context.Context) error {
+	ctx := context.Background()
+	h.syncMu.Lock()
+	defer h.syncMu.Unlock()
+	perCaller, err := h.loadPerCallerEntries(ctx)
+	if err != nil {
+		// The shared tools still refresh; the placeholders already installed stay until a read succeeds.
+		logger.Warn("[mcp-server] %v; keeping the per-caller names already installed", err)
+		perCaller = perCaller.union(h.perCaller.Load())
 	}
+	h.install(perCaller)
 	return nil
+}
+
+// install replaces the server's lists with what is available now and perCaller's placeholders.
+// While they are replaced, the list hooks know the placeholders of both the old and the new set, so
+// no placeholder is ever listed as it is. Callers hold syncMu.
+func (h *MCPServerHandler) install(perCaller *perCallerEntries) {
+	ctx := context.Background()
+	h.perCaller.Store(h.perCaller.Load().union(perCaller))
+	// App-only tools are installed too; who may see and call them is decided per request.
+	// Installs every tool /mcp or a client's /mcp/<slug> may serve; code mode is decided per request.
+	availableTools := h.toolManager.GetAvailableMCPTools(coremcp.WithGatewayTools(ctx))
+	tools, index := h.serverTools(availableTools)
+	index = h.indexServerTypesOnSlug(ctx, index, availableTools)
+	tools = append(tools, h.perCallerServerTools(perCaller, tools)...)
+	// Refusal tools go in last, so every exact name, per-caller placeholders included, wins over them.
+	index = indexPerCallerNames(index, perCaller)
+	tools = h.refusalTools(index, tools)
+	h.toolIndex.Store(index)
+	h.mcpServer.SetTools(tools...)
+	logger.Debug("Synced MCP server with %d tools", len(tools))
+	if h.served != nil {
+		h.syncResourcesAndPrompts(ctx, perCaller)
+	}
+	h.perCaller.Store(perCaller)
 }
 
 // server returns the server requests are served from.
@@ -388,7 +413,9 @@ func (h *MCPServerHandler) setInstructions(ctx context.Context, field *string) {
 func (h *MCPServerHandler) buildServer() *server.MCPServer {
 	hooks := &server.Hooks{}
 	hooks.AddAfterListTools(h.narrowListedTools)
+	hooks.AddBeforeCallTool(h.resolveCallToolName)
 	hooks.AddAfterInitialize(h.forwardServerInstructions)
+	hooks.AddAfterInitialize(h.capInitializeVersion)
 	hooks.AddAfterDiscover(h.forwardDiscoverInstructions)
 
 	// No WithToolFilter: mcp-go also applies a tool filter to tools/call and answers "not found" before
@@ -398,6 +425,8 @@ func (h *MCPServerHandler) buildServer() *server.MCPServer {
 		server.WithToolCapabilities(true),
 	}
 	if h.served != nil {
+		// MCP Apps needs resources/read to fetch the ui:// resources.
+		options = append(options, server.WithExtensions(mcpAppsServerExtension))
 		options = append(options, h.resourcesAndPromptsOptions(hooks)...)
 	}
 	return server.NewMCPServer(mcpServerName, version, append(options, server.WithHooks(hooks))...)
@@ -406,8 +435,10 @@ func (h *MCPServerHandler) buildServer() *server.MCPServer {
 // serverTools turns every available tool into a server tool. A tool's handler reads nothing about
 // the caller: what a request may see and call rides on its context, and both the tool filter and
 // the executor read it from there.
-func (h *MCPServerHandler) serverTools(availableTools []schemas.ChatTool) []server.ServerTool {
+// It also returns the index of their MCP Apps facts and server-given names, nil when there is none.
+func (h *MCPServerHandler) serverTools(availableTools []schemas.ChatTool) ([]server.ServerTool, *gatewayToolIndex) {
 	tools := make([]server.ServerTool, 0, len(availableTools))
+	var index *gatewayToolIndex
 	for _, tool := range availableTools {
 		// Only process function tools (skip custom tools)
 		if tool.Function == nil {
@@ -419,69 +450,96 @@ func (h *MCPServerHandler) serverTools(availableTools []schemas.ChatTool) []serv
 		declaresOutputSchema := tool.MCP != nil && len(tool.MCP.OutputSchema) > 0
 
 		handler := func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			logger.Debug("[mcp-server] tool handler start tool=%q arg_count=%d", toolName, len(request.GetArguments()))
-			// Convert to Bifrost tool call format
-			toolCallType := "function"
-			toolCallID := fmt.Sprintf("mcp-%s", toolName)
-			argsJSON, jsonErr := sonic.Marshal(request.GetArguments())
-			if jsonErr != nil {
-				return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal tool arguments: %v", jsonErr)), nil
+			index, perCaller := h.toolIndex.Load(), h.perCaller.Load()
+			if index.hiddenByCodeMode(ctx, perCaller, toolName) {
+				return nil, toolNotFoundError(toolName)
 			}
-			toolCall := schemas.ChatAssistantMessageToolCall{
-				ID:   &toolCallID,
-				Type: &toolCallType,
-				Function: schemas.ChatAssistantMessageToolCallFunction{
-					Name:      &toolName,
-					Arguments: string(argsJSON),
-				},
+			if index.codeModeLeftToCaller(ctx, perCaller, toolName) {
+				// This tool holds the name the caller's placeholder would; check the caller as it does.
+				return h.perCallerToolHandler(toolName, false)(ctx, request)
 			}
-
-			// Execute the tool via tool executor
-			toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
-			if err != nil {
-				logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
-				if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
-					return mcp.NewToolResultError(mcpAuthRequiredToolResult(authReq)), nil
-				}
-				return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err))), nil
-			}
-			logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
-
-			return gatewayToolResult(toolMessage, declaresOutputSchema), nil
+			return h.runTool(ctx, toolName, declaresOutputSchema, request), nil
 		}
-
-		// Convert description from *string to string
-		description := ""
-		if tool.Function.Description != nil {
-			description = *tool.Function.Description
-		}
-
-		inputSchema := convertToolFunctionParametersToMCPInputSchema(tool.Function.Parameters)
-
-		// Map Bifrost annotations back to MCP tool annotations
-		var toolAnnotation mcp.ToolAnnotation
-		if tool.Annotations != nil {
-			toolAnnotation = mcp.ToolAnnotation{
-				Title:           tool.Annotations.Title,
-				ReadOnlyHint:    tool.Annotations.ReadOnlyHint,
-				DestructiveHint: tool.Annotations.DestructiveHint,
-				IdempotentHint:  tool.Annotations.IdempotentHint,
-				OpenWorldHint:   tool.Annotations.OpenWorldHint,
-			}
-		}
-
-		serverTool := mcp.Tool{
-			Name:        toolName,
-			Description: description,
-			InputSchema: inputSchema,
-			Annotations: toolAnnotation,
-		}
-		if tool.MCP != nil {
-			serverTool.Title, serverTool.Icons, serverTool.RawOutputSchema = tool.MCP.Title, tool.MCP.Icons, tool.MCP.OutputSchema
-		}
-		tools = append(tools, server.ServerTool{Tool: serverTool, Handler: handler})
+		_, aggregateMeta := toolMeta(tool)
+		index = indexTool(index, tool, aggregateMeta)
+		tools = append(tools, server.ServerTool{Tool: gatewayTool(tool), Handler: handler})
 	}
-	return tools
+	return tools, index
+}
+
+// runTool executes toolName through Bifrost as the caller on ctx and answers with its result. A
+// failure is a tool result too, the sign-in prompt included.
+func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declaresOutputSchema bool, request mcp.CallToolRequest) *mcp.CallToolResult {
+	logger.Debug("[mcp-server] tool handler start tool=%q arg_count=%d", toolName, len(request.GetArguments()))
+	// Convert to Bifrost tool call format
+	toolCallType := "function"
+	toolCallID := fmt.Sprintf("mcp-%s", toolName)
+	argsJSON, jsonErr := sonic.Marshal(request.GetArguments())
+	if jsonErr != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Failed to marshal tool arguments: %v", jsonErr))
+	}
+	toolCall := schemas.ChatAssistantMessageToolCall{
+		ID:   &toolCallID,
+		Type: &toolCallType,
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      &toolName,
+			Arguments: string(argsJSON),
+		},
+	}
+
+	// Execute the tool via tool executor
+	ctx = withInputResumption(withCallerCapabilities(ctx), request.Params.MultiRoundTripParams)
+	toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
+	if err != nil {
+		logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
+		if authReq := err.ExtraFields.MCPAuthRequired; authReq != nil {
+			return mcp.NewToolResultError(mcpAuthRequiredToolResult(authReq))
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("Tool execution failed: %v", bifrost.GetErrorMessage(err)))
+	}
+	logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
+
+	result := gatewayToolResult(toolMessage, declaresOutputSchema)
+	if result.NeedsInput() {
+		// The caller's retry names this call, so its rounds share one id in the MCP logs.
+		result.RequestState = coremcp.WrapRoundTripState(coremcp.CallRoundTripID(ctx), result.RequestState)
+	}
+	return result
+}
+
+// gatewayTool is the MCP form of a Bifrost tool, as tools/list sends it.
+func gatewayTool(tool schemas.ChatTool) mcp.Tool {
+	// Convert description from *string to string
+	description := ""
+	if tool.Function.Description != nil {
+		description = *tool.Function.Description
+	}
+
+	inputSchema := convertToolFunctionParametersToMCPInputSchema(tool.Function.Parameters)
+
+	// Map Bifrost annotations back to MCP tool annotations
+	var toolAnnotation mcp.ToolAnnotation
+	if tool.Annotations != nil {
+		toolAnnotation = mcp.ToolAnnotation{
+			Title:           tool.Annotations.Title,
+			ReadOnlyHint:    tool.Annotations.ReadOnlyHint,
+			DestructiveHint: tool.Annotations.DestructiveHint,
+			IdempotentHint:  tool.Annotations.IdempotentHint,
+			OpenWorldHint:   tool.Annotations.OpenWorldHint,
+		}
+	}
+
+	serverTool := mcp.Tool{
+		Name:        tool.Function.Name,
+		Description: description,
+		InputSchema: inputSchema,
+		Annotations: toolAnnotation,
+	}
+	if tool.MCP != nil {
+		serverTool.Title, serverTool.Icons, serverTool.RawOutputSchema = tool.MCP.Title, tool.MCP.Icons, tool.MCP.OutputSchema
+	}
+	serverTool.Meta, _ = toolMeta(tool)
+	return serverTool
 }
 
 // gatewayToolResult is what /mcp answers for a tool message: the upstream's own result while no plugin
@@ -573,26 +631,185 @@ func derefOr(value *string, fallback string) string {
 
 // narrowListedTools narrows a tools/list answer to what the request's context permits: the include
 // lists the caller sent (x-bf-mcp-include-clients, x-bf-mcp-include-tools) and the tool list the
-// request was admitted with, which admit stamps on the same key. A no-op when the context carries
-// neither. It edits the page mcp-go built, so the server must not paginate tools/list.
+// request was admitted with, which admit stamps on the same key. A per-caller placeholder becomes
+// the caller's own tool, with its own description and schemas, or is left out. The hidden refusal
+// tools for server-given names are never listed. Then the MCP Apps rules (applyAppTools). It edits
+// the page mcp-go built, so the server must not paginate tools/list.
 func (h *MCPServerHandler) narrowListedTools(ctx context.Context, _ any, _ *mcp.ListToolsRequest, result *mcp.ListToolsResult) {
-	if result == nil || !requestNarrowed(ctx) {
+	if result == nil {
 		return
 	}
-	result.Tools = keepAllowed(result.Tools, func(t mcp.Tool) string { return t.Name }, h.toolManager.GetAvailableMCPTools(ctx), func(t schemas.ChatTool) string {
-		if t.Function == nil {
-			return ""
+	index, perCaller := h.toolIndex.Load(), h.perCaller.Load()
+	dropHiddenByCodeMode(ctx, index, perCaller, result)
+	narrowed := requestNarrowed(ctx)
+	if !narrowed {
+		dropRefusalTools(index, result) // a narrowed list keeps only Bifrost's own names
+	}
+	if !narrowed && perCaller == nil && !index.hasAppTools() {
+		return
+	}
+	callerCtx := withCallerCapabilities(ctx)
+	if narrowed || perCaller != nil {
+		available := h.toolManager.GetAvailableMCPTools(callerCtx)
+		// By index: a ChatTool is too large for a map to hold inline.
+		callers := make(map[string]int, len(available))
+		for i, tool := range available {
+			if tool.Function != nil {
+				callers[tool.Function.Name] = i
+			}
 		}
-		return t.Function.Name
+		aggregate := coremcp.GatewayAggregate(callerCtx)
+		kept := make([]mcp.Tool, 0, len(result.Tools))
+		for _, tool := range result.Tools {
+			own, ok := callers[tool.Name]
+			switch {
+			case perCaller.holdsTool(tool.Name):
+				if ok {
+					kept = append(kept, callersGatewayTool(available[own], aggregate))
+				}
+			case ok || !narrowed:
+				kept = append(kept, tool)
+			}
+		}
+		result.Tools = kept
+	}
+	applyAppTools(callerCtx, index, result)
+}
+
+// indexServerTypesOnSlug records the clients whose own /mcp/<slug> overrides code mode, and whether the
+// code-mode tools were installed only for such a slug.
+func (h *MCPServerHandler) indexServerTypesOnSlug(ctx context.Context, index *gatewayToolIndex, installed []schemas.ChatTool) *gatewayToolIndex {
+	if h.config == nil {
+		return index
+	}
+	modes := h.serverTypesOnSlug()
+	if len(modes) == 0 {
+		return index
+	}
+	if index == nil {
+		index = &gatewayToolIndex{}
+	}
+	index.serverTypesOnSlug = modes
+	index.codeModeOnlyOnSlug = listsCodeModeTools(installed) && !listsCodeModeTools(h.toolManager.GetAvailableMCPTools(coremcp.WithAllTools(ctx)))
+	return index
+}
+
+// mcpClientCodeModes is the code mode of an MCP client whose server_type_on_slug overrides
+// is_code_mode_client.
+type mcpClientCodeModes struct {
+	Global bool // on /mcp, Virtual MCPs and LLM requests
+	OnSlug bool // on its own /mcp/<slug>
+}
+
+// serverTypesOnSlug returns every enabled MCP client with a server_type_on_slug override, keyed by
+// client name; nil when none has one.
+func (h *MCPServerHandler) serverTypesOnSlug() map[string]mcpClientCodeModes {
+	if h.config == nil {
+		return nil
+	}
+	var result map[string]mcpClientCodeModes
+	h.config.LiveStore.Collections.MCPClients.Range(func(client *registry.MCPClient) bool {
+		if client.Config.Disabled {
+			return true
+		}
+		onSlug, overrides := client.Config.ServerTypeOnSlug.CodeModeOverride()
+		if !overrides {
+			return true
+		}
+		if result == nil {
+			result = make(map[string]mcpClientCodeModes)
+		}
+		result[client.Config.Name] = mcpClientCodeModes{Global: client.Config.IsCodeModeClient, OnSlug: onSlug}
+		return true
 	})
+	return result
+}
+
+// enabledMCPClientBySlug returns the MCP client served at /mcp/<slug>. A disabled client is not
+// found, so its endpoint is not served (admit 403).
+func (h *MCPServerHandler) enabledMCPClientBySlug(slug string) (*registry.MCPClient, bool) {
+	if h.config == nil || slug == "" {
+		return nil, false
+	}
+	client, ok := h.config.LiveStore.Collections.MCPClients.GetBy(registry.MCPClientBySlug, slug)
+	if !ok || client.Config.Disabled {
+		return nil, false
+	}
+	return client, true
+}
+
+// listsCodeModeTools reports whether tools include the code-mode tools.
+func listsCodeModeTools(tools []schemas.ChatTool) bool {
+	return slices.ContainsFunc(tools, func(tool schemas.ChatTool) bool {
+		return tool.Function != nil && tool.Function.Name == coremcp.ToolTypeExecuteToolCode
+	})
+}
+
+// hiddenByCodeMode reports whether a server_type_on_slug override hides the installed tool from ctx's request:
+// a client's own tools where it runs in code mode, and the code-mode tools off the slugs that need them.
+// A caller's own per-user tools are decided by its discovery instead.
+func (index *gatewayToolIndex) hiddenByCodeMode(ctx context.Context, perCaller *perCallerEntries, name string) bool {
+	if index == nil || len(index.serverTypesOnSlug) == 0 {
+		return false
+	}
+	gatewayClient, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string)
+	if coremcp.IsCodeModeTool(name) {
+		return index.codeModeOnlyOnSlug && gatewayClient == "" && !perCaller.holdsTool(name)
+	}
+	client := coremcp.ToolClientName(name)
+	mode, ok := index.serverTypesOnSlug[client]
+	if !ok || name == coremcp.ConnectToolName(client) {
+		return false
+	}
+	if gatewayClient == client {
+		return mode.OnSlug
+	}
+	return mode.Global
+}
+
+// codeModeLeftToCaller reports whether a code-mode tool installed only for a slug is called on /mcp
+// under a per-caller name, so the caller's own discovery decides it, as it does for listing.
+func (index *gatewayToolIndex) codeModeLeftToCaller(ctx context.Context, perCaller *perCallerEntries, name string) bool {
+	if index == nil || !index.codeModeOnlyOnSlug || !coremcp.IsCodeModeTool(name) || !perCaller.holdsTool(name) {
+		return false
+	}
+	gatewayClient, _ := ctx.Value(schemas.BifrostContextKeyMCPGatewayClient).(string)
+	return gatewayClient == ""
+}
+
+// dropHiddenByCodeMode leaves the tools a server_type_on_slug override hides out of a tools/list answer.
+func dropHiddenByCodeMode(ctx context.Context, index *gatewayToolIndex, perCaller *perCallerEntries, result *mcp.ListToolsResult) {
+	if index == nil || len(index.serverTypesOnSlug) == 0 {
+		return
+	}
+	kept := result.Tools[:0]
+	for _, tool := range result.Tools {
+		if !index.hiddenByCodeMode(ctx, perCaller, tool.Name) {
+			kept = append(kept, tool)
+		}
+	}
+	result.Tools = kept
 }
 
 // Admission
 
 // mcpRefusal is what a /mcp request is refused with: the status to answer and the message to say.
+// A governance refusal also keeps the error it came as, so /mcp answers with the same error type
+// execute and chat answer with.
 type mcpRefusal struct {
 	status  int
 	message string
+	err     *schemas.BifrostError
+}
+
+// sendMCPRefusal writes a refusal: the governance error as it came, with the refusal's status, or
+// a plain error carrying the status and message.
+func sendMCPRefusal(ctx *fasthttp.RequestCtx, refusal *mcpRefusal) {
+	if refusal.err != nil {
+		SendBifrostError(ctx, refusal.err)
+		return
+	}
+	SendError(ctx, refusal.status, refusal.message)
 }
 
 // admit settles who is asking and what they may reach, in that order, before a single JSON-RPC
@@ -603,6 +820,12 @@ type mcpRefusal struct {
 // request may see and call.
 func (h *MCPServerHandler) admit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext) *mcpRefusal {
 	if err := h.authenticate(ctx, bifrostCtx); err != nil {
+		// Every credential refusal in a mode that accepts Bifrost-issued tokens points at where a
+		// token can be obtained, including the ones authenticate returns without setting it itself
+		// (a token whose virtual key no longer exists, for one).
+		if h.discoveryEnabled() && len(ctx.Response.Header.Peek("WWW-Authenticate")) == 0 {
+			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
+		}
 		return &mcpRefusal{status: fasthttp.StatusUnauthorized, message: err.Error()}
 	}
 
@@ -617,7 +840,9 @@ func (h *MCPServerHandler) admit(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.B
 		if status == fasthttp.StatusUnauthorized && h.discoveryEnabled() {
 			ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 		}
-		return &mcpRefusal{status: status, message: bifrost.GetErrorMessage(refused)}
+		sent := *refused
+		sent.StatusCode = &status
+		return &mcpRefusal{status: status, message: bifrost.GetErrorMessage(refused), err: &sent}
 	}
 
 	// A /mcp/<slug> endpoint serves one Virtual MCP or one MCP client: gate on the caller's grant and
@@ -666,8 +891,9 @@ func mcpAuthRequiredToolResult(authReq *schemas.MCPAuthRequiredError) string {
 // governed, so a client slug is served whole, as /mcp serves it.
 func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug string, access schemas.Access) *mcpRefusal {
 	if h.admitter == nil {
-		if _, clientName, found := h.config.GetMCPClientBySlug(slug); found {
-			bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{clientName + "-*"})
+		if client, found := h.enabledMCPClientBySlug(slug); found {
+			bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, []string{client.Config.Name + "-*"})
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, client.Config.Name)
 			return nil
 		}
 		return &mcpRefusal{status: fasthttp.StatusForbidden, message: "access_denied"}
@@ -679,10 +905,13 @@ func (h *MCPServerHandler) admitBySlug(bifrostCtx *schemas.BifrostContext, slug 
 	}
 	if served, ok := h.admitter.MCPClientToolAccess(bifrostCtx, slug, access); ok {
 		bifrostCtx.SetValue(schemas.MCPContextKeyIncludeTools, served)
+		if client, found := h.enabledMCPClientBySlug(slug); found {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyMCPGatewayClient, client.Config.Name)
+		}
 		return nil
 	}
 	// The wire answer stays 403 either way so slugs can't be probed; the log says which it was.
-	if _, _, found := h.config.GetMCPClientBySlug(slug); found {
+	if _, found := h.enabledMCPClientBySlug(slug); found {
 		logger.Debug("mcp: refused /mcp/%s: MCP client exists but the caller's access does not grant it", slug)
 	} else {
 		logger.Debug("mcp: refused /mcp/%s: no enabled MCP client and no Virtual MCP granted to the caller has this slug", slug)
@@ -842,7 +1071,7 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					return fmt.Errorf("user is no longer active")
 				}
 			}
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 
 		case schemas.MCPAuthModeSession:
 			// Session-mode tokens carry no verified identity. When the operator
@@ -854,7 +1083,7 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 				ctx.Response.Header.Set("WWW-Authenticate", wwwAuthenticateValue(ctx, h.config))
 				return fmt.Errorf("authentication required; session-mode tokens are not accepted when authentication is enforced - re-authenticate with a virtual key or user identity")
 			}
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 
 		case schemas.MCPAuthModeVK:
 			// Live virtual-key identity cutoff: when virtual-key identity has been
@@ -872,14 +1101,14 @@ func (h *MCPServerHandler) authenticate(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 			}
 			// The token names the key by row ID; governance resolves keys by value, so the
 			// row is read to stamp the value. Nothing else about the key is decided here.
-			vk, err := h.getVirtualKeyByID(ctx, claims.Subject)
+			vkValue, err := virtualKeyValueByID(h.config.LiveStore, claims.Subject)
 			if err != nil {
 				return err
 			}
-			return injectJWTContext(bifrostCtx, claims, vk)
+			return injectJWTContext(bifrostCtx, claims, vkValue)
 
 		default:
-			return injectJWTContext(bifrostCtx, claims, nil)
+			return injectJWTContext(bifrostCtx, claims, "")
 		}
 	}
 
@@ -969,8 +1198,82 @@ func convertToolFunctionParametersToMCPInputSchema(params *schemas.ToolFunctionP
 // Streamable HTTP transport over fasthttp
 
 // newMCPTransport serves srv with the Streamable HTTP rules of every protocol revision mcp-go knows.
+// The version cap is applied in front of it (refuseVersionAboveCap) and on initialize (capInitializeVersion).
 func newMCPTransport(srv *server.MCPServer) *server.StreamableHTTPServer {
 	return server.NewStreamableHTTPServer(srv, server.WithSessionIdManager(&mcpSessionIDManager{}))
+}
+
+// UpdateServerMaxProtocolVersion caps the protocol version /mcp serves, from the next request on.
+// server/discover needs no list of its own: it is reached only while 2026-07-28 is allowed, and then every
+// version mcp-go knows is too. A version newer than 2026-07-28 would need it set per request.
+func (h *MCPServerHandler) UpdateServerMaxProtocolVersion(version string) {
+	allowed := schemas.MCPProtocolVersionsUpTo(version)
+	h.allowedVersions.Store(&allowed)
+}
+
+// refuseVersionAboveCap answers 400 to a request whose MCP-Protocol-Version header is above the cap, as the
+// Streamable HTTP transport requires for an unsupported version: a 2026-07-28 POST with the JSON-RPC
+// -32022 error and the supported versions, so the client can fall back, and anything else as plain text,
+// as mcp-go does. initialize passes so capInitializeVersion can lower it, and a 2026-07-28 GET or DELETE
+// passes for the transport's 405. Uncapped, it returns at the first check.
+func (h *MCPServerHandler) refuseVersionAboveCap(ctx *fasthttp.RequestCtx) bool {
+	allowed := h.allowedVersions.Load()
+	if allowed == nil || *allowed == nil {
+		return false
+	}
+	header := ctx.Request.Header.Peek("MCP-Protocol-Version")
+	if len(header) == 0 {
+		return false
+	}
+	version := string(header)
+	if slices.Contains(*allowed, version) {
+		return false
+	}
+	if mcp.IsModernProtocol(version) {
+		if !ctx.IsPost() {
+			return false
+		}
+		refusal := mcp.UnsupportedProtocolVersionError{Version: version, Supported: *allowed}.JSONRPCError()
+		refusal.ID = mcp.NewRequestId(gjson.GetBytes(ctx.PostBody(), "id").Value())
+		body, err := sonic.Marshal(refusal)
+		if err != nil {
+			return false
+		}
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		ctx.SetContentType("application/json")
+		ctx.SetBody(body)
+		return true
+	}
+	if gjson.GetBytes(ctx.PostBody(), "method").Str == string(mcp.MethodInitialize) {
+		return false
+	}
+	ctx.SetStatusCode(fasthttp.StatusBadRequest)
+	ctx.SetContentType("text/plain; charset=utf-8")
+	ctx.Response.Header.Set("X-Content-Type-Options", "nosniff")
+	ctx.SetBodyString("Unsupported protocol version: " + version + "\n")
+	return true
+}
+
+// capInitializeVersion lowers the version initialize agreed on to the cap. mcp-go negotiates
+// initialize without the transport's version list, and records the result on the session before
+// this hook runs, so the session is corrected too.
+func (h *MCPServerHandler) capInitializeVersion(ctx context.Context, _ any, _ *mcp.InitializeRequest, result *mcp.InitializeResult) {
+	var allowed []string
+	if p := h.allowedVersions.Load(); p != nil {
+		allowed = *p
+	}
+	if result == nil || allowed == nil || slices.Contains(allowed, result.ProtocolVersion) {
+		return
+	}
+	for _, v := range allowed {
+		if v < result.ProtocolVersion {
+			result.ProtocolVersion = v
+			break
+		}
+	}
+	if session, ok := server.ClientSessionFromContext(ctx).(interface{ SetProtocolVersion(string) }); ok {
+		session.SetProtocolVersion(result.ProtocolVersion)
+	}
 }
 
 // mcpSessionIDManager hands legacy clients a session id at initialize but never requires one back.

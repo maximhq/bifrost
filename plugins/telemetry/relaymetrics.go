@@ -27,7 +27,7 @@ func (p *PrometheusPlugin) recordRelayMetrics(trace *schemas.Trace) {
 		if relayName == "" {
 			continue
 		}
-		values := make([]string, len(relayMetricLabelNames))
+		values := make([]string, len(relayMetricLabelNames), len(relayMetricLabelNames)+len(p.relayCustomLabels))
 		values[0] = relayName
 		values[1] = schemas.RelayMethodLabel(schemas.GetStringAttr(span.Attributes, schemas.AttrHTTPRequestMethod))
 		values[2] = schemas.GetStringAttr(span.Attributes, schemas.AttrBifrostRelayRoutePath)
@@ -49,11 +49,25 @@ func (p *PrometheusPlugin) recordRelayMetrics(trace *schemas.Trace) {
 		} {
 			values[i+5] = schemas.GetStringAttr(span.Attributes, key)
 		}
-		var seconds float64
-		if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
-			seconds = span.EndTime.Sub(span.StartTime).Seconds()
+		// Custom labels are read from the trace's dimensions (x-bf-dim-*): relay metrics are
+		// recorded from the completed trace, where no request context is left.
+		if len(p.relayCustomLabels) > 0 {
+			dims := schemas.TraceDimensions(trace.Attributes)
+			for _, key := range p.relayCustomLabels {
+				values = append(values, dims[key])
+			}
 		}
-		p.RelayOperationDuration.WithLabelValues(values...).Observe(seconds)
+		p.RelayOperationDuration.WithLabelValues(values...).Observe(schemas.RelaySpanDurationSeconds(span))
+		if upstreamMs, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayUpstreamDurationMs); ok && upstreamMs > 0 && p.RelayUpstreamDuration != nil {
+			p.RelayUpstreamDuration.WithLabelValues(values...).Observe(upstreamMs / 1000)
+		}
+		// Bifrost's own time on the call, from the root span the tracer stamps it on, as the LLM
+		// overhead histogram takes it.
+		if trace.RootSpan != nil && p.RelayOverheadLatency != nil {
+			if overheadMs, ok := schemas.GetFloat64AttrOK(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs); ok && overheadMs >= 0 {
+				p.RelayOverheadLatency.WithLabelValues(values...).Observe(overheadMs * 1000)
+			}
+		}
 		if cost, ok := schemas.GetFloat64AttrOK(span.Attributes, schemas.AttrBifrostRelayCost); ok && cost > 0 {
 			p.RelayCostTotal.WithLabelValues(values...).Add(cost)
 		}

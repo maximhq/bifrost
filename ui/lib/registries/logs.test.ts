@@ -21,22 +21,22 @@ describe("listedOptions", () => {
 	});
 
 	it("keeps the checked option although no row holds it, so it can be unchecked", () => {
-		expect(listedOptions(field, { ext_state: ["up"] }, "down").map((o) => o.value)).toEqual(["up", "down"]);
+		expect(listedOptions(field, { ext_state: ["up"] }, ["down"]).map((o) => o.value)).toEqual(["up", "down"]);
 	});
 
 	it("keeps a checked value the field does not name, under the value itself, while the recorded values are unknown", () => {
-		expect(listedOptions(field, undefined, "sideways").map((o) => o.value)).toEqual(["up", "down", "unknown", "sideways"]);
+		expect(listedOptions(field, undefined, ["sideways"]).map((o) => o.value)).toEqual(["up", "down", "unknown", "sideways"]);
 	});
 
 	it("keeps a checked value the field does not name although no row holds it", () => {
-		expect(listedOptions(field, { ext_state: ["up"] }, "sideways")).toEqual([
+		expect(listedOptions(field, { ext_state: ["up"] }, ["sideways"])).toEqual([
 			{ value: "up", label: "Up" },
 			{ value: "sideways", label: "sideways" },
 		]);
 	});
 
 	it("lists a checked value rows hold and the field does not name once", () => {
-		expect(listedOptions(field, { ext_state: ["sideways"] }, "sideways")).toEqual([{ value: "sideways", label: "sideways" }]);
+		expect(listedOptions(field, { ext_state: ["sideways"] }, ["sideways"])).toEqual([{ value: "sideways", label: "sideways" }]);
 	});
 
 	it("lists nothing for a key no row in the range holds", () => {
@@ -46,6 +46,14 @@ describe("listedOptions", () => {
 	it("lists a recorded value the field does not name under the value itself", () => {
 		expect(listedOptions(field, { ext_state: ["up", "sideways"] }, undefined)).toEqual([
 			{ value: "up", label: "Up" },
+			{ value: "sideways", label: "sideways" },
+		]);
+	});
+
+	it("keeps every checked value listed when several are checked", () => {
+		expect(listedOptions(field, { ext_state: ["up"] }, ["down", "sideways", "up"])).toEqual([
+			{ value: "up", label: "Up" },
+			{ value: "down", label: "Down" },
 			{ value: "sideways", label: "sideways" },
 		]);
 	});

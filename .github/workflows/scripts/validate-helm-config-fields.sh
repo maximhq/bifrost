@@ -186,6 +186,7 @@ bifrost:
     mcpCodeModeBindingLevel: "server"
     mcpToolSyncInterval: 60
     hideDeletedVirtualKeysInFilters: true
+    mcpClientMetadataUrl: "https://public.example.com/bifrost/client.json"
 VALS
 
 render_config "$TMPDIR/values-client.yaml"
@@ -218,6 +219,7 @@ assert_field_value 'client.mcp_tool_execution_timeout' '.client.mcp_tool_executi
 assert_field_value 'client.mcp_code_mode_binding_level' '.client.mcp_code_mode_binding_level' '"server"'
 assert_field_value 'client.mcp_tool_sync_interval' '.client.mcp_tool_sync_interval' '60'
 assert_field_value 'client.hide_deleted_virtual_keys_in_filters' '.client.hide_deleted_virtual_keys_in_filters' 'true'
+assert_field_value 'client.mcp_client_metadata_url' '.client.mcp_client_metadata_url' '"https://public.example.com/bifrost/client.json"'
 
 ###############################################################################
 # 1b. Server Config
@@ -791,6 +793,7 @@ bifrost:
         connectionType: "stdio"
         clientId: "client-1"
         isCodeModeClient: true
+        serverTypeOnSlug: "disabled"
         toolSyncInterval: "5m"
         maxProtocolVersion: "2025-06-18"
         isPingAvailable: false
@@ -817,6 +820,17 @@ bifrost:
           url: "https://mcp.example.com/headers"
         authType: "per_user_headers"
         perUserHeaderKeys: ["Authorization", "X-Api-Key"]
+      - name: "openapi-server"
+        connectionType: "openapi"
+        authType: "headers"
+        openapiConfig:
+          specUrl: "https://api.example.com/openapi.json"
+          baseUrl: "https://api.example.com/v2"
+          securityCredentials:
+            bearerAuth:
+              value: "env.API_TOKEN"
+          includeDeprecated: true
+          maxResponseBytes: 65536
     toolManagerConfig:
       toolExecutionTimeout: 60
       maxAgentDepth: 5
@@ -848,6 +862,15 @@ assert_field_value 'mcp client[3] auth_type' '.mcp.client_configs.[3].auth_type'
 assert_field_value 'mcp client[3] per_user_header_keys[0]' '.mcp.client_configs.[3].per_user_header_keys.[0]' '"Authorization"'
 assert_field_value 'mcp client[3] per_user_header_keys[1]' '.mcp.client_configs.[3].per_user_header_keys.[1]' '"X-Api-Key"'
 
+# openapi client (openapiConfig -> openapi_config)
+assert_field_value 'mcp client[4] connection_type' '.mcp.client_configs.[4].connection_type' '"openapi"'
+assert_field_value 'mcp client[4] auth_type' '.mcp.client_configs.[4].auth_type' '"headers"'
+assert_field_value 'mcp client[4] openapi_config.spec_url' '.mcp.client_configs.[4].openapi_config.spec_url' '"https://api.example.com/openapi.json"'
+assert_field_value 'mcp client[4] openapi_config.base_url' '.mcp.client_configs.[4].openapi_config.base_url' '"https://api.example.com/v2"'
+assert_field_value 'mcp client[4] openapi_config.security_credentials.bearerAuth.value' '.mcp.client_configs.[4].openapi_config.security_credentials.bearerAuth.value' '"env.API_TOKEN"'
+assert_field_value 'mcp client[4] openapi_config.include_deprecated' '.mcp.client_configs.[4].openapi_config.include_deprecated' 'true'
+assert_field_value 'mcp client[4] openapi_config.max_response_bytes' '.mcp.client_configs.[4].openapi_config.max_response_bytes' '65536'
+
 # Tool manager config
 assert_field_value 'mcp tool_manager_config.tool_execution_timeout' '.mcp.tool_manager_config.tool_execution_timeout' '60'
 assert_field_value 'mcp tool_manager_config.max_agent_depth' '.mcp.tool_manager_config.max_agent_depth' '5'
@@ -859,6 +882,7 @@ assert_field_value 'mcp max_protocol_version' '.mcp.max_protocol_version' '"auto
 # Gap 6b: Per-client new fields
 assert_field_value 'mcp client[0] client_id' '.mcp.client_configs.[0].client_id' '"client-1"'
 assert_field_value 'mcp client[0] is_code_mode_client' '.mcp.client_configs.[0].is_code_mode_client' 'true'
+assert_field_value 'mcp client[0] server_type_on_slug' '.mcp.client_configs.[0].server_type_on_slug' '"disabled"'
 assert_field_value 'mcp client[0] tool_sync_interval' '.mcp.client_configs.[0].tool_sync_interval' '"5m"'
 assert_field_value 'mcp client[0] max_protocol_version' '.mcp.client_configs.[0].max_protocol_version' '"2025-06-18"'
 assert_field_value 'mcp client[0] is_ping_available' '.mcp.client_configs.[0].is_ping_available' 'false'
@@ -1179,6 +1203,7 @@ bifrost:
         apply_to: "input"
         send_all_conversation_turns: false
         max_turns_to_send: 0
+        exclude_system_prompt: true
         provider_config_ids:
           - 1
     providers:
@@ -1205,6 +1230,7 @@ assert_field_value 'guardrails rule[0].stream_replay_event_interval_ms' '.guardr
 assert_field 'guardrails rule[0].provider_config_ids' '.guardrails_config.guardrail_rules.[0].provider_config_ids'
 assert_field_value 'guardrails rule[1].send_all_conversation_turns' '.guardrails_config.guardrail_rules.[1].send_all_conversation_turns' 'false'
 assert_field_value 'guardrails rule[1].max_turns_to_send' '.guardrails_config.guardrail_rules.[1].max_turns_to_send' '0'
+assert_field_value 'guardrails rule[1].exclude_system_prompt' '.guardrails_config.guardrail_rules.[1].exclude_system_prompt' 'true'
 
 assert_field 'guardrails_config.guardrail_providers' '.guardrails_config.guardrail_providers'
 assert_field_value 'guardrails provider[0].id' '.guardrails_config.guardrail_providers.[0].id' '1'
@@ -1767,6 +1793,7 @@ storage:
     statementTimeout: "60s"
     idleInTransactionSessionTimeout: "30s"
     objectStorageExcludeRequestTypes: ["list_models"]
+    captureClientIp: true
 postgresql:
   enabled: true
   auth:
@@ -1848,6 +1875,7 @@ assert_field_value 'config_store.config.idle_in_transaction_session_timeout ("0"
 assert_field_value 'logs_store.config.statement_timeout' '.logs_store.config.statement_timeout' '"60s"'
 assert_field_value 'logs_store.config.idle_in_transaction_session_timeout' '.logs_store.config.idle_in_transaction_session_timeout' '"30s"'
 assert_field_value 'logs_store.object_storage_exclude_request_types' '.logs_store.object_storage_exclude_request_types' '["list_models"]'
+assert_field_value 'logs_store.capture_client_ip' '.logs_store.capture_client_ip' 'true'
 assert_field_value 'providers.openai.ignore_provider_cost' '.providers.openai.ignore_provider_cost' 'true'
 assert_field_value 'client.compat.force_reasoning_only_models_to_responses' '.client.compat.force_reasoning_only_models_to_responses' 'false'
 assert_field_value 'client.delete_expired_virtual_keys' '.client.delete_expired_virtual_keys' 'true'
@@ -1943,6 +1971,129 @@ for uri in 'https://*.example.com/callback' 'https://app.example.com/*' '**'; do
     report_result "client.oauth2_server_config.allowed_redirect_uris partial wildcard $uri is rejected" 0
   else
     report_result "client.oauth2_server_config.allowed_redirect_uris partial wildcard $uri is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# mcp.client_configs[].oauth_config: resource and use_client_metadata_document render when set and
+# are absent when omitted; the values schema refuses wrong types and clientId together with
+# useClientMetadataDocument, which Bifrost would only refuse once an admin starts the OAuth flow.
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 MCP client OAuth config${NC}"
+
+cat > "$TMPDIR/values-mcp-oauth.yaml" <<'VALS'
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "linear"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.linear.app/mcp"
+        authType: "oauth"
+        oauthConfig:
+          resource: "https://mcp.linear.app/mcp"
+          useClientMetadataDocument: true
+      - name: "notion"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.notion.com/mcp"
+        authType: "oauth"
+        oauthConfig:
+          scopes: ["read"]
+VALS
+
+render_config "$TMPDIR/values-mcp-oauth.yaml"
+assert_field_value 'mcp.client_configs[].oauth_config.resource' '.mcp.client_configs.[0].oauth_config.resource' '"https://mcp.linear.app/mcp"'
+assert_field_value 'mcp.client_configs[].oauth_config.use_client_metadata_document' '.mcp.client_configs.[0].oauth_config.use_client_metadata_document' 'true'
+absent=$(python3 -c "
+import json
+o = json.load(open('$TMPDIR/config.json'))['mcp']['client_configs'][1].get('oauth_config', {})
+print(','.join(k for k in ('resource', 'use_client_metadata_document') if k in o))
+" 2>/dev/null)
+report_result "mcp.client_configs[].oauth_config omits resource and use_client_metadata_document when unset" "$([ -z "$absent" ] && echo 0 || echo 1)"
+
+mcp_oauth_client='{"name":"linear","connectionType":"http","httpConfig":{"url":"https://mcp.linear.app/mcp"},"authType":"oauth","oauthConfig":'
+for case in 'useClientMetadataDocument "yes"|{"useClientMetadataDocument":"yes"}' 'resource 42|{"resource":42}' 'clientId with useClientMetadataDocument|{"clientId":"c1","useClientMetadataDocument":true}'; do
+  name=${case%%|*}
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set bifrost.encryptionKey=test-encryption-key-1234567890ab \
+       --set bifrost.mcp.enabled=true \
+       --set-json "bifrost.mcp.clientConfigs=[${mcp_oauth_client}${case#*|}}]" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "oauthConfig" "$TMPDIR/render-err.txt"; then
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 0
+  else
+    report_result "mcp.client_configs[].oauth_config $name is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# mcp.client_configs[].per_user_discovery renders when set and is absent when omitted. It is
+# refused without a per-user auth type and on openapi clients, and SSE/STDIO clients (and websocket,
+# which renders as sse) are refused
+# per-user auth types, which Bifrost would otherwise only skip at startup.
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 MCP per-user discovery${NC}"
+
+cat > "$TMPDIR/values-mcp-pud.yaml" <<'VALS'
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "per-user"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/mcp"
+        authType: "per_user_oauth"
+        perUserDiscovery: true
+      - name: "shared"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/shared"
+        authType: "headers"
+VALS
+
+render_config "$TMPDIR/values-mcp-pud.yaml"
+assert_field_value 'mcp.client_configs[].per_user_discovery' '.mcp.client_configs.[0].per_user_discovery' 'true'
+absent=$(python3 -c "
+import json
+print('per_user_discovery' in json.load(open('$TMPDIR/config.json'))['mcp']['client_configs'][1])
+" 2>/dev/null)
+report_result "mcp.client_configs[].per_user_discovery omitted when unset" "$([ "$absent" = "False" ] && echo 0 || echo 1)"
+
+for case in \
+  'perUserDiscovery with headers auth|authType|{"name":"c","connectionType":"http","httpConfig":{"url":"https://mcp.example.com/mcp"},"authType":"headers","perUserDiscovery":true}' \
+  'perUserDiscovery on openapi|connectionType|{"name":"c","connectionType":"openapi","openapiConfig":{"specUrl":"https://api.example.com/openapi.json"},"authType":"per_user_headers","perUserHeaderKeys":["Authorization"],"perUserDiscovery":true}' \
+  'per_user_oauth on sse|authType|{"name":"c","connectionType":"sse","connectionString":"https://mcp.example.com/sse","authType":"per_user_oauth"}' \
+  'per_user_oauth on websocket (rendered as sse)|authType|{"name":"c","connectionType":"websocket","websocketConfig":{"url":"wss://mcp.example.com/ws"},"authType":"per_user_oauth"}' \
+  'per_user_headers on stdio|authType|{"name":"c","connectionType":"stdio","stdioConfig":{"command":"npx"},"authType":"per_user_headers","perUserHeaderKeys":["Authorization"]}'; do
+  # Each case is name|field the error must name|client JSON, so a fixture that fails for an
+  # unrelated reason (a missing URL, a typo) cannot pass as the rule under test.
+  name=${case%%|*}
+  rest=${case#*|}
+  expected=${rest%%|*}
+  client=${rest#*|}
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set bifrost.encryptionKey=test-encryption-key-1234567890ab \
+       --set bifrost.mcp.enabled=true \
+       --set-json "bifrost.mcp.clientConfigs=[${client}]" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "mcp.client_configs[] $name is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the chart to reject it${NC}"
+  elif grep -q -- "$expected" "$TMPDIR/render-err.txt"; then
+    report_result "mcp.client_configs[] $name is rejected" 0
+  else
+    report_result "mcp.client_configs[] $name is rejected" 1
+    echo -e "${YELLOW}    rejected for another reason; expected an error naming $expected:${NC}"
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
   fi
 done
@@ -2122,6 +2273,171 @@ for bad in 'enabled=true,bifrost.warp.provider=openai' 'maxIterations=1' 'reason
     report_result "warp {$bad} is rejected" 0
   else
     report_result "warp {$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# 2.1.49 config.schema.json sync: usage estimation tokenizers, datasheet overrides,
+# Baseten (alias deployment_url, semantic cache provider)
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 2.1.49 config.schema.json sync${NC}"
+
+cat > "$TMPDIR/values-2149.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  client:
+    usageEstimationTokenizers: ["anthropic", "llama3"]
+  providers:
+    baseten:
+      keys:
+        - name: "baseten-key"
+          value: "env.BASETEN_API_KEY"
+          aliases:
+            my-llama:
+              model_id: "not-required"
+              deployment_url: "https://model-abc.api.baseten.co/environments/production/sync/v1"
+  datasheetOverrides:
+    - provider: "openai"
+      model: "gpt-4o"
+      mode: "chat"
+      pricing_patch:
+        input_cost_per_token: 0.0000022
+        max_output_tokens: null
+      params_patch:
+        supports_reasoning: false
+    - provider: "openai"
+      model: "ft:gpt-4o-mini:acme:support"
+      mode: "chat"
+      is_custom: true
+VALS
+render_config "$TMPDIR/values-2149.yaml"
+assert_field_value 'client.usage_estimation_tokenizers' '.client.usage_estimation_tokenizers' '["anthropic", "llama3"]'
+assert_field_value 'providers.baseten alias deployment_url' '.providers.baseten.keys.[0].aliases.my-llama.deployment_url' '"https://model-abc.api.baseten.co/environments/production/sync/v1"'
+assert_field_value 'datasheet_overrides[0].pricing_patch (null kept for merge patch)' '.datasheet_overrides.[0].pricing_patch' '{"input_cost_per_token": 2.2e-06, "max_output_tokens": None}'
+assert_field_value 'datasheet_overrides[0].params_patch' '.datasheet_overrides.[0].params_patch' '{"supports_reasoning": False}'
+assert_field_value 'datasheet_overrides[1].is_custom' '.datasheet_overrides.[1].is_custom' 'true'
+
+# An explicit [] must render: with config.json as the source of truth it removes stored
+# overrides. Omitted, the key stays out of config.json and stored overrides are left alone.
+cat > "$TMPDIR/values-2149-empty.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  datasheetOverrides: []
+VALS
+render_config "$TMPDIR/values-2149-empty.yaml"
+assert_field_value 'datasheet_overrides [] kept' '.datasheet_overrides' '[]'
+render_config "$TMPDIR/values-warp-unset.yaml"
+if python3 -c "import json, sys; c = json.load(open('$TMPDIR/config.json')); sys.exit(0 if 'datasheet_overrides' not in c and 'usage_estimation_tokenizers' not in c.get('client', {}) else 1)"; then
+  report_result 'datasheet_overrides and usage_estimation_tokenizers omitted when unset' 0
+else
+  report_result 'datasheet_overrides and usage_estimation_tokenizers omitted when unset' 1
+fi
+
+if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set bifrost.plugins.semanticCache.enabled=true \
+     --set bifrost.plugins.semanticCache.config.provider=baseten > "$TMPDIR/render-err.txt" 2>&1; then
+  report_result 'semanticCache provider baseten is accepted' 0
+else
+  report_result 'semanticCache provider baseten is accepted' 1
+  head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+fi
+
+# The values schema refuses what config.schema.json refuses.
+for bad in 'bifrost.client.usageEstimationTokenizers=["gpt2"]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai"}]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai","model":"x","is_custom":true}]' \
+           'bifrost.datasheetOverrides=[{"provider":"openai","model":"x","params_patch":{"provider":"y"}}]'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set-json "$bad" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "{$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "values don't meet the specifications" "$TMPDIR/render-err.txt"; then
+    report_result "{$bad} is rejected" 0
+  else
+    report_result "{$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
+###############################################################################
+# Bifrost MCP: client.bifrost_url, client.bifrost_mcp_allow_writes,
+# client.mcp_openapi_max_spec_mb, framework.pricing.openapi_url
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 Bifrost MCP${NC}"
+
+cat > "$TMPDIR/values-bifrost-mcp.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  client:
+    bifrostUrl: "https://bifrost.example.com/bifrost"
+    bifrostMcpAllowWrites: true
+    mcpOpenapiMaxSpecMb: 64
+  framework:
+    pricing:
+      openapiUrl: "openapi.json"
+VALS
+render_config "$TMPDIR/values-bifrost-mcp.yaml"
+assert_field_value 'client.bifrost_url' '.client.bifrost_url' '"https://bifrost.example.com/bifrost"'
+assert_field_value 'client.bifrost_mcp_allow_writes' '.client.bifrost_mcp_allow_writes' 'true'
+assert_field_value 'client.mcp_openapi_max_spec_mb' '.client.mcp_openapi_max_spec_mb' '64'
+assert_field_value 'framework.pricing.openapi_url' '.framework.pricing.openapi_url' '"openapi.json"'
+
+# Explicit false, 0 and "" must reach config.json: the default writes switch is true,
+# 0 is the 32 MiB default and "" picks the build's spec, while an omitted key keeps the
+# stored value. bifrostUrl also takes a secret reference.
+cat > "$TMPDIR/values-bifrost-mcp-zero.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+bifrost:
+  client:
+    bifrostUrl:
+      type: "env"
+      env_var: "BIFROST_PUBLIC_URL"
+    bifrostMcpAllowWrites: false
+    mcpOpenapiMaxSpecMb: 0
+  framework:
+    pricing:
+      openapiUrl: ""
+VALS
+render_config "$TMPDIR/values-bifrost-mcp-zero.yaml"
+assert_field_value 'client.bifrost_url secret reference kept' '.client.bifrost_url' '{"env_var": "BIFROST_PUBLIC_URL", "type": "env"}'
+assert_field_value 'client.bifrost_mcp_allow_writes false kept' '.client.bifrost_mcp_allow_writes' 'false'
+assert_field_value 'client.mcp_openapi_max_spec_mb 0 kept' '.client.mcp_openapi_max_spec_mb' '0'
+assert_field_value 'framework.pricing.openapi_url "" kept' '.framework.pricing.openapi_url' '""'
+
+# Unset, none of the keys render, so values stored from the dashboard stay in force.
+render_config "$TMPDIR/values-warp-unset.yaml"
+if python3 -c "
+import json, sys
+c = json.load(open('$TMPDIR/config.json'))
+client = c.get('client', {})
+pricing = c.get('framework', {}).get('pricing', {})
+present = [k for k in ('bifrost_url', 'bifrost_mcp_allow_writes', 'mcp_openapi_max_spec_mb') if k in client]
+present += ['framework.pricing.openapi_url'] if 'openapi_url' in pricing else []
+print(', '.join(present))
+sys.exit(1 if present else 0)
+" > "$TMPDIR/present.txt"; then
+  report_result 'Bifrost MCP keys omitted when unset' 0
+else
+  report_result 'Bifrost MCP keys omitted when unset' 1
+  echo -e "${YELLOW}    rendered without being set: $(cat "$TMPDIR/present.txt")${NC}"
+fi
+
+# The values schema refuses what config.schema.json refuses.
+for bad in 'bifrost.client.mcpOpenapiMaxSpecMb=300'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 --set-json "$bad" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "{$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "values don't meet the specifications" "$TMPDIR/render-err.txt"; then
+    report_result "{$bad} is rejected" 0
+  else
+    report_result "{$bad} is rejected" 1
     head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
   fi
 done

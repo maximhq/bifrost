@@ -23,36 +23,59 @@ import (
 )
 
 type testClientManager struct {
-	perClientCap int
-	clients      map[string]*schemas.MCPClientState
-	tools        map[string][]schemas.ChatTool
+	perClientCap       int
+	clients            map[string]*schemas.MCPClientState
+	tools              map[string][]schemas.ChatTool
+	instructions       map[string]string            // client ID -> instructions every caller sees
+	callerInstructions map[string]map[string]string // caller -> client ID -> that caller's own instructions
 }
 
-func (m *testClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
+// testCallerKey names the caller on a test context for testClientManager.
+type testCallerKey struct{}
+
+func (m *testClientManager) GetClientForTool(_ context.Context, toolName string) (*schemas.MCPClientState, *schemas.MCPDiscovery) {
 	for clientName, tools := range m.tools {
 		for _, tool := range tools {
 			if tool.Function != nil && tool.Function.Name == toolName {
-				return m.clients[clientName]
+				return m.clients[clientName], &schemas.MCPDiscovery{}
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func (m *testClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
 	return m.clients[clientName]
 }
 
+func (m *testClientManager) GetToolsForClient(_ context.Context, clientID string) map[string]schemas.ChatTool {
+	return nil
+}
+
+func (m *testClientManager) GetInstructionsForClient(ctx context.Context, clientID string) string {
+	if caller, ok := ctx.Value(testCallerKey{}).(string); ok {
+		if text, ok := m.callerInstructions[caller][clientID]; ok {
+			return text
+		}
+	}
+	return m.instructions[clientID]
+}
+
 func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return m.tools
 }
 
-func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
-	return codemcp.InstructionCaps{PerClient: m.perClientCap}
+// GetCallerDiscovery serves the fake's tools, with no connect tools or instructions.
+func (m *testClientManager) GetCallerDiscovery(ctx context.Context, _ bool) codemcp.CallerDiscovery {
+	return codemcp.CallerDiscovery{ToolsPerClient: m.GetToolPerClient(ctx)}
 }
 
-func (m *testClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
+func (m *testClientManager) ConnectToolClient(context.Context, string) *schemas.MCPClientState {
 	return nil
+}
+
+func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
+	return codemcp.InstructionCaps{PerClient: m.perClientCap}
 }
 
 func (m *testClientManager) GetPluginPipeline() codemcp.PluginPipeline {
@@ -1564,19 +1587,19 @@ func newInstructionsCodeMode(level schemas.CodeModeBindingLevel) *StarlarkCodeMo
 	mode.clientManager = &testClientManager{
 		clients: map[string]*schemas.MCPClientState{
 			"codey": {
-				Name:               "codey",
-				ExecutionConfig:    &schemas.MCPClientConfig{Name: "codey", IsCodeModeClient: true},
-				ServerInstructions: probeInstructions,
+				Name:            "codey",
+				ExecutionConfig: &schemas.MCPClientConfig{ID: "codey-id", Name: "codey", IsCodeModeClient: true},
 			},
 			"plain": {
 				Name:            "plain",
-				ExecutionConfig: &schemas.MCPClientConfig{Name: "plain", IsCodeModeClient: true},
+				ExecutionConfig: &schemas.MCPClientConfig{ID: "plain-id", Name: "plain", IsCodeModeClient: true},
 			},
 		},
 		tools: map[string][]schemas.ChatTool{
 			"codey": {{Function: &schemas.ChatToolFunction{Name: "codey-add", Description: schemas.Ptr("Adds two numbers")}}},
 			"plain": {{Function: &schemas.ChatToolFunction{Name: "plain-echo"}}},
 		},
+		instructions: map[string]string{"codey-id": probeInstructions},
 	}
 	return mode
 }
@@ -1669,10 +1692,10 @@ func TestListToolFilesOmitsNonCodeModeServersFromInstructionPointer(t *testing.T
 	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
 	manager := mode.clientManager.(*testClientManager)
 	manager.clients["direct"] = &schemas.MCPClientState{
-		Name:               "direct",
-		ExecutionConfig:    &schemas.MCPClientConfig{Name: "direct", IsCodeModeClient: false},
-		ServerInstructions: "Direct-only rule.",
+		Name:            "direct",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "direct-id", Name: "direct", IsCodeModeClient: false},
 	}
+	manager.instructions["direct-id"] = "Direct-only rule."
 	manager.tools["direct"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "direct-ping"}}}
 
 	msg, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
@@ -1682,6 +1705,109 @@ func TestListToolFilesOmitsNonCodeModeServersFromInstructionPointer(t *testing.T
 
 	if strings.Contains(content, "direct") {
 		t.Fatalf("listing named a non-code-mode server, got:\n%s", content)
+	}
+}
+
+// listToolFiles names a server only where it runs in code mode: a slug override counts on that
+// server's own /mcp/<slug> and nowhere else.
+func TestListToolFilesFollowsServerTypeOnSlug(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["codey"].ExecutionConfig.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugDisabled
+	manager.clients["direct"] = &schemas.MCPClientState{
+		Name:            "direct",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "direct-id", Name: "direct", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+	}
+	manager.tools["direct"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "direct-ping"}}}
+	list := func(ctx context.Context) string {
+		msg, err := mode.handleListToolFiles(ctx, schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("tool-call-1")})
+		return instructionsToolResponse(t, msg, err)
+	}
+	onSlug := func(name string) context.Context {
+		return context.WithValue(context.Background(), schemas.BifrostContextKeyMCPGatewayClient, name)
+	}
+
+	onMCP := list(context.Background())
+	if !strings.Contains(onMCP, "codey") || strings.Contains(onMCP, "direct") {
+		t.Fatalf("/mcp must list codey and not direct, got:\n%s", onMCP)
+	}
+	if got := list(onSlug("codey")); strings.Contains(got, "codey") {
+		t.Fatalf("codey's own slug serves it directly, so it must not be listed, got:\n%s", got)
+	}
+	if got := list(onSlug("direct")); !strings.Contains(got, "direct") {
+		t.Fatalf("direct's own slug runs it in code mode, so it must be listed, got:\n%s", got)
+	}
+}
+
+// A server served directly on its own slug has no stub, docs or binding there; /mcp still has all three.
+func TestStubsDocsAndBindingsFollowServerTypeOnSlug(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	mode.clientManager.(*testClientManager).clients["codey"].ExecutionConfig.ServerTypeOnSlug = schemas.MCPServerTypeOnSlugDisabled
+	onCodeySlug := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	onCodeySlug.SetValue(schemas.BifrostContextKeyMCPGatewayClient, "codey")
+	onMCP := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	text := func(msg *schemas.ChatMessage, err error) string {
+		if err != nil {
+			return err.Error()
+		}
+		if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+			return ""
+		}
+		return *msg.Content.ContentStr
+	}
+	stub := func(ctx context.Context) string {
+		return text(mode.handleReadToolFile(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("tool-call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+		}))
+	}
+	docs := func(ctx context.Context) string {
+		return text(mode.handleGetToolDocs(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("tool-call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"add"}`},
+		}))
+	}
+
+	if got := stub(onMCP); !strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("/mcp must serve codey's stub, got:\n%s", got)
+	}
+	if got := stub(onCodeySlug); strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("codey is direct on its own slug, so it must have no stub there, got:\n%s", got)
+	}
+	if got := docs(onMCP); !strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("/mcp must serve codey's docs, got:\n%s", got)
+	}
+	if got := docs(onCodeySlug); strings.Contains(got, "Adds two numbers") {
+		t.Fatalf("codey is direct on its own slug, so it must have no docs there, got:\n%s", got)
+	}
+	if keys := mode.executeCode(onMCP, "result = 1").Environment.ServerKeys; !slices.Contains(keys, "codey") {
+		t.Fatalf("/mcp must bind codey in the sandbox, got %v", keys)
+	}
+	if keys := mode.executeCode(onCodeySlug, "result = 1").Environment.ServerKeys; slices.Contains(keys, "codey") {
+		t.Fatalf("codey is direct on its own slug, so the sandbox must not bind it there, got %v", keys)
+	}
+}
+
+// The stub carries the instructions from the caller's own discovery, the same one its tools
+// come from, not a text shared by every caller of the server.
+func TestReadToolFileCarriesTheCallersOwnInstructions(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	mode.clientManager.(*testClientManager).callerInstructions = map[string]map[string]string{
+		"alice": {"codey-id": "Alice may only read."},
+	}
+
+	alice := context.WithValue(context.Background(), testCallerKey{}, "alice")
+	msg, err := mode.handleReadToolFile(alice, schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if !strings.Contains(content, "# Alice may only read.") {
+		t.Fatalf("stub did not carry the caller's own instructions, got:\n%s", content)
+	}
+	if strings.Contains(content, "Always call list_items") {
+		t.Fatalf("stub carried the shared text instead of the caller's, got:\n%s", content)
 	}
 }
 

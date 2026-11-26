@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,8 +16,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/mcp_headers"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -49,26 +52,44 @@ const petstoreSpecYAML = "openapi: 3.0.3\ninfo:\n  title: Petstore YAML\n  versi
 // the runtime would have synthesized from.
 type openAPIRecordingManager struct {
 	MCPManager
+	live      *livestore.Store // when set, an add or update loads the client's row, as the server does
 	added     []*schemas.MCPClientConfig
 	updated   []*schemas.MCPClientConfig
 	refreshed []string
+	updateErr error // when set, UpdateMCPClient fails with it and records nothing
 }
 
+// loadRow loads an MCP client's row into the live store, as the server does after the runtime
+// takes the client.
+func (m *openAPIRecordingManager) loadRow(ctx context.Context, id string) error {
+	if m.live == nil {
+		return nil
+	}
+	return m.live.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindMCPClient, ID: id}})
+}
+
+// RefreshMCPClientTools records the client whose tools were refreshed.
 func (m *openAPIRecordingManager) RefreshMCPClientTools(_ context.Context, id string) (int, error) {
 	m.refreshed = append(m.refreshed, id)
 	return 0, nil
 }
 
-func (m *openAPIRecordingManager) AddMCPClient(_ context.Context, c *schemas.MCPClientConfig) error {
+// AddMCPClient records the client and loads its row, as the server does once the runtime has it.
+func (m *openAPIRecordingManager) AddMCPClient(ctx context.Context, c *schemas.MCPClientConfig) error {
 	m.added = append(m.added, c)
-	return nil
+	return m.loadRow(ctx, c.ID)
 }
 
-func (m *openAPIRecordingManager) UpdateMCPClient(_ context.Context, _ string, c *schemas.MCPClientConfig) error {
+// UpdateMCPClient records the edit and loads the client's row, or fails with updateErr when set.
+func (m *openAPIRecordingManager) UpdateMCPClient(ctx context.Context, id string, c *schemas.MCPClientConfig) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
 	m.updated = append(m.updated, c)
-	return nil
+	return m.loadRow(ctx, id)
 }
 
+// RequiresPerCallConnection reports a shared connection for every client.
 func (m *openAPIRecordingManager) RequiresPerCallConnection(*schemas.MCPClientConfig) bool {
 	return false
 }
@@ -79,22 +100,45 @@ func (m *openAPIRecordingManager) VerifyHeadersConnection(_ context.Context, c *
 	if c.ConnectionString == nil || c.ConnectionString.GetValue() == "" {
 		return nil, errors.New("connection URL is required for per-user headers verification")
 	}
-	return &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}, nil
+	return &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}, nil
 }
 
 func newOpenAPITestHandler(t *testing.T) (*MCPHandler, *openAPIRecordingManager) {
 	t.Helper()
 	SetLogger(&mockLogger{})
-	mgr := &openAPIRecordingManager{}
-	h := &MCPHandler{
-		store: &lib.Config{
-			ConfigStore:  newRealOAuth2Store(t),
-			ClientConfig: &configstore.ClientConfig{},
-			MCPConfig:    &schemas.MCPConfig{},
-		},
-		mcpManager: mgr,
-	}
+	store := libtest.FromStore(t, &lib.Config{
+		ConfigStore:  newRealOAuth2Store(t),
+		ClientConfig: &configstore.ClientConfig{},
+		MCPConfig:    &schemas.MCPConfig{},
+	})
+	mgr := &openAPIRecordingManager{live: store.LiveStore}
+	h := &MCPHandler{store: store, mcpManager: mgr}
 	return h, mgr
+}
+
+// loadMCPClient re-reads an MCP client's row into the handler's live store.
+func loadMCPClient(t *testing.T, h *MCPHandler, id string) {
+	t.Helper()
+	require.NoError(t, h.store.LiveStore.Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindMCPClient, ID: id}}))
+}
+
+// storeMCPClient writes client as a new row and loads it into the handler's live store.
+func storeMCPClient(t *testing.T, h *MCPHandler, client *schemas.MCPClientConfig) {
+	t.Helper()
+	require.NoError(t, h.store.ConfigStore.CreateMCPClientConfig(context.Background(), client))
+	loadMCPClient(t, h, client.ID)
+}
+
+// editMCPClientRow changes an MCP client's stored row with edit, through the store's own update,
+// and loads it into the handler's live store.
+func editMCPClientRow(t *testing.T, h *MCPHandler, id string, edit func(*configstoreTables.TableMCPClient)) {
+	t.Helper()
+	ctx := context.Background()
+	row, err := h.store.ConfigStore.GetMCPClientByID(ctx, id)
+	require.NoError(t, err)
+	edit(row)
+	require.NoError(t, h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, row))
+	loadMCPClient(t, h, id)
 }
 
 func doMCPRequest(t *testing.T, handler func(*fasthttp.RequestCtx), method, body, id string, authBypassed bool) (int, string) {
@@ -260,12 +304,41 @@ func TestPreviewOpenAPISpec_Errors(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
 	assert.Contains(t, body, "top level must be a mapping")
 
-	huge, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: "{" + strings.Repeat(" ", 5<<20) + "}"})
+	huge, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: "{" + strings.Repeat(" ", openapimcp.MaxSpecBytes) + "}"})
 	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(huge), "", false)
 	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
 
 	status, _ = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, `not json`, "", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// client_config.mcp_openapi_max_spec_mb is read on every request: lowering it refuses a spec the
+// default admits, on preview and on create, and 0 restores the default.
+func TestOpenAPISpec_ConfiguredMaxSpecSize(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	// Padded inside the object: the handlers trim surrounding whitespace before measuring.
+	padded := "{" + strings.Repeat(" ", 1<<20) + strings.TrimPrefix(strings.TrimSpace(petstoreSpecJSON), "{")
+	preview, _ := json.Marshal(MCPOpenAPIPreviewRequest{Spec: padded})
+	create, _ := json.Marshal(map[string]any{
+		"name": "petstore_sized", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"*"},
+		"openapi_config":   map[string]any{"spec": padded},
+	})
+
+	h.store.ClientConfig.MCPOpenAPIMaxSpecMB = 1
+	status, body := doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(preview), "", false)
+	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
+	assert.Contains(t, body, fmt.Sprintf("exceeds %d bytes", 1<<20))
+	status, body = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(create), "", false)
+	assert.Equal(t, fasthttp.StatusRequestEntityTooLarge, status, body)
+	assert.Empty(t, mgr.added)
+
+	h.store.ClientConfig.MCPOpenAPIMaxSpecMB = 0
+	status, body = doMCPRequest(t, h.previewOpenAPISpec, fasthttp.MethodPost, string(preview), "", false)
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	status, body = doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(create), "", false)
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	assert.Len(t, mgr.added, 1)
 }
 
 func TestAddMCPClient_OpenAPI_CreatesClientFromSpec(t *testing.T) {
@@ -375,6 +448,11 @@ func TestAddMCPClient_OpenAPI_Rejections(t *testing.T) {
 		want    string
 	}{
 		{"oauth auth refused", base(func(m map[string]any) { m["auth_type"] = "oauth" }), false, fasthttp.StatusBadRequest, "not supported for connection_type 'openapi'"},
+		{"per_user_headers storing a credential for a per-user header refused", base(func(m map[string]any) {
+			m["auth_type"] = "per_user_headers"
+			m["per_user_header_keys"] = []string{"x-api-key"}
+			m["openapi_config"] = map[string]any{"spec": petstoreSpecJSON, "security_credentials": map[string]any{"ApiKeyAuth": map[string]string{"value": "k-admin"}}}
+		}), false, fasthttp.StatusBadRequest, "security_credentials.ApiKeyAuth cannot be stored"},
 		{"token exchange refused", base(func(m map[string]any) { m["auth_type"] = "token_exchange" }), false, fasthttp.StatusBadRequest, "not supported for connection_type 'openapi'"},
 		{"missing openapi_config", base(func(m map[string]any) { delete(m, "openapi_config") }), false, fasthttp.StatusBadRequest, "openapi_config is required"},
 		{"connection_string set", base(func(m map[string]any) { m["connection_string"] = "https://mcp.example.com" }), false, fasthttp.StatusBadRequest, "connection_string must not be set"},
@@ -412,9 +490,6 @@ func TestUpdateMCPClient_OpenAPI_ReplacesSpecAndValidatesTools(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	require.Len(t, mgr.added, 1)
 	existing := mgr.added[0]
-	// The real server mirrors the runtime config into the in-memory MCPConfig;
-	// the stub manager does not, so do it here.
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{existing}
 
 	// Unknown tool against the stored spec.
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["listPets","nope"]}`, existing.ID, false)
@@ -454,7 +529,7 @@ func TestUpdateMCPClient_OpenAPI_ReplacesSpecAndValidatesTools(t *testing.T) {
 
 	// openapi_config on a non-openapi client is refused.
 	httpClient := &schemas.MCPClientConfig{ID: "http-1", Name: "remote", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("https://mcp.example.com"), AuthType: schemas.MCPAuthTypeNone}
-	h.store.MCPConfig.ClientConfigs = append(h.store.MCPConfig.ClientConfigs, httpClient)
+	storeMCPClient(t, h, httpClient)
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"openapi_config":{"spec":"x"}}`, "http-1", false)
 	assert.Equal(t, fasthttp.StatusBadRequest, status, respBody)
 	assert.Contains(t, respBody, "connection_type 'openapi'")
@@ -474,8 +549,9 @@ func TestUpdateMCPClient_OpenAPI_StoredSpecFileIsNotARequestField(t *testing.T) 
 	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	existing := mgr.added[0]
-	existing.OpenAPIConfig.SpecFile = strPtr("specs/petstore.json") // as prepareOpenAPIClientFromFile leaves it
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{existing}
+	editMCPClientRow(t, h, existing.ID, func(row *configstoreTables.TableMCPClient) {
+		row.OpenAPIConfig.SpecFile = strPtr("specs/petstore.json") // as prepareOpenAPIClientFromFile leaves it
+	})
 
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["listPets","getPetById"]}`, existing.ID, false)
 	assert.Equal(t, fasthttp.StatusOK, status, respBody)
@@ -508,18 +584,20 @@ func TestUpdateMCPClient_OpenAPI_ToolOnlyEditLeavesLiveConfigAlone(t *testing.T)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	existing := mgr.added[0]
 	// A config.json spec_url client: fetched at connect, never inlined.
-	existing.OpenAPIConfig.Spec = ""
-	existing.OpenAPIConfig.SpecTitle = ""
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{existing}
-	live := *existing.OpenAPIConfig
+	editMCPClientRow(t, h, existing.ID, func(row *configstoreTables.TableMCPClient) {
+		row.OpenAPIConfig.Spec = ""
+		row.OpenAPIConfig.SpecTitle = ""
+	})
+	liveOpenAPIConfig := func() schemas.MCPOpenAPIConfig { return *findMCPClientConfig(h.store, existing.ID).OpenAPIConfig }
+	live := liveOpenAPIConfig()
 
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["listPets","nope"]}`, existing.ID, false)
 	require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
-	assert.Equal(t, live, *existing.OpenAPIConfig, "a rejected edit leaves the live block untouched")
+	assert.Equal(t, live, liveOpenAPIConfig(), "a rejected edit leaves the live block untouched")
 
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["listPets","getPetById"]}`, existing.ID, false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
-	assert.Equal(t, live, *existing.OpenAPIConfig, "validation does not inline the fetched spec into the live block")
+	assert.Equal(t, live, liveOpenAPIConfig(), "validation does not inline the fetched spec into the live block")
 	assert.Equal(t, []string{existing.ID}, mgr.refreshed, "the runtime rebuilds from the document the allow-list was checked against")
 
 	// A client being disabled has no live server to rebuild; enabling it later
@@ -532,10 +610,41 @@ func TestUpdateMCPClient_OpenAPI_ToolOnlyEditLeavesLiveConfigAlone(t *testing.T)
 
 	// An inline-spec client has nothing newer to rebuild from.
 	mgr.refreshed = nil
-	existing.OpenAPIConfig.Spec = petstoreSpecJSON
+	editMCPClientRow(t, h, existing.ID, func(row *configstoreTables.TableMCPClient) { row.OpenAPIConfig.Spec = petstoreSpecJSON })
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["listPets"]}`, existing.ID, false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	assert.Empty(t, mgr.refreshed)
+}
+
+// TestUpdateMCPClient_InvalidVKConfigsApplyNothing pins that an update whose vk_configs is invalid is
+// refused before anything is applied. vk_configs was checked only after the client itself had been
+// updated, so the 400 came back with the rest of the request (here a rename) already saved and live.
+func TestUpdateMCPClient_InvalidVKConfigsApplyNothing(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	existing := mgr.added[0]
+
+	for name, vkConfigs := range map[string]string{
+		"an empty virtual_key_id":     `[{"virtual_key_id":"","tools_to_execute":["*"]}]`,
+		"a duplicate virtual_key_id":  `[{"virtual_key_id":"vk-1","tools_to_execute":["*"]},{"virtual_key_id":"vk-1","tools_to_execute":["*"]}]`,
+		"an invalid tools_to_execute": `[{"virtual_key_id":"vk-1","tools_to_execute":["*","x"]}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"petstore_renamed","vk_configs":`+vkConfigs+`}`, existing.ID, false)
+			require.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+			assert.Empty(t, mgr.updated, "the runtime client is not touched")
+			assert.Equal(t, "petstore", existing.Name, "the live config keeps its name")
+			stored, err := h.store.ConfigStore.GetMCPClientByID(context.Background(), existing.ID)
+			require.NoError(t, err)
+			assert.Equal(t, "petstore", stored.Name, "the stored row keeps its name")
+		})
+	}
 }
 
 // TestAddMCPClient_OpenAPI_OperationServersNeedNoBaseURL: a spec whose every
@@ -564,6 +673,62 @@ func TestAddMCPClient_OpenAPI_OperationServersNeedNoBaseURL(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusForbidden, status, respBody)
 }
 
+// TestAddMCPClient_OpenAPI_PerUserHeadersKeepsOtherSchemeCredentials: a
+// per_user_headers openapi client may store a credential for a scheme callers
+// do not supply, alongside its per-user headers.
+func TestAddMCPClient_OpenAPI_PerUserHeadersKeepsOtherSchemeCredentials(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	body, _ := json.Marshal(map[string]any{
+		"name": "petstore_mixed", "connection_type": "openapi", "auth_type": "per_user_headers",
+		"per_user_header_keys": []string{"x-user-token"},
+		"tools_to_execute":     []string{"*"},
+		"openapi_config":       map[string]any{"spec": petstoreSpecJSON, "security_credentials": map[string]any{"ApiKeyAuth": map[string]string{"value": "k-admin"}}},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	require.Len(t, mgr.added, 1)
+	assert.Contains(t, mgr.added[0].OpenAPIConfig.SecurityCredentials, "ApiKeyAuth")
+}
+
+// TestUpdateMCPClient_OpenAPI_PerUserHeaderCredentialConflict: an update that
+// would leave a per_user_headers openapi client storing a credential for a
+// header its callers supply is refused, whether it adds the credential or adds
+// the header to per_user_header_keys; clearing the credentials with {} is
+// accepted.
+func TestUpdateMCPClient_OpenAPI_PerUserHeaderCredentialConflict(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	create := func(name string, keys []string, creds map[string]any) *schemas.MCPClientConfig {
+		oc := map[string]any{"spec": petstoreSpecJSON}
+		if creds != nil {
+			oc["security_credentials"] = creds
+		}
+		body, _ := json.Marshal(map[string]any{
+			"name": name, "connection_type": "openapi", "auth_type": "per_user_headers",
+			"per_user_header_keys": keys, "tools_to_execute": []string{"*"}, "openapi_config": oc,
+		})
+		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
+		require.Equal(t, fasthttp.StatusOK, status, respBody)
+		client := mgr.added[len(mgr.added)-1]
+		return client
+	}
+	stored := map[string]any{"ApiKeyAuth": map[string]string{"value": "k-admin"}}
+
+	perUserAPIKey := create("petstore_per_user_key", []string{"x-api-key"}, nil)
+	status, respBody := doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"openapi_config":{"security_credentials":{"ApiKeyAuth":{"value":"k-admin"}}}}`, perUserAPIKey.ID, false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "security_credentials.ApiKeyAuth cannot be stored")
+	assert.Empty(t, mgr.updated, "a refused update does not reach the runtime")
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"openapi_config":{"security_credentials":{}}}`, perUserAPIKey.ID, false)
+	assert.Equal(t, fasthttp.StatusOK, status, respBody)
+
+	storedAPIKey := create("petstore_stored_key", []string{"x-user-token"}, stored)
+	updatedBefore := len(mgr.updated)
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"per_user_header_keys":["x-user-token","x-api-key"]}`, storedAPIKey.ID, false)
+	assert.Equal(t, fasthttp.StatusBadRequest, status, respBody)
+	assert.Contains(t, respBody, "security_credentials.ApiKeyAuth cannot be stored")
+	assert.Len(t, mgr.updated, updatedBefore, "a refused update does not reach the runtime")
+}
+
 // createPerUserHeadersOpenAPIClient registers an openapi client that collects
 // a per-user header and returns its stored config.
 func createPerUserHeadersOpenAPIClient(t *testing.T, h *MCPHandler, mgr *openAPIRecordingManager) *schemas.MCPClientConfig {
@@ -577,7 +742,6 @@ func createPerUserHeadersOpenAPIClient(t *testing.T, h *MCPHandler, mgr *openAPI
 	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(body), "", false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	require.Len(t, mgr.added, 1)
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{mgr.added[0]}
 	return mgr.added[0]
 }
 
@@ -587,7 +751,7 @@ func createPerUserHeadersOpenAPIClient(t *testing.T, h *MCPHandler, mgr *openAPI
 // the handshake for want of a connection URL.
 func TestFlowSubmit_OpenAPIPerUserHeadersSavesWithoutMCPHandshake(t *testing.T) {
 	h, mgr := newOpenAPITestHandler(t)
-	h.store.MCPHeadersProvider = mcp_headers.NewProvider(h.store.ConfigStore, &mockLogger{})
+	h.store.MCPHeadersProvider = newTestHeadersProvider(t, h.store.ConfigStore, &mockLogger{})
 	client := createPerUserHeadersOpenAPIClient(t, h, mgr)
 
 	now := time.Now()
@@ -597,13 +761,35 @@ func TestFlowSubmit_OpenAPIPerUserHeadersSavesWithoutMCPHandshake(t *testing.T) 
 	}
 	require.NoError(t, h.store.ConfigStore.CreateMCPPerUserHeaderFlow(context.Background(), flow))
 
-	headersHandler := NewMCPPerUserHeadersHandler(mgr, h.store, nil)
+	headersHandler := NewMCPPerUserHeadersHandler(mgr, nil, h.store, nil)
 	status, respBody := doMCPRequest(t, headersHandler.flowSubmit, fasthttp.MethodPost, `{"headers":{"x-user-token":"abc"}}`, flow.ID, false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeSession, "session-1", client.ID)
 	require.NoError(t, err)
 	require.NotNil(t, cred)
 	assert.Equal(t, "abc", cred.Headers["x-user-token"])
+}
+
+// TestFlowSubmit_ExpiredFlowIsGone: a header submission on a flow past its expiry answers 410 and
+// saves no credential, so the user restarts from the API error link.
+func TestFlowSubmit_ExpiredFlowIsGone(t *testing.T) {
+	h, mgr := newOpenAPITestHandler(t)
+	h.store.MCPHeadersProvider = newTestHeadersProvider(t, h.store.ConfigStore, &mockLogger{})
+	client := createPerUserHeadersOpenAPIClient(t, h, mgr)
+
+	expired := time.Now().Add(-time.Minute)
+	flow := &configstoreTables.TableMCPPerUserHeaderFlow{
+		ID: "flow-expired-1", MCPClientID: client.ID, SessionID: "session-1", FlowMode: string(schemas.MCPAuthModeSession),
+		Status: "pending", ExpiresAt: expired, CreatedAt: expired.Add(-15 * time.Minute), UpdatedAt: expired,
+	}
+	require.NoError(t, h.store.ConfigStore.CreateMCPPerUserHeaderFlow(context.Background(), flow))
+
+	headersHandler := NewMCPPerUserHeadersHandler(mgr, nil, h.store, nil)
+	status, respBody := doMCPRequest(t, headersHandler.flowSubmit, fasthttp.MethodPost, `{"headers":{"x-user-token":"abc"}}`, flow.ID, false)
+	assert.Equal(t, fasthttp.StatusGone, status, respBody)
+	assert.Contains(t, respBody, "Headers submission flow has expired; restart from the API error link")
+	_, err := h.store.MCPHeadersProvider.GetCredentialByMode(context.Background(), schemas.MCPAuthModeSession, "session-1", client.ID)
+	assert.ErrorContains(t, err, "credential not found", "nothing is saved for an expired flow")
 }
 
 // TestVerifyMCPClientHeaders_OpenAPIIsNotApplicable: admin header verification
@@ -644,12 +830,12 @@ func TestPreviewOpenAPISpec_ClientNameMatchesCreateNaming(t *testing.T) {
 
 func TestGetMCPClientOpenAPISpec(t *testing.T) {
 	h, _ := newOpenAPITestHandler(t)
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{
-		{ID: "oa-json", Name: "a", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: petstoreSpecJSON}},
-		{ID: "oa-yaml", Name: "b", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: petstoreSpecYAML}},
-		{ID: "oa-url", Name: "c", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: strPtr("https://x/openapi.json")}},
-		{ID: "http-1", Name: "d", ConnectionType: schemas.MCPConnectionTypeHTTP},
-	}
+	libtest.MCPClients(t, h.store,
+		&schemas.MCPClientConfig{ID: "oa-json", Name: "a", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: petstoreSpecJSON}},
+		&schemas.MCPClientConfig{ID: "oa-yaml", Name: "b", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: petstoreSpecYAML}},
+		&schemas.MCPClientConfig{ID: "oa-url", Name: "c", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: strPtr("https://x/openapi.json")}},
+		&schemas.MCPClientConfig{ID: "http-1", Name: "d", ConnectionType: schemas.MCPConnectionTypeHTTP},
+	)
 	get := func(id string) (int, string, string) {
 		var req fasthttp.Request
 		req.Header.SetMethod(fasthttp.MethodGet)
@@ -756,7 +942,7 @@ func strPtr(s string) *string { return &s }
 // raw secrets.
 func TestGetMCPClients_OpenAPIConfigIsReturnedRedacted(t *testing.T) {
 	h, _ := newOpenAPITestHandler(t)
-	h.client = &bifrost.Bifrost{MCPManager: bifrostmcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &mockLogger{}, nil)}
+	h.client = &bifrost.Bifrost{MCPManager: bifrostmcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, &mockLogger{}, nil)}
 	createBody, _ := json.Marshal(map[string]any{
 		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
 		"tools_to_execute": []string{"listPets"},
@@ -823,7 +1009,6 @@ func TestUpdateMCPClient_OpenAPI_RenameRevalidatesToolNames(t *testing.T) {
 	})
 	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{mgr.added[0]}
 	id := mgr.added[0].ID
 
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"name":"p_`+strings.Repeat("x", 30)+`"}`, id, false)
@@ -849,7 +1034,6 @@ func TestUpdateMCPClient_OpenAPI_OmittedOptionsKeepStoredValues(t *testing.T) {
 	})
 	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{mgr.added[0]}
 	id := mgr.added[0].ID
 
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"openapi_config":{"base_url":"https://other.example.com"}}`, id, false)
@@ -880,7 +1064,6 @@ func TestUpdateMCPClient_OpenAPI_AuthBypassedDocumentChangeRequiresPublicTarget(
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
 	existing := mgr.added[0]
 	require.False(t, existing.RequirePublicTarget)
-	h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{existing}
 
 	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"tools_to_execute":["listPets","createPet"]}`, existing.ID, false)
 	require.Equal(t, fasthttp.StatusOK, status, respBody)
@@ -915,7 +1098,6 @@ func TestUpdateMCPClient_OpenAPI_AuthBypassedRetargetCannotReuseStoredSecrets(t 
 		createBody, _ := json.Marshal(body)
 		status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
 		require.Equal(t, fasthttp.StatusOK, status, respBody)
-		h.store.MCPConfig.ClientConfigs = []*schemas.MCPClientConfig{mgr.added[0]}
 		return h, mgr.added[0].ID
 	}
 
@@ -978,4 +1160,32 @@ func TestMergeOpenAPIConfigUpdate_MaskedBaseURLKeepsStored(t *testing.T) {
 	other := "https://other.example.com"
 	merged = mergeOpenAPIConfigUpdate(existing, &schemas.MCPOpenAPIConfig{BaseURL: &other}, openAPIOptionFields{})
 	assert.Equal(t, other, *merged.BaseURL)
+}
+
+// TestFetchOpenAPISpecForCallerDerivesFromRequestContext: the download's
+// context is derived from the request's, so a server shutdown (which closes
+// the RequestCtx's Done) cancels it, and it still carries the size-scaled
+// deadline.
+func TestFetchOpenAPISpecForCallerDerivesFromRequestContext(t *testing.T) {
+	private := newAuthenticatedSpecClient
+	t.Cleanup(func() { newAuthenticatedSpecClient = private })
+	type markerKey struct{}
+	var sawMarker any
+	var deadline time.Duration
+	newAuthenticatedSpecClient = func(timeout time.Duration) *http.Client {
+		return &http.Client{Timeout: timeout, Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			sawMarker = r.Context().Value(markerKey{})
+			if d, ok := r.Context().Deadline(); ok {
+				deadline = time.Until(d)
+			}
+			return nil, errors.New("not dialed in tests")
+		})}
+	}
+	ctx := initCtx(&fasthttp.Request{})
+	ctx.SetUserValue(markerKey{}, "request")
+	_, _, _, err := fetchOpenAPISpecForCaller(ctx, "https://1.1.1.1/openapi.json", 64<<20)
+	require.Error(t, err)
+	assert.Equal(t, "request", sawMarker, "the fetch context must be derived from the request context")
+	assert.Greater(t, deadline, 15*time.Second, "the size-scaled deadline still applies")
+	assert.LessOrEqual(t, deadline, 30*time.Second)
 }

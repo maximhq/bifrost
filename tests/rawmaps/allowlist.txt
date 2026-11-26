@@ -1,0 +1,194 @@
+# Raw maps allowed outside the live store, checked by TestRepositoryKeepsDataInTheLiveStore.
+# One entry per line, tab-separated: kind, package, Type.field or variable, "group: reason".
+# Groups: handle (connections, goroutines, locks, compiled programs), inflight (per-request or
+# per-run working state, removed when it ends), core (OSS core cannot import livestore), registry
+# (filled at boot, then only read), backend (another store's own backend, or an in-memory fake),
+# config (built once from configuration and only read), fake (test doubles in non-test files),
+# decided (a recorded decision not to move it), held (waiting on a decision), queued (found by this
+# rule, to be moved or decided).
+
+syncmap	core	Bifrost.providerMutexes	core: OSS core cannot import livestore
+syncmap	core	Bifrost.requestQueues	core: OSS core cannot import livestore
+syncmap	core	Bifrost.retiredWorkerWaits	core: OSS core cannot import livestore
+syncmap	core	Bifrost.waitGroups	core: OSS core cannot import livestore
+lockedmap	core	PluginPipeline.postHookTimings	core: OSS core cannot import livestore
+lockedmap	core	PluginPipeline.streamScopedCtxs	core: OSS core cannot import livestore
+pkgsyncmap	core	pluginSpanNameCache	core: OSS core cannot import livestore
+lockedmap	core/agent	Manager.oauthFingerprints	decided: relies on a size cap that livestore.Cache has no option for; goes with the agent OAuth token cache
+lockedmap	core/agent	Manager.oauthTokens	decided: relies on a size cap that livestore.Cache has no option for
+syncmap	core/agent	runtimeRegistry.entries	core: OSS core cannot import livestore
+lockedmap	core/internal/mcptests	TestConnectPlugin.mutateHeaders	fake: test plugins and account in a non-test file
+lockedmap	core/internal/mcptests	TestGovernancePlugin.allowedToolNames	fake: test plugins and account in a non-test file
+lockedmap	core/internal/mcptests	TestGovernancePlugin.blockedClientIDs	fake: test plugins and account in a non-test file
+lockedmap	core/internal/mcptests	TestGovernancePlugin.blockedToolNames	fake: test plugins and account in a non-test file
+pkgsyncmap	core/internal/mcptests	managerAccounts	fake: test plugins and account in a non-test file
+lockedmap	core/internal/mcptests	testAccount.clients	fake: test plugins and account in a non-test file
+lockedmap	core/mcp	ConnectionCheckerManager.checkers	core: OSS core cannot import livestore
+lockedmap	core/mcp	MCPManager.clientMap	core: OSS core cannot import livestore
+syncmap	core/mcp	MCPManager.pendingRenegotiation	core: OSS core cannot import livestore
+syncmap	core/mcp	MCPManager.perCallConns	core: OSS core cannot import livestore
+syncmap	core/mcp	MCPManager.reconnectingClients	core: OSS core cannot import livestore
+lockedmap	core/mcp	memoryDiscoveryStore.discoveries	core: OSS core cannot import livestore
+lockedmap	core/network	HTTPClientFactory.fasthttpClients	core: OSS core cannot import livestore
+lockedmap	core/network	HTTPClientFactory.httpClients	core: OSS core cannot import livestore
+lockedmap	core/network	HTTPClientFactory.liveFasthttp	core: OSS core cannot import livestore
+lockedmap	core/network	HTTPClientFactory.liveHTTP	core: OSS core cannot import livestore
+lockedmap	core/providers/anthropic	anthropicStreamDeltaPromptUsageLedger.absent	core: OSS core cannot import livestore
+pkgsyncmap	core/providers/anthropic	anthropicStreamDeltaPromptUsageLedgers	core: OSS core cannot import livestore
+syncmap	core/providers/azure	AzureProvider.credentials	core: OSS core cannot import livestore
+pkgsyncmap	core/providers/bedrock	assumeRoleCredsCache	core: OSS core cannot import livestore
+lockedmap	core/providers/bedrock	bedrockInvokeStreamState.openedBlocks	core: OSS core cannot import livestore
+lockedmap	core/providers/bedrock	signingKeyCache.cache	core: OSS core cannot import livestore
+syncmap	core/providers/databricks	DatabricksProvider.responsesUnsupported	core: OSS core cannot import livestore
+lockedmap	core/providers/elevenlabs	speechSession.headers	core: OSS core cannot import livestore
+syncmap	core/providers/huggingface	HuggingFaceProvider.modelProviderMappingCache	core: OSS core cannot import livestore
+lockedmap	core/providers/utils	chatCustomToolStreamRestorer.calls	core: OSS core cannot import livestore; one streamed response's working state
+lockedmap	core/providers/utils	chatCustomToolStreamRestorer.names	core: OSS core cannot import livestore; one streamed response's working state
+lockedmap	core/providers/utils	customToolStreamRestorer.calls	core: OSS core cannot import livestore
+lockedmap	core/providers/utils	customToolStreamRestorer.names	core: OSS core cannot import livestore
+syncmap	core/providers/utils	fasthttpRoundTripper.schemes	core: OSS core cannot import livestore
+pkgsyncmap	core/providers/utils	fetchClients	core: OSS core cannot import livestore
+pkgsyncmap	core/providers/utils	requestContexts	core: OSS core cannot import livestore
+pkgsyncmap	core/providers/utils	streamPreambles	core: OSS core cannot import livestore
+syncmap	core/providers/utils/tokencache	Cache.slots	core: OSS core cannot import livestore
+syncmap	core/providers/vertex	VertexProvider.tokenSources	core: OSS core cannot import livestore
+atomicmaps	core/relay	Manager.endpoints	decided: compiled relay endpoints, a handle map
+syncmap	core/schemas	A2ARawCaptureManager.captures	core: OSS core cannot import livestore
+lockedmap	core/schemas	BifrostContext.realtimeTurnKeys	inflight: request-scoped context values
+lockedmap	core/schemas	BifrostContext.trustedValues	inflight: request-scoped context values
+lockedmap	core/schemas	BifrostContext.userValues	inflight: request-scoped context values
+lockedmap	core/schemas	Span.Attributes	inflight: one trace span being built
+lockedmap	core/schemas	Trace.Attributes	inflight: one trace being built
+lockedmap	core/schemas	Trace.RequestHeaders	inflight: one trace being built
+pkgmap	core/schemas	knownProviders	core: OSS core cannot import livestore
+pkgsyncmap	core/schemas	regexEntryCache	core: OSS core cannot import livestore
+pkgsyncmap	core/streamusage	counters	core: OSS core cannot import livestore
+lockedmap	core/toolsearch	Session.loaded	core: OSS core cannot import livestore
+pkgmap	framework/configstore/tables	validModelConfigScopes	registry: static scope list; written only by the scope registration at boot
+lockedmap	framework/encrypt	passwordCache.entries	decided: framework/livestore depends on framework/encrypt (import cycle)
+pkgmap	framework/featureflags	registry	registry: flag definitions registered at boot
+pkgmap	framework/jobaccounting	logNamespaces	registry: namespace per job kind, registered at boot
+syncmap	framework/logstore	ClickHouseLogStore.retentionCutoffs	backend: the log store's own retention bookkeeping, one entry per table
+lockedmap	framework/logstore	LogsCleaner.batchSizes	decided: kept as a map; per-table batch size after a statement timeout shrank it, a handful of entries; logstore cannot hold a live-store table, since framework/livestore imports framework/logstore
+pkgsyncmap	framework/logstore	chSchemaCache	handle: GORM schema parses of the log tables, built from code
+pkgsyncmap	framework/logstore	pgTextFieldCache	handle: text columns of GORM schemas, built from code
+lockedmap	framework/mcpdiscovery	PerUserStore.clients	handle: per-user discovery membership handles held by the MCP manager's discovery store
+lockedmap	framework/mcpdiscovery	SharedStore.writes	inflight: shared discovery writes in flight, by client
+pkgsyncmap	framework/modelcatalog	aliasNameIndexes	decided: kept as a map; one alias-name set per provider, rebuilt when the provider's keys slice changes; MayBeKeyAlias is a package function its callers reach with an optional catalog, so no live store is in reach
+pkgsyncmap	framework/modelcatalog/datasheet	peakHoursLocations	handle: parsed time zones
+lockedmap	framework/objectstore	InMemoryObjectStore.createdAt	backend: in-memory object store backend (a test fake)
+lockedmap	framework/objectstore	InMemoryObjectStore.objects	backend: in-memory object store backend (a test fake)
+lockedmap	framework/objectstore	InMemoryObjectStore.tags	backend: in-memory object store backend (a test fake)
+lockedmap	framework/objectstore	InMemoryObjectStore.types	backend: in-memory object store backend (a test fake)
+lockedmap	framework/queue	clickhouseStore.groups	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	memoryStore.byTopic	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	memoryStore.groups	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	memoryStore.items	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	memoryStore.keyLive	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	memoryStore.messages	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	memoryStore.queues	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	memoryStore.waiting	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	processLocker.locks	backend: the queue package's own backends, wired into nothing
+pkgmap	framework/queue	registry	backend: the queue package's own backends, wired into nothing
+syncmap	framework/queue	sqlStore.capped	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	storeQueue.subs	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	subscription.current	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/queue	subscription.inflight	backend: the queue package's own backends, wired into nothing
+lockedmap	framework/sidekiq	Runner.handlers	registry: job handlers registered at boot
+lockedmap	framework/sidekiq	Runner.inflight	inflight: jobs running on this node
+lockedmap	framework/sidekiq	Runner.jobCancels	handle: cancel funcs of running jobs
+lockedmap	framework/sidekiq	Runner.quiet	registry: quiet job kinds registered at boot
+lockedmap	framework/sidekiq	Runner.summarizers	registry: job summarizers registered at boot
+syncmap	framework/streaming	Accumulator.streamAccumulators	inflight: stream accumulators, removed when the stream ends
+lockedmap	framework/streaming	StreamAccumulator.AudioChunksSeen	inflight: stream accumulators, removed when the stream ends
+lockedmap	framework/streaming	StreamAccumulator.ChatChunksSeen	inflight: stream accumulators, removed when the stream ends
+lockedmap	framework/streaming	StreamAccumulator.ImageChunksSeen	inflight: stream accumulators, removed when the stream ends
+lockedmap	framework/streaming	StreamAccumulator.PassthroughChunks	inflight: stream accumulators, removed when the stream ends
+lockedmap	framework/streaming	StreamAccumulator.PassthroughHeaders	inflight: stream accumulators, removed when the stream ends
+lockedmap	framework/streaming	StreamAccumulator.ResponsesChunksSeen	inflight: stream accumulators, removed when the stream ends
+lockedmap	framework/streaming	StreamAccumulator.TranscriptionChunksSeen	inflight: stream accumulators, removed when the stream ends
+lockedmap	framework/temptoken	Registry.scopes	registry: temporary token scopes registered at boot
+syncmap	framework/tracing	TraceStore.deferredSpans	inflight: traces and spans being built
+syncmap	framework/tracing	TraceStore.traces	inflight: traces and spans being built
+syncmap	framework/tracing	Tracer.deferredCompletions	inflight: traces and spans being built
+syncmap	framework/tracing	Tracer.flushHolds	inflight: traces and spans being built
+lockedmap	framework/vectorstore	ChromemStore.namespaceDimensions	backend: the vector store backends' own bookkeeping
+lockedmap	framework/vectorstore	ChromemStore.snapshots	backend: the vector store backends' own bookkeeping
+lockedmap	framework/vectorstore	PineconeStore.namespaces	backend: the vector store backends' own bookkeeping
+lockedmap	framework/vectorstore	RedisStore.namespaceFieldTypes	backend: the vector store backends' own bookkeeping
+lockedmap	framework/warp	ManagementCatalog.byName	config: built once from the management spec, then only read
+lockedmap	framework/warp	ManagementCatalog.narrowed	config: built once from the management spec, then only read
+lockedmap	framework/warp	chartRegistry.charts	registry: chart specs registered at boot
+pkgsyncmap	framework/warp	managementWritePrompts	handle: prompt text built from code, one per combination of write kinds
+lockedmap	framework/webhooks	Dispatcher.perEndpoint	inflight: deliveries in flight per endpoint
+lockedmap	plugins/governance	UsageTracker.batchBilled	inflight: billing dedupe for batches being reported, dropped when reported
+lockedmap	plugins/governance	UsageTracker.billed	inflight: billing dedupe for requests being reported, dropped when reported
+pkgmap	plugins/governance	datasheetBaseIndex	registry: datasheet base index built once from the embedded datasheet
+lockedmap	plugins/jsonparser	JsonParserPlugin.accumulatedContent	inflight: stream chunks per request
+syncmap	plugins/logging	LoggerPlugin.evictedPartials	inflight: partial rows of evicted requests, swept as today
+syncmap	plugins/logging	LoggerPlugin.evictedRelayPartials	inflight: partial rows of evicted relay requests, swept as today
+syncmap	plugins/logging	LoggerPlugin.heldGuardrailRows	inflight: rows held until their guardrail verdict
+lockedmap	plugins/logging	LoggerPlugin.logDeleteSubscribers	handle: subscriber callbacks
+lockedmap	plugins/logging	LoggerPlugin.logSubscribers	handle: subscriber callbacks
+syncmap	plugins/logging	LoggerPlugin.pendingAgentLogs	inflight: pending log entries per request
+syncmap	plugins/logging	LoggerPlugin.pendingAgentLogsToInject	inflight: pending log entries per request
+syncmap	plugins/logging	LoggerPlugin.pendingEndpointLogs	inflight: pending log entries per request
+syncmap	plugins/logging	LoggerPlugin.pendingLogsEntries	inflight: pending log entries per request
+syncmap	plugins/logging	LoggerPlugin.pendingLogsToInject	inflight: pending log entries per request
+syncmap	plugins/logging	LoggerPlugin.pendingMCPLogsToInject	inflight: pending log entries per request
+syncmap	plugins/logging	LoggerPlugin.pendingRelayLogsToInject	inflight: pending log entries per request
+syncmap	plugins/logging	LoggerPlugin.provisionalMCPArguments	inflight: tool arguments before the MCP log row exists
+lockedmap	plugins/maxim	Plugin.loggers	handle: Maxim SDK loggers per repository
+lockedmap	plugins/mocker	MockerPlugin.ruleHits	decided: test plugin depending only on core; not worth a framework dependency
+atomicmaps	plugins/routing	RoutingPlugin.routers	handle: compiled model router runtimes (classifiers, capture), rebuilt from the router collection
+lockedmap	plugins/routing	complexityGenerationRegistry.targets	inflight: warms in progress
+lockedmap	plugins/routing	complexityGenerationRegistry.unclaimedLastSweep	inflight: a sweeper's working set between two passes (previous sweep's unclaimed namespaces)
+syncmap	plugins/routing	complexitySuggestions.backfills	inflight: backfills running, one channel per router
+lockedmap	plugins/routing	complexitySuggestions.cancelled	inflight: suggestion runs in flight
+lockedmap	plugins/routing	complexitySuggestions.inline	inflight: suggestion runs in flight
+lockedmap	plugins/routing	complexitySuggestions.inlineCancels	handle: cancel funcs of suggestion runs in flight
+lockedmap	plugins/routing	decisionTierDecider.criteria	inflight: one suggestion run's immutable criteria, built per run
+lockedmap	plugins/routing/complexity	RequestCapture.forgottenIDs	inflight: captured requests being forgotten
+lockedmap	plugins/routing/complexity	RequestCapture.pending	inflight: captures pending a write
+lockedmap	plugins/routing/complexity	SemanticClassifier.deleting	inflight: namespace deletes in flight
+lockedmap	plugins/routing/complexity	SemanticClassifier.localInFlight	inflight: generations in use by requests
+lockedmap	plugins/routing/complexity	semanticEmbeddingCache.vectors	decided: part of the semantic classifier handle
+pkgsyncmap	plugins/routing/rules	celMapKeyRegexCache	handle: compiled regular expressions
+syncmap	plugins/semanticcache	Plugin.cacheStates	inflight: per-request cache state between hooks
+syncmap	plugins/semanticcache	Plugin.streamAccumulators	inflight: per-request stream accumulators
+lockedmap	plugins/semanticcache	StreamAccumulator.Metadata	inflight: one stream being accumulated
+syncmap	plugins/telemetry	PrometheusPlugin.pendingOverheadLabels	inflight: labels handed from the post hook to Inject, swept
+atomicmaps	transports/bifrost-http/handlers	BifrostMCP.loaded	handle: the loaded Bifrost MCP server
+atomicmaps	transports/bifrost-http/handlers	MCPServerHandler.perCaller	decided: derived view of per-user discovery placeholders, rebuilt from the MCP clients
+atomicmaps	transports/bifrost-http/handlers	MCPServerHandler.toolIndex	decided: derived view of installed tools, rebuilt from the MCP clients
+syncmap	transports/bifrost-http/handlers	PluginsHandler.pluginLocks	handle: per-plugin locks
+lockedmap	transports/bifrost-http/handlers	WSCodexPassthroughHandler.callerSockets	inflight: this process's open Codex sockets per caller, removed as they close
+lockedmap	transports/bifrost-http/handlers	WebSocketHandler.clients	handle: open websocket connections
+lockedmap	transports/bifrost-http/handlers	codexRelay.live	inflight: one Codex relay session, removed when it ends
+lockedmap	transports/bifrost-http/handlers	codexRelay.middlewareValues	inflight: one Codex relay session, removed when it ends
+lockedmap	transports/bifrost-http/handlers	codexRelay.turnHeaders	inflight: one Codex relay session, removed when it ends
+lockedmap	transports/bifrost-http/handlers	codexRelay.upstreamHeaders	inflight: one Codex relay session, removed when it ends
+lockedmap	transports/bifrost-http/handlers	filterDataCache.builds	inflight: single-flight builds, dropped when nobody holds them
+lockedmap	transports/bifrost-http/handlers	liveMeter.backends	handle: live metering lanes per open session
+lockedmap	transports/bifrost-http/handlers	liveMeter.billedResponses	inflight: billing dedupe for a live session
+lockedmap	transports/bifrost-http/handlers	liveSessionController.callDelegations	inflight: delegations of a live session, until answered
+lockedmap	transports/bifrost-http/handlers	liveSessionController.delegations	inflight: delegations of a live session, until their terminal event
+pkgmap	transports/bifrost-http/handlers	managedByResolvers	registry: resolvers registered at boot
+pkgsyncmap	transports/bifrost-http/handlers	mcpJWTPublicKeys	handle: parsed public keys of the process's immutable signing key
+lockedmap	transports/bifrost-http/handlers	oauth2ClientMetadataResolver.cache	decided: relies on a size cap that livestore.Cache has no option for; fed by unauthenticated callers (CIMD)
+pkgsyncmap	transports/bifrost-http/handlers	periodLocations	handle: parsed time zones
+pkgmap	transports/bifrost-http/handlers	rankingNameResolvers	registry: resolvers registered at boot
+pkgmap	transports/bifrost-http/handlers	scopeNameBatchResolvers	registry: resolvers registered at boot
+pkgmap	transports/bifrost-http/handlers	scopeNameResolvers	registry: resolvers registered at boot
+lockedmap	transports/bifrost-http/handlers	skillsGitRepoCache.entries	handle: reference-counted temporary git repositories on disk
+lockedmap	transports/bifrost-http/handlers	webrtcRelayRegistry.relays	handle: open WebRTC relays
+pkgsyncmap	transports/bifrost-http/handlers	wildcardRegexpCache	handle: compiled origin patterns
+atomicmaps	transports/bifrost-http/lib	Config.ConfigMarshallers	decided: derived plugin marshaller index, rebuilt on plugin change
+atomicmaps	transports/bifrost-http/lib	Config.headerMatcher	decided: compiled header matcher, a memo once client config is a store singleton
+lockedmap	transports/bifrost-http/lib	Config.pluginOrderMap	decided: plugin ordering metadata, kept as a map
+lockedmap	transports/bifrost-http/lib	Config.pluginStatus	decided: process-local plugin status, kept as a map
+lockedmap	transports/bifrost-http/server	BifrostHTTPServer.refreshInFlight	inflight: provider refreshes in flight
+lockedmap	transports/bifrost-http/websocket	Pool.idle	handle: idle upstream connections
+lockedmap	transports/bifrost-http/websocket	Pool.probingPerKey	handle: connection probes in flight
+lockedmap	transports/bifrost-http/websocket	SessionManager.sessions	handle: open websocket sessions
+lockedmap	framework/sidekiq	Runner.retention	registry: job retention periods registered at boot

@@ -324,7 +324,7 @@ func (provider *OllamaProvider) Decision(ctx *schemas.BifrostContext, key schema
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*OllamaDecisionRequest, error) {
 			return ToOllamaDecisionRequest(request)
 		})
 	if bifrostErr != nil {

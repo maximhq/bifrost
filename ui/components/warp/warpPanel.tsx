@@ -7,10 +7,19 @@ import { useWarpStream } from "@/components/warp/useWarpStream";
 import WarpComposer from "@/components/warp/warpComposer";
 import { resolveWarpModel, warpModelForRequest, warpModelKey, warpModels } from "@/components/warp/warpComposer.utils";
 import WarpHistory from "@/components/warp/warpHistory";
+import { useWarpBifrostMCPNotice, WarpBifrostMCPNoticeDialog } from "@/components/warp/warpBifrostMCPNotice";
 import { WarpMessage, WarpStreamingMessage } from "@/components/warp/warpMessage";
 import WarpQuestionCard from "@/components/warp/warpQuestion";
-import { indexStatusLabel, pendingWarpQuestion, shouldDrainQueue, turnsFromStoredMessages } from "@/components/warp/warpStream.utils";
-import { useWarp } from "@/lib/contexts/warpContext";
+import { questionCardKey } from "@/components/warp/warpQuestion.utils";
+import {
+	decodeTurnError,
+	indexStatusLabel,
+	nextWarpHandoff,
+	pendingWarpQuestion,
+	shouldDrainQueue,
+	turnsFromStoredMessages,
+} from "@/components/warp/warpStream.utils";
+import { useWarp, type WarpTurn } from "@/lib/contexts/warpContext";
 import { useGetWarpConfigQuery, useGetWarpLogIndexStatusQuery, useLazyGetWarpConversationQuery } from "@/lib/store/apis/warpApi";
 import type { WarpConversation } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
@@ -18,6 +27,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import { ArrowDown, Clock, Database, History, Loader2, SquarePen, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const STARTERS = [
 	"What did I spend on each provider in the last 7 days?",
@@ -27,6 +37,8 @@ const STARTERS = [
 ];
 
 export default function WarpPanel() {
+	const { t } = useTranslation("shell");
+	const starters = [t("warp.starters.spend"), t("warp.starters.latency"), t("warp.starters.users"), t("warp.starters.failed")];
 	// Node in state, not a ref: the controls mount after the loading branch, so a [] effect would miss them.
 	const [controlsNode, setControlsNode] = useState<HTMLDivElement | null>(null);
 	const [controlsHeight, setControlsHeight] = useState(112);
@@ -78,6 +90,13 @@ export default function WarpPanel() {
 	const [loadConversation] = useLazyGetWarpConversationQuery();
 
 	const isConfigured = config?.configured ?? false;
+	// While Warp uses the Bifrost MCP (bifrost_mcp_enabled), it does not answer without
+	// it: admins get the setup popup on every open, everyone else an ask-an-admin
+	// message, and no one a composer. Decoupled (for now), it answers from its own tools.
+	const bifrostMCPEnabled = !!config?.bifrost_mcp_enabled;
+	const bifrostMCPAvailable = !!config?.bifrost_mcp_available;
+	const needsBifrostMCP = isConfigured && bifrostMCPEnabled && !bifrostMCPAvailable;
+	const bifrostMCPNotice = useWarpBifrostMCPNotice({ bifrostMCPEnabled, warpEnabled: isConfigured, bifrostMCPAvailable, setupOnly: true });
 
 	const models = useMemo(() => warpModels(config), [config]);
 	const selectedModel = resolveWarpModel(models, warp?.selectedModelKey ?? null);
@@ -90,6 +109,11 @@ export default function WarpPanel() {
 		if (!error || !sentModelRef.current) return;
 		sentModelRef.current = false;
 		void refetchConfig();
+	}, [error, refetchConfig]);
+	// The Bifrost MCP can go away after the config was read; the refusal says so,
+	// and rereading the config swaps the transcript for the setup state.
+	useEffect(() => {
+		if (error && decodeTurnError(error).code === "no_bifrost_mcp") void refetchConfig();
 	}, [error, refetchConfig]);
 
 	const [indexPollMs, setIndexPollMs] = useState(30000);
@@ -130,6 +154,28 @@ export default function WarpPanel() {
 		askRef.current?.(next.text);
 	}, [isStreaming, queue, question, error, isOpeningStored]);
 
+	// A question handed over from outside (the ⌘K palette) starts its own thread once the panel is free.
+	const startThreadRef = useRef<((text: string) => void) | null>(null);
+	const handoffSeq = warp?.handoffSeq ?? 0;
+	const takeHandoff = warp?.takeHandoff;
+	const stream = warp?.stream;
+	// Waits out the answer in flight and the follow-ups queued behind it, so they land in the thread they were written for.
+	// Queued follow-ups hold the handoff even after an error or a clarification question: starting a thread clears the queue.
+	const isBusy = isStreaming || isOpeningStored || queue.length > 0;
+	useEffect(() => {
+		if (!takeHandoff || !stream) return;
+		const gate = {
+			isConfigLoading,
+			isConfigFetching,
+			isConfigError,
+			isConfigured,
+			isBusy,
+			isStreamingNow: stream.getSnapshot().isStreaming,
+		};
+		const text = nextWarpHandoff(gate, takeHandoff);
+		if (text) startThreadRef.current?.(text);
+	}, [handoffSeq, takeHandoff, stream, isConfigLoading, isConfigFetching, isConfigError, isConfigured, isBusy]);
+
 	if (!warp) return null;
 
 	const openStored = async (conversation: WarpConversation) => {
@@ -157,22 +203,25 @@ export default function WarpPanel() {
 	// "Turned off" and "never set up" both report configured:false but need different fixes.
 	const isDisabledButComplete = !!config && !config.enabled && !!config.provider && !!config.model;
 
-	const ask = (text: string, label?: string) => {
+	const sendTurn = (text: string, history: WarpTurn[], label?: string, answeredQuestion?: string) => {
 		abandonStoredLoad();
-		const history = warp.turns;
-		warp.appendTurn({
-			role: "user",
-			content: text,
-			displayContent: label,
-			answeredQuestion: question?.question,
-		});
+		warp.appendTurn({ role: "user", content: text, displayContent: label, answeredQuestion });
 		clearQuestion();
 		// Sending re-pins the transcript, or the new message lands off-screen.
 		scrollToBottom();
 		sentModelRef.current = !!requestModel;
 		void send(history, text, requestModel);
 	};
+	const ask = (text: string, label?: string) => sendTurn(text, warp.turns, label, question?.question);
 	askRef.current = ask;
+	// Same steps as New chat. The history is passed as empty because warp.turns still holds the old thread this render.
+	startThreadRef.current = (text: string) => {
+		resetConversation();
+		setQueue([]);
+		warp.clear();
+		setShowHistory(false);
+		sendTurn(text, []);
+	};
 
 	// The queue does not auto-drain after an error; this is the manual way to resume it.
 	const resumeQueue = () => {
@@ -184,30 +233,31 @@ export default function WarpPanel() {
 
 	return (
 		<div className="flex h-full min-h-0 w-full flex-col" data-testid="warp-panel">
+			{canConfigure && <WarpBifrostMCPNoticeDialog notice={bifrostMCPNotice} />}
 			<header className="flex h-13 shrink-0 items-center justify-between gap-2 border-b px-4">
 				<div className="flex min-w-0 items-center gap-2">
 					{/* -mt-0.5 corrects the glyph's optical centre, which sits below its box centre. */}
 					<WarpIcon className="text-muted-foreground -mt-0.5 size-5 shrink-0" />
-					<h2 className="truncate text-sm font-semibold">Warp</h2>
+					<h2 className="truncate text-sm font-semibold">{t("nav.warp")}</h2>
 					<Badge variant="secondary" className="shrink-0 text-[10px] font-normal">
-						Preview
+						{t("warp.panel.preview")}
 					</Badge>
 					{indexChip && <WarpIndexChip status={indexChip} />}
 					{indexStatusUnavailable && (
 						<span
 							className="text-muted-foreground border-border rounded-full border px-2 py-0.5 text-[11px]"
 							data-testid="warp-index-status-unavailable"
-							title="Warp could not read its index status. Semantic search may or may not be available."
+							title={t("warp.panel.indexStatusTitle")}
 						>
-							Index status unavailable
+							{t("warp.panel.indexStatusUnavailable")}
 						</span>
 					)}
 				</div>
 				<div className="flex shrink-0 items-center gap-1">
-					{isConfigured && (
+					{isConfigured && !needsBifrostMCP && (
 						<button
 							type="button"
-							aria-label={showHistory ? "Back to chat" : "Chat history"}
+							aria-label={showHistory ? t("warp.panel.backToChat") : t("warp.panel.chatHistory")}
 							aria-pressed={showHistory}
 							data-testid="warp-history-btn"
 							onClick={() => {
@@ -225,7 +275,7 @@ export default function WarpPanel() {
 					{warp.turns.length > 0 && (
 						<button
 							type="button"
-							aria-label="New chat"
+							aria-label={t("warp.panel.newChat")}
 							data-testid="warp-new-chat-btn"
 							onClick={() => {
 								abandonStoredLoad();
@@ -242,7 +292,7 @@ export default function WarpPanel() {
 					<button
 						ref={closeRef}
 						type="button"
-						aria-label="Close Warp"
+						aria-label={t("warp.panel.close")}
 						data-testid="warp-close-btn"
 						onClick={warp.close}
 						className="text-muted-foreground hover:bg-accent hover:text-accent-foreground flex size-7 cursor-pointer items-center justify-center rounded-md transition-colors"
@@ -257,13 +307,35 @@ export default function WarpPanel() {
 			{isConfigLoading || (isConfigFetching && !isConfigured) ? (
 				// An undefined config reads as unconfigured, so without this the setup prompt flashes on open.
 				<div className="flex min-h-0 flex-1 items-center justify-center px-6" data-testid="warp-config-loading">
-					<p className="text-muted-foreground text-xs">Loading Warp...</p>
+					<p className="text-muted-foreground text-xs">{t("warp.panel.loading")}</p>
 				</div>
 			) : isConfigError ? (
 				<div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center" data-testid="warp-config-error">
 					<p className="text-destructive text-xs" role="alert">
-						Could not load Warp&apos;s configuration. Reload the page to try again.
+						{t("warp.panel.loadFailed")}
 					</p>
+				</div>
+			) : needsBifrostMCP ? (
+				<div
+					className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+					data-testid="warp-needs-bifrost-mcp"
+				>
+					<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
+						<WarpIcon className="size-5" />
+					</span>
+					<p className="text-sm font-medium">{t("warp.panel.needsBifrostMCP")}</p>
+					{canConfigure ? (
+						<>
+							<p className="text-muted-foreground text-xs">{t("warp.panel.needsBifrostMCPHint")}</p>
+							<Button size="sm" className="mt-1" onClick={bifrostMCPNotice.review} data-testid="warp-bifrost-mcp-set-up">
+								{t("warp.panel.setUpBifrostMCP")}
+							</Button>
+						</>
+					) : (
+						<p className="text-muted-foreground text-xs" data-testid="warp-ask-admin-bifrost-mcp">
+							{t("warp.panel.askAdminBifrostMCP")}
+						</p>
+					)}
 				</div>
 			) : isConfigured && showHistory ? (
 				<div className="min-h-0 flex-1" data-testid="warp-history-view">
@@ -285,19 +357,19 @@ export default function WarpPanel() {
 					<span className="bg-muted text-muted-foreground flex size-9 items-center justify-center rounded-full">
 						<WarpIcon className="size-5" />
 					</span>
-					<p className="text-sm font-medium">{isDisabledButComplete ? "Warp is turned off" : "Warp isn't set up yet"}</p>
+					<p className="text-sm font-medium">{isDisabledButComplete ? t("warp.panel.turnedOff") : t("warp.panel.notSetUp")}</p>
 					{canConfigure ? (
 						<>
 							<p className="text-muted-foreground text-xs">
-								{isDisabledButComplete ? "Switch Enable Warp on to start asking questions." : "Choose a model for Warp to run on."}
+								{isDisabledButComplete ? t("warp.panel.enableHint") : t("warp.panel.chooseModel")}
 							</p>
 							<Button asChild size="sm" className="mt-1" data-testid="warp-configure-link">
-								<Link to="/workspace/config/warp">{isDisabledButComplete ? "Open Warp settings" : "Configure Warp"}</Link>
+								<Link to="/workspace/config/warp">{isDisabledButComplete ? t("warp.panel.openSettings") : t("warp.panel.configure")}</Link>
 							</Button>
 						</>
 					) : (
 						<p className="text-muted-foreground text-xs" data-testid="warp-ask-admin">
-							Ask an administrator to {isDisabledButComplete ? "turn Warp on" : "set Warp up"}.
+							{isDisabledButComplete ? t("warp.panel.askAdminTurnOn") : t("warp.panel.askAdminSetUp")}
 						</p>
 					)}
 				</div>
@@ -310,9 +382,9 @@ export default function WarpPanel() {
 							<div className="min-w-0 space-y-5 p-4" style={{ paddingBottom: controlsHeight + 16 }} ref={contentRef}>
 								{warp.turns.length === 0 && !isStreaming ? (
 									<div className="space-y-3 pt-6" data-testid="warp-empty-state">
-										<p className="text-sm font-medium">Ask about your Bifrost data</p>
+										<p className="text-sm font-medium">{t("warp.panel.emptyTitle")}</p>
 										<div className="space-y-1.5">
-											{STARTERS.map((starter) => (
+											{starters.map((starter) => (
 												<button
 													key={starter}
 													type="button"
@@ -332,7 +404,7 @@ export default function WarpPanel() {
 									<div className="space-y-2">
 										{error && (
 											<Button type="button" size="sm" variant="outline" data-testid="warp-resume-queue" onClick={resumeQueue}>
-												Resume queued messages
+												{t("warp.panel.resumeQueue")}
 											</Button>
 										)}
 										{/* Drawn as the message it will become, dimmed until it sends, with a status line under it like a chat app's. */}
@@ -344,16 +416,16 @@ export default function WarpPanel() {
 													</div>
 													<div className="text-muted-foreground flex items-center justify-end gap-1.5 text-[11px]">
 														<Clock aria-hidden="true" className="size-3 shrink-0" />
-														<span>{index === 0 && isStreaming ? "Sends when this answer finishes" : "Queued"}</span>
+														<span>{index === 0 && isStreaming ? t("warp.panel.sendsWhenFinished") : t("warp.panel.queued")}</span>
 														<span aria-hidden="true">·</span>
 														<button
 															type="button"
-															aria-label="Remove queued message"
+															aria-label={t("warp.panel.removeQueued")}
 															data-testid="warp-queued-remove"
 															onClick={() => setQueue((current) => current.filter((queued) => queued.id !== item.id))}
 															className="hover:text-foreground cursor-pointer rounded-sm px-1 py-0.5 transition-colors"
 														>
-															Remove
+															{t("warp.panel.remove")}
 														</button>
 													</div>
 												</li>
@@ -370,7 +442,7 @@ export default function WarpPanel() {
 							size="icon"
 							variant="secondary"
 							onClick={scrollToBottom}
-							aria-label="Jump to latest"
+							aria-label={t("warp.panel.jumpToLatest")}
 							aria-hidden={isPinned}
 							data-testid="warp-jump-to-latest"
 							// Measured offset: a pending question makes the controls taller than any fixed value.
@@ -385,20 +457,21 @@ export default function WarpPanel() {
 					</div>
 
 					<div className="bg-card absolute inset-x-0 bottom-0" ref={setControlsNode}>
-						{question && !isStreaming && (
-							<div className="px-3 pt-3 pb-2">
-								<WarpQuestionCard
-									question={question}
-									onAnswer={ask}
-									onSkip={() => {
-										ask("Use your best judgement and say what you assumed.");
-									}}
-								/>
-							</div>
-						)}
 						<WarpComposer
 							isStreaming={isStreaming}
-							attached={!!question && !isStreaming}
+							tray={
+								question && !isStreaming ? (
+									<WarpQuestionCard
+										// A new question must not inherit the state of the card still folding back.
+										key={questionCardKey(question)}
+										question={question}
+										onAnswer={ask}
+										onSkip={() => {
+											ask(t("warp.question.skipAnswer"));
+										}}
+									/>
+								) : undefined
+							}
 							onCommand={(command) => {
 								if (command.id === "clear") {
 									stop();

@@ -581,3 +581,40 @@ func TestConvertChatParameters_DisplayModelGate(t *testing.T) {
 		})
 	}
 }
+
+// Haiku 5.5 on Converse takes the adaptive-only arm like the other 5.x models:
+// reasoning.effort becomes adaptive thinking plus output_config.effort instead of
+// a budget_tokens block, which Haiku 5.5 rejects.
+func TestConvertChatParameters_Haiku55EffortIsAdaptive(t *testing.T) {
+	const model = "global.anthropic.claude-haiku-5-5"
+	bifrostReq := &schemas.BifrostChatRequest{
+		Model:  model,
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("low")}},
+	}
+	bedrockReq := &BedrockConverseRequest{}
+	if err := convertChatParameters(nil, bifrostReq, bedrockReq, schemas.ResolveModelCaps(schemas.Bedrock, model)); err != nil {
+		t.Fatalf("convertChatParameters failed: %v", err)
+	}
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		t.Fatalf("expected AdditionalModelRequestFields to carry the thinking config, got nil")
+	}
+	raw, _ := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	thinking, ok := raw.(map[string]any)
+	if !ok || thinking["type"] != "adaptive" {
+		t.Fatalf("thinking = %+v, want type \"adaptive\"", raw)
+	}
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Errorf("budget_tokens sent to Haiku 5.5: %+v", thinking)
+	}
+	outputConfig, ok := bedrockReq.AdditionalModelRequestFields.Get("output_config")
+	if !ok {
+		t.Fatalf("output_config.effort was dropped")
+	}
+	oc, ok := outputConfig.(*schemas.OrderedMap)
+	if !ok {
+		t.Fatalf("expected output_config to be an OrderedMap, got %T", outputConfig)
+	}
+	if effort, _ := oc.Get("effort"); effort != "low" {
+		t.Errorf("output_config.effort = %v, want \"low\"", effort)
+	}
+}

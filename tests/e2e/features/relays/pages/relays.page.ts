@@ -122,6 +122,7 @@ export class RelaysPage extends BasePage {
   }
 
   async deleteSelected(): Promise<void> {
+    await this.page.getByTestId("relay-actions").click();
     await this.page.getByTestId("relay-delete").click();
     await this.page.getByTestId("relay-delete-confirm").click();
   }

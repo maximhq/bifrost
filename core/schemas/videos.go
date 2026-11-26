@@ -275,6 +275,7 @@ type BifrostVideoListResponse struct {
 	FirstID     *string                    `json:"first_id,omitempty"`
 	HasMore     *bool                      `json:"has_more,omitempty"`
 	LastID      *string                    `json:"last_id,omitempty"`
+	After       *string                    `json:"after,omitempty"` // Cursor for the next page; spans every key
 	ExtraFields BifrostResponseExtraFields `json:"extra_fields"`
 }
 

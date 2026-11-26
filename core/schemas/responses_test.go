@@ -997,6 +997,17 @@ func TestClientToolSearchFunctionName(t *testing.T) {
 		}
 		return tool
 	}
+	withDeferLoading := func(tool ResponsesTool, deferred bool) ResponsesTool {
+		tool.DeferLoading = Ptr(deferred)
+		return tool
+	}
+	namespace := func(deferLoading *bool, members ...ResponsesTool) ResponsesTool {
+		return ResponsesTool{Type: ResponsesToolTypeNamespace, Name: Ptr("mcp__demo"), DeferLoading: deferLoading,
+			ResponsesToolNamespace: &ResponsesToolNamespace{Tools: members}}
+	}
+	defaultNamespace := func(deferLoading *bool, members ...ResponsesTool) ResponsesTool {
+		return ResponsesTool{Type: ResponsesToolTypeNamespace, Name: Ptr("functions"), DeferLoading: deferLoading, ResponsesToolNamespace: &ResponsesToolNamespace{Tools: members}}
+	}
 	referenceHistory := []ResponsesMessage{
 		{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Name: Ptr("find_tools")}},
 		{Type: Ptr(ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Output: &ResponsesToolMessageOutputStruct{
@@ -1015,6 +1026,18 @@ func TestClientToolSearchFunctionName(t *testing.T) {
 		{"nothing deferred", []ResponsesTool{function("tool_search", false), function("get_weather", false)}, nil, ""},
 		{"deferred search name is not the search", []ResponsesTool{function("tool_search", true)}, nil, ""},
 		{"no search function", []ResponsesTool{function("lookup", false), function("get_weather", true)}, nil, ""},
+		// Deferral inside a namespace counts the same way: the member's own defer_loading
+		// when set, otherwise the namespace's.
+		{"deferred namespace", []ResponsesTool{function("ToolSearch", false), namespace(Ptr(true), function("get_weather", false))}, nil, "ToolSearch"},
+		{"deferred member of an eager namespace", []ResponsesTool{function("ToolSearch", false), namespace(nil, function("get_weather", true))}, nil, "ToolSearch"},
+		// The default namespace is the top level under another spelling (Codex and
+		// UnwrapDefaultNamespaceTools treat functions.ToolSearch and ToolSearch alike).
+		{"search in the default namespace", []ResponsesTool{defaultNamespace(nil, function("ToolSearch", false)), namespace(Ptr(true), function("get_weather", false))}, nil, "ToolSearch"},
+		{"deferred search in the default namespace is not the search", []ResponsesTool{defaultNamespace(nil, function("ToolSearch", true)), namespace(Ptr(true), function("get_weather", false))}, nil, ""},
+		{"eager member of a deferred namespace", []ResponsesTool{function("ToolSearch", false), namespace(Ptr(true), withDeferLoading(function("get_weather", false), false))}, nil, ""},
+		// A default-namespace member inherits the namespace's defer_loading like any other.
+		{"search inheriting deferral from the default namespace is not the search", []ResponsesTool{defaultNamespace(Ptr(true), function("ToolSearch", false)), namespace(Ptr(true), function("get_weather", false))}, nil, ""},
+		{"eager search in a deferred default namespace", []ResponsesTool{defaultNamespace(Ptr(true), withDeferLoading(function("ToolSearch", false), false)), namespace(Ptr(true), function("get_weather", false))}, nil, "ToolSearch"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, ClientToolSearchFunctionName(tc.tools, tc.input))
@@ -2666,4 +2689,230 @@ func TestResponsesStreamEventOmitsEmptyNestedExtraFields(t *testing.T) {
 	unary, err := MarshalSorted(BifrostResponsesResponse{ID: new("resp_1"), ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesRequest}})
 	require.NoError(t, err)
 	assert.Equal(t, "responses", gjson.GetBytes(unary, "extra_fields.request_type").String(), "a filled extra_fields must stay: %s", unary)
+}
+
+func TestToolUsageContainerSessions(t *testing.T) {
+	a := &ToolUsage{ContainerSessions: map[string]int{"1g": 1}}
+	sum := a.Add(&ToolUsage{ContainerSessions: map[string]int{"1g": 1, "4g": 2}})
+	assert.Equal(t, map[string]int{"1g": 2, "4g": 2}, sum.ContainerSessions)
+	assert.Equal(t, map[string]int{"1g": 1}, a.ContainerSessions, "Add must not change its receiver")
+
+	c := a.DeepCopy()
+	c.ContainerSessions["1g"] = 9
+	assert.Equal(t, 1, a.ContainerSessions["1g"], "DeepCopy must own its map")
+
+	assert.Equal(t, "container", ContainerPricingModel(ContainerTierDefault))
+	assert.Equal(t, "container-4g", ContainerPricingModel("4g"))
+}
+
+// Derived counts stay internal: a response that only has them sends no tool_usage at all.
+func TestResponsesMarshalOmitsDerivedToolUsage(t *testing.T) {
+	resp := BifrostResponsesResponse{Usage: &ResponsesResponseUsage{ToolUsage: &ToolUsage{ContainerSessions: map[string]int{"1g": 1}}}}
+	wire, err := Marshal(resp)
+	require.NoError(t, err)
+	assert.NotContains(t, string(wire), "tool_usage")
+	assert.Equal(t, 1, resp.Usage.ToolUsage.ContainerSessions["1g"], "marshal must not change the caller's usage")
+
+	resp.Usage.ToolUsage.WebSearch = &WebSearchToolUsage{NumRequests: 2}
+	wire, err = Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(wire), `"tool_usage":{"web_search":{"num_requests":2}}`)
+}
+
+func TestToolUsageImageGen(t *testing.T) {
+	one := func() *ToolUsage {
+		return &ToolUsage{
+			ImageGenModel: "gpt-image-2",
+			ImageGen: &ImageGenToolUsage{
+				InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
+				InputTokensDetails:  &ImageGenTokenDetails{TextTokens: 1},
+				OutputTokensDetails: &ImageGenTokenDetails{ImageTokens: 2},
+			},
+		}
+	}
+	sum := one().Add(one())
+	assert.Equal(t, 6, sum.ImageGen.TotalTokens)
+	assert.Equal(t, 4, sum.ImageGen.OutputTokensDetails.ImageTokens)
+	assert.Equal(t, "gpt-image-2", sum.ImageGenModel)
+
+	a := one()
+	c := a.DeepCopy()
+	c.ImageGen.OutputTokensDetails.ImageTokens = 9
+	assert.Equal(t, 2, a.ImageGen.OutputTokensDetails.ImageTokens, "DeepCopy must own its details")
+
+	assert.False(t, (&ImageGenToolUsage{}).HasTokens())
+	var none *ImageGenToolUsage
+	assert.False(t, none.HasTokens())
+}
+
+// OpenAI's zero-count image_gen block survives, as it did not before, and the derived model stays internal.
+func TestResponsesToolUsageImageGenRoundTrip(t *testing.T) {
+	in := `{"id":"r","object":"response","created_at":1,"output":[],"tools":[],"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`
+	var resp BifrostResponsesResponse
+	require.NoError(t, Unmarshal([]byte(in), &resp))
+	resp.Usage.ToolUsage.ImageGenModel = "gpt-image-2"
+	wire, err := Marshal(resp)
+	require.NoError(t, err)
+	var out struct {
+		ToolUsage json.RawMessage `json:"tool_usage"`
+	}
+	require.NoError(t, Unmarshal(wire, &out))
+	assert.JSONEq(t, `{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}}`, string(out.ToolUsage))
+}
+
+// Chat usage never carried OpenAI's all-zero image_gen block, on the final response or the terminal stream event.
+func TestResponsesToChatDropsZeroImageGen(t *testing.T) {
+	zero := &ImageGenToolUsage{}
+	generated := &ImageGenToolUsage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3}
+	cases := []struct {
+		name string
+		in   *ToolUsage
+		want *ToolUsage
+	}{
+		{"only a zero block sends no tool_usage", &ToolUsage{ImageGen: zero}, nil},
+		{"web search stays", &ToolUsage{ImageGen: zero, WebSearch: &WebSearchToolUsage{NumRequests: 2}}, &ToolUsage{WebSearch: &WebSearchToolUsage{NumRequests: 2}}},
+		{"container sessions stay", &ToolUsage{ImageGen: zero, ContainerSessions: map[string]int{"default": 1}}, &ToolUsage{ContainerSessions: map[string]int{"default": 1}}},
+		{"generated images stay, pricing reads them", &ToolUsage{ImageGen: generated}, &ToolUsage{ImageGen: generated}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &BifrostResponsesResponse{Usage: &ResponsesResponseUsage{TotalTokens: 1, ToolUsage: tc.in}}
+			assert.Equal(t, tc.want, resp.ToBifrostChatResponse().Usage.ToolUsage)
+
+			event := &BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: resp}
+			assert.Equal(t, tc.want, event.ToBifrostChatResponse().Usage.ToolUsage)
+
+			assert.NotNil(t, resp.Usage.ToolUsage.ImageGen, "conversion must not change the Responses usage")
+		})
+	}
+}
+
+// A provider's odd image_gen block only loses the image charge. It must not fail a response that is otherwise fine.
+func TestToolUsageToleratesMalformedImageGen(t *testing.T) {
+	for _, bad := range []string{`{"input_tokens":1.5}`, `{"input_tokens":"3"}`, `3`, `"x"`, `[]`, `null`} {
+		t.Run(bad, func(t *testing.T) {
+			body := `{"id":"r","created_at":1,"output":[],"usage":{"input_tokens":1},"tool_usage":{"image_gen":` + bad + `,"web_search":{"num_requests":2},"container_sessions":{"1g":1},"image_gen_model":"gpt-image-2"}}`
+			var resp BifrostResponsesResponse
+			require.NoError(t, Unmarshal([]byte(body), &resp))
+			assert.Nil(t, resp.ToolUsage.ImageGen)
+			assert.Equal(t, 2, resp.ToolUsage.WebSearch.NumRequests, "other tool_usage fields must survive")
+			assert.Equal(t, 1, resp.ToolUsage.ContainerSessions["1g"])
+			assert.Equal(t, "gpt-image-2", resp.ToolUsage.ImageGenModel)
+		})
+	}
+
+	var usage ToolUsage
+	require.NoError(t, Unmarshal([]byte(`{"image_gen":{"input_tokens":5,"output_tokens":6,"total_tokens":11}}`), &usage))
+	assert.Equal(t, 11, usage.ImageGen.TotalTokens, "a well-formed block still decodes")
+
+	require.Error(t, Unmarshal([]byte(`{"web_search":3}`), &usage), "only image_gen is tolerant")
+}
+
+func BenchmarkToolUsageUnmarshal(b *testing.B) {
+	body := []byte(`{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var usage ToolUsage
+		if err := Unmarshal(body, &usage); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestResponsesMessageMarshalSummaryOnlyOnReasoningItems(t *testing.T) {
+	tests := []struct {
+		name        string
+		item        string
+		wantSummary string
+	}{
+		{name: "function_call with encrypted_content omits summary", item: `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"spawn_agent","namespace":"collaboration","arguments":"{}","summary":null,"encrypted_content":"gAAAA"}`},
+		{name: "message with encrypted_content omits summary", item: `{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}],"summary":null,"encrypted_content":"gAAAA"}`},
+		{name: "reasoning item keeps an empty summary", item: `{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAAA"}`, wantSummary: `[]`},
+		{name: "reasoning item keeps summary text", item: `{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"t"}]}`, wantSummary: `[{"type":"summary_text","text":"t"}]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var msg ResponsesMessage
+			require.NoError(t, Unmarshal([]byte(tt.item), &msg))
+			out, err := Marshal(msg)
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, Unmarshal(out, &fields))
+			if strings.Contains(tt.item, "encrypted_content") {
+				require.JSONEq(t, `"gAAAA"`, string(fields["encrypted_content"]), "encrypted_content must survive: %s", out)
+			}
+			if tt.wantSummary == "" {
+				require.NotContains(t, fields, "summary", "OpenAI rejects summary on a non-reasoning item: %s", out)
+				return
+			}
+			require.JSONEq(t, tt.wantSummary, string(fields["summary"]), "%s", out)
+		})
+	}
+}
+
+// TestBifrostResponsesResponse_AccessProgramsRoundTrip pins OpenAI's
+// access_programs echo (Daybreak): it must survive decode, WithDefaults (the
+// /openai integration's shaping) and encode, so a client can see which cyber
+// program served the request. A response without it must not grow the key.
+func TestBifrostResponsesResponse_AccessProgramsRoundTrip(t *testing.T) {
+	raw := []byte(`{"id":"resp_1","object":"response","created_at":1,"model":"gpt-6.1-sol","status":"completed","output":[],"access_programs":{"cyber":"daybreak_blue"}}`)
+
+	var resp BifrostResponsesResponse
+	if err := Unmarshal(raw, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for name, r := range map[string]*BifrostResponsesResponse{"decoded": &resp, "WithDefaults": resp.WithDefaults()} {
+		encoded, err := MarshalSorted(r)
+		if err != nil {
+			t.Fatalf("%s: marshal: %v", name, err)
+		}
+		if !strings.Contains(string(encoded), `"access_programs":{"cyber":"daybreak_blue"}`) {
+			t.Errorf("%s: access_programs lost: %s", name, encoded)
+		}
+	}
+
+	var plain BifrostResponsesResponse
+	if err := Unmarshal([]byte(`{"id":"resp_2","object":"response","created_at":1,"model":"gpt-6.1-sol","output":[],"access_programs":null}`), &plain); err != nil {
+		t.Fatalf("unmarshal plain: %v", err)
+	}
+	encoded, err := MarshalSorted(plain.WithDefaults())
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	if strings.Contains(string(encoded), `access_programs`) {
+		t.Errorf("implicit standard (null) must not emit access_programs: %s", encoded)
+	}
+}
+
+// TestAccessPrograms_PreservesUnknownMembers pins that access_programs members
+// Bifrost does not model reach OpenAI as sent. Dropping them turned a typo such
+// as {"cyebr":"daybreak_red"} into {}, which OpenAI serves under the model's
+// default program with no error; forwarded, OpenAI rejects it with a 400. A
+// non-string cyber (null) is forwarded verbatim for the same reason.
+func TestAccessPrograms_PreservesUnknownMembers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"typo member", `{"access_programs":{"cyebr":"daybreak_red"}}`, `{"access_programs":{"cyebr":"daybreak_red"}}`},
+		{"known plus future member", `{"access_programs":{"cyber":"daybreak_blue","bio":"standard"}}`, `{"access_programs":{"bio":"standard","cyber":"daybreak_blue"}}`},
+		{"null cyber", `{"access_programs":{"cyber":null}}`, `{"access_programs":{"cyber":null}}`},
+		{"known only", `{"access_programs":{"cyber":"standard"}}`, `{"access_programs":{"cyber":"standard"}}`},
+		{"empty object", `{"access_programs":{}}`, `{"access_programs":{}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var params ResponsesParameters
+			if err := Unmarshal([]byte(tc.in), &params); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			out, err := MarshalSorted(params)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(out) != tc.want {
+				t.Errorf("access_programs = %s, want %s", out, tc.want)
+			}
+		})
+	}
 }

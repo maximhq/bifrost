@@ -14,7 +14,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/lrucache"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 // Wire values for the Cross App Access (ID-JAG) profile of token exchange.
@@ -25,6 +25,8 @@ const (
 	// resourceEndpointTTL bounds how long a discovered upstream token endpoint
 	// is reused before discovery runs again.
 	resourceEndpointTTL = time.Hour
+	// resourceEndpointsTable names the state table of discovered endpoints.
+	resourceEndpointsTable = "oauth2_resource_endpoints"
 )
 
 // resourceEndpoint is a cached leg-2 token endpoint for one MCP client URL.
@@ -58,31 +60,43 @@ var errNoAdminRenewSubject = errors.New("admin ID-JAG credential has no identity
 // longer an active Bifrost user, so it is not renewed in their name.
 var errAdminInactive = errors.New("the admin who verified this ID-JAG credential is no longer an active Bifrost user")
 
-// idjagGrantCache holds the ID-JAGs kept for reuse in a bounded LRU, so idle
-// (user, MCP client) pairs cannot grow it without limit. An expired grant is
-// a miss and is dropped on lookup.
+// idjagGrantCache holds the ID-JAGs kept for reuse. A grant is dropped when it expires, so idle
+// (user, MCP client) pairs cannot grow it without limit, and an expired grant read before then is a
+// miss.
 type idjagGrantCache struct {
-	cache *lrucache.Cache[*idjagGrant]
+	cache *livestore.Cache[*idjagGrant]
 }
 
-// newIDJAGGrantCache returns a grant cache bounded to capacity entries.
-func newIDJAGGrantCache(capacity int) *idjagGrantCache {
-	return &idjagGrantCache{cache: lrucache.New(capacity, lrucache.WithValidator(func(g *idjagGrant) bool {
-		return g != nil && time.Now().Before(g.expiresAt)
-	}))}
+// newIDJAGGrantCache creates the grant cache in live.
+func newIDJAGGrantCache(live *livestore.Store) (*idjagGrantCache, error) {
+	// Concurrent requests for one grant share one exchange and its result or error, as the cache
+	// this replaced did.
+	cache, err := live.NewCache[*idjagGrant](context.Background(), idjagGrantsCache,
+		livestore.WithSharedFills[*idjagGrant](),
+		livestore.WithValidator(func(g *idjagGrant) bool { return g != nil && time.Now().Before(g.expiresAt) }),
+		livestore.WithCacheTTL(func(g *idjagGrant) time.Duration {
+			if g == nil || g.expiresAt.IsZero() {
+				return 0
+			}
+			if ttl := time.Until(g.expiresAt); ttl > 0 {
+				return ttl
+			}
+			return -1
+		}))
+	if err != nil {
+		return nil, err
+	}
+	return &idjagGrantCache{cache: cache}, nil
 }
 
 // encode is the cache key for k; EncodeKey keeps a user ID from forging the
 // boundary with the client ID.
 func (k idjagGrantKey) encode() string {
-	return lrucache.EncodeKey(k.userID, k.clientID)
+	return livestore.EncodeKey(k.userID, k.clientID)
 }
 
 // load returns the held grant for key while it is still usable.
 func (c *idjagGrantCache) load(key idjagGrantKey) (*idjagGrant, bool) {
-	if c == nil {
-		return nil, false
-	}
 	return c.cache.Get(key.encode())
 }
 
@@ -95,7 +109,7 @@ var errGrantNotHeld = errors.New("id-jag grant not held")
 // eviction landing while the identity provider answers (client deleted, user
 // removed, forced refresh) keeps that grant from being held.
 func (c *idjagGrantCache) issue(ctx context.Context, key idjagGrantKey, issueFn func() (*idjagGrant, error)) (*idjagGrant, error) {
-	if c == nil || key.userID == "" {
+	if key.userID == "" {
 		return issueFn()
 	}
 	grant, err := c.cache.Fill(ctx, key.encode(), func() (*idjagGrant, string, error) {
@@ -113,19 +127,13 @@ func (c *idjagGrantCache) issue(ctx context.Context, key idjagGrantKey, issueFn 
 
 // delete drops the grant held for key.
 func (c *idjagGrantCache) delete(key idjagGrantKey) {
-	if c == nil {
-		return
-	}
 	c.cache.Evict(key.encode())
 }
 
 // evictWhere drops every held grant whose key matches.
 func (c *idjagGrantCache) evictWhere(match func(idjagGrantKey) bool) {
-	if c == nil {
-		return
-	}
 	c.cache.EvictWhere(func(raw string) bool {
-		parts, ok := lrucache.DecodeKey(raw, 2)
+		parts, ok := livestore.DecodeKey(raw, 2)
 		return ok && match(idjagGrantKey{userID: parts[0], clientID: parts[1]})
 	})
 }
@@ -418,10 +426,9 @@ func (p *OAuth2Provider) resourceTokenEndpoint(ctx context.Context, config *sche
 	if !schemas.IsHTTPSOrLoopbackURL(issuer) {
 		return resourceEndpoint{}, fmt.Errorf("MCP client %s: token_exchange.audience %q is not an https URL to discover its authorization server from; set token_exchange.resource_token_endpoint", config.Name, issuer)
 	}
-	if v, ok := p.resourceEndpoints.Load(config.ID); ok {
-		cached := v.(resourceEndpoint)
+	if cached, ok := p.resourceEndpoints.Get(config.ID); ok {
 		if cached.issuer == issuer && time.Since(cached.fetchedAt) < resourceEndpointTTL {
-			return cached, nil
+			return *cached, nil
 		}
 	}
 	metadata, err := fetchSingleAuthServerMetadata(ctx, issuer, hasTokenEndpoint, false)
@@ -446,7 +453,7 @@ func (p *OAuth2Provider) resourceTokenEndpoint(ctx context.Context, config *sche
 		return resourceEndpoint{}, fmt.Errorf("authorization server for MCP client %s does not support the jwt-bearer grant needed to redeem an ID-JAG", config.Name)
 	}
 	discovered := resourceEndpoint{issuer: issuer, endpoint: metadata.TokenURL, authMethods: metadata.TokenAuthMethods, fetchedAt: time.Now()}
-	p.resourceEndpoints.Store(config.ID, discovered)
+	p.resourceEndpoints.Put(config.ID, &discovered)
 	return discovered, nil
 }
 

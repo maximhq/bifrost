@@ -51,6 +51,7 @@ transports/bifrost-http/v1.5.x
 # Test reports
 test-reports
 tests/e2e/api/newman-reports
+tests/e2e/api/collections/mcp-harness.json
 
 # AI Agent specific
 settings.local.json
@@ -192,6 +193,7 @@ examples/mcps/oauth-demo-server/oauth-demo-server
 # binaries
 tests/cmd/e2eseed/e2eseed
 tests/cmd/seedvks/seedvks
+tests/cmd/complexitysuggesteval/complexitysuggesteval
 
 # routing harness ledgers (local run journals, never committed)
 tests/e2e/api/routing/ledger-*
@@ -263,3 +265,5 @@ ui/app/routeTree.gen.ts
 bifrost-migration-cli
 
 tests/e2e/clis/reports
+# Local assistant output, never committed
+Claude outputs/

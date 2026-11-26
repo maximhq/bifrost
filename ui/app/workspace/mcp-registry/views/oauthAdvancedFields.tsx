@@ -5,6 +5,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Info } from "lucide-react";
 import { type Control, useWatch } from "react-hook-form";
+import { useTranslation } from "react-i18next";
 
 interface OAuthAdvancedFieldsProps {
 	// Loosely typed on purpose: shared between the create form (CreateMCPClientRequest)
@@ -82,6 +83,7 @@ export function OAuthAdvancedFields({
 	clientMetadataDocumentTestId,
 	onFieldTouched,
 }: OAuthAdvancedFieldsProps) {
+	const { t } = useTranslation("mcp");
 	const useClientMetadataDocument = useWatch({ control, name: "oauth_config.use_client_metadata_document" }) === true;
 	const credentialsDisabled = disabled || (clientMetadataDocumentTestId !== undefined && useClientMetadataDocument);
 	return (
@@ -94,12 +96,8 @@ export function OAuthAdvancedFields({
 					render={({ field }) => (
 						<FormItem className="flex flex-row items-center justify-between gap-4 rounded-md border px-4 py-3">
 							<div className="flex flex-col gap-1">
-								<FormLabel htmlFor="use-client-metadata-document">Use Bifrost&apos;s client metadata document</FormLabel>
-								<p className="text-muted-foreground text-xs">
-									Register as Bifrost through its client metadata document even when the authorization server does not advertise support,
-									for example when its endpoints are entered by hand. Bifrost must be reachable over public HTTPS. When off, the document is
-									still used wherever the server advertises support.
-								</p>
+								<FormLabel htmlFor="use-client-metadata-document">{t("registry.oauthFields.clientMetadataDocumentLabel")}</FormLabel>
+								<p className="text-muted-foreground text-xs">{t("registry.oauthFields.clientMetadataDocumentDesc")}</p>
 							</div>
 							<FormControl>
 								<Switch
@@ -185,7 +183,7 @@ export function OAuthAdvancedFields({
 										field.onChange(e);
 										onFieldTouched?.("authorize_url");
 									}}
-									placeholder="https://provider.com/oauth/authorize"
+									placeholder={t("registry.oauthFields.authorizeUrlPlaceholder")}
 									data-testid={authorizeUrlTestId}
 								/>
 							</FormControl>
@@ -208,7 +206,7 @@ export function OAuthAdvancedFields({
 										field.onChange(e);
 										onFieldTouched?.("token_url");
 									}}
-									placeholder="https://provider.com/oauth/token"
+									placeholder={t("registry.oauthFields.tokenUrlPlaceholder")}
 									data-testid={tokenUrlTestId}
 								/>
 							</FormControl>
@@ -231,7 +229,7 @@ export function OAuthAdvancedFields({
 										field.onChange(e);
 										onFieldTouched?.("registration_url");
 									}}
-									placeholder="https://provider.com/oauth/register"
+									placeholder={t("registry.oauthFields.registrationUrlPlaceholder")}
 									data-testid={registrationUrlTestId}
 								/>
 							</FormControl>
@@ -247,11 +245,11 @@ export function OAuthAdvancedFields({
 							value={scopesRaw}
 							disabled={disabled}
 							onChange={(e) => onScopesRawChange(e.target.value)}
-							placeholder="read, write, admin"
+							placeholder={t("registry.oauthFields.scopesPlaceholder")}
 							data-testid={scopesTestId}
 						/>
 					</FormControl>
-					<p className="text-muted-foreground text-xs">Comma-separated.</p>
+					<p className="text-muted-foreground text-xs">{t("registry.oauthFields.commaSeparated")}</p>
 				</FormItem>
 				{resource.mode === "field" ? (
 					<FormField
@@ -265,7 +263,7 @@ export function OAuthAdvancedFields({
 										{...field}
 										value={field.value ?? ""}
 										disabled={disabled}
-										placeholder="https://provider.example.com/mcp or urn:example:mcp"
+										placeholder={t("registry.oauthFields.resourcePlaceholder")}
 										data-testid={resourceTestId}
 									/>
 								</FormControl>
@@ -282,7 +280,7 @@ export function OAuthAdvancedFields({
 								value={resource.value}
 								disabled={disabled}
 								onChange={(e) => resource.onChange(e.target.value)}
-								placeholder="https://provider.example.com/mcp or urn:example:mcp"
+								placeholder={t("registry.oauthFields.resourcePlaceholder")}
 								data-testid={resourceTestId}
 							/>
 						</FormControl>

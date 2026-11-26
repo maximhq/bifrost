@@ -61,15 +61,28 @@ type MCPManagerInterface interface {
 	ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 
 	// GetInjectedTool resolves a provider-injected tool (ProviderConfig.InjectedTools)
-	// by client name and unprefixed tool name, bypassing tool filters.
-	GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error)
+	// by client name and unprefixed tool name, bypassing tool filters. The tool is
+	// read from the caller's discovery on ctx.
+	GetInjectedTool(ctx context.Context, clientName, toolName string) (schemas.ChatTool, error)
 
 	// GetMaxAgentDepth returns the configured cap on model turns in a tool loop.
 	GetMaxAgentDepth() int
 
 	// Client Management
-	// GetClients returns all MCP clients
+	// GetClients returns all MCP clients. Snapshots carry connection state
+	// only; a client's discovery is read via GetToolsForClient or
+	// GetClientDiscovery.
 	GetClients() []schemas.MCPClientState
+
+	// GetToolsForClient returns the tools the caller on ctx should see for
+	// one client, or nil when it has none recorded. Discovery data lives in
+	// the manager's discovery store, never on client state snapshots.
+	GetToolsForClient(ctx context.Context, clientID string) map[string]schemas.ChatTool
+
+	// GetClientDiscovery returns the whole discovery the caller on ctx sees
+	// for one client — tools, instructions, resources and prompts — or nil
+	// when it has none recorded. The value is shared; callers must not mutate it.
+	GetClientDiscovery(ctx context.Context, clientID string) *schemas.MCPDiscovery
 
 	// RequiresPerCallConnection reports whether config resolves to a
 	// per-call connection (true) or a persistent shared one (false), taking
@@ -83,8 +96,9 @@ type MCPManagerInterface interface {
 	// NeedsReauth. Pass nil to clear a previously registered callback.
 	SetStateChangeCallback(cb func(clientID, name string, oldState, newState schemas.MCPConnectionState))
 
-	// SetDiscoveryChangeCallback registers cb to run whenever a client's discovery changes; the
-	// transport layer persists through it. nil clears it.
+	// SetDiscoveryChangeCallback registers cb to run whenever a client's discovery changes.
+	// Persisting the discovery is the discovery store's job; the callback is for reacting to the
+	// change, such as re-syncing a hosted MCP server. nil clears it.
 	SetDiscoveryChangeCallback(cb func(clientID, name string, discovery *schemas.MCPDiscovery))
 
 	// SetInProcessServerFactory replaces the factory that synthesizes
@@ -92,23 +106,27 @@ type MCPManagerInterface interface {
 	// schemas.MCPConfig.InProcessServerFactory). Applies on the next connect.
 	SetInProcessServerFactory(factory schemas.InProcessServerFactory)
 
-	// AddClient adds a new MCP client with the given configuration
-	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error
+	// AddClient connects the MCP client with this ID, whose configuration it reads
+	// from the Account
+	AddClient(ctx context.Context, id string) error
 
-	// ConnectConfiguredClients dials all clients supplied at construction time.
-	// Construction no longer connects; call this once all plugins are registered so
-	// PreMCPConnectionHook sees the full plugin set.
-	ConnectConfiguredClients(ctx context.Context)
+	// ConnectConfiguredClients dials the clients the Account lists. Construction
+	// never connects; call this once all
+	// plugins are registered so PreMCPConnectionHook sees the full plugin set. It
+	// returns once every client has been attempted; onClientDone, when not nil, is
+	// called as each attempt finishes, one call at a time.
+	ConnectConfiguredClients(ctx context.Context, onClientDone func(clientID string))
 
 	// RemoveClient removes an MCP client by ID
 	RemoveClient(id string) error
 
-	// UpdateClient updates an existing MCP client configuration
-	UpdateClient(id string, updatedConfig *schemas.MCPClientConfig) error
+	// UpdateClient applies an edit to an existing MCP client, whose new configuration
+	// it reads from the Account
+	UpdateClient(id string) error
 
 	// UpdateClientCredentials reconnects an existing MCP client using updated
 	// auth-related connection fields (for example, headers and OAuth config).
-	UpdateClientCredentials(id string, newConfig *schemas.MCPClientConfig) error
+	UpdateClientCredentials(id string) error
 
 	// ReconnectClient reconnects an MCP client by ID
 	ReconnectClient(id string) error
@@ -123,12 +141,6 @@ type MCPManagerInterface interface {
 	// connection and flips it to needs_reauth, without attempting a new
 	// dial. Used after OAuth credential rotation.
 	CloseAndMarkNeedsReauth(id string) error
-
-	// DisableClient shuts down a client's connection and workers without removing it
-	DisableClient(id string) error
-
-	// EnableClient reconnects a disabled client and restarts its workers
-	EnableClient(id string) error
 
 	// VerifyHeadersConnection creates a temporary MCP connection using a set of
 	// caller-supplied header values to verify connectivity and discover tools.

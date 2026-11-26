@@ -50,7 +50,7 @@ func TestToolExecution_Timeout(t *testing.T) {
 	// Should timeout (either error or result indicates timeout)
 	if bifrostErr != nil {
 		// Error occurred - check if it's a timeout error
-		assert.Contains(t, strings.ToLower(bifrostErr.Error.Message), "timeout",
+		assert.Contains(t, strings.ToLower(bifrostErr.Error.Message), "timed out",
 			"Error should indicate timeout: %s", bifrostErr.Error.Message)
 	} else if result != nil {
 		// May return result with error message
@@ -326,15 +326,10 @@ func TestToolExecution_ToolNotInExecuteList(t *testing.T) {
 	require.NoError(t, RegisterCalculatorTool(manager))
 
 	// Modify internal client to only allow echo
-	clients := manager.GetClients()
-	for i := range clients {
-		if clients[i].ExecutionConfig.ID == "bifrostInternal" {
-			clients[i].ExecutionConfig.ToolsToExecute = []string{"bifrostInternal-echo"}
-			err := manager.UpdateClient(clients[i].ExecutionConfig.ID, clients[i].ExecutionConfig)
-			require.NoError(t, err)
-			break
-		}
-	}
+	err := editInternalClient(manager, func(c *schemas.MCPClientConfig) {
+		c.ToolsToExecute = []string{"bifrostInternal-echo"}
+	})
+	require.NoError(t, err)
 
 	bifrost := setupBifrost(t)
 	bifrost.SetMCPManager(manager)

@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type {
 	MCPOpenAPIConfig,
 	MCPOpenAPICredential,
@@ -12,8 +13,88 @@ import type {
 /** How the user supplied the document in the create/replace sheet. */
 export type OpenAPISourceMode = "paste" | "url" | "upload";
 
-/** Client-side cap on a pasted or uploaded document, mirroring the server's 5 MiB limit. */
-export const OPENAPI_MAX_SPEC_BYTES = 5 * 1024 * 1024;
+/** Client-side cap on a pasted or uploaded document, mirroring the server's default 32 MiB limit. */
+export const OPENAPI_MAX_SPEC_BYTES = 32 * 1024 * 1024;
+
+/** The spec size limit for client_config.mcp_openapi_max_spec_mb, where 0 or unset is the default. */
+export function openAPIMaxSpecBytes(mb: number | undefined): number {
+	return mb && mb > 0 ? mb * 1024 * 1024 : OPENAPI_MAX_SPEC_BYTES;
+}
+
+/**
+ * The spec size limit once the core config has loaded, or null while it is pending or failed to
+ * load: the configured limit may be above the default, so guessing would refuse a document the
+ * server accepts. With null the server alone enforces the limit.
+ */
+export function knownOpenAPIMaxSpecBytes(config: { client_config?: { mcp_openapi_max_spec_mb?: number } } | undefined): number | null {
+	return config ? openAPIMaxSpecBytes(config.client_config?.mcp_openapi_max_spec_mb) : null;
+}
+
+/** Room a create, replace or preview request needs besides the document: its other fields and the JSON framing. */
+export const OPENAPI_REQUEST_OVERHEAD_BYTES = 64 * 1024;
+
+/**
+ * What an uploaded document must fit: the spec limit on its raw size, and the request body limit
+ * (client_config.max_request_body_size_mb, applied at startup) on the request that carries it as an
+ * escaped JSON string. `bytes` is the smaller of the two before escaping, what the help text shows
+ * and a file is checked against before it is read; `bodyBound` says the body limit is that one.
+ */
+export interface OpenAPIUploadLimit {
+	specBytes: number;
+	bodyBytes: number | null;
+	bytes: number;
+	bodyBound: boolean;
+}
+
+/** The upload limit once the core config has loaded, or null while it is pending (see knownOpenAPIMaxSpecBytes). */
+export function knownOpenAPIUploadLimit(
+	config: { client_config?: { mcp_openapi_max_spec_mb?: number; max_request_body_size_mb?: number } } | undefined,
+): OpenAPIUploadLimit | null {
+	const specBytes = knownOpenAPIMaxSpecBytes(config);
+	if (specBytes === null) return null;
+	const bodyMb = config?.client_config?.max_request_body_size_mb;
+	const bodyBytes = bodyMb && bodyMb > 0 ? bodyMb * 1024 * 1024 : null;
+	const room = bodyBytes === null ? Infinity : Math.max(0, bodyBytes - OPENAPI_REQUEST_OVERHEAD_BYTES);
+	return room < specBytes
+		? { specBytes, bodyBytes, bytes: room, bodyBound: true }
+		: { specBytes, bodyBytes, bytes: specBytes, bodyBound: false };
+}
+
+/** The size of a document once it is a JSON string in a request body: quotes, escapes and UTF-8. */
+export function serializedSpecBytes(text: string): number {
+	return new TextEncoder().encode(JSON.stringify(text)).length;
+}
+
+/**
+ * Why a read document cannot be sent, or null when it fits: "spec" when it is over the spec limit,
+ * "body" when escaping it would push the request over the body limit.
+ */
+export function uploadOverLimit(rawBytes: number, serializedBytes: number, limit: OpenAPIUploadLimit): "spec" | "body" | null {
+	if (rawBytes > limit.specBytes) return "spec";
+	if (limit.bodyBytes !== null && serializedBytes + OPENAPI_REQUEST_OVERHEAD_BYTES > limit.bodyBytes) return "body";
+	return null;
+}
+
+/** The largest limit mcp_openapi_max_spec_mb accepts (256 MiB), which bounds an upload while the configured one is unknown. */
+export const OPENAPI_MAX_SUPPORTED_SPEC_BYTES = 256 * 1024 * 1024;
+
+/**
+ * The limit an upload is read under. The cached limit may be stale (raised in another tab or by
+ * another admin), so a file over it re-reads the config first and only the refreshed limit
+ * refuses it. An unknown limit (config pending, unreadable, or the refresh failed) falls back to
+ * the supported maximum and leaves the rest to the server.
+ */
+export async function uploadSpecLimit(fileBytes: number, cached: number | null, refresh: () => Promise<number | null>): Promise<number> {
+	if (cached === null) return OPENAPI_MAX_SUPPORTED_SPEC_BYTES;
+	if (!isSpecTooLarge(fileBytes, cached)) return cached;
+	let current: number | null = null;
+	try {
+		current = await refresh();
+	} catch {
+		current = null;
+	}
+	return current ?? OPENAPI_MAX_SUPPORTED_SPEC_BYTES;
+}
 
 /** Picks the editor language from the document's first non-blank character. */
 export function detectSpecLanguage(text: string | undefined): "json" | "yaml" {
@@ -157,21 +238,36 @@ export function securitySchemeToInputs(scheme: MCPOpenAPISecurityScheme): OpenAP
 		const where = scheme.in ?? "header";
 		return {
 			scheme,
-			label: `${scheme.name} · ${scheme.param_name ?? "API key"} (${where})`,
-			fields: [{ field: "value", label: "API key", placeholder: `Value or env.${toEnvName(scheme.name)}` }],
+			label: i18n.t("openapi.credentials.apiKeyLabel", {
+				ns: "mcp",
+				name: scheme.name,
+				param: scheme.param_name ?? i18n.t("openapi.credentials.apiKey", { ns: "mcp" }),
+				where,
+			}),
+			fields: [
+				{
+					field: "value",
+					label: i18n.t("openapi.credentials.apiKey", { ns: "mcp" }),
+					placeholder: i18n.t("openapi.credentials.valuePlaceholder", { ns: "mcp", env: toEnvName(scheme.name) }),
+				},
+			],
 			helper: scheme.description,
 		};
 	}
 	if (scheme.type === "http" && scheme.scheme === "basic") {
 		return {
 			scheme,
-			label: `${scheme.name} · Basic authentication`,
+			label: i18n.t("openapi.credentials.basicLabel", { ns: "mcp", name: scheme.name }),
 			fields: [
-				{ field: "username", label: "Username", placeholder: "Username" },
+				{
+					field: "username",
+					label: i18n.t("openapi.credentials.username", { ns: "mcp" }),
+					placeholder: i18n.t("openapi.credentials.username", { ns: "mcp" }),
+				},
 				{
 					field: "password",
-					label: "Password",
-					placeholder: `Password or env.${toEnvName(scheme.name)}_PASSWORD`,
+					label: i18n.t("openapi.credentials.password", { ns: "mcp" }),
+					placeholder: i18n.t("openapi.credentials.passwordPlaceholder", { ns: "mcp", env: toEnvName(scheme.name) }),
 				},
 			],
 			helper: scheme.description,
@@ -179,12 +275,12 @@ export function securitySchemeToInputs(scheme: MCPOpenAPISecurityScheme): OpenAP
 	}
 	return {
 		scheme,
-		label: `${scheme.name} · Bearer token`,
+		label: i18n.t("openapi.credentials.bearerLabel", { ns: "mcp", name: scheme.name }),
 		fields: [
 			{
 				field: "value",
-				label: "Bearer token",
-				placeholder: `Token or env.${toEnvName(scheme.name)}`,
+				label: i18n.t("openapi.credentials.bearerToken", { ns: "mcp" }),
+				placeholder: i18n.t("openapi.credentials.tokenPlaceholder", { ns: "mcp", env: toEnvName(scheme.name) }),
 			},
 		],
 		helper: scheme.description,
@@ -308,9 +404,9 @@ export function summarizeSpecSource(cfg: MCPOpenAPIConfig | undefined): string {
 			? `OpenAPI ${cfg.openapi_version}`
 			: "";
 	if (title) parts.push(title);
-	parts.push(cfg.spec_url ? cfg.spec_url : "inline spec");
+	parts.push(cfg.spec_url ? cfg.spec_url : i18n.t("openapi.summary.inlineSpec", { ns: "mcp" }));
 	if (cfg.spec_size) parts.push(formatBytes(cfg.spec_size));
-	if (cfg.operation_count !== undefined) parts.push(`${cfg.operation_count} operation${cfg.operation_count === 1 ? "" : "s"}`);
+	if (cfg.operation_count !== undefined) parts.push(i18n.t("openapi.summary.operationCount", { ns: "mcp", count: cfg.operation_count }));
 	return parts.join(" · ");
 }
 /** The form values a parse response is applied to. */
@@ -386,15 +482,19 @@ export function applyParsedPreview(
 	return { selection, baseUrl, baseUrlChoice, credentials };
 }
 
-/** Reads an uploaded spec file, returning its text or the error to show. */
-export async function readUploadedSpec(file: {
-	size: number;
-	text: () => Promise<string>;
-}): Promise<{ text: string; error: string | null }> {
-	if (isSpecTooLarge(file.size)) {
+/** Reads an uploaded spec file, returning its text or the error to show; tooLargeMessage replaces the spec-limit wording. */
+export async function readUploadedSpec(
+	file: {
+		size: number;
+		text: () => Promise<string>;
+	},
+	maxBytes: number = OPENAPI_MAX_SPEC_BYTES,
+	tooLargeMessage?: string,
+): Promise<{ text: string; error: string | null }> {
+	if (isSpecTooLarge(file.size, maxBytes)) {
 		return {
 			text: "",
-			error: `The file exceeds the ${formatBytes(OPENAPI_MAX_SPEC_BYTES)} limit for OpenAPI documents.`,
+			error: tooLargeMessage ?? i18n.t("openapi.source.fileTooLarge", { ns: "mcp", size: formatBytes(maxBytes) }),
 		};
 	}
 	let text: string;
@@ -403,10 +503,10 @@ export async function readUploadedSpec(file: {
 	} catch (error) {
 		return {
 			text: "",
-			error: `The file could not be read: ${error instanceof Error ? error.message : String(error)}`,
+			error: i18n.t("openapi.source.fileReadFailed", { ns: "mcp", message: error instanceof Error ? error.message : String(error) }),
 		};
 	}
-	return { text, error: text.trim() ? null : "The file is empty." };
+	return { text, error: text.trim() ? null : i18n.t("openapi.source.fileEmpty", { ns: "mcp" }) };
 }
 /**
  * The header a security scheme travels in, suggested as the per-user header
@@ -478,13 +578,18 @@ export function openAPIParseControls(state: {
 	isParsing: boolean;
 }): { autoParse: boolean; showButton: boolean; showPending: boolean; buttonLabel: string } {
 	if (state.mode === "url") {
-		return { autoParse: false, showButton: !state.isCurrent || state.hasError, showPending: false, buttonLabel: "Fetch" };
+		return {
+			autoParse: false,
+			showButton: !state.isCurrent || state.hasError,
+			showPending: false,
+			buttonLabel: i18n.t("openapi.source.fetch", { ns: "mcp" }),
+		};
 	}
 	return {
 		autoParse: true,
 		showButton: state.hasError && !state.isParsing,
 		showPending: state.isParsing || (state.canParse && !state.isCurrent && !state.hasError),
-		buttonLabel: "Parse again",
+		buttonLabel: i18n.t("openapi.source.parseAgain", { ns: "mcp" }),
 	};
 }
 
@@ -661,14 +766,14 @@ export function openAPIBaseUrlError(
 	value: string,
 ): string | undefined {
 	const trimmed = value.trim();
-	if (!trimmed) return openAPIBaseUrlRequired(choice, preview) ? "Base URL is required" : undefined;
+	if (!trimmed) return openAPIBaseUrlRequired(choice, preview) ? i18n.t("registry.form.baseUrlRequired", { ns: "mcp" }) : undefined;
 	try {
 		const url = new URL(trimmed);
 		if ((url.protocol === "http:" || url.protocol === "https:") && url.host) return undefined;
 	} catch {
 		// fall through
 	}
-	return "Base URL must be an absolute http:// or https:// URL";
+	return i18n.t("openapi.preview.baseUrlInvalid", { ns: "mcp" });
 }
 
 /**
