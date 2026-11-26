@@ -17,6 +17,7 @@ import (
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -1409,6 +1410,22 @@ func TestAcquireClientConn_RejectedPerCallConnectionRefreshesAndRedials(t *testi
 		_, _, err := m.AcquireClientConn(ctx, newState())
 		if !errors.Is(err, reauth) {
 			t.Fatalf("AcquireClientConn error = %v, want the reauthorization the credential now needs", err)
+		}
+	})
+
+	// The call token replaced the stored credential's Authorization, so the 401 rejects the token.
+	t.Run("a rejected call token leaves the stored credential alone", func(t *testing.T) {
+		store := &rotatingCredStore{authRetryCredStore: authRetryCredStore{requiresPerCall: true}, token: "fresh", next: "fresh"}
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), store, &MockLogger{}, nil)
+		t.Cleanup(func() { _ = m.Cleanup() })
+		callCtx, releaseToken := utils.WithCallToken(ctx, "rejected-call-token")
+		defer releaseToken()
+		_, _, err := m.AcquireClientConn(callCtx, newState())
+		if err == nil {
+			t.Fatal("AcquireClientConn succeeded, want the upstream's rejection of the call token")
+		}
+		if got := store.forceRefreshCalls.Load(); got != 0 {
+			t.Fatalf("ForceRefresh calls = %d, want 0", got)
 		}
 	})
 }

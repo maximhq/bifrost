@@ -69,7 +69,8 @@ func (m *MCPManager) AcquireClientConn(ctx *schemas.BifrostContext, state *schem
 // through it too, so a credential its upstream rejects is refreshed there as well.
 func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schemas.MCPClientState) (*client.Client, func(), string, error) {
 	conn, release, instructions, err := m.dialClientConn(ctx, state)
-	if err == nil || !isAuthRequiredError(err) || !refreshesOnConnectRejection(m.credStore, state.ExecutionConfig) {
+	// A call token replaced the stored credential's Authorization, so a 401 rejects the token, not the credential.
+	if err == nil || !isAuthRequiredError(err) || utils.HasCallToken(ctx) || !refreshesOnConnectRejection(m.credStore, state.ExecutionConfig) {
 		return conn, release, instructions, err
 	}
 	if refreshErr := m.credStore.ForceRefresh(ctx, state.ExecutionConfig); refreshErr != nil {
