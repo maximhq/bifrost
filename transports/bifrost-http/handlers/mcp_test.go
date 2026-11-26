@@ -761,6 +761,73 @@ func TestDeleteMCPClient_RefusesWhenItsGrantsCannotBeRead(t *testing.T) {
 	assert.Empty(t, mgr.removed, "the runtime client is untouched")
 }
 
+// TestUpdateMCPClient_VKConfigsReloadTheAffectedKeysOnce pins that an update with vk_configs reloads
+// every key it affects (those granting the client before and those granting it after) in one batch,
+// after the assignments are saved, and answers from that batch alone. It used to reload the keys
+// already assigned first and then the whole set again, keeping the first batch's error, so an update
+// whose full reload succeeded could still answer 500.
+func TestUpdateMCPClient_VKConfigsReloadTheAffectedKeysOnce(t *testing.T) {
+	ctx := context.Background()
+	h, mgr := newOpenAPITestHandler(t)
+	createBody, _ := json.Marshal(map[string]any{
+		"name": "petstore", "connection_type": "openapi", "auth_type": "none",
+		"tools_to_execute": []string{"listPets"},
+		"openapi_config":   map[string]any{"spec": petstoreSpecJSON, "base_url": "https://petstore.example.com/v1/"},
+	})
+	status, respBody := doMCPRequest(t, h.addMCPClient, fasthttp.MethodPost, string(createBody), "", false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	existing := mgr.added[0]
+	row, err := h.store.ConfigStore.GetMCPClientByID(ctx, existing.ID)
+	require.NoError(t, err)
+	active := true
+	for _, id := range []string{"vk-keep", "vk-drop", "vk-add"} {
+		require.NoError(t, h.store.ConfigStore.CreateVirtualKey(ctx, &configtables.TableVirtualKey{ID: id, Name: id, Value: *schemas.NewSecretVar("sk-bf-" + id), IsActive: &active}))
+	}
+	for _, id := range []string{"vk-keep", "vk-drop"} {
+		require.NoError(t, h.store.ConfigStore.CreateVirtualKeyMCPConfig(ctx, &configtables.TableVirtualKeyMCPConfig{VirtualKeyID: id, MCPClientID: row.ID, ToolsToExecute: []string{"*"}}))
+	}
+	governance := &reloadCountingGovernanceManager{}
+	h.governanceManager = governance
+	h.mcpCredentialCacheManager = &evictionLog{}
+
+	update := `{"name":"petstore_renamed","vk_configs":[{"virtual_key_id":"vk-keep","tools_to_execute":["*"]},{"virtual_key_id":"vk-add","tools_to_execute":["listPets"]}]}`
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, update, existing.ID, false)
+	require.Equal(t, fasthttp.StatusOK, status, respBody)
+	assert.Equal(t, [][]string{{"vk-add", "vk-drop", "vk-keep"}}, governance.reloadedBatches, "one batch, holding every key the update affects")
+	assert.Empty(t, governance.reloaded, "no per-key reloads")
+	granting, err := h.store.ConfigStore.GetVirtualKeyMCPConfigsByMCPClientID(ctx, row.ID)
+	require.NoError(t, err)
+	var grantingIDs []string
+	for _, g := range granting {
+		grantingIDs = append(grantingIDs, g.VirtualKeyID)
+	}
+	sort.Strings(grantingIDs)
+	assert.Equal(t, []string{"vk-add", "vk-keep"}, grantingIDs, "the assignments were saved before the reload")
+
+	// A batch that fails still answers 500: the update is saved but the keys are stale.
+	governance.batchErr = errors.New("database unreachable")
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"vk_configs":[{"virtual_key_id":"vk-keep","tools_to_execute":["*"]}]}`, existing.ID, false)
+	assert.Equal(t, fasthttp.StatusInternalServerError, status, respBody)
+	assert.Contains(t, respBody, "failed to reload in-memory state")
+
+	// When the assignments cannot be saved, the keys still assigned the client reload to see its
+	// saved row before the 500, as after an update without vk_configs.
+	governance.batchErr, governance.reloadedBatches = nil, nil
+	h.store.ConfigStore = vkAssignmentFailingStore{h.store.ConfigStore}
+	status, respBody = doMCPRequest(t, h.updateMCPClient, fasthttp.MethodPut, `{"vk_configs":[{"virtual_key_id":"vk-keep","tools_to_execute":["*"]},{"virtual_key_id":"vk-drop","tools_to_execute":["*"]}]}`, existing.ID, false)
+	assert.Equal(t, fasthttp.StatusInternalServerError, status, respBody)
+	assert.Contains(t, respBody, "VK assignment update failed")
+	assert.Equal(t, [][]string{{"vk-keep"}}, governance.reloadedBatches, "the keys still assigned the client reload once")
+}
+
+// vkAssignmentFailingStore is a config store that cannot create a virtual key's MCP assignment.
+type vkAssignmentFailingStore struct{ configstore.ConfigStore }
+
+// CreateVirtualKeyMCPConfig always fails.
+func (vkAssignmentFailingStore) CreateVirtualKeyMCPConfig(context.Context, *configtables.TableVirtualKeyMCPConfig, ...*gorm.DB) error {
+	return errors.New("database unavailable")
+}
+
 // =============================================================================
 // GET /api/mcp/library installed flag
 // =============================================================================

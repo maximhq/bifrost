@@ -5,8 +5,8 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, setProviderFormDirtyState, useAppDispatch } from "@/lib/store";
 import { useUpdateProviderMutation } from "@/lib/store/apis/providersApi";
-import { BaseProvider, ModelProvider } from "@/lib/types/config";
-import { formCustomProviderConfigSchema } from "@/lib/types/schemas";
+import { AllowedRequests, BaseProvider, ModelProvider } from "@/lib/types/config";
+import { allowedRequestsSchema, formCustomProviderConfigSchema } from "@/lib/types/schemas";
 import { cleanPathOverrides } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -20,6 +20,58 @@ import { AllowedRequestsFields } from "./allowedRequestsFields";
 
 // Type for form data
 type FormCustomProviderConfig = z.infer<typeof formCustomProviderConfigSchema>;
+
+// allRequestsAllowed is how the form shows a custom provider saved without an
+// allowed_requests block: the gateway allows it every request type, so every flag
+// starts on. The keys come from the schema, so every flag it requires is filled,
+// including the ones this form does not render.
+const allRequestsAllowed = (): AllowedRequests =>
+	Object.fromEntries(Object.keys(allowedRequestsSchema.shape).map((key) => [key, true])) as unknown as AllowedRequests;
+
+// Request types the gateway gates (schemas.AllowedRequests) that the form's schema
+// does not list. A stored block allows only the flags set to true, so the first
+// restriction on an unrestricted provider starts with these allowed as well.
+const GATEWAY_ONLY_REQUEST_TYPES = [
+	"compaction",
+	"batch_create",
+	"batch_list",
+	"batch_retrieve",
+	"batch_cancel",
+	"batch_delete",
+	"batch_results",
+	"file_upload",
+	"file_list",
+	"file_retrieve",
+	"file_delete",
+	"file_content",
+	"container_create",
+	"container_list",
+	"container_retrieve",
+	"container_delete",
+	"container_file_create",
+	"container_file_list",
+	"container_file_retrieve",
+	"container_file_content",
+	"container_file_delete",
+	"cached_content_create",
+	"cached_content_list",
+	"cached_content_retrieve",
+	"cached_content_update",
+	"cached_content_delete",
+];
+
+// formValuesFor shows the saved config: a stored allowed_requests block as stored,
+// or every request type allowed when none is stored. The initial values and every
+// reload both use it, so the form never shows defaults as if they were saved.
+const formValuesFor = (provider: ModelProvider): FormCustomProviderConfig => ({
+	base_provider_type: provider.custom_provider_config?.base_provider_type ?? "openai",
+	is_key_less: provider.custom_provider_config?.is_key_less ?? false,
+	does_not_send_done_marker: provider.custom_provider_config?.does_not_send_done_marker ?? false,
+	wait_for_usage: provider.custom_provider_config?.wait_for_usage ?? false,
+	boolean_schema_nodes_unsupported: provider.custom_provider_config?.boolean_schema_nodes_unsupported ?? false,
+	allowed_requests: provider.custom_provider_config?.allowed_requests ?? allRequestsAllowed(),
+	request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
+});
 
 // Standalone usage (for provider configuration tabs)
 interface Props {
@@ -35,39 +87,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 	const form = useForm<FormCustomProviderConfig>({
 		resolver: zodResolver(formCustomProviderConfigSchema),
 		mode: "onChange",
-		defaultValues: {
-			base_provider_type: provider.custom_provider_config?.base_provider_type ?? "openai",
-			is_key_less: provider.custom_provider_config?.is_key_less ?? false,
-			does_not_send_done_marker: provider.custom_provider_config?.does_not_send_done_marker ?? false,
-			wait_for_usage: provider.custom_provider_config?.wait_for_usage ?? false,
-			boolean_schema_nodes_unsupported: provider.custom_provider_config?.boolean_schema_nodes_unsupported ?? false,
-			allowed_requests: {
-				text_completion: provider.custom_provider_config?.allowed_requests?.text_completion ?? true,
-				text_completion_stream: provider.custom_provider_config?.allowed_requests?.text_completion_stream ?? true,
-				chat_completion: provider.custom_provider_config?.allowed_requests?.chat_completion ?? true,
-				chat_completion_stream: provider.custom_provider_config?.allowed_requests?.chat_completion_stream ?? true,
-				responses: provider.custom_provider_config?.allowed_requests?.responses ?? true,
-				responses_stream: provider.custom_provider_config?.allowed_requests?.responses_stream ?? true,
-				responses_retrieve: provider.custom_provider_config?.allowed_requests?.responses_retrieve ?? false,
-				responses_delete: provider.custom_provider_config?.allowed_requests?.responses_delete ?? false,
-				responses_cancel: provider.custom_provider_config?.allowed_requests?.responses_cancel ?? false,
-				responses_input_items: provider.custom_provider_config?.allowed_requests?.responses_input_items ?? false,
-				embedding: provider.custom_provider_config?.allowed_requests?.embedding ?? true,
-				speech: provider.custom_provider_config?.allowed_requests?.speech ?? true,
-				speech_stream: provider.custom_provider_config?.allowed_requests?.speech_stream ?? true,
-				transcription: provider.custom_provider_config?.allowed_requests?.transcription ?? true,
-				transcription_stream: provider.custom_provider_config?.allowed_requests?.transcription_stream ?? true,
-				count_tokens: provider.custom_provider_config?.allowed_requests?.count_tokens ?? true,
-				list_models: provider.custom_provider_config?.allowed_requests?.list_models ?? true,
-				model_retrieve: provider.custom_provider_config?.allowed_requests?.model_retrieve ?? false,
-				ocr: provider.custom_provider_config?.allowed_requests?.ocr ?? true,
-				ocr_stream: provider.custom_provider_config?.allowed_requests?.ocr_stream ?? true,
-				decisions: provider.custom_provider_config?.allowed_requests?.decisions ?? true,
-				passthrough: provider.custom_provider_config?.allowed_requests?.passthrough ?? true,
-				passthrough_stream: provider.custom_provider_config?.allowed_requests?.passthrough_stream ?? true,
-			},
-			request_path_overrides: provider.custom_provider_config?.request_path_overrides ?? undefined,
-		},
+		defaultValues: formValuesFor(provider),
 	});
 
 	useEffect(() => {
@@ -75,11 +95,23 @@ export function ApiStructureFormFragment({ provider }: Props) {
 	}, [form.formState.isDirty]);
 
 	useEffect(() => {
-		form.reset(provider.custom_provider_config);
+		form.reset(formValuesFor(provider));
+		// Reload only when the saved config changes, so a refetched provider object with the same config keeps unsaved edits.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [form, provider.name, provider.custom_provider_config]);
 
 	const onSubmit = (data: FormCustomProviderConfig) => {
-		// Create updated provider configuration
+		// A provider saved without an allowed_requests block stays unrestricted until a
+		// request type is turned off; its first block then allows every request type
+		// the gateway gates except the ones turned off. A stored block keeps the request
+		// types the form does not list, since the update replaces custom_provider_config
+		// wholesale and the schema drops keys it does not know.
+		const storedAllowedRequests = provider.custom_provider_config?.allowed_requests;
+		const unlistedAllowedRequests = storedAllowedRequests ?? Object.fromEntries(GATEWAY_ONLY_REQUEST_TYPES.map((key) => [key, true]));
+		const allowedRequests =
+			!storedAllowedRequests && Object.values(data.allowed_requests ?? {}).every(Boolean)
+				? undefined
+				: ({ ...unlistedAllowedRequests, ...data.allowed_requests } as AllowedRequests);
 		updateProvider(
 			buildProviderUpdatePayload(provider, {
 				custom_provider_config: {
@@ -88,7 +120,7 @@ export function ApiStructureFormFragment({ provider }: Props) {
 					does_not_send_done_marker: data.does_not_send_done_marker ?? false,
 					wait_for_usage: data.wait_for_usage ?? false,
 					boolean_schema_nodes_unsupported: data.boolean_schema_nodes_unsupported ?? false,
-					allowed_requests: data.allowed_requests,
+					allowed_requests: allowedRequests,
 					request_path_overrides: cleanPathOverrides(data.request_path_overrides),
 				},
 			}),
