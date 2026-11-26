@@ -206,7 +206,7 @@ Bifrost does not currently support Google Workspace SCIM management APIs or inbo
 
 For Google Workspace, Bifrost uses the Directory API setup above to sync users in the background every **Directory sync interval** (default 24 hours). During that sync, Bifrost reconciles imported users, role mappings, team mappings, and business-unit mappings from Google Workspace. Background sync is turned off while SCIM Provisioning is on, because your IdP pushes changes instead.
 
-Bifrost also refreshes each OIDC session when it expires (sessions last at least 30 minutes). If a session cannot be refreshed, Bifrost checks with Google whether the user is still active; if Google reports the user as inactive, Bifrost decommissions that user locally.
+Bifrost also refreshes each OIDC session when it expires (sessions last at least the configured [minimum session lifetime](/enterprise/user-provisioning#background-lifecycle-reconciliation), 30 minutes by default). If a session cannot be refreshed, Bifrost checks with Google whether the user is still active; if Google reports the user as inactive, Bifrost decommissions that user locally.
 
 Support for Google Workspace SCIM management APIs is coming soon.
 

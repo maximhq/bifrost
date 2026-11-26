@@ -12681,6 +12681,9 @@
         "bulkSyncInterval": {
           "$ref": "#/$defs/scim_bulk_sync_interval"
         },
+        "minSessionDuration": {
+          "$ref": "#/$defs/scim_min_session_duration"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -12789,6 +12792,9 @@
         "bulkSyncInterval": {
           "$ref": "#/$defs/scim_bulk_sync_interval"
         },
+        "minSessionDuration": {
+          "$ref": "#/$defs/scim_min_session_duration"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -12880,6 +12886,9 @@
         },
         "bulkSyncInterval": {
           "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
+        "minSessionDuration": {
+          "$ref": "#/$defs/scim_min_session_duration"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -12985,6 +12994,9 @@
         "bulkSyncInterval": {
           "$ref": "#/$defs/scim_bulk_sync_interval"
         },
+        "minSessionDuration": {
+          "$ref": "#/$defs/scim_min_session_duration"
+        },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
         },
@@ -13075,6 +13087,9 @@
         },
         "bulkSyncInterval": {
           "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
+        "minSessionDuration": {
+          "$ref": "#/$defs/scim_min_session_duration"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -13183,6 +13198,9 @@
         },
         "bulkSyncInterval": {
           "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
+        "minSessionDuration": {
+          "$ref": "#/$defs/scim_min_session_duration"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -13330,6 +13348,9 @@
         },
         "bulkSyncInterval": {
           "$ref": "#/$defs/scim_bulk_sync_interval"
+        },
+        "minSessionDuration": {
+          "$ref": "#/$defs/scim_min_session_duration"
         },
         "authProxy": {
           "$ref": "#/$defs/scim_auth_proxy"
@@ -16134,6 +16155,12 @@
       "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
       "default": "24h",
       "description": "How often the directory reconcile lists the IdP's users through its admin API and deprovisions the ones it no longer returns, as whole days or h/m/s pairs (e.g. '12h', '1h30m', '7d'). Must be between 1h and 30d. Defaults to 24h. Inert when SCIM provisioning is enabled or the provider has no directory API access (e.g. Okta without apiToken)."
+    },
+    "scim_min_session_duration": {
+      "type": "string",
+      "pattern": "^([0-9]+d|([0-9]+(\\.[0-9]+)?(h|m|s))+)$",
+      "default": "30m",
+      "description": "Shortest lifetime of a Bifrost SSO session before it is re-checked with the IdP, as whole days or h/m/s pairs (e.g. '30m', '8h', '1d'). A session lasts the longer of this and the IdP token's expiry. Must be between 5m and 7d. Defaults to 30m. Longer values mean fewer IdP calls, but role changes and IdP-side disables take longer to reach signed-in users. Applies whether or not SCIM provisioning is enabled."
     },
     "scim_attribute_business_unit_mappings": {
       "type": "array",
