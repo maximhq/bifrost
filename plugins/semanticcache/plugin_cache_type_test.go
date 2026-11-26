@@ -1142,7 +1142,7 @@ func TestResponsesParamsHashIncludesOutputShapingParams(t *testing.T) {
 	}
 }
 
-func TestCacheIdentityIgnoresDerivedKeysInExtraParams(t *testing.T) {
+func TestCacheIdentityKeepsExtraParamsApartFromDerivedKeys(t *testing.T) {
 	plugin := &Plugin{config: getDefaultTestConfig(), logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
 	derivedValue := func(req *schemas.BifrostRequest, key string) any {
 		t.Helper()
@@ -1163,6 +1163,16 @@ func TestCacheIdentityIgnoresDerivedKeysInExtraParams(t *testing.T) {
 	}}}
 	withTools := &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup_invoice"}}}}
 	withMCP := &schemas.ChatParameters{MCPServers: []schemas.ChatMCPServer{{Type: "url", Name: "docs", URL: "https://docs.example.com/mcp"}}}
+	streamed := chatIdentityRequest(&schemas.ChatParameters{})
+	streamed.RequestType = schemas.ChatCompletionStreamRequest
+	speech := func(params *schemas.SpeechParameters) *schemas.BifrostRequest {
+		params.VoiceConfig = &schemas.SpeechVoiceInput{Voice: schemas.Ptr("rachel")}
+		return &schemas.BifrostRequest{
+			RequestType:   schemas.SpeechRequest,
+			SpeechRequest: &schemas.BifrostSpeechRequest{Provider: schemas.Elevenlabs, Model: "eleven_multilingual_v2", Input: &schemas.SpeechInput{Input: "Your order has shipped."}, Params: params},
+		}
+	}
+	withDictionary := &schemas.SpeechParameters{PronunciationDictionaryLocators: []schemas.SpeechPronunciationDictionaryLocator{{PronunciationDictionaryID: "brand_names"}}}
 
 	tests := []struct {
 		name    string
@@ -1179,12 +1189,18 @@ func TestCacheIdentityIgnoresDerivedKeysInExtraParams(t *testing.T) {
 		{"mcp_servers_hash", "mcp_servers_hash", chatIdentityRequest(withMCP), func(value any) *schemas.BifrostRequest {
 			return chatIdentityRequest(&schemas.ChatParameters{ExtraParams: map[string]any{"mcp_servers_hash": value}})
 		}},
+		{"stream", "stream", streamed, func(value any) *schemas.BifrostRequest {
+			return chatIdentityRequest(&schemas.ChatParameters{ExtraParams: map[string]any{"stream": value}})
+		}},
+		{"pronunciation_dictionary_locators_hash", "pronunciation_dictionary_locators_hash", speech(withDictionary), func(value any) *schemas.BifrostRequest {
+			return speech(&schemas.SpeechParameters{ExtraParams: map[string]any{"pronunciation_dictionary_locators_hash": value}})
+		}},
 	}
 	for _, tt := range tests {
 		genuine := cacheIdentityForTest(t, plugin, tt.genuine)
 		spoofed := cacheIdentityForTest(t, plugin, tt.spoof(derivedValue(tt.genuine, tt.key)))
 		if genuine.params == spoofed.params || genuine.request == spoofed.request {
-			t.Errorf("a request field named %s must not stand in for the hash the plugin derives", tt.key)
+			t.Errorf("a request field named %s must not stand in for the value the plugin derives", tt.key)
 		}
 	}
 

@@ -147,23 +147,12 @@ func putIfSet[T any](m map[string]any, key string, v *T) {
 	}
 }
 
-// derivedMetadataKeys are the metadata keys the plugin computes from typed
-// params. A request field with the same name would otherwise land in
-// ExtraParams and stand in for the real hash, letting two different requests
-// share an entry.
-var derivedMetadataKeys = map[string]struct{}{
-	"tools_hash":       {},
-	"text_format_hash": {},
-	"mcp_servers_hash": {},
-}
-
-// copyExtraParams merges provider-specific params into the metadata for every
-// request type, skipping the keys in derivedMetadataKeys.
+// copyExtraParams adds provider-specific params under their own key, so a
+// request field can never collide with a key the plugin derives itself
+// (stream, attachments or any *_hash) and stand in for it.
 func copyExtraParams(metadata map[string]any, extraParams map[string]any) {
-	for key, value := range extraParams {
-		if _, derived := derivedMetadataKeys[key]; !derived {
-			metadata[key] = value
-		}
+	if len(extraParams) > 0 {
+		metadata["extra_params"] = extraParams
 	}
 }
 
