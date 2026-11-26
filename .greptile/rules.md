@@ -59,6 +59,19 @@ Every piece of data a process keeps (configuration, runtime state, caches) lives
 - A change another process made is applied with `lib.DBLookupRetry()`.
 - A write path that re-reads needs a test where the re-read fails; a delete needs a test that it removes without reading.
 
+## MCP Harness
+
+Every MCP change a client can observe ships with cases in the MCP harness, `tests/e2e/api/runners/build-mcp-harness.mjs`. AGENTS.md ("Every MCP change ships with MCP harness cases") and `.claude/skills/mcp-harness/SKILL.md` hold the full rules and, in section 3, the cases each kind of change needs. Review only behaviour a PR adds or changes against them:
+
+- MCP behaviour covers MCP clients and their upstream auth, connection types, `/mcp` and `/mcp/<slug>`, `/v1/mcp/tool/execute`, MCP tools in inference and code mode, tool filtering, virtual keys' MCP grants and Virtual MCPs, per-user discovery and sessions, MCP logs and pricing, the MCP library, Bifrost's OAuth server and the Bifrost MCP on `/v1/mcp`. Its cases go in the MCP harness, never in `provider-harness.json`.
+- A new or changed upstream auth type is covered on every connection type that can carry it, from the API and from `config.json`, through expiry and refresh, per caller and shared, in each inbound auth mode, with the credential reaching the upstream on every call path and no answer or log echoing it.
+- A connection type or transport change covers every auth type that applies, failure at create and mid-call, recovery and tool sync.
+- An inbound auth change covers each auth mode with enforce on and off, every caller credential alone and in pairs, every surface, and the exact refusal (`WWW-Authenticate` only where the mode advertises OAuth).
+- A filtering, MCP grant or Virtual MCP change covers each level alone and combined, with every surface that lists or calls tools answering the same.
+- Flag cases that cover one connection type, auth mode or surface when the change reaches more and the PR does not say why the others are out of reach.
+- A new value on an axis (an upstream auth type, connection type, discovery or credential kind, inbound auth mode, caller credential, surface) is also added to every existing test that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new tests.
+- Harness conventions: one folder per test named by its ID, every request titled with the ID, independent tests that restore what they change, exact assertions, no early return on an error status, no 500 as the expected answer, a known bug asserted with `A.skip(...)`.
+
 ## Path-Specific Checks
 
 For `core/providers/**`:
@@ -74,6 +87,7 @@ For `core/mcp/**`:
 - Check tool filtering across global, client, tool, and per-request filters.
 - Review agent loops for bounded depth, deterministic tool execution behavior, and safe error propagation.
 - Preserve deterministic tool registration, discovery, and filtering behavior across in-process, SSE, streamable HTTP, and code-mode clients.
+- Ask for MCP harness cases for observable behaviour changes (see MCP Harness above).
 
 For `framework/streaming/**`:
 
