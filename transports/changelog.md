@@ -82,6 +82,7 @@
 - **Deterministic Config Hashes** - Provider config hashes no longer change with map order, so API-added keys are not dropped on restart (thanks [@rojinebrahimi](https://github.com/rojinebrahimi)!)
 - **Seedance Video Tokens** - Seedance video settlements record their output tokens, so logs show them and virtual key token limits count them
 - **Active Requests Gauge Leak** - A stream cancelled before the upstream's first byte no longer leaves `bifrost_active_requests` raised or its log row stuck in processing
+- **Stream Producer Panic Status** - A stream cut short by a panic in the HTTP stream producer reaches plugins and logs as a 500 `server_error` instead of a 499 client cancellation, and its usage is still estimated. `lib.RecoverStreamProducer` now takes the request's `BifrostContext` as its first argument, so callers outside this repo must pass it (thanks [@ahmedabdou14](https://github.com/ahmedabdou14)!)
 - **Upstream Latency** - `bifrost_upstream_latency_seconds` no longer includes provider queue wait, retry backoff or other plugins' hooks (thanks [@sam-klaviyo](https://github.com/sam-klaviyo)!)
   <Note>
   Dashboards built on `bifrost_upstream_latency_seconds` will show lower values after upgrading. Queue wait is now in `bifrost_provider_queue_wait_seconds`.

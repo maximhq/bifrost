@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -2137,5 +2138,129 @@ func TestCancelDuringAFallbackStopsTheChain(t *testing.T) {
 	}
 	if n := lastHits.Load(); n != 0 {
 		t.Fatalf("the last fallback ran %d time(s) after the caller cancelled", n)
+	}
+}
+
+// terminalErrorRecorder keeps the last error a stream's post-hooks were handed.
+type terminalErrorRecorder struct {
+	mu   sync.Mutex
+	errs []*schemas.BifrostError
+}
+
+func (r *terminalErrorRecorder) GetName() string { return "terminal-error-recorder" }
+
+func (r *terminalErrorRecorder) Cleanup() error { return nil }
+
+func (r *terminalErrorRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+func (r *terminalErrorRecorder) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (r *terminalErrorRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if bifrostErr != nil {
+		r.mu.Lock()
+		r.errs = append(r.errs, bifrostErr)
+		r.mu.Unlock()
+	}
+	return resp, bifrostErr, nil
+}
+
+// A stream cancelled mid-output by a consumer that failed itself ends as a server error in
+// the post-hooks, while a client that leaves still ends it as a cancellation. Both keep the
+// usage the provider reported so far, and both estimate it when the provider reports it only
+// at the end.
+func TestStreamCancelledByFailedConsumerIsAServerError(t *testing.T) {
+	const reportedUsage = `,"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}`
+	cases := []struct {
+		name           string
+		consumerFailed bool
+		usage          string
+		wantStatus     int
+		wantType       string
+	}{
+		{name: "client left", usage: reportedUsage, wantStatus: 499, wantType: schemas.RequestCancelled},
+		{name: "consumer failed", consumerFailed: true, usage: reportedUsage, wantStatus: 500, wantType: "server_error"},
+		{name: "client left before usage", wantStatus: 499, wantType: schemas.RequestCancelled},
+		{name: "consumer failed before usage", consumerFailed: true, wantStatus: 500, wantType: "server_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"he"}}]`+tc.usage+`}`+"\n\n")
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-time.After(10 * time.Second):
+				}
+			}))
+			defer server.Close()
+
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+			account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+				{ID: "cancel-key", Value: *schemas.NewSecretVar("sk-cancel"), Models: schemas.WhiteList{"*"}, Weight: 100},
+			})
+			recorder := &terminalErrorRecorder{}
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account:    account,
+				Logger:     NewDefaultLogger(schemas.LogLevelError),
+				LLMPlugins: []schemas.LLMPlugin{recorder},
+				// Stands in for the logging plugin's accumulator, which the estimate reads.
+				Tracer: &snapshotTracer{snapshot: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+					Choices: []schemas.BifrostResponseChoice{{ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{Message: &schemas.ChatMessage{
+						Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: new("he")},
+					}}}},
+				}}},
+			})
+			if err != nil {
+				t.Fatalf("failed to initialize bifrost: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-consumer-failed")
+			stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-4o-mini",
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("stream failed: %s", bifrostErr.GetErrorString())
+			}
+			if first := <-stream; first == nil || first.BifrostChatResponse == nil {
+				t.Fatalf("first chunk = %+v, want output", first)
+			}
+			if tc.consumerFailed {
+				ctx.SetValue(schemas.BifrostContextKeyStreamConsumerFailed, true)
+			}
+			ctx.Cancel()
+			for range stream {
+			}
+
+			recorder.mu.Lock()
+			defer recorder.mu.Unlock()
+			if len(recorder.errs) != 1 {
+				t.Fatalf("error post-hooks = %d, want 1", len(recorder.errs))
+			}
+			e := recorder.errs[0]
+			if e.StatusCode == nil || *e.StatusCode != tc.wantStatus || e.Error == nil || e.Error.Type == nil || *e.Error.Type != tc.wantType {
+				t.Fatalf("terminal error = %s, want status %d and type %q", e.GetErrorString(), tc.wantStatus, tc.wantType)
+			}
+			if tc.consumerFailed && e.Error.Message != providerUtils.ErrStreamConsumerFailedMessage {
+				t.Errorf("message = %q, want %q", e.Error.Message, providerUtils.ErrStreamConsumerFailedMessage)
+			}
+			billed := e.ExtraFields.BilledUsage
+			if tc.usage != "" && (billed == nil || billed.PromptTokens != 10 || billed.Estimation != nil) {
+				t.Errorf("billed usage = %+v, want the provider's running usage kept", billed)
+			}
+			if tc.usage == "" && (billed == nil || billed.Estimation == nil || billed.CompletionTokens == 0) {
+				t.Errorf("billed usage = %+v, want the received output estimated", billed)
+			}
+		})
 	}
 }

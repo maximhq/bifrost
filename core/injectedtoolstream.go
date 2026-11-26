@@ -324,14 +324,8 @@ func sendThroughPostHooks(ctx *schemas.BifrostContext, postHookRunner schemas.Po
 
 // injectedTurnsCancelledError ends a client stream cancelled between turns, while an
 // injected tool ran and no upstream stream was open to report it.
-func injectedTurnsCancelledError(usage *schemas.BifrostLLMUsage) *schemas.BifrostError {
-	bifrostErr := &schemas.BifrostError{
-		StatusCode: new(499), // Client Closed Request
-		Error: &schemas.ErrorField{
-			Message: "Request cancelled: client disconnected",
-			Type:    new(schemas.RequestCancelled),
-		},
-	}
+func injectedTurnsCancelledError(ctx *schemas.BifrostContext, usage *schemas.BifrostLLMUsage) *schemas.BifrostError {
+	bifrostErr := providerUtils.NewStreamCancelledError(ctx)
 	billEarlierTurns(bifrostErr, usage)
 	return bifrostErr
 }
@@ -462,7 +456,7 @@ func chainInjectedStream(ctx *schemas.BifrostContext, turns injectedStreamTurns,
 				}
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				ended.Store(true)
-				sendThroughPostHooks(ctx, postHookRunner, nil, injectedTurnsCancelledError(turns.usage()), out)
+				sendThroughPostHooks(ctx, postHookRunner, nil, injectedTurnsCancelledError(ctx, turns.usage()), out)
 				failed = true
 				return true
 			}

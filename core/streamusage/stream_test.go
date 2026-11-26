@@ -134,6 +134,16 @@ func TestEstimateOnlyForCancellationAndTimeout(t *testing.T) {
 			t.Errorf("%s: estimated=%v want %v", kind, got, want)
 		}
 	}
+
+	// A stream cancelled by its failed consumer ends as a server error, but it was interrupted
+	// like any cancellation.
+	consumerFailed := newContext()
+	consumerFailed.SetValue(schemas.BifrostContextKeyStreamConsumerFailed, true)
+	err := providerUtils.NewStreamCancelledError(consumerFailed)
+	estimateFrom(newContext(), chatSnapshot("hello world", false), chatRequest("unknown"), "unknown", err)
+	if got := err.ExtraFields.BilledUsage; got == nil || got.Estimation == nil {
+		t.Errorf("consumer failed: usage=%+v want an estimate", got)
+	}
 }
 
 func TestEstimateCountsReasoningAndTools(t *testing.T) {

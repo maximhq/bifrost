@@ -2493,7 +2493,7 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		// Registered after the teardown above so it runs first: a panic while converting a
 		// chunk is logged, an error frame goes to the client, upstream is cancelled and
 		// drained, then the teardown closes the stream.
-		defer lib.RecoverStreamProducer(cancel, stream, func() {
+		defer lib.RecoverStreamProducer(bifrostCtx, cancel, stream, func() {
 			if errorJSON, err := sonic.Marshal(lib.SanitizeBifrostErrorForClient(lib.StreamProducerPanicError())); err == nil {
 				if stripExtraFields {
 					errorJSON = lib.StripExtraFields(errorJSON)

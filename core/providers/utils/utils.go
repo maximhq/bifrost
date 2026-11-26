@@ -4461,14 +4461,7 @@ func HandleStreamCancellation(
 			return // Already handled
 		}
 	}
-	// Create cancellation error
-	cancelErr := &schemas.BifrostError{
-		StatusCode: new(499), // Client Closed Request
-		Error: &schemas.ErrorField{
-			Message: "Request cancelled: client disconnected",
-			Type:    schemas.Ptr(schemas.RequestCancelled),
-		},
-	}
+	cancelErr := NewStreamCancelledError(ctx)
 
 	if ShouldSendBackRawRequest(ctx, false) && len(jsonBody) > 0 {
 		cancelErr.ExtraFields.RawRequest = compactRawJSON(jsonBody)
@@ -4480,6 +4473,45 @@ func HandleStreamCancellation(
 
 	// Send through PostHook chain - this updates the log to "error" status
 	ProcessAndSendBifrostError(ctx, postHookRunner, cancelErr, responseChan, logger, postHookSpanFinalizer)
+}
+
+// ErrStreamConsumerFailedMessage is the message of the terminal error a stream ends with when
+// the code reading it cancelled it after failing itself.
+const ErrStreamConsumerFailedMessage = "internal error while streaming the response"
+
+// ErrStreamConsumerFailed is the cause NewStreamCancelledError gives that terminal error, so it
+// still reads as an interrupted stream, not a failure the provider reported.
+var ErrStreamConsumerFailed = errors.New(ErrStreamConsumerFailedMessage)
+
+// NewStreamConsumerFailedError is that terminal error without a cause. ErrorField serializes
+// its cause, so this is the form that can be framed for a client.
+func NewStreamConsumerFailedError() *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(500),
+		Error: &schemas.ErrorField{
+			Message: ErrStreamConsumerFailedMessage,
+			Type:    schemas.Ptr("server_error"),
+		},
+	}
+}
+
+// NewStreamCancelledError is the terminal error of a stream whose context was cancelled: a 499
+// client cancellation, or a 500 server error when the stream's consumer marked the cancel as
+// its own failure (BifrostContextKeyStreamConsumerFailed).
+func NewStreamCancelledError(ctx *schemas.BifrostContext) *schemas.BifrostError {
+	if failed, _ := ctx.Value(schemas.BifrostContextKeyStreamConsumerFailed).(bool); failed {
+		bifrostErr := NewStreamConsumerFailedError()
+		bifrostErr.Error.Error = ErrStreamConsumerFailed
+		return bifrostErr
+	}
+	return &schemas.BifrostError{
+		StatusCode: new(499), // Client Closed Request
+		Error: &schemas.ErrorField{
+			Message: "Request cancelled: client disconnected",
+			Type:    schemas.Ptr(schemas.RequestCancelled),
+		},
+	}
 }
 
 // attachBilledUsageFromContext copies a streaming provider's in-place
