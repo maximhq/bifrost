@@ -3896,7 +3896,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		OAuth2Provider:     s.Config.OAuthProvider,
 		MCPHeadersProvider: s.Config.MCPHeadersProvider,
 		Logger:             logger,
-		SessionAffinity:    bifrost.NewSessionAffinity(s.Config.Shared.Sessions, logger),
+		SessionAffinity:    bifrost.NewSessionAffinity(s.Config.SharedTables.Sessions, logger),
 		ModelCatalog:       s.Config.ModelCatalog,
 
 		MCPSharedDiscoveryStore:  sharedDiscoveryStore,

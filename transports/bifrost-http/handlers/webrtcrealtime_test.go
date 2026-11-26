@@ -120,7 +120,7 @@ func realtimeKeysForTest(t *testing.T) (*livestore.Store, *lib.SharedTables) {
 	if err := config.AttachLiveStore(live); err != nil {
 		t.Fatalf("AttachLiveStore() error = %v", err)
 	}
-	return live, config.Shared
+	return live, config.SharedTables
 }
 
 type testHandlerStore struct {
