@@ -163,3 +163,24 @@ func TestVectorStorageLimitAppliesPerStore(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 2000, kept, "a store under its own limit is left alone")
 }
+
+// Warp's index in a store named by an alias, one sharing another store's connection, is swept
+// under the owner's retention: the alias holds the owner's data, and the Vector Stores page shows
+// and edits only the owner's settings.
+func TestVectorRetentionOfAnAliasIsItsOwners(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+	disk := t.TempDir()
+	onDisk := func(name, dir string) vectorstore.Config {
+		return vectorstore.Config{Name: name, Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{Path: filepath.Join(disk, dir)}}
+	}
+	primary := onDisk("owner", "a")
+	cfg := vectorStoreTestConfig(t, nil, &primary, onDisk("alias", "a"))
+	alias, _ := cfg.VectorStores.Get("alias")
+	require.Equal(t, "owner", alias.SharedWith)
+	setVectorStoreSettings(t, cfg, "owner", 7, 0)
+	setVectorStoreSettings(t, cfg, "alias", 0, 0) // a row of its own, which nothing shows or edits
+
+	server := &BifrostHTTPServer{Config: cfg}
+	assert.Equal(t, 7, server.vectorRetentionDaysFor("alias")(), "the owner's retention")
+	assert.Equal(t, 7, server.vectorRetentionDaysFor("owner")())
+}

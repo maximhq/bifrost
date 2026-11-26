@@ -1216,6 +1216,7 @@
 		"conversationSearchHelp": "Warp は完了した会話をベクトルストアに埋め込み、意味でログを探します。そこに保存されるのはベクトルと運用メタデータだけで、会話本文はログストアに残ります。",
 		"vectorConnected": "ベクターストア接続済み",
 		"vectorDisconnected": "ベクターストア未接続",
+		"vectorConnectedTo": "{{name}} ({{type}}) に接続済み",
 		"embeddingProvider": "埋め込みプロバイダー",
 		"selectEmbeddingProvider": "埋め込みプロバイダーを選択",
 		"noEmbeddingProviders": "設定済みのプロバイダーに埋め込み対応がありません。Warp を有効化する前に、対応するもの — OpenAI、Azure OpenAI、Bedrock、Vertex、Cohere — を追加してください。",

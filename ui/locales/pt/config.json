@@ -1188,6 +1188,7 @@
 		"conversationSearchHelp": "O Warp incorpora as conversas concluídas no armazenamento vetorial e usa-as para encontrar registos pelo significado. Aí só ficam vetores e metadados operacionais; o texto da conversa permanece no armazenamento de registos.",
 		"vectorConnected": "Armazenamento vetorial ligado",
 		"vectorDisconnected": "Armazenamento vetorial desligado",
+		"vectorConnectedTo": "Ligado a {{name}} ({{type}})",
 		"embeddingProvider": "Fornecedor de embeddings",
 		"selectEmbeddingProvider": "Selecionar fornecedor de embeddings",
 		"noEmbeddingProviders": "Nenhum dos fornecedores configurados suporta embeddings. Adicione um que suporte — OpenAI, Azure OpenAI, Bedrock, Vertex ou Cohere — antes de ativar o Warp.",

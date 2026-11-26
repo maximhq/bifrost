@@ -98,13 +98,18 @@ type Service struct {
 	// tokens without a cost, rather than reporting a cost of zero.
 	catalog     *modelcatalog.ModelCatalog
 	vectorStore vectorstore.VectorStore
+	// vectorStores and vectorChoice, when set, are the configured stores and the one config.json
+	// names for the log index (see vectorselection.go); vectorStore is then that store, or nil.
+	vectorStores     VectorStoreResolver
+	vectorChoiceName string
+	vectorChoice     *vectorSelection
 	// vectorRetention reports the vector retention in days, for the vector sweep.
 	vectorRetention func() int
-	embed        EmbeddingExecutor
-	indexer      *LogIndexer
-	semantic     *SemanticSearcher
-	topics       *TopicReader
-	backfillJobs BackfillJobStore
+	embed           EmbeddingExecutor
+	indexer         *LogIndexer
+	semantic        *SemanticSearcher
+	topics          *TopicReader
+	backfillJobs    BackfillJobStore
 	// topicLimits bounds a topics run. Zero means the defaults; tests shrink
 	// them so a run crosses its thresholds on a handful of requests.
 	topicLimits topicLimits
@@ -286,6 +291,11 @@ func NewService(store configstore.ConfigStore, live *livestore.Store, opts ...Op
 	}
 	for _, opt := range opts {
 		opt(service)
+	}
+	if service.vectorStores != nil {
+		// Settled once: the store is chosen in config.json and read at startup.
+		service.vectorChoice = service.resolveSelection(service.vectorChoiceName)
+		service.vectorStore = service.vectorChoice.store()
 	}
 	service.topics = service.buildTopicReader()
 	if service.store != nil && service.vectorStore != nil && service.embed != nil {

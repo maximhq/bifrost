@@ -12,6 +12,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 - Added `vectorStore.retentionDays` and `vectorStore.maxSizeMB`, rendered into `vector_store.retention_days` and `vector_store.max_size_mb`, and the same `retention_days` and `max_size_mb` on each `vectorStores` entry: per store, an upper bound on how long vectors built from logs (Warp's log index, the complexity router's captured requests) are kept, and a storage limit trimmed oldest first by the hourly sweep. They seed the settings that Settings > Vector Stores edits; a value changed in values wins at the next restart.
 - Added `vectorStores`, rendered as written into `vector_stores`: more vector stores alongside `vectorStore`, each `{name, enabled, type, config}` and selected by its name. Added `vectorStore.name`, rendered into `vector_store.name`; the primary store is named after its type when it is unset.
+- Added `bifrost.warp.vectorStore`, rendered into `warp.vector_store`: the configured vector store Warp's log index is kept in, by name (`vectorStore.name` or a `vectorStores` entry); `""` is the primary store. Read at startup, so a change takes effect when the pods restart.
 
 ### 2.1.49
 

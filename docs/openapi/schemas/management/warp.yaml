@@ -174,7 +174,33 @@ WarpConfig:
     vector_store_connected:
       type: boolean
       readOnly: true
-      description: Whether the shared runtime vector store is connected.
+      description: Whether Warp has a connected vector store to keep its log index in (connected_vector_store is not null).
+    vector_store:
+      type: string
+      readOnly: true
+      description: |
+        The configured vector store Warp's log index is kept in, by name, as
+        config.json names it (warp.vector_store); "" is the primary
+        vector_store. Read at startup: PUT /api/warp/config cannot change it.
+    connected_vector_store:
+      type: [object, 'null']
+      readOnly: true
+      description: The store the log index is kept in while Warp can use it; null when it has none.
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        primary:
+          type: boolean
+      required: [name, type, primary]
+    vector_store_error:
+      type: string
+      readOnly: true
+      description: |
+        Why Warp has no vector store, when there is more to say than "none":
+        the store config.json names is not configured, is disabled, or could
+        not be reached at startup.
   required:
     - configured
     - enabled
@@ -332,6 +358,14 @@ WarpConfigInput:
     log_vector_store_namespace:
       type: string
       default: BifrostWarpLogs
+    vector_store:
+      type: string
+      description: |
+        The store config.json names for Warp's log index (warp.vector_store), as
+        GET /api/warp/config returns it. Accepted only when it repeats that
+        store, so a client can send back the configuration it read; any other
+        value is refused with 400, since the store is chosen in config.json and
+        read at startup. Omit it otherwise.
     semantic_search_threshold:
       type: number
       minimum: 0

@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/warp"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // WarpFileConfig is config.json's warp section: the Warp settings page, models, behaviour, log
@@ -20,9 +23,15 @@ import (
 // keys a write carried, so an omitted embedding or topic field keeps its stored value the way it
 // does for a dashboard save, and SaveConfig normalizes the input in place; each apply therefore
 // decodes a fresh one. The bytes are also what the sync hash is taken over.
+//
+// vector_store is not a setting the section writes: it names the vector store Warp's log index is
+// kept in, read once at startup (Config.WarpVectorStore), so it is kept apart from the bytes.
+// Changing it neither re-applies the settings nor counts as a change to them.
 type WarpFileConfig struct {
-	raw     json.RawMessage
-	invalid error // why the section cannot be a Warp config write; ApplyWarpFileConfig skips it
+	raw            json.RawMessage
+	invalid        error  // why the section cannot be a Warp config write; ApplyWarpFileConfig skips it
+	vectorStore    string // warp.vector_store; "" is the primary vector_store
+	hasVectorStore bool   // the section names vector_store
 }
 
 // UnmarshalJSON keeps the section compacted and checks it decodes as a Warp config write. A
@@ -35,8 +44,32 @@ func (w *WarpFileConfig) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	w.raw, w.invalid = compact.Bytes(), nil
+	w.vectorStore, w.hasVectorStore = "", false
+	if field := gjson.GetBytes(w.raw, "vector_store"); field.Exists() {
+		w.vectorStore, w.hasVectorStore = strings.TrimSpace(field.String()), true
+		// Not coerced: a number or an object is a mistake in the file, so the section is skipped
+		// with a warning, and Warp, finding no store by that name, says it is not configured
+		// rather than falling back to the primary.
+		if field.Type != gjson.String && field.Type != gjson.Null {
+			w.vectorStore = field.Raw
+			w.invalid = fmt.Errorf("vector_store must be a string, the name of a configured vector store; got %s", field.Raw)
+		}
+		settings, err := sjson.DeleteBytes(w.raw, "vector_store")
+		if err != nil {
+			w.raw, w.invalid = nil, err
+			return nil
+		}
+		// A section that only names the store declares no settings to apply.
+		if string(settings) == "{}" {
+			settings = nil
+		}
+		w.raw = settings
+	}
+	if len(w.raw) == 0 || w.invalid != nil {
+		return nil
+	}
 	var probe warp.ConfigInput
-	if err := json.Unmarshal(data, &probe); err != nil {
+	if err := json.Unmarshal(w.raw, &probe); err != nil {
 		w.invalid = err
 	}
 	return nil
@@ -44,10 +77,26 @@ func (w *WarpFileConfig) UnmarshalJSON(data []byte) error {
 
 // MarshalJSON writes the section back as declared.
 func (w WarpFileConfig) MarshalJSON() ([]byte, error) {
-	if len(w.raw) == 0 {
-		return []byte("null"), nil
+	if !w.hasVectorStore {
+		if len(w.raw) == 0 {
+			return []byte("null"), nil
+		}
+		return w.raw, nil
 	}
-	return w.raw, nil
+	section := w.raw
+	if len(section) == 0 {
+		section = []byte("{}")
+	}
+	return sjson.SetBytes(section, "vector_store", w.vectorStore)
+}
+
+// WarpVectorStore is the vector store config.json names for Warp's log index
+// (warp.vector_store), "" for the primary vector_store. It is read at startup.
+func (c *Config) WarpVectorStore() string {
+	if c == nil || c.warpFileConfig == nil {
+		return ""
+	}
+	return c.warpFileConfig.vectorStore
 }
 
 // WarpConfigSaver is the Warp service's write path, the one the settings page saves through.

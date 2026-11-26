@@ -246,3 +246,61 @@ func TestLoadConfig_IgnoresAMalformedWarpSection(t *testing.T) {
 		assert.ErrorIs(t, err, configstore.ErrNotFound)
 	}
 }
+
+// warpVectorStoreAtBoot loads the file in tempDir and returns the store it names for Warp.
+func warpVectorStoreAtBoot(t *testing.T, tempDir string) string {
+	t.Helper()
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	return config.WarpVectorStore()
+}
+
+// TestWarpFileConfig_VectorStoreIsReadAtStartupApartFromTheSettings: warp.vector_store names the
+// store Warp's log index is kept in, read at startup. It is not one of the settings the section
+// writes: the settings beside it are applied as before (a save naming it would be refused),
+// changing only the store leaves a dashboard edit alone, and a section naming only the store
+// applies no settings.
+func TestWarpFileConfig_VectorStoreIsReadAtStartupApartFromTheSettings(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+	configData.Warp = warpFile(t, `{"vector_store": "warp-qdrant", "provider": "openai", "model": "gpt-4o"}`)
+	createConfigFile(t, tempDir, configData)
+
+	assert.Equal(t, "warp-qdrant", warpVectorStoreAtBoot(t, tempDir))
+	row := bootWarp(t, tempDir, `{"provider": "openai", "model": "gpt-4o-mini"}`)
+	require.NotNil(t, row, "the settings beside it are applied")
+	assert.Equal(t, "gpt-4o", row.Model)
+
+	configData.Warp = warpFile(t, `{"vector_store": "", "provider": "openai", "model": "gpt-4o"}`)
+	createConfigFile(t, tempDir, configData)
+	assert.Equal(t, "", warpVectorStoreAtBoot(t, tempDir), `"" is the primary store`)
+	row = bootWarp(t, tempDir, "")
+	assert.Equal(t, "gpt-4o-mini", row.Model, "a change to the store alone is not a change to the settings")
+
+	onlyStore := createTempDir(t)
+	onlyData := makeConfigDataWithProvidersAndDir(nil, onlyStore)
+	onlyData.Warp = warpFile(t, `{"vector_store": "warp-qdrant"}`)
+	createConfigFile(t, onlyStore, onlyData)
+	assert.Equal(t, "warp-qdrant", warpVectorStoreAtBoot(t, onlyStore))
+	assert.Nil(t, bootWarp(t, onlyStore, ""), "a section naming only the store applies no settings")
+
+	written, err := json.Marshal(warpFile(t, `{"vector_store": "warp-qdrant", "provider": "openai"}`))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"vector_store": "warp-qdrant", "provider": "openai"}`, string(written), "the section is written back as declared")
+}
+
+// TestWarpFileConfig_RefusesANonStringVectorStore: warp.vector_store is a store's name. Anything
+// else is a mistake in the file, not coerced to text: the section is skipped with a warning, and
+// Warp, finding no store by that name, is unavailable rather than using the primary.
+func TestWarpFileConfig_RefusesANonStringVectorStore(t *testing.T) {
+	for _, value := range []string{`7`, `true`, `{"name": "warp-qdrant"}`, `["warp-qdrant"]`} {
+		file := warpFile(t, `{"vector_store": `+value+`, "provider": "openai", "model": "gpt-4o"}`)
+		require.Error(t, file.invalid, value)
+		assert.Contains(t, file.invalid.Error(), "vector_store must be a string", value)
+		assert.NotEmpty(t, file.vectorStore, "%s names no store, so it is never taken for the primary", value)
+	}
+	assert.NoError(t, warpFile(t, `{"vector_store": null, "provider": "openai"}`).invalid, "null is the primary, as omitted is")
+}

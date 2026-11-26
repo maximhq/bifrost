@@ -69,6 +69,10 @@ type WarpResolvers struct {
 	// UserGovernance answers what governs one person's spend. Nil leaves
 	// describe_user_limits out of Warp's tool set.
 	UserGovernance warp.UserGovernanceReader
+	// VectorStores are the configured vector stores, and VectorStoreName the one config.json
+	// names for Warp's log index ("" is the primary). Nil uses the vectors given.
+	VectorStores    warp.VectorStoreResolver
+	VectorStoreName string
 	// CallerRestriction reports whether row-level access control narrows the
 	// caller's reads. Nil leaves Warp reading that off the request's own
 	// query scope, which is all an OSS deployment has.
@@ -143,6 +147,9 @@ func NewWarpHandler(store configstore.ConfigStore, live *livestore.Store, logger
 	}
 	if resolvers.UserGovernance != nil {
 		opts = append(opts, warp.WithUserGovernanceReader(resolvers.UserGovernance))
+	}
+	if resolvers.VectorStores != nil {
+		opts = append(opts, warp.WithVectorStores(resolvers.VectorStores, resolvers.VectorStoreName))
 	}
 	if resolvers.CallerRestriction != nil {
 		opts = append(opts, warp.WithCallerRestrictionResolver(resolvers.CallerRestriction))
@@ -431,7 +438,10 @@ func (h *WarpHandler) startJob(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 	case errors.Is(err, warp.ErrTopicsAlreadyBuilt):
 		SendError(ctx, fasthttp.StatusConflict, err.Error())
 		return
-	case errors.Is(err, warp.ErrUnavailable), errors.Is(err, warp.ErrNoVectorStore):
+	case errors.Is(err, warp.ErrNoVectorStore):
+		h.sendUnavailable(ctx, schemas.WarpUnavailableNoVectorStore, err.Error())
+		return
+	case errors.Is(err, warp.ErrUnavailable):
 		SendError(ctx, fasthttp.StatusServiceUnavailable, err.Error())
 		return
 	case err != nil:
@@ -491,6 +501,14 @@ func (h *WarpHandler) jobStatus(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 			// its topics belong to a space nothing reads.
 			job, err = h.backfillStore.GetLatestSidekiqJobByKind(ctx, spec.kind)
 			if err == nil && job != nil && !h.service.BackfillMatchesConfig(ctx, job.Metadata) {
+				job = nil
+			}
+			// An embedding backfill that indexed into other data says nothing about this
+			// index: after a restart where config.json names another store, the page offers
+			// a fresh backfill instead of showing the old store's run as done. A run still in
+			// flight is shown whichever store it names, since it holds the slot; one into
+			// other data ends fast, refusing to run here.
+			if err == nil && job != nil && spec.kind == warp.BackfillJobKind && !h.service.BackfillMatchesStore(job.Metadata) {
 				job = nil
 			}
 		}
@@ -673,6 +691,13 @@ func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
 	// the old run's counts - or its failure - as the state of an index that had
 	// never been built.
 	if job != nil && !warpJobMatchesNamespace(job, view.LogVectorStoreNamespace) {
+		job = nil
+	}
+	// Likewise a finished job that indexed into other data: after config.json names another
+	// store, the new store is empty whatever the last run said. A job still pending or running
+	// is shown whichever store it names, as the backfill status shows it, since it holds the
+	// slot a new backfill needs; one into other data ends fast, refusing to run here.
+	if job != nil && job.Status != tables.SidekiqStatusPending && job.Status != tables.SidekiqStatusRunning && !h.service.BackfillMatchesStore(job.Metadata) {
 		job = nil
 	}
 	if job != nil {

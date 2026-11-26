@@ -169,6 +169,10 @@ func TestOpenRegistrySharesOneConnectionPerLocation(t *testing.T) {
 	a, _ := registry.Get("mem-a")
 	b, _ := registry.Get("mem-b")
 	assert.NotSame(t, a.Store, b.Store, "two memory-only stores are two stores")
+	assert.Equal(t, registry.Primary().Location, registry.Primary().ID, "a store on a server is identified by where it is")
+	assert.Equal(t, registry.Primary().ID, warp.ID, "two names for one store share its ID")
+	assert.NotEqual(t, a.ID, b.ID, "each memory-only store is a store of its own")
+	assert.NotEmpty(t, a.ID)
 	assert.Len(t, connector.opened, 3)
 
 	registry.Close(context.Background())
@@ -226,6 +230,7 @@ func TestChromemRelativePathIsTheSameStoreAsItsAbsoluteForm(t *testing.T) {
 	assert.Equal(t, "chromem://"+absolute, relative.Location)
 	assert.Same(t, relative.Store, abs.Store, "one directory is one store")
 	assert.Equal(t, "relative", abs.SharedWith)
+	assert.Equal(t, relative.ID, abs.ID)
 	require.NoError(t, relative.Store.CreateNamespace(context.Background(), "ns", 2, nil))
 	require.NoError(t, relative.Store.Add(context.Background(), "ns", "a", []float32{1, 0}, nil))
 	_, err = os.Stat(absolute)

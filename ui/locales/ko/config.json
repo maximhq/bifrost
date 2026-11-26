@@ -1216,6 +1216,7 @@
 		"conversationSearchHelp": "Warp는 완료된 대화를 벡터 저장소에 임베딩해 의미로 로그를 찾습니다. 그곳에는 벡터와 운영 메타데이터만 저장되고, 대화 본문은 로그 저장소에 남습니다.",
 		"vectorConnected": "벡터 스토어 연결됨",
 		"vectorDisconnected": "벡터 스토어 연결 끊김",
+		"vectorConnectedTo": "{{name}} ({{type}})에 연결됨",
 		"embeddingProvider": "임베딩 프로바이더",
 		"selectEmbeddingProvider": "임베딩 프로바이더 선택",
 		"noEmbeddingProviders": "구성된 프로바이더 중 임베딩을 지원하는 것이 없습니다. Warp를 사용하기 전에 지원하는 것 — OpenAI, Azure OpenAI, Bedrock, Vertex 또는 Cohere — 을 추가하세요.",

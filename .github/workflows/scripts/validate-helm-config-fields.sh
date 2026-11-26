@@ -2217,6 +2217,7 @@ bifrost:
     embeddingApiKeyId: "openai-embed-key"
     embeddingDimension: 1536
     logVectorStoreNamespace: "WarpLogsV2"
+    vectorStore: "warp-qdrant"
     semanticSearchThreshold: 0.6
     semanticSearchLimit: 20
     topicDiscoveryMinRequests: 250
@@ -2240,6 +2241,7 @@ assert_field_value 'warp.embedding_model' '.warp.embedding_model' '"text-embeddi
 assert_field_value 'warp.embedding_api_key_id' '.warp.embedding_api_key_id' '"openai-embed-key"'
 assert_field_value 'warp.embedding_dimension' '.warp.embedding_dimension' '1536'
 assert_field_value 'warp.log_vector_store_namespace' '.warp.log_vector_store_namespace' '"WarpLogsV2"'
+assert_field_value 'warp.vector_store' '.warp.vector_store' '"warp-qdrant"'
 assert_field_value 'warp.semantic_search_threshold' '.warp.semantic_search_threshold' '0.6'
 assert_field_value 'warp.semantic_search_limit' '.warp.semantic_search_limit' '20'
 assert_field_value 'warp.topic_discovery_min_requests' '.warp.topic_discovery_min_requests' '250'

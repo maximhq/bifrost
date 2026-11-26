@@ -209,3 +209,84 @@ test.describe('Warp semantic search threshold', () => {
     await expect(page.getByTestId('warp-search-threshold-input')).toHaveValue('0.62')
   })
 })
+
+// Warp keeps its log index in the vector store config.json names
+// (warp.vector_store), read at startup. The settings page shows which one, and
+// offers no way to change it: a save never sends vector_store.
+test.describe('Warp vector store', () => {
+  /** Mocks the Warp config and an idle backfill, and records every PUT body. */
+  async function mockWarpConfig(page: Page, config: object) {
+    await acknowledgeMCPNotice(page)
+    await page.route('**/api/feature-flags', async (route) => {
+      if (route.request().method() !== 'GET') return route.continue()
+      const response = await route.fetch()
+      const body = (await response.json()) as { flags: { id: string; enabled: boolean }[] }
+      body.flags = body.flags.map((flag) => (flag.id === 'warp' ? { ...flag, enabled: true } : flag))
+      await route.fulfill({ response, json: body })
+    })
+    const puts: Record<string, unknown>[] = []
+    await page.route('**/api/warp/config', async (route) => {
+      if (route.request().method() === 'PUT') puts.push(route.request().postDataJSON() as Record<string, unknown>)
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) })
+    })
+    await page.route('**/api/warp/log-index/backfill/status**', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'idle' }) }),
+    )
+    return puts
+  }
+
+  test('names the store config.json keeps the index in, and a save does not send one', async ({ page }) => {
+    const puts = await mockWarpConfig(page, {
+      ...configuredWarp,
+      vector_store: 'warp-qdrant',
+      connected_vector_store: { name: 'warp-qdrant', type: 'qdrant', primary: false },
+    })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-vector-store-status')).toHaveText('Connected to warp-qdrant (qdrant)')
+    await expect(page.getByTestId('warp-vector-store-select')).toHaveCount(0)
+
+    await page.getByTestId('warp-search-limit-input').fill('12')
+    const put = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/api/warp/config') && r.request().method() === 'PUT')
+    await page.getByTestId('warp-save-btn').click()
+    expect((await put).status()).toBe(200)
+    expect(puts).toHaveLength(1)
+    expect('vector_store' in puts[0]).toBe(false)
+  })
+
+  // A 503 refusal carries {reason, message} rather than {error: {message}}; the page must show
+  // the server's message, which names the store to fix, not a generic error.
+  test('shows the server\'s reason when a backfill start is refused for an unavailable store', async ({ page }) => {
+    const reason = 'Warp\'s vector store "warp-qdrant" could not be reached at startup'
+    await mockWarpConfig(page, {
+      ...configuredWarp,
+      vector_store: 'warp-qdrant',
+      connected_vector_store: { name: 'warp-qdrant', type: 'qdrant', primary: false },
+    })
+    await page.route('**/api/warp/log-index/backfill', (route) =>
+      route.request().method() === 'POST'
+        ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ reason: 'no_vector_store', message: reason }) })
+        : route.continue(),
+    )
+    await page.goto('/workspace/config/warp')
+
+    await page.getByTestId('warp-backfill-start-btn').click()
+    await expect(page.locator('[data-sonner-toast][data-type="error"]').filter({ hasText: reason })).toBeVisible()
+  })
+
+  test('says why Warp has no store when the one config.json names is unavailable', async ({ page }) => {
+    const reason = 'Warp\'s vector store "warp-qdrant" could not be reached at startup'
+    await mockWarpConfig(page, {
+      ...configuredWarp,
+      enabled: false,
+      vector_store: 'warp-qdrant',
+      vector_store_connected: false,
+      connected_vector_store: null,
+      vector_store_error: reason,
+    })
+    await page.goto('/workspace/config/warp')
+
+    await expect(page.getByTestId('warp-vector-store-status')).toHaveText(reason)
+    await expect(page.getByTestId('warp-enabled-switch')).toBeDisabled()
+  })
+})

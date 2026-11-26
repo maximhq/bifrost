@@ -47,6 +47,7 @@ type BackfillJobMeta struct {
 	EndTime         time.Time  `json:"end_time"`
 	ConfigSignature string     `json:"config_signature"`
 	Namespace       string     `json:"namespace"`
+	VectorStoreID   string     `json:"vector_store_id,omitempty"` // the data indexed into (NamedStore.ID); "" before it was recorded, the primary store
 	CursorTime      *time.Time `json:"cursor_time,omitempty"`
 	CursorOffset    int        `json:"cursor_offset,omitempty"`
 	Total           int64      `json:"total"`
@@ -149,6 +150,11 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	if !start.Before(end) {
 		return "", fmt.Errorf("%w: start_time must be before end_time", ErrInvalidConfig)
 	}
+	// No store is its own error, before the rest: when the store config.json names is
+	// unavailable, that is what the admin has to fix, not "not configured".
+	if s.vectorStore == nil && s.vectorChoice != nil {
+		return "", s.noVectorStore()
+	}
 	if s.logs == nil || s.indexer == nil {
 		return "", ErrUnavailable
 	}
@@ -178,7 +184,7 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	if result.Pagination.TotalCount > total {
 		total = result.Pagination.TotalCount
 	}
-	meta := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: signature, Namespace: config.EffectiveLogVectorStoreNamespace(), Total: total}
+	meta := BackfillJobMeta{StartTime: start, EndTime: end, ConfigSignature: signature, Namespace: config.EffectiveLogVectorStoreNamespace(), VectorStoreID: s.vectorStoreID(), Total: total}
 	return marshalBackfillMeta(meta)
 }
 
@@ -206,6 +212,18 @@ func (s *Service) BackfillMatchesConfig(ctx context.Context, metadata string) bo
 	return meta.ConfigSignature == embeddingConfigSignature(config)
 }
 
+// BackfillMatchesStore reports whether a backfill indexed into the data Warp's index is kept in
+// now. The embedding signature cannot carry this: topics are keyed by it in the log store and
+// stay valid when config.json names another store, so that changes only whether the index is
+// built. Metadata that does not parse is left to BackfillMatchesConfig.
+func (s *Service) BackfillMatchesStore(metadata string) bool {
+	var meta BackfillJobMeta
+	if sonic.Unmarshal([]byte(metadata), &meta) != nil {
+		return true
+	}
+	return s.checkpointIsForThisStore(meta.VectorStoreID)
+}
+
 // resumableBackfillMeta looks for the most recent backfill job that stopped
 // partway through this exact frozen window under this exact embedding
 // configuration, and returns its checkpoint. A job that ran to completion
@@ -231,6 +249,11 @@ func (s *Service) resumableBackfillMeta(ctx context.Context, start, end time.Tim
 		return BackfillJobMeta{}, false, nil
 	}
 	if meta.CursorTime == nil || !meta.StartTime.Equal(start) || !meta.EndTime.Equal(end) || meta.ConfigSignature != signature {
+		return BackfillJobMeta{}, false, nil
+	}
+	// Only into the data it was indexing: resuming into another store would skip every log the
+	// old run indexed there.
+	if !s.checkpointIsForThisStore(meta.VectorStoreID) {
 		return BackfillJobMeta{}, false, nil
 	}
 	meta.LastError = ""
@@ -269,6 +292,12 @@ func (s *Service) RunBackfillJob(ctx context.Context, job tables.TableSidekiqJob
 		}
 		if embeddingConfigSignature(config) != meta.ConfigSignature {
 			return snapshot(), fmt.Errorf("Warp embedding configuration changed while backfill was running")
+		}
+		// A job picked back up after a restart that named another store, or reached other data
+		// under the same name, would write past a cursor that store never had. It stops and
+		// keeps its checkpoint.
+		if !s.checkpointIsForThisStore(meta.VectorStoreID) {
+			return snapshot(), fmt.Errorf("Warp's vector store changed since this backfill was started; start a new backfill")
 		}
 
 		start := meta.StartTime

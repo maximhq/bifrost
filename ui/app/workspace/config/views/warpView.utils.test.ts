@@ -6,6 +6,9 @@ import {
 	retainFinishedWarpBackfill,
 	validateWarpMaxIterations,
 	warpSavedSpaceKey,
+	warpUnavailableMessage,
+	warpVectorStoreBadge,
+	warpVectorStoreRequirementMet,
 } from "./warpView.utils";
 
 describe("requireFiniteNumber", () => {
@@ -128,5 +131,61 @@ describe("retainedWarpBackfillForSpace", () => {
 	it("hides the job once the saved space moves off it", () => {
 		expect(retainedWarpBackfillForSpace({ job: completedJob, spaceKey: spaceA }, spaceB)).toBeNull();
 		expect(retainedWarpBackfillForSpace(null, spaceB)).toBeNull();
+	});
+});
+
+describe("warpVectorStoreBadge", () => {
+	it("names the connected store and its type", () => {
+		expect(
+			warpVectorStoreBadge({
+				vector_store_connected: true,
+				connected_vector_store: { name: "warp-qdrant", type: "qdrant", primary: false },
+			}),
+		).toEqual({ connected: true, name: "warp-qdrant", type: "qdrant" });
+	});
+
+	it("gives the server's reason when Warp has no store", () => {
+		const error = 'Warp\'s vector store "warp-qdrant" could not be reached at startup';
+		expect(warpVectorStoreBadge({ vector_store_connected: false, connected_vector_store: null, vector_store_error: error })).toEqual({
+			connected: false,
+			error,
+		});
+		expect(warpVectorStoreBadge({ vector_store_connected: false, connected_vector_store: null })).toEqual({
+			connected: false,
+			error: null,
+		});
+	});
+
+	// A server from before the store choice sends only vector_store_connected.
+	it("falls back to vector_store_connected when connected_vector_store is absent", () => {
+		expect(warpVectorStoreBadge({ vector_store_connected: true })).toEqual({ connected: true, name: null, type: null });
+		expect(warpVectorStoreBadge(undefined)).toEqual({ connected: false, error: null });
+	});
+});
+
+describe("warpUnavailableMessage", () => {
+	it("reads the message of a {reason, message} refusal", () => {
+		expect(
+			warpUnavailableMessage({
+				status: 503,
+				data: { reason: "no_vector_store", message: 'Warp\'s vector store "warp-qdrant" is disabled in config.json' },
+			}),
+		).toBe('Warp\'s vector store "warp-qdrant" is disabled in config.json');
+	});
+
+	it("returns null for the {error: {message}} shape and anything else", () => {
+		expect(warpUnavailableMessage({ status: 400, data: { error: { message: "bad" } } })).toBeNull();
+		expect(warpUnavailableMessage({ status: 409, data: { error: { message: "a backfill is in progress" } } })).toBeNull();
+		expect(warpUnavailableMessage(undefined)).toBeNull();
+		expect(warpUnavailableMessage(new Error("x"))).toBeNull();
+	});
+});
+
+describe("warpVectorStoreRequirementMet", () => {
+	it("needs a connected store only to turn Warp on", () => {
+		expect(warpVectorStoreRequirementMet({ vector_store_connected: true, enabled: false })).toBe(true);
+		expect(warpVectorStoreRequirementMet({ vector_store_connected: false, enabled: false })).toBe(false);
+		expect(warpVectorStoreRequirementMet({ vector_store_connected: false, enabled: true })).toBe(true);
+		expect(warpVectorStoreRequirementMet(undefined)).toBe(false);
 	});
 });

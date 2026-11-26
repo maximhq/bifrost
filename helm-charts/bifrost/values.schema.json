@@ -697,6 +697,11 @@
               "default": "BifrostWarpLogs",
               "description": "Vector store namespace holding Warp's log index. Must change whenever embeddingProvider, embeddingModel or embeddingDimension changes."
             },
+            "vectorStore": {
+              "type": "string",
+              "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]{0,63})?$",
+              "description": "The configured vector store Warp's log index is kept in, by name (vectorStore.name or a vectorStores entry); \"\" is the primary store. Read at startup, so a change takes effect when the pods restart. The new store starts empty until a backfill runs, and Warp's index in the store used before is left there."
+            },
             "semanticSearchThreshold": {
               "type": "number",
               "minimum": 0,
