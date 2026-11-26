@@ -23,6 +23,11 @@
       "path": ".claude/skills/mcp-harness/SKILL.md",
       "description": "Which MCP harness cases each kind of MCP change needs, where they go and how to write and run them.",
       "scope": ["core/mcp/**", "core/internal/mcptests/**", "framework/mcpcatalog/**", "framework/modelcatalog/mcp_library_sync.go", "framework/oauth2/**", "plugins/governance/**", "transports/bifrost-http/**", "tests/e2e/api/runners/**"]
+    },
+    {
+      "path": ".claude/skills/semantic-cache-wiring/SKILL.md",
+      "description": "Which semantic cache wiring cases each kind of semantic cache change needs, where they go and how to write and run them.",
+      "scope": ["plugins/semanticcache/**", "framework/vectorstore/**", "transports/bifrost-http/**", "tests/e2e/api/runners/**", "tests/e2e/api/collections/bifrost-semantic-cache-wiring.postman_collection.json"]
     }
   ]
 }
