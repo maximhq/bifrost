@@ -262,11 +262,14 @@ func TestValidateConfigSchema_WarpSectionCoversEverySetting(t *testing.T) {
 		t.Fatalf("failed to parse config.schema.json: %v", err)
 	}
 	declared := schema.Defs["warp_config"].Properties
+	// Warp's configuration tools need the Bifrost MCP, which is not released yet, so
+	// the schema does not advertise their setting.
+	unadvertised := map[string]bool{"management_writes": true}
 	inputType := reflect.TypeOf(warp.ConfigInput{})
 	fields := map[string]bool{}
 	for i := range inputType.NumField() {
 		name, _, _ := strings.Cut(inputType.Field(i).Tag.Get("json"), ",")
-		if name == "" || name == "-" {
+		if name == "" || name == "-" || unadvertised[name] {
 			continue
 		}
 		fields[name] = true
@@ -485,6 +488,42 @@ func TestValidateConfigSchema_ValidClientConfig(t *testing.T) {
 	err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t))
 	if err != nil {
 		t.Errorf("expected valid client config to pass validation, got error: %v", err)
+	}
+}
+
+// TestValidateConfigSchema_ClaudeCodeGatewayManagedSettings pins that managed_settings accepts
+// null (no policy, what Go writes for an unset value), {} (empty policy) and a policy object.
+func TestValidateConfigSchema_ClaudeCodeGatewayManagedSettings(t *testing.T) {
+	cfg := func(managed string) []byte {
+		return []byte(`{"client": {"oauth2_server_config": {"issuer_url": "https://bifrost.example.com",
+			"gateways": {"claude_code": {"enabled": true, "managed_settings": ` + managed + `}}}}}`)
+	}
+	for _, valid := range []string{`null`, `{}`, `{"permissions": {"deny": ["Bash(rm:*)"]}}`} {
+		if err := ValidateConfigSchema(cfg(valid), loadLocalSchema(t)); err != nil {
+			t.Errorf("managed_settings %s must be valid, got: %v", valid, err)
+		}
+	}
+	if err := ValidateConfigSchema(cfg(`"not an object"`), loadLocalSchema(t)); err == nil {
+		t.Error("a string managed_settings must be rejected")
+	}
+}
+
+// TestValidateConfigSchema_ClaudeCodeGatewayTelemetryDestinations pins that enabled telemetry
+// needs at least one destination, as the config validator does; disabled telemetry needs none.
+func TestValidateConfigSchema_ClaudeCodeGatewayTelemetryDestinations(t *testing.T) {
+	cfg := func(telemetry string) []byte {
+		return []byte(`{"client": {"oauth2_server_config": {"issuer_url": "https://bifrost.example.com",
+			"gateways": {"claude_code": {"enabled": true, "telemetry": ` + telemetry + `}}}}}`)
+	}
+	for _, invalid := range []string{`{"enabled": true}`, `{"enabled": true, "destinations": []}`} {
+		if err := ValidateConfigSchema(cfg(invalid), loadLocalSchema(t)); err == nil {
+			t.Errorf("telemetry %s must be rejected", invalid)
+		}
+	}
+	for _, valid := range []string{`{"enabled": false}`, `{"enabled": true, "destinations": [{"endpoint": "https://otel.example.com"}]}`} {
+		if err := ValidateConfigSchema(cfg(valid), loadLocalSchema(t)); err != nil {
+			t.Errorf("telemetry %s must be valid, got: %v", valid, err)
+		}
 	}
 }
 
@@ -4390,6 +4429,37 @@ func TestSchemaGovernanceProjectsValidation(t *testing.T) {
 				t.Fatalf("config should be valid, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestSchemaContentLoggingLayersAcceptNull pins that every content-logging layer config.json can
+// carry (team, virtual key, provider key) takes null as inherit, the way the API and the Go *bool
+// fields do, alongside both explicit decisions, and still refuses anything else.
+func TestSchemaContentLoggingLayersAcceptNull(t *testing.T) {
+	compiled := compileSchema(t)
+	layers := map[string]func(value string) string{
+		"team": func(value string) string {
+			return fmt.Sprintf(`{"governance": {"teams": [{"id": "t1", "name": "t1", "disable_content_logging": %s}]}}`, value)
+		},
+		"virtual key": func(value string) string {
+			return fmt.Sprintf(`{"governance": {"virtual_keys": [{"id": "vk1", "name": "vk1", "disable_content_logging": %s}]}}`, value)
+		},
+		"provider key": func(value string) string {
+			return fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k1", "value": "sk-test", "weight": 1, "disable_content_logging": %s}]}}}`, value)
+		},
+	}
+	for layer, config := range layers {
+		for value, wantError := range map[string]bool{"null": false, "true": false, "false": false, `"off"`: true} {
+			t.Run(layer+" "+value, func(t *testing.T) {
+				err := validateConfig(t, compiled, config(value))
+				if wantError && err == nil {
+					t.Fatal("config should be invalid")
+				}
+				if !wantError && err != nil {
+					t.Fatalf("config should be valid, got: %v", err)
+				}
+			})
+		}
 	}
 }
 

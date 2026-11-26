@@ -240,12 +240,14 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 
 				// Map file
 				if block.File != nil {
+					respBlocks[i].Citations = block.Citations
 					respBlocks[i].FileID = block.File.FileID
 					respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
-						FileData: block.File.FileData,
-						FileURL:  block.File.FileURL,
-						Filename: block.File.Filename,
-						FileType: block.File.FileType,
+						FileData:    block.File.FileData,
+						FileContent: block.File.FileContent,
+						FileURL:     block.File.FileURL,
+						Filename:    block.File.Filename,
+						FileType:    block.File.FileType,
 					}
 				}
 
@@ -314,8 +316,11 @@ func (ctc *ChatToolChoice) ToResponsesToolChoice() *ResponsesToolChoice {
 					tools[i] = ResponsesToolChoiceAllowedToolDef{
 						Type: tool.Type,
 					}
-					if tool.Function.Name != "" {
-						name := tool.Function.Name
+					name := tool.Function.Name
+					if tool.Type == string(ChatToolChoiceTypeCustom) && tool.Custom != nil {
+						name = tool.Custom.Name
+					}
+					if name != "" {
 						tools[i].Name = &name
 					}
 				}
@@ -393,7 +398,11 @@ func (tc *ResponsesToolChoice) ToChatToolChoice() *ChatToolChoice {
 					Type: tool.Type,
 				}
 				if tool.Name != nil {
-					tools[i].Function = ChatToolChoiceFunction{Name: *tool.Name}
+					if tool.Type == string(ChatToolChoiceTypeCustom) {
+						tools[i].Custom = &ChatToolChoiceCustom{Name: *tool.Name}
+					} else {
+						tools[i].Function = ChatToolChoiceFunction{Name: *tool.Name}
+					}
 				}
 			}
 			// Copy the mode if present, otherwise default to "auto"
@@ -539,6 +548,21 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			var callID *string
 			if tc.ID != nil && *tc.ID != "" {
 				callID = tc.ID
+			}
+
+			if tc.Custom != nil {
+				messages = append(messages, ResponsesMessage{
+					ID:     Ptr("ctc_" + GetRandomString(50)),
+					Type:   Ptr(ResponsesMessageTypeCustomToolCall),
+					Role:   Ptr(ResponsesInputMessageRoleAssistant),
+					Status: Ptr("completed"),
+					ResponsesToolMessage: &ResponsesToolMessage{
+						CallID:                  callID,
+						Name:                    tc.Custom.Name,
+						ResponsesCustomToolCall: &ResponsesCustomToolCall{Input: tc.Custom.Input},
+					},
+				})
+				continue
 			}
 
 			var namePtr *string
@@ -691,11 +715,13 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 					}
 				}
 				if block.File != nil {
+					rb.Citations = block.Citations
 					rb.ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
-						FileData: block.File.FileData,
-						FileURL:  block.File.FileURL,
-						Filename: block.File.Filename,
-						FileType: block.File.FileType,
+						FileData:    block.File.FileData,
+						FileContent: block.File.FileContent,
+						FileURL:     block.File.FileURL,
+						Filename:    block.File.Filename,
+						FileType:    block.File.FileType,
 					}
 					rb.FileID = block.File.FileID
 				}
@@ -764,11 +790,14 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 					// Map file
 					if block.File != nil {
+						respBlocks[i].Citations = block.Citations
 						respBlocks[i].FileID = block.File.FileID
 						respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
-							FileData: block.File.FileData,
-							Filename: block.File.Filename,
-							FileType: block.File.FileType,
+							FileData:    block.File.FileData,
+							FileContent: block.File.FileContent,
+							FileURL:     block.File.FileURL,
+							Filename:    block.File.Filename,
+							FileType:    block.File.FileType,
 						}
 					}
 
@@ -827,7 +856,8 @@ func chatConvertibleRolelessItem(t ResponsesMessageType) bool {
 	switch t {
 	case ResponsesMessageTypeMessage, ResponsesMessageTypeFunctionCall,
 		ResponsesMessageTypeFunctionCallOutput, ResponsesMessageTypeReasoning,
-		ResponsesMessageTypeRefusal:
+		ResponsesMessageTypeRefusal, ResponsesMessageTypeCustomToolCall,
+		ResponsesMessageTypeCustomToolCallOutput:
 		return true
 	}
 	return false
@@ -970,6 +1000,20 @@ func ToChatMessages(rms []ResponsesMessage, sources *[]int) []ChatMessage {
 			}
 			continue
 		}
+		if rm.Type != nil && *rm.Type == ResponsesMessageTypeCustomToolCall {
+			if rm.ResponsesToolMessage != nil {
+				tc := ChatAssistantMessageToolCall{
+					Type:   Ptr(string(ChatToolTypeCustom)),
+					ID:     rm.ResponsesToolMessage.CallID,
+					Custom: &ChatAssistantMessageToolCallCustom{Name: rm.ResponsesToolMessage.Name},
+				}
+				if rm.ResponsesToolMessage.ResponsesCustomToolCall != nil {
+					tc.Custom.Input = rm.ResponsesToolMessage.ResponsesCustomToolCall.Input
+				}
+				currentToolCalls = append(currentToolCalls, tc)
+			}
+			continue
+		}
 
 		// If we have collected tool calls, create an assistant message with them
 		flushToolCalls()
@@ -994,7 +1038,7 @@ func ToChatMessages(rms []ResponsesMessage, sources *[]int) []ChatMessage {
 		// Handle special message types
 		if rm.Type != nil {
 			switch *rm.Type {
-			case ResponsesMessageTypeFunctionCallOutput:
+			case ResponsesMessageTypeFunctionCallOutput, ResponsesMessageTypeCustomToolCallOutput:
 				cm.Role = ChatMessageRoleTool
 				if rm.ResponsesToolMessage != nil && rm.ResponsesToolMessage.CallID != nil {
 					cm.ChatToolMessage = &ChatToolMessage{
@@ -1111,12 +1155,14 @@ func ToChatMessages(rms []ResponsesMessage, sources *[]int) []ChatMessage {
 						}
 					}
 					if block.ResponsesInputMessageContentBlockFile != nil {
+						chatBlocks[i].Citations = block.Citations
 						chatBlocks[i].File = &ChatInputFile{
-							FileData: block.ResponsesInputMessageContentBlockFile.FileData,
-							FileURL:  block.ResponsesInputMessageContentBlockFile.FileURL,
-							Filename: block.ResponsesInputMessageContentBlockFile.Filename,
-							FileType: block.ResponsesInputMessageContentBlockFile.FileType,
-							FileID:   block.FileID,
+							FileData:    block.ResponsesInputMessageContentBlockFile.FileData,
+							FileContent: block.ResponsesInputMessageContentBlockFile.FileContent,
+							FileURL:     block.ResponsesInputMessageContentBlockFile.FileURL,
+							Filename:    block.ResponsesInputMessageContentBlockFile.Filename,
+							FileType:    block.ResponsesInputMessageContentBlockFile.FileType,
+							FileID:      block.FileID,
 						}
 					}
 					if block.Audio != nil {
@@ -1379,6 +1425,7 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 
 	// Convert Input messages using existing ChatMessage.ToResponsesMessages()
 	var allResponsesMessages []ResponsesMessage
+	var customCallIDs map[string]struct{}
 	for _, chatMsg := range cr.Input {
 		msg := &chatMsg
 		if chatMsg.Role == ChatMessageRoleTool {
@@ -1386,6 +1433,24 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 			msg = ToolResultForResponses(msg)
 		}
 		responsesMessages := msg.ToResponsesMessages()
+		for i := range responsesMessages {
+			item := &responsesMessages[i]
+			if item.Type == nil || item.ResponsesToolMessage == nil || item.CallID == nil {
+				continue
+			}
+			switch *item.Type {
+			case ResponsesMessageTypeCustomToolCall:
+				if customCallIDs == nil {
+					customCallIDs = make(map[string]struct{})
+				}
+				customCallIDs[*item.CallID] = struct{}{}
+			case ResponsesMessageTypeFunctionCallOutput:
+				// OpenAI pairs a custom_tool_call only with a custom_tool_call_output.
+				if _, ok := customCallIDs[*item.CallID]; ok {
+					item.Type = Ptr(ResponsesMessageTypeCustomToolCallOutput)
+				}
+			}
+		}
 		allResponsesMessages = append(allResponsesMessages, responsesMessages...)
 	}
 	brr.Input = allResponsesMessages
@@ -1721,7 +1786,7 @@ func chatFinishReasonFromResponses(status *string, incompleteDetails *ResponsesR
 
 	if status != nil && *status == ResponsesResponseStatusCompleted {
 		for _, item := range output {
-			if item.Type != nil && *item.Type == ResponsesMessageTypeFunctionCall {
+			if item.Type != nil && (*item.Type == ResponsesMessageTypeFunctionCall || *item.Type == ResponsesMessageTypeCustomToolCall) {
 				return Ptr(string(BifrostFinishReasonToolCalls))
 			}
 		}
@@ -2774,6 +2839,15 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 	return responses
 }
 
+// chatToolCallIndex maps a Responses output index to a chat tool call index, the way the
+// function call events do: a leading reasoning item takes output index 0.
+func chatToolCallIndex(outputIndex *int) uint16 {
+	if outputIndex != nil && *outputIndex > 0 {
+		return uint16(*outputIndex - 1)
+	}
+	return 0
+}
+
 // ToBifrostChatResponse converts a BifrostResponsesStreamResponse chunk to a BifrostChatResponse (chat.completion.chunk).
 func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatResponse {
 	if rsr == nil {
@@ -2870,10 +2944,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 				return resp
 			}
 			funcType := "function"
-			var idx uint16
-			if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
-				idx = uint16(*rsr.OutputIndex - 1)
-			}
+			idx := chatToolCallIndex(rsr.OutputIndex)
 			resp.Choices = []BifrostResponseChoice{
 				{
 					Index: 0,
@@ -2893,6 +2964,24 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 					},
 				},
 			}
+			return resp
+
+		case ResponsesMessageTypeCustomToolCall:
+			if rsr.Item.ResponsesToolMessage == nil {
+				resp.Choices = []BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{}}}}
+				return resp
+			}
+			resp.Choices = []BifrostResponseChoice{{
+				Index: 0,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: &ChatStreamResponseChoiceDelta{
+					ToolCalls: []ChatAssistantMessageToolCall{{
+						Index:  chatToolCallIndex(rsr.OutputIndex),
+						Type:   Ptr(string(ChatToolTypeCustom)),
+						ID:     rsr.Item.ResponsesToolMessage.CallID,
+						Custom: &ChatAssistantMessageToolCallCustom{Name: rsr.Item.ResponsesToolMessage.Name},
+					}},
+				}},
+			}}
 			return resp
 
 		case ResponsesMessageTypeMessage:
@@ -2935,10 +3024,7 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 			}
 			return resp
 		}
-		var idx uint16
-		if rsr.OutputIndex != nil && *rsr.OutputIndex > 0 {
-			idx = uint16(*rsr.OutputIndex - 1)
-		}
+		idx := chatToolCallIndex(rsr.OutputIndex)
 
 		resp.Choices = []BifrostResponseChoice{
 			{
@@ -2957,6 +3043,17 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 				},
 			},
 		}
+		return resp
+
+	case ResponsesStreamResponseTypeCustomToolCallInputDelta:
+		delta := &ChatStreamResponseChoiceDelta{}
+		if rsr.Delta != nil {
+			delta.ToolCalls = []ChatAssistantMessageToolCall{{
+				Index:  chatToolCallIndex(rsr.OutputIndex),
+				Custom: &ChatAssistantMessageToolCallCustom{Input: *rsr.Delta},
+			}}
+		}
+		resp.Choices = []BifrostResponseChoice{{Index: 0, ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta}}}
 		return resp
 
 	case ResponsesStreamResponseTypeCompleted, ResponsesStreamResponseTypeIncomplete:

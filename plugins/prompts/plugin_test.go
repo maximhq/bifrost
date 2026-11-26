@@ -7,6 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	tables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,12 +18,22 @@ import (
 
 func TestInitWithResolver_NilStore(t *testing.T) {
 	_, err := InitWithResolver(context.Background(), nil, &staticResolver{}, NewMockLogger())
-	require.Error(t, err, "expected error for nil store")
+	require.Error(t, err, "expected error for nil live store")
+}
+
+func TestInit_NilConfigStore(t *testing.T) {
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	_, err = Init(context.Background(), nil, live, NewMockLogger())
+	require.ErrorContains(t, err, "config store is required for prompts plugin")
 }
 
 func TestInitWithResolver_NilResolverFallsBackToHeader(t *testing.T) {
-	ms := &mockStore{}
-	p, err := InitWithResolver(context.Background(), ms, nil, NewMockLogger())
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	p, err := InitWithResolver(context.Background(), live, nil, NewMockLogger())
 	require.NoError(t, err)
 	require.NotNil(t, p)
 	_, ok := p.resolver.(*headerResolver)
@@ -30,48 +41,29 @@ func TestInitWithResolver_NilResolverFallsBackToHeader(t *testing.T) {
 }
 
 // ============================================================
-// loadCache
+// Lookups over the live store
 // ============================================================
 
-func TestLoadCache_EmptyStore(t *testing.T) {
-	p := newPluginWithStore(&mockStore{})
-	require.NoError(t, p.loadCache(context.Background()))
-	assert.Empty(t, p.promptsByID)
-	assert.Empty(t, p.versionsByPromptAndNumber)
+func TestResolveVersion_EmptyStore(t *testing.T) {
+	p := newPluginWithRows(nil, nil, nil, NewMockLogger())
+	_, _, ok := p.resolveVersion("p1", 0)
+	assert.False(t, ok)
 }
 
-func TestLoadCache_PopulatesMaps(t *testing.T) {
+func TestResolveVersion_FindsPromptsAndVersions(t *testing.T) {
 	v1 := makeVersion(1, "p1", true, versionMsg(schemas.ChatMessageRoleSystem, "Hello"))
 	v2 := makeVersion(2, "p2", true)
 	p1 := makePrompt("p1", &v1)
 	p2 := makePrompt("p2", &v2)
+	p := newPluginWithRows(nil, []tables.TablePrompt{p1, p2}, []tables.TablePromptVersion{v1, v2}, NewMockLogger())
 
-	p := newPluginWithStore(&mockStore{
-		prompts:  []tables.TablePrompt{p1, p2},
-		versions: []tables.TablePromptVersion{v1, v2},
-	})
-
-	require.NoError(t, p.loadCache(context.Background()))
-	assert.Len(t, p.promptsByID, 2)
-	assert.Len(t, p.versionsByPromptAndNumber, 2)
-	assert.NotNil(t, p.promptsByID["p1"])
-	assert.NotNil(t, p.versionsByPromptAndNumber["p1"][1])
-}
-
-func TestLoadCache_GetPromptsError(t *testing.T) {
-	p := newPluginWithStore(&mockStore{err: errTest("boom")})
-	err := p.loadCache(context.Background())
-	require.Error(t, err)
-}
-
-func TestLoadCache_GetVersionsError(t *testing.T) {
-	p := newPluginWithStore(&versionsErrStore{
-		prompts: []tables.TablePrompt{makePrompt("p1", nil)},
-		err:     errTest("versions boom"),
-	})
-	err := p.loadCache(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "versions boom")
+	prompt, version, ok := p.resolveVersion("p1", 1)
+	require.True(t, ok)
+	assert.Equal(t, "p1", prompt.ID)
+	assert.Equal(t, 1, version.VersionNumber)
+	_, latest, ok := p.resolveVersion("p2", 0)
+	require.True(t, ok)
+	assert.Equal(t, 2, latest.VersionNumber)
 }
 
 // ============================================================
@@ -840,13 +832,13 @@ func TestPreLLMHook_ModelInVersionParams_DoesNotOverrideRequestModel(t *testing.
 }
 
 // ============================================================
-// loadCache + PreLLMHook integration (store → cache → injection)
+// Live store + PreLLMHook integration (rows → records → injection)
 // ============================================================
 
 // TestLoadCacheAndPreLLMHook_EndToEnd verifies the full pipeline:
-// mockStore returns TablePrompt/TablePromptVersion structs → loadCache populates
-// the in-memory maps → PreLLMHook injects the template messages correctly.
-// This catches any mismatch between how loadCache builds the maps and how
+// the store's TablePrompt/TablePromptVersion rows load into the live store's prompt
+// collections → PreLLMHook injects the template messages correctly.
+// This catches any mismatch between how the collections hold prompts and how
 // PreLLMHook reads them (e.g. pointer aliasing, LatestVersion linking).
 func TestLoadCacheAndPreLLMHook_EndToEnd(t *testing.T) {
 	v := makeVersion(1, "p1", true,
@@ -854,15 +846,15 @@ func TestLoadCacheAndPreLLMHook_EndToEnd(t *testing.T) {
 	)
 	prompt := makePrompt("p1", &v)
 
-	ms := &mockStore{
+	ms := struct {
+		prompts  []tables.TablePrompt
+		versions []tables.TablePromptVersion
+	}{
 		prompts:  []tables.TablePrompt{prompt},
 		versions: []tables.TablePromptVersion{v},
 	}
 
-	p := newPluginWithStore(ms)
-	require.NoError(t, p.loadCache(context.Background()))
-
-	p.resolver = &staticResolver{promptID: "p1"}
+	p := newPluginWithRows(&staticResolver{promptID: "p1"}, ms.prompts, ms.versions, NewMockLogger())
 
 	out, _, err := p.PreLLMHook(bfCtx(), chatRequest(userMsg("user msg")))
 	require.NoError(t, err)
@@ -874,7 +866,7 @@ func TestLoadCacheAndPreLLMHook_EndToEnd(t *testing.T) {
 	assert.Equal(t, "user msg", msgText(out.ChatRequest.Input[1]))
 }
 
-// TestLoadCacheAndPreLLMHook_SpecificVersion exercises the loadCache → PreLLMHook
+// TestLoadCacheAndPreLLMHook_SpecificVersion exercises the load → PreLLMHook
 // path for a version lookup by ID (not just the LatestVersion pointer).
 func TestLoadCacheAndPreLLMHook_SpecificVersion(t *testing.T) {
 	vOld := makeVersion(2, "p1", false,
@@ -885,15 +877,15 @@ func TestLoadCacheAndPreLLMHook_SpecificVersion(t *testing.T) {
 	)
 	prompt := makePrompt("p1", &vLatest)
 
-	ms := &mockStore{
+	ms := struct {
+		prompts  []tables.TablePrompt
+		versions []tables.TablePromptVersion
+	}{
 		prompts:  []tables.TablePrompt{prompt},
 		versions: []tables.TablePromptVersion{vOld, vLatest},
 	}
 
-	p := newPluginWithStore(ms)
-	require.NoError(t, p.loadCache(context.Background()))
-
-	p.resolver = &staticResolver{promptID: "p1", versionNumber: 2}
+	p := newPluginWithRows(&staticResolver{promptID: "p1", versionNumber: 2}, ms.prompts, ms.versions, NewMockLogger())
 
 	out, _, err := p.PreLLMHook(bfCtx(), chatRequest(userMsg("question")))
 	require.NoError(t, err)

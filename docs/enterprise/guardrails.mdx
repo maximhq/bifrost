@@ -119,10 +119,12 @@ Every rule has one execution target. Existing rules and rules that omit `target`
 
 | Target | Input phase | Output phase | Target-specific CEL variables |
 |--------|-------------|--------------|-------------------------------|
-| `llm` | Before the request reaches the model provider | After the model provider responds | `model`, `provider`, `params` |
+| `llm` | Before the request reaches the model provider | After the model provider responds | `model`, `provider`, `params`, `service_tier` |
 | `mcp` | Before the MCP tool executes; guardrails can inspect or redact its arguments | After the tool returns; guardrails can inspect or redact its result | `mcp_client`, `mcp_tool`, `mcp_arguments` |
 
 Both targets also expose `headers`, `virtual_key`, `customer`, `team`, and `user`. Target-specific CEL variables are intentionally isolated: an MCP rule cannot reference `model`, and an LLM rule cannot reference `mcp_tool`.
+
+`service_tier` is the tier the request asks for, such as `auto`, `default`, `flex`, `priority`, `fast`, or `ultrafast`, in Bifrost's naming (Anthropic's `standard_only` arrives as `default`). It is `""` when the request sets no tier or has no tier concept, such as embeddings. Rules are selected before the provider call, so it reflects the requested tier, not the one the provider served.
 
 ### Architecture
 
@@ -240,6 +242,10 @@ Input guardrails still check the request before Bifrost sends it to the LLM prov
   If the same rule also uses another output guardrail profile, Bifrost waits for that profile to check the completed response. Gray Swan's text-only behavior only skips the Gray Swan call; it does not bypass the other profile.
 </Note>
 
+<Note>
+  Noma Security is a block-capable exception. When the only enforced output rule matching a request has Noma as its only profile, Bifrost releases text progressively as Noma clears it instead of holding the complete stream. See [Noma Security](/integrations/guardrails/noma-security#streaming-responses) for the conditions.
+</Note>
+
 ---
 
 ## Monitor Mode
@@ -282,10 +288,14 @@ Guardrail Rules are custom policies that define when and how content validation 
 | `timeout` | integer | No | Execution timeout in seconds (default: 60) |
 | `send_all_conversation_turns` | boolean | No | `true` sends all input conversation turns. When `false`, `max_turns_to_send` selects the current input plus preceding turns. Omit it to preserve legacy behavior (`0` sends all; a positive value limits history). |
 | `max_turns_to_send` | integer | No | Used when `send_all_conversation_turns` is `false`: number of preceding conversation turns to include. `0` sends only the current input. |
+| `exclude_system_prompt` | boolean | No | `true` keeps system messages away from the rule's providers, both as content to check and as conversation context; `false` (default) sends them. LLM rules only. See [Excluding the System Prompt](#excluding-the-system-prompt) |
 | `evaluation_mode` | enum | No | `bundled` (default) sends selected turns in one guardrail call; `per_turn` evaluates each turn in isolation and uses more provider calls |
 | `stream_replay_event_interval_ms` | integer | No | Delay in milliseconds between buffered events after block-capable streaming output guardrails allow the response. `0` sends buffered events immediately; maximum `1000` |
 | `output_mode` | enum | No | `enforce` (default) acts on output matches; `monitor` delivers the response untouched and only logs what the output guardrails would do. Requires `apply_to` `output` or `both`. See [Monitor Mode](#monitor-mode) |
-| `provider_config_ids` | array | No | IDs of profiles to use for evaluation |
+| `input_timing` | enum | No | `pre_call` (default) finishes the input check before the request is sent; `parallel` runs it alongside the LLM call, holds the response for the verdict, and enforces only blocks. `parallel` requires target `llm` and `apply_to` `input` or `both` |
+| `fail_closed` | boolean | No | `true` blocks traffic when one of the rule's providers errors, times out, or returns an invalid or partial result; `false` (default) lets it through and logs the failure. See [Provider Failures](#provider-failures) |
+| `provider_config_ids` | array | No | IDs of profiles to use for evaluation, in execution order |
+| `profile_execution_mode` | enum | No | `independent` (default) gives every linked profile the original payload; `chained` gives each profile the payload as earlier profiles redacted or transformed it. See [Chained Profile Execution](#chained-profile-execution) |
 
 ### Creating Rules
 
@@ -316,10 +326,13 @@ Guardrail Rules are custom policies that define when and how content validation 
 - **CEL Expression**: Define the validation logic
 - **Sampling Rate**: Set percentage of requests to evaluate (default: 100%)
 - **Timeout**: Set maximum execution time in seconds (default: 60)
+- **Block when guardrail is unavailable**: Off by default. Blocks traffic when a guardrail provider errors, times out, or returns an invalid or partial result. Applies to profiles that block or redact content before it's sent; detect-only and logs-only profiles never block. See [Provider Failures](#provider-failures)
+- **Exclude system prompt**: Off by default. LLM rules only. Keeps system messages away from the rule's providers. See [Excluding the System Prompt](#excluding-the-system-prompt)
 
 3. **Link Profiles**
    - Select one or more profiles to use for evaluation
-   - Bifrost evaluates linked profiles in the execution order shown under the profile picker. A block stops the remaining profiles for that rule; a provider error fails open and the next profile still runs. See [Profile Execution Order](#profile-execution-order)
+   - Bifrost evaluates linked profiles in the execution order shown under the profile picker. A block stops the remaining profiles for that rule; a provider error fails open and the next profile still runs, unless **Block when guardrail is unavailable** is on. See [Profile Execution Order](#profile-execution-order)
+   - With more than one enabled profile, turn on **Chain profiles** so each profile evaluates the payload as the profiles above it redacted it. See [Chained Profile Execution](#chained-profile-execution)
 
 4. **Save and Test**
    - Click **Save Rule**
@@ -328,7 +341,7 @@ Guardrail Rules are custom policies that define when and how content validation 
 </Tab>
 <Tab title="API">
 
-The HTTP API uses camelCase field names (`celExpression`, `applyTo`, `samplingRate`, `selectedGuardrailProfiles`). The `target` field remains lowercase and accepts `llm` or `mcp`. Profiles are referenced as `"<provider-type>:<config-id>"` strings (for example, `"regex:1"`, `"patronus-ai:6"`).
+The HTTP API uses camelCase field names (`celExpression`, `applyTo`, `samplingRate`, `selectedGuardrailProfiles`, `profileExecutionMode`). The `target` field remains lowercase and accepts `llm` or `mcp`. Profiles are referenced as `"<provider-type>:<config-id>"` strings (for example, `"regex:1"`, `"patronus-ai:6"`).
 
 **Create a Guardrail Rule:**
 ```bash
@@ -519,6 +532,11 @@ provider == "openai" && ("x-environment" in headers) && headers["x-environment"]
 team == "team-platform"
 ```
 
+**Skip Fast-Tier OpenAI Traffic:**
+```cel
+!(provider == "openai" && service_tier in ["fast", "priority", "ultrafast"])
+```
+
 **Apply to an MCP Tool:**
 ```cel
 mcp_client == "github" && mcp_tool == "create_issue"
@@ -551,16 +569,42 @@ Rules can be linked to multiple profiles for comprehensive validation:
 When a rule links more than one profile, the rule editor shows an **Execution order** list under the profile picker. Profiles run top to bottom whenever the rule matches. Drag a profile by its handle to change its position.
 
 <Frame>
-  <img src="/media/guardrails/guardrail-rule-execution-order.png" alt="Guardrail rule editor with four linked profiles and an Execution order list that can be reordered by dragging" />
+  <img src="/media/guardrails/guardrail-rule-execution-order.png" alt="Guardrail rule editor with four linked profiles in a draggable Execution order list and the Chain profiles switch turned on" />
 </Frame>
 
 | Outcome of a profile | Effect on the remaining profiles |
 |----------------------|----------------------------------|
 | Allows the content | The next profile runs |
 | Blocks the content | Later profiles do not run and the rule returns the intervention |
-| Provider error or timeout | Fails open: the error is reported and the next profile still runs |
+| Provider error or timeout | Fails open: the error is reported and the next profile still runs. With **Block when guardrail is unavailable** on, a failed profile that can block or redact stops the rule: later profiles do not run and the rule blocks. See [Provider Failures](#provider-failures) |
 
-Order matters most when profiles rewrite content. Put a cheap, local profile such as [Custom Regex](/enterprise/guardrails/custom-regex) first to redact or block obvious cases before the request is sent to an external provider. The order is saved with the rule. Through the API, list profiles in the order you want them to run in `selectedGuardrailProfiles`; duplicates are rejected.
+Put a cheap, local profile such as [Custom Regex](/enterprise/guardrails/custom-regex) first to block obvious cases before an external provider is called. The order is saved with the rule. Through the API, list profiles in the order you want them to run in `selectedGuardrailProfiles`; duplicates are rejected.
+
+By default, every profile evaluates the original payload, so a value an earlier profile redacts still reaches the profiles after it. To prevent that, chain the profiles.
+
+#### Chained Profile Execution
+
+When a rule has more than one enabled profile, turn on **Chain profiles** in the rule editor. Through the API, set `"profileExecutionMode": "chained"`; in `config.json`, set `"profile_execution_mode": "chained"`. Profiles then run in execution order, and each one evaluates the payload as the profiles above it redacted or transformed it. A local redactor such as Custom Regex or [Secrets Detection](/enterprise/guardrails/secrets-detection) can run first, so external and judge profiles later in the chain never see the values it caught.
+
+- Later profiles see every earlier finding replaced, including `logs_only` findings, so the chain never forwards a value it already flagged.
+- A block stops the chain. A profile that errors or times out is skipped, and the next profile sees the payload as it stood.
+- Chaining applies within a rule; separate rules still run in parallel. A rule with one profile never chains.
+- It covers LLM input and output, streaming output, and MCP tool arguments and results.
+- If a profile's rewrite cannot be combined safely with the earlier ones, the rule fails closed with an error.
+
+Chaining is off by default (`independent`), so existing rules keep their behavior.
+
+### Excluding the System Prompt
+
+Turn on **Exclude system prompt** on an LLM rule (`exclude_system_prompt: true` in config files, `excludeSystemPrompt: true` through the API) to keep system messages away from the rule's providers. This covers `system` messages in Chat Completions, `instructions` in the Responses API, and `system` in the Anthropic Messages API, wherever they sit in the conversation. The rule's providers neither check these messages nor receive them as conversation context, including the conversation some providers receive alongside an output check.
+
+Use it when a long system prompt adds cost or latency to every check, or when its instructions trigger false positives. Keep in mind:
+
+- Providers that use the system prompt as context, such as prompt-injection detectors, may become less accurate.
+- The conversation history window (`max_turns_to_send`) counts only the turns the rule sends.
+- When a request holds nothing but system messages, the rule skips that request. It does not block, even with **Block when guardrail is unavailable** on.
+
+The option is off by default, so existing rules keep their behavior.
 
 ---
 
@@ -1016,106 +1060,48 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### Guardrail Response Handling
 
-**Successful Validation (200):**
-```json
-{
-  "id": "chatcmpl-abc123",
-  "object": "chat.completion",
-  "created": 1699564800,
-  "model": "gpt-4o-mini",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "I'd be happy to help you with your task..."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "extra_fields": {
-    "guardrails": {
-      "input_validation": {
-        "guardrail_id": "bedrock-prod-guardrail",
-        "status": "passed",
-        "violations": [],
-        "processing_time_ms": 245
-      },
-      "output_validation": {
-        "guardrail_id": "patronus-ai-001",
-        "status": "passed",
-        "violations": [],
-        "processing_time_ms": 312
-      }
-    }
-  }
-}
-```
+An allowed request returns the model's response, with any masking your rules apply.
 
-**Validation Failure - Blocked (446):**
+When a guardrail blocks, Bifrost returns HTTP `400` with `type: "guardrail_intervention"`. The message carries the guardrail's reason. For an input rule, the request is not sent to the model; for an output rule, the model's response is replaced by the error. A blocked stream ends with the same `guardrail_intervention` error.
+
+Trimmed example:
+
 ```json
 {
+  "type": "guardrail_intervention",
+  "is_bifrost_error": false,
+  "status_code": 400,
   "error": {
-    "message": "Request blocked by guardrails",
-    "type": "guardrail_violation",
-    "code": 446,
-    "details": {
-      "guardrail_id": "bedrock-prod-guardrail",
-      "validation_stage": "input",
-      "violations": [
-        {
-          "type": "PII",
-          "category": "SSN",
-          "severity": "HIGH",
-          "action": "block",
-          "text_excerpt": "My SSN is ***-**-****"
-        },
-        {
-          "type": "prompt_injection",
-          "severity": "CRITICAL",
-          "action": "block",
-          "confidence": 0.95
-        }
-      ],
-      "processing_time_ms": 198
-    }
+    "type": "guardrail_intervention",
+    "message": "Blocked by Noma AI-DR policy: Email detected in the user prompt"
+  },
+  "extra_fields": {
+    "request_type": "chat_completion"
   }
 }
 ```
 
-**Validation Warning - Logged (246):**
+Use `type` (or `error.type`) equal to `guardrail_intervention` to tell guardrail blocks apart from other `400` errors.
+
+### Provider Failures
+
+A guardrail provider can fail to return a usable verdict: its API errors or is unreachable, the call exceeds the rule's timeout, or the response is invalid or partial, such as when the provider skips some of its checks. By default, Bifrost lets traffic through, logs a warning, and lists the profile under `providers_failed` on the guardrail span. Other rules and profiles still run, so another rule can still block.
+
+Turn on **Block when guardrail is unavailable** on a rule (`fail_closed: true` in config files, `failClosed: true` through the API) to block instead. The block applies wherever the rule enforces: inputs checked before or in parallel with the LLM call, non-streaming and held streaming outputs, runtime-redaction streams, and MCP tool arguments and results. It does not apply to monitor mode, and a profile that only detects or redacts the logs never blocks, since it could not have changed what was sent. With **Block when guardrail is unavailable** on, a failed profile that can block or redact also stops the rule, so the profiles after it do not run. A profile that only detects or redacts the logs never stops the rule.
+
+The block returns the same `400` `guardrail_intervention` error as a policy block, with `code` set to `guardrail_unavailable`. The message names the profile, and the provider's own error stays in the logs. When another rule blocks the same request, its policy reason is returned instead.
+
 ```json
 {
-  "id": "chatcmpl-def456",
-  "object": "chat.completion",
-  "created": 1699564800,
-  "model": "gpt-4o-mini",
-  "choices": [
-    {
-      "index": 0,
-      "message": {
-        "role": "assistant",
-        "content": "Response with redacted content..."
-      },
-      "finish_reason": "stop"
-    }
-  ],
-  "bifrost_metadata": {
-    "guardrails": {
-      "output_validation": {
-        "guardrail_id": "azure-content-safety-001",
-        "status": "warning",
-        "violations": [
-          {
-            "type": "profanity",
-            "severity": "LOW",
-            "action": "redact",
-            "modifications": 2
-          }
-        ],
-        "processing_time_ms": 187
-      }
-    }
+  "type": "guardrail_intervention",
+  "is_bifrost_error": false,
+  "status_code": 400,
+  "error": {
+    "type": "guardrail_intervention",
+    "code": "guardrail_unavailable",
+    "message": "Request blocked: guardrail check failed for \"model-armor-prod\""
   }
 }
 ```
+
+Use `error.code` equal to `guardrail_unavailable` to tell a provider outage, which may succeed on retry, apart from a policy violation.

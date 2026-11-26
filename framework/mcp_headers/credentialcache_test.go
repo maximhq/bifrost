@@ -16,6 +16,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 func testCredential(id string, headers map[string]string) cachedHeaderCredential {
@@ -34,7 +35,7 @@ func fillWithCredential(v cachedHeaderCredential) func() (cachedHeaderCredential
 }
 
 func TestHeaderCredentialCache_HitAndMiss(t *testing.T) {
-	c := newHeaderCredentialCache(4)
+	c := newTestCredentialCache(t)
 
 	_, ok := c.Get("missing")
 	assert.False(t, ok, "empty cache must miss")
@@ -52,33 +53,8 @@ func TestHeaderCredentialCache_HitAndMiss(t *testing.T) {
 	assert.False(t, ok, "unrelated key must miss")
 }
 
-func TestHeaderCredentialCache_CapacityEviction(t *testing.T) {
-	c := newHeaderCredentialCache(2)
-
-	for i := 1; i <= 3; i++ {
-		_, err := c.Fill(context.Background(), 
-			fmt.Sprintf("k%d", i),
-			fillWithCredential(testCredential(fmt.Sprintf("c%d", i), nil)),
-		)
-		require.NoError(t, err)
-	}
-
-	assert.Equal(t, 2, c.Len(), "cache must stay at capacity")
-	_, ok := c.Get("k1")
-	assert.False(t, ok, "least recently used entry must be evicted")
-	_, ok = c.Get("k2")
-	assert.True(t, ok)
-	_, ok = c.Get("k3")
-	assert.True(t, ok)
-
-	// The evicted entry's credential-ID index mapping must be gone: evicting
-	// by its row ID must not disturb the surviving entries.
-	c.EvictByCredentialID("c1")
-	assert.Equal(t, 2, c.Len())
-}
-
 func TestHeaderCredentialCache_EvictExactKey(t *testing.T) {
-	c := newHeaderCredentialCache(4)
+	c := newTestCredentialCache(t)
 	_, err := c.Fill(context.Background(), "k1", fillWithCredential(testCredential("c1", nil)))
 	require.NoError(t, err)
 
@@ -92,7 +68,7 @@ func TestHeaderCredentialCache_EvictExactKey(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_EvictByCredentialID(t *testing.T) {
-	c := newHeaderCredentialCache(4)
+	c := newTestCredentialCache(t)
 	_, err := c.Fill(context.Background(), "k1", fillWithCredential(testCredential("c1", nil)))
 	require.NoError(t, err)
 	_, err = c.Fill(context.Background(), "k2", fillWithCredential(testCredential("c2", nil)))
@@ -110,7 +86,7 @@ func TestHeaderCredentialCache_EvictByCredentialID(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_EvictByMCPClient(t *testing.T) {
-	c := newHeaderCredentialCache(8)
+	c := newTestCredentialCache(t)
 	keyA1 := headerCredentialCacheKey(schemas.MCPAuthModeUser, "u1", "client-a")
 	keyA2 := headerCredentialCacheKey(schemas.MCPAuthModeVK, "vk1", "client-a")
 	// Admin-mode entries carry an empty identity component and must be
@@ -140,7 +116,7 @@ func TestHeaderCredentialCache_EvictByMCPClient(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_EvictByVirtualKey(t *testing.T) {
-	c := newHeaderCredentialCache(8)
+	c := newTestCredentialCache(t)
 	keyVK1A := headerCredentialCacheKey(schemas.MCPAuthModeVK, "vk1", "client-a")
 	keyVK1B := headerCredentialCacheKey(schemas.MCPAuthModeVK, "vk1", "client-b")
 	keyVK2 := headerCredentialCacheKey(schemas.MCPAuthModeVK, "vk2", "client-a")
@@ -169,7 +145,7 @@ func TestHeaderCredentialCache_EvictByVirtualKey(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_EvictByUser(t *testing.T) {
-	c := newHeaderCredentialCache(8)
+	c := newTestCredentialCache(t)
 	keyU1A := headerCredentialCacheKey(schemas.MCPAuthModeUser, "u1", "client-a")
 	keyU1B := headerCredentialCacheKey(schemas.MCPAuthModeUser, "u1", "client-b")
 	keyU2 := headerCredentialCacheKey(schemas.MCPAuthModeUser, "u2", "client-a")
@@ -198,7 +174,7 @@ func TestHeaderCredentialCache_EvictByUser(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_Flush(t *testing.T) {
-	c := newHeaderCredentialCache(4)
+	c := newTestCredentialCache(t)
 	for i := 1; i <= 3; i++ {
 		_, err := c.Fill(context.Background(), fmt.Sprintf("k%d", i), fillWithCredential(testCredential(fmt.Sprintf("c%d", i), nil)))
 		require.NoError(t, err)
@@ -213,7 +189,7 @@ func TestHeaderCredentialCache_Flush(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_InflightDedup(t *testing.T) {
-	c := newHeaderCredentialCache(4)
+	c := newTestCredentialCache(t)
 
 	var calls atomic.Int64
 	release := make(chan struct{})
@@ -266,7 +242,7 @@ func TestHeaderCredentialCache_InflightDedup(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_ErrorSharedNotCached(t *testing.T) {
-	c := newHeaderCredentialCache(4)
+	c := newTestCredentialCache(t)
 
 	var calls atomic.Int64
 	release := make(chan struct{})
@@ -320,7 +296,7 @@ func TestHeaderCredentialCache_ErrorSharedNotCached(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_GenerationGuardDiscardsStaleFill(t *testing.T) {
-	c := newHeaderCredentialCache(4)
+	c := newTestCredentialCache(t)
 
 	inFill := make(chan struct{})
 	release := make(chan struct{})
@@ -354,7 +330,7 @@ func TestHeaderCredentialCache_GenerationGuardDiscardsStaleFill(t *testing.T) {
 }
 
 func TestHeaderCredentialCache_UpsertRebindsCredentialIDIndex(t *testing.T) {
-	c := newHeaderCredentialCache(4)
+	c := newTestCredentialCache(t)
 	_, err := c.Fill(context.Background(), "k1", fillWithCredential(testCredential("c-old", nil)))
 	require.NoError(t, err)
 
@@ -371,21 +347,6 @@ func TestHeaderCredentialCache_UpsertRebindsCredentialIDIndex(t *testing.T) {
 	c.EvictByCredentialID("c-new")
 	_, ok = c.Get("k1")
 	assert.False(t, ok, "current credential-ID mapping must evict the entry")
-}
-
-func TestHeaderCredentialCache_NilSafety(t *testing.T) {
-	var c *headerCredentialCache
-	_, ok := c.Get("k")
-	assert.False(t, ok)
-	c.Evict("k")
-	c.EvictByCredentialID("c")
-	c.EvictByMCPClient("client")
-	c.EvictByVirtualKey("vk")
-	c.Flush()
-	assert.Equal(t, 0, c.Len())
-	v, err := c.Fill(context.Background(), "k", fillWithCredential(testCredential("c-pass", nil)))
-	require.NoError(t, err)
-	assert.Equal(t, "c-pass", v.credentialID)
 }
 
 // ---------- Integration through GetCredentialByMode ----------
@@ -451,7 +412,7 @@ func TestGetCredentialByMode_AdminIdentityNormalizedToOneCacheEntry(t *testing.T
 		CreatedAt: now, UpdatedAt: now,
 	}
 	store.mu.Unlock()
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	// The store lookup ignores identity for admin mode, so lookups with and
@@ -472,7 +433,7 @@ func TestGetCredentialByMode_AdminIdentityNormalizedToOneCacheEntry(t *testing.T
 func TestGetCredentialByMode_SecondCallServedFromCache(t *testing.T) {
 	store := newTestConfigStore()
 	seedHeaderCredential(store, "cred-1", "mcp-1", "active", `{"X-Api-Key":"v1"}`)
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	cred, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -489,7 +450,7 @@ func TestGetCredentialByMode_SecondCallServedFromCache(t *testing.T) {
 func TestGetCredentialByMode_CachedHitReturnsIsolatedCopy(t *testing.T) {
 	store := newTestConfigStore()
 	seedHeaderCredential(store, "cred-1", "mcp-1", "active", `{"X-Api-Key":"v1"}`)
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	first, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -507,7 +468,7 @@ func TestGetCredentialByMode_CachedHitReturnsIsolatedCopy(t *testing.T) {
 func TestGetCredentialByMode_UpsertEvictsSoNextReadSeesNewValues(t *testing.T) {
 	store := newTestConfigStore()
 	seedHeaderCredential(store, "cred-1", "mcp-1", "active", `{"X-Api-Key":"old"}`)
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	cred, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -532,7 +493,7 @@ func TestGetCredentialByMode_UpsertEvictsSoNextReadSeesNewValues(t *testing.T) {
 func TestGetCredentialByMode_DeleteEvictsSoNextReadIsNotFound(t *testing.T) {
 	store := newTestConfigStore()
 	seedHeaderCredential(store, "cred-1", "mcp-1", "active", `{"X-Api-Key":"v1"}`)
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	_, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -548,7 +509,7 @@ func TestGetCredentialByMode_DeleteEvictsSoNextReadIsNotFound(t *testing.T) {
 func TestGetCredentialByMode_EvictByIDAfterDirectStoreDelete(t *testing.T) {
 	store := newTestConfigStore()
 	seedHeaderCredential(store, "cred-1", "mcp-1", "active", `{"X-Api-Key":"v1"}`)
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	_, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -569,7 +530,7 @@ func TestGetCredentialByMode_EvictByIDAfterDirectStoreDelete(t *testing.T) {
 func TestGetCredentialByMode_NeedsUpdateRowIsCachedWithStatus(t *testing.T) {
 	store := newTestConfigStore()
 	seedHeaderCredential(store, "cred-1", "mcp-1", "needs_update", `{"X-Api-Key":"stale"}`)
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	cred, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -585,7 +546,7 @@ func TestGetCredentialByMode_NeedsUpdateRowIsCachedWithStatus(t *testing.T) {
 
 func TestGetCredentialByMode_NegativeNotCached(t *testing.T) {
 	store := newTestConfigStore()
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	_, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeSession, "sess-1", "mcp-1")
@@ -615,7 +576,7 @@ func TestGetCredentialByMode_EvictByMCPClientCoversAdminMode(t *testing.T) {
 		UpdatedAt:   now,
 	}
 	store.mu.Unlock()
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 	ctx := context.Background()
 
 	_, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeAdmin, "", "mcp-1")
@@ -627,4 +588,100 @@ func TestGetCredentialByMode_EvictByMCPClientCoversAdminMode(t *testing.T) {
 	_, err = provider.GetCredentialByMode(ctx, schemas.MCPAuthModeAdmin, "", "mcp-1")
 	require.NoError(t, err)
 	assert.Equal(t, 2, lookupCalls(store), "client-scoped eviction must also drop the admin-mode binding")
+}
+
+// newTestCredentialCache returns a credential cache in a live store of its own, closed when the test
+// ends.
+func newTestCredentialCache(t *testing.T) *headerCredentialCache {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	c, err := newHeaderCredentialCache(live)
+	require.NoError(t, err)
+	return c
+}
+
+// clientCredentialStore answers credential lookups from a read-only map keyed by MCP client ID, so a
+// benchmark's misses cost the cache and the load around the lookup, not the test store's lock.
+type clientCredentialStore struct {
+	*testConfigStore
+	byClient map[string]*tables.TableMCPPerUserHeaderCredential
+}
+
+// GetMCPPerUserHeaderCredentialByMode returns a copy of the client's credential, nil when it has
+// none.
+func (s *clientCredentialStore) GetMCPPerUserHeaderCredentialByMode(_ context.Context, _ schemas.MCPAuthMode, _, mcpClientID string) (*tables.TableMCPPerUserHeaderCredential, error) {
+	row, ok := s.byClient[mcpClientID]
+	if !ok {
+		return nil, nil
+	}
+	return bifrost.Ptr(*row), nil
+}
+
+// BenchmarkGetCredentialByMode measures the per-request credential read over 300 cached session
+// bindings, one per MCP client: a hit, hits from every core at once, and concurrent misses, each
+// of which evicts its own binding and reloads it through the cache's fill.
+func BenchmarkGetCredentialByMode(b *testing.B) {
+	const clients = 300
+	now := time.Now()
+	store := &clientCredentialStore{testConfigStore: newTestConfigStore(), byClient: make(map[string]*tables.TableMCPPerUserHeaderCredential, clients)}
+	clientIDs := make([]string, clients)
+	for i := range clientIDs {
+		clientIDs[i] = fmt.Sprintf("mcp-%03d", i)
+		store.byClient[clientIDs[i]] = &tables.TableMCPPerUserHeaderCredential{
+			ID: fmt.Sprintf("cred-%03d", i), MCPClientID: clientIDs[i], AuthMode: "session", SessionID: "sess-1",
+			Status: "active", HeadersJSON: `{"X-Api-Key":"v1","X-Tenant":"acme"}`, CreatedAt: now, UpdatedAt: now,
+		}
+	}
+	live, err := livestore.New()
+	require.NoError(b, err)
+	b.Cleanup(live.Close)
+	p, err := NewProvider(store, live, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(b, err)
+	ctx := context.Background()
+	read := func(i int) error {
+		_, err := p.GetCredentialByMode(ctx, schemas.MCPAuthModeSession, "sess-1", clientIDs[i%clients])
+		return err
+	}
+	for i := range clientIDs {
+		require.NoError(b, read(i))
+	}
+
+	b.Run("hit", func(b *testing.B) {
+		b.ReportAllocs()
+		i := 0
+		for b.Loop() {
+			if err := read(i); err != nil {
+				b.Fatal(err)
+			}
+			i++
+		}
+	})
+	b.Run("hit-parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		var next atomic.Int64
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if err := read(int(next.Add(1))); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
+	b.Run("miss-parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		var next atomic.Int64
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				i := int(next.Add(1)) % clients
+				p.EvictCredential(schemas.MCPAuthModeSession, "sess-1", clientIDs[i])
+				if err := read(i); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
 }

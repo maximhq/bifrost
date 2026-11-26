@@ -782,6 +782,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "fc") {
 			message.ID = nil
 		}
+		// A custom_tool_call id must begin with "ctc".
+		if message.Type != nil && *message.Type == schemas.ResponsesMessageTypeCustomToolCall &&
+			message.ID != nil && *message.ID != "" && !strings.HasPrefix(*message.ID, "ctc") {
+			message.ID = nil
+		}
 
 		// OpenAI accepts role only on message input items.
 		if (message.Type != nil && *message.Type != schemas.ResponsesMessageTypeMessage) ||
@@ -1294,6 +1299,15 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	if features, ok := ProviderFeatures[bifrostReq.Provider]; ok && !features.ContextManagement {
 		req.ContextManagement = nil
 		delete(req.ExtraParams, "context_management")
+	}
+
+	// access_programs (Daybreak) is defined only by OpenAI's own Responses API; the other
+	// backends sharing this converter would reject or ignore it. Unlike the feature table
+	// above this is default-closed, and keyed on the base provider so a custom provider
+	// fronting OpenAI keeps it. req holds a copy of the params, so the caller's value
+	// survives for a fallback to OpenAI.
+	if req.AccessPrograms != nil && schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) != schemas.OpenAI {
+		req.AccessPrograms = nil
 	}
 
 	return req

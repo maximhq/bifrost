@@ -36,6 +36,7 @@ export const KnownProvidersNames = [
 	"wafer",
 	"minimax",
 	"byteplus",
+	"machgen",
 	"baseten",
 	"kimchi",
 	"databricks",
@@ -84,6 +85,11 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"kimchi",
 	"github-copilot",
 ] as const;
+
+// Built-in providers whose Bifrost implementation rejects chat requests (Chat
+// Completions and Responses). Also checked against a custom provider's base type,
+// since the base decides what the provider can serve.
+export const ChatUnsupportedProviders: readonly ProviderName[] = ["elevenlabs", "machgen", "runway", "soniox", "typesafe"] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
@@ -200,6 +206,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	wafer: "Wafer",
 	minimax: "MiniMax",
 	byteplus: "BytePlus",
+	machgen: "MachGen",
 	baseten: "Baseten",
 	kimchi: "Kimchi",
 	databricks: "Databricks",

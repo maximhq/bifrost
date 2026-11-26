@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/transports/v2
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.8.0
@@ -16,18 +16,18 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.3
 	github.com/mark3labs/mcp-go v1.5.0
-	github.com/maximhq/bifrost/core v1.15.1
-	github.com/maximhq/bifrost/framework v1.12.1
-	github.com/maximhq/bifrost/plugins/compat v0.5.5
-	github.com/maximhq/bifrost/plugins/governance v1.12.1
-	github.com/maximhq/bifrost/plugins/logging v1.12.1
-	github.com/maximhq/bifrost/plugins/maxim v1.7.16
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.16
-	github.com/maximhq/bifrost/plugins/otel v1.6.6
-	github.com/maximhq/bifrost/plugins/prompts v1.1.16
-	github.com/maximhq/bifrost/plugins/routing v1.3.1
-	github.com/maximhq/bifrost/plugins/semanticcache v1.7.6
-	github.com/maximhq/bifrost/plugins/telemetry v1.9.6
+	github.com/maximhq/bifrost/core v1.15.2
+	github.com/maximhq/bifrost/framework v1.12.2
+	github.com/maximhq/bifrost/plugins/compat v0.5.6
+	github.com/maximhq/bifrost/plugins/governance v1.12.2
+	github.com/maximhq/bifrost/plugins/logging v1.12.2
+	github.com/maximhq/bifrost/plugins/maxim v1.7.17
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.17
+	github.com/maximhq/bifrost/plugins/otel v1.6.7
+	github.com/maximhq/bifrost/plugins/prompts v1.1.17
+	github.com/maximhq/bifrost/plugins/routing v1.3.2
+	github.com/maximhq/bifrost/plugins/semanticcache v1.7.7
+	github.com/maximhq/bifrost/plugins/telemetry v1.9.7
 	github.com/pion/ice/v4 v4.4.4
 	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.18
@@ -40,6 +40,7 @@ require (
 	github.com/tidwall/gjson v1.18.0
 	github.com/tidwall/sjson v1.2.5
 	github.com/valyala/fasthttp v1.74.0
+	go.opentelemetry.io/proto/otlp v1.11.0
 	go.uber.org/automaxprocs v1.6.0
 	golang.org/x/sync v0.24.0
 	golang.org/x/text v0.43.0
@@ -119,6 +120,7 @@ require (
 	github.com/go-openapi/jsonreference v1.0.1 // indirect
 	github.com/go-openapi/loads v0.25.2 // indirect
 	github.com/go-openapi/runtime v0.33.0 // indirect
+	github.com/go-openapi/runtime/server-middleware v0.30.0 // indirect
 	github.com/go-openapi/spec v0.22.11 // indirect
 	github.com/go-openapi/strfmt v0.27.0 // indirect
 	github.com/go-openapi/swag v0.29.1 // indirect
@@ -157,7 +159,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.16 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.17 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -221,7 +223,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.47.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/trace v1.47.0 // indirect
-	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.58.1-0.20261009181718-2f1f834330b2 // indirect

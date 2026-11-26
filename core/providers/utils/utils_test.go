@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2742,6 +2743,53 @@ func TestFlattenResponsesNamespaceTools_AmbiguousToolChoiceReturns400(t *testing
 	}
 }
 
+// A namespace deferred as a whole stays deferred once flattened: a member without its
+// own defer_loading inherits the namespace's, and a member's own value wins. Codex
+// marks its MCP namespaces deferred, and on a flattening wire (Gemini, Vertex,
+// Anthropic) losing the flag sent every member eagerly.
+func boolPtrString(b *bool) string {
+	if b == nil {
+		return "unset"
+	}
+	return strconv.FormatBool(*b)
+}
+
+func TestFlattenResponsesNamespaceTools_MembersInheritNamespaceDeferLoading(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	eager := namespaceFunctionTool("eager")
+	eager.DeferLoading = new(false)
+	deferred := namespaceTool("mcp__demo", namespaceFunctionTool("inherits"), eager)
+	deferred.DeferLoading = new(true)
+	req := issue7048Request()
+	req.Params.Tools = []schemas.ResponsesTool{deferred, namespaceTool("plain", namespaceFunctionTool("js"))}
+
+	out, bifrostErr := FlattenResponsesNamespaceTools(ctx, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	want := map[string]*bool{"mcp__demo__inherits": new(true), "mcp__demo__eager": new(false), "plain__js": nil}
+	for _, tool := range out.Params.Tools {
+		got, expected := tool.DeferLoading, want[*tool.Name]
+		if (got == nil) != (expected == nil) || (got != nil && *got != *expected) {
+			t.Errorf("%s defer_loading = %s, want %s", *tool.Name, boolPtrString(got), boolPtrString(expected))
+		}
+	}
+	if req.Params.Tools[0].ResponsesToolNamespace.Tools[0].DeferLoading != nil {
+		t.Fatal("the shared request's member was mutated")
+	}
+
+	functions := namespaceTool(DefaultToolNamespace, namespaceFunctionTool("exec"))
+	functions.DeferLoading = new(true)
+	req.Params.Tools = []schemas.ResponsesTool{functions}
+	unwrapped, bifrostErr := UnwrapDefaultNamespaceTools(req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if got := unwrapped.Params.Tools[0].DeferLoading; got == nil || !*got {
+		t.Fatalf("an unwrapped default-namespace member must inherit defer_loading, got %v", got)
+	}
+}
+
 func TestFlattenResponsesNamespaceTools_DropsNonFunctionNestedTools(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := issue7048Request()
@@ -2905,7 +2953,7 @@ func TestRestoreResponsesNamespaceToolCalls_BareNameFallback(t *testing.T) {
 		Output: []schemas.ResponsesMessage{call("unique_fn"), call("js"), call("shadowed")},
 	}}
 
-	RestoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, resp)
+	restoreResponsesNamespaceToolCalls(prepared.NamespaceToolAliases, resp)
 
 	out := resp.ResponsesResponse.Output
 	if *out[0].Name != "unique_fn" || out[0].Namespace == nil || *out[0].Namespace != "namespace_a" {
@@ -2943,7 +2991,7 @@ func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
 			Output: []schemas.ResponsesMessage{functionCall("namespace_a__js"), functionCall("plain")},
 		}}
-		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		restoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
 		assertRestored(t, &resp.ResponsesResponse.Output[0])
 		if plain := resp.ResponsesResponse.Output[1]; *plain.Name != "plain" || plain.Namespace != nil {
 			t.Fatal("a tool that was never aliased must not be touched")
@@ -2956,7 +3004,7 @@ func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 			Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
 			Item: &item,
 		}}
-		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		restoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
 		assertRestored(t, resp.ResponsesStreamResponse.Item)
 	})
 
@@ -2965,7 +3013,7 @@ func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 			Type:     schemas.ResponsesStreamResponseTypeCompleted,
 			Response: &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{functionCall("namespace_a__js")}},
 		}}
-		RestoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
+		restoreResponsesNamespaceToolCalls(aliasesFor(true), resp)
 		assertRestored(t, &resp.ResponsesStreamResponse.Response.Output[0])
 	})
 
@@ -2973,7 +3021,7 @@ func TestRestoreResponsesNamespaceToolCalls(t *testing.T) {
 		resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
 			Output: []schemas.ResponsesMessage{functionCall("namespace_a__js")},
 		}}
-		RestoreResponsesNamespaceToolCalls(aliasesFor(false), resp)
+		restoreResponsesNamespaceToolCalls(aliasesFor(false), resp)
 		if got := resp.ResponsesResponse.Output[0]; *got.Name != "namespace_a__js" || got.Namespace != nil {
 			t.Fatal("without an alias map nothing may be rewritten")
 		}
@@ -3096,7 +3144,7 @@ func TestFlattenResponsesNamespaceTools_CapsAliasLength(t *testing.T) {
 		Type:                 new(schemas.ResponsesMessageTypeFunctionCall),
 		ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new("c"), Name: new(names[0]), Arguments: new("{}")},
 	}}}}
-	RestoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, resp)
+	restoreResponsesNamespaceToolCalls(out.NamespaceToolAliases, resp)
 	restored := resp.ResponsesResponse.Output[0]
 	if *restored.Name != longFunction || restored.Namespace == nil || *restored.Namespace != longNamespace {
 		t.Fatalf("restore gave name=%q namespace=%v", *restored.Name, restored.Namespace)

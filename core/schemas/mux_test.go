@@ -473,21 +473,32 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
 			{Type: ChatContentBlockTypeText, Text: Ptr("18C, light rain"), CacheControl: &CacheControl{Type: CacheControlTypeEphemeral}},
 			{Type: ChatContentBlockTypeImage, ImageURLStruct: &ChatInputImage{URL: "https://example.com/radar.png"}},
+			{Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileURL: Ptr("s3://bucket/document.pdf"), Filename: Ptr("pack.pdf"), FileType: Ptr("application/pdf")}},
+			{Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileContent: json.RawMessage(`[{"type":"text","text":"Budget."}]`), Filename: Ptr("pack")}, Citations: &Citations{Enabled: Ptr(true)}},
 		}},
 	}
-	want := []ResponsesMessageContentBlockType{ResponsesInputMessageContentBlockTypeText, ResponsesInputMessageContentBlockTypeImage}
+	want := []ResponsesMessageContentBlockType{ResponsesInputMessageContentBlockTypeText, ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockTypeFile}
 
 	check := func(t *testing.T, name string, msg *ResponsesMessage) {
 		if msg == nil || msg.Type == nil || *msg.Type != ResponsesMessageTypeFunctionCallOutput {
 			t.Fatalf("%s: expected a function_call_output message, got %#v", name, msg)
 		}
 		out := msg.ResponsesToolMessage.Output
-		if out == nil || out.ResponsesFunctionToolCallOutputBlocks == nil || len(out.ResponsesFunctionToolCallOutputBlocks) != 2 {
-			t.Fatalf("%s: expected 2 output blocks, got %#v", name, out)
+		if out == nil || out.ResponsesFunctionToolCallOutputBlocks == nil || len(out.ResponsesFunctionToolCallOutputBlocks) != len(want) {
+			t.Fatalf("%s: expected 4 output blocks, got %#v", name, out)
 		}
 		for i, b := range out.ResponsesFunctionToolCallOutputBlocks {
 			if b.Type != want[i] {
 				t.Errorf("%s: output[%d].type = %q, want %q", name, i, b.Type, want[i])
+			}
+			if file := cm.Content.ContentBlocks[i].File; file != nil {
+				expected := &ResponsesInputMessageContentBlockFile{FileData: file.FileData, FileURL: file.FileURL, FileContent: file.FileContent, Filename: file.Filename, FileType: file.FileType}
+				if !reflect.DeepEqual(expected, b.ResponsesInputMessageContentBlockFile) {
+					t.Errorf("%s: output[%d] lost file data: %+v", name, i, b.ResponsesInputMessageContentBlockFile)
+				}
+				if !reflect.DeepEqual(cm.Content.ContentBlocks[i].Citations, b.Citations) {
+					t.Errorf("%s: output[%d] lost citation settings", name, i)
+				}
 			}
 		}
 		if out.ResponsesFunctionToolCallOutputBlocks[0].CacheControl == nil {
@@ -501,6 +512,19 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 		t.Fatalf("ToResponsesMessages: expected 1 message, got %d", len(msgs))
 	}
 	check(t, "ToResponsesMessages", &msgs[0])
+}
+
+func BenchmarkToResponsesMessagesToolFileURL(b *testing.B) {
+	message := ChatMessage{
+		Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_document")},
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+			Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileURL: Ptr("s3://bucket/document.pdf"), Filename: Ptr("pack.pdf")},
+		}}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		message.ToResponsesMessages()
+	}
 }
 
 // TestToResponsesToolMessage_MarksAFailedToolResult pins that a tool result the chat surface marks
@@ -2984,5 +3008,129 @@ func TestResponsesStreamToBifrostChatResponse_MapsOutputTextDeltaLogProbs(t *tes
 	chunk.LogProbs = []ResponsesOutputMessageContentTextLogProb{}
 	if resp := chunk.ToBifrostChatResponse(); resp.Choices[0].LogProbs != nil {
 		t.Fatalf("expected nil logprobs for an empty delta list, got %+v", resp.Choices[0].LogProbs)
+	}
+}
+func customToolCallItem() ResponsesMessage {
+	return ResponsesMessage{
+		ID:     Ptr("ctc_1"),
+		Type:   Ptr(ResponsesMessageTypeCustomToolCall),
+		Status: Ptr("completed"),
+		ResponsesToolMessage: &ResponsesToolMessage{
+			CallID:                  Ptr("call_1"),
+			Name:                    Ptr("code_exec"),
+			ResponsesCustomToolCall: &ResponsesCustomToolCall{Input: "print(1)"},
+		},
+	}
+}
+
+func requireCustomChatToolCall(t *testing.T, tc ChatAssistantMessageToolCall, input string) {
+	t.Helper()
+	if tc.Type == nil || *tc.Type != string(ChatToolTypeCustom) {
+		t.Fatalf("tool call type = %v, want custom", tc.Type)
+	}
+	if tc.ID == nil || *tc.ID != "call_1" {
+		t.Fatalf("tool call id = %v, want call_1", tc.ID)
+	}
+	if tc.Custom == nil || tc.Custom.Name == nil || *tc.Custom.Name != "code_exec" || tc.Custom.Input != input {
+		t.Fatalf("custom = %+v, want code_exec/%q", tc.Custom, input)
+	}
+}
+
+// A chat request served through the Responses API answers a custom tool call with a
+// chat custom tool call, not an empty choices list.
+func TestResponsesToChatResponse_CustomToolCall(t *testing.T) {
+	resp := &BifrostResponsesResponse{ID: Ptr("resp_1"), Status: Ptr(ResponsesResponseStatusCompleted), Output: []ResponsesMessage{customToolCallItem()}}
+	chat := resp.ToBifrostChatResponse()
+	if len(chat.Choices) != 1 {
+		t.Fatalf("choices = %d, want 1", len(chat.Choices))
+	}
+	choice := chat.Choices[0]
+	if choice.FinishReason == nil || *choice.FinishReason != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("finish_reason = %v, want tool_calls", choice.FinishReason)
+	}
+	calls := choice.Message.ChatAssistantMessage.ToolCalls
+	if len(calls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(calls))
+	}
+	requireCustomChatToolCall(t, calls[0], "print(1)")
+}
+
+func TestResponsesStreamToChat_CustomToolCall(t *testing.T) {
+	item := customToolCallItem()
+	item.ResponsesCustomToolCall = &ResponsesCustomToolCall{}
+	added := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: Ptr(0), Item: &item}).ToBifrostChatResponse()
+	calls := added.Choices[0].Delta.ToolCalls
+	if len(calls) != 1 {
+		t.Fatalf("added: tool calls = %d, want 1", len(calls))
+	}
+	requireCustomChatToolCall(t, calls[0], "")
+
+	delta := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCustomToolCallInputDelta, OutputIndex: Ptr(0), ItemID: Ptr("ctc_1"), Delta: Ptr("pri")}).ToBifrostChatResponse()
+	calls = delta.Choices[0].Delta.ToolCalls
+	if len(calls) != 1 || calls[0].Custom == nil || calls[0].Custom.Input != "pri" || calls[0].Custom.Name != nil {
+		t.Fatalf("delta: tool calls = %+v, want one custom input delta", calls)
+	}
+
+	completed := (&BifrostResponsesStreamResponse{Type: ResponsesStreamResponseTypeCompleted, Response: &BifrostResponsesResponse{Output: []ResponsesMessage{customToolCallItem()}}}).ToBifrostChatResponse()
+	if fr := completed.Choices[0].FinishReason; fr == nil || *fr != string(BifrostFinishReasonToolCalls) {
+		t.Fatalf("finish_reason = %v, want tool_calls", fr)
+	}
+}
+
+// Replayed chat history keeps a custom call and its result custom on the Responses wire;
+// OpenAI pairs a custom_tool_call only with a custom_tool_call_output.
+func TestChatToResponsesRequest_CustomToolCallHistory(t *testing.T) {
+	req := &BifrostChatRequest{Input: []ChatMessage{
+		{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentStr: Ptr("run it")}},
+		{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &ChatAssistantMessage{ToolCalls: []ChatAssistantMessageToolCall{{
+			ID: Ptr("call_1"), Type: Ptr("custom"), Custom: &ChatAssistantMessageToolCallCustom{Name: Ptr("code_exec"), Input: "print(1)"},
+		}}}},
+		{Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")}, Content: &ChatMessageContent{ContentStr: Ptr("1")}},
+	}}
+	input := req.ToResponsesRequest().Input
+	if len(input) != 3 {
+		t.Fatalf("input items = %d, want 3", len(input))
+	}
+	call := input[1]
+	if *call.Type != ResponsesMessageTypeCustomToolCall || call.ResponsesCustomToolCall == nil || call.ResponsesCustomToolCall.Input != "print(1)" ||
+		*call.Name != "code_exec" || *call.CallID != "call_1" || call.Arguments != nil {
+		t.Fatalf("call item = %+v", call)
+	}
+	if output := input[2]; *output.Type != ResponsesMessageTypeCustomToolCallOutput || *output.CallID != "call_1" {
+		t.Fatalf("output item type = %v, want custom_tool_call_output", *output.Type)
+	}
+}
+
+// A chat response carrying a custom call converts to a custom_tool_call output item.
+func TestChatToResponsesResponse_CustomToolCall(t *testing.T) {
+	chat := &BifrostChatResponse{Choices: []BifrostResponseChoice{{
+		FinishReason: Ptr("tool_calls"),
+		ChatNonStreamResponseChoice: &ChatNonStreamResponseChoice{Message: &ChatMessage{
+			Role: ChatMessageRoleAssistant,
+			ChatAssistantMessage: &ChatAssistantMessage{ToolCalls: []ChatAssistantMessageToolCall{{
+				ID: Ptr("call_1"), Type: Ptr("custom"), Custom: &ChatAssistantMessageToolCallCustom{Name: Ptr("code_exec"), Input: "print(1)"},
+			}}},
+		}},
+	}}}
+	output := chat.ToBifrostResponsesResponse().Output
+	if len(output) != 1 || *output[0].Type != ResponsesMessageTypeCustomToolCall || output[0].ResponsesCustomToolCall.Input != "print(1)" {
+		t.Fatalf("output = %+v", output)
+	}
+}
+
+func TestToolChoiceAllowedTools_CustomEntryNameSurvivesResponses(t *testing.T) {
+	choice := &ChatToolChoice{ChatToolChoiceStruct: &ChatToolChoiceStruct{
+		Type: ChatToolChoiceTypeAllowedTools,
+		AllowedTools: &ChatToolChoiceAllowedTools{Mode: "required", Tools: []ChatToolChoiceAllowedToolsTool{
+			{Type: "custom", Custom: &ChatToolChoiceCustom{Name: "exec"}},
+		}},
+	}}
+	rtc := choice.ToResponsesToolChoice()
+	if got := rtc.ResponsesToolChoiceStruct.Tools[0].Name; got == nil || *got != "exec" {
+		t.Fatalf("responses entry name = %v", got)
+	}
+	back := rtc.ToChatToolChoice().ChatToolChoiceStruct.AllowedTools.Tools[0]
+	if back.Type != "custom" || back.Custom == nil || back.Custom.Name != "exec" || back.Function.Name != "" {
+		t.Fatalf("chat entry = %+v", back)
 	}
 }

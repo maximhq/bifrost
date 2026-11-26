@@ -1,6 +1,8 @@
 package integrations
 
 import (
+	"errors"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -105,6 +108,63 @@ func NewOpenAIPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handle
 // chatGPTUpstreamURL is the ChatGPT backend, the only OpenAI upstream that accepts a caller's ChatGPT sign-in token.
 const chatGPTUpstreamURL = "https://chatgpt.com"
 
+const (
+	chatGPTPassthroughPrefix  = "/chatgpt_passthrough"
+	chatGPTCodexModelsPath    = "/backend-api/codex/models"
+	chatGPTCodexResponsesPath = "/backend-api/codex/responses"
+
+	// ChatGPTCodexResponsesRoute is the Codex responses route. A POST streams over HTTP; a
+	// WebSocket upgrade on the same path is served by the Codex WebSocket relay.
+	ChatGPTCodexResponsesRoute = chatGPTPassthroughPrefix + chatGPTCodexResponsesPath
+	// ChatGPTCodexResponsesWebSocketURL is the upstream the Codex WebSocket relay dials.
+	ChatGPTCodexResponsesWebSocketURL = "wss://chatgpt.com" + chatGPTCodexResponsesPath
+)
+
+// IsChatGPTBearer reports whether an Authorization header value carries a ChatGPT sign-in
+// token, the only credential the Codex routes forward to chatgpt.com.
+func IsChatGPTBearer(authHeader string) bool {
+	return isChatGPTBearer(authHeader)
+}
+
+// ResolveChatGPTPassthroughProvider applies the provider rule of the HTTP Codex routes to
+// another transport: x-model-provider may only be absent or name OpenAI. It returns the HTTP
+// status to refuse with when the header names anything else.
+func ResolveChatGPTPassthroughProvider(ctx *fasthttp.RequestCtx, store lib.HandlerStore) (schemas.ModelProvider, int, error) {
+	provider, err := getPassthroughProvider(ctx, store, schemas.OpenAI, false)
+	if err != nil {
+		if errors.Is(err, errPassthroughNotEnabled) {
+			return "", fasthttp.StatusForbidden, err
+		}
+		return "", fasthttp.StatusBadRequest, err
+	}
+	return provider, 0, nil
+}
+
+// NewChatGPTCodexTurn builds the passthrough request for one Codex responses turn that arrived
+// as a WebSocket response.create frame, under the rules the HTTP route applies to a POST: the
+// model is read strictly from the frame, the caller's ChatGPT token is the upstream credential
+// so key selection is skipped, and plugins that rewrite text get the Responses body rewriter.
+// The frame is the request body as sent; nothing is re-encoded.
+func NewChatGPTCodexTurn(bifrostCtx *schemas.BifrostContext, frame []byte, safeHeaders map[string]string) (*schemas.BifrostPassthroughRequest, error) {
+	model, _, err := parsePassthroughBody("application/json", frame)
+	if err != nil {
+		return nil, err
+	}
+	bifrostCtx.SetValue(schemas.BifrostContextKeySkipKeySelection, true)
+	req := &schemas.BifrostPassthroughRequest{
+		Method:       fasthttp.MethodPost,
+		Path:         chatGPTCodexResponsesPath,
+		UpstreamURL:  chatGPTUpstreamURL,
+		Body:         frame,
+		SafeHeaders:  safeHeaders,
+		Provider:     schemas.OpenAI,
+		BaseProvider: schemas.OpenAI,
+		Model:        model,
+	}
+	registerPassthroughTextRewriters(bifrostCtx, passthroughparse.Classify(schemas.OpenAI, model, req.Method, req.Path))
+	return req, nil
+}
+
 // NewChatGPTPassthroughRouter creates a passthrough router for /chatgpt_passthrough.
 // Restricted to the Codex model list and responses endpoints, the two routes Codex calls
 // through a gateway when users sign in with ChatGPT; this is not a general-purpose
@@ -116,18 +176,26 @@ func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 		// The Codex endpoint owns an event stream even when a WebSocket bridge
 		// omits the HTTP stream flag. Relay incrementally without changing its body.
 		StreamingPath: func(method, path string) bool {
-			return method == fasthttp.MethodPost && path == "/backend-api/codex/responses"
+			return method == fasthttp.MethodPost && path == chatGPTCodexResponsesPath
 		},
 		// The model list names and runs no model; each responses turn is still checked against the model allowlist.
 		ModelFreePath: func(method, path string) bool {
-			return method == fasthttp.MethodGet && path == "/backend-api/codex/models"
+			return method == fasthttp.MethodGet && path == chatGPTCodexModelsPath
+		},
+		// The list is trimmed to the models the caller's access allows, so the picker offers nothing a turn would refuse.
+		ModelList: func(method, path string) schemas.PassthroughModelListFilter {
+			if method == fasthttp.MethodGet && path == chatGPTCodexModelsPath {
+				return filterCodexModelList
+			}
+			return nil
 		},
 		StripPrefix: []string{
-			"/chatgpt_passthrough",
+			chatGPTPassthroughPrefix,
 		},
+		// The GET upgrade on the responses path is registered by the Codex WebSocket relay.
 		AllowedRoutes: []PassthroughRoute{
-			{Method: fasthttp.MethodGet, Path: "/chatgpt_passthrough/backend-api/codex/models"},
-			{Method: fasthttp.MethodPost, Path: "/chatgpt_passthrough/backend-api/codex/responses"},
+			{Method: fasthttp.MethodGet, Path: chatGPTPassthroughPrefix + chatGPTCodexModelsPath},
+			{Method: fasthttp.MethodPost, Path: ChatGPTCodexResponsesRoute},
 		},
 	})
 }
@@ -245,8 +313,115 @@ func registerPassthroughTextRewriters(ctx *schemas.BifrostContext, route passthr
 		rewriter = rewriteGenAIRawRequestBody
 	case schemas.OpenAI:
 		rewriter = openAIRawRequestBodyRewriter(route.RequestType)
+	case passthroughparse.WireGeminiInteractions:
+		rewriter = rewriteGeminiInteractionsRawRequestBody
+	case schemas.Runware:
+		rewriter = rewriteRunwareRawRequestBody
+	case schemas.SageMaker:
+		rewriter = rewriteSageMakerRawRequestBody
+	case schemas.Bedrock:
+		rewriter = rewriteBedrockAgentRawRequestBody
 	}
 	if rewriter != nil {
 		ctx.SetValue(schemas.BifrostContextKeyRawRequestBodyTextRewriter, rewriter)
 	}
+}
+
+// rewriteRunwareRawRequestBody applies runtime replacements to the task texts a Runware passthrough call is read for.
+func rewriteRunwareRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectRunwareRawRequestTextPaths)
+}
+
+// collectRunwareRawRequestTextPaths selects the texts of a Runware task array (or single task) that passthroughparse
+// reads, by walking the same fields its reader does (passthroughparse.RunwareTaskTexts).
+func collectRunwareRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	collectTask := func(task gjson.Result, path string) {
+		passthroughparse.RunwareTaskTexts(task, func(field string, _ schemas.ChatMessageRole, text gjson.Result) {
+			if path != "" {
+				field = path + "." + field
+			}
+			appendRawRequestTextPath(&paths, text, field)
+		})
+	}
+	if root.IsObject() {
+		collectTask(root, "")
+		return paths, nil
+	}
+	root.ForEach(func(index, task gjson.Result) bool {
+		collectTask(task, rawRequestArrayPath("", int(index.Int())))
+		return true
+	})
+	return paths, nil
+}
+
+// rewriteSageMakerRawRequestBody applies runtime replacements to the texts a SageMaker invocation is read for.
+func rewriteSageMakerRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectSageMakerRawRequestTextPaths)
+}
+
+// collectSageMakerRawRequestTextPaths selects the texts of a SageMaker invocation that passthroughparse reads: every one
+// of the OpenAI chat messages, the OpenAI completion prompt, and the string inputs of a TGI, LMI or TEI call that the
+// body carries, since containers choose among them in different orders.
+func collectSageMakerRawRequestTextPaths(root gjson.Result, replacements map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	if root.Get("messages").IsArray() {
+		chatPaths, err := collectOpenAIChatRawRequestTextPaths(root, replacements)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, chatPaths...)
+	}
+	if prompt := root.Get("prompt"); prompt.Exists() && prompt.Type != gjson.Null {
+		promptPaths, err := collectOpenAITextCompletionRawRequestTextPaths(root, replacements)
+		if err != nil {
+			return nil, err
+		}
+		paths = append(paths, promptPaths...)
+	}
+	inputs := root.Get("inputs")
+	appendRawRequestTextPath(&paths, inputs, "inputs")
+	if inputs.IsArray() {
+		inputs.ForEach(func(index, input gjson.Result) bool {
+			appendRawRequestTextPath(&paths, input, rawRequestArrayPath("inputs", int(index.Int())))
+			return true
+		})
+	}
+	return paths, nil
+}
+
+// rewriteBedrockAgentRawRequestBody applies runtime replacements to the texts a Bedrock InvokeAgent call is read for.
+func rewriteBedrockAgentRawRequestBody(rawBody []byte, replacements map[string]string) ([]byte, error) {
+	return rewriteRawRequestTextFields(rawBody, replacements, collectBedrockAgentRawRequestTextPaths)
+}
+
+// collectBedrockAgentRawRequestTextPaths selects the texts of an InvokeAgent body that passthroughparse reads: the
+// prompt session attributes, the input text, the conversation history's text blocks, and the bodies of returned tool
+// results.
+func collectBedrockAgentRawRequestTextPaths(root gjson.Result, _ map[string]string) ([]string, error) {
+	paths := make([]string, 0)
+	root.Get("sessionState.promptSessionAttributes").ForEach(func(key, value gjson.Result) bool {
+		appendRawRequestTextPath(&paths, value, rawRequestObjectPath("sessionState.promptSessionAttributes", key.String()))
+		return true
+	})
+	appendRawRequestTextPath(&paths, root.Get("inputText"), "inputText")
+	root.Get("sessionState.conversationHistory.messages").ForEach(func(messageIndex, message gjson.Result) bool {
+		message.Get("content").ForEach(func(blockIndex, block gjson.Result) bool {
+			path := fmt.Sprintf("sessionState.conversationHistory.messages.%d.content.%d.text", messageIndex.Int(), blockIndex.Int())
+			appendRawRequestTextPath(&paths, block.Get("text"), path)
+			return true
+		})
+		return true
+	})
+	root.Get("sessionState.returnControlInvocationResults").ForEach(func(resultIndex, result gjson.Result) bool {
+		for _, kind := range []string{"functionResult", "apiResult"} {
+			bodiesPath := fmt.Sprintf("sessionState.returnControlInvocationResults.%d.%s.responseBody", resultIndex.Int(), kind)
+			result.Get(kind + ".responseBody").ForEach(func(contentType, content gjson.Result) bool {
+				appendRawRequestTextPath(&paths, content.Get("body"), rawRequestObjectPath(rawRequestObjectPath(bodiesPath, contentType.String()), "body"))
+				return true
+			})
+		}
+		return true
+	})
+	return paths, nil
 }

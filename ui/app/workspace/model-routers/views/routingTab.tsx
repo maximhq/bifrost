@@ -16,7 +16,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { RouterEnabledSwitch } from "./routersTable";
 import { COMPLEXITY_RULES_SEARCH, complexityRulesFor, namedComplexityRules } from "./routingTab.utils";
 
-const COMPLEXITY_RULES_DOCS_URL = "https://docs.getbifrost.ai/features/complexity-router";
+const COMPLEXITY_RULES_DOCS_URL = "https://docs.getbifrost.ai/features/routers#moving-from-the-complexity-router";
 // The most rules the list endpoint returns in one page.
 const COMPLEXITY_RULES_LIMIT = 100;
 

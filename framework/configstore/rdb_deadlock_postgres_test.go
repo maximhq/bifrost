@@ -100,14 +100,11 @@ func TestPostgresProviderGraphConcurrentMutationsDoNotDeadlock(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(3)
 
-		go func(iter int) {
+		go func() {
 			defer wg.Done()
 			<-start
-			errs <- store.UpdateProvider(ctx, "openai", ProviderConfig{Keys: []schemas.Key{
-				{ID: "pg-key-a", Name: "pg-openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
-				{ID: fmt.Sprintf("pg-key-new-%d", iter), Name: fmt.Sprintf("pg-openai-key-new-%d", iter), Value: *schemas.NewSecretVar("sk-new"), Weight: 1.0},
-			}})
-		}(i)
+			errs <- store.UpdateProvider(ctx, "openai", ProviderConfig{})
+		}()
 		go func() {
 			defer wg.Done()
 			<-start
@@ -238,11 +235,11 @@ func seedProviderGraph(ctx context.Context, store *RDBConfigStore) error {
 	_ = store.DeleteVirtualKey(ctx, "pg-vk")
 
 	if err := store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		"openai": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
 		"openai": {
-			Keys: []schemas.Key{
-				{ID: "pg-key-a", Name: "pg-openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
-				{ID: "pg-key-b", Name: "pg-openai-key-b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1.0},
-			},
+			{ID: "pg-key-a", Name: "pg-openai-key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
+			{ID: "pg-key-b", Name: "pg-openai-key-b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1.0},
 		},
 	}); err != nil {
 		return err
@@ -363,7 +360,8 @@ func TestPostgresGrantRevocationCatchesConcurrentCodeExchange(t *testing.T) {
 	}))
 	t.Cleanup(func() { _ = store.DB().Callback().Update().Remove("test:pause_revocation") })
 
-	require.NoError(t, store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-race"))
+	_, err := store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-race")
+	require.NoError(t, err)
 
 	var exchangeErr error
 	select {
@@ -399,7 +397,7 @@ func TestPostgresGrantRevocationCatchesConcurrentTokenRefresh(t *testing.T) {
 	var once sync.Once
 	require.NoError(t, store.DB().Callback().Update().After("gorm:update").Register("test:pause_refresh", func(db *gorm.DB) {
 		once.Do(func() {
-			go func() { revokeDone <- store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-refresh") }()
+			go func() { _, err := store.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-refresh"); revokeDone <- err }()
 			time.Sleep(500 * time.Millisecond)
 		})
 	}))

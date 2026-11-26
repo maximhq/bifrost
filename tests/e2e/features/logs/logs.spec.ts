@@ -392,6 +392,7 @@ test.describe("LLM Logs", () => {
       // A reload and a freshly opened log keep the same filter.
       await logsPage.closeLogDetails();
       await page.reload();
+      await expect(logsPage.tableRows).toHaveCount(1);
       await logsPage.viewLogDetails(0);
       await expect(count).toHaveText("1/5");
       await expect(sheet.getByText(userText)).toHaveCount(0);
@@ -405,9 +406,89 @@ test.describe("LLM Logs", () => {
       await expect(sheet.getByText(userText)).toBeVisible();
       await logsPage.closeLogDetails();
       await page.reload();
+      await expect(logsPage.tableRows).toHaveCount(1);
       await logsPage.viewLogDetails(0);
       await expect(count).toHaveCount(0);
       await expect(sheet.getByText(assistantText)).toBeVisible();
+    });
+
+    test("should end a resize drag when the sheet closes in the middle of it", async ({ page, logsPage }) => {
+      const timestamp = new Date().toISOString();
+      const logId = `synthetic-sheet-drag-${Date.now()}`;
+      const log = {
+        id: logId,
+        object: "chat.completion",
+        timestamp,
+        created_at: timestamp,
+        provider: "openai",
+        model: "synthetic-model",
+        number_of_retries: 0,
+        fallback_index: 0,
+        status: "success",
+        stream: false,
+        latency: 120,
+        cost: 0,
+        input_history: [{ role: "user", content: "hello" }],
+        output_message: { role: "assistant", content: "hi" },
+        responses_input_history: [],
+      };
+      await page.route((url) => url.pathname === "/api/logs", async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        await route.fulfill({ json: {
+          logs: [log],
+          pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+          stats: {
+            total_requests: 1,
+            success_rate: 100,
+            user_facing_success_rate: 100,
+            user_facing_total_requests: 1,
+            average_latency: 120,
+            total_tokens: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_cost: 0,
+          },
+          has_logs: true,
+        } });
+      });
+      await page.route((url) => url.pathname === `/api/logs/${logId}`, async (route) => {
+        if (route.request().method() !== "GET") return route.continue();
+        await route.fulfill({ json: log });
+      });
+      await logsPage.goto();
+
+      // The log sheet stays mounted while closed, so drag state left behind would carry over.
+      const sheet = logsPage.logDetailSheet;
+      const openSheet = async () => {
+        await logsPage.viewLogDetails(0);
+        await sheet.evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+        const handle = sheet.getByTestId("sheet-resize-handle");
+        await expect(handle).toBeVisible();
+        const box = await handle.boundingBox();
+        expect(box, "resize handle has no bounding box").not.toBeNull();
+        return { handle, x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+      };
+      const sheetWidth = async () => Math.round((await sheet.boundingBox())!.width);
+
+      const first = await openSheet();
+      await page.mouse.move(first.x, first.y);
+      await page.mouse.down();
+      await page.mouse.move(first.x - 100, first.y, { steps: 4 });
+      await expect(first.handle).toHaveAttribute("data-dragging", "true");
+      const draggedWidth = await sheetWidth();
+      // Close the sheet mid-drag, then release the button with the handle gone.
+      await page.keyboard.press("Escape");
+      await expect(sheet).not.toBeVisible();
+      await page.mouse.up();
+
+      const second = await openSheet();
+      await expect(second.handle).not.toHaveAttribute("data-dragging");
+      // The width reached before the close is kept, and hovering with no button pressed does not resize.
+      await expect.poll(sheetWidth).toBe(draggedWidth);
+      expect(await page.evaluate(() => localStorage.getItem("bifrost.sheet.width.log-details"))).toBe(String(draggedWidth));
+      await page.mouse.move(second.x, second.y);
+      await page.mouse.move(second.x - 150, second.y, { steps: 4 });
+      expect(await sheetWidth()).toBe(draggedWidth);
     });
 
     test.describe("Fallback chain", () => {
@@ -528,6 +609,19 @@ test.describe("LLM Logs", () => {
         const row = logsPage.tableRows.first();
         await expect(row).toContainText('get_weather({"city":"Paris"})');
         await expect(row).not.toContainText(summary);
+      });
+
+      test("should preview a chat custom tool call as name(input)", async ({ page, logsPage }) => {
+        const turn = {
+          ...syntheticLog(`synthetic-customcall-${Date.now()}`, 0, "success"),
+          input_history: [
+            { role: "system", content: "You are an agent." },
+            { role: "assistant", tool_calls: [{ id: "call_1", type: "custom", custom: { name: "code_exec", input: "print(1)" } }] },
+          ],
+        };
+        await mockLogs(page, turn, {});
+        await logsPage.goto();
+        await expect(logsPage.tableRows.first()).toContainText("code_exec(print(1))");
       });
     });
 
@@ -1576,5 +1670,89 @@ test.describe("LLM Logs", () => {
       expect(url).toMatch(/start_time=\d+/);
       expect(url).toMatch(/end_time=\d+/);
     });
+  });
+});
+
+test.describe("LLM Logs columns", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("should toggle and persist the stop reason column", async ({ page, logsPage }) => {
+    const timestamp = new Date().toISOString();
+    const reasons = ["stop", "length", "content_filter", "tool_calls", "provider_specific_reason", "", null, undefined];
+    await page.route((url) => url.pathname === "/api/logs", async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      await route.fulfill({ json: {
+        logs: reasons.map((stopReason, index) => ({
+          id: `stop-reason-${index}`,
+          object: "chat.completion",
+          timestamp,
+          created_at: timestamp,
+          provider: "openai",
+          model: "synthetic-model",
+          number_of_retries: 0,
+          fallback_index: 0,
+          status: "success",
+          stream: false,
+          latency: 120,
+          cost: 0,
+          stop_reason: stopReason,
+          input_history: [],
+          responses_input_history: [],
+        })),
+        pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+        stats: {
+          total_requests: reasons.length,
+          success_rate: 100,
+          user_facing_success_rate: 100,
+          user_facing_total_requests: reasons.length,
+          average_latency: 120,
+          total_tokens: 0,
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_cost: 0,
+        },
+        has_logs: true,
+      } });
+    });
+    await logsPage.goto();
+
+    const header = logsPage.logsTable.getByRole("columnheader", { name: /Stop Reason/ });
+    const cells = page.getByTestId("logs-stop-reason-cell");
+    const trigger = page.getByTestId("column-config-trigger");
+    const toggle = page.getByTestId("column-visibility-stop_reason");
+    await expect(header).toHaveCount(0);
+    await trigger.click();
+    await expect(toggle).toHaveAccessibleName("Stop Reason");
+    await expect(toggle).not.toBeChecked();
+    await toggle.click();
+    await expect(toggle).toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(header).toBeVisible();
+    await expect(cells).toHaveText(reasons.map((reason) => reason || "-"));
+    await expect.poll(() => new URL(page.url()).searchParams.get("cols")?.split(",")).toContain("stop_reason");
+
+    // The URL restores the column on reload; a clean URL restores it from localStorage.
+    await page.reload();
+    await expect(header).toBeVisible();
+    await logsPage.goto();
+    await expect(header).toBeVisible();
+    await expect(cells).toHaveText(reasons.map((reason) => reason || "-"));
+
+    await trigger.click();
+    await toggle.click();
+    await expect(toggle).not.toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(header).toHaveCount(0);
+    await expect(cells).toHaveCount(0);
+    await logsPage.goto();
+    await expect(header).toHaveCount(0);
+
+    await trigger.click();
+    await toggle.click();
+    await expect(toggle).toBeChecked();
+    await page.getByTestId("column-reset-default").click();
+    await expect(toggle).not.toBeChecked();
+    await page.keyboard.press("Escape");
+    await expect(header).toHaveCount(0);
   });
 });

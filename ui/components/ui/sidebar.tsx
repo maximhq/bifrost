@@ -13,7 +13,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { useIsMobile } from "@/hooks/use-mobile";
 import { cn } from "@/lib/utils";
 
-const SIDEBAR_COOKIE_NAME = "sidebar_state";
+import { readSidebarOpenCookie, SIDEBAR_COOKIE_NAME } from "./sidebar.utils";
+
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
 const SIDEBAR_WIDTH = "15rem";
 const SIDEBAR_WIDTH_MOBILE = "18rem";
@@ -59,16 +60,12 @@ function SidebarProvider({
 
 	// This is the internal state of the sidebar.
 	// We use openProp and setOpenProp for control from outside the component.
-	const [internalOpen, setInternalOpen] = React.useState(defaultOpen);
-
-	// Restore persisted sidebar state from cookie after hydration.
-	React.useEffect(() => {
-		if (openProp !== undefined) return;
-		const match = document.cookie.match(new RegExp(`(?:^|; )${SIDEBAR_COOKIE_NAME}=([^;]*)`));
-		if (match && (match[1] === "true" || match[1] === "false")) {
-			setInternalOpen(match[1] === "true");
-		}
-	}, [openProp]);
+	// Read the persisted state during the first render, not in an effect: the app is
+	// client-rendered (createRoot), so there is no server markup to mismatch, and an effect
+	// would paint the default first and then animate to the saved state on every reload.
+	const [internalOpen, setInternalOpen] = React.useState(() =>
+		typeof document === "undefined" ? defaultOpen : readSidebarOpenCookie(document.cookie, defaultOpen),
+	);
 
 	const open = openProp ?? internalOpen;
 	const setOpen = React.useCallback(
@@ -172,6 +169,7 @@ function Sidebar({
 		return (
 			<Sheet open={openMobile} onOpenChange={setOpenMobile} {...props}>
 				<SheetContent
+					resizable={false}
 					data-sidebar="sidebar"
 					data-slot="sidebar"
 					data-mobile="true"

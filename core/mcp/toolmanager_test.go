@@ -1370,12 +1370,14 @@ func TestExecuteTool_UpstreamNeedsUserInput_ExplainsWhy(t *testing.T) {
 	connect := func(t *testing.T, id string, opts ...server.StreamableHTTPOption) *MCPManager {
 		ts := httptest.NewServer(server.NewStreamableHTTPServer(s, opts...))
 		t.Cleanup(ts.Close)
-		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 		t.Cleanup(func() { _ = m.Cleanup() })
-		require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+		config := &schemas.MCPClientConfig{
 			ID: id, Name: "upstream", ConnectionType: schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
-		}))
+		}
+		accountOf(m).set(config)
+		require.NoError(t, m.connectToMCPClient(context.Background(), config))
 		return m
 	}
 	modern := connect(t, "needs-input-modern")
@@ -1436,7 +1438,7 @@ func TestExecuteTool_CallsTheUpstreamToolByItsExactName(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	ctx := context.Background()
-	m := &MCPManager{credStore: &fakeAdminCredStore{headers: http.Header{}}, logger: &MockLogger{}, clientMap: map[string]*schemas.MCPClientState{}, discoveryStore: NewDiscoveryStore(nil, nil)}
+	m := &MCPManager{credStore: &fakeAdminCredStore{headers: http.Header{}}, logger: &MockLogger{}, account: newTestAccount(), clientMap: map[string]*clientConn{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 	config := &schemas.MCPClientConfig{
 		ID:               "client-alpha",
 		Name:             "alpha",
@@ -1510,12 +1512,12 @@ func (s *countingDiscoveryStore) DeleteDiscovery(_ context.Context, client *sche
 // the caller once, whichever store it lives in.
 func TestParseAndAddToolsToRequest_ReadsEachClientsDiscoveryOnce(t *testing.T) {
 	shared, perUser := newCountingDiscoveryStore(), newCountingDiscoveryStore()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: perUser}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: perUser}, newTestAccount(), nil, &MockLogger{}, nil)
 	wiki := &schemas.MCPClientConfig{ID: "wiki-id", Name: "wiki", ToolsToExecute: []string{"*"}}
 	notes := &schemas.MCPClientConfig{ID: "notes-id", Name: "notes", ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true)}
 	jira := &schemas.MCPClientConfig{ID: "jira-id", Name: "jira", ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true)}
 	for _, config := range []*schemas.MCPClientConfig{wiki, notes, jira} {
-		m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
+		putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy})
 	}
 	wikiDiscovery := discoveryOf("wiki", "read")
 	wikiDiscovery.Instructions = "Cite the page."
@@ -1552,8 +1554,8 @@ func BenchmarkParseAndAddToolsToRequest(b *testing.B) {
 // request's first turn adds to its prompt.
 func BenchmarkParseAndAddToolsToRequest_WithInstructions(b *testing.B) {
 	m, _ := benchmarkSharedManager(10, 20)
-	for _, client := range m.clientMap {
-		m.discoveryStore.GetDiscovery(context.Background(), client.ExecutionConfig).Instructions = client.Name + " rule: check permissions first."
+	for id, client := range m.clientMap {
+		m.discoveryStore.GetDiscovery(context.Background(), m.config(id)).Instructions = client.Name + " rule: check permissions first."
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -1602,12 +1604,14 @@ func TestExecuteTool_PassesInputRequestsToGatewayCaller(t *testing.T) {
 	})
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
 	t.Cleanup(ts.Close)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
-	require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+	config := &schemas.MCPClientConfig{
 		ID: "input-relay", Name: "upstream", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(true), ToolsToExecute: []string{"*"},
-	}))
+	}
+	accountOf(m).set(config)
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 
 	call := func(t *testing.T, tool string, caller *mcpgo.ClientCapabilities, resume *mcpgo.MultiRoundTripParams) (*schemas.ChatMessage, *schemas.BifrostError) {
 		t.Helper()
@@ -1692,12 +1696,14 @@ func TestExecuteTool_DeclaresRelayableCallerCapabilitiesUpstream(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	for _, sticky := range []bool{true, false} {
-		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+		m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 		t.Cleanup(func() { _ = m.Cleanup() })
-		require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+		config := &schemas.MCPClientConfig{
 			ID: fmt.Sprintf("caps-%t", sticky), Name: "upstream", ConnectionType: schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar(ts.URL), NeedsSessionStickiness: schemas.Ptr(sticky), ToolsToExecute: []string{"*"},
-		}))
+		}
+		accountOf(m).set(config)
+		require.NoError(t, m.connectToMCPClient(context.Background(), config))
 		cases := []struct {
 			name   string
 			caller *mcpgo.ClientCapabilities
@@ -1769,12 +1775,14 @@ func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
-	require.NoError(t, m.connectToMCPClient(context.Background(), &schemas.MCPClientConfig{
+	config := &schemas.MCPClientConfig{
 		ID: "apps", Name: "apps", ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ConnectionString: schemas.NewSecretVar(ts.URL), ToolsToExecute: []string{"*"},
-	}))
+	}
+	accountOf(m).set(config)
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 
 	appsCaller := &mcpgo.ClientCapabilities{Extensions: map[string]any{schemas.MCPAppsExtension: map[string]any{}}}
 	// client is the /mcp/<slug> server; "" is aggregate /mcp.
@@ -1901,9 +1909,9 @@ func TestGetToolPerClient_AppOnlyToolsReachOnlySlugAppsCallers(t *testing.T) {
 // model on every path: injection, listing, execution and provider-injected tools.
 func TestGetToolPerClient_AppOnlyToolsOfPerUserClients(t *testing.T) {
 	shared, perUser := newCountingDiscoveryStore(), newCountingDiscoveryStore()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: perUser}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: perUser}, newTestAccount(), nil, &MockLogger{}, nil)
 	notes := &schemas.MCPClientConfig{ID: "notes-id", Name: "notes", ToolsToExecute: []string{"*"}, PerUserDiscovery: schemas.Ptr(true)}
-	m.clientMap[notes.ID] = &schemas.MCPClientState{Name: notes.Name, ExecutionConfig: notes, State: schemas.MCPConnectionStateHealthy}
+	putClient(m, &schemas.MCPClientState{Name: notes.Name, ExecutionConfig: notes, State: schemas.MCPConnectionStateHealthy})
 	discovery := discoveryOf("notes", "search", "refresh")
 	refresh := discovery.Tools["notes-refresh"]
 	refresh.MCP = &schemas.MCPToolMetadata{Visibility: []string{schemas.MCPToolVisibilityApp}}

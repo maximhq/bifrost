@@ -101,6 +101,8 @@ const (
 	SortByLatency   SortBy = "latency"
 	SortByTokens    SortBy = "tokens"
 	SortByCost      SortBy = "cost"
+	// SortByFallbackIndex orders a chain's hops; the request trace uses it.
+	SortByFallbackIndex SortBy = "fallback_index"
 )
 
 type SortOrder string
@@ -122,6 +124,7 @@ type SearchFilters struct {
 	ToolCallNames        []string   `json:"tool_call_names,omitempty"` // Requests whose response called ANY of these function names (matched against the tool_call_names column)
 	Objects              []string   `json:"objects,omitempty"`         // For filtering by request type (chat.completion, text.completion, embedding)
 	ParentRequestID      string     `json:"parent_request_id,omitempty"`
+	FallbackHopsOnly     bool       `json:"-"`                        // With ParentRequestID: only the fallback hops under it (fallback_index > 0), not session units or async cost rows that share the parent.
 	RequestID            string     `json:"request_id,omitempty"`     // Exact match on the log primary key, which is the request ID. Time-range filters are skipped for it so a unique ID is never hidden by the selected window.
 	RootsOnly            bool       `json:"roots_only,omitempty"`     // Hide rows whose parent_request_id points at another row matching these same filters, so each chain lists as its root request only. Ignored when ParentRequestID is set.
 	GroupSessions        bool       `json:"group_sessions,omitempty"` // Collapse every row sharing a session_id into that session's earliest chain-root row. Layered on top of RootsOnly; see SessionGroupingActive for when it applies.
@@ -168,9 +171,18 @@ type SearchFilters struct {
 	// GuardrailOutcomes keeps requests a guardrail acted on: "blocked" matches
 	// a guardrail_intervention error or a recorded intervention, "detected" a
 	// detect-only match in guardrail_debug. Several values are OR-ed together.
-	GuardrailOutcomes []string          `json:"guardrail_outcomes,omitempty"`
-	ContentSearch     string            `json:"content_search,omitempty"`
-	MetadataFilters   MetadataFilterMap `json:"metadata_filters,omitempty"` // metadata key to accepted values: any value per key, every key
+	GuardrailOutcomes []string `json:"guardrail_outcomes,omitempty"`
+	// GuardrailActions, GuardrailRuleIDs, GuardrailProfileIDs and GuardrailPhases
+	// keep requests with one recorded guardrail match that meets every one of
+	// them that is set: what the guardrail did (GuardrailMatchAction*), the rule
+	// and profile ids, and the phase. Values within one are OR-ed; no action
+	// means any of them.
+	GuardrailActions    []string          `json:"guardrail_actions,omitempty"`
+	GuardrailRuleIDs    []string          `json:"guardrail_rule_ids,omitempty"`
+	GuardrailProfileIDs []string          `json:"guardrail_profile_ids,omitempty"`
+	GuardrailPhases     []string          `json:"guardrail_phases,omitempty"`
+	ContentSearch       string            `json:"content_search,omitempty"`
+	MetadataFilters     MetadataFilterMap `json:"metadata_filters,omitempty"` // metadata key to accepted values: any value per key, every key
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
@@ -248,7 +260,7 @@ func (f SearchFilters) EffectiveRankingLimit(defaultLimit int) int {
 type PaginationOptions struct {
 	Limit          int    `json:"limit"`
 	Offset         int    `json:"offset"`
-	SortBy         string `json:"sort_by"`     // "timestamp", "latency", "tokens", "cost"
+	SortBy         string `json:"sort_by"`     // "timestamp", "latency", "tokens", "cost", "fallback_index"
 	Order          string `json:"order"`       // "asc", "desc"
 	TotalCount     int64  `json:"total_count"` // Total number of items matching the query
 	SelectedOffset *int64 `json:"selected_offset,omitempty"`
@@ -3267,6 +3279,15 @@ type DashboardResult struct {
 	ModelRankings     DashboardModelRankings             `json:"model_rankings"`
 	DimensionRankings map[string]*DimensionRankingResult `json:"dimension_rankings"`
 	MCP               DashboardMCP                       `json:"mcp"`
+}
+
+// NodeUsageWindows holds actual-reset cutoffs in Unix nanoseconds, independently
+// for budgets, tokens and requests. Missing or zero values mean no known reset.
+// Callers own the maps and must not mutate them during a read.
+type NodeUsageWindows struct {
+	Budgets  map[string]int64
+	Tokens   map[string]int64
+	Requests map[string]int64
 }
 
 // NodeUsageCursor identifies the last log row included in a node usage scan.

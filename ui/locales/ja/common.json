@@ -191,8 +191,7 @@
 		"toggle": "サイドバーを切り替え"
 	},
 	"sheet": {
-		"collapse": "折りたたむ",
-		"expand": "展開"
+		"resizeHandle": "パネルのサイズを変更"
 	},
 	"tabs": {
 		"showMore_one": "さらに {{count}} 個のタブを表示",
@@ -263,7 +262,8 @@
 	"budgetDisplay": {
 		"usageAria": "予算使用状況",
 		"override": "オーバーライド",
-		"baseTooltip": "基本 {{base}} + オーバーライド {{override}}"
+		"baseTooltip": "基本 {{base}} + オーバーライド {{override}}",
+		"sharedTag": "共有"
 	},
 	"rateLimit": {
 		"tokens": "トークン",
@@ -302,6 +302,11 @@
 	},
 	"configSyncAlert": {
 		"message": "この設定は <code0>config.json</code0> から同期されています。今後 config.json が更新されると、UI での変更は上書きされます。config.json を初期設定のブートストラップにのみ使用している場合は、このアラートを無視して問題ありません。"
+	},
+	"configIssuesAlert": {
+		"title": "config.json の宣言の一部が適用されませんでした",
+		"badge": "設定の問題",
+		"hint": "宣言の残りは適用済みです。上の各項目は、参照先が存在するようになると自動的に消えます（例: 不足している MCP クライアントを登録したとき）。"
 	},
 	"breadcrumb": {
 		"label": "パンくずリスト",
@@ -509,6 +514,9 @@
 		"maxNumber": "{{maximum}} 以下にしてください",
 		"maxChars": "{{maximum}} 文字以内にしてください",
 		"validUrl": "有効な URL にしてください",
+		"publicUrlNoUserinfoQueryOrFragment": "ユーザー情報、クエリ、フラグメントを含めることはできません",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "http(s) URL またはアプリディレクトリからの相対パスである必要があります",
+		"openapiUrlMustStayInAppDir": "アプリディレクトリ内にとどまる相対パスである必要があります",
 		"validEmail": "有効なメールアドレスにしてください",
 		"grpcHostPortFormat": "gRPC では <host>:<port> の形式にしてください (例: {{example}})",
 		"invalidInput": "入力が無効です",

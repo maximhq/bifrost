@@ -2,6 +2,7 @@ package jobaccounting
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	cstables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/stretchr/testify/assert"
@@ -862,28 +864,31 @@ func (f *fakeBatchResultFetcher) FetchBatchResults(ctx context.Context, job *cst
 	return f.resultsResp, nil
 }
 
-type fakeKVStore struct {
-	setNXAllowed bool
-	setNXCalls   int
-	deleteCalls  int
+// leaseWrite is one lease write a poll lease table's set observer heard.
+type leaseWrite struct {
+	key   string
+	lease PollLease
 }
 
-func (s *fakeKVStore) Get(key string) (any, error) {
-	return nil, nil
+// leaseWrites records what a poll lease table's observers hear.
+type leaseWrites struct {
+	sets    []leaseWrite
+	deletes []string
 }
 
-func (s *fakeKVStore) SetWithTTL(key string, value any, ttl time.Duration) error {
-	return nil
-}
-
-func (s *fakeKVStore) SetNXWithTTL(key string, value any, ttl time.Duration) (bool, error) {
-	s.setNXCalls++
-	return s.setNXAllowed, nil
-}
-
-func (s *fakeKVStore) Delete(key string) (bool, error) {
-	s.deleteCalls++
-	return true, nil
+// pollLeasesForTest returns the poll lease table for kind on a new live store, with observers
+// recording its writes.
+func pollLeasesForTest(t *testing.T, kind ProviderJobKind) (*livestore.Table[string, PollLease], *leaseWrites) {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	leases, err := live.NewTable[string, PollLease](context.Background(), PollLeaseTable(kind), livestore.WithWriteTimes())
+	require.NoError(t, err)
+	w := &leaseWrites{}
+	leases.OnSet(func(key string, lease PollLease, _, _ int64) { w.sets = append(w.sets, leaseWrite{key, lease}) })
+	leases.OnDelete(func(key string, _ int64) { w.deletes = append(w.deletes, key) })
+	return leases, w
 }
 
 func TestSweeper_AccountsCompletedOpenAIJob(t *testing.T) {
@@ -1016,17 +1021,22 @@ func TestSweeper_SkipsProviderPollWhenKVLeaseIsHeld(t *testing.T) {
 	require.NoError(t, store.UpsertProviderJob(context.Background(), job))
 
 	fetcher := &fakeBatchResultFetcher{}
-	kv := &fakeKVStore{setNXAllowed: false}
+	leases, sent := pollLeasesForTest(t, ProviderJobKindBatch)
+	held := PollLease{ClaimedBy: "another-sweeper", JobID: job.ID}
+	leases.PutWithTTL("batch-accounting:poll:openai:batch_sweep_lease", held, time.Minute)
 	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
 		Provider: schemas.OpenAI,
 		Limit:    10,
-		KVStore:  kv,
+		Leases:   leases,
 	})
 
 	sweeper.SweepOnce(context.Background())
 
-	assert.Equal(t, 1, kv.setNXCalls)
-	assert.Zero(t, kv.deleteCalls)
+	got, ok := leases.Get("batch-accounting:poll:openai:batch_sweep_lease")
+	assert.True(t, ok)
+	assert.Equal(t, held, got, "the held lease must stand")
+	assert.Len(t, sent.sets, 1, "only the held lease was written")
+	assert.Empty(t, sent.deletes)
 	assert.Zero(t, fetcher.retrieveCalls)
 	assert.Zero(t, fetcher.resultsCalls)
 }
@@ -1047,17 +1057,27 @@ func TestSweeper_ReleasesProviderPollLeaseAfterSuccessfulPoll(t *testing.T) {
 		ID:     job.JobID,
 		Status: schemas.BatchStatusInProgress,
 	}}
-	kv := &fakeKVStore{setNXAllowed: true}
+	leases, sent := pollLeasesForTest(t, ProviderJobKindBatch)
 	sweeper := NewBatchSweeper(store, store, fakePricing{}, fetcher, nil, nil, SweeperConfig{
-		Provider: schemas.OpenAI,
-		Limit:    10,
-		KVStore:  kv,
+		Provider:  schemas.OpenAI,
+		Limit:     10,
+		ClaimedBy: "sweeper-a",
+		Leases:    leases,
 	})
 
 	sweeper.SweepOnce(context.Background())
 
-	assert.Equal(t, 1, kv.setNXCalls)
-	assert.Equal(t, 1, kv.deleteCalls)
+	// The lease was written under the batch key, then released.
+	lease := PollLease{ClaimedBy: "sweeper-a", JobID: job.ID}
+	assert.Equal(t, []leaseWrite{{"batch-accounting:poll:openai:batch_release_lease", lease}}, sent.sets)
+	// It encodes with the field names earlier versions wrote.
+	encoded, err := json.Marshal(lease)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"claimed_by":"sweeper-a","job_id":"`+job.ID+`"}`, string(encoded))
+	assert.Equal(t, []string{"batch-accounting:poll:openai:batch_release_lease"}, sent.deletes)
+	_, ok := leases.Get("batch-accounting:poll:openai:batch_release_lease")
+	assert.False(t, ok)
+	assert.Equal(t, 1, fetcher.retrieveCalls)
 }
 
 func TestSweeper_RescheduleUsesBackoffAndJitter(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -208,6 +209,27 @@ func TestExtractOpenAIPassthroughUsage_VideoMultipartSeconds(t *testing.T) {
 	u := openai.ExtractOpenAIPassthroughUsage("POST", "/v1/videos", reqBody, nil)
 	if u == nil || u.VideoSeconds == nil || *u.VideoSeconds != 6 {
 		t.Fatalf("video seconds = %+v, want 6", u)
+	}
+}
+
+// A multipart video request whose body is only a BodySource (a Go SDK or plugin caller, no parsed
+// Form) bills the seconds it sends, not the default: the usage body is read from the source.
+func TestExtractOpenAIPassthroughUsage_VideoSourceOnlySeconds(t *testing.T) {
+	var src bytes.Buffer
+	w := multipart.NewWriter(&src)
+	file, err := w.CreateFormFile("input_reference", "ref.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Write(bytes.Repeat([]byte("png"), 1<<10)) //nolint:errcheck
+	if err := w.WriteField("seconds", "12"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close() //nolint:errcheck
+	req := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/v1/videos", BodySource: schemas.NewBytesBodySource(src.Bytes())}
+	u := openai.ExtractOpenAIPassthroughUsage("POST", "/v1/videos", providerUtils.PassthroughUsageRequestBody(req), nil)
+	if u == nil || u.VideoSeconds == nil || *u.VideoSeconds != 12 {
+		t.Fatalf("source-only video seconds = %+v, want 12", u)
 	}
 }
 
