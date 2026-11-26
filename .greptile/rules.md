@@ -85,6 +85,21 @@ Every semantic cache change a client can observe ships with rows in the semantic
 - A new value on an axis (a request type, route, config field, request header, `cache_debug` field or response header, vector store, caller identity, cache key input) is also added to every existing row that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new rows.
 - Suite conventions: the collection is regenerated from the generator and never hand-edited; every request of a case is named by its ID; reads that must hit go through `hit()` and are polled with `x-bf-cache-no-store`; a miss runs only after its isolation hit; keys and namespaces carry the run ID; a row that changes the plugin restores the folder's baseline; exact assertions, no early return on an error status, no 500 as the expected answer.
 
+## Routing Harness
+
+Every routing change a client can observe ships with scenarios in the routing harness: `tests/e2e/api/runners/build-routing-wiring.mjs` for the routing path and `build-model-catalog-wiring.mjs` for the model catalog. AGENTS.md ("Every routing change ships with routing harness cases") and `.claude/skills/routing-harness/SKILL.md` hold the full rules and, in section 3, the cases each kind of change needs. Review only behaviour a PR adds or changes against them:
+
+- Routing covers routing rules, model routers and the complexity router, the model catalog and key aliases, a model named without a provider, virtual key provider configs and governance load balancing, key selection and key pins, direct keys, session affinity, fallbacks and retries, `extra_fields.routing_info`, the `x-bifrost-routing-info-*` headers and the routing log trail. Its cases go in the routing harness, never as new folders in `provider-harness.json`; updates to the routing folders already there are fine.
+- A routing rule change covers a match and a no-match for each CEL input it reads, each scope that can hold it and the order between scopes, priority, each target shape (provider and model, model only, a key pin, weights, a first-token cutoff), its fallbacks and chains, and an edit, disable and delete between requests.
+- A model router or complexity router change covers each classifier picking each tier and its fallback chain, tier targets and fallbacks, a router after a rule, and the request types that classify.
+- A catalog or alias change covers provider and key mutations reaching `/api/models` and `/api/models/details` and the next route, and exact, case-insensitive and regex aliases.
+- A virtual key routing change covers weighted, zero and allow-list-only configs, a candidate that cannot serve skipped at any weight, a caller-named provider skipping the balancing, budgets and rate limits, and each refusal's exact status and message.
+- A fallback or retry change covers every fallback source, an exhausted chain returning the primary's error and headers, and each upstream outcome it reaches (429, 5xx, a dropped connection, a refused key).
+- When the generator has no step for a case (streams, sessions, direct keys, rule scopes, model routers, a scripted upstream), the PR extends the generator; flag a case left out for that reason.
+- Flag scenarios that cover one scope, config, fallback source or entry point when the change reaches more and the PR does not say why the others are out of reach.
+- A new value on an axis (an entry point, routing header, rule scope, CEL input, target field, fallback source, classifier, key field, `routing_info` field, provider) is also added to every existing scenario that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new scenarios.
+- Harness conventions: the collections are regenerated from the generators and never hand-edited; routing requests are sent once and judged once, and only catalog, log, trail and pricing reads poll; everything a scenario creates is run-scoped except standard providers, which keep their fixed name on the clean server; exact assertions, distributions as membership and never exact splits, no early return on an error status, no 500 as the expected answer.
+
 ## Path-Specific Checks
 
 For `core/providers/**`:
@@ -124,6 +139,11 @@ For `plugins/governance/**`:
 - Review budget, rate-limit, virtual key, and RBAC paths for fail-closed behavior where security is involved.
 - Check that fallback and retry attempts do not double-count or undercount usage unexpectedly.
 - Preserve nil-versus-empty access semantics where configured lists distinguish allow-all, deny-all, and explicit allow-list behavior.
+- Ask for routing harness cases when a change alters virtual key routing or load balancing (see Routing Harness above).
+
+For `plugins/routing/**`, `framework/routing/**`, `framework/modelcatalog/**` and `plugins/modelcatalogresolver/**`:
+
+- Ask for routing harness cases for observable routing changes (see Routing Harness above).
 
 For `ui/**`:
 

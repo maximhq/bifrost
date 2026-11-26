@@ -28,6 +28,11 @@
       "path": ".claude/skills/semantic-cache-wiring/SKILL.md",
       "description": "Which semantic cache wiring cases each kind of semantic cache change needs, where they go and how to write and run them.",
       "scope": ["plugins/semanticcache/**", "framework/vectorstore/**", "transports/bifrost-http/**", "tests/e2e/api/runners/**", "tests/e2e/api/collections/bifrost-semantic-cache-wiring.postman_collection.json"]
+    },
+    {
+      "path": ".claude/skills/routing-harness/SKILL.md",
+      "description": "Which routing harness cases each kind of routing change needs, where they go and how to write and run them.",
+      "scope": ["plugins/routing/**", "framework/routing/**", "framework/modelcatalog/**", "plugins/modelcatalogresolver/**", "plugins/governance/**", "framework/configstore/complexity*.go", "framework/configstore/modelrouter*.go", "framework/configstore/tables/routingrules.go", "framework/configstore/tables/modelrouter.go", "framework/configstore/tables/modelroutertarget.go", "framework/livestore/registry/routingrules.go", "framework/livestore/registry/modelrouters.go", "core/**", "transports/bifrost-http/**", "tests/e2e/api/runners/**", "tests/e2e/api/collections/bifrost-routing-wiring.postman_collection.json", "tests/e2e/api/collections/bifrost-model-catalog-wiring.postman_collection.json"]
     }
   ]
 }
