@@ -394,21 +394,23 @@ func TestUpdateMCPClientReloadsAssignedVirtualKeysInOneCall(t *testing.T) {
 	gm := &reloadCountingGovernanceManager{}
 	h := &MCPHandler{store: &lib.Config{ConfigStore: cs}, governanceManager: gm}
 
-	h.refreshMCPClientOnAssignedVirtualKeys(context.Background(), "c7", 7)
+	require.NoError(t, h.refreshMCPClientOnAssignedVirtualKeys(context.Background(), 7))
 
 	require.Equal(t, [][]string{{"vk-mcp-000", "vk-mcp-001", "vk-mcp-002"}}, gm.reloadedBatches, "one batched reload of every assigned key")
 	require.Empty(t, gm.reloaded, "no per-key reloads when the batched reload succeeds")
 }
 
-// TestUpdateMCPClientBatchedReloadFallsBackPerKey pins that when the batched
-// reload fails, every assigned key is still reloaded, one ReloadVirtualKey each.
-func TestUpdateMCPClientBatchedReloadFallsBackPerKey(t *testing.T) {
+// TestUpdateMCPClientBatchedReloadFailureIsReturned pins that when the batched reload fails, the
+// error comes back for the handler to answer, with no reload per key: the keys keep their previous
+// records until a reload succeeds.
+func TestUpdateMCPClientBatchedReloadFailureIsReturned(t *testing.T) {
 	SetLogger(&mockLogger{})
 	assignments := newMCPRefreshFixture(t, 3)
 	cs := &mcpRefreshConfigStore{client: &configstoreTables.TableMCPClient{ID: 7, ClientID: "c7"}, assignments: assignments}
-	gm := &reloadCountingGovernanceManager{batchErr: fmt.Errorf("config store does not support batched virtual key reads")}
+	batchErr := fmt.Errorf("database unreachable")
+	gm := &reloadCountingGovernanceManager{batchErr: batchErr}
 	h := &MCPHandler{store: &lib.Config{ConfigStore: cs}, governanceManager: gm}
 
-	h.refreshMCPClientOnAssignedVirtualKeys(context.Background(), "c7", 7)
-	require.Equal(t, []string{"vk-mcp-000", "vk-mcp-001", "vk-mcp-002"}, gm.reloaded)
+	require.ErrorIs(t, h.refreshMCPClientOnAssignedVirtualKeys(context.Background(), 7), batchErr)
+	require.Empty(t, gm.reloaded, "no per-key fallback")
 }

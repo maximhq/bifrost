@@ -2524,15 +2524,22 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, err.Error())
 		return
 	}
+	rec := lib.RecordAuditChange(ctx, "virtual_key.created", "virtual_key", vk.ID, vk.Name, nil, auditVirtualKey(&vk))
 	preloadedVk, err := h.governanceManager.ReloadVirtualKey(ctx, vk.ID)
 	if err != nil {
-		logger.Error("failed to reload virtual key: %v", err)
-		preloadedVk = &vk
+		// The committed row lacks the rate limit and budgets saved beside it; record them when the database answers.
+		if saved, readErr := h.configStore.GetVirtualKey(ctx, vk.ID); readErr == nil && saved != nil {
+			h.hydrateVKGovernance(ctx, saved)
+			rec.SetAfter(auditVirtualKey(saved))
+		}
+		logger.Error("failed to reload virtual key after create: %v", err)
+		SendError(ctx, 500, "Virtual key created in database but failed to reload in-memory state")
+		return
 	}
 	// Reverse-map governance from the model configs just written, for display.
 	h.hydrateVKGovernance(ctx, preloadedVk)
 
-	lib.RecordAuditChange(ctx, "virtual_key.created", "virtual_key", vk.ID, vk.Name, nil, auditVirtualKey(preloadedVk))
+	rec.SetAfter(auditVirtualKey(preloadedVk))
 	SendJSON(ctx, map[string]any{
 		"message":     "Virtual key created successfully",
 		"virtual_key": preloadedVk,
@@ -3607,12 +3614,18 @@ func (h *GovernanceHandler) createTeam(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Reloading team from in-memory store
+	rec := lib.RecordAuditChange(ctx, "team.created", "team", team.ID, team.Name, nil, auditTeam(&team))
 	preloadedTeam, err := h.governanceManager.ReloadTeam(ctx, team.ID)
 	if err != nil {
-		logger.Error("failed to reload team: %v", err)
-		preloadedTeam = &team
+		// The committed row lacks the rate limit and budgets saved beside it; record them when the database answers.
+		if saved, readErr := h.configStore.GetTeam(ctx, team.ID); readErr == nil && saved != nil {
+			rec.SetAfter(auditTeam(saved))
+		}
+		logger.Error("failed to reload team after create: %v", err)
+		SendError(ctx, 500, "Team created in database but failed to reload in-memory state")
+		return
 	}
-	lib.RecordAuditChange(ctx, "team.created", "team", team.ID, team.Name, nil, auditTeam(preloadedTeam))
+	rec.SetAfter(auditTeam(preloadedTeam))
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Team created successfully",
 		"team":    preloadedTeam,
@@ -4022,12 +4035,18 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 500, "failed to create customer")
 		return
 	}
+	rec := lib.RecordAuditChange(ctx, "customer.created", "customer", customer.ID, customer.Name, nil, auditCustomer(&customer))
 	preloadedCustomer, err := h.governanceManager.ReloadCustomer(ctx, customer.ID)
 	if err != nil {
-		logger.Error("failed to reload customer: %v", err)
-		preloadedCustomer = &customer
+		// The committed row lacks the rate limit and budgets saved beside it; record them when the database answers.
+		if saved, readErr := h.configStore.GetCustomer(ctx, customer.ID); readErr == nil && saved != nil {
+			rec.SetAfter(auditCustomer(saved))
+		}
+		logger.Error("failed to reload customer after create: %v", err)
+		SendError(ctx, 500, "Customer created in database but failed to reload in-memory state")
+		return
 	}
-	lib.RecordAuditChange(ctx, "customer.created", "customer", customer.ID, customer.Name, nil, auditCustomer(preloadedCustomer))
+	rec.SetAfter(auditCustomer(preloadedCustomer))
 	SendJSON(ctx, map[string]interface{}{
 		"message":  "Customer created successfully",
 		"customer": preloadedCustomer,
@@ -4866,14 +4885,16 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	// Reload model config in memory
+	rec := lib.RecordAuditChange(ctx, "model_config.created", "model_config", mc.ID, mc.ModelName, nil, &mc)
 	preloadedMC, err := h.governanceManager.ReloadModelConfig(ctx, mc.ID)
 	if err != nil {
-		logger.Error("failed to reload model config in memory: %v", err)
-		preloadedMC = &mc
+		logger.Error("failed to reload model config after create: %v", err)
+		SendError(ctx, 500, "Model config created in database but failed to reload in-memory state")
+		return
 	}
 	h.resolveModelConfigScopeName(ctx, preloadedMC, map[string]string{})
 	h.resolveModelConfigManagedBy(ctx, preloadedMC, map[string]configstoreTables.SourceRef{})
-	lib.RecordAuditChange(ctx, "model_config.created", "model_config", mc.ID, mc.ModelName, nil, preloadedMC)
+	rec.SetAfter(preloadedMC)
 	SendJSON(ctx, map[string]interface{}{
 		"message":      "Model config created successfully",
 		"model_config": preloadedMC,
