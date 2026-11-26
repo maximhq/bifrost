@@ -146,7 +146,7 @@ func (provider *BytePlusProvider) Embedding(ctx *schemas.BifrostContext, key sch
 			jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 				ctx,
 				request,
-				func() (providerUtils.RequestBodyWithExtraParams, error) {
+				func() (*BytePlusMultimodalEmbeddingRequest, error) {
 					return ToBytePlusMultimodalEmbeddingRequest(request.Model, item, request.Params)
 				})
 			if bifrostErr != nil {

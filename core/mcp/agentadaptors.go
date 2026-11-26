@@ -316,6 +316,22 @@ func joinNonEmpty(earlier []string, last *string) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// toolResultSummaryBlocks lists a tool result's blocks for a text summary; media is named by a placeholder.
+func toolResultSummaryBlocks(contentBlocks []schemas.ChatContentBlock) []map[string]interface{} {
+	blocks := make([]map[string]interface{}, 0, len(contentBlocks))
+	for _, block := range contentBlocks {
+		blockMap := map[string]interface{}{"type": string(block.Type)}
+		switch {
+		case block.Text != nil:
+			blockMap["text"] = *block.Text
+		case block.ImageURLStruct != nil || block.InputAudio != nil || block.File != nil:
+			blockMap["text"] = schemas.ToolResultMediaPlaceholder(block)
+		}
+		blocks = append(blocks, blockMap)
+	}
+	return blocks
+}
+
 // createChatResponseWithExecutedToolsAndNonAutoExecutableCalls creates a chat response
 // that includes executed tool results and non-auto-executable tool calls. The response
 // contains a formatted text summary of executed tool results and includes the non-auto-executable
@@ -385,17 +401,7 @@ func createChatResponseWithExecutedToolsAndNonAutoExecutableCalls(
 				if toolResult.Content.ContentStr != nil {
 					output = *toolResult.Content.ContentStr
 				} else if toolResult.Content.ContentBlocks != nil {
-					// Convert content blocks to a readable format
-					blocks := make([]map[string]interface{}, 0)
-					for _, block := range toolResult.Content.ContentBlocks {
-						blockMap := make(map[string]interface{})
-						blockMap["type"] = string(block.Type)
-						if block.Text != nil {
-							blockMap["text"] = *block.Text
-						}
-						blocks = append(blocks, blockMap)
-					}
-					output = blocks
+					output = toolResultSummaryBlocks(toolResult.Content.ContentBlocks)
 				}
 			}
 			toolResultsMap[toolName] = output
@@ -485,7 +491,7 @@ func (r *responsesAPIAdapter) addAssistantMessage(conversation []interface{}, re
 func (r *responsesAPIAdapter) addToolResults(conversation []interface{}, toolResults []*schemas.ChatMessage) []interface{} {
 	for _, toolResult := range toolResults {
 		// Convert using existing converter
-		responsesMessages := toolResult.ToResponsesMessages()
+		responsesMessages := schemas.ToolResultForResponses(toolResult).ToResponsesMessages()
 		for _, respMsg := range responsesMessages {
 			conversation = append(conversation, respMsg)
 		}
@@ -671,17 +677,7 @@ func createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls(
 				if toolResult.Content.ContentStr != nil {
 					output = *toolResult.Content.ContentStr
 				} else if toolResult.Content.ContentBlocks != nil {
-					// Convert content blocks to a readable format
-					blocks := make([]map[string]interface{}, 0)
-					for _, block := range toolResult.Content.ContentBlocks {
-						blockMap := make(map[string]interface{})
-						blockMap["type"] = string(block.Type)
-						if block.Text != nil {
-							blockMap["text"] = *block.Text
-						}
-						blocks = append(blocks, blockMap)
-					}
-					output = blocks
+					output = toolResultSummaryBlocks(toolResult.Content.ContentBlocks)
 				}
 			}
 			toolResultsMap[toolName] = output

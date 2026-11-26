@@ -1,1 +1,3 @@
-- chore: upgraded Go to 1.27.3, core to v1.13.1 and framework to v1.10.1
+- feat: model routers - named routers classify requests into tiers and route each tier to weighted targets with fallbacks, by scope, CEL condition and priority
+- feat: complexity router phrase suggestions - sampled request capture, scheduled clustering within a budget, impact replay, add-phrases and backfill from logs, and statement classification
+- chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0

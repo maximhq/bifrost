@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/maximhq/bifrost/plugins/otel"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/plugins/otel"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -50,6 +52,18 @@ func (s *capturePluginsStore) CreatePlugin(_ context.Context, plugin *configstor
 	return nil
 }
 
+// fixedNamesLoader is a loader whose server configures the named plugins itself, besides the
+// built-ins every server does.
+type fixedNamesLoader struct {
+	noopPluginsLoader
+	names []string
+}
+
+// IsFixedBuiltinPlugin reports the loader's own names and every server's built-ins as fixed.
+func (l fixedNamesLoader) IsFixedBuiltinPlugin(name string) bool {
+	return slices.Contains(l.names, name) || lib.IsFixedBuiltinPlugin(name)
+}
+
 // noopPluginsLoader satisfies the PluginsLoader interface without doing anything.
 type noopPluginsLoader struct{}
 
@@ -65,6 +79,10 @@ func (noopPluginsLoader) NormalizePluginConfig(_ string, _ map[string]any) (map[
 	return nil, nil
 }
 
+// IsFixedBuiltinPlugin reports every server's built-ins as fixed.
+func (noopPluginsLoader) IsFixedBuiltinPlugin(name string) bool {
+	return lib.IsFixedBuiltinPlugin(name)
+}
 func (noopPluginsLoader) ExpandPluginConfigForAPI(_ string, _ map[string]any) (map[string]any, error) {
 	return nil, nil
 }
@@ -1171,4 +1189,61 @@ func TestUpdatePlugin_AuditsCommittedUpdateWhenRuntimeStopFails(t *testing.T) {
 		t.Fatalf("expected 500, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
 	}
 	requireSingleAuditChange(t, ctx, "plugin.updated")
+}
+
+// TestPluginsAPIRefusesFixedBuiltinPlugins checks that the plugins API refuses to create, change
+// or delete a built-in plugin Bifrost configures itself, without touching the store or the
+// loader, while built-ins configured through it, like otel, stay editable.
+func TestPluginsAPIRefusesFixedBuiltinPlugins(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, name := range []string{"governance", "routing", "logging", "prompts", "compat", "model-catalog-resolver"} {
+		t.Run(name, func(t *testing.T) {
+			store := &capturePluginsStore{existingPlugin: &configstoreTables.TablePlugin{Name: name, Enabled: true}}
+			h := &PluginsHandler{pluginsLoader: noopPluginsLoader{}, configStore: store}
+			refusal := fmt.Sprintf("The %s plugin is built in and configured by Bifrost; it cannot be created, changed or deleted through the plugins API", name)
+			requireRefused := func(op string, ctx *fasthttp.RequestCtx) {
+				t.Helper()
+				if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+					t.Fatalf("%s: expected 400, got %d: %s", op, got, ctx.Response.Body())
+				}
+				if !strings.Contains(string(ctx.Response.Body()), refusal) {
+					t.Fatalf("%s: expected the built-in refusal, got %s", op, ctx.Response.Body())
+				}
+			}
+
+			create := buildCreateRequest(t, map[string]any{"name": name, "enabled": true})
+			h.createPlugin(create)
+			requireRefused("create", create)
+
+			update := buildUpdateRequest(t, map[string]any{"enabled": false})
+			update.SetUserValue("name", name)
+			h.updatePlugin(update)
+			requireRefused("update", update)
+			if store.capturedConfig != nil || store.capturedEnabled {
+				t.Fatal("update reached the config store")
+			}
+
+			remove := &fasthttp.RequestCtx{}
+			remove.Request.Header.SetMethod("DELETE")
+			remove.SetUserValue("name", name)
+			h.deletePlugin(remove)
+			requireRefused("delete", remove)
+		})
+	}
+
+	// A server that configures more plugins itself names them, and the API refuses those too.
+	extra := &PluginsHandler{pluginsLoader: fixedNamesLoader{names: []string{"custom-builtin"}}, configStore: &capturePluginsStore{}}
+	create := buildCreateRequest(t, map[string]any{"name": "custom-builtin", "enabled": true})
+	extra.createPlugin(create)
+	if got := create.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("create of a server's own built-in: expected 400, got %d: %s", got, create.Response.Body())
+	}
+
+	store := &capturePluginsStore{existingPlugin: &configstoreTables.TablePlugin{Name: "otel", Enabled: true, Config: map[string]any{}}}
+	h := &PluginsHandler{pluginsLoader: noopPluginsLoader{}, configStore: store}
+	update := buildUpdateRequest(t, map[string]any{"enabled": true, "config": map[string]any{"collector_url": "collector:4317"}})
+	h.updatePlugin(update)
+	if got := update.Response.StatusCode(); got != fasthttp.StatusOK {
+		t.Fatalf("otel update: expected 200, got %d: %s", got, update.Response.Body())
+	}
 }

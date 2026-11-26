@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -211,6 +212,27 @@ func TestExtractOpenAIPassthroughUsage_VideoMultipartSeconds(t *testing.T) {
 	}
 }
 
+// A multipart video request whose body is only a BodySource (a Go SDK or plugin caller, no parsed
+// Form) bills the seconds it sends, not the default: the usage body is read from the source.
+func TestExtractOpenAIPassthroughUsage_VideoSourceOnlySeconds(t *testing.T) {
+	var src bytes.Buffer
+	w := multipart.NewWriter(&src)
+	file, err := w.CreateFormFile("input_reference", "ref.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	file.Write(bytes.Repeat([]byte("png"), 1<<10)) //nolint:errcheck
+	if err := w.WriteField("seconds", "12"); err != nil {
+		t.Fatal(err)
+	}
+	w.Close() //nolint:errcheck
+	req := &schemas.BifrostPassthroughRequest{Method: "POST", Path: "/v1/videos", BodySource: schemas.NewBytesBodySource(src.Bytes())}
+	u := openai.ExtractOpenAIPassthroughUsage("POST", "/v1/videos", providerUtils.PassthroughUsageRequestBody(req), nil)
+	if u == nil || u.VideoSeconds == nil || *u.VideoSeconds != 12 {
+		t.Fatalf("source-only video seconds = %+v, want 12", u)
+	}
+}
+
 // Video usage is billable only on POST. GET (list/retrieve) and DELETE must not accrue
 // per-second video usage even though the path contains "/videos".
 func TestExtractOpenAIPassthroughUsage_VideoNonPOSTNotBilled(t *testing.T) {
@@ -380,5 +402,40 @@ func TestClassifyPassthroughPathMethods(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestEndsOpenAIPassthroughStream(t *testing.T) {
+	cases := map[string]bool{
+		`{"type":"response.completed","response":{}}`:                 true,
+		`{"type":"response.failed","response":{}}`:                    true,
+		`{"type":"response.incomplete","response":{}}`:                true,
+		`{"type":"error","message":"boom"}`:                           true,
+		`{"type":"response.output_text.delta","delta":"hi"}`:          false,
+		`{"type":"response.created","response":{}}`:                   false,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`:           false,
+		`{"choices":[],"usage":{"prompt_tokens":1,"total_tokens":2}}`: false,
+		`[DONE]`: false,
+	}
+	for event, want := range cases {
+		if got := openai.EndsOpenAIPassthroughStream([]byte(event)); got != want {
+			t.Errorf("EndsOpenAIPassthroughStream(%s) = %v, want %v", event, got, want)
+		}
+	}
+}
+
+func BenchmarkEndsOpenAIPassthroughStream(b *testing.B) {
+	events := map[string][]byte{
+		"delta":     []byte(`{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}`),
+		"completed": []byte(`{"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":5,"output_tokens":3,"total_tokens":8}}}`),
+		"chat":      []byte(`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`),
+	}
+	for name, event := range events {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				openai.EndsOpenAIPassthroughStream(event)
+			}
+		})
 	}
 }

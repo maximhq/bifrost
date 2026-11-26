@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -16,10 +17,36 @@ type responseHandler[T any] func(responseBody []byte, response *T, requestBody [
 // Used when the datasheet publishes no row for a (provider, model) pair. Caps
 // gates in this package pass one of these as their fallback.
 
-// defaultSupportsReasoningContentBlocks: gpt-oss carries replayed reasoning as
-// content blocks; the o-series and GPT-5 carry it as summary[] entries.
-func defaultSupportsReasoningContentBlocks(model string) bool {
-	return strings.Contains(strings.ToLower(model), "gpt-oss")
+// defaultSupportsReasoningContentBlocks: gpt-oss and every vLLM-served model carry
+// replayed reasoning as content blocks; the o-series and GPT-5 carry it as summary[] entries.
+func defaultSupportsReasoningContentBlocks(provider schemas.ModelProvider, model string) bool {
+	return provider == schemas.VLLM || isGPTOSS(model)
+}
+
+// isGPTOSS reports whether model is gpt-oss, which accepts sampling params at any effort.
+func isGPTOSS(model string) bool { return strings.Contains(strings.ToLower(model), "gpt-oss") }
+
+// joinReasoningBlocks collapses reasoning text blocks into one, in order, joined by "\n" as
+// vLLM's harmony reader does; vLLM's general reader keeps only content[0]. Blocks holding
+// anything but reasoning text are returned unchanged.
+func joinReasoningBlocks(blocks []schemas.ResponsesMessageContentBlock) []schemas.ResponsesMessageContentBlock {
+	if len(blocks) < 2 {
+		return blocks
+	}
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesOutputMessageContentTypeReasoning || block.Text == nil {
+			return blocks
+		}
+		if *block.Text == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(*block.Text)
+	}
+	return []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr(b.String())}}
 }
 
 // IsOpenAIReasoningModel matches OpenAI-family models that accept
@@ -133,15 +160,16 @@ func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
 // datasheet's per-level booleans take precedence when a row exists.
 func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
-	// BytePlus Ark accepts minimal/low/medium/high on every reasoning model.
-	if acceptsMinimalEffort(model) || provider == schemas.BytePlus {
+	// BytePlus Ark accepts minimal/low/medium/high on every reasoning model; Baseten
+	// Model APIs accepts minimal through max, and models without a level ignore it.
+	if acceptsMinimalEffort(model) || provider == schemas.BytePlus || provider == schemas.Baseten {
 		levels = append([]string{schemas.ReasoningEffortMinimal}, levels...)
 	}
 	if includeXHighInDefaultLadder(provider, model) {
 		levels = append(levels, schemas.ReasoningEffortXHigh)
 	}
 	// MiniMax accepts "max" on every chat model (and defaults to it); M2.x ignores effort entirely.
-	if acceptsMaxEffort(model) || provider == schemas.MiniMax {
+	if acceptsMaxEffort(model) || provider == schemas.MiniMax || provider == schemas.Baseten {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
@@ -294,6 +322,7 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
+		bifrostMessages[i].AttachMessageCacheControl(message.CacheControl)
 	}
 	return bifrostMessages
 }
@@ -303,8 +332,28 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 // carrier for. Over-long tool call IDs are stripped of embedded provider
 // reasoning signatures, and tool messages lose is_error so providers that reject
 // unknown message parameters never see it.
+// Media a tool returned becomes a text placeholder, since a Chat tool message
+// takes text only; ToOpenAIChatRequest moves the images into user content
+// instead when the destination model accepts images.
 // The caller's messages are never mutated: shared pointers are cloned before edit.
 func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []OpenAIMessage {
+	return convertBifrostMessagesToOpenAIMessages(messages, false)
+}
+
+// convertBifrostMessagesToOpenAIMessages is ConvertBifrostMessagesToOpenAIMessages
+// with hoistToolImages choosing what happens to a tool's images. When it is
+// true they move into user content after the run of tool results; when false
+// they become placeholders, because a model without image input rejects an
+// image_url part outright and the placeholder keeps the request valid.
+func convertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage, hoistToolImages bool) []OpenAIMessage {
+	hasToolImages := false
+	keepToolImage := func(block schemas.ChatContentBlock) bool {
+		if !hoistToolImages || !schemas.IsImageBlock(block) || block.ImageURLStruct.URL == "" {
+			return false
+		}
+		hasToolImages = true
+		return true
+	}
 	openaiMessages := make([]OpenAIMessage, len(messages))
 	for i, message := range messages {
 		openaiMessages[i] = OpenAIMessage{
@@ -312,6 +361,11 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			Role:            message.Role,
 			Content:         message.Content,
 			ChatToolMessage: message.ChatToolMessage,
+		}
+		// Preserve portable images until they can be moved after all tool results.
+		// Other media still becomes a text placeholder.
+		if message.Role == schemas.ChatMessageRoleTool {
+			openaiMessages[i].Content = schemas.FlattenToolResultMedia(message.Content, keepToolImage)
 		}
 		// Strip provider reasoning signatures (e.g. Gemini thoughtSignatures embedded in
 		// call_id as "<baseID>_ts_<sig>") from the tool result's tool_call_id, but only when it
@@ -364,7 +418,114 @@ func ConvertBifrostMessagesToOpenAIMessages(messages []schemas.ChatMessage) []Op
 			}
 		}
 	}
+	if hasToolImages {
+		return hoistChatToolResultImages(openaiMessages)
+	}
 	return openaiMessages
+}
+
+// hoistChatToolResultImages moves images after each complete run of tool results.
+// It prepends them to an existing following user turn when possible, avoiding
+// consecutive user turns. Message content still aliases the caller and is copied
+// before edit; image payloads themselves are reused, not decoded or copied.
+func hoistChatToolResultImages(messages []OpenAIMessage) []OpenAIMessage {
+	out := make([]OpenAIMessage, 0, len(messages)+1)
+	var attachments []schemas.ChatContentBlock
+	for i := 0; i < len(messages); i++ {
+		message := messages[i]
+		if message.Role == schemas.ChatMessageRoleTool && message.Content != nil {
+			var blocks []schemas.ChatContentBlock
+			for j, block := range message.Content.ContentBlocks {
+				if block.Type != schemas.ChatContentBlockTypeImage {
+					continue
+				}
+				if blocks == nil {
+					blocks = slices.Clone(message.Content.ContentBlocks)
+					caption := "Images returned by tool:"
+					if message.ChatToolMessage != nil && message.ToolCallID != nil {
+						caption = "Images returned by tool call " + *message.ToolCallID + ":"
+					}
+					attachments = append(attachments, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &caption})
+				}
+				// Keep the original cache boundary on a text part, where Chat
+				// accepts it, rather than duplicating it on the moved image.
+				blocks[j] = schemas.ChatContentBlock{
+					Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Image attached below."),
+					CacheControl: block.CacheControl, PromptCacheBreakpoint: block.PromptCacheBreakpoint,
+				}
+				block.CacheControl = nil
+				block.PromptCacheBreakpoint = nil
+				block.CachePoint = nil
+				block.GuardContent = nil
+				attachments = append(attachments, block)
+			}
+			if blocks != nil {
+				// Flattening previously joined refusal text into the tool's
+				// string. Retain that text, not an assistant-only refusal part.
+				for j, block := range blocks {
+					if block.Type != schemas.ChatContentBlockTypeRefusal {
+						continue
+					}
+					block.Type = schemas.ChatContentBlockTypeText
+					if block.Text == nil {
+						block.Text = block.Refusal
+					}
+					if block.Text == nil {
+						block.Text = schemas.Ptr("")
+					}
+					block.Refusal = nil
+					blocks[j] = block
+				}
+				message.Content = toolTextContent(message.Content, blocks)
+			}
+		}
+		out = append(out, message)
+		if len(attachments) == 0 || (i+1 < len(messages) && messages[i+1].Role == schemas.ChatMessageRoleTool) {
+			continue
+		}
+
+		user := OpenAIMessage{Role: schemas.ChatMessageRoleUser}
+		content := &schemas.ChatMessageContent{ContentBlocks: attachments}
+		if i+1 < len(messages) && messages[i+1].Role == schemas.ChatMessageRoleUser {
+			i++
+			user = messages[i]
+			if user.Content != nil {
+				if user.Content.ContentStr != nil {
+					content.ContentBlocks = append(content.ContentBlocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: user.Content.ContentStr})
+				} else {
+					content.ContentBlocks = append(content.ContentBlocks, user.Content.ContentBlocks...)
+				}
+			}
+		}
+		user.Content = content
+		out = append(out, user)
+		attachments = nil
+	}
+	return out
+}
+
+// toolTextContent is content with blocks, all text, in place of its parts. They
+// are joined into one string, the form FlattenToolResultMedia gives a text-only
+// tool result and the one strict servers accept, unless a part carries a cache
+// marker that needs a part to stay on.
+func toolTextContent(content *schemas.ChatMessageContent, blocks []schemas.ChatContentBlock) *schemas.ChatMessageContent {
+	out := *content
+	for _, block := range blocks {
+		if block.CacheControl != nil || block.PromptCacheBreakpoint != nil {
+			out.ContentBlocks = blocks
+			return &out
+		}
+	}
+	texts := make([]string, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Text != nil {
+			texts = append(texts, *block.Text)
+		}
+	}
+	joined := strings.Join(texts, "\n")
+	out.ContentBlocks = nil
+	out.ContentStr = &joined
+	return &out
 }
 
 // MaxUserFieldLength for OpenAI enforces a 64 character maximum on the user field
@@ -396,4 +557,79 @@ func toolChoiceAnySupported(provider schemas.ModelProvider, model string) bool {
 	default:
 		return false
 	}
+}
+
+// wrapSystemReminder renders system text for a user turn, matching the Anthropic converter's fallback.
+func wrapSystemReminder(text string) string {
+	return "<system-reminder>\n" + text + "\n</system-reminder>\n"
+}
+
+// inlineChatMidConversationSystem rewrites system / developer messages after the leading run as
+// user turns, prefixed with <system-reminder>
+func inlineChatMidConversationSystem(messages []OpenAIMessage) []OpenAIMessage {
+	leading := true
+	for i := range messages {
+		m := &messages[i]
+		isSystem := m.Role == schemas.ChatMessageRoleSystem || m.Role == schemas.ChatMessageRoleDeveloper
+		if leading && isSystem {
+			continue
+		}
+		leading = false
+		if !isSystem {
+			continue
+		}
+		if m.Content == nil {
+			*m = OpenAIMessage{Name: m.Name, Role: schemas.ChatMessageRoleUser}
+			continue
+		}
+		content := &schemas.ChatMessageContent{}
+		if m.Content.ContentStr != nil {
+			content.ContentStr = new(wrapSystemReminder(*m.Content.ContentStr))
+		}
+		for _, block := range m.Content.ContentBlocks {
+			if block.Text != nil {
+				block.Text = new(wrapSystemReminder(*block.Text))
+			}
+			content.ContentBlocks = append(content.ContentBlocks, block)
+		}
+		*m = OpenAIMessage{Name: m.Name, Role: schemas.ChatMessageRoleUser, Content: content}
+	}
+	return messages
+}
+
+func inlineResponsesMidConversationSystem(messages []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	leading := true
+	for i := range messages {
+		m := &messages[i]
+		// Tool declarations and configuration updates are not conversation turns, so they do not end the leading run.
+		if m.Type != nil && (*m.Type == schemas.ResponsesMessageTypeAdditionalTools || *m.Type == schemas.ResponsesMessageTypeConfigurationUpdate) {
+			continue
+		}
+		isSystem := m.Role != nil &&
+			(*m.Role == schemas.ResponsesInputMessageRoleSystem || *m.Role == schemas.ResponsesInputMessageRoleDeveloper) &&
+			(m.Type == nil || *m.Type == schemas.ResponsesMessageTypeMessage)
+		if leading && isSystem {
+			continue
+		}
+		leading = false
+		if !isSystem {
+			continue
+		}
+		m.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleUser)
+		if m.Content == nil {
+			continue
+		}
+		content := &schemas.ResponsesMessageContent{}
+		if m.Content.ContentStr != nil {
+			content.ContentStr = schemas.Ptr(wrapSystemReminder(*m.Content.ContentStr))
+		}
+		for _, block := range m.Content.ContentBlocks {
+			if block.Text != nil {
+				block.Text = schemas.Ptr(wrapSystemReminder(*block.Text))
+			}
+			content.ContentBlocks = append(content.ContentBlocks, block)
+		}
+		m.Content = content
+	}
+	return messages
 }

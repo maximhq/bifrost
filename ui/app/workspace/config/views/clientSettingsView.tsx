@@ -1,19 +1,25 @@
+import BetaBadge from "@/components/betaBadge";
+import { LanguageSelect } from "@/components/language-switcher";
 import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getErrorMessage, useGetCoreConfigQuery, useGetDroppedRequestsQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, DefaultGlobalHeaderFilterConfig, GlobalHeaderFilterConfig } from "@/lib/types/config";
+import { bifrostUrlSchema, openAPIUrlSchema, SecretVar } from "@/lib/types/schemas";
 import { cn } from "@/lib/utils";
+import { secretVarEquals } from "@/lib/utils/secretVarForm";
 import LargePayloadSettingsFragment from "@enterprise/components/large-payload/largePayloadSettingsFragment";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetLargePayloadConfigQuery, useUpdateLargePayloadConfigMutation } from "@enterprise/lib/store/apis/largePayloadApi";
 import { DefaultLargePayloadConfig, LargePayloadConfig } from "@enterprise/lib/types/largePayload";
 import { Info, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import UserAgentMappingsView from "./userAgentMappingsView";
 
@@ -67,6 +73,8 @@ function largePayloadConfigEqual(a: LargePayloadConfig, b: LargePayloadConfig): 
 }
 
 export default function ClientSettingsView() {
+	const { t } = useTranslation("config");
+	const { t: tCommon } = useTranslation("common");
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [droppedRequests, setDroppedRequests] = useState<number>(0);
 	const { data: droppedRequestsData } = useGetDroppedRequestsQuery();
@@ -74,6 +82,9 @@ export default function ClientSettingsView() {
 	const config = bifrostConfig?.client_config;
 	const [updateCoreConfig, { isLoading: isSavingCoreConfig }] = useUpdateCoreConfigMutation();
 	const [localConfig, setLocalConfig] = useState<CoreConfig>(DefaultCoreConfig);
+	// openapi_url lives in the framework config; it is edited here with the client config.
+	const storedOpenAPIURL = bifrostConfig?.framework_config?.openapi_url ?? "";
+	const [openAPIURL, setOpenAPIURL] = useState(storedOpenAPIURL);
 
 	// Large payload config state
 	const { data: serverLargePayloadConfig, isLoading: isLargePayloadConfigLoading } = useGetLargePayloadConfigQuery();
@@ -99,6 +110,10 @@ export default function ClientSettingsView() {
 	}, [config]);
 
 	useEffect(() => {
+		setOpenAPIURL(storedOpenAPIURL);
+	}, [storedOpenAPIURL]);
+
+	useEffect(() => {
 		if (serverLargePayloadConfig) {
 			setLocalLargePayloadConfig(serverLargePayloadConfig);
 		}
@@ -112,9 +127,11 @@ export default function ClientSettingsView() {
 			localConfig.dump_errors_in_console_logs !== config.dump_errors_in_console_logs ||
 			localConfig.async_job_result_ttl !== config.async_job_result_ttl ||
 			(localConfig.extra_fields_placement ?? "body") !== (config.extra_fields_placement ?? "body") ||
+			!secretVarEquals(localConfig.bifrost_url, config.bifrost_url) ||
+			openAPIURL.trim() !== storedOpenAPIURL ||
 			!headerFilterConfigEqual(localConfig.header_filter_config, config.header_filter_config)
 		);
-	}, [config, localConfig]);
+	}, [config, localConfig, openAPIURL, storedOpenAPIURL]);
 
 	const hasLargePayloadChanges = useMemo(() => {
 		const baseline = serverLargePayloadConfig ?? DefaultLargePayloadConfig;
@@ -134,6 +151,13 @@ export default function ClientSettingsView() {
 
 	const hasSecurityHeaderError = invalidSecurityHeaders.length > 0;
 
+	// Checked on every render, not memoized, so a message follows a language switch.
+	const bifrostURLCheck = localConfig.bifrost_url ? bifrostUrlSchema.safeParse(localConfig.bifrost_url) : undefined;
+	const bifrostURLError = bifrostURLCheck && !bifrostURLCheck.success ? bifrostURLCheck.error.issues[0]?.message : undefined;
+	const openAPIURLCheck = openAPIUrlSchema.safeParse(openAPIURL);
+	const openAPIURLError = openAPIURLCheck.success ? undefined : openAPIURLCheck.error.issues[0]?.message;
+	const hasURLError = !!bifrostURLError || !!openAPIURLError;
+
 	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[] | GlobalHeaderFilterConfig) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
@@ -147,6 +171,10 @@ export default function ClientSettingsView() {
 		if (hasSecurityHeaderError) {
 			return;
 		}
+		// The errors are shown beside their inputs.
+		if (hasURLError) {
+			return;
+		}
 
 		// Validate large payload config if it has changes
 		if (hasLargePayloadChanges) {
@@ -158,15 +186,15 @@ export default function ClientSettingsView() {
 				localLargePayloadConfig.max_payload_bytes < minBytes ||
 				localLargePayloadConfig.truncated_log_bytes < minBytes
 			) {
-				toast.error("All byte values must be at least 1024 (1 KB).");
+				toast.error(t("clientSettings.toastMinBytes"));
 				return;
 			}
 			if (localLargePayloadConfig.max_payload_bytes < localLargePayloadConfig.request_threshold_bytes) {
-				toast.error("Max payload size must be greater than or equal to the request threshold.");
+				toast.error(t("clientSettings.toastMaxVsRequest"));
 				return;
 			}
 			if (localLargePayloadConfig.max_payload_bytes < localLargePayloadConfig.response_threshold_bytes) {
-				toast.error("Max payload size must be greater than or equal to the response threshold.");
+				toast.error(t("clientSettings.toastMaxVsResponse"));
 				return;
 			}
 		}
@@ -177,7 +205,7 @@ export default function ClientSettingsView() {
 		// Save core config if changed
 		if (hasCoreConfigChanges) {
 			if (!bifrostConfig) {
-				toast.error("Configuration not loaded. Please refresh and try again.");
+				toast.error(t("configNotLoadedRefresh"));
 				return;
 			}
 			// Clean up empty strings from header filter config
@@ -190,10 +218,18 @@ export default function ClientSettingsView() {
 			};
 
 			try {
-				await updateCoreConfig({ ...bifrostConfig!, client_config: cleanedConfig }).unwrap();
+				await updateCoreConfig({
+					...bifrostConfig!,
+					client_config: cleanedConfig,
+					framework_config: { ...bifrostConfig.framework_config, openapi_url: openAPIURL.trim() },
+				}).unwrap();
 				coreConfigSaved = true;
 			} catch (error) {
-				toast.error(`Failed to save client config: ${getErrorMessage(error)}`);
+				toast.error(
+					t("clientSettings.toastSaveClientFailed", {
+						error: getErrorMessage(error),
+					}),
+				);
 			}
 		}
 
@@ -203,24 +239,31 @@ export default function ClientSettingsView() {
 				await updateLargePayloadConfig(localLargePayloadConfig).unwrap();
 				largePayloadSaved = true;
 			} catch (error) {
-				toast.error(`Failed to save large payload config: ${getErrorMessage(error)}`);
+				toast.error(
+					t("clientSettings.toastSaveLargePayloadFailed", {
+						error: getErrorMessage(error),
+					}),
+				);
 			}
 		}
 
 		if (coreConfigSaved || largePayloadSaved) {
 			if (largePayloadSaved) {
-				toast.success("Settings updated. Large payload changes require a restart to apply.");
+				toast.success(t("clientSettings.toastSavedWithRestart"));
 			} else {
-				toast.success("Client settings updated successfully.");
+				toast.success(t("clientSettings.toastSaved"));
 			}
 		}
 	}, [
 		bifrostConfig,
 		hasSecurityHeaderError,
+		hasURLError,
 		hasCoreConfigChanges,
 		hasLargePayloadChanges,
 		localConfig,
 		localLargePayloadConfig,
+		openAPIURL,
+		t,
 		updateCoreConfig,
 		updateLargePayloadConfig,
 	]);
@@ -290,20 +333,34 @@ export default function ClientSettingsView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-6">
-			<PageTitle title="Client Settings">Configure client behavior and request handling.</PageTitle>
+			<PageTitle title={t("clientSettings.title")}>{t("clientSettings.description")}</PageTitle>
 
 			<div className="space-y-4">
+				{/* Language: per-browser preference, applied immediately (not part of Save) */}
+				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
+					<div className="space-y-0.5">
+						<label htmlFor="client-settings-language" className="flex items-center gap-2 text-sm font-medium">
+							{tCommon("language")}
+							<BetaBadge />
+						</label>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.languageHelp")}</p>
+					</div>
+					<LanguageSelect id="client-settings-language" />
+				</div>
+
 				{/* Drop Excess Requests */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="drop-excess-requests" className="text-sm font-medium">
-							Drop Excess Requests
+							{t("clientSettings.dropExcessRequests")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							If enabled, Bifrost will drop requests that exceed pool capacity.{" "}
+							{t("clientSettings.dropExcessRequestsHelp")}{" "}
 							{localConfig.drop_excess_requests && droppedRequests > 0 ? (
 								<span>
-									Have dropped <b>{droppedRequests} requests</b> since last restart.
+									{t("clientSettings.droppedRequests", {
+										count: droppedRequests,
+									})}
 								</span>
 							) : (
 								<></>
@@ -323,11 +380,9 @@ export default function ClientSettingsView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="disable-db-pings-in-health" className="text-sm font-medium">
-							Disable DB Pings in Health Check
+							{t("clientSettings.disableDbPings")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							If enabled, the /health endpoint will skip database connectivity checks and return OK immediately.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.disableDbPingsHelp")}</p>
 					</div>
 					<Switch
 						id="disable-db-pings-in-health"
@@ -342,11 +397,9 @@ export default function ClientSettingsView() {
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">
 						<label htmlFor="dump-errors-in-console-logs" className="text-sm font-medium">
-							Dump Errors in Console Logs
+							{t("clientSettings.dumpErrors")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							If enabled, full error details are written to the server console logs. Useful for debugging, but may be noisy in production.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.dumpErrorsHelp")}</p>
 					</div>
 					<Switch
 						id="dump-errors-in-console-logs"
@@ -361,19 +414,14 @@ export default function ClientSettingsView() {
 				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
 					<div className="space-y-0.5">
 						<label htmlFor="extra-fields-placement" className="text-sm font-medium">
-							Extra Fields Placement
+							{t("clientSettings.extraFieldsPlacement")}
 						</label>
 						<p className="text-muted-foreground text-sm">
-							Where inference responses carry Bifrost&apos;s <b>extra_fields</b> metadata. <b>Body</b> keeps the extra_fields object in the
-							JSON response. <b>Headers</b> removes it from the body and from every streaming chunk, and sends its scalar fields as{" "}
-							<b>x-bifrost-*</b> response headers.
+							<Trans t={t} i18nKey="clientSettings.extraFieldsPlacementHelp" components={{ b: <b /> }} />
 						</p>
 						{(localConfig.extra_fields_placement ?? "body") === "headers" && (
 							<p className="text-muted-foreground text-sm" data-testid="client-settings-extra-fields-placement-dropped-note">
-								In Headers mode these fields are dropped and not sent anywhere: raw request, raw response, routing metadata, guardrail
-								debug, parse errors, and on errors key statuses, billed usage and MCP auth details. Streaming responses only carry what is
-								known before the first chunk (routing, fallback, cache lookup), so per-chunk latency, chunk index and final totals are
-								dropped too.
+								{t("clientSettings.extraFieldsPlacementDroppedNote")}
 							</p>
 						)}
 					</div>
@@ -393,10 +441,10 @@ export default function ClientSettingsView() {
 						</SelectTrigger>
 						<SelectContent>
 							<SelectItem value="body" data-testid="client-settings-extra-fields-placement-option-body">
-								Body
+								{t("clientSettings.extraFieldsBody")}
 							</SelectItem>
 							<SelectItem value="headers" data-testid="client-settings-extra-fields-placement-option-headers">
-								Headers
+								{t("clientSettings.extraFieldsHeaders")}
 							</SelectItem>
 						</SelectContent>
 					</Select>
@@ -406,11 +454,9 @@ export default function ClientSettingsView() {
 				<div className="flex flex-col items-start gap-2 sm:flex-row sm:items-center sm:justify-between">
 					<div className="space-y-0.5">
 						<label htmlFor="async-job-result-ttl" className="text-sm font-medium">
-							Async Job Result TTL (seconds)
+							{t("clientSettings.asyncJobTtl")}
 						</label>
-						<p className="text-muted-foreground text-sm">
-							Default time-to-live for async job results in seconds. Results are automatically cleaned up after expiry.
-						</p>
+						<p className="text-muted-foreground text-sm">{t("clientSettings.asyncJobTtlHelp")}</p>
 					</div>
 					<Input
 						id="async-job-result-ttl"
@@ -425,13 +471,63 @@ export default function ClientSettingsView() {
 				</div>
 			</div>
 
+			{/* Bifrost URL */}
+			<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-bifrost-url">
+				<label htmlFor="bifrost-url" className="text-sm font-medium">
+					{t("clientSettings.bifrostUrl")}
+				</label>
+				<p className="text-muted-foreground text-sm">
+					<Trans t={t} i18nKey="clientSettings.bifrostUrlHelp" components={{ code0: <code className="text-xs" /> }} />
+				</p>
+				<SecretVarInput
+					id="bifrost-url"
+					data-testid="client-settings-bifrost-url-input"
+					placeholder={t("clientSettings.bifrostUrlPlaceholder")}
+					value={localConfig.bifrost_url}
+					onChange={(value: SecretVar) => setLocalConfig((prev) => ({ ...prev, bifrost_url: value }))}
+					disabled={!hasSettingsUpdateAccess}
+					aria-invalid={!!bifrostURLError}
+					aria-describedby={bifrostURLError ? "bifrost-url-error" : undefined}
+				/>
+				{bifrostURLError && (
+					<p id="bifrost-url-error" className="text-destructive text-sm" data-testid="client-settings-bifrost-url-error">
+						{bifrostURLError}
+					</p>
+				)}
+			</div>
+
+			{/* OpenAPI URL: the spec /v1/mcp builds its tools from (framework config) */}
+			<div className="space-y-2 rounded-sm border p-4" data-testid="client-settings-openapi-url">
+				<label htmlFor="openapi-url" className="text-sm font-medium">
+					{t("clientSettings.openapiUrl")}
+				</label>
+				<p className="text-muted-foreground text-sm">
+					<Trans t={t} i18nKey="clientSettings.openapiUrlHelp" components={{ code0: <code className="text-xs" /> }} />
+				</p>
+				<Input
+					id="openapi-url"
+					data-testid="client-settings-openapi-url-input"
+					placeholder={t("clientSettings.openapiUrlPlaceholder")}
+					value={openAPIURL}
+					onChange={(e) => setOpenAPIURL(e.target.value)}
+					disabled={!hasSettingsUpdateAccess}
+					aria-invalid={!!openAPIURLError}
+					aria-describedby={openAPIURLError ? "openapi-url-error" : undefined}
+				/>
+				{openAPIURLError && (
+					<p id="openapi-url-error" className="text-destructive text-sm" data-testid="client-settings-openapi-url-error">
+						{openAPIURLError}
+					</p>
+				)}
+			</div>
+
 			<UserAgentMappingsView disabled={isLoading || !hasSettingsUpdateAccess} />
 
 			{/* Header Filter Section */}
 			<div className="space-y-4">
 				<div>
-					<h3 className="text-lg font-semibold tracking-tight">Header Forwarding</h3>
-					<p className="text-muted-foreground text-sm">Control which extra headers are forwarded to LLM providers.</p>
+					<h3 className="text-lg font-semibold tracking-tight">{t("clientSettings.headerForwarding")}</h3>
+					<p className="text-muted-foreground text-sm">{t("clientSettings.headerForwardingHelp")}</p>
 				</div>
 
 				<Accordion type="multiple" className="w-full rounded-sm border px-4">
@@ -439,61 +535,94 @@ export default function ClientSettingsView() {
 						<AccordionTrigger>
 							<span className="flex items-center gap-2">
 								<Info className="h-4 w-4" />
-								About Header Forwarding
+								{t("clientSettings.aboutHeaderForwarding")}
 							</span>
 						</AccordionTrigger>
 						<AccordionContent className="space-y-3">
 							<div>
-								<p className="mb-2 font-medium">Two ways to forward headers:</p>
+								<p className="mb-2 font-medium">{t("clientSettings.twoWays")}</p>
 								<ul className="text-muted-foreground list-inside list-disc space-y-1 text-sm">
 									<li>
-										<span className="font-medium">Prefixed headers:</span> Use{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">x-bf-eh-*</code> prefix. For example,{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">x-bf-eh-custom-id</code> is forwarded as{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">custom-id</code>.
+										<Trans
+											t={t}
+											i18nKey="clientSettings.prefixedHeaders"
+											components={{
+												span0: <span className="font-medium" />,
+												code1: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+												code2: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+												code3: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+											}}
+										/>
 									</li>
 									<li>
-										<span className="font-medium">Direct headers:</span> Any header explicitly added to the allowlist can be forwarded
-										directly without the prefix (e.g.,{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-beta</code>).
+										<Trans
+											t={t}
+											i18nKey="clientSettings.directHeaders"
+											components={{
+												span0: <span className="font-medium" />,
+												code1: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+											}}
+										/>
 									</li>
 								</ul>
 							</div>
 							<div>
-								<p className="mb-2 font-medium">How allowlist and denylist work:</p>
+								<p className="mb-2 font-medium">{t("clientSettings.howListsWork")}</p>
 								<ul className="text-muted-foreground list-inside list-disc space-y-1 text-sm">
 									<li>
-										<span className="font-medium">Allowlist empty:</span> Only{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">x-bf-eh-*</code> prefixed headers are forwarded
-										(default behavior)
+										<Trans
+											t={t}
+											i18nKey="clientSettings.emptyAllowlist"
+											components={{
+												span0: <span className="font-medium" />,
+												code1: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+											}}
+										/>
 									</li>
 									<li>
-										<span className="font-medium">Allowlist configured:</span> Prefixed headers filtered by allowlist, plus any direct
-										header in the allowlist is forwarded
+										<Trans t={t} i18nKey="clientSettings.configuredAllowlist" components={{ span0: <span className="font-medium" /> }} />
 									</li>
 									<li>
-										<span className="font-medium">Denylist:</span> Headers in the denylist are always blocked from forwarding
+										<Trans t={t} i18nKey="clientSettings.denylistRules" components={{ span0: <span className="font-medium" /> }} />
 									</li>
 									<li>
-										<span className="font-medium">Wildcards:</span> Use{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> at the end of a pattern to match prefixes
-										(e.g., <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-*</code> matches all headers starting
-										with <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">anthropic-</code>). Use{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">*</code> alone to match all headers.
+										<Trans
+											t={t}
+											i18nKey="clientSettings.wildcardRules"
+											components={{
+												span0: <span className="font-medium" />,
+												code1: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+												code2: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+												code3: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+												code4: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+											}}
+										/>
 									</li>
 								</ul>
 							</div>
 							<div>
-								<p className="mb-2 font-medium">Important:</p>
+								<p className="mb-2 font-medium">{t("clientSettings.important")}</p>
 								<ul className="text-muted-foreground list-inside list-disc space-y-1 text-sm">
 									<li>
-										Allowlist/denylist entries should be the header name <span className="font-medium">without</span> the{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">x-bf-eh-</code> prefix
+										<Trans
+											t={t}
+											i18nKey="clientSettings.headerNames"
+											components={{
+												span0: <span className="font-medium" />,
+												code1: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+											}}
+										/>
 									</li>
 									<li>
-										Example: To allow <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">x-bf-eh-custom-id</code> or direct{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">custom-id</code>, add{" "}
-										<code className="bg-muted rounded px-1 py-0.5 font-mono text-xs">custom-id</code> to the allowlist
+										<Trans
+											t={t}
+											i18nKey="clientSettings.allowlistExample"
+											components={{
+												code0: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+												code1: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+												code2: <code className="bg-muted rounded px-1 py-0.5 font-mono text-xs" />,
+											}}
+										/>
 									</li>
 								</ul>
 							</div>
@@ -504,18 +633,12 @@ export default function ClientSettingsView() {
 						<AccordionTrigger>
 							<span className="flex items-center gap-2">
 								<Info className="h-4 w-4" />
-								Security Note
+								{t("clientSettings.securityNote")}
 							</span>
 						</AccordionTrigger>
 						<AccordionContent>
-							<p className="text-sm">
-								Some headers are always blocked for security reasons regardless of configuration. These headers cannot be added to the
-								allowlist or denylist:
-							</p>
-							<p className="text-muted-foreground mt-1 font-mono text-xs">
-								proxy-authorization, cookie, host, content-length, connection, transfer-encoding, x-api-key, x-goog-api-key, x-bf-api-key,
-								x-bf-vk
-							</p>
+							<p className="text-sm">{t("clientSettings.securityNoteBody")}</p>
+							<p className="text-muted-foreground mt-1 font-mono text-xs">{SECURITY_HEADERS.join(", ")}</p>
 						</AccordionContent>
 					</AccordionItem>
 				</Accordion>
@@ -523,10 +646,15 @@ export default function ClientSettingsView() {
 				{/* Allowlist Section */}
 				<div className="space-y-3">
 					<div className="space-y-1">
-						<h4 className="text-sm font-medium">Allowlist</h4>
+						<h4 className="text-sm font-medium">{t("clientSettings.allowlist")}</h4>
 						<p className="text-muted-foreground text-xs">
-							Headers to allow. Enter names without the <code className="bg-muted rounded px-1 font-mono">x-bf-eh-</code> prefix. Any header
-							in this list can also be sent directly without the prefix.
+							<Trans
+								t={t}
+								i18nKey="clientSettings.allowlistHelp"
+								components={{
+									code0: <code className="bg-muted rounded px-1 font-mono" />,
+								}}
+							/>
 						</p>
 					</div>
 
@@ -534,7 +662,7 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.allowlist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. anthropic-*, custom-id"
+									placeholder={t("clientSettings.allowlistPlaceholder")}
 									data-testid="header-filter-allowlist-input"
 									className={cn(
 										"font-mono lowercase",
@@ -559,7 +687,7 @@ export default function ClientSettingsView() {
 						))}
 						<Button type="button" variant="outline" size="sm" onClick={handleAddAllowlistHeader} disabled={!hasSettingsUpdateAccess}>
 							<Plus className="mr-2 h-4 w-4" />
-							Add Header
+							{t("addHeader")}
 						</Button>
 					</div>
 				</div>
@@ -567,10 +695,15 @@ export default function ClientSettingsView() {
 				{/* Denylist Section */}
 				<div className="space-y-3">
 					<div className="space-y-1">
-						<h4 className="text-sm font-medium">Denylist</h4>
+						<h4 className="text-sm font-medium">{t("clientSettings.denylist")}</h4>
 						<p className="text-muted-foreground text-xs">
-							Headers to block. Enter names without the <code className="bg-muted rounded px-1 font-mono">x-bf-eh-</code> prefix. Applies to
-							both prefixed and direct header forwarding.
+							<Trans
+								t={t}
+								i18nKey="clientSettings.denylistHelp"
+								components={{
+									code0: <code className="bg-muted rounded px-1 font-mono" />,
+								}}
+							/>
 						</p>
 					</div>
 
@@ -578,7 +711,7 @@ export default function ClientSettingsView() {
 						{(localConfig.header_filter_config?.denylist || []).map((header, index) => (
 							<div key={index} className="flex items-center gap-2">
 								<Input
-									placeholder="e.g. x-internal-*"
+									placeholder={t("clientSettings.denylistPlaceholder")}
 									data-testid="header-filter-denylist-input"
 									className={cn(
 										"font-mono lowercase",
@@ -603,7 +736,7 @@ export default function ClientSettingsView() {
 						))}
 						<Button type="button" variant="outline" size="sm" onClick={handleAddDenylistHeader} disabled={!hasSettingsUpdateAccess}>
 							<Plus className="mr-2 h-4 w-4" />
-							Add Header
+							{t("addHeader")}
 						</Button>
 					</div>
 				</div>
@@ -621,16 +754,23 @@ export default function ClientSettingsView() {
 					<Tooltip>
 						<TooltipTrigger asChild>
 							<span>
-								<Button disabled>{isLoading ? "Saving..." : "Save Changes"}</Button>
+								<Button disabled>{isLoading ? t("saving") : t("saveChanges")}</Button>
 							</span>
 						</TooltipTrigger>
 						<TooltipContent>
-							Remove security header{invalidSecurityHeaders.length > 1 ? "s" : ""}: {invalidSecurityHeaders.join(", ")}
+							{t("clientSettings.removeSecurityHeader", {
+								count: invalidSecurityHeaders.length,
+								headers: invalidSecurityHeaders.join(", "),
+							})}
 						</TooltipContent>
 					</Tooltip>
 				) : (
-					<Button onClick={handleSave} disabled={!hasChanges || isLoading || isQueriesLoading || !hasSettingsUpdateAccess}>
-						{isLoading ? "Saving..." : "Save Changes"}
+					<Button
+						onClick={handleSave}
+						disabled={!hasChanges || hasURLError || isLoading || isQueriesLoading || !hasSettingsUpdateAccess}
+						data-testid="client-settings-save-btn"
+					>
+						{isLoading ? t("saving") : t("saveChanges")}
 					</Button>
 				)}
 			</div>

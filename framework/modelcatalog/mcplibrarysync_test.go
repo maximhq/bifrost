@@ -7,12 +7,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/stretchr/testify/require"
 )
 
@@ -57,6 +60,18 @@ func TestFetchMCPLibraryFromRelativeFileURL(t *testing.T) {
 			require.Equal(t, "Filesystem", entries[0].Name)
 		})
 	}
+}
+
+// TestSyncMCPLibraryMissingFileFailsAtOnce checks that a file:// catalog path that does not exist
+// fails the sync with the open error on the first attempt. Boot logs it and carries on with an
+// empty library; retrying with backoff would only delay that by about 7s.
+func TestSyncMCPLibraryMissingFileFailsAtOnce(t *testing.T) {
+	missing := "file://" + filepath.Join(t.TempDir(), "missing.json")
+	start := time.Now()
+	// The fetch fails before the store is used, so none is passed.
+	_, err := SyncMCPLibrary(context.Background(), missing, nil)
+	require.ErrorContains(t, err, "failed to open MCP library file")
+	require.Less(t, time.Since(start), time.Second, "a missing catalog file must not be retried")
 }
 
 // TestIsFileURL guards the retry carve-out: a local catalog file either exists
@@ -264,4 +279,72 @@ func TestFetchMCPLibraryUsesGlobalProxy(t *testing.T) {
 	// A public IP literal: ValidateExternalURL resolves the host before any request.
 	_, _ = fetchMCPLibrary(ctx, "https://203.0.113.10/mcp-library.json")
 	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "203.0.113.10:443", nil)
+}
+
+// TestSyncMCPLibraryDoesNotRetryPermanentErrors checks that a catalog answering
+// malformed JSON or a 4xx fails on its first request with the same message.
+func TestSyncMCPLibraryDoesNotRetryPermanentErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		status  int
+		body    string
+		wantErr string
+	}{
+		{name: "malformed JSON", status: http.StatusOK, body: "{", wantErr: "failed to unmarshal MCP library data"},
+		{name: "HTTP 404", status: http.StatusNotFound, wantErr: "failed to download MCP library data: HTTP 404"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+
+			// The fetch fails before the store is used, so none is passed.
+			_, err := SyncMCPLibrary(context.Background(), srv.URL, nil)
+			require.ErrorContains(t, err, tc.wantErr)
+			require.Equal(t, int32(1), hits.Load())
+		})
+	}
+}
+
+// TestSyncMCPLibrarySkipsEntriesThePublishAPIRejects checks that catalog
+// entries failing the publish API's connection and auth checks are skipped
+// while the valid ones sync.
+func TestSyncMCPLibrarySkipsEntriesThePublishAPIRejects(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "servers.json")
+	payload := `{"servers":[
+		{"name":"Valid HTTP","connection_type":"http","connection_url":"https://a.example/mcp"},
+		{"name":"Valid STDIO","connection_type":"stdio","stdio_config":{"command":"npx"},"auth_type":"headers"},
+		{"name":"Unknown Type","connection_type":"openapi","connection_url":"https://b.example/mcp"},
+		{"name":"No Type","connection_url":"https://c.example/mcp"},
+		{"name":"HTTP Without URL","connection_type":"http"},
+		{"name":"SSE Blank URL","connection_type":"sse","connection_url":"  "},
+		{"name":"STDIO Without Command","connection_type":"stdio","stdio_config":{"args":["x"]}},
+		{"name":"Unknown Auth","connection_type":"http","connection_url":"https://d.example/mcp","auth_type":"bogus"}
+	]}`
+	require.NoError(t, os.WriteFile(path, []byte(payload), 0o600))
+
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+
+	count, err := SyncMCPLibrary(ctx, "file://"+path, store)
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
+
+	entries, _, err := store.GetMCPLibraryPaginated(ctx, configstore.MCPLibraryQueryParams{})
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name)
+	}
+	require.Equal(t, []string{"Valid HTTP", "Valid STDIO"}, names)
 }

@@ -54,6 +54,27 @@ test.describe("Provider Key Management", () => {
     });
   });
 
+  test("should set and clear content logging for a key", async ({ providersPage }) => {
+    const keyData = createProviderKeyData({
+      name: `Content-Logging-Key-${Date.now()}`,
+      value: "sk-test-content-logging-key",
+      contentLogging: "disabled",
+    });
+    managementKeys.push(keyData.name);
+    await providersPage.addKey(keyData);
+
+    // The choice made on create is what the editor shows when the key is reopened.
+    expect(await providersPage.getKeyContentLogging(keyData.name)).toBe("disabled");
+
+    // Back to inherit: the key is saved whole with null, which must not read back as "off".
+    await providersPage.editKey(keyData.name, { contentLogging: "inherit" });
+    expect(await providersPage.getKeyContentLogging(keyData.name)).toBe("inherit");
+
+    // And the third state is a decision of its own, distinct from inherit.
+    await providersPage.editKey(keyData.name, { contentLogging: "enabled" });
+    expect(await providersPage.getKeyContentLogging(keyData.name)).toBe("enabled");
+  });
+
   test("should delete a key", async ({ providersPage }) => {
     // First add a key
     const keyData = createProviderKeyData({
@@ -138,6 +159,59 @@ test.describe("Provider Key Management", () => {
     await expect(blockedModelsMultiselect).toBeVisible();
 
     await providersPage.keyCancelBtn.click();
+  });
+
+  test.describe("AWS SageMaker keys", () => {
+    test("should create, reopen and edit a key with explicit AWS credentials", async ({ providersPage, page }) => {
+      const keyName = `SageMaker-Key-${Date.now()}`;
+      const createdProvider = !(await providersPage.providerExists("sagemaker"));
+      try {
+        if (createdProvider) {
+          await providersPage.addKnownProviderFromDropdown("sagemaker");
+        } else {
+          await providersPage.selectProvider("sagemaker");
+        }
+
+        await providersPage.addSageMakerKey({
+          name: keyName,
+          accessKey: "AKIAE2ESAGEMAKER0001",
+          secretKey: "e2e-sagemaker-secret-key-0001",
+          region: "us-east-1",
+        });
+        expect(await providersPage.keyExists(keyName)).toBe(true);
+
+        // Reopening must detect the explicit-credentials tab from the stored config and show the
+        // non-secret fields verbatim; the secret key comes back masked.
+        await providersPage.openKeyEditor(keyName);
+        await expect(page.getByTestId("apikey-sagemaker-explicit-credentials-tab")).toHaveAttribute("data-state", "active");
+        await expect(page.getByTestId("apikey-sagemaker-region-input")).toHaveValue("us-east-1");
+        await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).toHaveValue(/.+/);
+        await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).not.toHaveValue("e2e-sagemaker-secret-key-0001");
+
+        // Saving with the masked secrets untouched must keep the stored credentials.
+        await page.getByTestId("apikey-sagemaker-region-input").fill("us-west-2");
+        await providersPage.keySaveBtn.click();
+        await providersPage.waitForSuccessToast();
+        await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+
+        await providersPage.openKeyEditor(keyName);
+        await expect(page.getByTestId("apikey-sagemaker-region-input")).toHaveValue("us-west-2");
+        // Both stored credentials must survive the save, still masked.
+        await expect(page.getByTestId("apikey-sagemaker-access-key-input")).toHaveValue(/.+/);
+        await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).toHaveValue(/.+/);
+        await expect(page.getByTestId("apikey-sagemaker-secret-key-input")).not.toHaveValue("e2e-sagemaker-secret-key-0001");
+        await providersPage.keyCancelBtn.click();
+        await expect(providersPage.keyForm).not.toBeVisible({ timeout: 5000 });
+      } finally {
+        if (await providersPage.keyExists(keyName, 2000)) {
+          await providersPage.deleteKey(keyName);
+        }
+        if (createdProvider && (await providersPage.providerExists("sagemaker"))) {
+          await providersPage.deleteProvider("sagemaker", { skipToastWait: true });
+          await expect(providersPage.getProviderItem("sagemaker")).toHaveCount(0, { timeout: 5000 });
+        }
+      }
+    });
   });
 
   test.describe("GitHub Copilot sign in with GitHub", () => {

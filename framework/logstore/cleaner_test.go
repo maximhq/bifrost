@@ -3,13 +3,18 @@ package logstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
 )
 
 // gatedRetentionManager is a retention manager whose MaintenanceGate a test can
@@ -167,7 +172,7 @@ func TestLogsCleanerExpiresWarpTopicRows(t *testing.T) {
 	assert.Zero(t, manager.logs.expired)
 	assert.Zero(t, manager.mcp.expired)
 	assert.Zero(t, manager.assignments.expired, "assignments past retention must be drained to the end")
-	assert.Equal(t, 3, manager.assignments.calls, "two full batches and the short one that ends the drain")
+	assert.Equal(t, 4, manager.assignments.calls, "two full batches, the short one, and the empty one that ends the drain")
 	assert.Zero(t, manager.unmatched.expired)
 	// Every table expires on the same instant: the one the logs expire on.
 	want := time.Now().UTC().AddDate(0, 0, -30)
@@ -251,4 +256,357 @@ func TestLogsCleanerLogsTroubleDoesNotStarveWarpTopicRows(t *testing.T) {
 
 		assert.Zero(t, manager.unmatched.expired, "assignments must leave time for the unmatched pool")
 	})
+}
+
+// scriptedRetention returns one scripted result per call, then empty batches.
+type scriptedRetention struct {
+	results  []scriptedBatch
+	calls    int
+	interval time.Duration
+}
+
+type scriptedBatch struct {
+	deleted int64
+	err     error
+}
+
+func (m *scriptedRetention) DeleteLogsBatch(context.Context, time.Time, int) (int64, error) {
+	m.calls++
+	if m.calls > len(m.results) {
+		return 0, nil
+	}
+	r := m.results[m.calls-1]
+	return r.deleted, r.err
+}
+
+func (m *scriptedRetention) RetentionInterval() time.Duration { return m.interval }
+
+// A short batch is what SKIP LOCKED returns when another session holds some
+// expired rows, so it must not end the pass the way it did before.
+func TestDrainExpiredContinuesPastShortBatch(t *testing.T) {
+	m := &scriptedRetention{results: []scriptedBatch{{deleted: batchSize}, {deleted: 40}, {deleted: batchSize}, {deleted: 7}}}
+	cleaner := NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{})
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), m.DeleteLogsBatch))
+	assert.Equal(t, 5, m.calls, "only the empty fifth batch ends the drain")
+}
+
+// Another replica holding the table's lock ends this replica's drain of that
+// table quietly, and the pass still moves on to the other tables.
+func TestDrainExpiredYieldsToLockHolder(t *testing.T) {
+	m := &scriptedRetention{results: []scriptedBatch{{deleted: batchSize}, {err: ErrRetentionBusy}, {deleted: batchSize}}}
+	cleaner := NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{})
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), m.DeleteLogsBatch), "yielding is not a failure")
+	assert.Equal(t, 2, m.calls, "no batch may follow the yield")
+
+	manager := &fullRetention{}
+	manager.logs.err = ErrRetentionBusy
+	manager.assignments.expired = 4
+	NewLogsCleaner(manager, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
+	assert.Zero(t, manager.assignments.expired, "a busy logs table must not hold up the tables after it")
+}
+
+// Retention keys share Postgres' advisory key space with every other lock, so a shared key makes
+// replicas yield a table nobody is draining. 1000031 and 1000032 are held by enterprise.
+func TestRetentionAdvisoryLockKeysStayInOwnBlock(t *testing.T) {
+	seen := map[int64]string{}
+	for table, key := range retentionAdvisoryLockKeys {
+		assert.GreaterOrEqual(t, key, int64(1000040), table)
+		assert.LessOrEqual(t, key, int64(1000049), table)
+		assert.Empty(t, seen[key], "%s shares its key", table)
+		seen[key] = table
+	}
+	assert.Empty(t, seen[retentionAdvisoryLockKeyOther], "the fallback key must be its own")
+}
+
+func TestNextRunDurationFollowsStoreInterval(t *testing.T) {
+	hourly := NewLogsCleaner(&scriptedRetention{interval: time.Hour}, CleanerConfig{RetentionDays: 3}, testLogger{})
+	daily := NewLogsCleaner(&logsOnlyRetention{}, CleanerConfig{RetentionDays: 3}, testLogger{})
+	unset := NewLogsCleaner(&scriptedRetention{}, CleanerConfig{RetentionDays: 3}, testLogger{})
+	for range 50 {
+		d := hourly.nextRunDuration()
+		assert.GreaterOrEqual(t, d, time.Hour+time.Hour/96)
+		assert.LessOrEqual(t, d, time.Hour+time.Hour/48)
+
+		d = daily.nextRunDuration()
+		assert.GreaterOrEqual(t, d, 24*time.Hour+15*time.Minute, "the daily jitter is unchanged")
+		assert.LessOrEqual(t, d, 24*time.Hour+30*time.Minute)
+
+		assert.GreaterOrEqual(t, unset.nextRunDuration(), 24*time.Hour, "a zero interval falls back to daily")
+	}
+}
+
+// Enterprise wraps the store in a struct embedding LogStore; the cleaner must still see the store's interval through it.
+func TestLogStoreWrapperForwardsRetentionInterval(t *testing.T) {
+	type wrapper struct{ LogStore }
+	_, ok := any(wrapper{}).(RetentionScheduler)
+	assert.True(t, ok, "a wrapper embedding LogStore must satisfy RetentionScheduler")
+}
+
+// setupRetentionPostgres migrates a fresh logs table holding expired old rows and fresh new ones.
+func setupRetentionPostgres(t *testing.T, expired, fresh int) (*RDBLogStore, *gorm.DB) {
+	t.Helper()
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available")
+	}
+	ctx := context.Background()
+	dropAllManagedMatViews(db)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS mcp_tool_logs CASCADE").Error)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS async_jobs CASCADE").Error)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS webhook_deliveries CASCADE").Error)
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS logs CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations").Error)
+	require.NoError(t, triggerMigrations(ctx, db, testLogger{}))
+	t.Cleanup(func() { _ = db.Exec("TRUNCATE logs").Error })
+
+	seed := `INSERT INTO logs (id, timestamp, created_at, provider, model, status, object_type)
+		SELECT ? || g, NOW() - ?::interval + g * INTERVAL '1 millisecond', NOW() - ?::interval + g * INTERVAL '1 millisecond',
+			'openai', 'gpt-4o', 'success', 'chat.completion'
+		FROM generate_series(1, ?) AS g`
+	require.NoError(t, db.Exec(seed, "old-", "40 days", "40 days", expired).Error)
+	require.NoError(t, db.Exec(seed, "new-", "1 day", "1 day", fresh).Error)
+	return &RDBLogStore{db: db, logger: testLogger{}}, db
+}
+
+func countLogs(t *testing.T, db *gorm.DB, prefix string) int64 {
+	t.Helper()
+	var n int64
+	require.NoError(t, db.Raw("SELECT count(*) FROM logs WHERE id LIKE ?", prefix+"%").Scan(&n).Error)
+	return n
+}
+
+// Replicas yielding to each other on the advisory lock must still drain every expired row between them.
+func TestPostgresConcurrentCleanersDrainEverything(t *testing.T) {
+	store, db := setupRetentionPostgres(t, 3*batchSize+123, 50)
+	cutoff := time.Now().UTC().AddDate(0, 0, -30)
+
+	const replicas = 8
+	var wg sync.WaitGroup
+	results := make([]bool, replicas)
+	for i := range replicas {
+		wg.Go(func() {
+			cleaner := NewLogsCleaner(store, CleanerConfig{RetentionDays: 30}, testLogger{})
+			results[i] = cleaner.drainExpired(context.Background(), "logs", cutoff, store.DeleteLogsBatch)
+		})
+	}
+	wg.Wait()
+
+	for i, ok := range results {
+		assert.True(t, ok, "replica %d must finish or yield, not fail", i)
+	}
+	assert.Zero(t, countLogs(t, db, "old-"), "every expired row must be deleted")
+	assert.Equal(t, int64(50), countLogs(t, db, "new-"), "rows inside retention must survive")
+}
+
+// A replica that finds the table's retention lock taken skips the batch at
+// once instead of queueing behind the holder.
+func TestPostgresRetentionBatchYieldsWhileLockHeld(t *testing.T) {
+	store, db := setupRetentionPostgres(t, 20, 0)
+	cutoff := time.Now().UTC().AddDate(0, 0, -30)
+
+	holder := db.Begin()
+	require.NoError(t, holder.Error)
+	t.Cleanup(func() { holder.Rollback() }) // releases the lock if the test stops before the commit below
+	var acquired bool
+	require.NoError(t, holder.Raw("SELECT pg_try_advisory_xact_lock(?)", retentionAdvisoryLockKeys["logs"]).Row().Scan(&acquired))
+	require.True(t, acquired)
+
+	_, err := store.DeleteLogsBatch(context.Background(), cutoff, batchSize)
+	assert.ErrorIs(t, err, ErrRetentionBusy)
+	assert.Equal(t, int64(20), countLogs(t, db, "old-"))
+
+	other, err := store.DeleteMCPToolLogsBatch(context.Background(), cutoff, batchSize)
+	assert.NoError(t, err, "each table has its own lock")
+	assert.Zero(t, other)
+
+	require.NoError(t, holder.Commit().Error)
+	deleted, err := store.DeleteLogsBatch(context.Background(), cutoff, batchSize)
+	require.NoError(t, err)
+	assert.Equal(t, int64(20), deleted, "the lock goes with the holder's transaction")
+}
+
+// One Postgres batch deletes at most batchSize rows. drainExpired reads a larger count as ClickHouse's whole-range
+// delete and stops, so a statement that overshoots the limit leaves expired rows behind.
+func TestPostgresRetentionBatchNeverExceedsBatchSize(t *testing.T) {
+	store, db := setupRetentionPostgres(t, 3*batchSize+123, 0)
+	cutoff := time.Now().UTC().AddDate(0, 0, -30)
+
+	for _, want := range []int64{batchSize, batchSize, batchSize, 123, 0} {
+		deleted, err := store.DeleteLogsBatch(context.Background(), cutoff, batchSize)
+		require.NoError(t, err)
+		require.Equal(t, want, deleted, "each batch must stop at the limit")
+	}
+	assert.Zero(t, countLogs(t, db, "old-"))
+}
+
+// An operator's own pruner holding row locks must not stall the cleaner: the
+// batch skips those rows and deletes the rest.
+func TestPostgresRetentionBatchSkipsLockedRows(t *testing.T) {
+	store, db := setupRetentionPostgres(t, 30, 0)
+	cutoff := time.Now().UTC().AddDate(0, 0, -30)
+
+	pruner := db.Begin()
+	require.NoError(t, pruner.Error)
+	defer pruner.Rollback()
+	require.NoError(t, pruner.Exec("SELECT id FROM logs WHERE id LIKE 'old-%' ORDER BY created_at LIMIT 10 FOR UPDATE").Error)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	deleted, err := store.DeleteLogsBatch(ctx, cutoff, batchSize)
+	require.NoError(t, err, "the batch must not wait on the pruner's row locks")
+	assert.Equal(t, int64(20), deleted)
+
+	require.NoError(t, pruner.Rollback().Error)
+	deleted, err = store.DeleteLogsBatch(context.Background(), cutoff, batchSize)
+	require.NoError(t, err)
+	assert.Equal(t, int64(10), deleted, "the skipped rows go on a later batch")
+}
+
+// Postgres runs retention hourly because only the lock holder does work; every other dialect stays daily.
+func TestRDBRetentionIntervalByDialect(t *testing.T) {
+	onDialect := func(d gorm.Dialector) *RDBLogStore {
+		return &RDBLogStore{db: &gorm.DB{Config: &gorm.Config{Dialector: d}}}
+	}
+	assert.Equal(t, time.Hour, onDialect(postgres.Dialector{Config: &postgres.Config{}}).RetentionInterval())
+	assert.Equal(t, 24*time.Hour, onDialect(&sqlite.Dialector{}).RetentionInterval())
+}
+
+// timeoutAbove is a delete that times out above limit rows and drains backlog otherwise, recording each requested size.
+type timeoutAbove struct {
+	limit   int
+	backlog int64
+	sizes   []int
+}
+
+func (d *timeoutAbove) deleteBatch(_ context.Context, _ time.Time, size int) (int64, error) {
+	d.sizes = append(d.sizes, size)
+	if size > d.limit {
+		return 0, &pgconn.PgError{Code: postgresSQLStateStatementTimeout}
+	}
+	deleted := min(d.backlog, int64(size))
+	d.backlog -= deleted
+	return deleted, nil
+}
+
+// A batch of wide rows that cannot finish inside statement_timeout must not fail every pass on the same rows.
+func TestDrainExpiredShrinksBatchOnStatementTimeout(t *testing.T) {
+	d := &timeoutAbove{limit: 1000, backlog: 2500}
+	cleaner := NewLogsCleaner(plainRetentionManager{}, CleanerConfig{RetentionDays: 7}, testLogger{})
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), d.deleteBatch))
+	assert.Zero(t, d.backlog)
+	assert.Equal(t, []int{5000, 2500, 1250, 625, 625, 625, 625, 625}, d.sizes)
+
+	d = &timeoutAbove{limit: 1000, backlog: 700}
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), d.deleteBatch))
+	assert.Equal(t, 625, d.sizes[0], "the next pass starts at the size that fit")
+	assert.Equal(t, batchSize, cleaner.batchSizeFor("mcp tool logs"), "each table learns its own size")
+}
+
+func TestDrainExpiredGrowsBatchBackAfterSuccesses(t *testing.T) {
+	d := &timeoutAbove{limit: batchSize / 2, backlog: 1 << 30}
+	calls := 0
+	deleteBatch := func(ctx context.Context, cutoff time.Time, size int) (int64, error) {
+		calls++
+		if calls == 1 {
+			d.sizes = append(d.sizes, size)
+			return 0, &pgconn.PgError{Code: postgresSQLStateStatementTimeout}
+		}
+		if calls > cleanupGrowAfter+2 {
+			d.sizes = append(d.sizes, size)
+			return 0, nil
+		}
+		d.limit = batchSize
+		return d.deleteBatch(ctx, cutoff, size)
+	}
+	cleaner := NewLogsCleaner(plainRetentionManager{}, CleanerConfig{RetentionDays: 7}, testLogger{})
+	require.True(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), deleteBatch))
+	assert.Equal(t, batchSize/2, d.sizes[1])
+	assert.Equal(t, batchSize, d.sizes[len(d.sizes)-1], "a run of successes restores the full batch")
+	assert.Equal(t, batchSize, cleaner.batchSizeFor("logs"))
+}
+
+func TestDrainExpiredFailsWhenOneRowTimesOut(t *testing.T) {
+	d := &timeoutAbove{limit: 0}
+	cleaner := NewLogsCleaner(plainRetentionManager{}, CleanerConfig{RetentionDays: 7}, testLogger{})
+	require.False(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), d.deleteBatch))
+	assert.Equal(t, 1, d.sizes[len(d.sizes)-1])
+	assert.Len(t, d.sizes, 13, "halving stops at one row")
+}
+
+// Other errors still end the table's drain at once.
+func TestDrainExpiredDoesNotShrinkOnOtherErrors(t *testing.T) {
+	calls := 0
+	deleteBatch := func(context.Context, time.Time, int) (int64, error) {
+		calls++
+		return 0, &pgconn.PgError{Code: "40P01"}
+	}
+	cleaner := NewLogsCleaner(plainRetentionManager{}, CleanerConfig{RetentionDays: 7}, testLogger{})
+	require.False(t, cleaner.drainExpired(context.Background(), "logs", time.Now(), deleteBatch))
+	assert.Equal(t, 1, calls)
+}
+
+func TestRaiseRetentionStatementTimeout(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available")
+	}
+	for session, want := range map[string]string{"100ms": "10min", "2min": "10min", "0": "0", "1h": "1h"} {
+		var got string
+		require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+			require.NoError(t, tx.Exec("SELECT set_config('statement_timeout', ?, true)", session).Error)
+			require.NoError(t, raiseRetentionStatementTimeout(tx))
+			return tx.Raw("SHOW statement_timeout").Scan(&got).Error
+		}))
+		assert.Equal(t, want, got, "session timeout %s", session)
+	}
+}
+
+// A long id list goes out in several statements, and every row still goes.
+func TestPostgresDeleteLogsChunksLargeIDList(t *testing.T) {
+	store, db := setupRetentionPostgres(t, 3*deleteLogsChunkSize+7, 5)
+	ids := make([]string, 0, 3*deleteLogsChunkSize+7)
+	for i := 1; i <= 3*deleteLogsChunkSize+7; i++ {
+		ids = append(ids, fmt.Sprintf("old-%d", i))
+	}
+	require.NoError(t, store.DeleteLogs(context.Background(), ids))
+	assert.Zero(t, countLogs(t, db, "old-"))
+	assert.Equal(t, int64(5), countLogs(t, db, "new-"))
+}
+
+type reclaimingRetentionManager struct {
+	gatedRetentionManager
+	reclaims atomic.Int64
+	maxPages atomic.Int64
+}
+
+func (m *reclaimingRetentionManager) ReclaimSpace(_ context.Context, maxPages int) (int64, error) {
+	m.reclaims.Add(1)
+	m.maxPages.Store(int64(maxPages))
+	return 0, nil
+}
+
+// TestCleanupOldLogsReclaimsSpaceOncePerPass pins that a retention pass ends
+// with one space reclaim for stores that support it.
+func TestCleanupOldLogsReclaimsSpaceOncePerPass(t *testing.T) {
+	manager := &reclaimingRetentionManager{}
+	cleaner := NewLogsCleaner(manager, CleanerConfig{RetentionDays: 30}, testLogger{})
+
+	cleaner.cleanupOldLogs(context.Background())
+
+	require.EqualValues(t, 1, manager.reclaims.Load())
+	require.EqualValues(t, reclaimStepPages, manager.maxPages.Load())
+}
+
+// TestCleanupOldLogsSkipsReclaimWhenPassCancelled pins that a stopped pass does
+// not start a reclaim.
+func TestCleanupOldLogsSkipsReclaimWhenPassCancelled(t *testing.T) {
+	manager := &reclaimingRetentionManager{}
+	cleaner := NewLogsCleaner(manager, CleanerConfig{RetentionDays: 30}, testLogger{})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cleaner.cleanupOldLogs(ctx)
+
+	require.Zero(t, manager.reclaims.Load())
 }

@@ -9,7 +9,7 @@ Bifrost persists two types of data - **config** (providers, virtual keys, govern
 | Store | Purpose | Backends |
 |-------|---------|---------|
 | `config_store` | Provider configs, virtual keys, governance rules | SQLite, PostgreSQL |
-| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload |
+| `logs_store` | Request/response logs shown in UI | SQLite, PostgreSQL, ClickHouse + optional S3/GCS/Azure Blob offload |
 | `vector_store` | Semantic response caching | Weaviate, Redis, Valkey, Qdrant, Pinecone |
 
 <Note>
@@ -21,7 +21,7 @@ If you use PostgreSQL for any store, the target database must be **UTF8 encoded*
 ## config_store
 
 <Note>
-When `config_store` is omitted, Bifrost creates a default SQLite config store in the app directory. Set `config_store.enabled` to `false` only when you want file-only configuration with no config-backed Web UI/API edits. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
+When `config_store` is omitted, Bifrost creates a default SQLite config store in the app directory. Set `config_store.enabled` to `false` only when you want file-only configuration with no configuration Web UI/API. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth).
 </Note>
 
 ### SQLite (Default)
@@ -117,7 +117,7 @@ Use `password_command` for short-lived database credentials such as AWS RDS IAM 
 
 ### Disabled (file-only mode)
 
-Use this when you want Bifrost to read all configuration from `config.json` only - no configuration database and no config-backed Web UI/API edits.
+Use this when you want Bifrost to read all configuration from `config.json` only - no configuration database and no configuration Web UI/API.
 
 ```json
 {
@@ -126,6 +126,8 @@ Use this when you want Bifrost to read all configuration from `config.json` only
   }
 }
 ```
+
+Every configuration API route then answers `503 config store not available`, reads included, so the Web UI cannot show or edit configuration. Inference, `GET /api/config`, `/health`, logs and metrics keep working.
 
 This is the recommended setup for [multinode OSS deployments](/deployment-guides/how-to/multinode) where a shared `config.json` is the single source of truth.
 
@@ -283,6 +285,36 @@ ClickHouse is a **`logs_store`-only** backend. The `config_store` supports only 
 With ClickHouse, `retention_days` is enforced by a native table **TTL** rather than a background delete job. The TTL is reconciled on every startup, so changing `retention_days` later updates the existing `logs`, `mcp_tool_logs` and `webhook_deliveries` tables (metadata only; expired rows are dropped by ClickHouse's regular TTL merges). Setting it to `0` (or omitting it) leaves any existing TTL untouched and creates new tables without one, so ClickHouse itself never expires rows unless you manage the TTL yourself. Background cleanup is controlled separately by `client_config.log_retention_days`; on ClickHouse each run is a single lightweight `DELETE FROM ... WHERE created_at < cutoff`, as are the periodic sweeps of stale `processing` rows, so setting both is safe. Lightweight deletes require ClickHouse 24.4 or newer. `matview_refresh_interval` and `matview_refresh_timeout` do not apply - they are PostgreSQL-only settings for materialized views.
 </Note>
 
+#### Required privileges
+
+Bifrost creates and evolves its own tables on every startup, so the ClickHouse user needs DDL rights as well as read and write access. The database itself must already exist. Bifrost does not create it.
+
+```sql
+GRANT SELECT, INSERT, ALTER, CREATE TABLE ON bifrost.* TO bifrost_user;
+GRANT SELECT ON system.tables TO bifrost_user;
+GRANT SELECT ON system.columns TO bifrost_user;
+GRANT SELECT ON system.data_skipping_indices TO bifrost_user;
+
+-- Only when `cluster` is set
+GRANT CLUSTER ON *.* TO bifrost_user;
+```
+
+Replace `bifrost` with your database and `bifrost_user` with your user.
+
+| Privilege | Used for |
+|-----------|----------|
+| `SELECT`, `INSERT` | Reading and writing logs |
+| `CREATE TABLE` | Creating tables at startup |
+| `ALTER` | Adding columns and skip indexes, updating the table TTL, and deleting logs |
+| `SELECT` on `system.tables`, `system.columns`, `system.data_skipping_indices` | Schema checks during startup migrations |
+| `CLUSTER` | Running DDL `ON CLUSTER`. Needed only when `cluster` is set |
+
+<Note>
+Managed services such as ClickHouse Cloud do not let a user read `system` tables without an explicit grant. A missing grant fails startup with `Not enough privileges ... SELECT ON system.data_skipping_indices`.
+
+The user's settings profile must not be `readonly`. Bifrost sets query settings such as `final`, `mutations_sync` and `max_query_size` on its connections.
+</Note>
+
 ### Disabled
 
 ```json
@@ -304,6 +336,29 @@ Set `retention_days` to automatically purge old log entries. `0` disables retent
     "type": "postgres",
     "config": { "...": "..." },
     "retention_days": 90
+  }
+}
+```
+
+#### Disk space on PostgreSQL
+
+Retention deletes expired rows every hour. PostgreSQL keeps the space of deleted rows inside the table and reuses it for new logs once autovacuum has processed them, so with retention on, the tables stay near their steady-state size instead of growing. Bifrost sets `autovacuum_vacuum_scale_factor = 0.01` and `autovacuum_vacuum_threshold = 10000` on `logs`, `mcp_tool_logs`, `relay_logs`, `warp_topic_assignments` and `warp_topic_unmatched`, so autovacuum runs after about 1% of a table is dead rows instead of PostgreSQL's default 20%. The migration replaces any per-table values for these two parameters that you set yourself, and rolling it back resets them to the server defaults. Reapply your own values after upgrading if you tuned these tables by hand.
+
+The tables do not shrink on their own. To give space back to the filesystem after lowering `retention_days` or after a large backlog, use [`pg_repack`](https://github.com/reorg/pg_repack). It rewrites a table while reads and writes continue, taking an exclusive lock only briefly at the start and the end. If a long query holds the table when it needs that lock, by default it cancels the query after `--wait-timeout` and then disconnects the blocking session; pass `--no-kill-backend` to skip the table instead. It needs the `pg_repack` extension installed in the database and free disk space of about twice the table and its indexes. Avoid `VACUUM FULL` on a running deployment: it locks the table for the whole rewrite, so log writes and dashboard queries wait until it finishes.
+
+### Client IP capture
+
+Set `capture_client_ip` to `true` to record the caller's IP on LLM, MCP and relay logs in the `client_ip` field. Bifrost takes the leftmost `X-Forwarded-For` value, then `X-Real-IP`, and falls back to the TCP peer address when neither header is present. This is the same order enterprise audit logs use. The caller sends these headers and Bifrost does not verify them. For an address you can trust, put Bifrost behind a proxy that overwrites both headers, and block direct access to Bifrost so no request can skip the proxy.
+
+It defaults to `false`. When it's off, new logs leave `client_ip` empty in the logs database, the API, CSV exports and object storage. Turning it off doesn't clear addresses already recorded: logs written while it was on keep their values until log retention deletes those rows. With log retention off, the addresses stay until you delete the logs yourself. The setting is read at startup, so restart Bifrost after changing it. The user email field doesn't depend on this setting.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "postgres",
+    "config": { "...": "..." },
+    "capture_client_ip": true
   }
 }
 ```
@@ -390,7 +445,7 @@ Upgrading to a release **without** this pause (for example 2.2.x to 2.3.0) on a 
 
 ### Object Storage for Logs
 
-Offload LLM request/response logs and MCP tool logs from the database to S3 or GCS. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
+Offload LLM request/response logs and MCP tool logs from the database to S3, GCS, or Azure Blob Storage. The database retains lightweight index records and fetches full payloads on demand. For MCP logs, the full tool log is stored in object storage and the database keeps dashboard/table fields plus a 200-character input preview.
 
 #### AWS S3
 
@@ -462,7 +517,7 @@ The IAM user or role needs the following permissions on your bucket:
 | `bucket` | S3 bucket name (supports `env.` prefix) |
 | `prefix` | Key prefix for stored objects (default: `"bifrost"`) |
 | `compress` | Legacy gzip switch, same as `"compression": "gzip"` (default: `false`) |
-| `format` | Payload object format: `json` (default) or `parquet` (S3 only). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
+| `format` | Payload object format: `json` (default) or `parquet` (S3 and Azure). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
 | `compression` | `none`, `gzip`, `snappy` or `zstd`. JSON allows `none` or `gzip` (whole object); Parquet uses it as the page codec (default `snappy`) |
 | `region` | AWS region |
 | `access_key_id` | AWS access key ID (omit for default credential chain) |
@@ -527,6 +582,39 @@ Omit `credentials_json` to use Application Default Credentials (Workload Identit
 |-------|-------------|
 | `project_id` | GCP project ID (supports `env.` prefix) |
 | `credentials_json` | Service account JSON or path - omit for ADC |
+
+#### Azure Blob Storage
+
+Create the container before starting Bifrost. Set `bucket` to the container name, not the storage account name.
+
+```json
+{
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": { "path": "/app/data/logs.db" },
+    "object_storage": {
+      "type": "azure",
+      "bucket": "bifrost-logs",
+      "endpoint": "https://myaccount.blob.core.windows.net",
+      "prefix": "bifrost",
+      "compress": true
+    }
+  }
+}
+```
+
+`endpoint` uses `DefaultAzureCredential`: managed identity, workload identity, or a service principal configured through `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, and `AZURE_CLIENT_SECRET`. These credentials are separate from Azure model-provider credentials.
+
+For connection-string authentication, replace `endpoint` with `"connection_string": "env.AZURE_STORAGE_CONNECTION_STRING"`. Set only one. `bucket`, `endpoint`, and `connection_string` accept environment or vault references and must resolve to nonempty values.
+
+Grant **Storage Blob Data Contributor** on the container, or equivalent read/write/list/delete permissions. Blob index-tag permissions are not needed.
+
+Azure supports JSON/gzip and Parquet for logs, and also stores skills files. See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) for format options.
+
+<Warning>
+Restart after changing storage configuration or credentials; identity tokens refresh automatically. Apply lifecycle expiry only to log paths, not `skills/`. Before switching stores, copy existing objects with their keys and content headers intact. See [Azure operations](/enterprise/log-exports#azure-operations).
+</Warning>
 
 #### MinIO (Self-Hosted)
 

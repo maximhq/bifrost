@@ -147,7 +147,7 @@ test("topic cases allow exactly one list_topics call and no other tool", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
   const toolFailure = /tool calls, want at most|no use for|did not call/;
-  for (const id of ["topics-overview", "topics-past-day", "topics-trend", "topics-people"]) {
+  for (const id of ["topics-overview", "topics-past-day", "topics-trend"]) {
     const { expect } = caseFromCollection(id);
     const tools = (calls) => lib.evaluate(answered("x", calls), expect).filter((f) => toolFailure.test(f));
     assert.deepStrictEqual(tools(["list_topics"]), [], `${id}: one list_topics call`);
@@ -155,6 +155,30 @@ test("topic cases allow exactly one list_topics call and no other tool", () => {
     assert.notDeepStrictEqual(tools(["list_topics", { name: "query_logs", failed: true }]), [], `${id}: a failed query_logs call`);
     assert.notDeepStrictEqual(tools([]), [], `${id}: no list_topics call`);
   }
+});
+
+// How many users are behind a topic is answered, not declined: a
+// query_usage_by user ranking with the topic's topic_ids counts the users with
+// a request in it, and the answer says that number without the feature-request
+// link. The ranking has to carry both the topic and the user dimension.
+test("topics-people answers the user count from a user ranking over topic_ids", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  const { expect } = caseFromCollection("topics-people");
+  const link = " Counting distinct people is not available yet: https://github.com/maximhq/bifrost/issues/new";
+  const ranking = { name: "query_usage_by", arguments: '{"dimension": "user", "filters": {"topic_ids": ["t-1"]}, "limit": 20}' };
+  const answer = "The largest topic, Refund Requests, had **7 different users** in the last 7 days.";
+  assert.deepStrictEqual(lib.evaluate(answered(answer, ["list_topics", ranking]), expect), [], "user ranking with topic_ids, then the count");
+  assert.deepStrictEqual(lib.evaluate(answered(answer, ["describe_filter_space", "list_topics", ranking]), expect), [], "a discovery call first");
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer + link, ["list_topics", ranking]), expect), [], "declined with the feature link anyway");
+  assert.notDeepStrictEqual(lib.evaluate(answered("Refund Requests is the largest topic.", ["list_topics", ranking]), expect), [], "no user count");
+  assert.notDeepStrictEqual(lib.evaluate(answered("Refund Requests is the largest topic." + link, ["list_topics"]), expect), [], "the old decline");
+  const unscoped = { name: "query_usage_by", arguments: '{"dimension": "user", "filters": {"start_time": "-7d"}}' };
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, ["list_topics", unscoped]), expect), [], "a ranking not narrowed to the topic");
+  const teams = { name: "query_usage_by", arguments: '{"dimension": "team", "filters": {"topic_ids": ["t-1"]}}' };
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, ["list_topics", teams]), expect), [], "a ranking of teams");
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, ["list_topics", ranking, "query_logs"]), expect), [], "the logs sliced");
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, []), expect), [], "no list_topics call");
 });
 
 // A survey scoped to a window or a person is answered from one query_logs
@@ -337,6 +361,25 @@ test("a miss is retried once from scratch, then recorded as a failure", () => {
   assert.strictEqual(recorded.tests.length, 1);
   assert.strictEqual(recorded.tests[0].ok, false);
   assert.match(recorded.tests[0].message, /answer lacks \/anthropic\//);
+});
+
+// A repeated call is only diagnosable from what it changed: three list_topics
+// calls read the same unless each one's arguments are in the failure.
+test("a failure names each tool call with its arguments", () => {
+  const { pm, recorded } = fakePm();
+  const lib = createWarpLib(pm);
+  const c = { name: "topics overview", ask: "What do people ask about?", expect: { maxToolCalls: 1 } };
+  const calls = [
+    { name: "list_topics", arguments: '{"limit": 15}' },
+    { name: "list_topics", arguments: '{"limit": 50}' },
+  ];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    lib.prerequest(c);
+    pm.respond(200, answered("Refunds lead.", calls));
+    lib.test(c);
+  }
+  assert.strictEqual(recorded.tests[0].ok, false);
+  assert.match(recorded.tests[0].message, /tools: \[list_topics \{"limit": 15\}, list_topics \{"limit": 50\}\]/);
 });
 
 // The no-skip rule: an auth failure, rate limit or 5xx must fail the case

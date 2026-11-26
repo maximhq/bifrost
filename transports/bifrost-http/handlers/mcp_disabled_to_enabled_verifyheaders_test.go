@@ -10,6 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
 )
 
@@ -41,14 +42,14 @@ func (m *fakeMCPManagerVerifyOnly) CloseAndMarkNeedsReauth(_ context.Context, _ 
 }
 func (m *fakeMCPManagerVerifyOnly) DisableMCPClient(_ context.Context, _ string) error { return nil }
 func (m *fakeMCPManagerVerifyOnly) EnableMCPClient(_ context.Context, _ string) error  { return nil }
-func (m *fakeMCPManagerVerifyOnly) VerifyPerUserOAuthConnection(_ context.Context, _ *schemas.MCPClientConfig, _ string) (map[string]schemas.ChatTool, map[string]string, string, error) {
-	return nil, nil, "", nil
+func (m *fakeMCPManagerVerifyOnly) VerifyPerUserOAuthConnection(_ context.Context, _ *schemas.MCPClientConfig, _ string) (*schemas.MCPDiscovery, error) {
+	return &schemas.MCPDiscovery{}, nil
 }
-func (m *fakeMCPManagerVerifyOnly) VerifyHeadersConnection(_ context.Context, _ *schemas.MCPClientConfig, _ map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
+func (m *fakeMCPManagerVerifyOnly) VerifyHeadersConnection(_ context.Context, _ *schemas.MCPClientConfig, _ map[string]string) (*schemas.MCPDiscovery, error) {
 	m.verifyCalls++
-	return nil, nil, "", errors.New("rejected by upstream")
+	return nil, errors.New("rejected by upstream")
 }
-func (m *fakeMCPManagerVerifyOnly) SetClientTools(_ string, _ map[string]schemas.ChatTool, _ map[string]string, _ string) {
+func (m *fakeMCPManagerVerifyOnly) SetClientDiscovery(_ string, _ *schemas.MCPDiscovery) {
 }
 func (m *fakeMCPManagerVerifyOnly) RequiresPerCallConnection(_ *schemas.MCPClientConfig) bool {
 	return false
@@ -74,6 +75,9 @@ func (m *mockUpdateConfigStore) UpdateMCPClientConfig(_ context.Context, _ strin
 	return nil
 }
 
+// TestUpdateMCPClient_DisabledToEnabled_WithInvalidReplacementHeaders_PreflightRejects: enabling a
+// disabled client with replacement headers the upstream rejects answers 422 and writes nothing,
+// so the live-store record stays disabled.
 func TestUpdateMCPClient_DisabledToEnabled_WithInvalidReplacementHeaders_PreflightRejects(t *testing.T) {
 	SetLogger(&mockLogger{})
 	plain := func(v string) schemas.SecretVar { return *schemas.NewSecretVar(v) }
@@ -88,7 +92,8 @@ func TestUpdateMCPClient_DisabledToEnabled_WithInvalidReplacementHeaders_Preflig
 		Headers:           map[string]schemas.SecretVar{"Authorization": plain("Bearer old")},
 		PerUserHeaderKeys: nil,
 	}
-	store := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}}
+	store := &lib.Config{MCPConfig: &schemas.MCPConfig{}}
+	libtest.MCPClients(t, store, existing)
 	store.ClientConfig = &configstore.ClientConfig{} // avoid nil deref in ConvertToBifrostContext
 	cfgStore := &mockUpdateConfigStore{}
 	store.ConfigStore = cfgStore
@@ -123,7 +128,12 @@ func TestUpdateMCPClient_DisabledToEnabled_WithInvalidReplacementHeaders_Preflig
 	if cfgStore.updates != 0 {
 		t.Fatalf("expected no DB UpdateMCPClientConfig on pre-flight failure, got %d", cfgStore.updates)
 	}
-	if !existing.Disabled {
-		t.Fatalf("expected in-memory config to remain disabled after rejection, got Disabled=false")
+	// The handler reads the live-store record, not the fixture it was loaded from.
+	live := findMCPClientConfig(store, existing.ID)
+	if live == nil {
+		t.Fatalf("expected client %s to stay in the live store after rejection", existing.ID)
+	}
+	if !live.Disabled {
+		t.Fatalf("expected the live-store record to remain disabled after rejection, got Disabled=false")
 	}
 }

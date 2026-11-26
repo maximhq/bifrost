@@ -86,7 +86,6 @@ const delta = (d, b) => {
 // Round 34: direct-vs-Bifrost cache anchor parity, pivoted so each case is one row and the legs
 // are columns - the comparison is only meaningful read across a row.
 // ---------------------------------------------------------------------------------------------
-const LEG_ORDER = ["direct", "bifrost_messages", "bifrost_responses"];
 const anchorCases = new Map();
 for (const r of anchors) {
   const entry = anchorCases.get(r.caseKey) || { caseKey: r.caseKey, caseLabel: r.caseLabel, legs: {} };
@@ -111,8 +110,9 @@ const legVerdict = (entry, leg) => {
   const parityOk = (r.hitRate || 0) >= (d.hitRate || 0) - PARITY_TOLERANCE_PP / 100;
   return floorOk && parityOk ? "PASS" : "FAIL";
 };
+// Every recorded leg is scored, so a leg the table has no column for cannot pass unseen.
 const anchorRowVerdict = (entry) =>
-  LEG_ORDER.filter((l) => entry.legs[l]).every((l) => legVerdict(entry, l) === "PASS") ? "PASS" : "FAIL";
+  Object.keys(entry.legs).every((l) => legVerdict(entry, l) === "PASS") ? "PASS" : "FAIL";
 
 // A cell that recorded no cache write across ANY round never observed a cache being created: it
 // read a cache some earlier run wrote, which still clears the floor but proves only the read path.
@@ -191,20 +191,22 @@ if (anchorCases.size) {
   );
   lines.push("");
   lines.push(
-    "| Case | Expect hit | Direct hit | Bifrost /messages | Δ | Bifrost /responses | Δ | Direct r/w/u | /messages r/w/u | /responses r/w/u | Verdict |"
+    "| Case | Expect hit | Direct hit | Bifrost /messages | Δ | Bifrost /responses | Δ | Bifrost /chat | Δ | Direct r/w/u | /messages r/w/u | /responses r/w/u | /chat r/w/u | Verdict |"
   );
-  lines.push("|---|---|---:|---:|---:|---:|---:|---|---|---|---|");
+  lines.push("|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|");
   const rwu = (r) => (r ? `${r.read}/${r.write}/${r.uncached}` : "-");
   for (const entry of [...anchorCases.values()].sort((a, b) => a.caseKey.localeCompare(b.caseKey))) {
     const d = entry.legs.direct;
     const m = entry.legs.bifrost_messages;
     const p = entry.legs.bifrost_responses;
+    const c = entry.legs.bifrost_chat;
     lines.push(
       `| \`${entry.caseKey}\` | ${entry.expectHit ? "yes" : "no (floor only)"} ` +
         `| ${d ? pct(d.hitRate) : "-"} ` +
         `| ${m ? pct(m.hitRate) : "-"} | ${d && m ? delta(d.hitRate, m.hitRate) : "-"} ` +
         `| ${p ? pct(p.hitRate) : "-"} | ${d && p ? delta(d.hitRate, p.hitRate) : "-"} ` +
-        `| ${rwu(d)} | ${rwu(m)} | ${rwu(p)} | ${anchorRowVerdict(entry)} |`
+        `| ${c ? pct(c.hitRate) : "-"} | ${d && c ? delta(d.hitRate, c.hitRate) : "-"} ` +
+        `| ${rwu(d)} | ${rwu(m)} | ${rwu(p)} | ${rwu(c)} | ${anchorRowVerdict(entry)} |`
     );
   }
   lines.push("");
@@ -289,7 +291,7 @@ if (existsSync(HTML)) {
       return `<tr class="${cls(anchorRowVerdict(entry))}">
         <td><code>${esc(entry.caseKey)}</code></td>
         <td>${entry.expectHit ? "yes" : "no (floor only)"}</td>
-        ${cell("direct")}${cell("bifrost_messages")}${cell("bifrost_responses")}
+        ${cell("direct")}${cell("bifrost_messages")}${cell("bifrost_responses")}${cell("bifrost_chat")}
         <td>${anchorRowVerdict(entry)}</td>
       </tr>`;
     })
@@ -333,6 +335,7 @@ if (existsSync(HTML)) {
       <th>Direct hit</th><th>Δ</th>
       <th>Bifrost /messages</th><th>Δ</th>
       <th>Bifrost /responses</th><th>Δ</th>
+      <th>Bifrost /chat</th><th>Δ</th>
       <th>Verdict</th>
     </tr></thead>
     <tbody>

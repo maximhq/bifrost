@@ -369,6 +369,8 @@ import (
 	"testing"
 	"time"
 
+	"sync/atomic"
+
 	"github.com/google/uuid"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -380,7 +382,9 @@ import (
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/featureflags"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -391,7 +395,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"sync/atomic"
 )
 
 // First-admin file setup must default inference auth on without changing existing
@@ -464,6 +467,58 @@ func TestLoadClientConfig_OAuth2ServerConfigPolicyFieldsSyncFromFile(t *testing.
 	require.NotNil(t, cfg.ClientConfig.OAuth2ServerConfig)
 	assert.Equal(t, []string{callback}, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs, "file allowed_redirect_uris must be synced over the DB row")
 	assert.True(t, cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity, "file disable_vk_identity must be synced over the DB row")
+}
+
+// A changed client section in config.json replaces the stored client config, but the max protocol
+// version is declared under mcp, so the stored cap survives the sync.
+func TestLoadClientConfig_FileSyncKeepsMaxProtocolVersion(t *testing.T) {
+	SetLogger(&testLogger{})
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var first ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{"client":{"drop_excess_requests":false}}`), &first))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &first))
+	cfg.ClientConfig.MCPMaxProtocolVersion = schemas.MCPProtocolVersion20250618
+	require.NoError(t, store.UpdateClientConfig(context.Background(), cfg.ClientConfig))
+
+	var changed ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{"client":{"drop_excess_requests":true}}`), &changed))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &changed))
+	require.True(t, cfg.ClientConfig.DropExcessRequests, "the file change was synced")
+	assert.Equal(t, schemas.MCPProtocolVersion20250618, cfg.ClientConfig.MCPMaxProtocolVersion)
+}
+
+// A config.json listing a telemetry collector twice still boots: every entry for it is dropped
+// with a warning and never reaches the store, while the other collectors are kept.
+func TestLoadClientConfig_DuplicateTelemetryCollectorIsSkipped(t *testing.T) {
+	SetLogger(&testLogger{})
+	file := `{"client":{"oauth2_server_config":{"issuer_url":"https://issuer.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":{"enabled":true,"destinations":[` +
+		`{"endpoint":"https://a.example.com","headers":{"authorization":"Bearer first"}},` +
+		`{"endpoint":"https://b.example.com"},` +
+		`{"endpoint":" https://a.example.com","headers":{"authorization":"Bearer second"}}]}}}}}}`
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var data ConfigData
+	require.NoError(t, json.Unmarshal([]byte(file), &data))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &data))
+	require.NoError(t, validateClientConfig(cfg.ClientConfig))
+
+	for name, cc := range map[string]*configstore.ClientConfig{"live": cfg.ClientConfig, "stored": store.clientConfig} {
+		dests := cc.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry.Destinations
+		require.Len(t, dests, 1, name)
+		assert.Equal(t, "https://b.example.com", dests[0].Endpoint.GetValue(), name)
+	}
+
+	// With only the repeated collector listed, nothing is left, so forwarding is paused rather than failing boot.
+	only := `{"client":{"oauth2_server_config":{"issuer_url":"https://issuer.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":{"enabled":true,"destinations":[` +
+		`{"endpoint":"https://a.example.com"},{"endpoint":"https://a.example.com"}]}}}}}}`
+	var onlyData ConfigData
+	require.NoError(t, json.Unmarshal([]byte(only), &onlyData))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &onlyData))
+	require.NoError(t, validateClientConfig(cfg.ClientConfig))
+	telemetry := store.clientConfig.OAuth2ServerConfig.ClaudeCodeGateway().Telemetry
+	assert.False(t, telemetry.Enabled)
+	assert.Empty(t, telemetry.Destinations)
 }
 
 // A partial wildcard in config.json must stop the file sync before it reaches the
@@ -625,7 +680,9 @@ type MockConfigStore struct {
 
 	clientConfig     *configstore.ClientConfig
 	providers        map[schemas.ModelProvider]configstore.ProviderConfig
+	providerKeys     map[schemas.ModelProvider][]schemas.Key // each provider's key rows, in creation order
 	mcpConfig        *schemas.MCPConfig
+	mcpClients       []*schemas.MCPClientConfig
 	governanceConfig *configstore.GovernanceConfig
 	authConfig       *configstore.AuthConfig
 	frameworkConfig  *tables.TableFrameworkConfig
@@ -642,7 +699,8 @@ type MockConfigStore struct {
 		ID     string
 		Config tables.TableMCPClient
 	}
-	governanceItemsCreated struct {
+	mcpClientConfigHashUpdates [][3]string // client ID, old hash, new hash
+	governanceItemsCreated     struct {
 		budgets     []tables.TableBudget
 		rateLimits  []tables.TableRateLimit
 		customers   []tables.TableCustomer
@@ -662,6 +720,7 @@ type MockConfigStore struct {
 func NewMockConfigStore() *MockConfigStore {
 	return &MockConfigStore{
 		providers:     make(map[schemas.ModelProvider]configstore.ProviderConfig),
+		providerKeys:  make(map[schemas.ModelProvider][]schemas.Key),
 		configEntries: make(map[string]string),
 	}
 }
@@ -688,7 +747,16 @@ func (m *MockConfigStore) GetOAuth2AuthorizeRequestByID(ctx context.Context, id 
 func (m *MockConfigStore) GetOAuth2AuthorizeRequestByCodeHash(ctx context.Context, codeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
 	return nil, configstore.ErrNotFound
 }
+func (m *MockConfigStore) GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx context.Context, deviceCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	return nil, configstore.ErrNotFound
+}
+func (m *MockConfigStore) GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx context.Context, userCodeHash string) (*tables.TableOAuth2AuthorizeRequest, error) {
+	return nil, configstore.ErrNotFound
+}
 func (m *MockConfigStore) ConsentOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error {
+	return nil
+}
+func (m *MockConfigStore) DenyOAuth2AuthorizeRequest(ctx context.Context, id string) error {
 	return nil
 }
 func (m *MockConfigStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
@@ -706,14 +774,14 @@ func (m *MockConfigStore) RotateOAuth2RefreshToken(ctx context.Context, oldID st
 func (m *MockConfigStore) GetOAuth2RefreshTokenByHashAny(ctx context.Context, hash string) (*tables.TableOAuth2RefreshToken, error) {
 	return nil, configstore.ErrNotFound
 }
-func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) error {
-	return nil
+func (m *MockConfigStore) RevokeOAuth2RefreshTokensByFamilyID(ctx context.Context, familyID string) (int64, error) {
+	return 0, nil
 }
 func (m *MockConfigStore) RevokeOAuth2RefreshTokensByMode(ctx context.Context, bfMode string) error {
 	return nil
 }
-func (m *MockConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) error {
-	return nil
+func (m *MockConfigStore) RevokeOAuth2GrantsBySubject(ctx context.Context, bfMode, bfSub string, tx ...*gorm.DB) (int64, error) {
+	return 0, nil
 }
 func (m *MockConfigStore) SweepOAuth2RefreshTokens(ctx context.Context, revokedOlderThan time.Duration) (int64, error) {
 	return 0, nil
@@ -775,12 +843,25 @@ func (m *MockConfigStore) UpdateClientMetadata(ctx context.Context, patch map[st
 }
 
 // Provider config
-func (m *MockConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]configstore.ProviderConfig, tx ...*gorm.DB) error {
+
+// UpdateProvidersConfig replaces the stored providers and, like the real store, writes keys[p] for
+// each provider p with an entry in keys while a provider without one keeps its stored keys.
+func (m *MockConfigStore) UpdateProvidersConfig(ctx context.Context, providers map[schemas.ModelProvider]configstore.ProviderConfig, keys map[schemas.ModelProvider][]schemas.Key, tx ...*gorm.DB) error {
+	storedKeys := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
+	for provider := range providers {
+		if providerKeys, ok := keys[provider]; ok {
+			storedKeys[provider] = providerKeys
+		} else {
+			storedKeys[provider] = m.providerKeys[provider]
+		}
+	}
 	m.providers = providers
+	m.providerKeys = storedKeys
 	m.providersConfigUpdated = true
 	return nil
 }
 
+// GetProvidersConfig returns the stored providers, keyless as the real store returns them.
 func (m *MockConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.ModelProvider]configstore.ProviderConfig, error) {
 	if len(m.providers) == 0 {
 		return nil, nil
@@ -788,77 +869,76 @@ func (m *MockConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.M
 	return m.providers, nil
 }
 
+// AddProvider stores a new provider without keys, as the real store does; CreateProviderKey adds them.
 func (m *MockConfigStore) AddProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig, tx ...*gorm.DB) error {
 	m.providers[provider] = config
+	m.setProviderKeys(provider, nil)
 	return nil
 }
 
+// UpdateProvider replaces a provider's settings; its keys stay as stored.
 func (m *MockConfigStore) UpdateProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig, tx ...*gorm.DB) error {
 	m.providers[provider] = config
 	return nil
 }
 
+// DeleteProvider removes a provider and its keys.
 func (m *MockConfigStore) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	delete(m.providers, provider)
+	delete(m.providerKeys, provider)
 	return nil
 }
 
+// setProviderKeys stores a provider's keys, making the key map on first use so a mock built as a
+// bare literal works too.
+func (m *MockConfigStore) setProviderKeys(provider schemas.ModelProvider, keys []schemas.Key) {
+	if m.providerKeys == nil {
+		m.providerKeys = make(map[schemas.ModelProvider][]schemas.Key)
+	}
+	m.providerKeys[provider] = keys
+}
+
+// GetProviderKeys returns a copy of a provider's keys, or ErrNotFound when the provider is not stored.
 func (m *MockConfigStore) GetProviderKeys(ctx context.Context, provider schemas.ModelProvider) ([]schemas.Key, error) {
-	config, ok := m.providers[provider]
-	if !ok {
+	if _, ok := m.providers[provider]; !ok {
 		return nil, configstore.ErrNotFound
 	}
-	return append([]schemas.Key(nil), config.Keys...), nil
+	return append([]schemas.Key(nil), m.providerKeys[provider]...), nil
 }
 
-func (m *MockConfigStore) GetProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string) (*schemas.Key, error) {
-	config, ok := m.providers[provider]
-	if !ok {
-		return nil, configstore.ErrNotFound
-	}
-	for _, key := range config.Keys {
-		if key.ID == keyID {
-			keyCopy := key
-			return &keyCopy, nil
-		}
-	}
-	return nil, configstore.ErrNotFound
-}
-
+// CreateProviderKey appends a key to a stored provider's keys.
 func (m *MockConfigStore) CreateProviderKey(ctx context.Context, provider schemas.ModelProvider, key schemas.Key, tx ...*gorm.DB) error {
-	config, ok := m.providers[provider]
-	if !ok {
+	if _, ok := m.providers[provider]; !ok {
 		return configstore.ErrNotFound
 	}
-	config.Keys = append(config.Keys, key)
-	m.providers[provider] = config
+	m.setProviderKeys(provider, append(m.providerKeys[provider], key))
 	return nil
 }
 
+// UpdateProviderKey replaces the key with keyID in a stored provider's keys.
 func (m *MockConfigStore) UpdateProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, key schemas.Key, tx ...*gorm.DB) error {
-	config, ok := m.providers[provider]
-	if !ok {
+	if _, ok := m.providers[provider]; !ok {
 		return configstore.ErrNotFound
 	}
-	for i := range config.Keys {
-		if config.Keys[i].ID == keyID {
-			config.Keys[i] = key
-			m.providers[provider] = config
+	keys := m.providerKeys[provider]
+	for i := range keys {
+		if keys[i].ID == keyID {
+			keys[i] = key
 			return nil
 		}
 	}
 	return configstore.ErrNotFound
 }
 
+// DeleteProviderKey removes the key with keyID from a stored provider's keys.
 func (m *MockConfigStore) DeleteProviderKey(ctx context.Context, provider schemas.ModelProvider, keyID string, tx ...*gorm.DB) error {
-	config, ok := m.providers[provider]
-	if !ok {
+	if _, ok := m.providers[provider]; !ok {
 		return configstore.ErrNotFound
 	}
-	for i := range config.Keys {
-		if config.Keys[i].ID == keyID {
-			config.Keys = append(config.Keys[:i], config.Keys[i+1:]...)
-			m.providers[provider] = config
+	keys := m.providerKeys[provider]
+	for i := range keys {
+		if keys[i].ID == keyID {
+			m.setProviderKeys(provider, append(keys[:i:i], keys[i+1:]...))
 			return nil
 		}
 	}
@@ -868,6 +948,11 @@ func (m *MockConfigStore) DeleteProviderKey(ctx context.Context, provider schema
 // MCP config
 func (m *MockConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, error) {
 	return m.mcpConfig, nil
+}
+
+// GetMCPClientConfigs returns the stored MCP clients, in creation order like the real store.
+func (m *MockConfigStore) GetMCPClientConfigs(ctx context.Context) ([]*schemas.MCPClientConfig, error) {
+	return m.mcpClients, nil
 }
 
 func (m *MockConfigStore) GetMCPClientByID(ctx context.Context, id string) (*tables.TableMCPClient, error) {
@@ -883,7 +968,7 @@ func (m *MockConfigStore) GetMCPClientByName(ctx context.Context, name string) (
 }
 
 func (m *MockConfigStore) CreateMCPClientConfig(ctx context.Context, clientConfig *schemas.MCPClientConfig) error {
-	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, clientConfig)
+	m.mcpClients = append(m.mcpClients, clientConfig)
 	m.mcpConfigsCreated = append(m.mcpConfigsCreated, clientConfig)
 	return nil
 }
@@ -897,22 +982,21 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		Config: *clientConfig,
 	})
 
-	// Initialize m.mcpConfig if nil (same pattern as CreateMCPClientConfig)
+	// Initialize m.mcpConfig if nil, so GetMCPConfig reports the store as holding MCP config
 	if m.mcpConfig == nil {
-		m.mcpConfig = &schemas.MCPConfig{
-			ClientConfigs: []*schemas.MCPClientConfig{},
-		}
+		m.mcpConfig = &schemas.MCPConfig{}
 	}
 
-	// Update the in-memory state to ensure GetMCPConfig returns updated data
-	for i := range m.mcpConfig.ClientConfigs {
-		if m.mcpConfig.ClientConfigs[i].ID == id {
+	// Update the in-memory state to ensure GetMCPClientConfigs returns updated data
+	for i := range m.mcpClients {
+		if m.mcpClients[i].ID == id {
 			// Found the entry, update it with the new config
-			m.mcpConfig.ClientConfigs[i] = &schemas.MCPClientConfig{
+			m.mcpClients[i] = &schemas.MCPClientConfig{
 				ID:                  clientConfig.ClientID,
 				Name:                clientConfig.Name,
-				EndpointSlug:        m.mcpConfig.ClientConfigs[i].EndpointSlug, // immutable: the real store never updates it
+				EndpointSlug:        m.mcpClients[i].EndpointSlug, // immutable: the real store never updates it
 				IsCodeModeClient:    clientConfig.IsCodeModeClient,
+				ServerTypeOnSlug:    clientConfig.ServerTypeOnSlug,
 				ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
 				ConnectionString:    clientConfig.ConnectionString,
 				StdioConfig:         clientConfig.StdioConfig,
@@ -925,10 +1009,11 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 		}
 	}
 	// If not found, create a new entry (similar to CreateMCPClientConfig behavior)
-	m.mcpConfig.ClientConfigs = append(m.mcpConfig.ClientConfigs, &schemas.MCPClientConfig{
+	m.mcpClients = append(m.mcpClients, &schemas.MCPClientConfig{
 		ID:                  clientConfig.ClientID,
 		Name:                clientConfig.Name,
 		IsCodeModeClient:    clientConfig.IsCodeModeClient,
+		ServerTypeOnSlug:    clientConfig.ServerTypeOnSlug,
 		ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
 		ConnectionString:    clientConfig.ConnectionString,
 		StdioConfig:         clientConfig.StdioConfig,
@@ -941,15 +1026,20 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 	return nil
 }
 
-func (m *MockConfigStore) UpdateMCPClientTools(ctx context.Context, clientID string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string) error {
-	if m.mcpConfig != nil {
-		for _, cfg := range m.mcpConfig.ClientConfigs {
-			if cfg.ID == clientID {
-				cfg.DiscoveredTools = tools
-				cfg.DiscoveredToolNameMapping = toolNameMapping
-				cfg.DiscoveredInstructions = instructions
-				return nil
-			}
+func (m *MockConfigStore) UpdateMCPClientConfigHash(ctx context.Context, clientID, oldHash, newHash string) (bool, error) {
+	m.mcpClientConfigHashUpdates = append(m.mcpClientConfigHashUpdates, [3]string{clientID, oldHash, newHash})
+	return true, nil
+}
+
+func (m *MockConfigStore) UpdateMCPClientDiscovery(ctx context.Context, clientID string, discovery *schemas.MCPDiscovery) error {
+	for _, cfg := range m.mcpClients {
+		if cfg.ID == clientID {
+			cfg.DiscoveredTools = discovery.Tools
+			cfg.DiscoveredInstructions = discovery.Instructions
+			cfg.DiscoveredResources = discovery.Resources
+			cfg.DiscoveredResourceTemplates = discovery.ResourceTemplates
+			cfg.DiscoveredPrompts = discovery.Prompts
+			return nil
 		}
 	}
 	return configstore.ErrNotFound
@@ -993,16 +1083,13 @@ func (m *MockConfigStore) GetProtectedMCPLibrarySlugs(ctx context.Context) ([]st
 }
 
 func (m *MockConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) error {
-	if m.mcpConfig == nil {
-		return nil
-	}
-	filtered := make([]*schemas.MCPClientConfig, 0, len(m.mcpConfig.ClientConfigs))
-	for _, client := range m.mcpConfig.ClientConfigs {
+	filtered := make([]*schemas.MCPClientConfig, 0, len(m.mcpClients))
+	for _, client := range m.mcpClients {
 		if client == nil || client.ID != id {
 			filtered = append(filtered, client)
 		}
 	}
-	m.mcpConfig.ClientConfigs = filtered
+	m.mcpClients = filtered
 	return nil
 }
 
@@ -1595,6 +1682,24 @@ func (m *MockConfigStore) DeletePricingOverride(ctx context.Context, id string, 
 	return nil
 }
 
+// Datasheet overrides
+
+func (m *MockConfigStore) GetDatasheetOverrides(ctx context.Context) ([]tables.TableDatasheetOverride, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetDatasheetOverrideByID(ctx context.Context, id string) (*tables.TableDatasheetOverride, error) {
+	return nil, configstore.ErrNotFound
+}
+
+func (m *MockConfigStore) UpsertDatasheetOverride(ctx context.Context, override *tables.TableDatasheetOverride, tx ...*gorm.DB) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteDatasheetOverride(ctx context.Context, id string, tx ...*gorm.DB) error {
+	return nil
+}
+
 // Model parameters
 
 func (m *MockConfigStore) GetModelParameters(ctx context.Context) ([]tables.TableModelParameters, error) {
@@ -1695,10 +1800,6 @@ func (m *MockConfigStore) DeleteModelConfigsForScope(ctx context.Context, tx *go
 
 // Budget/Rate limit usage
 func (m *MockConfigStore) UpdateBudgetUsage(ctx context.Context, id string, currentUsage float64, tx ...*gorm.DB) error {
-	return nil
-}
-
-func (m *MockConfigStore) UpdateRateLimitUsage(ctx context.Context, id string, tokenCurrentUsage int64, requestCurrentUsage int64, tx ...*gorm.DB) error {
 	return nil
 }
 
@@ -1859,6 +1960,10 @@ func (m *MockConfigStore) DeleteExpiredOauthUserSessions(ctx context.Context) (i
 	return 0, nil
 }
 
+func (m *MockConfigStore) DeleteAbandonedOauthConfigs(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockConfigStore) DeleteOrphanedOauthUserTokens(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return 0, nil
 }
@@ -1885,6 +1990,23 @@ func (m *MockConfigStore) MarkMCPPerUserHeaderCredentialsNeedsUpdate(ctx context
 func (m *MockConfigStore) DeleteOrphanedMCPPerUserHeaderCredentials(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return 0, nil
 }
+
+func (m *MockConfigStore) GetMCPPerUserDiscoveryByMode(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) (*tables.TableMCPPerUserDiscovery, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) UpsertMCPPerUserDiscovery(ctx context.Context, discovery *tables.TableMCPPerUserDiscovery) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteMCPPerUserDiscovery(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string) error {
+	return nil
+}
+
+func (m *MockConfigStore) DeleteMCPPerUserDiscoveriesByClient(ctx context.Context, mcpClientID string) error {
+	return nil
+}
+
 func (m *MockConfigStore) CreateMCPPerUserHeaderFlow(ctx context.Context, flow *tables.TableMCPPerUserHeaderFlow) error {
 	return nil
 }
@@ -1992,6 +2114,11 @@ func (m *MockConfigStore) FailSidekiqJob(ctx context.Context, id, runnerID, meta
 	return nil
 }
 
+// DeleteTerminalSidekiqJobs is a no-op for the mock store.
+func (m *MockConfigStore) DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error) {
+	return 0, nil
+}
+
 func (m *MockConfigStore) ListClaimableSidekiqJobs(ctx context.Context, staleBefore time.Time) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
 }
@@ -2004,7 +2131,7 @@ func (m *MockConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind st
 	return nil, nil
 }
 
-func (m *MockConfigStore) ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error) {
+func (m *MockConfigStore) ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error) {
 	return nil, nil
 }
 
@@ -2614,10 +2741,6 @@ func (m *MockConfigStore) GetPromptVersions(ctx context.Context, promptID string
 	return nil, nil
 }
 
-func (m *MockConfigStore) GetAllPromptVersions(ctx context.Context) ([]tables.TablePromptVersion, error) {
-	return nil, nil
-}
-
 func (m *MockConfigStore) GetPromptVersionByID(ctx context.Context, id uint) (*tables.TablePromptVersion, error) {
 	return nil, nil
 }
@@ -2732,7 +2855,9 @@ func createTempDir(t *testing.T) string {
 	return dir
 }
 
-// createConfigFile creates a config.json file with the given data
+// createConfigFile creates a config.json file with the given data. ConfigData holds a provider's
+// keys in ProviderKeys, apart from its Providers entry, and marshals without them, so the
+// "providers" section is written here in the file's shape: each entry with its "keys" nested.
 func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 	t.Helper()
 	configPath := filepath.Join(dir, "config.json")
@@ -2740,9 +2865,54 @@ func createConfigFile(t *testing.T, dir string, data *ConfigData) {
 	if err != nil {
 		t.Fatalf("failed to marshal config data: %v", err)
 	}
+	if data != nil && (data.Providers != nil || data.ProviderKeys != nil) {
+		var sections map[string]json.RawMessage
+		if err := json.Unmarshal(jsonData, &sections); err != nil {
+			t.Fatalf("failed to split config data into sections: %v", err)
+		}
+		providersJSON, err := json.Marshal(providerFileEntries(data.Providers, data.ProviderKeys))
+		if err != nil {
+			t.Fatalf("failed to marshal config.json providers: %v", err)
+		}
+		sections["providers"] = providersJSON
+		if jsonData, err = json.MarshalIndent(sections, "", "  "); err != nil {
+			t.Fatalf("failed to marshal config data: %v", err)
+		}
+	}
 	if err := os.WriteFile(configPath, jsonData, 0644); err != nil {
 		t.Fatalf("failed to write config file: %v", err)
 	}
+}
+
+// providerFileEntries joins ConfigData's Providers and ProviderKeys into config.json's
+// "providers" entries, each provider's keys nested inside its entry.
+func providerFileEntries(providers map[string]configstore.ProviderConfig, keys map[string][]schemas.Key) map[string]providerFileEntry {
+	entries := make(map[string]providerFileEntry, len(providers))
+	for name, config := range providers {
+		entries[name] = providerFileEntry{Keys: keys[name], ProviderConfig: config}
+	}
+	for name, providerKeys := range keys {
+		if _, ok := entries[name]; !ok {
+			entries[name] = providerFileEntry{Keys: providerKeys}
+		}
+	}
+	return entries
+}
+
+// splitProviderEntries splits config.json "providers" entries into ConfigData's Providers and
+// ProviderKeys, as ConfigData.UnmarshalJSON does. A nil map gives nil maps, so the file keeps no
+// "providers" entries.
+func splitProviderEntries(entries map[string]providerFileEntry) (map[string]configstore.ProviderConfig, map[string][]schemas.Key) {
+	if entries == nil {
+		return nil, nil
+	}
+	providers := make(map[string]configstore.ProviderConfig, len(entries))
+	keys := make(map[string][]schemas.Key, len(entries))
+	for name, entry := range entries {
+		providers[name] = entry.ProviderConfig
+		keys[name] = entry.Keys
+	}
+	return providers, keys
 }
 
 // TestValidateClientConfig_AuthCodeTTL covers the load-time invariant check that
@@ -2826,6 +2996,8 @@ func TestValidateClientConfig_AllowedRedirectURIsWildcard(t *testing.T) {
 		{[]string{"https://*.example.com/cb"}, true},
 		{[]string{"https://app.example.com/*"}, true},
 		{[]string{"**"}, true},
+		{[]string{"https://app.example.com/cb\x00gateways.claude_code.enabled:true"}, true},
+		{[]string{"https://app.example.com/cb\n"}, true},
 	} {
 		err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{AllowedRedirectURIs: tc.uris}})
 		if tc.wantErr {
@@ -2870,6 +3042,41 @@ func TestValidateClientConfig_IssuerURLRequiredForDiscovery(t *testing.T) {
 			if tc.wantErr {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), "issuer_url")
+				require.NotContains(t, err.Error(), "BIFROST_TEST_UNSET_ISSUER_URL", "the error must not echo the reference")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway pins that the
+// Claude Code gateway needs a pinned issuer_url in every MCP auth mode, since it
+// does not depend on MCP OAuth being enabled.
+func TestValidateClientConfig_IssuerURLRequiredForClaudeCodeGateway(t *testing.T) {
+	gateway := func(enabled bool, issuerURL string) *configstore.ClientConfig {
+		oc := &tables.OAuth2ServerConfig{Gateways: &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{Enabled: enabled}}}
+		if issuerURL != "" {
+			oc.IssuerURL = schemas.NewSecretVar(issuerURL)
+		}
+		return &configstore.ClientConfig{MCPServerAuthMode: tables.MCPServerAuthModeHeaders, OAuth2ServerConfig: oc}
+	}
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr bool
+	}{
+		{"enabled, no issuer_url", gateway(true, ""), true},
+		{"enabled, issuer_url env reference unset", gateway(true, "env.BIFROST_TEST_UNSET_ISSUER_URL"), true},
+		{"enabled, issuer_url set", gateway(true, "https://issuer.example.com"), false},
+		{"disabled, no issuer_url", gateway(false, ""), false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "oauth2_server_config.gateways")
 				require.NotContains(t, err.Error(), "BIFROST_TEST_UNSET_ISSUER_URL", "the error must not echo the reference")
 			} else {
 				require.NoError(t, err)
@@ -2923,6 +3130,139 @@ func TestLoadConfig_AuthCodeTTLAboveMaxFailsBoot(t *testing.T) {
 	require.Contains(t, err.Error(), "auth_code_ttl")
 }
 
+// TestLoadConfig_RedirectURIControlCharacterFailsBootBeforeHashing pins that a config.json
+// redirect URI imitating the gateway block's NUL framing fails startup before the file is
+// hashed. Without the early check its hash matches the stored row (the plain URI plus an
+// enabled gateway), the stored row is kept, and the file is silently ignored.
+func TestLoadConfig_RedirectURIControlCharacterFailsBootBeforeHashing(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	data := func(uri string, gateways *tables.ClientGatewaysConfig) *ConfigData {
+		return &ConfigData{
+			Client: &configstore.ClientConfig{
+				InitialPoolSize: 10, EnableLogging: new(true), MaxRequestBodySizeMB: 100,
+				OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+					IssuerURL:           schemas.NewSecretVar("https://bifrost.example.com"),
+					AllowedRedirectURIs: []string{uri},
+					Gateways:            gateways,
+				},
+			},
+			ConfigStoreConfig: &configstore.Config{Enabled: true, Type: configstore.ConfigStoreTypeSQLite, Config: &configstore.SQLiteConfig{Path: filepath.Join(tempDir, "config.db")}},
+		}
+	}
+	ctx := context.Background()
+
+	createConfigFile(t, tempDir, data("https://app.example.com/callback", &tables.ClientGatewaysConfig{ClaudeCode: &tables.ClaudeCodeGatewayConfig{Enabled: true}}))
+	first, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	first.Close(ctx)
+
+	createConfigFile(t, tempDir, data("https://app.example.com/callback\x00gateways.claude_code.enabled:true", nil))
+	second, err := LoadConfig(ctx, tempDir)
+	if second != nil {
+		defer second.Close(ctx)
+	}
+	require.ErrorContains(t, err, "contains a control character")
+}
+
+// TestValidateClientConfig_MCPOpenAPIMaxSpecMB: PUT /api/config bounds
+// mcp_openapi_max_spec_mb to 0..256, but config.json and older DB rows reach the
+// runtime through validateClientConfig, so the same bound holds there.
+func TestValidateClientConfig_MCPOpenAPIMaxSpecMB(t *testing.T) {
+	for _, tc := range []struct {
+		mb      int
+		wantErr bool
+	}{
+		{0, false}, {32, false}, {configstore.MaxMCPOpenAPISpecMB, false},
+		{configstore.MaxMCPOpenAPISpecMB + 1, true}, {1024, true}, {-1, true},
+	} {
+		err := validateClientConfig(&configstore.ClientConfig{MCPOpenAPIMaxSpecMB: tc.mb})
+		if tc.wantErr {
+			require.ErrorContains(t, err, "mcp_openapi_max_spec_mb", "mb=%d", tc.mb)
+		} else {
+			require.NoError(t, err, "mb=%d", tc.mb)
+		}
+	}
+}
+
+// TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot: an out-of-range
+// mcp_openapi_max_spec_mb in config.json fails startup instead of letting a
+// 1 GiB spec through (or a negative value fall back silently).
+func TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot(t *testing.T) {
+	initTestLogger()
+	for _, mb := range []int{1024, -1} {
+		tempDir := createTempDir(t)
+		createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{MCPOpenAPIMaxSpecMB: mb}})
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, tempDir)
+		if config != nil {
+			config.Close(ctx)
+		}
+		require.ErrorContains(t, err, "mcp_openapi_max_spec_mb", "mb=%d", mb)
+	}
+}
+
+// TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot: PUT /api/config refuses an
+// openapi_url outside the app directory, and config.json gets the same rule.
+func TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot(t *testing.T) {
+	initTestLogger()
+	for _, specURL := range []string{"/etc/bifrost/openapi.json", "../openapi.json"} {
+		tempDir := createTempDir(t)
+		value := specURL
+		createConfigFile(t, tempDir, &ConfigData{FrameworkConfig: &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}})
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, tempDir)
+		if config != nil {
+			config.Close(ctx)
+		}
+		require.ErrorContains(t, err, "openapi_url", specURL)
+	}
+}
+
+// TestGetBifrostURLAndBifrostMCPSettings: the getters trim, ignore an invalid public
+// URL rather than letting a request-derived fallback be shadowed by garbage, treat
+// an unset writes switch as on, and read the build's default spec while openapi_url
+// is unset or blank.
+func TestGetBifrostURLAndBifrostMCPSettings(t *testing.T) {
+	const fallback = "https://example.com/default/openapi.json"
+	cfg := &Config{ClientConfig: &configstore.ClientConfig{}}
+	assert.Empty(t, cfg.GetBifrostURL())
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback))
+	assert.True(t, cfg.GetBifrostMCPAllowWrites())
+
+	blank := "  "
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &blank}}
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback), "a blank openapi_url reads the default")
+
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar(" https://gw.example.com/bifrost/ ")
+	set := " specs/openapi.json "
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &set}}
+	cfg.ClientConfig.BifrostMCPAllowWrites = new(false)
+	assert.Equal(t, "https://gw.example.com/bifrost", cfg.GetBifrostURL())
+	assert.Equal(t, "specs/openapi.json", cfg.GetOpenAPIURL(fallback))
+	assert.False(t, cfg.GetBifrostMCPAllowWrites())
+
+	cfg.ClientConfig.BifrostURL = schemas.NewSecretVar("not a url")
+	assert.Empty(t, cfg.GetBifrostURL())
+
+	// An env reference (saved through the API, or stored before config.json resolved
+	// it) is resolved like config.json's: an unset, empty or invalid value reads the
+	// default rather than a file named after the reference.
+	useEnv := func(value string) string {
+		ref := " env.BIFROST_TEST_OPENAPI_URL "
+		cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &ref}}
+		t.Setenv("BIFROST_TEST_OPENAPI_URL", value)
+		return cfg.GetOpenAPIURL(fallback)
+	}
+	assert.Equal(t, "https://mirror.internal/openapi.json", useEnv(" https://mirror.internal/openapi.json "), "an env reference is resolved and trimmed")
+	assert.Equal(t, "specs/openapi.json", useEnv("specs/openapi.json"), "an env reference may name a path in the app directory")
+	assert.Equal(t, fallback, useEnv(""), "an env reference that resolves empty reads the default")
+	assert.Equal(t, fallback, useEnv("/etc/openapi.json"), "an env reference that resolves outside the app directory reads the default")
+	unset := "env.BIFROST_TEST_OPENAPI_URL_NEVER_SET"
+	cfg.FrameworkConfig = &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &unset}}
+	assert.Equal(t, fallback, cfg.GetOpenAPIURL(fallback), "an unset env reference reads the default")
+}
+
 // TestConfigDataSourceOfTruthDefaultsToSplit verifies omitted source_of_truth uses split mode.
 func TestConfigDataSourceOfTruthDefaultsToSplit(t *testing.T) {
 	var configData ConfigData
@@ -2969,8 +3309,9 @@ func makeClientConfig(initialPoolSize int, enableLogging bool) *configstore.Clie
 	}
 }
 
-func makeProviderConfig(keyName, keyValue string) configstore.ProviderConfig {
-	return configstore.ProviderConfig{
+// makeProviderConfig creates a config.json provider entry with one key.
+func makeProviderConfig(keyName, keyValue string) providerFileEntry {
+	return providerFileEntry{
 		Keys: []schemas.Key{
 			{
 				ID:     uuid.NewString(),
@@ -3037,13 +3378,14 @@ func createTestSQLiteConfigStore(t *testing.T, dir string) configstore.ConfigSto
 }
 
 // makeConfigDataWithProviders creates a ConfigData with only providers configured
-func makeConfigDataWithProviders(providers map[string]configstore.ProviderConfig) *ConfigData {
+func makeConfigDataWithProviders(providers map[string]providerFileEntry) *ConfigData {
 	return makeConfigDataWithProvidersAndDir(providers, "")
 }
 
 // makeConfigDataWithProvidersAndDir creates a ConfigData with providers and a specific temp directory for the DB
-func makeConfigDataWithProvidersAndDir(providers map[string]configstore.ProviderConfig, tempDir string) *ConfigData {
+func makeConfigDataWithProvidersAndDir(providers map[string]providerFileEntry, tempDir string) *ConfigData {
 	dbPath := filepath.Join(tempDir, "config.db")
+	providerConfigs, providerKeys := splitProviderEntries(providers)
 	return &ConfigData{
 		Client: &configstore.ClientConfig{
 			InitialPoolSize:      10,
@@ -3058,18 +3400,20 @@ func makeConfigDataWithProvidersAndDir(providers map[string]configstore.Provider
 				Path: dbPath,
 			},
 		},
-		Providers: providers,
+		Providers:    providerConfigs,
+		ProviderKeys: providerKeys,
 	}
 }
 
 // makeConfigDataWithVirtualKeys creates a ConfigData with providers and virtual keys
-func makeConfigDataWithVirtualKeys(providers map[string]configstore.ProviderConfig, vks []tables.TableVirtualKey) *ConfigData {
+func makeConfigDataWithVirtualKeys(providers map[string]providerFileEntry, vks []tables.TableVirtualKey) *ConfigData {
 	return makeConfigDataWithVirtualKeysAndDir(providers, vks, "")
 }
 
 // makeConfigDataWithVirtualKeysAndDir creates a ConfigData with providers, virtual keys, and a specific temp directory
-func makeConfigDataWithVirtualKeysAndDir(providers map[string]configstore.ProviderConfig, vks []tables.TableVirtualKey, tempDir string) *ConfigData {
+func makeConfigDataWithVirtualKeysAndDir(providers map[string]providerFileEntry, vks []tables.TableVirtualKey, tempDir string) *ConfigData {
 	dbPath := filepath.Join(tempDir, "config.db")
+	providerConfigs, providerKeys := splitProviderEntries(providers)
 	return &ConfigData{
 		Client: &configstore.ClientConfig{
 			InitialPoolSize:      10,
@@ -3084,7 +3428,8 @@ func makeConfigDataWithVirtualKeysAndDir(providers map[string]configstore.Provid
 				Path: dbPath,
 			},
 		},
-		Providers: providers,
+		Providers:    providerConfigs,
+		ProviderKeys: providerKeys,
 		Governance: &configstore.GovernanceConfig{
 			VirtualKeys: vks,
 		},
@@ -3092,12 +3437,12 @@ func makeConfigDataWithVirtualKeysAndDir(providers map[string]configstore.Provid
 }
 
 // makeConfigDataFull creates a full ConfigData with all configurations
-func makeConfigDataFull(client *configstore.ClientConfig, providers map[string]configstore.ProviderConfig, governance *configstore.GovernanceConfig) *ConfigData {
+func makeConfigDataFull(client *configstore.ClientConfig, providers map[string]providerFileEntry, governance *configstore.GovernanceConfig) *ConfigData {
 	return makeConfigDataFullWithDir(client, providers, governance, "")
 }
 
 // makeConfigDataFullWithDir creates a full ConfigData with all configurations and a specific temp directory
-func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[string]configstore.ProviderConfig, governance *configstore.GovernanceConfig, tempDir string) *ConfigData {
+func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[string]providerFileEntry, governance *configstore.GovernanceConfig, tempDir string) *ConfigData {
 	if client == nil {
 		client = &configstore.ClientConfig{
 			InitialPoolSize:      10,
@@ -3107,6 +3452,7 @@ func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[s
 		}
 	}
 	dbPath := filepath.Join(tempDir, "config.db")
+	providerConfigs, providerKeys := splitProviderEntries(providers)
 	return &ConfigData{
 		Client: client,
 		ConfigStoreConfig: &configstore.Config{
@@ -3116,14 +3462,15 @@ func makeConfigDataFullWithDir(client *configstore.ClientConfig, providers map[s
 				Path: dbPath,
 			},
 		},
-		Providers:  providers,
-		Governance: governance,
+		Providers:    providerConfigs,
+		ProviderKeys: providerKeys,
+		Governance:   governance,
 	}
 }
 
-// makeProviderConfigWithNetwork creates a provider config with network settings
-func makeProviderConfigWithNetwork(keyName, keyValue, baseURL string) configstore.ProviderConfig {
-	return configstore.ProviderConfig{
+// makeProviderConfigWithNetwork creates a config.json provider entry with one key and network settings
+func makeProviderConfigWithNetwork(keyName, keyValue, baseURL string) providerFileEntry {
+	return providerFileEntry{
 		Keys: []schemas.Key{
 			{
 				ID:     uuid.NewString(),
@@ -3132,18 +3479,22 @@ func makeProviderConfigWithNetwork(keyName, keyValue, baseURL string) configstor
 				Weight: 1,
 			},
 		},
-		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: baseURL,
+		ProviderConfig: configstore.ProviderConfig{
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL: baseURL,
+			},
 		},
 	}
 }
 
-// makeProviderConfigWithMultipleKeys creates a provider config with multiple keys
-func makeProviderConfigWithMultipleKeys(keys []schemas.Key, baseURL string) configstore.ProviderConfig {
-	return configstore.ProviderConfig{
+// makeProviderConfigWithMultipleKeys creates a config.json provider entry with multiple keys
+func makeProviderConfigWithMultipleKeys(keys []schemas.Key, baseURL string) providerFileEntry {
+	return providerFileEntry{
 		Keys: keys,
-		NetworkConfig: &schemas.NetworkConfig{
-			BaseURL: baseURL,
+		ProviderConfig: configstore.ProviderConfig{
+			NetworkConfig: &schemas.NetworkConfig{
+				BaseURL: baseURL,
+			},
 		},
 	}
 }
@@ -3225,13 +3576,34 @@ func verifyProviderInDB(t *testing.T, store configstore.ConfigStore, provider sc
 	if err != nil {
 		t.Fatalf("failed to get providers from DB: %v", err)
 	}
-	cfg, exists := providers[provider]
-	if !exists {
+	if _, exists := providers[provider]; !exists {
 		t.Fatalf("provider %s not found in DB", provider)
 	}
-	if len(cfg.Keys) != expectedKeyCount {
-		t.Errorf("expected %d keys for provider %s, got %d", expectedKeyCount, provider, len(cfg.Keys))
+	keys, err := store.GetProviderKeys(ctx, provider)
+	if err != nil {
+		t.Fatalf("failed to get keys of provider %s from DB: %v", provider, err)
 	}
+	if len(keys) != expectedKeyCount {
+		t.Errorf("expected %d keys for provider %s, got %d", expectedKeyCount, provider, len(keys))
+	}
+}
+
+// dbProvidersAndKeys reads every provider store holds and, for each, its keys in creation order:
+// what GetProvidersConfig returned in one map before a provider's keys moved out of its config.
+func dbProvidersAndKeys(ctx context.Context, store configstore.ConfigStore) (map[schemas.ModelProvider]configstore.ProviderConfig, map[schemas.ModelProvider][]schemas.Key, error) {
+	providers, err := store.GetProvidersConfig(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	keys := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
+	for provider := range providers {
+		providerKeys, err := store.GetProviderKeys(ctx, provider)
+		if err != nil {
+			return nil, nil, err
+		}
+		keys[provider] = providerKeys
+	}
+	return providers, keys, nil
 }
 
 // verifyVirtualKeyInDB checks that a virtual key exists in the database
@@ -3358,27 +3730,25 @@ func TestLoadConfig_ClientConfig_Merge(t *testing.T) {
 
 // TestLoadConfig_Providers_Merge tests provider keys merge from DB and file
 func TestLoadConfig_Providers_Merge(t *testing.T) {
-	// Setup DB providers
-	dbProviders := make(map[schemas.ModelProvider]configstore.ProviderConfig)
-	dbProviders[schemas.OpenAI] = configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     "key-1",
-				Name:   "openai-db-key-1",
-				Value:  *schemas.NewSecretVar("sk-db-123"),
-				Weight: 1,
-			},
-			{
-				ID:     "key-2",
-				Name:   "openai-db-key-2",
-				Value:  *schemas.NewSecretVar("sk-db-456"),
-				Weight: 1,
-			},
+	// Setup DB provider keys
+	dbKeys := make(map[schemas.ModelProvider][]schemas.Key)
+	dbKeys[schemas.OpenAI] = []schemas.Key{
+		{
+			ID:     "key-1",
+			Name:   "openai-db-key-1",
+			Value:  *schemas.NewSecretVar("sk-db-123"),
+			Weight: 1,
+		},
+		{
+			ID:     "key-2",
+			Name:   "openai-db-key-2",
+			Value:  *schemas.NewSecretVar("sk-db-456"),
+			Weight: 1,
 		},
 	}
 
 	// Setup file providers with some overlapping and some new keys
-	fileProviders := map[string]configstore.ProviderConfig{
+	fileProviders := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -3400,12 +3770,12 @@ func TestLoadConfig_Providers_Merge(t *testing.T) {
 	// Simulate merge logic
 	for providerName, fileCfg := range fileProviders {
 		provider := schemas.ModelProvider(providerName)
-		if existingCfg, exists := dbProviders[provider]; exists {
+		if existingKeys, exists := dbKeys[provider]; exists {
 			// Merge keys
 			keysToAdd := make([]schemas.Key, 0)
 			for _, newKey := range fileCfg.Keys {
 				found := false
-				for _, existingKey := range existingCfg.Keys {
+				for _, existingKey := range existingKeys {
 					if existingKey.Name == newKey.Name || existingKey.ID == newKey.ID || existingKey.Value == newKey.Value {
 						found = true
 						break
@@ -3415,20 +3785,19 @@ func TestLoadConfig_Providers_Merge(t *testing.T) {
 					keysToAdd = append(keysToAdd, newKey)
 				}
 			}
-			existingCfg.Keys = append(existingCfg.Keys, keysToAdd...)
-			dbProviders[provider] = existingCfg
+			dbKeys[provider] = append(existingKeys, keysToAdd...)
 		}
 	}
 
 	// Verify merge results
-	openaiCfg := dbProviders[schemas.OpenAI]
-	if len(openaiCfg.Keys) != 3 {
-		t.Errorf("Expected 3 keys after merge (2 from DB + 1 new from file), got %d", len(openaiCfg.Keys))
+	openaiKeys := dbKeys[schemas.OpenAI]
+	if len(openaiKeys) != 3 {
+		t.Errorf("Expected 3 keys after merge (2 from DB + 1 new from file), got %d", len(openaiKeys))
 	}
 
 	// Verify the keys
 	keyNames := make(map[string]bool)
-	for _, key := range openaiCfg.Keys {
+	for _, key := range openaiKeys {
 		keyNames[key.Name] = true
 	}
 
@@ -3446,7 +3815,7 @@ func TestLoadConfig_Providers_Merge(t *testing.T) {
 // TestLoadConfig_MCP_Merge tests MCP config merge from DB and file
 func TestLoadConfig_MCP_Merge(t *testing.T) {
 	// Setup DB MCP config
-	dbMCPConfig := &schemas.MCPConfig{
+	dbMCPConfig := &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:             "mcp-1",
@@ -3462,7 +3831,7 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 	}
 
 	// Setup file MCP config with some overlapping and some new
-	fileMCPConfig := &schemas.MCPConfig{
+	fileMCPConfig := &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:             "mcp-1", // Same ID - should be skipped
@@ -3498,7 +3867,7 @@ func TestLoadConfig_MCP_Merge(t *testing.T) {
 		}
 	}
 
-	mergedMCPConfig := &schemas.MCPConfig{
+	mergedMCPConfig := &MCPFileConfig{
 		ClientConfigs: append(dbMCPConfig.ClientConfigs, clientConfigsToAdd...),
 	}
 
@@ -3547,11 +3916,10 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 	require.NoError(t, err)
 	existing.ConfigHash = existingHash
 
-	store.mcpConfig = &schemas.MCPConfig{
-		ClientConfigs: []*schemas.MCPClientConfig{existing},
-	}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{existing}
 
-	fileMCP := &schemas.MCPConfig{
+	fileMCP := &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				Name:           "echo_http",
@@ -3570,8 +3938,8 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 		},
 	}
 
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpConfig)
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: fileMCP}, store.mcpClients)
 
 	require.Len(t, store.mcpClientConfigUpdates, 1, "expected one updated MCP client")
 	require.Equal(t, "mcp-existing", store.mcpClientConfigUpdates[0].ID)
@@ -3584,9 +3952,9 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 	require.NotEmpty(t, store.mcpConfigsCreated[0].ID)
 	require.NotEmpty(t, store.mcpConfigsCreated[0].ConfigHash)
 
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 2)
+	require.Len(t, cfg.boot.mcpClients, 2)
 	byName := map[string]*schemas.MCPClientConfig{}
-	for _, client := range cfg.MCPConfig.ClientConfigs {
+	for _, client := range cfg.boot.mcpClients {
 		byName[client.Name] = client
 	}
 	require.Equal(t, "mcp-existing", byName["echo_http"].ID, "updated client should preserve DB client_id")
@@ -3599,36 +3967,34 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 func TestSourceOfTruthConfigJSON_MCPMissingLeavesDBUntouched(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
-	store.mcpConfig = &schemas.MCPConfig{
-		ClientConfigs: []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}},
-	}
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 
 	loadMCPConfig(context.Background(), cfg, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON})
 
 	require.NotNil(t, cfg.MCPConfig)
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	require.Equal(t, "db-client", cfg.MCPConfig.ClientConfigs[0].Name)
+	require.Len(t, cfg.boot.mcpClients, 1)
+	require.Equal(t, "db-client", cfg.boot.mcpClients[0].Name)
 }
 
 // TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB verifies present empty mcp removes DB MCP clients.
 func TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
-	store.mcpConfig = &schemas.MCPConfig{
-		ClientConfigs: []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}},
-	}
-	cfg := &Config{ConfigStore: store}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{{ID: "client-db", Name: "db-client"}}
+	cfg := &Config{ConfigStore: store, boot: &bootConfig{}}
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
-		MCP:           &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{}},
+		MCP:           &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{}},
 	}
 
 	loadMCPConfig(context.Background(), cfg, configData)
 
 	require.NotNil(t, cfg.MCPConfig)
-	require.Empty(t, cfg.MCPConfig.ClientConfigs)
-	require.Empty(t, store.mcpConfig.ClientConfigs)
+	require.Empty(t, cfg.boot.mcpClients)
+	require.Empty(t, store.mcpClients)
 }
 
 // TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient: when
@@ -3638,14 +4004,15 @@ func TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB(t *testing.T) {
 func TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient(t *testing.T) {
 	initTestLogger()
 	store := NewMockConfigStore()
-	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{{
 		ID: "openapi-db", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
 		OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "stored valid document"},
-	}}}
-	cfg := &Config{ConfigStore: store}
+	}}
+	cfg := &Config{ConfigStore: store, boot: &bootConfig{}}
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
-		MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+		MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
 			OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"},
 		}}},
@@ -3653,10 +4020,91 @@ func TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient(t *t
 
 	loadMCPConfig(context.Background(), cfg, configData)
 
-	require.Len(t, store.mcpConfig.ClientConfigs, 1, "the stored client must not be pruned")
+	require.Len(t, store.mcpClients, 1, "the stored client must not be pruned")
 	require.NotNil(t, cfg.MCPConfig)
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	assert.Equal(t, "stored valid document", cfg.MCPConfig.ClientConfigs[0].OpenAPIConfig.Spec, "the runtime keeps the last valid configuration")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	assert.Equal(t, "stored valid document", cfg.boot.mcpClients[0].OpenAPIConfig.Spec, "the runtime keeps the last valid configuration")
+}
+
+// mcpClientNames lists the names of configs, in order.
+func mcpClientNames(configs []*schemas.MCPClientConfig) []string {
+	names := make([]string, 0, len(configs))
+	for _, c := range configs {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// TestLoadMCPConfig_RefusesAuthTypesCreateRefuses pins that config.json gets the
+// create API's answer on auth_type: an unknown auth_type, and a per-user one on SSE
+// or STDIO, are skipped and not stored, while the client beside them loads.
+func TestLoadMCPConfig_RefusesAuthTypesCreateRefuses(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	configData := &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "bogus_auth", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp"), AuthType: "bogus"},
+		{Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"}},
+		{Name: "oauth_on_stdio", ConnectionType: schemas.MCPConnectionTypeSTDIO, StdioConfig: &schemas.MCPStdioConfig{Command: "true"}, AuthType: schemas.MCPAuthTypePerUserOauth},
+		{Name: "plain_http", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp"), AuthType: schemas.MCPAuthTypeNone},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"plain_http"}, mcpClientNames(cfg.boot.mcpClients), "the runtime")
+	assert.Equal(t, []string{"plain_http"}, mcpClientNames(store.mcpConfigsCreated), "the store")
+}
+
+// TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders pins that a config.json client
+// without an auth_type loads as headers, the value the store saves and later boots
+// read back, so it connects the same way on its first boot as on every boot after.
+func TestLoadMCPConfig_OmittedAuthTypeLoadsAsHeaders(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	configData := &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		{Name: "no_auth_type", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/mcp")},
+	}}}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.NotNil(t, cfg.MCPConfig)
+	require.Len(t, cfg.boot.mcpClients, 1)
+	assert.Equal(t, schemas.MCPAuthTypeHeaders, cfg.boot.mcpClients[0].AuthType, "the runtime")
+	require.Len(t, store.mcpConfigsCreated, 1)
+	assert.Equal(t, schemas.MCPAuthTypeHeaders, store.mcpConfigsCreated[0].AuthType, "the store")
+}
+
+// TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient: a stored client whose
+// config.json declaration is now refused for its auth_type is kept with its stored
+// configuration, the way an unparsable OpenAPI declaration keeps it, instead of being
+// pruned as missing from the file.
+func TestSourceOfTruthConfigJSON_RefusedAuthTypeKeepsStoredClient(t *testing.T) {
+	initTestLogger()
+	stored := &schemas.MCPClientConfig{
+		ID: "sse-db", Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"},
+	}
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{stored}
+	cfg := &Config{ConfigStore: store, boot: &bootConfig{}}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name: "headers_on_sse", ConnectionType: schemas.MCPConnectionTypeSSE,
+			ConnectionString: schemas.NewSecretVar("http://127.0.0.1:9/sse"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-key"},
+		}}},
+	}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(store.mcpClients), "the stored client must not be pruned")
+	require.NotNil(t, cfg.MCPConfig)
+	assert.Equal(t, []string{"headers_on_sse"}, mcpClientNames(cfg.boot.mcpClients))
 }
 
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
@@ -3818,9 +4266,6 @@ func TestLoadConfig_Governance_Merge(t *testing.T) {
 func TestGenerateProviderConfigHash(t *testing.T) {
 	// Create a provider config
 	config1 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -3837,11 +4282,8 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 		t.Error("Expected non-empty hash")
 	}
 
-	// Same config should produce same hash
+	// Same config should produce same hash (keys are not part of a provider config, so they cannot change it)
 	config2 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "different-id", Name: "different-name", Value: *schemas.NewSecretVar("different-value"), Weight: 2}, // Keys should NOT affect hash
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -3859,9 +4301,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different config should produce different hash
 	config3 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://different-api.example.com", // Different base URL
 		},
@@ -3889,9 +4328,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different SendBackRawResponse should produce different hash
 	config5 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -3909,9 +4345,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different ConcurrencyAndBufferSize should produce different hash
 	config6 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -3933,9 +4366,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different ProxyConfig should produce different hash
 	config7 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -3957,9 +4387,6 @@ func TestGenerateProviderConfigHash(t *testing.T) {
 
 	// Different CustomProviderConfig should produce different hash
 	config8 := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "test-key", Value: *schemas.NewSecretVar("sk-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4305,9 +4732,6 @@ func TestGenerateKeyHash(t *testing.T) {
 func TestProviderHashComparison_MatchingHash(t *testing.T) {
 	// Create a provider config (simulating what's in config.json)
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4322,23 +4746,28 @@ func TestProviderHashComparison_MatchingHash(t *testing.T) {
 
 	// Create DB config with same hash (simulating unchanged config.json)
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-different"), Weight: 1}, // DB may have different key value (edited via dashboard)
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
 		SendBackRawResponse: false,
 		ConfigHash:          fileHash, // Same hash as file
 	}
+	// The file's key "openai-key" holds sk-file-123; the DB's was edited via the dashboard.
+	dbKeys := []schemas.Key{
+		{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-different"), Weight: 1}, // DB may have different key value (edited via dashboard)
+	}
 
 	// Simulate the hash comparison logic
 	providersInConfigStore := map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: dbConfig,
 	}
+	keysInConfigStore := map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: dbKeys,
+	}
 
 	// When hash matches, we should keep DB config
 	existingCfg := providersInConfigStore[schemas.OpenAI]
+	existingKeys := keysInConfigStore[schemas.OpenAI]
 	if existingCfg.ConfigHash == fileHash {
 		// Hash matches - keep DB config
 		// This is the expected path
@@ -4347,18 +4776,18 @@ func TestProviderHashComparison_MatchingHash(t *testing.T) {
 	}
 
 	// Verify DB config is preserved (key value from DB, not file)
-	if existingCfg.Keys[0].Value != *schemas.NewSecretVar("sk-db-different") {
-		t.Errorf("Expected DB key value to be preserved, got %v", existingCfg.Keys[0].Value)
+	if existingKeys[0].Value != *schemas.NewSecretVar("sk-db-different") {
+		t.Errorf("Expected DB key value to be preserved, got %v", existingKeys[0].Value)
 	}
 }
 
 // TestProviderHashComparison_DifferentHash tests that file config is used when hashes differ
 func TestProviderHashComparison_DifferentHash(t *testing.T) {
 	// Create a provider config (simulating what's in config.json - CHANGED)
+	fileKeys := []schemas.Key{
+		{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
+	}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v2", // Changed URL
 		},
@@ -4374,31 +4803,34 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 
 	// Create DB config with different hash (config.json was changed)
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-123"), Weight: 1},
-			{ID: "key-2", Name: "dashboard-added-key", Value: *schemas.NewSecretVar("sk-dashboard"), Weight: 1}, // Key added via dashboard
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com", // Old URL
 		},
 		SendBackRawResponse: false, // Old setting
 		ConfigHash:          "old-different-hash",
 	}
+	dbKeys := []schemas.Key{
+		{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-db-123"), Weight: 1},
+		{ID: "key-2", Name: "dashboard-added-key", Value: *schemas.NewSecretVar("sk-dashboard"), Weight: 1}, // Key added via dashboard
+	}
 
 	// Simulate the hash comparison logic
 	providersInConfigStore := map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: dbConfig,
 	}
+	keysInConfigStore := map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: dbKeys,
+	}
 
 	existingCfg := providersInConfigStore[schemas.OpenAI]
 	if existingCfg.ConfigHash != fileHash {
 		// Hash mismatch - sync from file, but preserve dashboard-added keys
-		mergedKeys := fileConfig.Keys
+		mergedKeys := fileKeys
 
 		// Find keys in DB that aren't in file (added via dashboard)
-		for _, dbKey := range existingCfg.Keys {
+		for _, dbKey := range keysInConfigStore[schemas.OpenAI] {
 			found := false
-			for _, fileKey := range fileConfig.Keys {
+			for _, fileKey := range fileKeys {
 				dbKeyHash, _ := configstore.GenerateKeyHash(schemas.Key{
 					Name:   dbKey.Name,
 					Value:  dbKey.Value,
@@ -4418,7 +4850,7 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 		}
 
 		// Update the result
-		fileConfig.Keys = mergedKeys
+		keysInConfigStore[schemas.OpenAI] = mergedKeys
 		providersInConfigStore[schemas.OpenAI] = fileConfig
 	} else {
 		t.Error("Expected hash mismatch")
@@ -4426,6 +4858,7 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 
 	// Verify file config is now used
 	resultConfig := providersInConfigStore[schemas.OpenAI]
+	resultKeys := keysInConfigStore[schemas.OpenAI]
 
 	if resultConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
 		t.Errorf("Expected file BaseURL, got %s", resultConfig.NetworkConfig.BaseURL)
@@ -4436,13 +4869,13 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 	}
 
 	// Verify dashboard-added key is preserved
-	if len(resultConfig.Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 from file + 1 dashboard-added), got %d", len(resultConfig.Keys))
+	if len(resultKeys) != 2 {
+		t.Errorf("Expected 2 keys (1 from file + 1 dashboard-added), got %d", len(resultKeys))
 	}
 
 	hasFileKey := false
 	hasDashboardKey := false
-	for _, key := range resultConfig.Keys {
+	for _, key := range resultKeys {
 		if key.Name == "openai-key" {
 			hasFileKey = true
 		}
@@ -4461,11 +4894,9 @@ func TestProviderHashComparison_DifferentHash(t *testing.T) {
 
 // TestProviderHashComparison_ProviderOnlyInDB tests that provider added via dashboard is preserved
 func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
-	// DB has a provider that was added via dashboard (not in config.json)
+	// DB has a provider that was added via dashboard (not in config.json), with key
+	// "dashboard-provider-key", which the provider hash does not cover.
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "dashboard-provider-key", Value: *schemas.NewSecretVar("sk-dashboard-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.custom-provider.com",
 		},
@@ -4485,7 +4916,7 @@ func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
 	}
 
 	// File providers (doesn't include custom-provider)
-	fileProviders := map[string]configstore.ProviderConfig{
+	fileProviders := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-openai-123"), Weight: 1},
@@ -4501,7 +4932,7 @@ func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
 
 		if _, exists := providersInConfigStore[provider]; !exists {
 			// New provider from file - add it
-			providersInConfigStore[provider] = fileCfg
+			providersInConfigStore[provider] = fileCfg.ProviderConfig
 		}
 		// Note: We don't delete providers that are only in DB
 	}
@@ -4526,9 +4957,6 @@ func TestProviderHashComparison_ProviderOnlyInDB(t *testing.T) {
 func TestProviderHashComparison_RoundTrip(t *testing.T) {
 	// First load: config.json content
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4549,9 +4977,6 @@ func TestProviderHashComparison_RoundTrip(t *testing.T) {
 
 	// Second load: same config.json (no changes)
 	secondFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4582,9 +5007,6 @@ func TestProviderHashComparison_RoundTrip(t *testing.T) {
 func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 	// Initial file config
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4594,27 +5016,28 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 	fileHash, _ := fileConfig.GenerateConfigHash("openai")
 	fileConfig.ConfigHash = fileHash
 
-	// Simulate: user edits key value via dashboard (but provider config hash stays same)
+	// Simulate: user edits key value via dashboard (but provider config hash stays same).
+	// The file's key "openai-key" holds sk-original-123.
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-dashboard-modified-456"), Weight: 1}, // Modified via dashboard
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
 		SendBackRawResponse: false,
 		ConfigHash:          fileHash, // Hash based on provider config, not keys
 	}
+	dbKeys := []schemas.Key{
+		{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-dashboard-modified-456"), Weight: 1}, // Modified via dashboard
+	}
 
 	providersInConfigStore := map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: dbConfig,
 	}
+	keysInConfigStore := map[schemas.ModelProvider][]schemas.Key{
+		schemas.OpenAI: dbKeys,
+	}
 
 	// Reload with same file config
 	reloadFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com",
 		},
@@ -4633,8 +5056,9 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 	}
 
 	// Verify dashboard-modified key value is preserved
-	if existingCfg.Keys[0].Value != *schemas.NewSecretVar("sk-dashboard-modified-456") {
-		t.Errorf("Expected dashboard-modified key value to be preserved, got %v", existingCfg.Keys[0].Value)
+	existingKeys := keysInConfigStore[schemas.OpenAI]
+	if existingKeys[0].Value != *schemas.NewSecretVar("sk-dashboard-modified-456") {
+		t.Errorf("Expected dashboard-modified key value to be preserved, got %v", existingKeys[0].Value)
 	}
 }
 
@@ -4642,7 +5066,6 @@ func TestProviderHashComparison_DashboardEditThenSameFile(t *testing.T) {
 func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 	// Config with no optional fields
 	configNoOptional := configstore.ProviderConfig{
-		Keys:                []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		SendBackRawResponse: false,
 	}
 
@@ -4653,7 +5076,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with NetworkConfig
 	configWithNetwork := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4671,7 +5093,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with ProxyConfig
 	configWithProxy := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		ProxyConfig: &schemas.ProxyConfig{
 			Type: "http",
 			URL:  schemas.NewSecretVar("http://proxy.example.com"),
@@ -4690,7 +5111,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with ConcurrencyAndBufferSize
 	configWithConcurrency := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
 			BufferSize:  100,
@@ -4709,7 +5129,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with CustomProviderConfig
 	configWithCustom := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			BaseProviderType: "openai",
 		},
@@ -4727,7 +5146,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with SendBackRawResponse true vs false
 	configWithRawResponse := configstore.ProviderConfig{
-		Keys:                []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		SendBackRawResponse: true,
 	}
 
@@ -4742,7 +5160,6 @@ func TestProviderHashComparison_OptionalFieldsPresence(t *testing.T) {
 
 	// Config with ALL optional fields
 	configAllFields := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4904,7 +5321,6 @@ func TestKeyHashComparison_OptionalFieldsPresence(t *testing.T) {
 func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 	// Base config
 	baseConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 		},
@@ -4915,7 +5331,6 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 
 	// Change BaseURL
 	configChangedURL := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.different.com", // Changed
 		},
@@ -4930,7 +5345,6 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 
 	// Add extra headers
 	configWithHeaders := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -4948,7 +5362,6 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 
 	// Change concurrency values
 	configWithConc1 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
 			BufferSize:  100,
@@ -4958,7 +5371,6 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 	hashConc1, _ := configWithConc1.GenerateConfigHash("openai")
 
 	configWithConc2 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 20, // Changed
 			BufferSize:  100,
@@ -4981,7 +5393,6 @@ func stringPtr(s string) *string {
 func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 	// Original config with all fields
 	originalConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5003,7 +5414,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// NetworkConfig removed
 	configNoNetwork := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		// NetworkConfig: nil (removed)
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
@@ -5024,7 +5434,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// ConcurrencyAndBufferSize removed
 	configNoConcurrency := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5047,7 +5456,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// ProxyConfig removed
 	configNoProxy := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5070,7 +5478,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// SendBackRawResponse changed to false
 	configNoRawResponse := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
@@ -5096,7 +5503,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// ExtraHeaders removed from NetworkConfig
 	configNoHeaders := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
 			// ExtraHeaders removed
@@ -5120,7 +5526,6 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 
 	// All optional fields removed
 	configMinimal := configstore.ProviderConfig{
-		Keys:                []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		SendBackRawResponse: false,
 	}
 
@@ -5241,7 +5646,6 @@ func TestKeyHashComparison_FieldRemoved(t *testing.T) {
 func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 	// Base config
 	baseConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:                        "https://api.example.com",
 			DefaultRequestTimeoutInSeconds: 30,
@@ -5253,7 +5657,6 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 
 	// Timeout set to 0 (default/removed)
 	configNoTimeout := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:                        "https://api.example.com",
 			DefaultRequestTimeoutInSeconds: 0, // Removed/default
@@ -5269,7 +5672,6 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 
 	// MaxRetries set to 0 (default/removed)
 	configNoRetries := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:                        "https://api.example.com",
 			DefaultRequestTimeoutInSeconds: 30,
@@ -5285,7 +5687,6 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 
 	// Timeout value changed
 	configDifferentTimeout := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:                        "https://api.example.com",
 			DefaultRequestTimeoutInSeconds: 60, // Changed from 30
@@ -5304,7 +5705,6 @@ func TestProviderHashComparison_PartialFieldChanges(t *testing.T) {
 func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 	// === STEP 1: Initial state - provider exists in DB from previous config.json ===
 	initialConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-initial-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -5323,7 +5723,6 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 
 	// === STEP 2: New config.json comes with changes ===
 	newFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-new-456"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v2", // Changed!
 			MaxRetries: 5,                           // Added!
@@ -5364,7 +5763,6 @@ func TestProviderHashComparison_FullLifecycle(t *testing.T) {
 
 	// === STEP 4: Same config.json loaded again - should NOT update ===
 	sameFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "openai-key", Value: *schemas.NewSecretVar("sk-new-456"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v2",
 			MaxRetries: 5,
@@ -5412,7 +5810,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 1: Initial config ===
 	config1 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v1"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.v1.com",
 		},
@@ -5429,7 +5826,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 2: Update config.json ===
 	config2 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v2"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.v2.com", // Changed
 		},
@@ -5449,7 +5845,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 3: Another update ===
 	config3 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v3"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.v3.com", // Changed again
 			MaxRetries: 3,                    // Added
@@ -5471,7 +5866,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 4: Same as Round 3 (no change) ===
 	config4 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v3"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.v3.com",
 			MaxRetries: 3,
@@ -5490,7 +5884,6 @@ func TestProviderHashComparison_MultipleUpdates(t *testing.T) {
 
 	// === Round 5: Revert to Round 1 config ===
 	config5 := configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: "key-1", Name: "key", Value: *schemas.NewSecretVar("sk-v1"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.v1.com",
 		},
@@ -5537,8 +5930,8 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	}
 	originalKeyHash, _ := configstore.GenerateKeyHash(originalKey)
 
+	dbKeys := []schemas.Key{originalKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v1",
 			MaxRetries: 3,
@@ -5562,7 +5955,6 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{sameKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v2", // CHANGED!
 			MaxRetries: 5,                           // CHANGED!
@@ -5593,21 +5985,21 @@ func TestProviderHashComparison_ProviderChangedKeysUnchanged(t *testing.T) {
 	// - Keep existing keys from DB (they weren't changed in file)
 
 	updatedConfig := configstore.ProviderConfig{
-		Keys:                dbConfig.Keys,                  // Keep original keys from DB
+		// Keep original keys from DB
 		NetworkConfig:       fileConfig.NetworkConfig,       // Update from file
 		SendBackRawResponse: fileConfig.SendBackRawResponse, // Update from file
 		ConfigHash:          fileProviderHash,               // New provider hash
 	}
 
 	// Verify keys are preserved (same values as DB)
-	if len(updatedConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(updatedConfig.Keys))
+	if len(dbKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(dbKeys))
 	}
-	if updatedConfig.Keys[0].Value.GetValue() != "sk-original-123" {
-		t.Errorf("Expected key value to be preserved, got %v", updatedConfig.Keys[0].Value)
+	if dbKeys[0].Value.GetValue() != "sk-original-123" {
+		t.Errorf("Expected key value to be preserved, got %v", dbKeys[0].Value)
 	}
-	if len(updatedConfig.Keys[0].Models) != 2 {
-		t.Errorf("Expected 2 models to be preserved, got %d", len(updatedConfig.Keys[0].Models))
+	if len(dbKeys[0].Models) != 2 {
+		t.Errorf("Expected 2 models to be preserved, got %d", len(dbKeys[0].Models))
 	}
 
 	// Verify provider config is updated
@@ -5637,7 +6029,6 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	originalKeyHash, _ := configstore.GenerateKeyHash(originalKey)
 
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v1",
 			MaxRetries: 3,
@@ -5660,8 +6051,8 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 	}
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
+	fileKeys := []schemas.Key{changedKey}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{changedKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v1", // SAME
 			MaxRetries: 3,                           // SAME
@@ -5686,41 +6077,48 @@ func TestProviderHashComparison_KeysChangedProviderUnchanged(t *testing.T) {
 		t.Log("✓ Key hash changed (expected)")
 	}
 
-	// === Simulate sync logic: Keep provider, update keys ===
-	// When provider hash matches but key hashes differ:
-	// - Keep provider-level config from DB
-	// - Update keys from file (they were changed)
+	// === Reconcile through the loader's merge: the provider hash matches, so its settings stay as
+	// stored, while the key whose hash changed is taken from the file under its stored ID ===
+	initTestLogger()
+	storedKey := originalKey
+	storedKey.ConfigHash = originalKeyHash
+	fileConfig.ConfigHash = fileProviderHash
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: dbConfig}
+	keys := map[schemas.ModelProvider][]schemas.Key{schemas.OpenAI: {storedKey}}
+	mergeProviderWithHash(schemas.OpenAI, fileConfig, fileKeys, providers, keys)
 
-	updatedConfig := configstore.ProviderConfig{
-		Keys:                fileConfig.Keys,              // Update keys from file
-		NetworkConfig:       dbConfig.NetworkConfig,       // Keep from DB
-		SendBackRawResponse: dbConfig.SendBackRawResponse, // Keep from DB
-		ConfigHash:          dbProviderHash,               // Provider hash unchanged
+	merged := providers[schemas.OpenAI]
+	if merged.NetworkConfig == nil || merged.NetworkConfig.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("Expected BaseURL to be preserved from DB, got %+v", merged.NetworkConfig)
+	} else if merged.NetworkConfig.MaxRetries != 3 {
+		t.Errorf("Expected MaxRetries to be preserved from DB, got %d", merged.NetworkConfig.MaxRetries)
 	}
-
-	// Verify provider config is preserved
-	if updatedConfig.NetworkConfig.BaseURL != "https://api.openai.com/v1" {
-		t.Error("Expected BaseURL to be preserved from DB")
-	}
-	if updatedConfig.NetworkConfig.MaxRetries != 3 {
-		t.Error("Expected MaxRetries to be preserved from DB")
-	}
-	if updatedConfig.SendBackRawResponse {
+	if merged.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be preserved from DB (false)")
 	}
+	if merged.ConfigHash != dbProviderHash {
+		t.Error("Expected the stored provider hash to be kept")
+	}
 
-	// Verify keys are updated
-	if len(updatedConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(updatedConfig.Keys))
+	mergedKeys := keys[schemas.OpenAI]
+	if len(mergedKeys) != 1 {
+		t.Fatalf("Expected 1 key, got %d", len(mergedKeys))
 	}
-	if updatedConfig.Keys[0].Value.GetValue() != "sk-new-456" {
-		t.Errorf("Expected key value to be updated, got %v", updatedConfig.Keys[0].Value)
+	key := mergedKeys[0]
+	if key.ID != "key-1" {
+		t.Errorf("Expected the stored key ID to be kept, got %q", key.ID)
 	}
-	if len(updatedConfig.Keys[0].Models) != 3 {
-		t.Errorf("Expected 3 models (updated), got %d", len(updatedConfig.Keys[0].Models))
+	if key.Value.GetValue() != "sk-new-456" {
+		t.Errorf("Expected key value to be updated, got %v", key.Value)
 	}
-	if updatedConfig.Keys[0].Weight != 2.0 {
-		t.Errorf("Expected weight to be 2.0 (updated), got %f", updatedConfig.Keys[0].Weight)
+	if len(key.Models) != 3 {
+		t.Errorf("Expected 3 models (updated), got %d", len(key.Models))
+	}
+	if key.Weight != 2.0 {
+		t.Errorf("Expected weight to be 2.0 (updated), got %f", key.Weight)
+	}
+	if key.ConfigHash != changedKeyHash {
+		t.Error("Expected the key to carry the file's key hash")
 	}
 
 	t.Log("✓ Provider preserved, keys updated")
@@ -5739,7 +6137,6 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	originalKeyHash, _ := configstore.GenerateKeyHash(originalKey)
 
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -5761,13 +6158,13 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	changedKeyHash, _ := configstore.GenerateKeyHash(changedKey)
 
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{changedKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://api.openai.com/v2", // CHANGED
 			MaxRetries: 5,                           // ADDED
 		},
 		SendBackRawResponse: true, // CHANGED
 	}
+	fileKeys := []schemas.Key{changedKey}
 	fileProviderHash, _ := fileConfig.GenerateConfigHash("openai")
 
 	t.Logf("File - Provider hash: %s", fileProviderHash[:16]+"...")
@@ -5789,6 +6186,7 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	// === Simulate sync: Update everything from file ===
 	updatedConfig := fileConfig
 	updatedConfig.ConfigHash = fileProviderHash
+	updatedKeys := fileKeys
 
 	// Verify both provider and keys are updated
 	if updatedConfig.NetworkConfig.BaseURL != "https://api.openai.com/v2" {
@@ -5797,10 +6195,10 @@ func TestProviderHashComparison_BothChangedIndependently(t *testing.T) {
 	if !updatedConfig.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be updated")
 	}
-	if updatedConfig.Keys[0].Value.GetValue() != "sk-new-456" {
+	if updatedKeys[0].Value.GetValue() != "sk-new-456" {
 		t.Error("Expected key value to be updated")
 	}
-	if updatedConfig.Keys[0].Weight != 2.0 {
+	if updatedKeys[0].Weight != 2.0 {
 		t.Error("Expected key weight to be updated")
 	}
 
@@ -5820,7 +6218,6 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 	originalKeyHash, _ := configstore.GenerateKeyHash(originalKey)
 
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{originalKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -5843,7 +6240,6 @@ func TestProviderHashComparison_NeitherChanged(t *testing.T) {
 	sameKeyHash, _ := configstore.GenerateKeyHash(sameKey)
 
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{sameKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -5890,8 +6286,8 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	}
 	dbKeyHash, _ := configstore.GenerateKeyHash(dbKey)
 
+	dbKeys := []schemas.Key{dbKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{dbKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -5912,8 +6308,8 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	}
 	fileKeyHash, _ := configstore.GenerateKeyHash(fileKey)
 
+	fileKeys := []schemas.Key{fileKey}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{fileKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -5938,13 +6334,13 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -5969,7 +6365,7 @@ func TestKeyLevelSync_ProviderHashMatch_SingleKeyChanged(t *testing.T) {
 
 	// Add keys only in file
 	for _, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 	}
 
 	// === Verify results ===
@@ -6006,8 +6402,8 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 		Weight: 1.0,
 	}
 
+	dbKeys := []schemas.Key{dbKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{dbKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6031,8 +6427,8 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 		Weight: 1.0,
 	}
 
+	fileKeys := []schemas.Key{fileKey1, newFileKey}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{fileKey1, newFileKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6048,13 +6444,13 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6079,7 +6475,7 @@ func TestKeyLevelSync_ProviderHashMatch_NewKeyInFile(t *testing.T) {
 
 	// Add keys only in file (NEW keys)
 	for name, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 		t.Logf("✓ New key '%s' added from file", name)
 	}
 
@@ -6135,8 +6531,8 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 		Weight: 2.0,
 	}
 
+	dbKeys := []schemas.Key{dbKey1, dashboardKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{dbKey1, dashboardKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6153,8 +6549,9 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 		Weight: 1.0,                               // SAME
 	}
 
+	fileKeys := []schemas.Key{fileKey1}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{fileKey1}, // Dashboard key NOT here
+		// Dashboard key NOT here
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6170,13 +6567,13 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6202,7 +6599,7 @@ func TestKeyLevelSync_ProviderHashMatch_KeyOnlyInDB(t *testing.T) {
 
 	// Add keys only in file
 	for _, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 	}
 
 	// === Verify results ===
@@ -6260,8 +6657,8 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 		Weight: 3.0,
 	}
 
+	dbKeys := []schemas.Key{unchangedKey, changedKey, dashboardKey}
 	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{unchangedKey, changedKey, dashboardKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6293,8 +6690,8 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	}
 	// Note: dashboardKey is NOT in file
 
+	fileKeys := []schemas.Key{fileUnchangedKey, fileChangedKey, newFileKey}
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{fileUnchangedKey, fileChangedKey, newFileKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6310,13 +6707,13 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6341,7 +6738,7 @@ func TestKeyLevelSync_ProviderHashMatch_MixedScenario(t *testing.T) {
 	}
 
 	for name, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 		t.Logf("  Key '%s': FILE-ONLY → adding new key", name)
 	}
 
@@ -6421,7 +6818,6 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	}
 
 	dbConfig := configstore.ProviderConfig{
-		Keys: dbKeys,
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1",
 		},
@@ -6437,7 +6833,6 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	}
 
 	fileConfig := configstore.ProviderConfig{
-		Keys: fileKeys,
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.openai.com/v1", // SAME
 		},
@@ -6452,14 +6847,14 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	// === Simulate key-level sync logic ===
 	mergedKeys := make([]schemas.Key, 0)
 	fileKeysByName := make(map[string]int)
-	for i, fk := range fileConfig.Keys {
+	for i, fk := range fileKeys {
 		fileKeysByName[fk.Name] = i
 	}
 
 	changedCount := 0
-	for _, dbk := range dbConfig.Keys {
+	for _, dbk := range dbKeys {
 		if fileIdx, exists := fileKeysByName[dbk.Name]; exists {
-			fk := fileConfig.Keys[fileIdx]
+			fk := fileKeys[fileIdx]
 			fkHash, _ := configstore.GenerateKeyHash(fk)
 			dkHash, _ := configstore.GenerateKeyHash(schemas.Key{
 				Name:   dbk.Name,
@@ -6482,7 +6877,7 @@ func TestKeyLevelSync_ProviderHashMatch_MultipleKeysChanged(t *testing.T) {
 	}
 
 	for _, idx := range fileKeysByName {
-		mergedKeys = append(mergedKeys, fileConfig.Keys[idx])
+		mergedKeys = append(mergedKeys, fileKeys[idx])
 	}
 
 	// === Verify all 3 keys were detected as changed ===
@@ -6570,13 +6965,13 @@ func TestKeyHashComparison_KeyContentChanged(t *testing.T) {
 func TestProviderHashComparison_NewProvider(t *testing.T) {
 	// Create a provider config (simulating new provider in config.json)
 	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: "key-1", Name: "anthropic-key", Value: *schemas.NewSecretVar("sk-ant-123"), Weight: 1},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.anthropic.com",
 		},
 		SendBackRawResponse: false,
+	}
+	fileKeys := []schemas.Key{
+		{ID: "key-1", Name: "anthropic-key", Value: *schemas.NewSecretVar("sk-ant-123"), Weight: 1},
 	}
 
 	// Generate hash for the file config
@@ -6588,12 +6983,14 @@ func TestProviderHashComparison_NewProvider(t *testing.T) {
 
 	// Empty DB (no existing providers)
 	providersInConfigStore := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	keysInConfigStore := map[schemas.ModelProvider][]schemas.Key{}
 
 	provider := schemas.Anthropic
 
 	// Simulate the logic: provider doesn't exist, add from file
 	if _, exists := providersInConfigStore[provider]; !exists {
 		providersInConfigStore[provider] = fileConfig
+		keysInConfigStore[provider] = fileKeys
 	}
 
 	// Verify provider was added
@@ -6602,17 +6999,18 @@ func TestProviderHashComparison_NewProvider(t *testing.T) {
 	}
 
 	resultConfig := providersInConfigStore[provider]
+	resultKeys := keysInConfigStore[provider]
 
 	if resultConfig.ConfigHash != fileHash {
 		t.Error("Expected ConfigHash to be set from file")
 	}
 
-	if len(resultConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(resultConfig.Keys))
+	if len(resultKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(resultKeys))
 	}
 
-	if resultConfig.Keys[0].Name != "anthropic-key" {
-		t.Errorf("Expected key name 'anthropic-key', got %s", resultConfig.Keys[0].Name)
+	if resultKeys[0].Name != "anthropic-key" {
+		t.Errorf("Expected key name 'anthropic-key', got %s", resultKeys[0].Name)
 	}
 }
 
@@ -7167,7 +7565,6 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	initialConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{initialAzureKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -7181,6 +7578,9 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	// Simulate DB state
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"azure": initialConfig,
+	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"azure": {initialAzureKey},
 	}
 
 	t.Logf("Step 1 - Initial DB provider hash: %s", initialProviderHash[:16]+"...")
@@ -7201,7 +7601,6 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	dbConfigAfterDashboardEdit := configstore.ProviderConfig{
-		Keys: []schemas.Key{dashboardEditedKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -7210,6 +7609,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	providersInDB["azure"] = dbConfigAfterDashboardEdit
+	keysInDB["azure"] = []schemas.Key{dashboardEditedKey}
 
 	dashboardKeyHash, _ := configstore.GenerateKeyHash(dashboardEditedKey)
 	t.Logf("Step 2 - After dashboard edit, key hash: %s (different from initial)", dashboardKeyHash[:16]+"...")
@@ -7220,18 +7620,6 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 
 	// === STEP 3: Same config.json loaded (unchanged) - should NOT update, preserve dashboard edits ===
 	sameFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("azure-api-key-initial"), // Original value from file
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
-				},
-			},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -7242,6 +7630,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 
 	// Provider hash should match (config.json unchanged)
 	existingCfg := providersInDB["azure"]
+	existingKeys := keysInDB["azure"]
 	if existingCfg.ConfigHash != sameFileProviderHash {
 		t.Errorf("Expected provider hash to match - config.json unchanged. DB: %s, File: %s",
 			existingCfg.ConfigHash[:16], sameFileProviderHash[:16])
@@ -7250,24 +7639,24 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	t.Logf("Step 3 - Hash matches, dashboard edits preserved ✓")
 
 	// Verify dashboard-edited key value is preserved
-	if existingCfg.Keys[0].Value.GetValue() != "azure-api-key-dashboard-edited" {
-		t.Errorf("Expected dashboard-edited key value to be preserved, got %v", existingCfg.Keys[0].Value)
+	if existingKeys[0].Value.GetValue() != "azure-api-key-dashboard-edited" {
+		t.Errorf("Expected dashboard-edited key value to be preserved, got %v", existingKeys[0].Value)
 	}
 
 	// === STEP 4: Config.json changed (Azure endpoint updated) - should trigger sync ===
-	newFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("azure-api-key-initial"),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://new-azure.openai.azure.com"), // Changed!
-				},
+	newFileKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("azure-api-key-initial"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}, "gpt-4o": {ModelID: "gpt-4o-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://new-azure.openai.azure.com"), // Changed!
 			},
 		},
+	}
+	newFileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://new-azure.openai.azure.com/openai", // Changed!
 		},
@@ -7275,7 +7664,7 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	newFileProviderHash, _ := newFileConfig.GenerateConfigHash("azure")
-	newFileKeyHash, _ := configstore.GenerateKeyHash(newFileConfig.Keys[0])
+	newFileKeyHash, _ := configstore.GenerateKeyHash(newFileKeys[0])
 
 	t.Logf("Step 4 - New file provider hash: %s", newFileProviderHash[:16]+"...")
 	t.Logf("Step 4 - New file key hash: %s", newFileKeyHash[:16]+"...")
@@ -7290,9 +7679,9 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	mergedKeys := []schemas.Key{}
 
 	// For each key in file, check if it exists in DB
-	for _, fileKey := range newFileConfig.Keys {
+	for _, fileKey := range newFileKeys {
 		found := false
-		for _, dbKey := range existingCfg.Keys {
+		for _, dbKey := range existingKeys {
 			if dbKey.Name == fileKey.Name || dbKey.ID == fileKey.ID {
 				// Key exists in both - use file version (config.json changed)
 				mergedKeys = append(mergedKeys, fileKey)
@@ -7307,9 +7696,9 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	// Preserve dashboard-added keys that aren't in file
-	for _, dbKey := range existingCfg.Keys {
+	for _, dbKey := range existingKeys {
 		found := false
-		for _, fileKey := range newFileConfig.Keys {
+		for _, fileKey := range newFileKeys {
 			if dbKey.Name == fileKey.Name || dbKey.ID == fileKey.ID {
 				found = true
 				break
@@ -7322,18 +7711,19 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	updatedConfig := configstore.ProviderConfig{
-		Keys:                mergedKeys,
 		NetworkConfig:       newFileConfig.NetworkConfig,
 		SendBackRawResponse: newFileConfig.SendBackRawResponse,
 		ConfigHash:          newFileProviderHash,
 	}
 
 	providersInDB["azure"] = updatedConfig
+	keysInDB["azure"] = mergedKeys
 
 	t.Logf("Step 4 - Sync complete, DB updated ✓")
 
 	// === STEP 5: Verify final state ===
 	finalConfig := providersInDB["azure"]
+	finalKeys := keysInDB["azure"]
 
 	// Verify provider config updated
 	if finalConfig.NetworkConfig.BaseURL != "https://new-azure.openai.azure.com/openai" {
@@ -7347,14 +7737,14 @@ func TestProviderHashComparison_AzureProviderFullLifecycle(t *testing.T) {
 	}
 
 	// Verify Azure key config updated
-	if len(finalConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(finalConfig.Keys))
+	if len(finalKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(finalKeys))
 	}
-	if finalConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://new-azure.openai.azure.com" {
-		t.Errorf("Expected updated Azure endpoint, got %s", finalConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue())
+	if finalKeys[0].AzureKeyConfig.Endpoint.GetValue() != "https://new-azure.openai.azure.com" {
+		t.Errorf("Expected updated Azure endpoint, got %s", finalKeys[0].AzureKeyConfig.Endpoint.GetValue())
 	}
-	if len(finalConfig.Keys[0].Aliases) != 2 {
-		t.Errorf("Expected 2 deployments, got %d", len(finalConfig.Keys[0].Aliases))
+	if len(finalKeys[0].Aliases) != 2 {
+		t.Errorf("Expected 2 deployments, got %d", len(finalKeys[0].Aliases))
 	}
 
 	t.Log("Step 5 - Final state verified, Azure provider lifecycle complete ✓")
@@ -7377,7 +7767,6 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	initialConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{initialBedrockKey},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -7392,6 +7781,9 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	// Simulate DB state
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"bedrock": initialConfig,
+	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"bedrock": {initialBedrockKey},
 	}
 
 	t.Logf("Step 1 - Initial DB provider hash: %s", initialProviderHash[:16]+"...")
@@ -7412,32 +7804,19 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	dbConfigAfterDashboardAdd := configstore.ProviderConfig{
-		Keys:                []schemas.Key{initialBedrockKey, dashboardAddedKey}, // Added via dashboard
+		// Added via dashboard
 		NetworkConfig:       initialConfig.NetworkConfig,
 		SendBackRawResponse: false,
 		ConfigHash:          initialProviderHash, // Provider hash unchanged
 	}
 
 	providersInDB["bedrock"] = dbConfigAfterDashboardAdd
+	keysInDB["bedrock"] = []schemas.Key{initialBedrockKey, dashboardAddedKey} // Added via dashboard
 
 	t.Logf("Step 2 - Dashboard added second key ✓")
 
 	// === STEP 3: Same config.json loaded (unchanged) - should NOT update, preserve dashboard keys ===
 	sameFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-east-1"),
-				},
-			},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -7449,6 +7828,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 
 	// Provider hash should match (config.json unchanged)
 	existingCfg := providersInDB["bedrock"]
+	existingKeys := keysInDB["bedrock"]
 	if existingCfg.ConfigHash != sameFileProviderHash {
 		t.Errorf("Expected provider hash to match - config.json unchanged. DB: %s, File: %s",
 			existingCfg.ConfigHash[:16], sameFileProviderHash[:16])
@@ -7457,27 +7837,27 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	t.Logf("Step 3 - Hash matches, dashboard-added key preserved ✓")
 
 	// Verify dashboard-added key is preserved
-	if len(existingCfg.Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 original + 1 dashboard-added), got %d", len(existingCfg.Keys))
+	if len(existingKeys) != 2 {
+		t.Errorf("Expected 2 keys (1 original + 1 dashboard-added), got %d", len(existingKeys))
 	}
 
 	// === STEP 4: Config.json changed (region and new deployment) - should trigger sync but preserve dashboard keys ===
-	newFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-west-2"),                                                           // Changed!
-					ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"), // Added!
-				},
+	newFileKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+				Region:    schemas.NewSecretVar("us-west-2"),                                                           // Changed!
+				ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"), // Added!
 			},
 		},
+	}
+	newFileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com", // Changed!
 			MaxRetries: 5,                                                 // Changed!
@@ -7486,7 +7866,7 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	newFileProviderHash, _ := newFileConfig.GenerateConfigHash("bedrock")
-	newFileKeyHash, _ := configstore.GenerateKeyHash(newFileConfig.Keys[0])
+	newFileKeyHash, _ := configstore.GenerateKeyHash(newFileKeys[0])
 
 	t.Logf("Step 4 - New file provider hash: %s", newFileProviderHash[:16]+"...")
 	t.Logf("Step 4 - New file key hash: %s", newFileKeyHash[:16]+"...")
@@ -7500,14 +7880,14 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	mergedKeys := []schemas.Key{}
 
 	// For each key in file, update or add
-	for _, fileKey := range newFileConfig.Keys {
+	for _, fileKey := range newFileKeys {
 		mergedKeys = append(mergedKeys, fileKey)
 	}
 
 	// Preserve dashboard-added keys that aren't in file
-	for _, dbKey := range existingCfg.Keys {
+	for _, dbKey := range existingKeys {
 		found := false
-		for _, fileKey := range newFileConfig.Keys {
+		for _, fileKey := range newFileKeys {
 			if dbKey.Name == fileKey.Name || dbKey.ID == fileKey.ID {
 				found = true
 				break
@@ -7520,18 +7900,19 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	updatedConfig := configstore.ProviderConfig{
-		Keys:                mergedKeys,
 		NetworkConfig:       newFileConfig.NetworkConfig,
 		SendBackRawResponse: newFileConfig.SendBackRawResponse,
 		ConfigHash:          newFileProviderHash,
 	}
 
 	providersInDB["bedrock"] = updatedConfig
+	keysInDB["bedrock"] = mergedKeys
 
 	t.Logf("Step 4 - Sync complete, DB updated ✓")
 
 	// === STEP 5: Verify final state ===
 	finalConfig := providersInDB["bedrock"]
+	finalKeys := keysInDB["bedrock"]
 
 	// Verify provider config updated
 	if finalConfig.NetworkConfig.BaseURL != "https://bedrock-runtime.us-west-2.amazonaws.com" {
@@ -7548,19 +7929,19 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 	}
 
 	// Verify we have both keys (1 updated from file + 1 dashboard-added)
-	if len(finalConfig.Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 from file + 1 dashboard-added), got %d", len(finalConfig.Keys))
+	if len(finalKeys) != 2 {
+		t.Errorf("Expected 2 keys (1 from file + 1 dashboard-added), got %d", len(finalKeys))
 	}
 
 	// Find the file key and verify its updates
 	var fileKey *schemas.Key
 	var dashboardKey *schemas.Key
-	for i := range finalConfig.Keys {
-		if finalConfig.Keys[i].Name == "aws-bedrock-key" {
-			fileKey = &finalConfig.Keys[i]
+	for i := range finalKeys {
+		if finalKeys[i].Name == "aws-bedrock-key" {
+			fileKey = &finalKeys[i]
 		}
-		if finalConfig.Keys[i].Name == "aws-bedrock-key-eu" {
-			dashboardKey = &finalConfig.Keys[i]
+		if finalKeys[i].Name == "aws-bedrock-key-eu" {
+			dashboardKey = &finalKeys[i]
 		}
 	}
 
@@ -7591,21 +7972,6 @@ func TestProviderHashComparison_BedrockProviderFullLifecycle(t *testing.T) {
 
 	// === STEP 6: Same config.json loaded again - should NOT update ===
 	sameNewFileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-sonnet": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}, "claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-west-2"),
-					ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/my-profile"),
-				},
-			},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com",
 			MaxRetries: 5,
@@ -7631,21 +7997,22 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 
 	// Empty DB - no Azure provider
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{}
 
 	// File has Azure provider with Azure key config
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("azure-api-key-123"),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -7662,6 +8029,7 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 	if _, exists := providersInDB["azure"]; !exists {
 		// Provider not in DB - add from file
 		providersInDB["azure"] = fileConfig
+		keysInDB["azure"] = fileKeys
 		t.Log("✓ Azure provider not in DB - added from config.json")
 	}
 
@@ -7677,14 +8045,15 @@ func TestProviderHashComparison_AzureNewProviderFromConfig(t *testing.T) {
 	}
 
 	// Verify Azure key config is present
-	if len(addedConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(addedConfig.Keys))
+	addedKeys := keysInDB["azure"]
+	if len(addedKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(addedKeys))
 	}
-	if addedConfig.Keys[0].AzureKeyConfig == nil {
+	if addedKeys[0].AzureKeyConfig == nil {
 		t.Fatal("Expected AzureKeyConfig to be present")
 	}
-	if addedConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://myazure.openai.azure.com" {
-		t.Errorf("Expected Azure endpoint, got %v", addedConfig.Keys[0].AzureKeyConfig.Endpoint)
+	if addedKeys[0].AzureKeyConfig.Endpoint.GetValue() != "https://myazure.openai.azure.com" {
+		t.Errorf("Expected Azure endpoint, got %v", addedKeys[0].AzureKeyConfig.Endpoint)
 	}
 
 	t.Log("✓ New Azure provider added to DB with correct hash and config")
@@ -7697,23 +8066,24 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 
 	// Empty DB - no Bedrock provider
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{}
 
 	// File has Bedrock provider with Bedrock key config
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-east-1"),
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+				Region:    schemas.NewSecretVar("us-east-1"),
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -7731,6 +8101,7 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 	if _, exists := providersInDB["bedrock"]; !exists {
 		// Provider not in DB - add from file
 		providersInDB["bedrock"] = fileConfig
+		keysInDB["bedrock"] = fileKeys
 		t.Log("✓ Bedrock provider not in DB - added from config.json")
 	}
 
@@ -7746,17 +8117,18 @@ func TestProviderHashComparison_BedrockNewProviderFromConfig(t *testing.T) {
 	}
 
 	// Verify Bedrock key config is present
-	if len(addedConfig.Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(addedConfig.Keys))
+	addedKeys := keysInDB["bedrock"]
+	if len(addedKeys) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(addedKeys))
 	}
-	if addedConfig.Keys[0].BedrockKeyConfig == nil {
+	if addedKeys[0].BedrockKeyConfig == nil {
 		t.Fatal("Expected BedrockKeyConfig to be present")
 	}
-	if addedConfig.Keys[0].BedrockKeyConfig.AccessKey.GetValue() != "AKIAIOSFODNN7EXAMPLE" {
-		t.Errorf("Expected Bedrock AccessKey, got %v", addedConfig.Keys[0].BedrockKeyConfig.AccessKey)
+	if addedKeys[0].BedrockKeyConfig.AccessKey.GetValue() != "AKIAIOSFODNN7EXAMPLE" {
+		t.Errorf("Expected Bedrock AccessKey, got %v", addedKeys[0].BedrockKeyConfig.AccessKey)
 	}
-	if addedConfig.Keys[0].BedrockKeyConfig.Region.GetValue() != "us-east-1" {
-		t.Errorf("Expected Bedrock region us-east-1, got %v", *addedConfig.Keys[0].BedrockKeyConfig.Region)
+	if addedKeys[0].BedrockKeyConfig.Region.GetValue() != "us-east-1" {
+		t.Errorf("Expected Bedrock region us-east-1, got %v", *addedKeys[0].BedrockKeyConfig.Region)
 	}
 
 	t.Log("✓ New Bedrock provider added to DB with correct hash and config")
@@ -7768,19 +8140,19 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	// Expected: Hash matches (structure same), DB value should NOT be overwritten
 
 	// DB has Azure config - key value was edited via dashboard
-	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
-				},
+	dbKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited this!
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"),
 			},
 		},
+	}
+	dbConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai",
 		},
@@ -7794,21 +8166,24 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"azure": dbConfig,
 	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"azure": dbKeys,
+	}
 
 	// File config has SAME STRUCTURE but DIFFERENT key value
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("original-key-from-file"), // Different value than DB!
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"), // Same
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("original-key-from-file"), // Different value than DB!
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4": {ModelID: "gpt-4-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://myazure.openai.azure.com"), // Same
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://myazure.openai.azure.com/openai", // Same
 		},
@@ -7816,6 +8191,10 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	}
 
 	fileHash, _ := fileConfig.GenerateConfigHash("azure")
+	// The file's key differs from the DB's; keys are not part of the provider hash.
+	if fileKeys[0].Value.GetValue() == dbKeys[0].Value.GetValue() {
+		t.Fatal("scenario needs the file's key value to differ from the DB's")
+	}
 
 	// === Key assertion: Provider hashes should MATCH (structure is same) ===
 	if dbHash != fileHash {
@@ -7833,14 +8212,14 @@ func TestProviderHashComparison_AzureDBValuePreservedWhenHashMatches(t *testing.
 	}
 
 	// === Verify DB value was NOT overwritten ===
-	if existingConfig.Keys[0].Value.GetValue() != "DASHBOARD-EDITED-SECRET-KEY" {
+	if keysInDB["azure"][0].Value.GetValue() != "DASHBOARD-EDITED-SECRET-KEY" {
 		t.Errorf("DB value should NOT be overwritten! Expected 'DASHBOARD-EDITED-SECRET-KEY', got '%v'",
-			existingConfig.Keys[0].Value)
+			keysInDB["azure"][0].Value)
 	}
 	t.Log("✓ DB value preserved (dashboard edit NOT overwritten)")
 
 	// === Verify Azure config in DB is intact ===
-	if existingConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://myazure.openai.azure.com" {
+	if keysInDB["azure"][0].AzureKeyConfig.Endpoint.GetValue() != "https://myazure.openai.azure.com" {
 		t.Error("Azure endpoint should be preserved")
 	}
 	t.Log("✓ Azure config preserved in DB")
@@ -7852,21 +8231,21 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	// Expected: Hash matches (structure same), DB credentials should NOT be overwritten
 
 	// DB has Bedrock config - credentials were edited via dashboard
-	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("DASHBOARD-EDITED-ACCESS-KEY"), // Dashboard edited!
-					SecretKey: *schemas.NewSecretVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited!
-					Region:    schemas.NewSecretVar("us-east-1"),
-				},
+	dbKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("DASHBOARD-EDITED-ACCESS-KEY"), // Dashboard edited!
+				SecretKey: *schemas.NewSecretVar("DASHBOARD-EDITED-SECRET-KEY"), // Dashboard edited!
+				Region:    schemas.NewSecretVar("us-east-1"),
 			},
 		},
+	}
+	dbConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -7880,23 +8259,26 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"bedrock": dbConfig,
 	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"bedrock": dbKeys,
+	}
 
 	// File config has SAME STRUCTURE but DIFFERENT credentials
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
-					Region:    schemas.NewSecretVar("us-east-1"),                                 // Same
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3": {ModelID: "anthropic.claude-3-sonnet-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),                     // Different!
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"), // Different!
+				Region:    schemas.NewSecretVar("us-east-1"),                                 // Same
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com", // Same
 			MaxRetries: 3,                                                 // Same
@@ -7905,6 +8287,10 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	}
 
 	fileHash, _ := fileConfig.GenerateConfigHash("bedrock")
+	// The file's credentials differ from the DB's; keys are not part of the provider hash.
+	if fileKeys[0].BedrockKeyConfig.AccessKey.GetValue() == dbKeys[0].BedrockKeyConfig.AccessKey.GetValue() {
+		t.Fatal("scenario needs the file's credentials to differ from the DB's")
+	}
 
 	// === Key assertion: Provider hashes should MATCH (structure is same) ===
 	if dbHash != fileHash {
@@ -7921,18 +8307,18 @@ func TestProviderHashComparison_BedrockDBValuePreservedWhenHashMatches(t *testin
 	}
 
 	// === Verify DB credentials were NOT overwritten ===
-	if existingConfig.Keys[0].BedrockKeyConfig.AccessKey.GetValue() != "DASHBOARD-EDITED-ACCESS-KEY" {
+	if keysInDB["bedrock"][0].BedrockKeyConfig.AccessKey.GetValue() != "DASHBOARD-EDITED-ACCESS-KEY" {
 		t.Errorf("DB AccessKey should NOT be overwritten! Expected 'DASHBOARD-EDITED-ACCESS-KEY', got '%v'",
-			existingConfig.Keys[0].BedrockKeyConfig.AccessKey)
+			keysInDB["bedrock"][0].BedrockKeyConfig.AccessKey)
 	}
-	if existingConfig.Keys[0].BedrockKeyConfig.SecretKey.GetValue() != "DASHBOARD-EDITED-SECRET-KEY" {
+	if keysInDB["bedrock"][0].BedrockKeyConfig.SecretKey.GetValue() != "DASHBOARD-EDITED-SECRET-KEY" {
 		t.Errorf("DB SecretKey should NOT be overwritten! Expected 'DASHBOARD-EDITED-SECRET-KEY', got '%v'",
-			existingConfig.Keys[0].BedrockKeyConfig.SecretKey)
+			keysInDB["bedrock"][0].BedrockKeyConfig.SecretKey)
 	}
 	t.Log("✓ DB credentials preserved (dashboard edits NOT overwritten)")
 
 	// === Verify Bedrock config in DB is intact ===
-	if existingConfig.Keys[0].BedrockKeyConfig.Region.GetValue() != "us-east-1" {
+	if keysInDB["bedrock"][0].BedrockKeyConfig.Region.GetValue() != "us-east-1" {
 		t.Error("Bedrock region should be preserved")
 	}
 	t.Log("✓ Bedrock config preserved in DB")
@@ -7944,18 +8330,18 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 	// Expected: Hash differs, DB should be updated with new config and hash
 
 	// DB has existing Azure config
-	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     "azure-key-1",
-				Name:   "azure-openai-key",
-				Value:  *schemas.NewSecretVar("azure-api-key-123"),
-				Weight: 1,
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://old-azure.openai.azure.com"),
-				},
+	dbKeys := []schemas.Key{
+		{
+			ID:     "azure-key-1",
+			Name:   "azure-openai-key",
+			Value:  *schemas.NewSecretVar("azure-api-key-123"),
+			Weight: 1,
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://old-azure.openai.azure.com"),
 			},
 		},
+	}
+	dbConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://old-azure.openai.azure.com/openai",
 		},
@@ -7968,21 +8354,24 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"azure": dbConfig,
 	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"azure": dbKeys,
+	}
 
 	// File has CHANGED Azure config (new endpoint)
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "azure-key-1",
-				Name:    "azure-openai-key",
-				Value:   *schemas.NewSecretVar("azure-api-key-123"),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-deployment"}},
-				AzureKeyConfig: &schemas.AzureKeyConfig{
-					Endpoint: *schemas.NewSecretVar("https://NEW-azure.openai.azure.com"), // Changed!
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "azure-key-1",
+			Name:    "azure-openai-key",
+			Value:   *schemas.NewSecretVar("azure-api-key-123"),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"gpt-4o": {ModelID: "gpt-4o-deployment"}},
+			AzureKeyConfig: &schemas.AzureKeyConfig{
+				Endpoint: *schemas.NewSecretVar("https://NEW-azure.openai.azure.com"), // Changed!
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://NEW-azure.openai.azure.com/openai", // Changed!
 		},
@@ -8001,6 +8390,7 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 
 	// === Simulate sync: hash differs -> update DB from file ===
 	providersInDB["azure"] = fileConfig
+	keysInDB["azure"] = fileKeys
 	t.Log("✓ DB updated from config.json")
 
 	// === Verify DB was updated ===
@@ -8009,8 +8399,8 @@ func TestProviderHashComparison_AzureConfigChangedInFile(t *testing.T) {
 	if updatedConfig.ConfigHash != fileHash {
 		t.Error("Expected DB hash to be updated")
 	}
-	if updatedConfig.Keys[0].AzureKeyConfig.Endpoint.GetValue() != "https://NEW-azure.openai.azure.com" {
-		t.Errorf("Expected new Azure endpoint, got %v", updatedConfig.Keys[0].AzureKeyConfig.Endpoint)
+	if keysInDB["azure"][0].AzureKeyConfig.Endpoint.GetValue() != "https://NEW-azure.openai.azure.com" {
+		t.Errorf("Expected new Azure endpoint, got %v", keysInDB["azure"][0].AzureKeyConfig.Endpoint)
 	}
 	if !updatedConfig.SendBackRawResponse {
 		t.Error("Expected SendBackRawResponse to be updated to true")
@@ -8025,20 +8415,20 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 	// Expected: Hash differs, DB should be updated with new config and hash
 
 	// DB has existing Bedrock config
-	dbConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     "bedrock-key-1",
-				Name:   "aws-bedrock-key",
-				Value:  *schemas.NewSecretVar(""),
-				Weight: 1,
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-east-1"),
-				},
+	dbKeys := []schemas.Key{
+		{
+			ID:     "bedrock-key-1",
+			Name:   "aws-bedrock-key",
+			Value:  *schemas.NewSecretVar(""),
+			Weight: 1,
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+				Region:    schemas.NewSecretVar("us-east-1"),
 			},
 		},
+	}
+	dbConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-east-1.amazonaws.com",
 			MaxRetries: 3,
@@ -8052,24 +8442,27 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 	providersInDB := map[schemas.ModelProvider]configstore.ProviderConfig{
 		"bedrock": dbConfig,
 	}
+	keysInDB := map[schemas.ModelProvider][]schemas.Key{
+		"bedrock": dbKeys,
+	}
 
 	// File has CHANGED Bedrock config (new region, new ARN)
-	fileConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:      "bedrock-key-1",
-				Name:    "aws-bedrock-key",
-				Value:   *schemas.NewSecretVar(""),
-				Weight:  1,
-				Aliases: schemas.KeyAliases{"claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
-				BedrockKeyConfig: &schemas.BedrockKeyConfig{
-					AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
-					SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
-					Region:    schemas.NewSecretVar("us-west-2"),                                                            // Changed!
-					ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/new-profile"), // Added!
-				},
+	fileKeys := []schemas.Key{
+		{
+			ID:      "bedrock-key-1",
+			Name:    "aws-bedrock-key",
+			Value:   *schemas.NewSecretVar(""),
+			Weight:  1,
+			Aliases: schemas.KeyAliases{"claude-3-opus": {ModelID: "anthropic.claude-3-opus-20240229-v1:0"}},
+			BedrockKeyConfig: &schemas.BedrockKeyConfig{
+				AccessKey: *schemas.NewSecretVar("AKIAIOSFODNN7EXAMPLE"),
+				SecretKey: *schemas.NewSecretVar("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+				Region:    schemas.NewSecretVar("us-west-2"),                                                            // Changed!
+				ARN:       schemas.NewSecretVar("arn:aws:bedrock:us-west-2:123456789012:inference-profile/new-profile"), // Added!
 			},
 		},
+	}
+	fileConfig := configstore.ProviderConfig{
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL:    "https://bedrock-runtime.us-west-2.amazonaws.com", // Changed!
 			MaxRetries: 5,                                                 // Changed!
@@ -8089,6 +8482,7 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 
 	// === Simulate sync: hash differs -> update DB from file ===
 	providersInDB["bedrock"] = fileConfig
+	keysInDB["bedrock"] = fileKeys
 	t.Log("✓ DB updated from config.json")
 
 	// === Verify DB was updated ===
@@ -8097,10 +8491,10 @@ func TestProviderHashComparison_BedrockConfigChangedInFile(t *testing.T) {
 	if updatedConfig.ConfigHash != fileHash {
 		t.Error("Expected DB hash to be updated")
 	}
-	if updatedConfig.Keys[0].BedrockKeyConfig.Region.GetValue() != "us-west-2" {
-		t.Errorf("Expected new Bedrock region, got %v", *updatedConfig.Keys[0].BedrockKeyConfig.Region)
+	if keysInDB["bedrock"][0].BedrockKeyConfig.Region.GetValue() != "us-west-2" {
+		t.Errorf("Expected new Bedrock region, got %v", *keysInDB["bedrock"][0].BedrockKeyConfig.Region)
 	}
-	if updatedConfig.Keys[0].BedrockKeyConfig.ARN == nil {
+	if keysInDB["bedrock"][0].BedrockKeyConfig.ARN == nil {
 		t.Error("Expected ARN to be set")
 	}
 	if updatedConfig.NetworkConfig.MaxRetries != 5 {
@@ -9035,7 +9429,7 @@ func TestSQLite_Provider_NewProviderFromFile(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a new provider
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9050,7 +9444,7 @@ func TestSQLite_Provider_NewProviderFromFile(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify provider exists in memory
-	if _, exists := config.Providers[schemas.OpenAI]; !exists {
+	if _, exists := providersOf(config)[schemas.OpenAI]; !exists {
 		t.Fatal("OpenAI provider not found in memory")
 	}
 
@@ -9073,7 +9467,7 @@ func TestSQLite_Provider_HashMatch_DBPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a provider
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9116,7 +9510,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a provider
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9135,7 +9529,7 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	config1.Close(ctx)
 
 	// Modify config.json - change the BaseURL
-	providers2 := map[string]configstore.ProviderConfig{
+	providers2 := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com/v2"),
 	}
 	configData2 := makeConfigDataWithProvidersAndDir(providers2, tempDir)
@@ -9157,8 +9551,8 @@ func TestSQLite_Provider_HashMismatch_FileSync(t *testing.T) {
 	}
 
 	// Verify the new BaseURL is in memory
-	if config2.Providers[schemas.OpenAI].NetworkConfig.BaseURL != "https://api.openai.com/v2" {
-		t.Errorf("Expected BaseURL to be updated, got %s", config2.Providers[schemas.OpenAI].NetworkConfig.BaseURL)
+	if providersOf(config2)[schemas.OpenAI].NetworkConfig.BaseURL != "https://api.openai.com/v2" {
+		t.Errorf("Expected BaseURL to be updated, got %s", providersOf(config2)[schemas.OpenAI].NetworkConfig.BaseURL)
 	}
 }
 
@@ -9168,7 +9562,7 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with OpenAI provider only
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9183,14 +9577,6 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 
 	// Add Anthropic provider directly to DB (simulating dashboard addition)
 	anthropicConfig := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{
-				ID:     uuid.NewString(),
-				Name:   "anthropic-key-1",
-				Value:  *schemas.NewSecretVar("sk-anthropic-123"),
-				Weight: 1,
-			},
-		},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.anthropic.com",
 		},
@@ -9199,9 +9585,17 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	anthropicConfig.ConfigHash = anthropicHash
 
 	// Update providers in DB to include both
-	existingProviders, _ := config1.ConfigStore.GetProvidersConfig(ctx)
+	existingProviders, existingKeys, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
 	existingProviders[schemas.Anthropic] = anthropicConfig
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders)
+	existingKeys[schemas.Anthropic] = []schemas.Key{
+		{
+			ID:     uuid.NewString(),
+			Name:   "anthropic-key-1",
+			Value:  *schemas.NewSecretVar("sk-anthropic-123"),
+			Weight: 1,
+		},
+	}
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders, existingKeys)
 	if err != nil {
 		t.Fatalf("Failed to add Anthropic to DB: %v", err)
 	}
@@ -9215,10 +9609,10 @@ func TestSQLite_Provider_DBOnlyProvider_Preserved(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify both providers exist
-	if _, exists := config2.Providers[schemas.OpenAI]; !exists {
+	if _, exists := providersOf(config2)[schemas.OpenAI]; !exists {
 		t.Error("OpenAI provider should exist (from file)")
 	}
-	if _, exists := config2.Providers[schemas.Anthropic]; !exists {
+	if _, exists := providersOf(config2)[schemas.Anthropic]; !exists {
 		t.Error("Anthropic provider should be preserved (added via DB)")
 	}
 
@@ -9232,7 +9626,7 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 	initTestLogger()
 	tempDir := createTempDir(t)
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9242,26 +9636,24 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 	config1, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
 
-	existingProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	existingProviders, existingKeys, err := dbProvidersAndKeys(ctx, config1.ConfigStore)
 	require.NoError(t, err)
-	openaiConfig := existingProviders[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	existingKeys[schemas.OpenAI] = append(existingKeys[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "dashboard-openai-key",
 		Value:  *schemas.NewSecretVar("sk-dashboard-openai"),
 		Weight: 1,
 	})
-	existingProviders[schemas.OpenAI] = openaiConfig
 	existingProviders[schemas.Anthropic] = configstore.ProviderConfig{
-		Keys: []schemas.Key{{
-			ID:     uuid.NewString(),
-			Name:   "anthropic-key-1",
-			Value:  *schemas.NewSecretVar("sk-anthropic-123"),
-			Weight: 1,
-		}},
 		NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
 	}
-	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders))
+	existingKeys[schemas.Anthropic] = []schemas.Key{{
+		ID:     uuid.NewString(),
+		Name:   "anthropic-key-1",
+		Value:  *schemas.NewSecretVar("sk-anthropic-123"),
+		Weight: 1,
+	}}
+	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, existingProviders, existingKeys))
 	config1.Close(ctx)
 
 	configData.SourceOfTruth = SourceOfTruthConfigJSON
@@ -9271,13 +9663,13 @@ func TestSQLite_SourceOfTruthConfigJSON_ProviderAndKeysPruned(t *testing.T) {
 	require.NoError(t, err)
 	defer config2.Close(ctx)
 
-	dbProviders, err := config2.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders, dbKeys, err := dbProvidersAndKeys(ctx, config2.ConfigStore)
 	require.NoError(t, err)
 	require.Len(t, dbProviders, 1)
 	require.Contains(t, dbProviders, schemas.OpenAI)
 	require.NotContains(t, dbProviders, schemas.Anthropic)
-	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
-	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
+	require.Len(t, dbKeys[schemas.OpenAI], 1)
+	require.Equal(t, "openai-key-1", dbKeys[schemas.OpenAI][0].Name)
 }
 
 // TestSQLite_Provider_RoundTrip tests load -> modify via DB -> reload same file -> no changes
@@ -9286,7 +9678,7 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9300,14 +9692,14 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	}
 
 	// Get original state
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders1, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
 	originalHash := dbProviders1[schemas.OpenAI].ConfigHash
-	originalKeyValue := dbProviders1[schemas.OpenAI].Keys[0].Value
+	originalKeyValue := dbKeys1[schemas.OpenAI][0].Value
 
 	// Modify key value in DB (simulating dashboard edit)
-	dbProviders1[schemas.OpenAI].Keys[0].Value = *schemas.NewSecretVar("sk-dashboard-modified")
+	dbKeys1[schemas.OpenAI][0].Value = *schemas.NewSecretVar("sk-dashboard-modified")
 	// Note: We keep the same hash since only the key value changed, not provider config
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1)
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1, dbKeys1)
 	if err != nil {
 		t.Fatalf("Failed to update provider in DB: %v", err)
 	}
@@ -9321,14 +9713,14 @@ func TestSQLite_Provider_RoundTrip(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify hash is unchanged
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders2, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
 	if dbProviders2[schemas.OpenAI].ConfigHash != originalHash {
 		t.Error("Hash should remain unchanged when config.json hasn't changed")
 	}
 
 	// The key value should be from DB (dashboard edit preserved) since hash matches
 	// This demonstrates that when hashes match, DB config is kept
-	if dbProviders2[schemas.OpenAI].Keys[0].Value == originalKeyValue {
+	if dbKeys2[schemas.OpenAI][0].Value == originalKeyValue {
 		t.Log("Note: Key value preserved from initial load (hash match means DB preserved)")
 	}
 }
@@ -9343,12 +9735,14 @@ func TestSQLite_Key_NewKeyFromFile(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a provider and one key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9363,13 +9757,68 @@ func TestSQLite_Key_NewKeyFromFile(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify the key exists
-	dbProviders, _ := config.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders[schemas.OpenAI].Keys) != 1 {
-		t.Errorf("Expected 1 key, got %d", len(dbProviders[schemas.OpenAI].Keys))
+	_, dbKeys, err := dbProvidersAndKeys(ctx, config.ConfigStore)
+	require.NoError(t, err)
+	require.Len(t, dbKeys[schemas.OpenAI], 1)
+	if len(dbKeys[schemas.OpenAI]) != 1 {
+		t.Errorf("Expected 1 key, got %d", len(dbKeys[schemas.OpenAI]))
 	}
-	if dbProviders[schemas.OpenAI].Keys[0].Name != "openai-key-1" {
-		t.Errorf("Expected key name 'openai-key-1', got '%s'", dbProviders[schemas.OpenAI].Keys[0].Name)
+	if dbKeys[schemas.OpenAI][0].Name != "openai-key-1" {
+		t.Errorf("Expected key name 'openai-key-1', got '%s'", dbKeys[schemas.OpenAI][0].Name)
 	}
+}
+
+// TestSQLite_Provider_InlineKeysLoadInFileOrder pins that a config.json provider entry with its keys
+// inline, written as raw JSON, loads every key in file order into the live store and the config
+// store and stores the provider config hash that config produced before keys were split from the
+// provider config, and that a restart over the same file and store neither duplicates nor reorders
+// the keys and keeps their IDs.
+func TestSQLite_Provider_InlineKeysLoadInFileOrder(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	tempDir := createTempDir(t)
+	// The provider config hash this entry stored before the split; keys are not part of it.
+	const pinnedConfigHash = "65144382c49fb06e7c163cf894aaa6cf6c8ae48ad54e55670b8857140c364612"
+	raw := `{
+		"config_store": {"enabled": true, "type": "sqlite", "config": {"path": ` + fmt.Sprintf("%q", filepath.Join(tempDir, "config.db")) + `}},
+		"providers": {"openai": {"keys":[{"name":"a","value":"sk-a","models":["*"],"weight":1},{"name":"b","value":"sk-b","models":["*"],"weight":1},{"name":"c","value":"sk-c","models":["*"],"weight":1}],"network_config":{"base_url":"https://api.example.com","default_request_timeout_in_seconds":30},"concurrency_and_buffer_size":{"concurrency":3,"buffer_size":10},"send_back_raw_response":true}}
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "config.json"), []byte(raw), 0o644))
+	wantNames := []string{"a", "b", "c"}
+	wantValues := []string{"sk-a", "sk-b", "sk-c"}
+
+	// load runs LoadConfig over the directory and returns the key IDs, after checking that the live
+	// store and the config store both hold the file's keys in file order with the same IDs.
+	load := func(boot string) []string {
+		t.Helper()
+		config, err := LoadConfig(ctx, tempDir)
+		require.NoError(t, err, boot)
+		defer config.Close(ctx)
+
+		liveKeys := config.GetProviderKeys(schemas.OpenAI)
+		storedKeys, err := config.ConfigStore.GetProviderKeys(ctx, schemas.OpenAI)
+		require.NoError(t, err, boot)
+		require.Len(t, liveKeys, len(wantNames), "%s: live keys", boot)
+		require.Len(t, storedKeys, len(wantNames), "%s: stored keys", boot)
+		ids := make([]string, len(storedKeys))
+		for i := range storedKeys {
+			assert.Equal(t, wantNames[i], storedKeys[i].Name, "%s: stored key %d", boot, i)
+			assert.Equal(t, wantValues[i], storedKeys[i].Value.GetValue(), "%s: stored key %d", boot, i)
+			assert.Equal(t, wantNames[i], liveKeys[i].Name, "%s: live key %d", boot, i)
+			assert.Equal(t, storedKeys[i].ID, liveKeys[i].ID, "%s: live key %d", boot, i)
+			assert.NotEmpty(t, storedKeys[i].ID, "%s: stored key %d", boot, i)
+			ids[i] = storedKeys[i].ID
+		}
+
+		stored, err := config.ConfigStore.GetProviderConfig(ctx, schemas.OpenAI)
+		require.NoError(t, err, boot)
+		require.NotNil(t, stored, boot)
+		assert.Equal(t, pinnedConfigHash, stored.ConfigHash, "%s: stored provider config hash", boot)
+		return ids
+	}
+
+	firstIDs := load("first boot")
+	assert.Equal(t, firstIDs, load("restart"), "a restart keeps each key's ID")
 }
 
 // TestSQLite_Key_HashMatch_DBKeyPreserved tests that DB key is preserved when unchanged
@@ -9378,12 +9827,14 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9397,8 +9848,10 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	}
 
 	// Get original key ID
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	originalKeyID := dbProviders1[schemas.OpenAI].Keys[0].ID
+	_, dbKeys1, err := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	require.NoError(t, err)
+	require.NotEmpty(t, dbKeys1[schemas.OpenAI])
+	originalKeyID := dbKeys1[schemas.OpenAI][0].ID
 	config1.Close(ctx)
 
 	// Second load with same config
@@ -9409,15 +9862,17 @@ func TestSQLite_Key_HashMatch_DBKeyPreserved(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify key ID is preserved (same key, not recreated)
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if dbProviders2[schemas.OpenAI].Keys[0].ID != originalKeyID {
+	_, dbKeys2, err := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	require.NoError(t, err)
+	require.NotEmpty(t, dbKeys2[schemas.OpenAI])
+	if dbKeys2[schemas.OpenAI][0].ID != originalKeyID {
 		t.Errorf("Expected key ID to be preserved on reload: got %s, want %s",
-			dbProviders2[schemas.OpenAI].Keys[0].ID, originalKeyID)
+			dbKeys2[schemas.OpenAI][0].ID, originalKeyID)
 	}
 
 	// Key should still be present
-	if len(dbProviders2[schemas.OpenAI].Keys) != 1 {
-		t.Errorf("Expected 1 key after reload, got %d", len(dbProviders2[schemas.OpenAI].Keys))
+	if len(dbKeys2[schemas.OpenAI]) != 1 {
+		t.Errorf("Expected 1 key after reload, got %d", len(dbKeys2[schemas.OpenAI]))
 	}
 }
 
@@ -9428,12 +9883,14 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 
 	// Create config.json with one key
 	keyID1 := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID1, Name: "file-key", Value: *schemas.NewSecretVar("sk-file-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9447,16 +9904,14 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 	}
 
 	// Add a second key directly to DB (simulating dashboard addition)
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	openaiConfig := dbProviders1[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	dbProviders1, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	dbKeys1[schemas.OpenAI] = append(dbKeys1[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "dashboard-key",
 		Value:  *schemas.NewSecretVar("sk-dashboard-456"),
 		Weight: 1,
 	})
-	dbProviders1[schemas.OpenAI] = openaiConfig
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1)
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1, dbKeys1)
 	if err != nil {
 		t.Fatalf("Failed to add dashboard key: %v", err)
 	}
@@ -9470,14 +9925,14 @@ func TestSQLite_Key_DashboardAddedKey_Preserved(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify both keys exist (dashboard-added key preserved)
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders2[schemas.OpenAI].Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 from file + 1 from dashboard), got %d", len(dbProviders2[schemas.OpenAI].Keys))
+	_, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	if len(dbKeys2[schemas.OpenAI]) != 2 {
+		t.Errorf("Expected 2 keys (1 from file + 1 from dashboard), got %d", len(dbKeys2[schemas.OpenAI]))
 	}
 
 	// Check key names
 	keyNames := make(map[string]bool)
-	for _, k := range dbProviders2[schemas.OpenAI].Keys {
+	for _, k := range dbKeys2[schemas.OpenAI] {
 		keyNames[k.Name] = true
 	}
 	if !keyNames["file-key"] {
@@ -9495,12 +9950,14 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 
 	// Create config.json with a key
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "test-key", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9514,19 +9971,21 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	}
 
 	// Verify original value
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	if dbProviders1[schemas.OpenAI].Keys[0].Value.GetValue() != "sk-original-123" {
-		t.Errorf("Expected original key value, got %v", dbProviders1[schemas.OpenAI].Keys[0].Value)
+	_, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	if dbKeys1[schemas.OpenAI][0].Value.GetValue() != "sk-original-123" {
+		t.Errorf("Expected original key value, got %v", dbKeys1[schemas.OpenAI][0].Value)
 	}
 	config1.Close(ctx)
 
 	// Modify config.json - change key value AND network config to trigger hash mismatch
-	providers2 := map[string]configstore.ProviderConfig{
+	providers2 := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "test-key", Value: *schemas.NewSecretVar("sk-modified-456"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com/v2"}, // Changed to trigger hash mismatch
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com/v2"}, // Changed to trigger hash mismatch
+			},
 		},
 	}
 	configData2 := makeConfigDataWithProvidersAndDir(providers2, tempDir)
@@ -9540,9 +9999,9 @@ func TestSQLite_Key_KeyValueChange_Detected(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// When hash mismatches (provider config changed), file key value should be synced
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if dbProviders2[schemas.OpenAI].Keys[0].Value.GetValue() != "sk-modified-456" {
-		t.Errorf("Expected key value to be updated to 'sk-modified-456', got '%v'", dbProviders2[schemas.OpenAI].Keys[0].Value)
+	_, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	if dbKeys2[schemas.OpenAI][0].Value.GetValue() != "sk-modified-456" {
+		t.Errorf("Expected key value to be updated to 'sk-modified-456', got '%v'", dbKeys2[schemas.OpenAI][0].Value)
 	}
 }
 
@@ -9554,13 +10013,15 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	// Create config.json with two keys
 	keyID1 := uuid.NewString()
 	keyID2 := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID1, Name: "key-1", Value: *schemas.NewSecretVar("sk-key1-123"), Weight: 1},
 				{ID: keyID2, Name: "key-2", Value: *schemas.NewSecretVar("sk-key2-456"), Weight: 2},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -9574,21 +10035,19 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	}
 
 	// Verify two keys exist
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders1[schemas.OpenAI].Keys) != 2 {
-		t.Errorf("Expected 2 keys, got %d", len(dbProviders1[schemas.OpenAI].Keys))
+	dbProviders1, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	if len(dbKeys1[schemas.OpenAI]) != 2 {
+		t.Errorf("Expected 2 keys, got %d", len(dbKeys1[schemas.OpenAI]))
 	}
 
 	// Add a third key via dashboard
-	openaiConfig := dbProviders1[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	dbKeys1[schemas.OpenAI] = append(dbKeys1[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "key-3-dashboard",
 		Value:  *schemas.NewSecretVar("sk-key3-789"),
 		Weight: 1,
 	})
-	dbProviders1[schemas.OpenAI] = openaiConfig
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1)
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1, dbKeys1)
 	if err != nil {
 		t.Fatalf("Failed to add third key: %v", err)
 	}
@@ -9602,14 +10061,14 @@ func TestSQLite_Key_MultipleKeys_MergeLogic(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify all three keys exist
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders2[schemas.OpenAI].Keys) != 3 {
-		t.Errorf("Expected 3 keys after merge, got %d", len(dbProviders2[schemas.OpenAI].Keys))
+	_, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	if len(dbKeys2[schemas.OpenAI]) != 3 {
+		t.Errorf("Expected 3 keys after merge, got %d", len(dbKeys2[schemas.OpenAI]))
 	}
 
 	// Verify key names
 	keyNames := make(map[string]bool)
-	for _, k := range dbProviders2[schemas.OpenAI].Keys {
+	for _, k := range dbKeys2[schemas.OpenAI] {
 		keyNames[k.Name] = true
 	}
 	if !keyNames["key-1"] || !keyNames["key-2"] || !keyNames["key-3-dashboard"] {
@@ -9627,7 +10086,7 @@ func TestSQLite_VirtualKey_NewFromFile(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with providers and a virtual key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -9653,11 +10112,11 @@ func TestSQLite_VirtualKey_NewFromFile(t *testing.T) {
 	}
 
 	// Verify virtual key is in memory config
-	if config.GovernanceConfig == nil || len(config.GovernanceConfig.VirtualKeys) == 0 {
+	if len(storedGovernance(t, config).VirtualKeys) == 0 {
 		t.Fatal("Expected virtual key in governance config")
 	}
-	if config.GovernanceConfig.VirtualKeys[0].Name != "test-vk" {
-		t.Errorf("Expected VK name 'test-vk', got '%s'", config.GovernanceConfig.VirtualKeys[0].Name)
+	if storedGovernance(t, config).VirtualKeys[0].Name != "test-vk" {
+		t.Errorf("Expected VK name 'test-vk', got '%s'", storedGovernance(t, config).VirtualKeys[0].Name)
 	}
 }
 
@@ -9667,7 +10126,7 @@ func TestSQLite_VirtualKey_HashMatch_DBPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a virtual key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -9708,7 +10167,7 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a virtual key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -9774,9 +10233,10 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 		t.Errorf("Expected API-set metadata to survive the sync in the store, got %v", dbVK2.Metadata)
 	}
 	var memVK *tables.TableVirtualKey
-	for i := range config2.GovernanceConfig.VirtualKeys {
-		if config2.GovernanceConfig.VirtualKeys[i].ID == "vk-1" {
-			memVK = &config2.GovernanceConfig.VirtualKeys[i]
+	stored := storedGovernance(t, config2)
+	for i := range stored.VirtualKeys {
+		if stored.VirtualKeys[i].ID == "vk-1" {
+			memVK = &stored.VirtualKeys[i]
 		}
 	}
 	if memVK == nil || memVK.Metadata["cost_center"] != "cc-42" {
@@ -9790,7 +10250,7 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with one VK
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -9835,7 +10295,7 @@ func TestSQLite_VirtualKey_DBOnlyVK_Preserved(t *testing.T) {
 
 	// Verify dashboard VK is in governance config
 	found := false
-	for _, vk := range config2.GovernanceConfig.VirtualKeys {
+	for _, vk := range storedGovernance(t, config2).VirtualKeys {
 		if vk.ID == "vk-dashboard" {
 			found = true
 			break
@@ -9852,7 +10312,7 @@ func TestSQLite_VirtualKey_WithProviderConfigs(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with providers and a virtual key with provider configs
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -9926,7 +10386,7 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigs(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Step 1: Create initial config.json with a simple VK (no ProviderConfigs)
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10023,12 +10483,14 @@ func TestSQLite_VirtualKey_MergePath_WithProviderConfigKeys(t *testing.T) {
 
 	// Step 1: Create initial config.json with a provider that has keys
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-test-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -10206,7 +10668,7 @@ func TestSQLite_VKProviderConfig_NewConfig(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with a VK that has provider configs
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10272,7 +10734,7 @@ func TestSQLite_VKProviderConfig_KeyIDsWildcardFlipsAllowAllKeys(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 
@@ -10356,12 +10818,14 @@ func TestSQLite_VKProviderConfig_KeyReference(t *testing.T) {
 
 	// Create provider key first
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-test-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 
@@ -10616,26 +11080,30 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 	keyID1 := uuid.NewString()
 	keyID2 := uuid.NewString()
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID1, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-openai-123"), Weight: 1},
 				{ID: keyID2, Name: "openai-key-2", Value: *schemas.NewSecretVar("sk-openai-456"), Weight: 2},
 			},
-			NetworkConfig: &schemas.NetworkConfig{
-				BaseURL: "https://api.openai.com",
-			},
-			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
-				Concurrency: 10,
-				BufferSize:  100,
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{
+					BaseURL: "https://api.openai.com",
+				},
+				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
+					Concurrency: 10,
+					BufferSize:  100,
+				},
 			},
 		},
 		"anthropic": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{
-				BaseURL: "https://api.anthropic.com",
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{
+					BaseURL: "https://api.anthropic.com",
+				},
 			},
 		},
 	}
@@ -10711,17 +11179,17 @@ func TestSQLite_FullLifecycle_InitialLoad(t *testing.T) {
 	verifyVirtualKeyInDB(t, config.ConfigStore, "vk-2")
 
 	// Verify in-memory state
-	if len(config.Providers) != 2 {
-		t.Errorf("Expected 2 providers in memory, got %d", len(config.Providers))
+	if len(providersOf(config)) != 2 {
+		t.Errorf("Expected 2 providers in memory, got %d", len(providersOf(config)))
 	}
-	if len(config.GovernanceConfig.VirtualKeys) != 2 {
-		t.Errorf("Expected 2 virtual keys in memory, got %d", len(config.GovernanceConfig.VirtualKeys))
+	if len(storedGovernance(t, config).VirtualKeys) != 2 {
+		t.Errorf("Expected 2 virtual keys in memory, got %d", len(storedGovernance(t, config).VirtualKeys))
 	}
-	if len(config.GovernanceConfig.Budgets) != 1 {
-		t.Errorf("Expected 1 budget in memory, got %d", len(config.GovernanceConfig.Budgets))
+	if len(storedGovernance(t, config).Budgets) != 1 {
+		t.Errorf("Expected 1 budget in memory, got %d", len(storedGovernance(t, config).Budgets))
 	}
-	if len(config.GovernanceConfig.RateLimits) != 1 {
-		t.Errorf("Expected 1 rate limit in memory, got %d", len(config.GovernanceConfig.RateLimits))
+	if len(storedGovernance(t, config).RateLimits) != 1 {
+		t.Errorf("Expected 1 rate limit in memory, got %d", len(storedGovernance(t, config).RateLimits))
 	}
 
 	// Verify hashes are set
@@ -10744,7 +11212,7 @@ func TestSQLite_FullLifecycle_SecondLoadNoChanges(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}
 	vks := []tables.TableVirtualKey{
@@ -10792,13 +11260,15 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config.json with two providers and two VKs
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-openai-123", "https://api.openai.com"),
 		"anthropic": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"},
+			},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -10826,13 +11296,15 @@ func TestSQLite_FullLifecycle_FileChange_Selective(t *testing.T) {
 	config1.Close(ctx)
 
 	// Modify config.json - change only OpenAI and vk-1
-	providers2 := map[string]configstore.ProviderConfig{
+	providers2 := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-openai-123", "https://api.openai.com/v2"), // Changed
 		"anthropic": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"}, // Unchanged
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.anthropic.com"}, // Unchanged
+			},
 		},
 	}
 	vks2 := []tables.TableVirtualKey{
@@ -10883,12 +11355,14 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 
 	// Create config.json
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key-1", Value: *schemas.NewSecretVar("sk-original-123"), Weight: 1},
 			},
-			NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			ProviderConfig: configstore.ProviderConfig{
+				NetworkConfig: &schemas.NetworkConfig{BaseURL: "https://api.openai.com"},
+			},
 		},
 	}
 	vks := []tables.TableVirtualKey{
@@ -10906,16 +11380,14 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 
 	// Simulate dashboard edits:
 	// 1. Add a new key
-	dbProviders1, _ := config1.ConfigStore.GetProvidersConfig(ctx)
-	openaiConfig := dbProviders1[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	dbProviders1, dbKeys1, _ := dbProvidersAndKeys(ctx, config1.ConfigStore)
+	dbKeys1[schemas.OpenAI] = append(dbKeys1[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "dashboard-key",
 		Value:  *schemas.NewSecretVar("sk-dashboard-789"),
 		Weight: 1,
 	})
-	dbProviders1[schemas.OpenAI] = openaiConfig
-	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1)
+	err = config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders1, dbKeys1)
 	if err != nil {
 		t.Fatalf("Failed to add dashboard key: %v", err)
 	}
@@ -10944,13 +11416,13 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify dashboard-added key is preserved
-	dbProviders2, _ := config2.ConfigStore.GetProvidersConfig(ctx)
-	if len(dbProviders2[schemas.OpenAI].Keys) != 2 {
-		t.Errorf("Expected 2 keys (1 original + 1 dashboard), got %d", len(dbProviders2[schemas.OpenAI].Keys))
+	_, dbKeys2, _ := dbProvidersAndKeys(ctx, config2.ConfigStore)
+	if len(dbKeys2[schemas.OpenAI]) != 2 {
+		t.Errorf("Expected 2 keys (1 original + 1 dashboard), got %d", len(dbKeys2[schemas.OpenAI]))
 	}
 
 	keyNames := make(map[string]bool)
-	for _, k := range dbProviders2[schemas.OpenAI].Keys {
+	for _, k := range dbKeys2[schemas.OpenAI] {
 		keyNames[k.Name] = true
 	}
 	if !keyNames["openai-key-1"] {
@@ -10966,7 +11438,7 @@ func TestSQLite_FullLifecycle_DashboardEdits_ThenFileUnchanged(t *testing.T) {
 
 	// Check VKs in memory
 	vkNames := make(map[string]bool)
-	for _, vk := range config2.GovernanceConfig.VirtualKeys {
+	for _, vk := range storedGovernance(t, config2).VirtualKeys {
 		vkNames[vk.Name] = true
 	}
 	if !vkNames["test-vk"] {
@@ -11134,7 +11606,7 @@ func TestSQLite_VirtualKey_WithMCPConfigs(t *testing.T) {
 	ctx := context.Background()
 
 	// Create config with virtual key
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -11223,7 +11695,7 @@ func TestSQLite_VKMCPConfig_Reconciliation(t *testing.T) {
 	ctx := context.Background()
 
 	// Create initial config
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -11385,7 +11857,7 @@ func TestSQLite_VirtualKey_DashboardProviderConfig_DeletedOnFileChange(t *testin
 	ctx := context.Background()
 
 	// Step 1: Create config.json with VK that has openai provider config
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-openai-123"), Weight: 1},
@@ -11545,7 +12017,7 @@ func TestSQLite_VirtualKey_DashboardMCPConfig_DeletedOnFileChange(t *testing.T) 
 	ctx := context.Background()
 
 	// Step 1: Create config.json with VK (no MCP configs initially - we'll add them via DB)
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-openai-123"), Weight: 1},
@@ -11715,7 +12187,7 @@ func TestSQLite_VKMCPConfig_AddRemove(t *testing.T) {
 	ctx := context.Background()
 
 	// Create initial config without MCP
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -11846,7 +12318,7 @@ func TestSQLite_VKMCPConfig_UpdateTools(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: uuid.NewString(), Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -11940,7 +12412,7 @@ func TestSQLite_VK_ProviderAndMCPConfigs_Combined(t *testing.T) {
 	ctx := context.Background()
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -12054,7 +12526,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	ctx := context.Background()
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -12063,7 +12535,7 @@ func TestSQLite_VKMCPConfig_MCPClientNameResolution(t *testing.T) {
 	}
 
 	// First, create config.json with MCP client configs
-	mcpConfig := &schemas.MCPConfig{
+	mcpConfig := &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				ID:               "weather-mcp",
@@ -13062,10 +13534,10 @@ func TestSQLite_Budget_NewFromFile(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify budget in memory
-	if config.GovernanceConfig == nil || len(config.GovernanceConfig.Budgets) != 1 {
+	if len(storedGovernance(t, config).Budgets) != 1 {
 		t.Fatal("Expected 1 budget in governance config")
 	}
-	if config.GovernanceConfig.Budgets[0].ID != "budget-1" {
+	if storedGovernance(t, config).Budgets[0].ID != "budget-1" {
 		t.Error("Budget ID mismatch")
 	}
 
@@ -13858,6 +14330,40 @@ func TestSQLite_Team_MigratedToProfile_SplitRewriteSkipsItsInlineBudgets(t *test
 	var team tables.TableTeam
 	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "team-1").First(&team).Error)
 	assert.NotEmpty(t, team.ConfigHash, "the rest of the entry still applies, hash and all")
+}
+
+// TestSQLite_UngovernedTeam_InlineLimitsApplyOnUpdate: when the file changes an ungoverned team's
+// inline budget and rate limit, the update writes them, as the first load did. Both are saved with
+// the team row, so the team save must keep saving those associations.
+func TestSQLite_UngovernedTeam_InlineLimitsApplyOnUpdate(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	withLimits := func(suffix string) *ConfigData {
+		configData := makeConfigDataWithProvidersAndDir(nil, tempDir)
+		configData.Governance = &configstore.GovernanceConfig{
+			Teams: []tables.TableTeam{{ID: "team-1", Name: "Team One",
+				RateLimit: &tables.TableRateLimit{ID: "team-rl-" + suffix, TokenMaxLimit: schemas.Ptr(int64(1000)), TokenResetDuration: schemas.Ptr("1h")},
+				Budgets:   []tables.TableBudget{{ID: "team-budget-" + suffix, MaxLimit: 100, ResetDuration: "1M"}}}},
+		}
+		return configData
+	}
+	ctx := context.Background()
+	createConfigFile(t, tempDir, withLimits("a"))
+	config1, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	config1.Close(ctx)
+
+	createConfigFile(t, tempDir, withLimits("b"))
+	config2, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	defer config2.Close(ctx)
+
+	exists, _ := countBudget(t, config2, "team-budget-b")
+	assert.True(t, exists, "the team's new inline budget was written on update")
+	var team tables.TableTeam
+	require.NoError(t, config2.ConfigStore.DB().Where("id = ?", "team-1").First(&team).Error)
+	require.NotNil(t, team.RateLimitID)
+	assert.Equal(t, "team-rl-b", *team.RateLimitID, "the team's new inline rate limit was written and linked")
 }
 
 // governedKeyConfig declares team-1 owning key vk-1, which carries a budget in governance.budgets, a
@@ -15810,6 +16316,103 @@ func TestGenerateClientConfigHash(t *testing.T) {
 // COMBINED GOVERNANCE RECONCILIATION TEST
 // ===================================================================================
 
+// TestSQLite_Governance_FileCannotSetUsageResetEpochs checks that the import keeps
+// reset history owned by the store, including for newly created associations.
+func TestSQLite_Governance_FileCannotSetUsageResetEpochs(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	dir := createTempDir(t)
+	data := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
+		"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
+	}, dir)
+	data.SourceOfTruth = SourceOfTruthConfigJSON
+	budget := func(id string) tables.TableBudget {
+		return tables.TableBudget{ID: id, MaxLimit: 10, ResetDuration: "1M", UsageResetEpoch: 900}
+	}
+	rate := func(id string) tables.TableRateLimit {
+		return tables.TableRateLimit{
+			ID: id, TokenMaxLimit: schemas.Ptr(int64(100)), TokenResetDuration: schemas.Ptr("1h"),
+			RequestMaxLimit: schemas.Ptr(int64(10)), RequestResetDuration: schemas.Ptr("1h"),
+			TokenUsageResetEpoch: 901, RequestUsageResetEpoch: 902,
+		}
+	}
+	data.Governance = &configstore.GovernanceConfig{
+		Budgets:    []tables.TableBudget{budget("top")},
+		RateLimits: []tables.TableRateLimit{rate("top-rate")},
+		Teams:      []tables.TableTeam{{ID: "team", Name: "Team", Budgets: []tables.TableBudget{budget("team-budget")}, RateLimit: schemas.Ptr(rate("team-rate"))}},
+		Customers: []tables.TableCustomer{{ID: "customer", Name: "Customer", Budgets: []tables.TableBudget{budget("customer-budget")}, RateLimit: schemas.Ptr(rate("customer-rate")),
+			Teams: []tables.TableTeam{{ID: "embedded-team", Name: "Embedded Team", Budgets: []tables.TableBudget{budget("embedded-team-budget")}, RateLimit: schemas.Ptr(rate("embedded-team-rate"))}},
+		}},
+		ModelConfigs: []tables.TableModelConfig{{ID: "model", ModelName: "gpt-4o", Budgets: []tables.TableBudget{budget("model-budget")}, RateLimit: schemas.Ptr(rate("model-rate"))}},
+		VirtualKeys: []tables.TableVirtualKey{{
+			ID: "vk", Name: "VK", Value: *schemas.NewSecretVar("sk-bf-test"), IsActive: schemas.Ptr(true),
+			Budgets: []tables.TableBudget{budget("key-budget")}, RateLimit: schemas.Ptr(rate("key-rate")),
+			ProviderConfigs: []tables.TableVirtualKeyProviderConfig{{
+				Provider: "openai", Weight: ptrFloat64(1), AllowedModels: []string{"*"},
+				Budgets: []tables.TableBudget{budget("provider-budget")}, RateLimit: schemas.Ptr(rate("provider-rate")),
+			}},
+		}},
+	}
+	createConfigFile(t, dir, data)
+	first, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer first.Close(ctx)
+	for _, id := range []string{"top", "team-budget", "customer-budget", "embedded-team-budget", "model-budget", "key-budget", "provider-budget"} {
+		stored, err := first.ConfigStore.GetBudget(ctx, id)
+		require.NoError(t, err, "budget %s", id)
+		assert.Zero(t, stored.UsageResetEpoch, "budget %s", id)
+	}
+
+	for _, id := range []string{"top-rate", "team-rate", "customer-rate", "embedded-team-rate", "model-rate", "key-rate", "provider-rate"} {
+		stored, err := first.ConfigStore.GetRateLimit(ctx, id)
+		require.NoError(t, err, "rate limit %s", id)
+		assert.Zero(t, stored.TokenUsageResetEpoch, "rate limit %s", id)
+		assert.Zero(t, stored.RequestUsageResetEpoch, "rate limit %s", id)
+	}
+
+	// Seed the store through normal persistence, then edit the file and reload.
+	const persistedEpoch int64 = 50
+	data.Governance.Budgets = append(data.Governance.Budgets, budget("existing"))
+	require.NoError(t, first.ConfigStore.CreateBudget(ctx, &tables.TableBudget{
+		ID: "existing", MaxLimit: 5, ResetDuration: "1M", UsageResetEpoch: persistedEpoch,
+	}))
+	data.Governance.RateLimits = append(data.Governance.RateLimits, rate("existing-rate"))
+	existingRate := rate("existing-rate")
+	existingRate.TokenMaxLimit = schemas.Ptr(int64(50))
+	existingRate.TokenUsageResetEpoch = 51
+	existingRate.RequestUsageResetEpoch = 52
+	require.NoError(t, first.ConfigStore.CreateRateLimit(ctx, &existingRate))
+	createConfigFile(t, dir, data)
+	second, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer second.Close(ctx)
+	stored, err := second.ConfigStore.GetBudget(ctx, "existing")
+	require.NoError(t, err)
+	assert.EqualValues(t, 10, stored.MaxLimit)
+	assert.Equal(t, persistedEpoch, stored.UsageResetEpoch)
+	storedRate, err := second.ConfigStore.GetRateLimit(ctx, "existing-rate")
+	require.NoError(t, err)
+	require.NotNil(t, storedRate.TokenMaxLimit)
+	assert.EqualValues(t, 100, *storedRate.TokenMaxLimit)
+	assert.EqualValues(t, 51, storedRate.TokenUsageResetEpoch)
+	assert.EqualValues(t, 52, storedRate.RequestUsageResetEpoch)
+
+	// Governance content is not kept on the config after boot, so the reconciled epochs are read
+	// from the stored governance.
+	stored2 := storedGovernance(t, second)
+	budgetIndex := slices.IndexFunc(stored2.Budgets, func(row tables.TableBudget) bool {
+		return row.ID == "existing"
+	})
+	require.NotEqual(t, -1, budgetIndex)
+	assert.Equal(t, persistedEpoch, stored2.Budgets[budgetIndex].UsageResetEpoch)
+	rateIndex := slices.IndexFunc(stored2.RateLimits, func(row tables.TableRateLimit) bool {
+		return row.ID == "existing-rate"
+	})
+	require.NotEqual(t, -1, rateIndex)
+	assert.EqualValues(t, 51, stored2.RateLimits[rateIndex].TokenUsageResetEpoch)
+	assert.EqualValues(t, 52, stored2.RateLimits[rateIndex].RequestUsageResetEpoch)
+}
+
 // TestSQLite_Governance_FullReconciliation tests full governance reconciliation
 func TestSQLite_Governance_FullReconciliation(t *testing.T) {
 	initTestLogger()
@@ -16088,7 +16691,7 @@ func TestSQLite_SourceOfTruthConfigJSON_KeepsModelConfigsOfScopesTheFileCannotDe
 	assert.True(t, ids["model:file-model"])
 
 	inMemory := map[string]bool{}
-	for _, mc := range config2.GovernanceConfig.ModelConfigs {
+	for _, mc := range storedGovernance(t, config2).ModelConfigs {
 		inMemory[mc.ID] = true
 	}
 	assert.True(t, inMemory["profile-model"], "what survives in the store survives in memory")
@@ -16213,7 +16816,7 @@ func TestSQLite_SourceOfTruthConfigJSON_KeepsInlineLimitsAcrossRestarts(t *testi
 			SetLogger(recorder)
 			defer initTestLogger()
 			tempDir := createTempDir(t)
-			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+			configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 				"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 			}, tempDir)
 			configData.SourceOfTruth = SourceOfTruthConfigJSON
@@ -16255,7 +16858,7 @@ func TestSQLite_VirtualKeyInlineBudgetsFollowTheFile(t *testing.T) {
 					}
 					return rows
 				}
-				configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+				configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 					"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 				}, tempDir)
 				configData.SourceOfTruth = sourceOfTruth
@@ -16360,7 +16963,7 @@ func TestSQLite_VirtualKeyInlineBudgetMovesBetweenTiers(t *testing.T) {
 			}
 			return rows
 		}
-		configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 		}, tempDir)
 		configData.SourceOfTruth = SourceOfTruthConfigJSON
@@ -16425,7 +17028,7 @@ func TestSQLite_VirtualKeyLimitsFromConfigLandOnModelConfigs(t *testing.T) {
 			rateLimit := func(id string) *tables.TableRateLimit {
 				return &tables.TableRateLimit{ID: id, RequestMaxLimit: &requestMax, RequestResetDuration: &requestDur}
 			}
-			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+			configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 				"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 			}, tempDir)
 			configData.SourceOfTruth = sourceOfTruth
@@ -16524,7 +17127,7 @@ func TestSQLite_VirtualKeyLimitsFromConfigLandOnModelConfigs(t *testing.T) {
 func TestSQLite_VirtualKeyLimitsFromConfigAdoptTheFilesModelConfig(t *testing.T) {
 	initTestLogger()
 	tempDir := createTempDir(t)
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 	}, tempDir)
 	configData.SourceOfTruth = SourceOfTruthConfigJSON
@@ -16564,7 +17167,7 @@ func TestSQLite_ProviderConfigBudgetFromConfigLandsOnTheProviderTier(t *testing.
 	initTestLogger()
 	tempDir := createTempDir(t)
 	declare := func(budgets []tables.TableBudget) *ConfigData {
-		configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 		}, tempDir)
 		configData.Governance = &configstore.GovernanceConfig{
@@ -16670,10 +17273,10 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 
 	tokenMax := int64(1000)
 	tokenDur := "1h"
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}, tempDir)
-	configData.MCP = &schemas.MCPConfig{
+	configData.MCP = &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{{ID: "mcp-file", Name: "file_mcp", ConnectionType: schemas.MCPConnectionTypeHTTP}},
 	}
 	configData.Plugins = []*schemas.PluginConfig{{Name: "file-plugin", Enabled: true, Config: map[string]any{"setting": "file"}}}
@@ -16688,20 +17291,17 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	config1, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
 
-	dbProviders, err := config1.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders, dbKeys, err := dbProvidersAndKeys(ctx, config1.ConfigStore)
 	require.NoError(t, err)
-	openaiConfig := dbProviders[schemas.OpenAI]
-	openaiConfig.Keys = append(openaiConfig.Keys, schemas.Key{
+	dbKeys[schemas.OpenAI] = append(dbKeys[schemas.OpenAI], schemas.Key{
 		ID:     uuid.NewString(),
 		Name:   "dashboard-openai-key",
 		Value:  *schemas.NewSecretVar("sk-dashboard-openai"),
 		Weight: 1,
 	})
-	dbProviders[schemas.OpenAI] = openaiConfig
-	dbProviders[schemas.Anthropic] = configstore.ProviderConfig{
-		Keys: []schemas.Key{{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic"), Weight: 1}},
-	}
-	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders))
+	dbProviders[schemas.Anthropic] = configstore.ProviderConfig{}
+	dbKeys[schemas.Anthropic] = []schemas.Key{{ID: uuid.NewString(), Name: "anthropic-key-1", Value: *schemas.NewSecretVar("sk-anthropic"), Weight: 1}}
+	require.NoError(t, config1.ConfigStore.UpdateProvidersConfig(ctx, dbProviders, dbKeys))
 
 	require.NoError(t, config1.ConfigStore.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
 		ID:             "mcp-dashboard",
@@ -16728,16 +17328,16 @@ func TestSQLite_SourceOfTruthConfigJSON_BulkEntityPruning(t *testing.T) {
 	require.NoError(t, err)
 	defer config2.Close(ctx)
 
-	dbProviders, err = config2.ConfigStore.GetProvidersConfig(ctx)
+	dbProviders, dbKeys, err = dbProvidersAndKeys(ctx, config2.ConfigStore)
 	require.NoError(t, err)
 	require.Len(t, dbProviders, 1)
-	require.Len(t, dbProviders[schemas.OpenAI].Keys, 1)
-	require.Equal(t, "openai-key-1", dbProviders[schemas.OpenAI].Keys[0].Name)
+	require.Len(t, dbKeys[schemas.OpenAI], 1)
+	require.Equal(t, "openai-key-1", dbKeys[schemas.OpenAI][0].Name)
 
-	mcpConfig, err := config2.ConfigStore.GetMCPConfig(ctx)
+	mcpClients, err := config2.ConfigStore.GetMCPClientConfigs(ctx)
 	require.NoError(t, err)
-	require.Len(t, mcpConfig.ClientConfigs, 1)
-	require.Equal(t, "file_mcp", mcpConfig.ClientConfigs[0].Name)
+	require.Len(t, mcpClients, 1)
+	require.Equal(t, "file_mcp", mcpClients[0].Name)
 
 	pluginRows, err := config2.ConfigStore.GetPlugins(ctx)
 	require.NoError(t, err)
@@ -18016,7 +18616,7 @@ func TestKeyWeight_ZeroPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "zero-weight-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 0}, // Explicit zero
@@ -18032,17 +18632,17 @@ func TestKeyWeight_ZeroPreserved(t *testing.T) {
 	}
 	defer config.Close(context.Background())
 
-	openaiConfig, exists := config.Providers[schemas.OpenAI]
-	if !exists {
+	if _, exists := providersOf(config)[schemas.OpenAI]; !exists {
 		t.Fatal("Expected openai provider to exist")
 	}
+	openaiKeys := config.GetProviderKeys(schemas.OpenAI)
 
-	if len(openaiConfig.Keys) != 1 {
-		t.Fatalf("Expected 1 key, got %d", len(openaiConfig.Keys))
+	if len(openaiKeys) != 1 {
+		t.Fatalf("Expected 1 key, got %d", len(openaiKeys))
 	}
 
-	if openaiConfig.Keys[0].Weight != 0 {
-		t.Errorf("Expected weight 0 (explicitly set), got %f", openaiConfig.Keys[0].Weight)
+	if openaiKeys[0].Weight != 0 {
+		t.Errorf("Expected weight 0 (explicitly set), got %f", openaiKeys[0].Weight)
 	}
 }
 
@@ -18053,7 +18653,7 @@ func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "default-weight-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1}, // Explicit 1 (default)
@@ -18069,13 +18669,13 @@ func TestKeyWeight_DefaultToOneWhenNotSet(t *testing.T) {
 	}
 	defer config.Close(context.Background())
 
-	openaiConfig, exists := config.Providers[schemas.OpenAI]
-	if !exists {
+	if _, exists := providersOf(config)[schemas.OpenAI]; !exists {
 		t.Fatal("Expected openai provider to exist")
 	}
+	openaiKeys := config.GetProviderKeys(schemas.OpenAI)
 
-	if openaiConfig.Keys[0].Weight != 1.0 {
-		t.Errorf("Expected weight 1.0 (default), got %f", openaiConfig.Keys[0].Weight)
+	if openaiKeys[0].Weight != 1.0 {
+		t.Errorf("Expected weight 1.0 (default), got %f", openaiKeys[0].Weight)
 	}
 }
 
@@ -18086,7 +18686,7 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "zero-weight-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 0},
@@ -18104,8 +18704,8 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
 
-	if config1.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
-		t.Errorf("First load: Expected weight 0, got %f", config1.Providers[schemas.OpenAI].Keys[0].Weight)
+	if config1.GetProviderKeys(schemas.OpenAI)[0].Weight != 0 {
+		t.Errorf("First load: Expected weight 0, got %f", config1.GetProviderKeys(schemas.OpenAI)[0].Weight)
 	}
 	config1.Close(ctx)
 
@@ -18116,9 +18716,9 @@ func TestSQLite_Key_WeightZero_RoundTrip(t *testing.T) {
 	}
 	defer config2.Close(ctx)
 
-	if config2.Providers[schemas.OpenAI].Keys[0].Weight != 0 {
+	if config2.GetProviderKeys(schemas.OpenAI)[0].Weight != 0 {
 		t.Errorf("Second load (from DB): Expected weight 0, got %f - weight=0 was incorrectly defaulted to 1.0",
-			config2.Providers[schemas.OpenAI].Keys[0].Weight)
+			config2.GetProviderKeys(schemas.OpenAI)[0].Weight)
 	}
 }
 
@@ -18134,7 +18734,7 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create providers
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test123", "https://api.openai.com"),
 	}
 
@@ -18163,11 +18763,11 @@ func TestVKProviderConfig_WeightZeroPreserved(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify virtual key exists and has provider config with weight=0
-	if config.GovernanceConfig == nil || len(config.GovernanceConfig.VirtualKeys) == 0 {
+	if len(storedGovernance(t, config).VirtualKeys) == 0 {
 		t.Fatal("Expected virtual key in governance config")
 	}
 
-	vkFromConfig := config.GovernanceConfig.VirtualKeys[0]
+	vkFromConfig := storedGovernance(t, config).VirtualKeys[0]
 	if len(vkFromConfig.ProviderConfigs) == 0 {
 		t.Fatal("Expected provider config in virtual key")
 	}
@@ -18188,7 +18788,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	keyID := uuid.NewString()
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: keyID, Name: "openai-key", Value: *schemas.NewSecretVar("sk-test123"), Weight: 1},
@@ -18223,7 +18823,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
 
-	vk1 := config1.GovernanceConfig.VirtualKeys[0]
+	vk1 := storedGovernance(t, config1).VirtualKeys[0]
 	if len(vk1.ProviderConfigs) == 0 {
 		t.Fatal("First load: Expected provider configs")
 	}
@@ -18242,7 +18842,7 @@ func TestSQLite_VKProviderConfig_WeightZero_RoundTrip(t *testing.T) {
 	}
 	defer config2.Close(ctx)
 
-	vk2 := config2.GovernanceConfig.VirtualKeys[0]
+	vk2 := storedGovernance(t, config2).VirtualKeys[0]
 	if len(vk2.ProviderConfigs) == 0 {
 		t.Fatal("Second load: Expected provider configs")
 	}
@@ -18397,7 +18997,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	keyID := uuid.NewString()
 
 	// Initial config with Enabled=true
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -18419,8 +19019,8 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 
 	// Verify initial state in the in-memory config
-	openaiConfig1 := config1.Providers[schemas.OpenAI]
-	if openaiConfig1.Keys[0].Enabled == nil || !*openaiConfig1.Keys[0].Enabled {
+	openaiKeys1 := config1.GetProviderKeys(schemas.OpenAI)
+	if openaiKeys1[0].Enabled == nil || !*openaiKeys1[0].Enabled {
 		t.Fatal("Expected Enabled=true after first load")
 	}
 
@@ -18428,7 +19028,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	config1.Close(context.Background())
 
 	// Update config with Enabled=false
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -18450,8 +19050,8 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 
 	// Verify Enabled changed to false in the in-memory config
-	openaiConfig2 := config2.Providers[schemas.OpenAI]
-	if openaiConfig2.Keys[0].Enabled == nil || *openaiConfig2.Keys[0].Enabled {
+	openaiKeys2 := config2.GetProviderKeys(schemas.OpenAI)
+	if openaiKeys2[0].Enabled == nil || *openaiKeys2[0].Enabled {
 		t.Error("Expected Enabled=false after second load, but got true or nil")
 	}
 	config2.Close(context.Background())
@@ -18462,7 +19062,7 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
 	defer config3.Close(context.Background())
-	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
+	if enabled := config3.GetProviderKeys(schemas.OpenAI)[0].Enabled; enabled == nil || *enabled {
 		t.Error("Expected Enabled=false to be persisted and survive a restart, but got true or nil")
 	}
 }
@@ -18488,7 +19088,7 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 		}
 	}
 	writeConfig := func(enabled *bool) {
-		createConfigFile(t, tempDir, makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		createConfigFile(t, tempDir, makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{makeKey(enabled)}},
 		}, tempDir))
 	}
@@ -18509,7 +19109,7 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 
 	// Turn the key back on the way the UI does (ConfigHash is left as is), and store the hash an
 	// older build wrote for this file
-	key := config2.Providers[schemas.OpenAI].Keys[0]
+	key := config2.GetProviderKeys(schemas.OpenAI)[0]
 	key.Enabled = &enabledTrue
 	if err := config2.ConfigStore.UpdateProviderKey(context.Background(), schemas.OpenAI, key.ID, key); err != nil {
 		t.Fatalf("UpdateProviderKey failed: %v", err)
@@ -18529,7 +19129,7 @@ func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
 	defer config3.Close(context.Background())
-	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || !*enabled {
+	if enabled := config3.GetProviderKeys(schemas.OpenAI)[0].Enabled; enabled == nil || !*enabled {
 		t.Error("Expected Enabled=true from the UI to survive a restart with config.json unchanged, but got false")
 	}
 }
@@ -18645,7 +19245,7 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	keyID := uuid.NewString()
 
 	// Initial config with UseForBatchAPI=false
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -18668,13 +19268,13 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	defer config1.Close(context.Background())
 
 	// Verify initial state in the in-memory config
-	openaiConfig1 := config1.Providers[schemas.OpenAI]
-	if openaiConfig1.Keys[0].UseForBatchAPI == nil || *openaiConfig1.Keys[0].UseForBatchAPI {
+	openaiKeys1 := config1.GetProviderKeys(schemas.OpenAI)
+	if openaiKeys1[0].UseForBatchAPI == nil || *openaiKeys1[0].UseForBatchAPI {
 		t.Fatal("Expected UseForBatchAPI=false after first load")
 	}
 
 	// Update config with UseForBatchAPI=true
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{
@@ -18697,8 +19297,8 @@ func TestSQLite_Key_UseForBatchAPIChange_Detected(t *testing.T) {
 	defer config2.Close(context.Background())
 
 	// Verify UseForBatchAPI changed to true in the in-memory config
-	openaiConfig2 := config2.Providers[schemas.OpenAI]
-	if openaiConfig2.Keys[0].UseForBatchAPI == nil || !*openaiConfig2.Keys[0].UseForBatchAPI {
+	openaiKeys2 := config2.GetProviderKeys(schemas.OpenAI)
+	if openaiKeys2[0].UseForBatchAPI == nil || !*openaiKeys2[0].UseForBatchAPI {
 		t.Error("Expected UseForBatchAPI=true after second load, but got false or nil")
 	}
 }
@@ -19125,7 +19725,7 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	keyID := uuid.NewString()
 
 	// Phase 1: Initial load with Vertex config
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19151,17 +19751,18 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	defer config1.Close(context.Background())
 
 	// Verify initial state
-	providers1, _ := config1.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig1 := providers1[schemas.Vertex]
-	if vertexConfig1.Keys[0].VertexKeyConfig == nil {
+	vertexKeys1, err := config1.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	require.NoError(t, err)
+	require.NotEmpty(t, vertexKeys1)
+	if vertexKeys1[0].VertexKeyConfig == nil {
 		t.Fatal("Expected VertexKeyConfig after first load")
 	}
-	if vertexConfig1.Keys[0].VertexKeyConfig.ProjectID.GetValue() != "my-project-123" {
-		t.Errorf("Expected ProjectID='my-project-123', got '%s'", vertexConfig1.Keys[0].VertexKeyConfig.ProjectID.GetValue())
+	if vertexKeys1[0].VertexKeyConfig.ProjectID.GetValue() != "my-project-123" {
+		t.Errorf("Expected ProjectID='my-project-123', got '%s'", vertexKeys1[0].VertexKeyConfig.ProjectID.GetValue())
 	}
 
 	// Phase 2: Update config with different Region
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19187,10 +19788,9 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	defer config2.Close(context.Background())
 
 	// Verify Region changed
-	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig2 := providers2[schemas.Vertex]
-	if vertexConfig2.Keys[0].VertexKeyConfig.Region.GetValue() != "europe-west1" {
-		t.Errorf("Expected Region='europe-west1', got '%s'", vertexConfig2.Keys[0].VertexKeyConfig.Region.GetValue())
+	vertexKeys2, _ := config2.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	if vertexKeys2[0].VertexKeyConfig.Region.GetValue() != "europe-west1" {
+		t.Errorf("Expected Region='europe-west1', got '%s'", vertexKeys2[0].VertexKeyConfig.Region.GetValue())
 	}
 
 	// Phase 3: Same config again - should not trigger update (hash matches)
@@ -19200,10 +19800,9 @@ func TestProviderHashComparison_VertexProviderFullLifecycle(t *testing.T) {
 	}
 	defer config3.Close(context.Background())
 
-	providers3, _ := config3.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig3 := providers3[schemas.Vertex]
-	if vertexConfig3.Keys[0].VertexKeyConfig.Region.GetValue() != "europe-west1" {
-		t.Errorf("Expected Region='europe-west1' preserved, got '%s'", vertexConfig3.Keys[0].VertexKeyConfig.Region.GetValue())
+	vertexKeys3, _ := config3.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	if vertexKeys3[0].VertexKeyConfig.Region.GetValue() != "europe-west1" {
+		t.Errorf("Expected Region='europe-west1' preserved, got '%s'", vertexKeys3[0].VertexKeyConfig.Region.GetValue())
 	}
 }
 
@@ -19213,7 +19812,7 @@ func TestProviderHashComparison_VertexNewProviderFromConfig(t *testing.T) {
 	tempDir := createTempDir(t)
 
 	// Create config with Vertex provider
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19240,18 +19839,18 @@ func TestProviderHashComparison_VertexNewProviderFromConfig(t *testing.T) {
 
 	// Verify Vertex provider was created
 	providers, _ := config.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig, exists := providers[schemas.Vertex]
-	if !exists {
+	if _, exists := providers[schemas.Vertex]; !exists {
 		t.Fatal("Expected Vertex provider to exist in DB")
 	}
-	if len(vertexConfig.Keys) != 1 {
-		t.Fatalf("Expected 1 key, got %d", len(vertexConfig.Keys))
+	vertexKeys, _ := config.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	if len(vertexKeys) != 1 {
+		t.Fatalf("Expected 1 key, got %d", len(vertexKeys))
 	}
-	if vertexConfig.Keys[0].VertexKeyConfig == nil {
+	if vertexKeys[0].VertexKeyConfig == nil {
 		t.Fatal("Expected VertexKeyConfig to exist")
 	}
-	if vertexConfig.Keys[0].VertexKeyConfig.ProjectID.GetValue() != "new-project-456" {
-		t.Errorf("Expected ProjectID='new-project-456', got '%s'", vertexConfig.Keys[0].VertexKeyConfig.ProjectID.GetValue())
+	if vertexKeys[0].VertexKeyConfig.ProjectID.GetValue() != "new-project-456" {
+		t.Errorf("Expected ProjectID='new-project-456', got '%s'", vertexKeys[0].VertexKeyConfig.ProjectID.GetValue())
 	}
 }
 
@@ -19263,7 +19862,7 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 	keyID := uuid.NewString()
 
 	// Initial config
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19289,9 +19888,9 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 
 	// Manually update the DB with a different AuthCredentials (simulating dashboard edit)
 	providers1, _ := config1.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig := providers1[schemas.Vertex]
-	vertexConfig.Keys[0].VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar(`{"type":"service_account","edited":true}`)
-	config1.ConfigStore.UpdateProvidersConfig(context.Background(), providers1)
+	vertexKeys, _ := config1.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	vertexKeys[0].VertexKeyConfig.AuthCredentials = *schemas.NewSecretVar(`{"type":"service_account","edited":true}`)
+	config1.ConfigStore.UpdateProvidersConfig(context.Background(), providers1, map[schemas.ModelProvider][]schemas.Key{schemas.Vertex: vertexKeys})
 	config1.Close(context.Background())
 
 	// Reload with same config file - DB value should be preserved since hash matches
@@ -19304,11 +19903,10 @@ func TestProviderHashComparison_VertexDBValuePreservedWhenHashMatches(t *testing
 	// Note: With hash-based reconciliation, when the file hash doesn't change,
 	// the DB values are preserved. Since we modified the DB but not the file,
 	// the file hash still matches the original, so DB values are kept.
-	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig2 := providers2[schemas.Vertex]
+	vertexKeys2, _ := config2.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
 	// The AuthCredentials should be the DB-modified value since file hash matches original
-	if vertexConfig2.Keys[0].VertexKeyConfig.AuthCredentials.GetValue() != `{"type":"service_account","edited":true}` {
-		t.Logf("AuthCredentials: %s", vertexConfig2.Keys[0].VertexKeyConfig.AuthCredentials.GetValue())
+	if vertexKeys2[0].VertexKeyConfig.AuthCredentials.GetValue() != `{"type":"service_account","edited":true}` {
+		t.Logf("AuthCredentials: %s", vertexKeys2[0].VertexKeyConfig.AuthCredentials.GetValue())
 		// This is expected behavior - when file hasn't changed, DB value is preserved
 	}
 }
@@ -19321,7 +19919,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	keyID := uuid.NewString()
 
 	// Initial config
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19346,7 +19944,7 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	config1.Close(context.Background())
 
 	// Update config file with different ProjectID
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"vertex": {
 			Keys: []schemas.Key{
 				{
@@ -19371,10 +19969,9 @@ func TestProviderHashComparison_VertexConfigChangedInFile(t *testing.T) {
 	defer config2.Close(context.Background())
 
 	// Verify file value wins
-	providers2, _ := config2.ConfigStore.GetProvidersConfig(context.Background())
-	vertexConfig2 := providers2[schemas.Vertex]
-	if vertexConfig2.Keys[0].VertexKeyConfig.ProjectID.GetValue() != "updated-project" {
-		t.Errorf("Expected ProjectID='updated-project' from file, got '%s'", vertexConfig2.Keys[0].VertexKeyConfig.ProjectID.GetValue())
+	vertexKeys2, _ := config2.ConfigStore.GetProviderKeys(context.Background(), schemas.Vertex)
+	if vertexKeys2[0].VertexKeyConfig.ProjectID.GetValue() != "updated-project" {
+		t.Errorf("Expected ProjectID='updated-project' from file, got '%s'", vertexKeys2[0].VertexKeyConfig.ProjectID.GetValue())
 	}
 }
 
@@ -19783,13 +20380,14 @@ func getSchemaTypeMappings() []schemaTypeMapping {
 		{"framework.pricing", reflect.TypeOf(modelcatalog.Config{}), false},
 
 		// MCP config
-		{"mcp", reflect.TypeOf(schemas.MCPConfig{}), false},
+		{"mcp", reflect.TypeOf(MCPFileConfig{}), false},
 		{"mcp.client_configs", reflect.TypeOf(schemas.MCPClientConfig{}), true},
 		{"mcp.client_configs.stdio_config", reflect.TypeOf(schemas.MCPStdioConfig{}), false},
 		{"mcp.tool_manager_config", reflect.TypeOf(schemas.MCPToolManagerConfig{}), false},
 
 		// Webhooks config
 		{"webhooks", reflect.TypeOf(WebhookEndpointConfig{}), true},
+		{"datasheet_overrides", reflect.TypeOf(DatasheetOverrideFileConfig{}), true},
 		{"client.webhook_config", reflect.TypeOf(tables.WebhookConfig{}), false},
 
 		// Governance config
@@ -19845,8 +20443,15 @@ var excludedGoFields = map[string]map[string]bool{
 		// deliberately without a deprecated client-level twin in the schema.
 		"mcp_max_instructions_per_client": true,
 		"mcp_max_instructions_total":      true,
+		// Configured only as mcp.max_protocol_version and mcp.server_max_protocol_version.
+		"mcp_max_protocol_version":        true,
+		"mcp_server_max_protocol_version": true,
 	},
 	"configstore.ProviderConfig": {"ConfigHash": true},
+	// Phrase suggestions are a model router's: the type is shared with
+	// model_routers entries, whose schema has suggestions, and the complexity
+	// analyzer config's schema refuses them.
+	"configstore.ComplexityAnalyzerConfig": {"suggestions": true},
 	// GovernanceConfig - some fields are internal/enterprise
 	"configstore.GovernanceConfig": {
 		"model_configs": true, // Internal
@@ -19858,13 +20463,17 @@ var excludedGoFields = map[string]map[string]bool{
 		"config_hash":        true,
 		"created_at":         true,
 		"updated_at":         true,
+		"usage_reset_epoch":  true, // Runtime reset evidence; reconcileFileResetEpochs ignores file values
 		"virtual_key_id":     true, // Internal DB FK for multi-budget ownership
 		"provider_config_id": true, // Internal DB FK for multi-budget ownership
+		"business_unit_id":   true, // Enterprise owner FK; the OSS loader clears it with a warning (ignoreBudgetBusinessUnitIDs)
 	},
 	"tables.TableRateLimit": {
-		"config_hash": true,
-		"created_at":  true,
-		"updated_at":  true,
+		"config_hash":               true,
+		"created_at":                true,
+		"updated_at":                true,
+		"token_usage_reset_epoch":   true, // Runtime reset evidence; reconcileFileResetEpochs ignores file values
+		"request_usage_reset_epoch": true, // Runtime reset evidence; reconcileFileResetEpochs ignores file values
 	},
 	"tables.TableCustomer": {
 		"config_hash":  true,
@@ -19917,7 +20526,7 @@ var excludedGoFields = map[string]map[string]bool{
 		"created_at": true, // DB metadata; set on write
 	},
 	// MCP types have internal state fields
-	"schemas.MCPConfig": {
+	"lib.MCPFileConfig": {
 		"tool_sync_interval": true, // Internal
 	},
 	"schemas.MCPClientConfig": {
@@ -20140,6 +20749,13 @@ func getGoStructFields(t reflect.Type) map[string]bool {
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
 		jsonTag := field.Tag.Get("json")
+		// An untagged embedded struct's fields are encoded as the outer struct's own.
+		if field.Anonymous && jsonTag == "" {
+			for name := range getGoStructFields(field.Type) {
+				fields[name] = true
+			}
+			continue
+		}
 		if jsonTag == "" || jsonTag == "-" {
 			continue
 		}
@@ -20735,6 +21351,40 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, modelcatalog.MinimumPricingSyncIntervalSec, *normalizedModelCatalog.MCPLibrarySyncInterval)
 	})
 
+	t.Run("mcp library file:// urls in config.json reach the catalog unchanged", func(t *testing.T) {
+		// The fetch resolves these forms (TestFetchMCPLibraryFromFileURL and its relative
+		// sibling), so boot must hand them over as written.
+		for _, mcpURL := range []string{"file:///opt/bifrost/mcp-library.json", "file://./mcp-library.json", "file:mcp-library.json"} {
+			t.Run(mcpURL, func(t *testing.T) {
+				raw := mcpURL
+				fileConfig := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{MCPLibraryURL: &raw}}
+
+				normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+				require.Equal(t, mcpURL, *normalizedTable.MCPLibraryURL)
+				require.Equal(t, mcpURL, *normalizedModelCatalog.MCPLibraryURL)
+			})
+		}
+	})
+
+	t.Run("mcp library file intervals 60, -5 and 0", func(t *testing.T) {
+		for _, tc := range []struct {
+			file, want int64
+		}{
+			{file: 60, want: modelcatalog.MinimumPricingSyncIntervalSec},
+			{file: -5, want: defaultSyncSeconds},
+			{file: modelcatalog.MCPLibrarySyncDisabled, want: modelcatalog.MCPLibrarySyncDisabled},
+		} {
+			t.Run(fmt.Sprint(tc.file), func(t *testing.T) {
+				interval := tc.file
+				fileConfig := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{MCPLibrarySyncInterval: &interval}}
+
+				normalizedTable, normalizedModelCatalog, _ := ResolveFrameworkPricingConfig(nil, fileConfig)
+				require.Equal(t, tc.want, *normalizedTable.MCPLibrarySyncInterval)
+				require.Equal(t, tc.want, *normalizedModelCatalog.MCPLibrarySyncInterval)
+			})
+		}
+	})
+
 	t.Run("mcp library zero db interval is honoured as disabled", func(t *testing.T) {
 		disabledDBSync := modelcatalog.MCPLibrarySyncDisabled
 		dbConfig := &tables.TableFrameworkConfig{
@@ -20949,14 +21599,84 @@ func TestResolveFrameworkPricingConfig(t *testing.T) {
 		require.Equal(t, dbURL, *tableOut.PricingURL,
 			"URL from a valid DB field must still be used")
 	})
+
+	t.Run("openapi_url has no default to backfill; file applies, then DB wins until the file changes", func(t *testing.T) {
+		fullDB := func(openAPIURL *string, hash string) *tables.TableFrameworkConfig {
+			return &tables.TableFrameworkConfig{
+				ID: 9, PricingURL: &defaultURL, PricingSyncInterval: &defaultSyncSeconds, ModelParametersURL: &defaultModelParamsURL,
+				MCPLibraryURL: &defaultMCPLibraryURL, MCPLibrarySyncInterval: &defaultSyncSeconds, LiveModelsSyncInterval: &defaultLiveModelsSyncSeconds,
+				OpenAPIURL: openAPIURL, ConfigHash: hash,
+			}
+		}
+		withOpenAPI := func(value string) *framework.FrameworkConfig {
+			return &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &value}}
+		}
+
+		tableOut, catalogOut, needsDBUpdate := ResolveFrameworkPricingConfig(fullDB(nil, ""), nil)
+		require.False(t, needsDBUpdate, "an unset openapi_url is not a backfill: the build's default is read at use")
+		require.Nil(t, tableOut.OpenAPIURL)
+		require.Nil(t, catalogOut.OpenAPIURL)
+
+		// No DB row: initFrameworkConfig writes the result whatever needsDBUpdate says.
+		tableOut, catalogOut, _ = ResolveFrameworkPricingConfig(nil, withOpenAPI(" specs/openapi.json "))
+		require.Equal(t, "specs/openapi.json", *tableOut.OpenAPIURL, "no DB row: the file value applies, trimmed")
+		require.Equal(t, "specs/openapi.json", *catalogOut.OpenAPIURL)
+
+		fileURL := "specs/openapi.json"
+		storedHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{OpenAPIURL: &fileURL})
+		require.NoError(t, err)
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(nil, storedHash), withOpenAPI(fileURL))
+		require.False(t, needsDBUpdate)
+		require.Nil(t, tableOut.OpenAPIURL, "cleared in the UI while config.json is unchanged: the cleared value stands")
+		uiURL := "https://mirror.internal/openapi.json"
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI(fileURL))
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "set in the UI while config.json is unchanged: the DB value stands")
+
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI("specs/v2.json"))
+		require.True(t, needsDBUpdate)
+		require.Equal(t, "specs/v2.json", *tableOut.OpenAPIURL, "a changed config.json wins and is saved")
+
+		tableOut, _, _ = ResolveFrameworkPricingConfig(nil, withOpenAPI("/etc/bifrost/openapi.json"))
+		require.Nil(t, tableOut.OpenAPIURL, "a path outside the app directory is ignored")
+
+		// An explicit "" in config.json chooses the build's default. Once the file
+		// changes it clears a stored override, like any other changed file value.
+		tableOut, catalogOut, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), withOpenAPI(""))
+		require.True(t, needsDBUpdate, "switching config.json to an explicit empty openapi_url is a file change")
+		require.Nil(t, tableOut.OpenAPIURL, "an explicit empty openapi_url clears the stored override")
+		require.Nil(t, catalogOut.OpenAPIURL)
+
+		// The same when another file setting is what changed the hash.
+		empty := ""
+		emptyHash, err := configstore.GenerateFrameworkConfigHash(nil, nil, nil, configstore.FrameworkConfigHashOptions{OpenAPIURL: &empty})
+		require.NoError(t, err)
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, emptyHash), withOpenAPI(""))
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an unchanged config.json leaves the stored override in place")
+		fileSync := int64(7200)
+		emptyAndSync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &empty, PricingSyncInterval: &fileSync}}
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, emptyHash), emptyAndSync)
+		require.True(t, needsDBUpdate)
+		require.Nil(t, tableOut.OpenAPIURL, "an explicit empty openapi_url clears the override when another setting changed the file")
+
+		// Omitted, or an env reference that does not resolve: the stored override stays.
+		onlySync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{PricingSyncInterval: &fileSync}}
+		tableOut, _, needsDBUpdate = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), onlySync)
+		require.True(t, needsDBUpdate)
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an omitted openapi_url keeps the stored override")
+		unresolved := "env.BIFROST_TEST_OPENAPI_URL_UNSET"
+		unresolvedAndSync := &framework.FrameworkConfig{Pricing: &modelcatalog.Config{OpenAPIURL: &unresolved, PricingSyncInterval: &fileSync}}
+		tableOut, _, _ = ResolveFrameworkPricingConfig(fullDB(&uiURL, storedHash), unresolvedAndSync)
+		require.Equal(t, uiURL, *tableOut.OpenAPIURL, "an unresolved env reference keeps the stored override")
+	})
 }
 
-func TestIsBcryptHash(t *testing.T) {
+func TestIsPasswordHash(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
 		expected bool
 	}{
+		{"pbkdf2-sha256 prefix", "$pbkdf2-sha256$i=600000$c2FsdHNhbHRzYWx0c2FsdA$ZGlnZXN0", true},
 		{"bcrypt $2a$ prefix", "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
 		{"bcrypt $2b$ prefix", "$2b$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
 		{"bcrypt $2y$ prefix", "$2y$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", true},
@@ -20968,9 +21688,9 @@ func TestIsBcryptHash(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isBcryptHash(tt.input)
+			result := isPasswordHash(tt.input)
 			if result != tt.expected {
-				t.Errorf("isBcryptHash(%q) = %v, want %v", tt.input, result, tt.expected)
+				t.Errorf("isPasswordHash(%q) = %v, want %v", tt.input, result, tt.expected)
 			}
 		})
 	}
@@ -21005,7 +21725,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NotEqual(t, plainPassword, storedAuth.AdminPassword, "password should be hashed, not plain text")
 
 		// Verify the stored hash is a valid bcrypt hash
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "stored password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "stored password should be a bcrypt hash")
 
 		// Verify the hash can be used to verify the original password
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), plainPassword)
@@ -21097,7 +21817,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, storedAuth)
 		require.Equal(t, "newadmin", storedAuth.AdminUserName.GetValue(), "username should be overwritten by file config")
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "newpassword")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the new file password")
@@ -21178,7 +21898,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.Equal(t, "env.TEST_ADMIN_USERNAME", storedAuth.AdminUserName.GetRawRef(), "env var reference should be preserved")
 
 		// Verify password was hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be hashed")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be hashed")
 	})
 
 	t.Run("password from env variable gets resolved and hashed", func(t *testing.T) {
@@ -21202,7 +21922,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.NotNil(t, storedAuth)
 
 		// Verify password was resolved from env and hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "envpassword123")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the env variable value")
@@ -21238,7 +21958,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		require.True(t, storedAuth.AdminUserName.IsFromSecret(), "username should be marked as from env")
 
 		// Verify password was resolved from env and hashed
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "envpass456")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the env variable value")
@@ -21310,7 +22030,7 @@ func TestLoadAuthConfigFromFile_PasswordHashing(t *testing.T) {
 		storedAuth, err := mockStore.GetAuthConfig(ctx)
 		require.NoError(t, err)
 		require.NotNil(t, storedAuth)
-		require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()), "new password should be a bcrypt hash")
+		require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()), "new password should be a bcrypt hash")
 		match, err := encrypt.CompareHash(storedAuth.AdminPassword.GetValue(), "newpassword")
 		require.NoError(t, err)
 		require.True(t, match, "hashed password should match the new password")
@@ -21364,7 +22084,7 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, storedAuth)
 	require.Equal(t, "nested-admin", storedAuth.AdminUserName.GetValue())
-	require.True(t, isBcryptHash(storedAuth.AdminPassword.GetValue()))
+	require.True(t, isPasswordHash(storedAuth.AdminPassword.GetValue()))
 	require.True(t, storedAuth.IsEnabled)
 	config1.Close(ctx)
 
@@ -21377,7 +22097,7 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 	require.NotNil(t, config2.GovernanceConfig)
 	require.NotNil(t, config2.GovernanceConfig.AuthConfig)
 	require.Equal(t, "nested-admin", config2.GovernanceConfig.AuthConfig.AdminUserName.GetValue())
-	require.True(t, isBcryptHash(config2.GovernanceConfig.AuthConfig.AdminPassword.GetValue()))
+	require.True(t, isPasswordHash(config2.GovernanceConfig.AuthConfig.AdminPassword.GetValue()))
 	require.True(t, config2.GovernanceConfig.AuthConfig.IsEnabled)
 }
 
@@ -21385,45 +22105,121 @@ func TestLoadConfig_GovernanceAuthConfig_PersistsFromFirstImport(t *testing.T) {
 // AddProvider Tests
 // =============================================================================
 
-// mockConfigStoreAddProvider is a ConfigStore mock that allows controlling AddProvider behavior.
+// mockConfigStoreAddProvider wraps a config store so a test can make AddProvider fail.
 type mockConfigStoreAddProvider struct {
-	MockConfigStore
+	configstore.ConfigStore
 	addProviderErr error
 }
 
+// AddProvider fails with addProviderErr when it is set, and writes through otherwise.
 func (m *mockConfigStoreAddProvider) AddProvider(ctx context.Context, provider schemas.ModelProvider, config configstore.ProviderConfig, tx ...*gorm.DB) error {
 	if m.addProviderErr != nil {
 		return m.addProviderErr
 	}
-	return m.MockConfigStore.AddProvider(ctx, provider, config, tx...)
+	return m.ConfigStore.AddProvider(ctx, provider, config, tx...)
+}
+
+// testProviderKey is a key with a name and a value, which every stored key needs.
+func testProviderKey() schemas.Key {
+	return schemas.Key{Name: "test-key", Value: *schemas.NewSecretVar("test-key")}
+}
+
+// addProviderWithKeys stores a provider and then each of keys in order, since AddProvider writes
+// the provider row alone.
+func addProviderWithKeys(ctx context.Context, store configstore.ConfigStore, provider schemas.ModelProvider, config configstore.ProviderConfig, keys []schemas.Key) error {
+	if err := store.AddProvider(ctx, provider, config); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if err := store.CreateProviderKey(ctx, provider, key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// TestProviderPrefixRegistration_ConfigLifecycle checks that a provider's "name/model" prefix is
+// recognized once AddProvider returns and stops being recognized once RemoveProvider drops it,
+// and that a failed write leaves it as it was. A provider written to the database elsewhere and
+// then refreshed into this config registers its prefix the same way.
+func TestProviderPrefixRegistration_ConfigLifecycle(t *testing.T) {
+	initTestLogger()
+	const provider schemas.ModelProvider = "Config Prefix Registration"
+	t.Cleanup(func() { schemas.UnregisterKnownProvider(provider) })
+	cfg := providerStore(t, nil, nil)
+	store := cfg.ConfigStore
+	ctx := context.Background()
+	model := string(provider) + "/namespace/model"
+	if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	parsedProvider, parsedModel := schemas.ParseModelString(model, "")
+	if parsedProvider != provider || parsedModel != "namespace/model" {
+		t.Fatalf("configured prefix was not recognized: provider=%q model=%q", parsedProvider, parsedModel)
+	}
+
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: store, deleteProviderErr: errors.New("delete failed")}
+	if err := cfg.RemoveProvider(ctx, provider); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if !schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("failed removal unregistered the retained configuration")
+	}
+	cfg.ConfigStore = store
+	if err := cfg.RemoveProvider(ctx, provider); err != nil {
+		t.Fatal(err)
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("removed configuration left a registered prefix")
+	}
+
+	cfg.ConfigStore = &mockConfigStoreAddProvider{ConfigStore: store, addProviderErr: errors.New("add failed")}
+	if err := cfg.AddProvider(ctx, provider, configstore.ProviderConfig{}); err == nil {
+		t.Fatal("expected persistence failure")
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("failed creation registered a prefix")
+	}
+
+	// A provider written elsewhere is registered when this config refreshes it, and unregistered
+	// when a delete whose rows are already gone drops it.
+	cfg.ConfigStore = store
+	if err := store.AddProvider(ctx, provider, configstore.ProviderConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshProviderRow(ctx, cfg, provider); err != nil {
+		t.Fatal(err)
+	}
+	if !schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("refreshed configuration did not register its prefix")
+	}
+	if err := store.DeleteProvider(ctx, provider); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.RemoveProvider(context.WithValue(ctx, schemas.BifrostContextKeySkipDBUpdate, true), provider); err != nil {
+		t.Fatal(err)
+	}
+	if schemas.IsKnownProvider(string(provider)) {
+		t.Fatal("configuration removed after its rows were deleted left a registered prefix")
+	}
 }
 
 func TestAddProvider_Success(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: NewMockConfigStore(),
-	}
+	cfg := providerStore(t, nil, nil)
 
-	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{
-		Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}},
-	})
+	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; !exists {
-		t.Fatal("provider should be in the in-memory map after successful add")
+	if !cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should be in the live store after a successful add")
 	}
 }
 
 func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {},
-		},
-		ConfigStore: NewMockConfigStore(),
-	}
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{"test-provider": {}}, nil)
 
 	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
 	if err == nil {
@@ -21436,21 +22232,16 @@ func TestAddProvider_AlreadyExistsInMemory(t *testing.T) {
 
 func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 	initTestLogger()
-	// Simulate: provider exists in DB but not in the in-memory map.
-	// This can happen when a previous AddProvider wrote to DB but the process failed
-	// before syncing the in-memory state (e.g., UpdateProviderConfig failed after AddProvider).
-	mockStore := &mockConfigStoreAddProvider{
-		MockConfigStore: *NewMockConfigStore(),
-		addProviderErr:  configstore.ErrAlreadyExists,
-	}
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: mockStore,
+	schemas.UnregisterKnownProvider("test-provider")
+	t.Cleanup(func() { schemas.UnregisterKnownProvider("test-provider") })
+	// Simulate: provider exists in DB but not in memory. This can happen when a previous
+	// AddProvider wrote to DB but the process failed before the live store heard of it.
+	cfg := providerStore(t, nil, nil)
+	config := configstore.ProviderConfig{}
+	if err := addProviderWithKeys(context.Background(), cfg.ConfigStore, "test-provider", config, []schemas.Key{testProviderKey()}); err != nil {
+		t.Fatalf("seeding the database: %v", err)
 	}
 
-	config := configstore.ProviderConfig{
-		Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}},
-	}
 	err := cfg.AddProvider(context.Background(), "test-provider", config)
 
 	// Should return ErrAlreadyExists
@@ -21461,50 +22252,44 @@ func TestAddProvider_AlreadyExistsInDB_SyncsToMemory(t *testing.T) {
 		t.Fatalf("expected ErrAlreadyExists, got: %v", err)
 	}
 
-	// The provider should be synced to the in-memory map
+	// The provider should be refreshed into the live store
 	// so that subsequent UpdateProviderConfig calls can succeed
-	if _, exists := cfg.Providers["test-provider"]; !exists {
-		t.Fatal("provider should be synced to in-memory map when DB returns already exists")
+	if !cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should be refreshed into the live store when DB returns already exists")
+	}
+	if !schemas.IsKnownProvider("test-provider") {
+		t.Fatal("synced configuration should register its provider prefix")
 	}
 }
 
 func TestAddProvider_DBError_DoesNotSyncToMemory(t *testing.T) {
 	initTestLogger()
 	// Non-duplicate DB errors should NOT add the provider to memory
-	mockStore := &mockConfigStoreAddProvider{
-		MockConfigStore: *NewMockConfigStore(),
-		addProviderErr:  errors.New("connection refused"),
-	}
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: mockStore,
-	}
+	cfg := providerStore(t, nil, nil)
+	cfg.ConfigStore = &mockConfigStoreAddProvider{ConfigStore: cfg.ConfigStore, addProviderErr: errors.New("connection refused")}
 
 	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 
-	if _, exists := cfg.Providers["test-provider"]; exists {
+	if cfg.IsProviderConfigured("test-provider") {
 		t.Fatal("provider should NOT be in memory when DB returns a non-duplicate error")
 	}
 }
 
-func TestAddProvider_NilConfigStore_AddsToMemoryOnly(t *testing.T) {
+// With the config store disabled, configuration does not change until a restart, so a provider
+// write is refused and memory keeps what boot loaded.
+func TestAddProvider_NilConfigStore_Refuses(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: nil,
-	}
+	cfg := withProviders(t, &Config{}, nil, nil)
 
-	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{
-		Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}},
-	})
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+	err := cfg.AddProvider(context.Background(), "test-provider", configstore.ProviderConfig{})
+	if !errors.Is(err, ErrNoConfigStore) {
+		t.Fatalf("expected ErrNoConfigStore, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; !exists {
-		t.Fatal("provider should be in memory when ConfigStore is nil")
+	if cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should not be added when ConfigStore is nil")
 	}
 }
 
@@ -21512,114 +22297,144 @@ func TestAddProvider_NilConfigStore_AddsToMemoryOnly(t *testing.T) {
 // RemoveProvider Tests
 // =============================================================================
 
-// mockConfigStoreDeleteProvider is a ConfigStore mock that allows controlling DeleteProvider behavior.
+// mockConfigStoreDeleteProvider wraps a config store so a test can make DeleteProvider fail.
 type mockConfigStoreDeleteProvider struct {
-	MockConfigStore
+	configstore.ConfigStore
 	deleteProviderErr error
 }
 
+// DeleteProvider fails with deleteProviderErr when it is set, and deletes through otherwise.
 func (m *mockConfigStoreDeleteProvider) DeleteProvider(ctx context.Context, provider schemas.ModelProvider, tx ...*gorm.DB) error {
 	if m.deleteProviderErr != nil {
 		return m.deleteProviderErr
 	}
-	return m.MockConfigStore.DeleteProvider(ctx, provider, tx...)
+	return m.ConfigStore.DeleteProvider(ctx, provider, tx...)
 }
 
 func TestRemoveProvider_Success(t *testing.T) {
 	initTestLogger()
-	mockStore := NewMockConfigStore()
-	mockStore.providers["test-provider"] = configstore.ProviderConfig{}
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}}},
-		},
-		ConfigStore: mockStore,
-	}
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
+	})
 
 	err := cfg.RemoveProvider(context.Background(), "test-provider")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; exists {
-		t.Fatal("provider should be removed from in-memory map after successful delete")
+	if cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should be removed from the live store after successful delete")
 	}
 }
 
 func TestRemoveProvider_NotFound(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers:   make(map[schemas.ModelProvider]configstore.ProviderConfig),
-		ConfigStore: NewMockConfigStore(),
-	}
+	cfg := providerStore(t, nil, nil)
 
 	err := cfg.RemoveProvider(context.Background(), "nonexistent-provider")
-	if err != nil {
-		t.Fatalf("expected nil, got error: %v", err)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestRemoveProvider_RepeatedDelete(t *testing.T) {
+	initTestLogger()
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
+	})
+	if err := cfg.RemoveProvider(context.Background(), "test-provider"); err != nil {
+		t.Fatalf("first delete: %v", err)
+	}
+	if err := cfg.RemoveProvider(context.Background(), "test-provider"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("repeated delete: err = %v, want ErrNotFound", err)
+	}
+	// A cluster peer replaying a delete skips the store, and an absent provider is not its error.
+	peer := context.WithValue(context.Background(), schemas.BifrostContextKeySkipDBUpdate, true)
+	for name, store := range map[string]configstore.ConfigStore{"no store": nil, "with store": cfg.ConfigStore} {
+		cfg.ConfigStore = store
+		if err := cfg.RemoveProvider(peer, "test-provider"); err != nil {
+			t.Fatalf("peer delete %s: %v", name, err)
+		}
+	}
+}
+
+func TestRemoveProvider_StoreRowGoneStillClearsMemory(t *testing.T) {
+	initTestLogger()
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
+	})
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: cfg.ConfigStore, deleteProviderErr: configstore.ErrNotFound}
+
+	for _, attempt := range []string{"row gone, still in memory", "gone from both"} {
+		if err := cfg.RemoveProvider(context.Background(), "test-provider"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s: err = %v, want ErrNotFound", attempt, err)
+		}
+		if cfg.IsProviderConfigured("test-provider") {
+			t.Fatalf("%s: provider should be removed from memory", attempt)
+		}
 	}
 }
 
 func TestRemoveProvider_DBError_DoesNotRemoveFromMemory(t *testing.T) {
 	initTestLogger()
-	mockStore := &mockConfigStoreDeleteProvider{
-		MockConfigStore:   *NewMockConfigStore(),
-		deleteProviderErr: errors.New("connection refused"),
-	}
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}}},
-		},
-		ConfigStore: mockStore,
-	}
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
+	})
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: cfg.ConfigStore, deleteProviderErr: errors.New("connection refused")}
 
 	err := cfg.RemoveProvider(context.Background(), "test-provider")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 
-	if _, exists := cfg.Providers["test-provider"]; !exists {
+	if !cfg.IsProviderConfigured("test-provider") {
 		t.Fatal("provider should still be in memory when DB delete fails")
 	}
 }
 
-func TestRemoveProvider_NilConfigStore_RemovesFromMemoryOnly(t *testing.T) {
+func TestRemoveProvider_NilConfigStore_Refuses(t *testing.T) {
 	initTestLogger()
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}}},
-		},
-		ConfigStore: nil,
-	}
+	cfg := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
+	})
 
 	err := cfg.RemoveProvider(context.Background(), "test-provider")
-	if err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+	if !errors.Is(err, ErrNoConfigStore) {
+		t.Fatalf("expected ErrNoConfigStore, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; exists {
-		t.Fatal("provider should be removed from memory when ConfigStore is nil")
+	if !cfg.IsProviderConfigured("test-provider") {
+		t.Fatal("provider should stay when ConfigStore is nil")
 	}
 }
 
+// A delete whose rows are already gone from the store: the store is not written again, and the
+// provider leaves memory.
 func TestRemoveProvider_SkipDBUpdate(t *testing.T) {
 	initTestLogger()
 	// When skipDBUpdate is set, DeleteProvider should not be called on the store.
 	// Use a mock that would fail if called, proving it was skipped.
-	mockStore := &mockConfigStoreDeleteProvider{
-		MockConfigStore:   *NewMockConfigStore(),
-		deleteProviderErr: errors.New("should not be called"),
-	}
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"test-provider": {Keys: []schemas.Key{{Value: *schemas.NewSecretVar("test-key")}}},
-		},
-		ConfigStore: mockStore,
-	}
+	cfg := providerStore(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"test-provider": {},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		"test-provider": {testProviderKey()},
+	})
+	cfg.ConfigStore = &mockConfigStoreDeleteProvider{ConfigStore: cfg.ConfigStore, deleteProviderErr: errors.New("should not be called")}
 
 	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeySkipDBUpdate, true)
 	err := cfg.RemoveProvider(ctx, "test-provider")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
-	if _, exists := cfg.Providers["test-provider"]; exists {
+	if cfg.IsProviderConfigured("test-provider") {
 		t.Fatal("provider should be removed from memory when skipDBUpdate is true")
 	}
 }
@@ -21807,6 +22622,21 @@ func assertDefaultClientConfigValues(t *testing.T, cc configstore.ClientConfig) 
 	require.Equal(t, false, cc.HideDeletedVirtualKeysInFilters, "HideDeletedVirtualKeysInFilters should default to false")
 }
 
+// requireProvidersAsStored checks that boot attached a live store whose provider collection holds
+// exactly the providers the config store holds.
+func requireProvidersAsStored(t *testing.T, config *Config) {
+	t.Helper()
+	require.NotNil(t, config.LiveStore, "LiveStore should be attached")
+	require.NotNil(t, config.LiveStore.Collections.Providers, "Providers collection should be registered")
+	stored, err := config.ConfigStore.GetProvidersConfig(context.Background())
+	require.NoError(t, err)
+	held := providersOf(config)
+	require.Len(t, held, len(stored), "Providers collection should hold every stored provider")
+	for name := range stored {
+		require.Contains(t, held, name, "Providers collection should hold stored provider %s", name)
+	}
+}
+
 // TestLoadConfig_NoConfigFile_FreshStart tests LoadConfig with no config.json and no existing DB
 func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	initTestLogger()
@@ -21827,8 +22657,9 @@ func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	// HeaderMatcher is nil when no header filter is configured (DefaultClientConfig has nil HeaderFilterConfig)
 	// This is expected behavior - it's only set when HeaderFilterConfig is non-nil
 
-	// Verify providers map initialized (may be empty or auto-detected from env)
-	require.NotNil(t, config.Providers, "Providers map should be initialized")
+	// Verify boot filled the provider collection with what the store holds (may be empty or
+	// auto-detected from env)
+	requireProvidersAsStored(t, config)
 
 	// Verify governance/MCP are nil or empty (no config file)
 	// MCP and governance may be nil when no config and no DB data
@@ -21838,8 +22669,9 @@ func TestLoadConfig_NoConfigFile_FreshStart(t *testing.T) {
 	// Verify WebSocket defaults
 	require.NotNil(t, config.WebSocketConfig, "WebSocketConfig should have defaults")
 
-	// Verify KV store initialized
-	require.NotNil(t, config.KVStore, "KVStore should be initialized")
+	// Verify the shared tables are created
+	require.NotNil(t, config.Shared, "shared tables should be created")
+	require.NotNil(t, config.Shared.Sessions, "the session table should be created")
 }
 
 // TestLoadConfig_NoConfigFile_ExistingDB tests LoadConfig with no config.json but existing DB from previous run
@@ -21849,7 +22681,7 @@ func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
 	ctx := context.Background()
 
 	// First run: create a config.json to populate the DB
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
 	}
 	configData := makeConfigDataWithProvidersAndDir(providers, tempDir)
@@ -21880,13 +22712,13 @@ func TestLoadConfig_NoConfigFile_ExistingDB(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify DB data was loaded (provider preserved from first run)
-	require.Len(t, config2.Providers, 1, "Provider from DB should be preserved")
-	_, hasOpenAI := config2.Providers[schemas.OpenAI]
+	require.Len(t, providersOf(config2), 1, "Provider from DB should be preserved")
+	_, hasOpenAI := providersOf(config2)[schemas.OpenAI]
 	require.True(t, hasOpenAI, "OpenAI provider should be loaded from DB")
 
 	// Verify governance loaded from DB
 	require.NotNil(t, config2.GovernanceConfig, "GovernanceConfig should be loaded from DB")
-	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget from DB should be preserved")
+	require.Len(t, storedGovernance(t, config2).Budgets, 1, "Budget from DB should be preserved")
 }
 
 // TestLoadConfig_FullConfigFile_FreshDB tests LoadConfig with all sections in config.json
@@ -21895,7 +22727,7 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	providers := map[string]configstore.ProviderConfig{
+	providers := map[string]providerFileEntry{
 		"openai": makeProviderConfig("openai-key-1", "sk-openai-123"),
 		"anthropic": {
 			Keys: []schemas.Key{
@@ -21924,7 +22756,7 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	}
 
 	// Add MCP
-	configData.MCP = &schemas.MCPConfig{
+	configData.MCP = &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{ID: uuid.NewString(), Name: "mcp_client_1", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:8080")},
 		},
@@ -21940,12 +22772,12 @@ func TestLoadConfig_FullConfigFile_FreshDB(t *testing.T) {
 	// Verify all sections loaded
 	require.NotNil(t, config.ConfigStore, "ConfigStore should be initialized")
 	require.Equal(t, 20, config.ClientConfig.InitialPoolSize, "Client config InitialPoolSize from file")
-	require.Len(t, config.Providers, 2, "Should have 2 providers")
+	require.Len(t, providersOf(config), 2, "Should have 2 providers")
 	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
-	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
-	require.Len(t, config.GovernanceConfig.VirtualKeys, 1, "Should have 1 virtual key")
+	require.Len(t, storedGovernance(t, config).Budgets, 1, "Should have 1 budget")
+	require.Len(t, storedGovernance(t, config).VirtualKeys, 1, "Should have 1 virtual key")
 	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
-	require.Len(t, config.MCPConfig.ClientConfigs, 1, "Should have 1 MCP client")
+	require.Len(t, mcpClientsOf(config), 1, "Should have 1 MCP client")
 	require.Len(t, config.PluginConfigs, 1, "Should have 1 plugin")
 	require.Equal(t, "test-plugin", config.PluginConfigs[0].Name)
 
@@ -21965,9 +22797,9 @@ func TestLoadConfig_PartialConfigFile_OnlyProviders(t *testing.T) {
 	ctx := context.Background()
 
 	configData := makeMinimalConfigData(tempDir)
-	configData.Providers = map[string]configstore.ProviderConfig{
+	configData.Providers, configData.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
 		"openai": makeProviderConfig("openai-key-1", "sk-test-123"),
-	}
+	})
 
 	createConfigFile(t, tempDir, configData)
 
@@ -21977,8 +22809,8 @@ func TestLoadConfig_PartialConfigFile_OnlyProviders(t *testing.T) {
 	defer config.Close(ctx)
 
 	// Verify providers loaded from file
-	require.Len(t, config.Providers, 1, "Should have 1 provider from file")
-	_, hasOpenAI := config.Providers[schemas.OpenAI]
+	require.Len(t, providersOf(config), 1, "Should have 1 provider from file")
+	_, hasOpenAI := providersOf(config)[schemas.OpenAI]
 	require.True(t, hasOpenAI, "OpenAI should be loaded from file")
 
 	// Verify client config gets defaults (no client in file)
@@ -22020,7 +22852,7 @@ func TestLoadConfig_PartialConfigFile_OnlyClient(t *testing.T) {
 
 	// Verify providers auto-detected (no providers in file)
 	// (may be empty if no env vars set, that's fine)
-	require.NotNil(t, config.Providers, "Providers map should be initialized")
+	requireProvidersAsStored(t, config)
 }
 
 // TestLoadConfig_PartialConfigFile_OnlyGovernance tests config.json with only governance section
@@ -22045,8 +22877,8 @@ func TestLoadConfig_PartialConfigFile_OnlyGovernance(t *testing.T) {
 
 	// Verify governance loaded from file
 	require.NotNil(t, config.GovernanceConfig, "GovernanceConfig should be loaded")
-	require.Len(t, config.GovernanceConfig.Budgets, 1, "Should have 1 budget")
-	require.Equal(t, 500.0, config.GovernanceConfig.Budgets[0].MaxLimit)
+	require.Len(t, storedGovernance(t, config).Budgets, 1, "Should have 1 budget")
+	require.Equal(t, 500.0, storedGovernance(t, config).Budgets[0].MaxLimit)
 
 	// Verify client config gets defaults
 	assertDefaultClientConfigValues(t, *config.ClientConfig)
@@ -22086,7 +22918,7 @@ func TestLoadConfig_PartialConfigFile_OnlyMCP(t *testing.T) {
 	ctx := context.Background()
 
 	configData := makeMinimalConfigData(tempDir)
-	configData.MCP = &schemas.MCPConfig{
+	configData.MCP = &MCPFileConfig{
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{ID: uuid.NewString(), Name: "mcp_test", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:9090")},
 		},
@@ -22101,8 +22933,8 @@ func TestLoadConfig_PartialConfigFile_OnlyMCP(t *testing.T) {
 
 	// Verify MCP loaded from file
 	require.NotNil(t, config.MCPConfig, "MCPConfig should be loaded")
-	require.Len(t, config.MCPConfig.ClientConfigs, 1, "Should have 1 MCP client")
-	require.Equal(t, "mcp_test", config.MCPConfig.ClientConfigs[0].Name)
+	require.Len(t, mcpClientsOf(config), 1, "Should have 1 MCP client")
+	require.Equal(t, "mcp_test", mcpClientsOf(config)[0].Name)
 
 	// Verify client gets defaults
 	assertDefaultClientConfigValues(t, *config.ClientConfig)
@@ -22121,10 +22953,10 @@ func TestLoadConfig_PartialConfigFile_ClientAndProviders(t *testing.T) {
 		MaxRequestBodySizeMB: 50,
 		AllowedOrigins:       []string{"*"},
 	}
-	configData.Providers = map[string]configstore.ProviderConfig{
+	configData.Providers, configData.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
 		"openai":    makeProviderConfig("openai-key", "sk-openai-abc"),
 		"anthropic": makeProviderConfig("anthropic-key", "sk-anthropic-def"),
-	}
+	})
 
 	createConfigFile(t, tempDir, configData)
 
@@ -22135,7 +22967,7 @@ func TestLoadConfig_PartialConfigFile_ClientAndProviders(t *testing.T) {
 
 	// Verify both sections loaded
 	require.Equal(t, 100, config.ClientConfig.InitialPoolSize)
-	require.Len(t, config.Providers, 2, "Should have 2 providers")
+	require.Len(t, providersOf(config), 2, "Should have 2 providers")
 
 	// Verify other sections empty/nil
 	require.Empty(t, config.PluginConfigs, "Plugins should be empty")
@@ -22148,11 +22980,10 @@ func TestLoadConfig_ConfigFile_NoConfigStoreSection(t *testing.T) {
 	ctx := context.Background()
 
 	// Create config.json without config_store section
-	configData := &ConfigData{
-		Providers: map[string]configstore.ProviderConfig{
-			"openai": makeProviderConfig("openai-key", "sk-test-123"),
-		},
-	}
+	configData := &ConfigData{}
+	configData.Providers, configData.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"openai": makeProviderConfig("openai-key", "sk-test-123"),
+	})
 	createConfigFile(t, tempDir, configData)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -22164,8 +22995,8 @@ func TestLoadConfig_ConfigFile_NoConfigStoreSection(t *testing.T) {
 	require.NotNil(t, config.ConfigStore, "ConfigStore should be created as default SQLite when section is absent")
 
 	// Verify providers are loaded into memory
-	require.Len(t, config.Providers, 1, "Provider should be loaded into memory")
-	_, hasOpenAI := config.Providers[schemas.OpenAI]
+	require.Len(t, providersOf(config), 1, "Provider should be loaded into memory")
+	_, hasOpenAI := providersOf(config)[schemas.OpenAI]
 	require.True(t, hasOpenAI, "OpenAI should be loaded")
 }
 
@@ -22179,10 +23010,10 @@ func TestLoadConfig_ConfigFile_ConfigStoreDisabled(t *testing.T) {
 		ConfigStoreConfig: &configstore.Config{
 			Enabled: false,
 		},
-		Providers: map[string]configstore.ProviderConfig{
-			"openai": makeProviderConfig("openai-key", "sk-test-456"),
-		},
 	}
+	configData.Providers, configData.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"openai": makeProviderConfig("openai-key", "sk-test-456"),
+	})
 	createConfigFile(t, tempDir, configData)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -22194,7 +23025,7 @@ func TestLoadConfig_ConfigFile_ConfigStoreDisabled(t *testing.T) {
 	require.Nil(t, config.ConfigStore, "ConfigStore should be nil when disabled")
 
 	// Providers should still be loaded into memory
-	require.Len(t, config.Providers, 1, "Provider should be loaded into memory")
+	require.Len(t, providersOf(config), 1, "Provider should be loaded into memory")
 }
 
 // TestLoadConfig_NoConfigFile_SecondRun tests that DB data persists across runs without config.json
@@ -22217,12 +23048,11 @@ func TestLoadConfig_NoConfigFile_SecondRun(t *testing.T) {
 	require.NotNil(t, config1)
 
 	// Manually add a provider to DB to simulate dashboard addition
-	testProvider := configstore.ProviderConfig{
-		Keys: []schemas.Key{
-			{ID: uuid.NewString(), Name: "manual-key", Value: *schemas.NewSecretVar("sk-manual-123"), Weight: 1},
-		},
+	testProviderKeys := []schemas.Key{
+		{ID: uuid.NewString(), Name: "manual-key", Value: *schemas.NewSecretVar("sk-manual-123"), Weight: 1},
 	}
-	err = config1.ConfigStore.AddProvider(ctx, schemas.OpenAI, testProvider)
+	testProvider := configstore.ProviderConfig{}
+	err = addProviderWithKeys(ctx, config1.ConfigStore, schemas.OpenAI, testProvider, testProviderKeys)
 	require.NoError(t, err)
 	config1.Close(ctx)
 
@@ -22246,7 +23076,7 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 	ctx := context.Background()
 
 	// First run: full config.json
-	providers1 := map[string]configstore.ProviderConfig{
+	providers1 := map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: "openai-key-1", Name: "openai-key", Value: *schemas.NewSecretVar("test-openai-key"), Weight: 1},
@@ -22268,19 +23098,19 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 
 	config1, err := LoadConfig(ctx, tempDir)
 	require.NoError(t, err)
-	require.Len(t, config1.Providers, 2, "Should have 2 providers from first load")
+	require.Len(t, providersOf(config1), 2, "Should have 2 providers from first load")
 	require.NotNil(t, config1.GovernanceConfig)
 	config1.Close(ctx)
 
 	// Second run: config.json with only changed providers (no governance section)
 	configData2 := makeMinimalConfigData(tempDir)
-	configData2.Providers = map[string]configstore.ProviderConfig{
+	configData2.Providers, configData2.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
 		"openai": {
 			Keys: []schemas.Key{
 				{ID: "openai-key-1", Name: "openai-key", Value: *schemas.NewSecretVar("test-openai-key-updated"), Weight: 1},
 			},
 		},
-	}
+	})
 	// Note: no governance section in this config.json
 	createConfigFile(t, tempDir, configData2)
 
@@ -22290,13 +23120,13 @@ func TestLoadConfig_PartialConfigFile_WithExistingDB(t *testing.T) {
 	defer config2.Close(ctx)
 
 	// Verify providers updated (only openai now from file)
-	require.Contains(t, config2.Providers, schemas.OpenAI, "OpenAI should be present")
+	require.Contains(t, providersOf(config2), schemas.OpenAI, "OpenAI should be present")
 
 	// Verify governance preserved from DB (not wiped by missing section in file)
 	require.NotNil(t, config2.GovernanceConfig, "Governance should be preserved from DB")
-	require.Len(t, config2.GovernanceConfig.Budgets, 1, "Budget should be preserved from DB")
+	require.Len(t, storedGovernance(t, config2).Budgets, 1, "Budget should be preserved from DB")
 
-	_, hasAnthropic := config2.Providers[schemas.Anthropic]
+	_, hasAnthropic := providersOf(config2)[schemas.Anthropic]
 	require.True(t, hasAnthropic, "Anthropic should be preserved from DB")
 }
 
@@ -22380,21 +23210,23 @@ func makeV1ProviderKey(name string, models schemas.WhiteList) schemas.Key {
 	}
 }
 
-// makeV1ProviderConfig builds a minimal configstore.ProviderConfig with the given keys.
-func makeV1ProviderConfig(keys ...schemas.Key) configstore.ProviderConfig {
-	return configstore.ProviderConfig{Keys: keys}
+// makeV1ProviderConfig builds a minimal config.json provider entry with the given keys.
+func makeV1ProviderConfig(keys ...schemas.Key) providerFileEntry {
+	return providerFileEntry{Keys: keys}
 }
 
 // makeV1ConfigData is a convenience constructor for compat tests.
 func makeV1ConfigData(
-	providers map[string]configstore.ProviderConfig,
-	mcp *schemas.MCPConfig,
+	providers map[string]providerFileEntry,
+	mcp *MCPFileConfig,
 	vks []tables.TableVirtualKey,
 ) *ConfigData {
+	providerConfigs, providerKeys := splitProviderEntries(providers)
 	cd := &ConfigData{
-		Version:   1,
-		Providers: providers,
-		MCP:       mcp,
+		Version:      1,
+		Providers:    providerConfigs,
+		ProviderKeys: providerKeys,
+		MCP:          mcp,
 	}
 	if len(vks) > 0 {
 		cd.Governance = &configstore.GovernanceConfig{VirtualKeys: vks}
@@ -22406,7 +23238,7 @@ func makeV1ConfigData(
 // both normalised to ["*"].
 func TestApplyV1Compat_ProviderKey_EmptyModels(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(
 				makeV1ProviderKey("nil-models", nil),
 				makeV1ProviderKey("empty-models", schemas.WhiteList{}),
@@ -22417,7 +23249,7 @@ func TestApplyV1Compat_ProviderKey_EmptyModels(t *testing.T) {
 
 	applyV1Compat(cd)
 
-	for _, key := range cd.Providers["openai"].Keys {
+	for _, key := range cd.ProviderKeys["openai"] {
 		require.Equal(t, schemas.WhiteList{"*"}, key.Models,
 			"key %q: expected models to be normalized to [\"*\"]", key.Name)
 	}
@@ -22427,7 +23259,7 @@ func TestApplyV1Compat_ProviderKey_EmptyModels(t *testing.T) {
 // ["*"] is left untouched.
 func TestApplyV1Compat_ProviderKey_WildcardUnchanged(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(makeV1ProviderKey("wildcard", schemas.WhiteList{"*"})),
 		},
 		nil, nil,
@@ -22435,7 +23267,7 @@ func TestApplyV1Compat_ProviderKey_WildcardUnchanged(t *testing.T) {
 
 	applyV1Compat(cd)
 
-	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["openai"].Keys[0].Models)
+	require.Equal(t, schemas.WhiteList{"*"}, cd.ProviderKeys["openai"][0].Models)
 }
 
 // TestApplyV1Compat_ProviderKey_ExplicitUnchanged ensures that a specific model
@@ -22443,7 +23275,7 @@ func TestApplyV1Compat_ProviderKey_WildcardUnchanged(t *testing.T) {
 func TestApplyV1Compat_ProviderKey_ExplicitUnchanged(t *testing.T) {
 	models := schemas.WhiteList{"gpt-4o", "gpt-4o-mini"}
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(makeV1ProviderKey("specific", models)),
 		},
 		nil, nil,
@@ -22451,7 +23283,7 @@ func TestApplyV1Compat_ProviderKey_ExplicitUnchanged(t *testing.T) {
 
 	applyV1Compat(cd)
 
-	require.Equal(t, models, cd.Providers["openai"].Keys[0].Models)
+	require.Equal(t, models, cd.ProviderKeys["openai"][0].Models)
 }
 
 // TestApplyV1Compat_VK_EmptyProviderConfigs verifies that a VK with no
@@ -22459,7 +23291,7 @@ func TestApplyV1Compat_ProviderKey_ExplicitUnchanged(t *testing.T) {
 // AllowedModels: ["*"] and AllowAllKeys: true.
 func TestApplyV1Compat_VK_EmptyProviderConfigs(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai":    makeV1ProviderConfig(makeV1ProviderKey("k1", nil)),
 			"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k2", nil)),
 		},
@@ -22494,7 +23326,7 @@ func TestApplyV1Compat_VK_EmptyProviderConfigs(t *testing.T) {
 // provider config entry with allowed_models: [] gets normalised to ["*"].
 func TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		nil,
 		[]tables.TableVirtualKey{
 			{
@@ -22517,7 +23349,7 @@ func TestApplyV1Compat_VK_ProviderConfig_EmptyAllowedModels(t *testing.T) {
 // with no keys and AllowAllKeys=false gets AllowAllKeys set to true.
 func TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		nil,
 		[]tables.TableVirtualKey{
 			{
@@ -22540,7 +23372,7 @@ func TestApplyV1Compat_VK_ProviderConfig_EmptyKeyIDs(t *testing.T) {
 // that already has AllowAllKeys=true is left unchanged.
 func TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		nil,
 		[]tables.TableVirtualKey{
 			{
@@ -22564,8 +23396,8 @@ func TestApplyV1Compat_VK_ProviderConfig_AlreadyAllowAll(t *testing.T) {
 // gets one entry per configured MCP client, each with ToolsToExecute: ["*"].
 func TestApplyV1Compat_VK_EmptyMCPConfigs(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
-		&schemas.MCPConfig{
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		&MCPFileConfig{
 			ClientConfigs: []*schemas.MCPClientConfig{
 				{Name: "tools-a"},
 				{Name: "tools-b"},
@@ -22601,8 +23433,8 @@ func TestApplyV1Compat_VK_NonEmptyMCPConfigs(t *testing.T) {
 		{MCPClientName: "tools-a", ToolsToExecute: schemas.WhiteList{"tool1"}},
 	}
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
-		&schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "tools-a"}, {Name: "tools-b"}}},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		&MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{Name: "tools-a"}, {Name: "tools-b"}}},
 		[]tables.TableVirtualKey{
 			{ID: "vk-1", Name: "Has MCP", MCPConfigs: existing},
 		},
@@ -22619,21 +23451,21 @@ func TestApplyV1Compat_VK_NonEmptyMCPConfigs(t *testing.T) {
 // governance section is absent.
 func TestApplyV1Compat_NoGovernance(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil)),
 		},
 		nil, nil,
 	)
 
 	require.NotPanics(t, func() { applyV1Compat(cd) })
-	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["openai"].Keys[0].Models)
+	require.Equal(t, schemas.WhiteList{"*"}, cd.ProviderKeys["openai"][0].Models)
 }
 
 // TestApplyV1Compat_NoMCP verifies that an empty mcp_configs on a VK is NOT
 // backfilled when the top-level mcp section is absent.
 func TestApplyV1Compat_NoMCP(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
+		map[string]providerFileEntry{"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", nil))},
 		nil, // no MCP config
 		[]tables.TableVirtualKey{
 			{ID: "vk-1", Name: "No MCP Section", MCPConfigs: []tables.TableVirtualKeyMCPConfig{}},
@@ -22650,7 +23482,7 @@ func TestApplyV1Compat_NoMCP(t *testing.T) {
 // single pass, even when some already have wildcard models.
 func TestApplyV1Compat_MultipleProviders(t *testing.T) {
 	cd := makeV1ConfigData(
-		map[string]configstore.ProviderConfig{
+		map[string]providerFileEntry{
 			"openai": makeV1ProviderConfig(
 				makeV1ProviderKey("empty", schemas.WhiteList{}),
 				makeV1ProviderKey("nil", nil),
@@ -22665,11 +23497,11 @@ func TestApplyV1Compat_MultipleProviders(t *testing.T) {
 
 	applyV1Compat(cd)
 
-	for _, k := range cd.Providers["openai"].Keys {
+	for _, k := range cd.ProviderKeys["openai"] {
 		require.Equal(t, schemas.WhiteList{"*"}, k.Models, "openai key %q should be [*]", k.Name)
 	}
-	require.Equal(t, schemas.WhiteList{"*"}, cd.Providers["anthropic"].Keys[0].Models, "wildcard unchanged")
-	require.Equal(t, schemas.WhiteList{"claude-3-5-sonnet-20241022"}, cd.Providers["anthropic"].Keys[1].Models, "specific unchanged")
+	require.Equal(t, schemas.WhiteList{"*"}, cd.ProviderKeys["anthropic"][0].Models, "wildcard unchanged")
+	require.Equal(t, schemas.WhiteList{"claude-3-5-sonnet-20241022"}, cd.ProviderKeys["anthropic"][1].Models, "specific unchanged")
 }
 
 // =============================================================================
@@ -22702,10 +23534,10 @@ func TestVersionField_DefaultBehavior(t *testing.T) {
 
 	cd := &ConfigData{
 		// Version intentionally omitted — defaults to 0, treated as v2
-		Providers: map[string]configstore.ProviderConfig{
-			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
-		},
 	}
+	cd.Providers, cd.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+	})
 	createConfigFile(t, tempDir, cd)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -22714,10 +23546,11 @@ func TestVersionField_DefaultBehavior(t *testing.T) {
 	defer config.Close(ctx)
 
 	// v2 semantics: empty models stays empty (deny all) — must NOT be promoted to ["*"]
-	openaiCfg, ok := config.Providers[schemas.OpenAI]
+	_, ok := providersOf(config)[schemas.OpenAI]
 	require.True(t, ok, "openai provider should be present")
-	require.Len(t, openaiCfg.Keys, 1)
-	require.Empty(t, openaiCfg.Keys[0].Models,
+	openaiKeys := config.GetProviderKeys(schemas.OpenAI)
+	require.Len(t, openaiKeys, 1)
+	require.Empty(t, openaiKeys[0].Models,
 		"v2 semantics: empty models must NOT be normalised to [\"*\"]")
 }
 
@@ -22729,12 +23562,10 @@ func TestVersionField_Version1_AppliesCompat(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	cd := &ConfigData{
-		Version: 1,
-		Providers: map[string]configstore.ProviderConfig{
-			"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
-		},
-	}
+	cd := &ConfigData{Version: 1}
+	cd.Providers, cd.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"openai": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+	})
 	createConfigFile(t, tempDir, cd)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -22742,10 +23573,11 @@ func TestVersionField_Version1_AppliesCompat(t *testing.T) {
 	require.NotNil(t, config)
 	defer config.Close(ctx)
 
-	openaiCfg, ok := config.Providers[schemas.OpenAI]
+	_, ok := providersOf(config)[schemas.OpenAI]
 	require.True(t, ok, "openai provider should be present")
-	require.Len(t, openaiCfg.Keys, 1)
-	require.Equal(t, schemas.WhiteList{"*"}, openaiCfg.Keys[0].Models,
+	openaiKeys := config.GetProviderKeys(schemas.OpenAI)
+	require.Len(t, openaiKeys, 1)
+	require.Equal(t, schemas.WhiteList{"*"}, openaiKeys[0].Models,
 		"v1 semantics: empty models must be normalised to [\"*\"]")
 }
 
@@ -22756,12 +23588,10 @@ func TestVersionField_Version2_NoCompat(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	cd := &ConfigData{
-		Version: 2,
-		Providers: map[string]configstore.ProviderConfig{
-			"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
-		},
-	}
+	cd := &ConfigData{Version: 2}
+	cd.Providers, cd.ProviderKeys = splitProviderEntries(map[string]providerFileEntry{
+		"anthropic": makeV1ProviderConfig(makeV1ProviderKey("k1", schemas.WhiteList{})),
+	})
 	createConfigFile(t, tempDir, cd)
 
 	config, err := LoadConfig(ctx, tempDir)
@@ -22769,10 +23599,11 @@ func TestVersionField_Version2_NoCompat(t *testing.T) {
 	require.NotNil(t, config)
 	defer config.Close(ctx)
 
-	anthropicCfg, ok := config.Providers[schemas.Anthropic]
+	_, ok := providersOf(config)[schemas.Anthropic]
 	require.True(t, ok, "anthropic provider should be present")
-	require.Len(t, anthropicCfg.Keys, 1)
-	require.Empty(t, anthropicCfg.Keys[0].Models,
+	anthropicKeys := config.GetProviderKeys(schemas.Anthropic)
+	require.Len(t, anthropicKeys, 1)
+	require.Empty(t, anthropicKeys[0].Models,
 		"v2 semantics: empty models must NOT be normalised")
 }
 
@@ -22837,14 +23668,21 @@ func testMemoryEndpoint(id, name string) *configstoreTables.TableWebhookEndpoint
 	}
 }
 
-func TestWebhookEndpointMemoryStore(t *testing.T) {
-	config := &Config{}
+// TestWebhookEndpointsServedFromTheLiveStore checks webhook endpoints are read from the live store
+// by ID and by name, follow a rename and a delete once refreshed, and come back as stored.
+func TestWebhookEndpointsServedFromTheLiveStore(t *testing.T) {
+	ctx := context.Background()
+	config := providerStore(t, nil, nil)
+	refresh := func(id string, remove bool) {
+		t.Helper()
+		require.NoError(t, config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id, Remove: remove}}))
+	}
 
-	// Empty store misses cleanly.
 	_, ok := config.WebhookEndpointByID("ep-1")
-	assert.False(t, ok)
+	assert.False(t, ok, "an empty store misses cleanly")
 
-	config.SetWebhookEndpoint(testMemoryEndpoint("ep-1", "first"))
+	require.NoError(t, config.ConfigStore.CreateWebhookEndpoint(ctx, testMemoryEndpoint("ep-1", "first")))
+	refresh("ep-1", false)
 	byID, ok := config.WebhookEndpointByID("ep-1")
 	require.True(t, ok)
 	assert.Equal(t, "first", byID.Name)
@@ -22852,32 +23690,31 @@ func TestWebhookEndpointMemoryStore(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "ep-1", byName.ID)
 
-	// A rename evicts the stale name-index entry.
-	config.SetWebhookEndpoint(testMemoryEndpoint("ep-1", "renamed"))
+	renamed := testMemoryEndpoint("ep-1", "renamed")
+	require.NoError(t, config.ConfigStore.UpdateWebhookEndpoint(ctx, renamed))
+	refresh("ep-1", false)
 	_, ok = config.WebhookEndpointByName("first")
-	assert.False(t, ok)
+	assert.False(t, ok, "a rename drops the old name")
 	_, ok = config.WebhookEndpointByName("renamed")
 	assert.True(t, ok)
 
-	// Mutating the caller's struct after Set must not affect the store.
-	external := testMemoryEndpoint("ep-2", "second")
-	config.SetWebhookEndpoint(external)
-	external.Name = "mutated"
-	stored, ok := config.WebhookEndpointByID("ep-2")
-	require.True(t, ok)
-	assert.Equal(t, "second", stored.Name)
-
-	config.RemoveWebhookEndpoint("ep-1")
+	require.NoError(t, config.ConfigStore.DeleteWebhookEndpoint(ctx, "ep-1"))
+	refresh("ep-1", true)
 	_, ok = config.WebhookEndpointByID("ep-1")
 	assert.False(t, ok)
 	_, ok = config.WebhookEndpointByName("renamed")
 	assert.False(t, ok)
+}
 
-	config.replaceWebhookEndpoints([]configstoreTables.TableWebhookEndpoint{*testMemoryEndpoint("ep-3", "third")})
-	_, ok = config.WebhookEndpointByID("ep-2")
-	assert.False(t, ok, "replace swaps the whole store")
-	_, ok = config.WebhookEndpointByName("third")
-	assert.True(t, ok)
+// loadWebhooksForTest runs the boot's webhook step, then loads a new live store from the config
+// store as the end of LoadConfig does, so reads see the final database state.
+func loadWebhooksForTest(t *testing.T, config *Config, configData *ConfigData) {
+	t.Helper()
+	ctx := context.Background()
+	loadWebhooksConfig(ctx, config, configData)
+	live := newLiveStoreForTest(t)
+	require.NoError(t, config.AttachLiveStore(live))
+	require.NoError(t, live.LoadAll(ctx, config.ConfigStore.DB()))
 }
 
 // parseConfigData round-trips raw config JSON through ConfigData.UnmarshalJSON
@@ -22912,7 +23749,7 @@ func TestLoadWebhooksConfigMerge(t *testing.T) {
 			{"name": "broken", "url": "http://93.184.216.34/hook", "events": ["async_job.completed"]}
 		]
 	}`)
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	names := webhookNamesInStore(t, store)
 	require.Len(t, names, 1)
@@ -22933,7 +23770,7 @@ func TestLoadWebhooksConfigMerge(t *testing.T) {
 			{"name": "from-file", "url": "https://93.184.216.34/hook2", "events": ["async_job.completed"]}
 		]
 	}`)
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	names = webhookNamesInStore(t, store)
 	require.Len(t, names, 2)
@@ -22959,7 +23796,7 @@ func TestLoadWebhooksConfigSourceOfTruthPrunes(t *testing.T) {
 		]
 	}`)
 	require.True(t, configData.isConfigJSONSourceOfTruth(), "fixture must opt into file-as-source-of-truth")
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	names := webhookNamesInStore(t, store)
 	require.Len(t, names, 1)
@@ -22968,7 +23805,7 @@ func TestLoadWebhooksConfigSourceOfTruthPrunes(t *testing.T) {
 	assert.False(t, ok, "rows absent from the file are pruned when it is the source of truth")
 
 	// Re-running with an unchanged file is a no-op (hash match).
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 	assert.Len(t, webhookNamesInStore(t, store), 1)
 }
 
@@ -22989,7 +23826,7 @@ func TestLoadWebhooksConfigInvalidDeclarationKeepsEndpoint(t *testing.T) {
 		]
 	}`)
 	require.True(t, configData.isConfigJSONSourceOfTruth())
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	names := webhookNamesInStore(t, store)
 	assert.Contains(t, names, "keep-me", "an invalid declaration must not prune its existing endpoint")
@@ -23005,7 +23842,7 @@ func TestLoadWebhooksConfigWithoutSection(t *testing.T) {
 	// Source-of-truth mode without a webhooks section must not prune —
 	// presence of the section is what authorizes it.
 	configData := parseConfigData(t, `{"source_of_truth": "config.json"}`)
-	loadWebhooksConfig(context.Background(), config, configData)
+	loadWebhooksForTest(t, config, configData)
 
 	assert.Len(t, webhookNamesInStore(t, store), 1)
 	_, ok := config.WebhookEndpointByName("db-only")
@@ -23377,6 +24214,43 @@ func TestApplyMCPGlobalSettingsToClientConfig_ToolSyncInterval(t *testing.T) {
 	}
 }
 
+// TestApplyMCPGlobalSettingsToClientConfig_MaxProtocolVersion: a declared mcp.max_protocol_version
+// is stored and handed to bifrost.Init; an absent or invalid one keeps the stored value, even when
+// the file is the source of truth, so an upgrade never lifts the migration's cap.
+func TestApplyMCPGlobalSettingsToClientConfig_MaxProtocolVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name, stored, file string
+		fileIsTruth        bool
+		want               string
+	}{
+		{"declared value is stored", "2025-06-18", "auto", false, "auto"},
+		{"declared value wins with file as source of truth", "2025-06-18", "2025-11-25", true, "2025-11-25"},
+		{"absent keeps the stored cap", "2025-06-18", "", false, "2025-06-18"},
+		{"absent keeps the stored cap with file as source of truth", "2025-06-18", "", true, "2025-06-18"},
+		{"invalid is ignored", "2025-06-18", "latest", true, "2025-06-18"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestLogger()
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			ctx := context.Background()
+			// mcp.server_max_protocol_version follows the same rules for /mcp.
+			clientConfig := &configstore.ClientConfig{MCPMaxProtocolVersion: tc.stored, MCPServerMaxProtocolVersion: tc.stored}
+			require.NoError(t, store.UpdateClientConfig(ctx, clientConfig))
+			cfg := &Config{ConfigStore: store, ClientConfig: clientConfig}
+			mcpCfg := &schemas.MCPConfig{MaxProtocolVersion: tc.file, ServerMaxProtocolVersion: tc.file}
+
+			applyMCPGlobalSettingsToClientConfig(ctx, cfg, mcpCfg, tc.fileIsTruth)
+
+			assert.Equal(t, tc.want, mcpCfg.MaxProtocolVersion, "value handed to bifrost.Init")
+			assert.Equal(t, tc.want, mcpCfg.ServerMaxProtocolVersion, "server value handed on")
+			persisted, err := store.GetClientConfig(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, persisted.MCPMaxProtocolVersion, "stored value")
+			assert.Equal(t, tc.want, persisted.MCPServerMaxProtocolVersion, "stored server value")
+		})
+	}
+}
+
 // TestCodeModeLimitsFromConfigFile pins how code mode limits flow from config.json:
 // mcp.tool_manager_config.code_mode_limits wins when set, client_config.mcp_code_mode_limits
 // survives a tool_manager_config that omits them, and bifrost.Init receives the result.
@@ -23471,7 +24345,7 @@ func TestLoadClientConfig_ToolManagerOnlyFileReconciles(t *testing.T) {
 	start := func(tm *schemas.MCPToolManagerConfig) *configstore.ClientConfig {
 		t.Helper()
 		cfg := &Config{ConfigStore: store}
-		require.NoError(t, loadClientConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
+		require.NoError(t, loadClientConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{MCPConfig: schemas.MCPConfig{ToolManagerConfig: tm}}}))
 		stored, err := store.GetClientConfig(ctx)
 		require.NoError(t, err)
 		return stored
@@ -23501,7 +24375,7 @@ func TestLoadClientConfig_InvalidAllowlistIsNeverPersisted(t *testing.T) {
 	ctx := context.Background()
 	start := func(store configstore.ConfigStore, tm *schemas.MCPToolManagerConfig) error {
 		t.Helper()
-		return loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}})
+		return loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &MCPFileConfig{MCPConfig: schemas.MCPConfig{ToolManagerConfig: tm}}})
 	}
 	invalid := &schemas.MCPToolManagerConfig{MaxAgentDepth: 5, OAuthPrivateAllowlist: []string{"169.254.169.254"}}
 
@@ -23571,7 +24445,7 @@ func TestOAuthPrivateAllowlistExplicitEmptyIsAFileChange(t *testing.T) {
 	ctx := context.Background()
 	start := func(tm *schemas.MCPToolManagerConfig) *configstore.ClientConfig {
 		t.Helper()
-		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &schemas.MCPConfig{ToolManagerConfig: tm}}))
+		require.NoError(t, loadClientConfig(ctx, &Config{ConfigStore: store}, &ConfigData{MCP: &MCPFileConfig{MCPConfig: schemas.MCPConfig{ToolManagerConfig: tm}}}))
 		stored, err := store.GetClientConfig(ctx)
 		require.NoError(t, err)
 		return stored
@@ -23647,27 +24521,6 @@ func TestUpdateClientConfig_PersistsExplicitZeroToolSyncInterval(t *testing.T) {
 	assert.Equal(t, 0, persisted.MCPToolSyncInterval)
 }
 
-// TestGetMCPClientBySlugSkipsDisabled pins that a disabled MCP client's endpoint slug does not
-// resolve, so /mcp/<slug> is not served (admit returns 403) for a disabled direct client.
-func TestGetMCPClientBySlugSkipsDisabled(t *testing.T) {
-	c := &Config{
-		MCPConfig: &schemas.MCPConfig{
-			ClientConfigs: []*schemas.MCPClientConfig{
-				{ID: "enabled-id", Name: "Enabled", EndpointSlug: "live-slug"},
-				{ID: "disabled-id", Name: "Disabled", EndpointSlug: "dead-slug", Disabled: true},
-			},
-		},
-	}
-
-	id, name, ok := c.GetMCPClientBySlug("live-slug")
-	require.True(t, ok)
-	require.Equal(t, "enabled-id", id)
-	require.Equal(t, "Enabled", name)
-
-	_, _, ok = c.GetMCPClientBySlug("dead-slug")
-	require.False(t, ok, "a disabled client's slug must not resolve")
-}
-
 // TestPinMCPClientImmutableFields_EndpointSlug: the stored slug always wins, and only a declared slug that
 // normalises to something else is reported as an ignored change.
 func TestPinMCPClientImmutableFields_EndpointSlug(t *testing.T) {
@@ -23716,14 +24569,121 @@ func TestMergeMCPConfig_EndpointSlugOnlyEditIsReconciled(t *testing.T) {
 	existing.ConfigHash, err = configstore.GenerateMCPClientHash(row)
 	require.NoError(t, err)
 	existing.EndpointSlug = "echo-http"
-	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{existing}
 
-	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
-	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared("renamed")}}}, store.mcpConfig)
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared("renamed")}}}, store.mcpClients)
 
 	require.Len(t, store.mcpClientConfigUpdates, 1, "an endpoint_slug-only edit must be reconciled, not skipped")
-	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
-	require.Equal(t, "echo-http", cfg.MCPConfig.ClientConfigs[0].EndpointSlug, "the stored slug still wins")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	require.Equal(t, "echo-http", cfg.boot.mcpClients[0].EndpointSlug, "the stored slug still wins")
+}
+
+// TestMergeMCPConfig_ServerTypeOnSlugEditIsReconciled: a config.json edit that only sets server_type_on_slug drifts the
+// hash, so the stored client takes the override and the runtime config carries it.
+func TestMergeMCPConfig_ServerTypeOnSlugEditIsReconciled(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	store := NewMockConfigStore()
+
+	declared := func(slug schemas.MCPServerTypeOnSlug) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:             "echo_http",
+			EndpointSlug:     "echo-http",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ToolsToExecute:   schemas.WhiteList{"*"},
+			IsCodeModeClient: true,
+			ServerTypeOnSlug: slug,
+		}
+	}
+	existing := declared(schemas.MCPServerTypeOnSlugInherit)
+	existing.ID = "mcp-existing"
+	row, err := mcpClientConfigToTable(existing)
+	require.NoError(t, err)
+	existing.ConfigHash, err = configstore.GenerateMCPClientHash(row)
+	require.NoError(t, err)
+	store.mcpConfig = &schemas.MCPConfig{}
+	store.mcpClients = []*schemas.MCPClientConfig{existing}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(schemas.MCPServerTypeOnSlugDisabled)}}}, store.mcpClients)
+
+	require.Len(t, store.mcpClientConfigUpdates, 1, "a server_type_on_slug-only edit must be reconciled, not skipped")
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, store.mcpClientConfigUpdates[0].Config.ServerTypeOnSlug, "the stored row takes the override")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	require.Equal(t, schemas.MCPServerTypeOnSlugDisabled, cfg.boot.mcpClients[0].ServerTypeOnSlug, "the runtime config carries the override")
+}
+
+// TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits: on the first boot after is_code_mode_client joined the hash,
+// an unchanged config.json code-mode client keeps its dashboard edits and only its stored hash moves to the
+// current form; a later config.json edit that only turns code mode off or on still applies.
+func TestMergeMCPConfig_PreCodeModeHashKeepsDBEdits(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	mock := NewMockConfigStore()
+
+	declared := func(codeMode bool) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:             "echo_http",
+			EndpointSlug:     "echo-http",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ToolsToExecute:   schemas.WhiteList{"*"},
+			IsCodeModeClient: codeMode,
+		}
+	}
+	// Stored by an older build: config.json's client hashed without is_code_mode_client, then edited in the UI.
+	legacyRow, err := mcpClientConfigToTable(declared(false))
+	require.NoError(t, err)
+	legacyHash, err := configstore.GenerateMCPClientHash(legacyRow)
+	require.NoError(t, err)
+	existing := declared(true)
+	existing.ID = "mcp-existing"
+	existing.ToolsToExecute = schemas.WhiteList{"echo"}
+	existing.ConfigHash = legacyHash
+	mock.mcpConfig = &schemas.MCPConfig{}
+	mock.mcpClients = []*schemas.MCPClientConfig{existing}
+
+	cfg := &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpClients)
+
+	currentRow, err := mcpClientConfigToTable(declared(true))
+	require.NoError(t, err)
+	currentHash, err := configstore.GenerateMCPClientHash(currentRow)
+	require.NoError(t, err)
+	require.Len(t, cfg.boot.mcpClients, 1)
+	assert.Equal(t, schemas.WhiteList{"echo"}, cfg.boot.mcpClients[0].ToolsToExecute, "the dashboard edit survives the upgrade")
+	assert.Empty(t, mock.mcpClientConfigUpdates, "no stored field is rewritten")
+	assert.Equal(t, [][3]string{{"mcp-existing", legacyHash, currentHash}}, mock.mcpClientConfigHashUpdates,
+		"only the stored hash moves, and only from the legacy value")
+
+	// Next boot, config.json turns code mode off: the upgraded hash makes that a detected edit.
+	upgraded := declared(true)
+	upgraded.ID = "mcp-existing"
+	upgraded.ToolsToExecute = schemas.WhiteList{"echo"}
+	upgraded.ConfigHash = currentHash
+	mock.mcpClients = []*schemas.MCPClientConfig{upgraded}
+	mock.mcpClientConfigUpdates = nil
+	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(false)}}}, mock.mcpClients)
+
+	require.Len(t, mock.mcpClientConfigUpdates, 1, "turning code mode off in config.json is a file edit")
+	assert.False(t, mock.mcpClientConfigUpdates[0].Config.IsCodeModeClient)
+	assert.Equal(t, schemas.WhiteList{"*"}, cfg.boot.mcpClients[0].ToolsToExecute, "the file version applies")
+
+	// A client stored without code mode hashes the same under both formulas, so config.json turning it on
+	// must apply rather than read as an old hash.
+	withoutCodeMode := declared(false)
+	withoutCodeMode.ID = "mcp-existing"
+	withoutCodeMode.ConfigHash = legacyHash
+	mock.mcpClients = []*schemas.MCPClientConfig{withoutCodeMode}
+	mock.mcpClientConfigUpdates = nil
+	cfg = &Config{ConfigStore: mock, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{declared(true)}}}, mock.mcpClients)
+
+	require.Len(t, mock.mcpClientConfigUpdates, 1, "turning code mode on in config.json is a file edit")
+	assert.True(t, mock.mcpClientConfigUpdates[0].Config.IsCodeModeClient)
+	assert.True(t, cfg.boot.mcpClients[0].IsCodeModeClient, "the file version applies")
 }
 
 // TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug: a config.json client with no endpoint_slug gets
@@ -23732,13 +24692,22 @@ func TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 
-	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
-		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+	fileMCP := func(tools schemas.WhiteList) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
 			Name:             "my_web_client",
 			ConnectionType:   schemas.MCPConnectionTypeHTTP,
 			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
 			ToolsToExecute:   tools,
 		}}}
+	}
+	// bySlug resolves an enabled boot client by its endpoint slug, as /mcp/<slug> does.
+	bySlug := func(cfg *Config, slug string) (name string, ok bool) {
+		for _, client := range cfg.boot.mcpClients {
+			if client != nil && client.EndpointSlug == slug && !client.Disabled {
+				return client.Name, true
+			}
+		}
+		return "", false
 	}
 
 	cases := []struct {
@@ -23753,16 +24722,471 @@ func TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := createTestSQLiteConfigStore(t, createTempDir(t))
 
-			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.WhiteList{"*"})})
-			_, _, ok := first.GetMCPClientBySlug("my-web-client")
+			_, ok := bySlug(first, "my-web-client")
 			require.True(t, ok, "first boot should serve the derived slug")
 
-			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
 			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.secondTools)})
-			_, name, ok := second.GetMCPClientBySlug("my-web-client")
+			name, ok := bySlug(second, "my-web-client")
 			require.True(t, ok, "reload dropped the stored endpoint_slug from the in-memory client")
 			require.Equal(t, "my_web_client", name)
+		})
+	}
+}
+
+// TestPinMCPClientImmutableFields_MaxProtocolVersion: a file entry that omits the cap keeps the stored one;
+// a declared cap wins.
+func TestPinMCPClientImmutableFields_MaxProtocolVersion(t *testing.T) {
+	for _, tc := range []struct{ name, stored, file, want string }{
+		{"omitted keeps the stored cap", "2025-06-18", "", "2025-06-18"},
+		{"declared wins", "2025-06-18", "2025-11-25", "2025-11-25"},
+		{"nothing stored", "", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &schemas.MCPClientConfig{Name: "docs", MaxProtocolVersion: tc.file}
+			pinMCPClientImmutableFields(file, &schemas.MCPClientConfig{Name: "docs", MaxProtocolVersion: tc.stored})
+			assert.Equal(t, tc.want, file.MaxProtocolVersion)
+		})
+	}
+}
+
+// TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion: a cap saved through the UI or API survives a
+// TestPinMCPClientImmutableFields_ExposeLists: a file entry that omits an allow-list keeps the stored one
+// (omitted would otherwise expose everything); a declared list wins.
+func TestPinMCPClientImmutableFields_ExposeLists(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		stored, file schemas.WhiteList
+		want         schemas.WhiteList
+	}{
+		{"omitted keeps an expose-none list", schemas.WhiteList{}, nil, schemas.WhiteList{}},
+		{"omitted keeps a restricted list", schemas.WhiteList{"review"}, nil, schemas.WhiteList{"review"}},
+		{"declared wins", schemas.WhiteList{"review"}, schemas.WhiteList{"*"}, schemas.WhiteList{"*"}},
+		{"nothing stored", nil, nil, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &schemas.MCPClientConfig{Name: "docs", PromptsToExpose: tc.file, ResourcesToExpose: tc.file}
+			pinMCPClientImmutableFields(file, &schemas.MCPClientConfig{Name: "docs", PromptsToExpose: tc.stored, ResourcesToExpose: tc.stored})
+			assert.Equal(t, tc.want, file.PromptsToExpose)
+			assert.Equal(t, tc.want, file.ResourcesToExpose)
+		})
+	}
+}
+
+// TestLoadMCPConfig_FileReloadKeepsSavedExposeLists: allow-lists saved through the UI or API survive an
+// unrelated edit to the client's file entry, in the stored row and the running config.
+func TestLoadMCPConfig_FileReloadKeepsSavedExposeLists(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(tools schemas.WhiteList) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:             "docs_server",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+			ToolsToExecute:   tools,
+		}}}
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"})})
+	require.Len(t, first.boot.mcpClients, 1)
+
+	id := first.boot.mcpClients[0].ID
+	row, err := store.GetMCPClientByID(ctx, id)
+	require.NoError(t, err)
+	row.PromptsToExpose, row.ResourcesToExpose = schemas.WhiteList{}, schemas.WhiteList{"file:///handbook.md"}
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, id, row))
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.WhiteList{"web_search"})})
+	require.Len(t, second.boot.mcpClients, 1)
+	assert.Equal(t, schemas.WhiteList{}, second.boot.mcpClients[0].PromptsToExpose, "running config keeps expose-none")
+	assert.Equal(t, schemas.WhiteList{"file:///handbook.md"}, second.boot.mcpClients[0].ResourcesToExpose)
+	stored, err := store.GetMCPClientByID(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, schemas.WhiteList{}, stored.PromptsToExpose, "stored row keeps expose-none")
+	assert.Equal(t, schemas.WhiteList{"file:///handbook.md"}, stored.ResourcesToExpose)
+}
+
+// staleMCPReadStore answers GetMCPConfig with what an instance read before another instance's insert committed.
+type staleMCPReadStore struct {
+	configstore.ConfigStore
+	stale *schemas.MCPConfig
+}
+
+func (s *staleMCPReadStore) GetMCPConfig(context.Context) (*schemas.MCPConfig, error) {
+	return s.stale, nil
+}
+
+// GetMCPClientConfigs answers with no clients: the stale read came before the other instance's insert.
+func (s *staleMCPReadStore) GetMCPClientConfigs(context.Context) ([]*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// TestLoadMCPConfig_PeerStoredFileClientFirst: nodes booting together all find no row for a config.json
+// client without client_id. The one whose insert loses must run the client under the stored row's ID and
+// slug, or the dashboard shows it as errored there and reconnect answers "not found".
+func TestLoadMCPConfig_PeerStoredFileClientFirst(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func() *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:             "docs_server",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+			ToolsToExecute:   schemas.WhiteList{"*"},
+		}}}
+	}
+	cases := []struct {
+		name  string
+		sot   string
+		stale *schemas.MCPConfig
+	}{
+		{name: "no MCP rows yet", stale: nil},
+		{name: "default mode", stale: &schemas.MCPConfig{}},
+		{name: "config.json source of truth", sot: SourceOfTruthConfigJSON, stale: &schemas.MCPConfig{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+			peer := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+			loadMCPConfig(ctx, peer, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP()})
+			stored, err := store.GetMCPClientByName(ctx, "docs_server")
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+
+			node := &Config{ConfigStore: &staleMCPReadStore{ConfigStore: store, stale: tc.stale}, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+			loadMCPConfig(ctx, node, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP()})
+			require.Len(t, node.boot.mcpClients, 1)
+			running := node.boot.mcpClients[0]
+			assert.Equal(t, stored.ClientID, running.ID, "the node must run the client under the stored ID")
+			assert.Equal(t, stored.EndpointSlug, running.EndpointSlug, "the node must serve the stored endpoint slug")
+		})
+	}
+}
+
+// TestMCPClientConfigToTable_RejectsInvalidExposeLists: a list the store would refuse is refused before it
+// reaches the runtime.
+func TestMCPClientConfigToTable_RejectsInvalidExposeLists(t *testing.T) {
+	for name, list := range map[string]schemas.WhiteList{
+		"wildcard with others": {"*", "review"},
+		"duplicate":            {"review", "Review"},
+		"bad regex":            {"regex:("},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := mcpClientConfigToTable(&schemas.MCPClientConfig{Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, PromptsToExpose: list})
+			assert.ErrorContains(t, err, "prompts_to_expose")
+			_, err = mcpClientConfigToTable(&schemas.MCPClientConfig{Name: "docs", ConnectionType: schemas.MCPConnectionTypeHTTP, ResourcesToExpose: list})
+			assert.ErrorContains(t, err, "resources_to_expose")
+		})
+	}
+}
+
+// re-sync of a file entry that omits it, in the stored row and the running config.
+func TestLoadMCPConfig_FileReloadKeepsSavedMaxProtocolVersion(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(tools schemas.WhiteList) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:             "legacy_server",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+			ToolsToExecute:   tools,
+		}}}
+	}
+	for _, tc := range []struct {
+		name        string
+		sot         string
+		secondTools schemas.WhiteList
+	}{
+		{name: "default mode, edited file", secondTools: schemas.WhiteList{"web_search"}},
+		{name: "config.json source of truth, unchanged file", sot: SourceOfTruthConfigJSON, secondTools: schemas.WhiteList{"*"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.WhiteList{"*"})})
+			require.Len(t, first.boot.mcpClients, 1)
+
+			// The cap an admin sets for this server in the UI.
+			id := first.boot.mcpClients[0].ID
+			row, err := store.GetMCPClientByID(ctx, id)
+			require.NoError(t, err)
+			row.MaxProtocolVersion = "2025-06-18"
+			require.NoError(t, store.UpdateMCPClientConfig(ctx, id, row))
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.secondTools)})
+			require.Len(t, second.boot.mcpClients, 1)
+			assert.Equal(t, "2025-06-18", second.boot.mcpClients[0].MaxProtocolVersion, "running config keeps the saved cap")
+			stored, err := store.GetMCPClientByID(ctx, id)
+			require.NoError(t, err)
+			assert.Equal(t, "2025-06-18", stored.MaxProtocolVersion, "stored row keeps the saved cap")
+		})
+	}
+}
+
+// TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth: an entry that omits
+// per_user_discovery keeps the stored value under split, where the file only
+// adds and edits, and turns it off under config.json, where the file is the
+// whole configuration. An explicit value wins in both.
+func TestLoadMCPConfig_PerUserDiscoveryFollowsSourceOfTruth(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	fileMCP := func(perUserDiscovery *bool) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:              "notes",
+			ConnectionType:    schemas.MCPConnectionTypeHTTP,
+			ConnectionString:  schemas.NewSecretVar("http://localhost:3001/mcp"),
+			AuthType:          schemas.MCPAuthTypePerUserHeaders,
+			PerUserHeaderKeys: []string{"x-api-key"},
+			ToolsToExecute:    schemas.WhiteList{"*"},
+			PerUserDiscovery:  perUserDiscovery,
+		}}}
+	}
+	on := func(flag *bool) bool { return flag != nil && *flag }
+
+	cases := []struct {
+		name   string
+		sot    string
+		second *bool
+		want   bool
+	}{
+		{name: "split, omitted keeps the stored value", sot: SourceOfTruthSplit, want: true},
+		{name: "split, explicit false turns it off", sot: SourceOfTruthSplit, second: schemas.Ptr(false), want: false},
+		{name: "config.json, omitted turns it off", sot: SourceOfTruthConfigJSON, want: false},
+		{name: "config.json, explicit true keeps it on", sot: SourceOfTruthConfigJSON, second: schemas.Ptr(true), want: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.Ptr(true))})
+			require.Len(t, first.boot.mcpClients, 1)
+			require.True(t, on(first.boot.mcpClients[0].PerUserDiscovery), "fixture check: the first boot turns the flag on")
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.second)})
+			require.Len(t, second.boot.mcpClients, 1)
+			runtime := second.boot.mcpClients[0]
+			assert.Equal(t, tc.want, on(runtime.PerUserDiscovery), "runtime config")
+			stored, err := store.GetMCPClientConfigByID(ctx, runtime.ID)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, on(stored.PerUserDiscovery), "stored config")
+		})
+	}
+}
+
+// TestLoadMCPConfig_ConfigJSONKeepsTheStoredIDOfANameMatch: under config.json
+// a declaration is matched to a stored client by name first. When it also
+// declares the ID of a different stored client (a copied block, say), the
+// runtime client must keep the ID of the client it was matched to: credentials
+// are keyed by client ID, so taking the other ID would send that client's
+// per-user credentials to this client's URL. The client whose ID was borrowed
+// is no longer declared, so it is pruned.
+func TestLoadMCPConfig_ConfigJSONKeepsTheStoredIDOfANameMatch(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	client := func(id, name, url string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID:               id,
+			Name:             name,
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar(url),
+			ToolsToExecute:   schemas.WhiteList{"*"},
+		}
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		client("id-alpha", "alpha", "http://alpha.example/mcp"),
+		client("id-beta", "beta", "http://beta.example/mcp"),
+	}}})
+	require.Len(t, first.boot.mcpClients, 2)
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: SourceOfTruthConfigJSON, MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
+		client("id-beta", "alpha", "http://alpha.example/mcp"),
+	}}})
+
+	require.Len(t, second.boot.mcpClients, 1)
+	runtime := second.boot.mcpClients[0]
+	assert.Equal(t, "id-alpha", runtime.ID, "the runtime client keeps the ID of the stored client it was matched to by name")
+	assert.Equal(t, "http://alpha.example/mcp", runtime.ConnectionString.GetValue())
+	_, err := store.GetMCPClientConfigByID(ctx, "id-alpha")
+	require.NoError(t, err)
+	_, err = store.GetMCPClientConfigByID(ctx, "id-beta")
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "beta is no longer declared, so it is pruned")
+}
+
+// TestMCPClientStartsPendingVerification: a client declared in config.json
+// starts pending its admin step exactly when its auth type has one and there is
+// an upstream to run it against.
+func TestMCPClientStartsPendingVerification(t *testing.T) {
+	for authType, want := range map[schemas.MCPAuthType]bool{
+		schemas.MCPAuthTypeOauth:          true,
+		schemas.MCPAuthTypePerUserOauth:   true,
+		schemas.MCPAuthTypePerUserHeaders: true,
+		schemas.MCPAuthTypeTokenExchange:  true,
+		schemas.MCPAuthTypeHeaders:        false,
+		schemas.MCPAuthTypeNone:           false,
+	} {
+		http := &schemas.MCPClientConfig{AuthType: authType, ConnectionType: schemas.MCPConnectionTypeHTTP}
+		assert.Equal(t, want, mcpClientStartsPendingVerification(http), authType)
+		openAPI := &schemas.MCPClientConfig{AuthType: authType, ConnectionType: schemas.MCPConnectionTypeOpenAPI}
+		assert.False(t, mcpClientStartsPendingVerification(openAPI), "%s over openapi has nothing upstream to verify", authType)
+	}
+}
+
+// TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep: a client config.json
+// adds starts pending its admin step when its auth type has one, and a reload
+// that edits the client keeps the stored record rather than resetting it from
+// the file.
+func TestLoadMCPConfig_NewClientsStartPendingTheirAdminStep(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(tools schemas.WhiteList) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{Name: "signin", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"), AuthType: schemas.MCPAuthTypeOauth, ToolsToExecute: tools},
+			{Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: tools},
+			{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), ToolsToExecute: tools},
+		}}
+	}
+	pending := func(cfg *Config) map[string]bool {
+		got := map[string]bool{}
+		for _, c := range cfg.boot.mcpClients {
+			got[c.Name] = c.PendingVerification
+		}
+		return got
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(schemas.WhiteList{"*"})})
+	assert.Equal(t, map[string]bool{"signin": true, "notes": true, "wiki": false}, pending(first))
+
+	var notesID string
+	for _, c := range first.boot.mcpClients {
+		if c.Name == "notes" {
+			notesID = c.ID
+		}
+	}
+	// Verified as verify-headers does it: the tools found, then the record.
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, notesID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}))
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, notesID))
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.WhiteList{"search"})})
+	assert.Equal(t, map[string]bool{"signin": true, "notes": false, "wiki": false}, pending(second), "the stored record wins over the edited file")
+	stored, err := store.GetMCPClientConfigByID(ctx, notesID)
+	require.NoError(t, err)
+	assert.False(t, stored.PendingVerification)
+}
+
+// TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile: config.json turning
+// per_user_discovery on or off has the same effects as the API, and the client
+// handed to the runtime carries what the store reset: on, a verified client
+// stays verified with no tools; off (here by omission, under source_of_truth
+// config.json), it goes back to its admin step. The flag on a client it cannot
+// apply to is refused, and the stored client is kept.
+func TestLoadMCPConfig_TurningPerUserDiscoveryOnOrOffInTheFile(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	fileMCP := func(perUser *bool) *MCPFileConfig {
+		return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{
+			{Name: "notes", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"), AuthType: schemas.MCPAuthTypePerUserHeaders, PerUserHeaderKeys: []string{"x-api-key"}, ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser},
+			{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser},
+		}}
+	}
+	runtimeClient := func(t *testing.T, cfg *Config, name string) *schemas.MCPClientConfig {
+		t.Helper()
+		for _, c := range cfg.boot.mcpClients {
+			if c.Name == name {
+				return c
+			}
+		}
+		t.Fatalf("client %q is not loaded", name)
+		return nil
+	}
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+	first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, first, &ConfigData{MCP: fileMCP(nil)})
+	notesID := runtimeClient(t, first, "notes").ID
+	// Verified as verify-headers does it, keeping the admin's sample headers.
+	tools := map[string]schemas.ChatTool{"notes-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "notes-search"}}}
+	require.NoError(t, store.UpdateMCPClientDiscovery(ctx, notesID, &schemas.MCPDiscovery{Tools: tools}))
+	require.NoError(t, store.ClearMCPClientPendingVerification(ctx, notesID))
+	require.NoError(t, store.UpsertMCPPerUserHeaderCredential(ctx, &tables.TableMCPPerUserHeaderCredential{MCPClientID: notesID, AuthMode: "admin", Status: "active", HeadersJSON: `{"x-api-key":"sample"}`}))
+
+	second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, second, &ConfigData{MCP: fileMCP(schemas.Ptr(true))})
+	notes := runtimeClient(t, second, "notes")
+	assert.Equal(t, schemas.Ptr(true), notes.PerUserDiscovery)
+	assert.False(t, notes.PendingVerification, "still verified")
+	assert.Nil(t, notes.DiscoveredTools, "the admin's tools are not kept")
+	admin, err := store.GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx, []string{notesID})
+	require.NoError(t, err)
+	assert.Empty(t, admin, "nor is the admin's credential")
+	wiki, err := store.GetMCPClientConfigByID(ctx, runtimeClient(t, second, "wiki").ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, schemas.Ptr(true), wiki.PerUserDiscovery, "refused for a shared auth type, and the stored client kept")
+
+	require.NoError(t, store.UpsertMCPPerUserDiscovery(ctx, &tables.TableMCPPerUserDiscovery{
+		MCPClientID: notesID, AuthMode: string(schemas.MCPAuthModeUser), UserID: schemas.Ptr("alice"), Tools: tools, DiscoveryHash: "hash-alice", DiscoveredAt: time.Now(),
+	}))
+	third := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, third, &ConfigData{MCP: fileMCP(nil), SourceOfTruth: SourceOfTruthConfigJSON})
+	notes = runtimeClient(t, third, "notes")
+	assert.Equal(t, schemas.Ptr(false), notes.PerUserDiscovery, "omitted under source_of_truth config.json: off")
+	assert.True(t, notes.PendingVerification, "back to its admin step")
+	discovery, err := store.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, "alice", notesID)
+	require.NoError(t, err)
+	assert.Nil(t, discovery, "callers' discoveries are deleted")
+}
+
+// TestLoadMCPConfig_RefusesPerUserDiscoveryOnTheStoredAuthType: config.json
+// cannot change an existing client's auth type, so per_user_discovery is held to
+// the stored one. A block that declares a per-user type for a stored shared
+// client, with the flag on, is refused before anything is written: the client
+// keeps its stored configuration and tools, rather than storing the flag where
+// it cannot apply and failing to load at every boot after.
+func TestLoadMCPConfig_RefusesPerUserDiscoveryOnTheStoredAuthType(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	for _, sot := range []string{SourceOfTruthSplit, SourceOfTruthConfigJSON} {
+		t.Run(sot, func(t *testing.T) {
+			wiki := func(authType schemas.MCPAuthType, perUser *bool) *MCPFileConfig {
+				client := &schemas.MCPClientConfig{Name: "wiki", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionString: schemas.NewSecretVar("http://localhost:3003/mcp"), AuthType: authType, ToolsToExecute: schemas.WhiteList{"*"}, PerUserDiscovery: perUser}
+				if authType == schemas.MCPAuthTypePerUserHeaders {
+					client.PerUserHeaderKeys = []string{"x-api-key"}
+				}
+				return &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}
+			}
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: sot, MCP: wiki(schemas.MCPAuthTypeHeaders, nil)})
+			require.Len(t, first.boot.mcpClients, 1)
+			wikiID := first.boot.mcpClients[0].ID
+			tools := map[string]schemas.ChatTool{"wiki-search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "wiki-search"}}}
+			require.NoError(t, store.UpdateMCPClientDiscovery(ctx, wikiID, &schemas.MCPDiscovery{Tools: tools}))
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: sot, MCP: wiki(schemas.MCPAuthTypePerUserHeaders, schemas.Ptr(true))})
+			require.Len(t, second.boot.mcpClients, 1)
+			runtime := second.boot.mcpClients[0]
+			assert.Equal(t, schemas.MCPAuthTypeHeaders, runtime.AuthType)
+			assert.NotEqual(t, schemas.Ptr(true), runtime.PerUserDiscovery, "the runtime is handed the stored client")
+			stored, err := store.GetMCPClientConfigByID(ctx, wikiID)
+			require.NoError(t, err)
+			assert.NotEqual(t, schemas.Ptr(true), stored.PerUserDiscovery, "the flag is not stored on a shared client")
+			assert.Contains(t, stored.DiscoveredTools, "wiki-search", "and nothing turning it on deletes is deleted")
 		})
 	}
 }
@@ -23908,6 +25332,141 @@ func TestReconcileVirtualMCPsConfig_DedupeNameAndID(t *testing.T) {
 	require.Equal(t, "Dup", vmcps[0].Name)
 }
 
+// TestReconcileVirtualMCPsConfig_PartialApplyAndRelink covers a declaration naming an MCP client
+// that is not registered yet: the Virtual MCP is still created with the specs that resolve, the
+// missing client is recorded as a config issue, and registering the client later links it in and
+// clears the issue without a restart.
+func TestReconcileVirtualMCPsConfig_PartialApplyAndRelink(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-github", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+
+	fileVMCPs := []schemas.VirtualMCPConfig{{
+		Name: "Team Tools",
+		Tools: []schemas.MCPToolSpecConfig{
+			{MCPClientName: "github", ToolNames: []string{"*"}},
+			{MCPClientName: "jira", ToolNames: []string{"create_issue"}},
+		},
+	}}
+	cfg := &Config{ConfigStore: store}
+	cfg.rememberFileVirtualMCPs(fileVMCPs)
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+
+	created, err := store.GetVirtualMCPByName(ctx, "Team Tools")
+	require.NoError(t, err)
+	require.Len(t, created.ParsedTools, 1, "the resolved spec is applied")
+	assert.Equal(t, "client-github", created.ParsedTools[0].MCPClientID)
+	require.NotNil(t, created.ConfigIssues, "the missing client is recorded")
+	assert.Contains(t, *created.ConfigIssues, `"jira"`)
+
+	// A dashboard save neither clears nor rewrites the issues.
+	created.Description = schemas.Ptr("edited")
+	created.ConfigIssues = nil
+	require.NoError(t, store.UpdateVirtualMCP(ctx, created))
+	afterEdit, err := store.GetVirtualMCPByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, afterEdit.ConfigIssues)
+
+	// A client the declarations don't name changes nothing.
+	ids, err := cfg.ReconcileFileVirtualMCPsForClient(ctx, "slack")
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	ids, err = cfg.ReconcileFileVirtualMCPsForClient(ctx, "jira")
+	require.NoError(t, err)
+	assert.Equal(t, []uint{created.ID}, ids)
+
+	linked, err := store.GetVirtualMCPByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.Len(t, linked.ParsedTools, 2, "the newly registered client is linked in")
+	assert.Nil(t, linked.ConfigIssues, "the issue clears once the declaration applies in full")
+
+	// The next boot finds a matching hash and leaves the row alone.
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+	rebooted, err := store.GetVirtualMCPByID(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, linked.ConfigHash, rebooted.ConfigHash)
+	assert.Nil(t, rebooted.ConfigIssues)
+}
+
+// TestReconcileFileVirtualMCPsForClient_ReRegisteredClient covers a client deleted and registered
+// again under the same name: the Virtual MCP moves to the new client_id straight away, instead of
+// pointing at the deleted one until the next restart.
+func TestReconcileFileVirtualMCPsForClient_ReRegisteredClient(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-old", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	fileVMCPs := []schemas.VirtualMCPConfig{{
+		Name:  "Jira Tools",
+		Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}},
+	}}
+	cfg := &Config{ConfigStore: store}
+	cfg.rememberFileVirtualMCPs(fileVMCPs)
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+
+	require.NoError(t, store.DeleteMCPClientConfig(ctx, "client-old"))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-new", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	ids, err := cfg.ReconcileFileVirtualMCPsForClient(ctx, "jira")
+	require.NoError(t, err)
+	require.Len(t, ids, 1)
+
+	vmcp, err := store.GetVirtualMCPByID(ctx, ids[0])
+	require.NoError(t, err)
+	require.Len(t, vmcp.ParsedTools, 1)
+	assert.Equal(t, "client-new", vmcp.ParsedTools[0].MCPClientID)
+}
+
+// TestReconcileVirtualMCPsConfig_HashMatchClearsStaleIssues verifies issues are kept accurate even
+// when the declaration's hash matches the stored row and nothing else is written.
+func TestReconcileVirtualMCPsConfig_HashMatchClearsStaleIssues(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-1", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	fileVMCPs := []schemas.VirtualMCPConfig{{
+		Name:  "Tools",
+		Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "github", ToolNames: []string{"*"}}},
+	}}
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+	vmcp, err := store.GetVirtualMCPByName(ctx, "Tools")
+	require.NoError(t, err)
+	require.NoError(t, store.SetVirtualMCPConfigIssues(ctx, vmcp.ID, schemas.Ptr("stale")))
+
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+	after, err := store.GetVirtualMCPByID(ctx, vmcp.ID)
+	require.NoError(t, err)
+	assert.Equal(t, vmcp.ConfigHash, after.ConfigHash)
+	assert.Nil(t, after.ConfigIssues)
+}
+
+// TestReconcileVirtualMCPsConfig_MalformedSpecStillSkips verifies a tool spec naming no client at
+// all is still a malformed declaration that skips the whole entry, unlike a client that is merely
+// not registered yet.
+func TestReconcileVirtualMCPsConfig_MalformedSpecStillSkips(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, []schemas.VirtualMCPConfig{{
+		Name:  "Broken",
+		Tools: []schemas.MCPToolSpecConfig{{ToolNames: []string{"*"}}},
+	}}, false))
+	_, err := store.GetVirtualMCPByName(ctx, "Broken")
+	require.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
 // lockableLogStore records the locker a ClickHouse-backed store would receive.
 type lockableLogStore struct {
 	logstore.LogStore
@@ -23932,51 +25491,45 @@ func TestAttachWarpHistoryLock(t *testing.T) {
 	require.Nil(t, bare.locker)
 }
 
-// TestGetAllKeys_PreservesEnabled pins that /api/keys reports each key's enabled
-// flag. GetAllKeys builds its keys field by field, and once dropped Enabled, so a
-// disabled key read as enabled to every client of the endpoint.
-func TestGetAllKeys_PreservesEnabled(t *testing.T) {
-	initTestLogger()
-	cfg := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			"typesafe": {
-				Keys: []schemas.Key{
-					{ID: "disabled-key", Name: "disabled", Value: *schemas.NewSecretVar("sk-disabled"), Enabled: new(false)},
-					{ID: "enabled-key", Name: "enabled", Value: *schemas.NewSecretVar("sk-enabled"), Enabled: new(true)},
-					{ID: "unset-key", Name: "unset", Value: *schemas.NewSecretVar("sk-unset")},
-				},
-			},
-		},
+// TestReconcileProviderKeys_AnthropicWorkloadIdentity pins that an unchanged config.json key keeps
+// its dashboard edits when the env-backed identity token behind it rotates, on both the stored-hash
+// and the legacy no-hash paths, while an edit to the block still replaces the stored key.
+func TestReconcileProviderKeys_AnthropicWorkloadIdentity(t *testing.T) {
+	SetLogger(&testLogger{})
+	t.Setenv("RECONCILE_TEST_ANTHROPIC_TOKEN", "jwt-v1")
+	fileKey := func(workspace string) schemas.Key {
+		wif := &schemas.AnthropicWorkloadIdentityConfig{
+			FederationRuleID: *schemas.NewSecretVar("fdrl_01abc"),
+			OrganizationID:   *schemas.NewSecretVar("org-uuid"),
+			ServiceAccountID: *schemas.NewSecretVar("svac_01def"),
+			IdentitySource:   &schemas.IdentitySource{Type: schemas.IdentitySourceInline, Token: schemas.NewSecretVar("env.RECONCILE_TEST_ANTHROPIC_TOKEN")},
+		}
+		if workspace != "" {
+			wif.WorkspaceID = schemas.NewSecretVar(workspace)
+		}
+		return schemas.Key{Name: "wif", Weight: 1, AnthropicKeyConfig: &schemas.AnthropicKeyConfig{WorkloadIdentity: wif}}
 	}
+	syncedHash, err := configstore.GenerateKeyHash(fileKey(""))
+	require.NoError(t, err)
+	dbKey := fileKey("")
+	dbKey.ID = "key-1"
+	dbKey.ConfigHash = syncedHash
+	t.Setenv("RECONCILE_TEST_ANTHROPIC_TOKEN", "jwt-v2")
 
-	keys, err := cfg.GetAllKeys()
-	if err != nil {
-		t.Fatalf("GetAllKeys: %v", err)
-	}
-	byID := make(map[string]configstoreTables.TableKey, len(keys))
-	for _, key := range keys {
-		byID[key.KeyID] = key
-	}
+	merged := reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("")}, []schemas.Key{dbKey})
+	require.Len(t, merged, 1)
+	require.Equal(t, syncedHash, merged[0].ConfigHash, "a rotated identity token must not read as a config.json edit")
 
-	if got := byID["disabled-key"].Enabled; got == nil || *got {
-		t.Fatalf("disabled key: expected Enabled=false, got %v", got)
-	}
-	if got := byID["enabled-key"].Enabled; got == nil || !*got {
-		t.Fatalf("enabled key: expected Enabled=true, got %v", got)
-	}
-	// Unset stays unset: the field is omitted and clients read it as enabled.
-	if got := byID["unset-key"].Enabled; got != nil {
-		t.Fatalf("unset key: expected Enabled=nil, got %v", *got)
-	}
+	legacy := dbKey
+	legacy.ConfigHash = ""
+	merged = reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("")}, []schemas.Key{legacy})
+	require.Len(t, merged, 1)
+	require.Empty(t, merged[0].ConfigHash, "a legacy key matching the file keeps the stored version")
 
-	// The flag is what clients act on, so pin it on the wire too.
-	body, err := json.Marshal(byID["disabled-key"])
-	if err != nil {
-		t.Fatalf("marshal disabled key: %v", err)
-	}
-	if !strings.Contains(string(body), `"enabled":false`) {
-		t.Fatalf("disabled key JSON should carry \"enabled\":false, got %s", body)
-	}
+	merged = reconcileProviderKeys(schemas.Anthropic, []schemas.Key{fileKey("wrkspc_01ghi")}, []schemas.Key{dbKey})
+	require.Len(t, merged, 1)
+	require.NotNil(t, merged[0].AnthropicKeyConfig.WorkloadIdentity.WorkspaceID, "an edited block must replace the stored key")
+	require.NotEqual(t, syncedHash, merged[0].ConfigHash)
 }
 
 // Warp ships behind a feature flag that is on for OSS and off for enterprise,
@@ -23993,14 +25546,14 @@ func TestRegisterFeatureFlags_WarpDefaultsPerBuildAndIsIdempotent(t *testing.T) 
 	require.False(t, def.DefaultFor(true), "Warp is off by default in enterprise until an operator enables it")
 	require.False(t, def.EnterpriseOnly, "enterprise can still turn it on")
 
-	oss, err := featureflags.New(featureflags.Config{})
+	oss, err := featureflags.New(newLiveStoreForTest(t), featureflags.Config{})
 	require.NoError(t, err)
 	require.True(t, oss.IsEnabled(FeatureFlagWarp))
 	_, err = oss.Set(context.Background(), FeatureFlagWarp, false)
 	require.NoError(t, err)
 	require.False(t, oss.IsEnabled(FeatureFlagWarp), "an OSS operator can still turn Warp off")
 
-	enterprise, err := featureflags.New(featureflags.Config{IsEnterprise: true})
+	enterprise, err := featureflags.New(newLiveStoreForTest(t), featureflags.Config{IsEnterprise: true})
 	require.NoError(t, err)
 	require.False(t, enterprise.IsEnabled(FeatureFlagWarp))
 	status, err := enterprise.Status(FeatureFlagWarp)
@@ -24009,6 +25562,28 @@ func TestRegisterFeatureFlags_WarpDefaultsPerBuildAndIsIdempotent(t *testing.T) 
 	_, err = enterprise.Set(context.Background(), FeatureFlagWarp, true)
 	require.NoError(t, err)
 	require.True(t, enterprise.IsEnabled(FeatureFlagWarp))
+}
+
+// The phrase suggestions dashboard ships behind a flag that is off in both
+// builds, so a few deployments can try the suggestion APIs first; either build
+// can turn it on.
+func TestRegisterFeatureFlags_PhraseSuggestionsOffByDefault(t *testing.T) {
+	require.NoError(t, registerFeatureFlags(context.Background()))
+
+	def, ok := featureflags.LookupDef(FeatureFlagPhraseSuggestions)
+	require.True(t, ok, "phrase-suggestions flag must be registered")
+	require.False(t, def.DefaultFor(false), "off by default in OSS")
+	require.False(t, def.DefaultFor(true), "off by default in enterprise")
+	require.False(t, def.EnterpriseOnly, "OSS can turn it on")
+
+	for _, isEnterprise := range []bool{false, true} {
+		store, err := featureflags.New(newLiveStoreForTest(t), featureflags.Config{IsEnterprise: isEnterprise})
+		require.NoError(t, err)
+		require.False(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v", isEnterprise)
+		_, err = store.Set(context.Background(), FeatureFlagPhraseSuggestions, true)
+		require.NoError(t, err)
+		require.True(t, store.IsEnabled(FeatureFlagPhraseSuggestions), "enterprise=%v: an operator can turn it on", isEnterprise)
+	}
 }
 
 // governanceWithRoutingFallbacks decodes routing rules the way config.json is read, so each
@@ -24029,12 +25604,12 @@ func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
 	ctx := context.Background()
 	store := createTestSQLiteConfigStore(t, t.TempDir())
 	// Key names are unique across providers; the lookup still checks the name belongs to the fallback's provider.
-	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{Keys: []schemas.Key{
+	require.NoError(t, addProviderWithKeys(ctx, store, schemas.Anthropic, configstore.ProviderConfig{}, []schemas.Key{
 		{ID: "k-anthropic-prod", Name: "Anthropic Prod", Value: *schemas.NewSecretVar("sk-a"), Models: schemas.WhiteList{"*"}, Weight: 1},
-	}}))
-	require.NoError(t, store.AddProvider(ctx, schemas.Vertex, configstore.ProviderConfig{Keys: []schemas.Key{
+	}))
+	require.NoError(t, addProviderWithKeys(ctx, store, schemas.Vertex, configstore.ProviderConfig{}, []schemas.Key{
 		{ID: "k-vertex-prod", Name: "Vertex Prod", Value: *schemas.NewSecretVar("sk-v"), Models: schemas.WhiteList{"*"}, Weight: 1},
-	}}))
+	}))
 	config := &Config{ConfigStore: store}
 
 	t.Run("resolves names per provider and leaves other entries alone", func(t *testing.T) {
@@ -24096,6 +25671,245 @@ func TestResolveGovernanceKeyReferences_RoutingFallbacks(t *testing.T) {
 	})
 }
 
+// configRoutingRule builds a config.json routing rule with one target. Every call returns fresh
+// slices, so a rule reused across simulated boots never shares state the merge wrote into.
+func configRoutingRule(id, name string, priority int, model string) tables.TableRoutingRule {
+	return tables.TableRoutingRule{
+		ID:            id,
+		Name:          name,
+		CelExpression: "true",
+		Scope:         "global",
+		Priority:      priority,
+		Targets:       []tables.TableRoutingTarget{{Provider: schemas.Ptr("openai"), Model: schemas.Ptr(model), Weight: 1}},
+	}
+}
+
+// bootRoutingRules runs the startup governance merge, as loadGovernanceConfig does, for a
+// config.json that declares only the given routing rules, and returns the stored rules by ID.
+func bootRoutingRules(t *testing.T, store configstore.ConfigStore, sourceOfTruth string, rules ...tables.TableRoutingRule) map[string]tables.TableRoutingRule {
+	t.Helper()
+	ctx := context.Background()
+	governanceConfig, err := store.GetGovernanceConfig(ctx)
+	require.NoError(t, err)
+	if governanceConfig == nil {
+		governanceConfig = &configstore.GovernanceConfig{}
+	}
+	config := &Config{ConfigStore: store, GovernanceConfig: governanceConfig}
+	configData := &ConfigData{
+		SourceOfTruth: sourceOfTruth,
+		Governance:    &configstore.GovernanceConfig{RoutingRules: append([]tables.TableRoutingRule{}, rules...)},
+	}
+	mergeGovernanceConfig(ctx, config, configData, governanceConfig)
+	return storedRoutingRules(t, store)
+}
+
+func storedRoutingRules(t *testing.T, store configstore.ConfigStore) map[string]tables.TableRoutingRule {
+	t.Helper()
+	stored, err := store.GetRoutingRules(context.Background())
+	require.NoError(t, err)
+	byID := make(map[string]tables.TableRoutingRule, len(stored))
+	for _, rule := range stored {
+		byID[rule.ID] = rule
+	}
+	return byID
+}
+
+func storedRoutingRuleByName(t *testing.T, rules map[string]tables.TableRoutingRule, name string) tables.TableRoutingRule {
+	t.Helper()
+	var found []tables.TableRoutingRule
+	for _, rule := range rules {
+		if rule.Name == name {
+			found = append(found, rule)
+		}
+	}
+	require.Len(t, found, 1, "expected exactly one stored rule named %q", name)
+	return found[0]
+}
+
+func routingRuleModel(rule tables.TableRoutingRule) string {
+	if len(rule.Targets) == 0 || rule.Targets[0].Model == nil {
+		return ""
+	}
+	return *rule.Targets[0].Model
+}
+
+// Changing a rule's id in split mode leaves the old row in place at the same priority. That
+// used to fail the whole governance sync (and stop startup with "routing rule with priority 7
+// already exists for scope 'global'"); now only the conflicting rule is skipped.
+func TestMergeGovernanceConfig_RoutingRuleIDChangeSkipsPriorityConflict(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	bootRoutingRules(t, store, "", configRoutingRule("rule-a", "primary", 7, "gpt-4o"))
+
+	rules := bootRoutingRules(t, store, "",
+		configRoutingRule("rule-b", "primary-renamed", 7, "gpt-4.1"),
+		configRoutingRule("rule-c", "secondary", 8, "gpt-4o-mini"),
+	)
+
+	require.Contains(t, rules, "rule-a", "the stored rule keeps its priority")
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["rule-a"]))
+	assert.NotContains(t, rules, "rule-b", "the rule whose priority is taken is skipped")
+	require.Contains(t, rules, "rule-c", "the rest of the sync still applies")
+	assert.Len(t, rules, 2)
+}
+
+// A rule without an id is inserted once and then matched by name on every later boot: same
+// ID, same config hash, no rewrite. Editing it updates the row in place.
+func TestMergeGovernanceConfig_IDLessRoutingRuleIsStableAcrossBoots(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	rules := bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	first := storedRoutingRuleByName(t, rules, "primary")
+	require.NotEmpty(t, first.ID, "a rule without an id gets one")
+	wantHash, err := configstore.GenerateRoutingRuleHash(configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.NoError(t, err)
+	assert.Equal(t, wantHash, first.ConfigHash, "the hash is taken over the rule as written, without the generated ID")
+
+	rules = bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.Len(t, rules, 1)
+	second := rules[first.ID]
+	assert.Equal(t, first.ConfigHash, second.ConfigHash)
+	assert.True(t, first.UpdatedAt.Equal(second.UpdatedAt), "an unchanged rule is not rewritten")
+
+	rules = bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1, "editing a rule without an id must not add a second row")
+	assert.Equal(t, "gpt-4.1", routingRuleModel(rules[first.ID]))
+}
+
+// The match key is (name, scope, scope_id): the same name in another scope is another rule, and
+// a rule created outside config.json is adopted when the key matches.
+func TestMergeGovernanceConfig_IDLessRoutingRuleMatchesByNameAndScope(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.CreateTeam(ctx, &tables.TableTeam{ID: "team-1", Name: "Team 1"}))
+
+	teamRule := configRoutingRule("ui-team-rule", "shared", 1, "gpt-4o")
+	teamRule.Scope = "team"
+	teamRule.ScopeID = schemas.Ptr("team-1")
+	require.NoError(t, store.SyncRoutingRules(ctx, []tables.TableRoutingRule{
+		configRoutingRule("ui-global-rule", "shared", 1, "gpt-4o"),
+		teamRule,
+	}, nil))
+
+	fileTeamRule := configRoutingRule("", "shared", 1, "gpt-4.1")
+	fileTeamRule.Scope = "team"
+	fileTeamRule.ScopeID = schemas.Ptr("team-1")
+	rules := bootRoutingRules(t, store, "", fileTeamRule)
+
+	require.Len(t, rules, 2)
+	assert.Equal(t, "gpt-4.1", routingRuleModel(rules["ui-team-rule"]), "the team rule with the same name is updated")
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["ui-global-rule"]), "the global rule with the same name is untouched")
+}
+
+// A rule without an id is skipped when its name does not identify one rule: two stored global
+// rules share it (NULL scope_id is not covered by the unique index), or the file repeats it.
+func TestMergeGovernanceConfig_IDLessRoutingRuleSkippedWhenNameIsAmbiguous(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.SyncRoutingRules(ctx, []tables.TableRoutingRule{
+		configRoutingRule("dup-1", "dup", 1, "gpt-4o"),
+		configRoutingRule("dup-2", "dup", 2, "gpt-4o"),
+	}, nil))
+
+	rules := bootRoutingRules(t, store, "",
+		configRoutingRule("", "dup", 3, "gpt-4.1"),
+		configRoutingRule("", "repeated", 4, "gpt-4o"),
+		configRoutingRule("", "repeated", 5, "gpt-4.1"),
+	)
+
+	require.Len(t, rules, 3)
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["dup-1"]))
+	assert.Equal(t, "gpt-4o", routingRuleModel(rules["dup-2"]))
+	repeated := storedRoutingRuleByName(t, rules, "repeated")
+	assert.Equal(t, 4, repeated.Priority, "the first declaration of a repeated name wins")
+}
+
+// Priority conflicts among the rules config.json writes: the first declared wins. Rules that
+// swap priorities do not conflict, because the check runs on the state after the sync.
+func TestMergeGovernanceConfig_RoutingRulePriorityConflictsWithinFile(t *testing.T) {
+	initTestLogger()
+
+	t.Run("same priority keeps the first rule", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		rules := bootRoutingRules(t, store, "",
+			configRoutingRule("first", "first", 1, "gpt-4o"),
+			configRoutingRule("second", "second", 1, "gpt-4o"),
+		)
+		require.Len(t, rules, 1)
+		assert.Contains(t, rules, "first")
+	})
+
+	t.Run("swapped priorities both apply", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		bootRoutingRules(t, store, "",
+			configRoutingRule("x", "x", 1, "gpt-4o"),
+			configRoutingRule("y", "y", 2, "gpt-4o"),
+		)
+		rules := bootRoutingRules(t, store, "",
+			configRoutingRule("x", "x", 2, "gpt-4o"),
+			configRoutingRule("y", "y", 1, "gpt-4o"),
+		)
+		assert.Equal(t, 2, rules["x"].Priority)
+		assert.Equal(t, 1, rules["y"].Priority)
+	})
+
+	t.Run("skipped update keeps the stored version", func(t *testing.T) {
+		store := createTestSQLiteConfigStore(t, t.TempDir())
+		bootRoutingRules(t, store, "", configRoutingRule("x", "x", 1, "gpt-4o"))
+		require.NoError(t, store.SyncRoutingRules(context.Background(), []tables.TableRoutingRule{
+			configRoutingRule("ui-rule", "ui", 2, "gpt-4o"),
+		}, nil))
+		rules := bootRoutingRules(t, store, "", configRoutingRule("x", "x", 2, "gpt-4.1"))
+		require.Len(t, rules, 2)
+		assert.Equal(t, 1, rules["x"].Priority)
+		assert.Equal(t, "gpt-4o", routingRuleModel(rules["x"]))
+	})
+}
+
+// With source_of_truth=config.json the rule with the old id is pruned in the same transaction,
+// so changing an id needs no skip, and a rule without an id is never pruned as undeclared.
+func TestMergeGovernanceConfig_ConfigJSONModeRoutingRuleIDs(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("rule-a", "primary", 7, "gpt-4o"))
+	rules := bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("rule-b", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b")
+
+	rules = bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b", "a rule without an id adopts the stored rule with its name")
+
+	rules = bootRoutingRules(t, store, SourceOfTruthConfigJSON, configRoutingRule("", "primary", 7, "gpt-4.1"))
+	require.Len(t, rules, 1)
+	assert.Contains(t, rules, "rule-b")
+}
+
+// A row an earlier release stored with an empty primary key (a rule without an id, before ids
+// were resolved) is matched by name and, since its hash still matches, left alone.
+func TestMergeGovernanceConfig_LegacyEmptyIDRoutingRuleIsUntouched(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+
+	legacy := configRoutingRule("", "primary", 7, "gpt-4o")
+	hash, err := configstore.GenerateRoutingRuleHash(legacy)
+	require.NoError(t, err)
+	legacy.ConfigHash = hash
+	require.NoError(t, store.SyncRoutingRules(context.Background(), []tables.TableRoutingRule{legacy}, nil))
+	before := storedRoutingRules(t, store)
+	require.Contains(t, before, "")
+
+	rules := bootRoutingRules(t, store, "", configRoutingRule("", "primary", 7, "gpt-4o"))
+	require.Len(t, rules, 1)
+	require.Contains(t, rules, "")
+	assert.True(t, before[""].UpdatedAt.Equal(rules[""].UpdatedAt), "the legacy row is not rewritten")
+}
+
 // Reconciliation writes carry metadata_json forward inside UpdateClientConfig's transaction, so UI
 // flags survive a restart that re-syncs the client section without any restore step afterwards.
 func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
@@ -24103,7 +25917,7 @@ func TestLoadConfig_ClientConfigSyncPreservesClientMetadata(t *testing.T) {
 	tempDir := createTempDir(t)
 	ctx := context.Background()
 
-	configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+	configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 		"openai": makeProviderConfigWithNetwork("openai-key-1", "sk-test-123", "https://api.openai.com"),
 	}, tempDir)
 	configData.Client = &configstore.ClientConfig{LogRetentionDays: 30}
@@ -24151,7 +25965,7 @@ func TestLoadConfig_DisableOnboarding(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("BIFROST_DISABLE_ONBOARDING", tc.env)
 			tempDir := createTempDir(t)
-			configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{}, tempDir)
+			configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{}, tempDir)
 			configData.DisableOnboarding = tc.file
 			createConfigFile(t, tempDir, configData)
 
@@ -24201,15 +26015,16 @@ func TestValidateCustomProviderUpdate_ConvertsReservedName(t *testing.T) {
 // time it would fail open and the provider would silently serve requests without the
 // web search tool the operator configured.
 func TestValidateInjectedTools(t *testing.T) {
-	clients := map[string]string{"id-1": "tavily", "id-2": "fetcher"}
+	clients := func(name string) bool { return name == "tavily" || name == "fetcher" }
+	noClients := func(string) bool { return false }
 	row := func(name, client, tool string) schemas.InjectedTool {
 		return schemas.InjectedTool{Name: name, MCPClientName: client, ToolName: tool}
 	}
 	search := row("web_search", "tavily", "search")
 	fetch := row("read_page", "fetcher", "fetch")
 
-	assert.NoError(t, ValidateInjectedTools(nil, nil), "no injected_tools list is not a misconfiguration")
-	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{}, nil), "an empty list injects nothing")
+	assert.NoError(t, ValidateInjectedTools(nil, noClients), "no injected_tools list is not a misconfiguration")
+	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{}, noClients), "an empty list injects nothing")
 	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{search, fetch}, clients))
 	assert.NoError(t, ValidateInjectedTools([]schemas.InjectedTool{row("Fetch-Page_2", "fetcher", "fetch")}, clients), "letters, digits, _ and - are allowed")
 
@@ -24233,7 +26048,7 @@ func TestValidateInjectedTools(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.reason, name)
 		}
 	}
-	assert.Error(t, ValidateInjectedTools([]schemas.InjectedTool{search}, nil), "no MCP clients configured at all")
+	assert.Error(t, ValidateInjectedTools([]schemas.InjectedTool{search}, noClients), "no MCP clients configured at all")
 }
 
 // TestUnresolvedInjectedTools pins the load-time check for config.json. The file path
@@ -24251,13 +26066,15 @@ func TestUnresolvedInjectedTools(t *testing.T) {
 		schemas.Anthropic: ref("exa"),
 		schemas.Gemini:    {},
 	}
+	tavily := func(name string) bool { return name == "tavily" }
+	noClients := func(string) bool { return false }
 	assert.Equal(t, []string{`provider anthropic: injected tools validation failed: injected_tools[0] (web_search) references unknown MCP client "exa"`},
-		unresolvedInjectedTools(providers, map[string]string{"id-1": "tavily"}))
-	assert.Len(t, unresolvedInjectedTools(providers, nil), 2, "with no MCP clients every reference is unresolved")
-	assert.Empty(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Gemini: {}}, nil))
+		unresolvedInjectedTools(providers, tavily))
+	assert.Len(t, unresolvedInjectedTools(providers, noClients), 2, "with no MCP clients every reference is unresolved")
+	assert.Empty(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Gemini: {}}, noClients))
 
 	dup := configstore.ProviderConfig{InjectedTools: append(ref("tavily").InjectedTools, schemas.InjectedTool{Name: "web_search", MCPClientName: "tavily", ToolName: "crawl"})}
-	assert.Len(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: dup}, map[string]string{"id-1": "tavily"}), 1,
+	assert.Len(t, unresolvedInjectedTools(map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: dup}, tavily), 1,
 		"config.json cannot express unique names, so a repeated one is a boot warning")
 }
 
@@ -24300,14 +26117,14 @@ func TestValidatePassthroughBody_AcceptsSchemaValidShapes(t *testing.T) {
 // an x-model-provider header names: only a custom provider reports its base, and only a
 // policy, even an empty one, counts as opting in.
 func TestGetCustomProviderPassthrough(t *testing.T) {
-	store := &Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
 		schemas.OpenAI: {Passthrough: &schemas.PassthroughPolicy{}},
 		"sidecar": {
 			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
 			Passthrough:          &schemas.PassthroughPolicy{},
 		},
 		"sidecar-off": {CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic}},
-	}}
+	}, nil)
 	for _, tc := range []struct {
 		provider    schemas.ModelProvider
 		wantBase    schemas.ModelProvider
@@ -24334,7 +26151,7 @@ func TestSQLite_DirectlyOwnedVirtualKeyLimitsAreRepairedOnReload(t *testing.T) {
 			tempDir := createTempDir(t)
 			requestMax, requestDur := int64(50), "1m"
 			declare := func(step string) *ConfigData {
-				configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+				configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 					"openai": {Keys: []schemas.Key{{ID: "key-1", Name: "key-1", Value: *schemas.NewSecretVar("sk-test"), Weight: 1}}},
 				}, tempDir)
 				configData.SourceOfTruth = sourceOfTruth
@@ -24538,7 +26355,7 @@ func TestSQLite_ProviderConfigDroppedFromFileTakesItsTier(t *testing.T) {
 	tempDir := createTempDir(t)
 	requestMax, requestDur := int64(50), "1m"
 	declare := func(step string, providers ...string) *ConfigData {
-		configData := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		configData := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai":    {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 			"anthropic": {Keys: []schemas.Key{{ID: "k2", Name: "k2", Value: *schemas.NewSecretVar("sk-b"), Weight: 1}}},
 		}, tempDir)
@@ -24730,7 +26547,7 @@ func TestSQLite_ReloadDoesNotCreateCompetingVirtualKeyTiers(t *testing.T) {
 	initTestLogger()
 	ctx := context.Background()
 	declare := func(dir string, withLimits bool, provider *string) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -24805,7 +26622,7 @@ func TestSQLite_DroppedProviderConfigKeepsDeclaredModelConfig(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(withProviderConfig bool) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -24908,7 +26725,7 @@ func TestSQLite_DeclaredModelConfigAdoptsExistingVirtualKeyTier(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string, named bool) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -25088,7 +26905,7 @@ func TestSQLite_TopLevelBudgetFollowsItsDeclaredOwner(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string, onKey bool, pcID *uint) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -25245,7 +27062,7 @@ func TestSQLite_DroppedProviderKeepsLimitsTheFileRelocated(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string, onProvider bool) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.SourceOfTruth = SourceOfTruthConfigJSON
@@ -25459,7 +27276,7 @@ func TestSQLite_DroppedTierKeepsARateLimitAnotherTierShares(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string, withAnthropic bool) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai":    {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 			"anthropic": {Keys: []schemas.Key{{ID: "k2", Name: "k2", Value: *schemas.NewSecretVar("sk-b"), Weight: 1}}},
 		}, dir)
@@ -25530,7 +27347,7 @@ func TestSQLite_ApiOwnedTierBudgetSurvivesKeyEdit(t *testing.T) {
 	ctx := context.Background()
 	dir := createTempDir(t)
 	declare := func(step string) *ConfigData {
-		cd := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		cd := makeConfigDataWithProvidersAndDir(map[string]providerFileEntry{
 			"openai": {Keys: []schemas.Key{{ID: "k1", Name: "k1", Value: *schemas.NewSecretVar("sk-a"), Weight: 1}}},
 		}, dir)
 		cd.Governance = &configstore.GovernanceConfig{VirtualKeys: []tables.TableVirtualKey{{
@@ -25608,6 +27425,220 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 	})
 }
 
+// TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys pins the upgrade path from the
+// unsorted request_path_overrides hash: a stored provider config_hash computed under any
+// override order still means "config.json unchanged", so keys added through the API survive
+// the first restart on the sorted encoding and the stored hash is rewritten to the sorted
+// form. A real file edit still syncs from the file.
+func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
+	SetLogger(&testLogger{})
+	provider := schemas.ModelProvider("custom-openai")
+	fileKey := schemas.Key{ID: "file-key", Name: "file", Value: *schemas.NewSecretVar("sk"), Weight: 1}
+	build := func() configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				BaseProviderType: schemas.OpenAI,
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/v1/chat",
+					schemas.EmbeddingRequest:      "/v1/embed",
+					schemas.TextCompletionRequest: "/v1/text",
+				},
+			},
+		}
+	}
+	// stored returns the stored provider and its keys: the file key and one added through the API.
+	stored := func(t *testing.T) (configstore.ProviderConfig, []schemas.Key) {
+		cfg := build()
+		legacy, err := cfg.LegacyOverrideOrderConfigHash(string(provider), []schemas.RequestType{
+			schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.EmbeddingRequest,
+		})
+		require.NoError(t, err)
+		fileKeyHash, err := configstore.GenerateKeyHash(fileKey)
+		require.NoError(t, err)
+		storedFileKey := fileKey
+		storedFileKey.ConfigHash = fileKeyHash
+		apiKey := schemas.Key{ID: "api-key", Name: "added-through-api", Value: *schemas.NewSecretVar("sk-api"), Weight: 1}
+		cfg.ConfigHash = legacy
+		return cfg, []schemas.Key{storedFileKey, apiKey}
+	}
+
+	t.Run("unchanged file keeps API-added keys", func(t *testing.T) {
+		fileCfg := build()
+		sorted, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = sorted
+		dbCfg, dbKeys := stored(t)
+		require.NotEqual(t, sorted, dbCfg.ConfigHash)
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
+		keys := map[schemas.ModelProvider][]schemas.Key{provider: dbKeys}
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
+		merged := providers[provider]
+		require.Equal(t, sorted, merged.ConfigHash, "the stored hash must be upgraded to the sorted form")
+		names := []string{}
+		for _, k := range keys[provider] {
+			names = append(names, k.Name)
+		}
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, names, "the API-added key must survive the hash format change")
+	})
+
+	t.Run("edited file still syncs from the file", func(t *testing.T) {
+		fileCfg := build()
+		fileCfg.CustomProviderConfig.IsKeyLess = true
+		edited, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = edited
+
+		dbCfg, dbKeys := stored(t)
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, map[schemas.ModelProvider][]schemas.Key{provider: dbKeys})
+		merged := providers[provider]
+		require.Equal(t, edited, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess, "a changed config.json must still replace the stored provider")
+	})
+}
+
+// TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys covers a provider with
+// more request_path_overrides than the legacy hash search can enumerate. Its stored hash may
+// come from an older build, so a mismatch is not proof of a file edit: the file's provider
+// settings still apply, as they did on every boot before the hash was sorted, but keys added
+// through the API survive and the new hash is stored so later edits are detected normally.
+func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *testing.T) {
+	SetLogger(&testLogger{})
+	provider := schemas.ModelProvider("custom-openai")
+	requestTypes := []schemas.RequestType{
+		schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.EmbeddingRequest,
+		schemas.SpeechRequest, schemas.TranscriptionRequest, schemas.ImageGenerationRequest,
+		schemas.RerankRequest, schemas.ResponsesRequest, schemas.CountTokensRequest,
+	}
+	fileKey := schemas.Key{ID: "file-key", Name: "file", Value: *schemas.NewSecretVar("sk"), Weight: 1}
+	build := func() configstore.ProviderConfig {
+		overrides := map[schemas.RequestType]string{}
+		for _, rt := range requestTypes {
+			overrides[rt] = "/v1/" + string(rt)
+		}
+		return configstore.ProviderConfig{
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: overrides},
+		}
+	}
+	// stored returns the stored provider, keyed by provider in a map mergeProviderWithHash merges
+	// into, and its keys, the file key and one added through the API, keyed the same way.
+	stored := func(t *testing.T) (map[schemas.ModelProvider]configstore.ProviderConfig, map[schemas.ModelProvider][]schemas.Key) {
+		cfg := build()
+		order := append([]schemas.RequestType{}, requestTypes...)
+		slices.Reverse(order)
+		legacy, err := cfg.LegacyOverrideOrderConfigHash(string(provider), order)
+		require.NoError(t, err)
+		fileKeyHash, err := configstore.GenerateKeyHash(fileKey)
+		require.NoError(t, err)
+		storedFileKey := fileKey
+		storedFileKey.ConfigHash = fileKeyHash
+		apiKey := schemas.Key{ID: "api-key", Name: "added-through-api", Value: *schemas.NewSecretVar("sk-api"), Weight: 1}
+		cfg.ConfigHash = legacy
+		return map[schemas.ModelProvider]configstore.ProviderConfig{provider: cfg},
+			map[schemas.ModelProvider][]schemas.Key{provider: {storedFileKey, apiKey}}
+	}
+	keyNames := func(keys []schemas.Key) []string {
+		names := []string{}
+		for _, k := range keys {
+			names = append(names, k.Name)
+		}
+		return names
+	}
+
+	t.Run("unchanged file keeps API-added keys and upgrades the hash", func(t *testing.T) {
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		providers, keys := stored(t)
+		require.NotEqual(t, current, providers[provider].ConfigHash)
+
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
+		merged := providers[provider]
+		require.Equal(t, current, merged.ConfigHash, "the stored hash must move to the sorted form so this runs once")
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(keys[provider]), "the API-added key must survive")
+	})
+
+	t.Run("edited file still applies its provider settings", func(t *testing.T) {
+		fileCfg := build()
+		fileCfg.CustomProviderConfig.IsKeyLess = true
+		edited, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = edited
+
+		providers, keys := stored(t)
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
+		merged := providers[provider]
+		require.Equal(t, edited, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess, "a changed config.json must still replace the provider settings")
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(keys[provider]))
+	})
+
+	t.Run("edited file key is still updated", func(t *testing.T) {
+		fileCfg := build()
+		fileKeys := []schemas.Key{fileKey}
+		fileKeys[0].Weight = 2
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+
+		providers, keys := stored(t)
+		mergeProviderWithHash(provider, fileCfg, fileKeys, providers, keys)
+		found := false
+		for _, k := range keys[provider] {
+			if k.Name == "file" {
+				found = true
+				require.Equal(t, float64(2), k.Weight, "a key edited in config.json must still replace the stored key")
+			}
+		}
+		require.True(t, found, "the file key must remain in the merged keys")
+	})
+
+	t.Run("upgrade boot is recorded as a file sync", func(t *testing.T) {
+		DrainStartupAuditChanges()
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		providers, keys := stored(t)
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
+		changes := DrainStartupAuditChanges()
+		require.Len(t, changes, 1, "provider settings were taken from config.json, so the sync is audited")
+		require.Equal(t, string(provider), changes[0].TargetID)
+	})
+
+	t.Run("a later edit after the upgrade takes the normal edit path", func(t *testing.T) {
+		// First boot on the sorted build: legacy hash, unverifiable, keys reconciled.
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		providers, keys := stored(t)
+		mergeProviderWithHash(provider, fileCfg, []schemas.Key{fileKey}, providers, keys)
+		upgraded, upgradedKeys := providers[provider], keys[provider]
+		require.Equal(t, current, upgraded.ConfigHash)
+
+		// Second boot: config.json really changed (provider setting edited, the file key removed).
+		DrainStartupAuditChanges()
+		edited := build()
+		edited.CustomProviderConfig.IsKeyLess = true
+		editedHash, err := edited.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		edited.ConfigHash = editedHash
+		require.False(t, edited.ConfigHashLegacyOverrideOrderUnverifiable(upgraded.ConfigHash), "a sorted-era stored hash is never unverifiable")
+
+		providers = map[schemas.ModelProvider]configstore.ProviderConfig{provider: upgraded}
+		keys = map[schemas.ModelProvider][]schemas.Key{provider: upgradedKeys}
+		mergeProviderWithHash(provider, edited, nil, providers, keys)
+		merged := providers[provider]
+		require.Equal(t, editedHash, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess)
+		require.NotContains(t, keyNames(keys[provider]), "file", "a key removed from config.json must be removed once the hash is sorted-era")
+		require.Len(t, DrainStartupAuditChanges(), 1, "the edit is audited")
+	})
+}
+
 // TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
 // config.json is normalized at load: spec_file is read relative to the config
 // directory and inlined, the server-computed metadata is filled from a parse,
@@ -25621,7 +27652,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	str := func(s string) *string { return &s }
 
 	fromFile := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}}
-	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir))
+	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir, 0))
 	assert.Equal(t, spec, fromFile.OpenAPIConfig.Spec, "spec_file is inlined so the persisted row carries the document")
 	assert.Equal(t, "Petstore", fromFile.OpenAPIConfig.SpecTitle)
 	assert.Equal(t, "3.0.3", fromFile.OpenAPIConfig.OpenAPIVersion)
@@ -25629,7 +27660,7 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 	assert.NotEmpty(t, fromFile.OpenAPIConfig.SpecHash)
 
 	urlOnly := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeHeaders, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}}
-	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
+	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir, 0))
 	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
 
 	for name, cfg := range map[string]*schemas.MCPClientConfig{
@@ -25642,18 +27673,22 @@ func TestPrepareOpenAPIClientFromFile(t *testing.T) {
 		"unparseable":    {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir))
+			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir, 0))
 		})
 	}
 }
 
 // newOpenAPIUpdateTestConfig builds a Config backed by a real Bifrost engine
-// with one registered openapi client. Its server factory succeeds on the first
+// with one registered openapi client, stored in an SQLite config store and
+// loaded into the live store. The engine's Account reads a loaded live store,
+// as the server's does. Its server factory succeeds on the first
 // connect and fails every rebuild after it when failRebuilds is set.
 func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *schemas.MCPClientConfig) {
 	t.Helper()
+	ctx := context.Background()
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(&Config{}), Logger: logger})
+	cfg := providerStore(t, nil, nil)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(cfg), Logger: logger})
 	require.NoError(t, err)
 	t.Cleanup(client.Shutdown)
 	var calls atomic.Int32
@@ -25663,31 +27698,43 @@ func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *sche
 		}
 		return mcpserver.NewMCPServer("openapi-test", "1", mcpserver.WithToolCapabilities(false)), nil
 	}
-	client.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: factory}, nil, logger, nil))
+	client.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: factory}, NewBaseAccount(cfg), nil, logger, nil))
 	stored := &schemas.MCPClientConfig{
 		ID: "openapi-1", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
 		ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "spec-a"},
 	}
-	runtime := *stored
-	runtime.OpenAPIConfig = stored.OpenAPIConfig.Clone()
-	require.NoError(t, client.AddMCPClient(context.Background(), &runtime))
-	return &Config{client: client, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{stored}}}, stored
+	require.NoError(t, cfg.ConfigStore.CreateMCPClientConfig(ctx, stored))
+	require.NoError(t, cfg.refreshMCPClient(ctx, stored.ID))
+	require.NoError(t, client.AddMCPClient(ctx, stored.ID))
+	cfg.client = client
+	return cfg, stored
+}
+
+// storeMCPClientEdit writes client to its stored row the way the update handler does before it
+// calls UpdateMCPClient.
+func storeMCPClientEdit(t *testing.T, cfg *Config, client *schemas.MCPClientConfig) {
+	t.Helper()
+	row, err := mcpClientConfigToTable(client)
+	require.NoError(t, err)
+	require.NoError(t, cfg.ConfigStore.UpdateMCPClientConfig(context.Background(), client.ID, &row))
 }
 
 // TestUpdateMCPClient_SharedConnectFailureStillAppliesFields: when the runtime
-// saved an update but could not reconnect with it, the management copy takes
-// the update too, so it agrees with the database and the runtime instead of
-// serving the old document and merging later edits against it.
+// saved an update but could not reconnect with it, the management copy (the
+// live store) takes the update too, so it agrees with the database and the
+// runtime instead of serving the old document and merging later edits against it.
 func TestUpdateMCPClient_SharedConnectFailureStillAppliesFields(t *testing.T) {
 	cfg, stored := newOpenAPIUpdateTestConfig(t, true)
 	update := *stored
 	update.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: "spec-b"}
 	update.ToolsToExecute = schemas.WhiteList{"listPets"}
-	err := cfg.UpdateMCPClient(context.Background(), stored.ID, &update)
+	storeMCPClientEdit(t, cfg, &update)
+	err := cfg.UpdateMCPClient(context.Background(), stored.ID)
 	require.ErrorIs(t, err, mcp.ErrMCPSharedConnectFailedAfterUpdate)
-	got := cfg.MCPConfig.ClientConfigs[0]
-	assert.Equal(t, "spec-b", got.OpenAPIConfig.Spec)
-	assert.Equal(t, schemas.WhiteList{"listPets"}, got.ToolsToExecute)
+	got, ok := cfg.liveMCPClient(stored.ID)
+	require.True(t, ok)
+	assert.Equal(t, "spec-b", got.Config.OpenAPIConfig.Spec)
+	assert.Equal(t, schemas.WhiteList{"listPets"}, got.Config.ToolsToExecute)
 }
 
 // TestUpdateMCPClient_RequirePublicTargetOnlyTightens: the management copy can
@@ -25696,45 +27743,279 @@ func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
 	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
 	update := *stored
 	update.RequirePublicTarget = true
-	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
-	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+	storeMCPClientEdit(t, cfg, &update)
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID))
+	got, ok := cfg.liveMCPClient(stored.ID)
+	require.True(t, ok)
+	assert.True(t, got.Config.RequirePublicTarget)
 
 	update.RequirePublicTarget = false
-	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
-	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+	storeMCPClientEdit(t, cfg, &update)
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID))
+	got, ok = cfg.liveMCPClient(stored.ID)
+	require.True(t, ok)
+	assert.True(t, got.Config.RequirePublicTarget)
 }
 
-// TestGetMCPClientOpenAPISpec_ReadsUnderLock: the stored document is copied out
-// under the MCP config lock, so a concurrent update that replaces the block
-// cannot race the read (run with -race).
-func TestGetMCPClientOpenAPISpec_ReadsUnderLock(t *testing.T) {
-	c := &Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
-		ID: "oa", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "v0"},
-	}}}}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; i < 200; i++ {
-			c.muMCP.Lock()
-			c.MCPConfig.ClientConfigs[0].OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: fmt.Sprintf("v%d", i)}
-			c.muMCP.Unlock()
-		}
-	}()
-	for i := 0; i < 200; i++ {
-		spec, isOpenAPI, found := c.GetMCPClientOpenAPISpec("oa")
-		require.True(t, found)
-		require.True(t, isOpenAPI)
-		require.NotEmpty(t, spec)
-	}
-	<-done
-	_, isOpenAPI, found := c.GetMCPClientOpenAPISpec("missing")
-	assert.False(t, found)
-	assert.False(t, isOpenAPI)
+// TestRemoveMCPClient_DropsItsCatalogPricing: the pricing catalog is keyed by
+// client name, so a deleted client's prices must leave it with the client.
+// Left behind, they priced the next client registered under the same name.
+func TestRemoveMCPClient_DropsItsCatalogPricing(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
+	stored.ToolPricing = map[string]float64{"listPets": 0.25}
+	storeMCPClientEdit(t, cfg, stored)
+	require.NoError(t, cfg.refreshMCPClient(context.Background(), stored.ID))
+	other := *stored
+	other.ID, other.Name, other.EndpointSlug = stored.ID+"-other", "other", ""
+	other.ToolPricing = map[string]float64{"listPets": 0.5}
+	require.NoError(t, cfg.ConfigStore.CreateMCPClientConfig(context.Background(), &other))
+	require.NoError(t, cfg.refreshMCPClient(context.Background(), other.ID))
+	catalog, err := mcpcatalog.Init(context.Background(), cfg.LiveStore, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	cfg.MCPCatalog = catalog
+	price, priced := catalog.GetPricingData("petstore", "listPets")
+	require.True(t, priced, "a stored client's price comes from its record")
+	assert.Equal(t, 0.25, price.CostPerExecution)
 
-	// A nil entry in the client list is skipped, not dereferenced.
-	c.MCPConfig.ClientConfigs = append([]*schemas.MCPClientConfig{nil}, c.MCPConfig.ClientConfigs...)
-	require.NotPanics(t, func() { _, _, found = c.GetMCPClientOpenAPISpec("oa") })
-	assert.True(t, found)
+	// The caller deletes the row before it removes the client.
+	require.NoError(t, cfg.ConfigStore.DeleteMCPClientConfig(context.Background(), stored.ID))
+	require.NoError(t, cfg.RemoveMCPClient(context.Background(), stored.ID))
+	_, priced = catalog.GetPricingData("petstore", "listPets")
+	assert.False(t, priced, "the deleted client's price is gone")
+	_, priced = catalog.GetPricingData("other", "listPets")
+	assert.True(t, priced, "another client's price stays")
+}
+
+// billingToolsFileClient is a config.json MCP client with this code mode and these tool prices.
+func billingToolsFileClient(codeMode bool, prices map[string]float64) *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{
+		Name:             "billing_tools",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+		ToolsToExecute:   schemas.WhiteList{"*"},
+		Headers:          map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("file")},
+		IsCodeModeClient: codeMode,
+		ToolPricing:      prices,
+	}
+}
+
+// bootMCPToolPricing runs the boot's MCP step over store with client as config.json declares it, loads a
+// live store from the database as the end of LoadConfig does, and returns the MCP catalog over it.
+func bootMCPToolPricing(t *testing.T, store configstore.ConfigStore, sourceOfTruth string, client *schemas.MCPClientConfig) *mcpcatalog.MCPCatalog {
+	t.Helper()
+	ctx := context.Background()
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, cfg, &ConfigData{SourceOfTruth: sourceOfTruth, MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{client}}})
+	live := newLiveStoreForTest(t)
+	require.NoError(t, live.LoadAll(ctx, store.DB()))
+	catalog, err := mcpcatalog.Init(ctx, live, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.NoError(t, err)
+	return catalog
+}
+
+// editStoredMCPClient applies edit to the stored row of the MCP client named name and saves it as the
+// dashboard's update does: a full row without a config hash, so the stored hash stays as it was.
+func editStoredMCPClient(t *testing.T, store configstore.ConfigStore, name string, edit func(*tables.TableMCPClient)) {
+	t.Helper()
+	ctx := context.Background()
+	row, err := store.GetMCPClientByName(ctx, name)
+	require.NoError(t, err)
+	edit(row)
+	row.ConfigHash = ""
+	require.NoError(t, store.UpdateMCPClientConfig(ctx, row.ClientID, row))
+}
+
+// toolPrice returns what catalog charges for tool on the MCP client named server, and fails the test when
+// it prices nothing.
+func toolPrice(t *testing.T, catalog *mcpcatalog.MCPCatalog, server, tool string) float64 {
+	t.Helper()
+	entry, ok := catalog.GetPricingData(server, tool)
+	require.True(t, ok, "%s.%s has no price", server, tool)
+	return entry.CostPerExecution
+}
+
+// mcpFileClientHash returns the config hash of client as config.json declares it.
+func mcpFileClientHash(t *testing.T, client *schemas.MCPClientConfig) string {
+	t.Helper()
+	row, err := mcpClientConfigToTable(client)
+	require.NoError(t, err)
+	hash, err := configstore.GenerateMCPClientHash(row)
+	require.NoError(t, err)
+	return hash
+}
+
+// TestLoadMCPConfig_FileToolPricing: config.json tool prices sync like the client's other fields. A client
+// created from the file is priced from its first boot, and a price edited in the file applies on the next
+// boot. A dashboard price edit survives a boot while the file is unchanged, except with config.json as the
+// source of truth, where every boot rewrites the client from the file.
+func TestLoadMCPConfig_FileToolPricing(t *testing.T) {
+	initTestLogger()
+	for _, tc := range []struct {
+		name, sourceOfTruth    string
+		wantAfterDashboardEdit float64
+	}{
+		{name: "default mode", wantAfterDashboardEdit: 0.75},
+		{name: "config.json source of truth", sourceOfTruth: SourceOfTruthConfigJSON, wantAfterDashboardEdit: 0.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			catalog := bootMCPToolPricing(t, store, tc.sourceOfTruth, billingToolsFileClient(false, map[string]float64{"search": 0.25}))
+			assert.Equal(t, 0.25, toolPrice(t, catalog, "billing_tools", "search"), "a client created from config.json is priced from its first boot")
+
+			catalog = bootMCPToolPricing(t, store, tc.sourceOfTruth, billingToolsFileClient(false, map[string]float64{"search": 0.5}))
+			assert.Equal(t, 0.5, toolPrice(t, catalog, "billing_tools", "search"), "a price edited in config.json applies on the next boot")
+
+			editStoredMCPClient(t, store, "billing_tools", func(row *tables.TableMCPClient) {
+				row.ToolPricing = map[string]float64{"search": 0.75}
+			})
+			catalog = bootMCPToolPricing(t, store, tc.sourceOfTruth, billingToolsFileClient(false, map[string]float64{"search": 0.5}))
+			assert.Equal(t, tc.wantAfterDashboardEdit, toolPrice(t, catalog, "billing_tools", "search"), "a dashboard price edit, then a boot with config.json unchanged")
+		})
+	}
+}
+
+// TestLoadMCPConfig_UpgradeFillsFileToolPricing: the first boot after tool_pricing joined the MCP client
+// hash. Older builds stored a config.json client under a hash that left out its prices (and, before
+// is_code_mode_client was hashed, its code mode), and stored no prices at create. When the stored hash is
+// the file client's under such a formula, that boot keeps the row's other fields, adds the file's price for
+// each tool the row does not price, and moves the hash to the current form, so the next boot changes nothing.
+func TestLoadMCPConfig_UpgradeFillsFileToolPricing(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	filePrices := map[string]float64{"search": 0.25, "fetch": 0.1}
+	hashOf := func(c *schemas.MCPClientConfig) string { return mcpFileClientHash(t, c) }
+	for _, tc := range []struct {
+		name string
+		// storedCodeMode is the stored row's code mode, hashedCodeMode the one its stored hash was computed
+		// with, and fileCodeMode config.json's.
+		storedCodeMode, hashedCodeMode, fileCodeMode bool
+		storedPrices, wantPrices                     map[string]float64
+		wantHeader                                   string
+	}{
+		{name: "pre-pricing hash, no stored prices", wantPrices: filePrices, wantHeader: "dashboard"},
+		{name: "pre-pricing hash, a stored price wins", storedPrices: map[string]float64{"search": 0.9}, wantPrices: map[string]float64{"search": 0.9, "fetch": 0.1}, wantHeader: "dashboard"},
+		{name: "pre-pricing hash of a code-mode client", storedCodeMode: true, hashedCodeMode: true, fileCodeMode: true, wantPrices: filePrices, wantHeader: "dashboard"},
+		{name: "pre-code-mode and pre-pricing hash", storedCodeMode: true, fileCodeMode: true, wantPrices: filePrices, wantHeader: "dashboard"},
+		{name: "config.json turning code mode on is a file edit", fileCodeMode: true, wantPrices: filePrices, wantHeader: "file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, t.TempDir())
+			// What an older build stored: the file client without prices, under its hash then.
+			old := billingToolsFileClient(tc.storedCodeMode, nil)
+			old.ID = "billing-1"
+			old.ConfigHash = hashOf(billingToolsFileClient(tc.hashedCodeMode, nil))
+			require.NoError(t, store.CreateMCPClientConfig(ctx, old))
+			editStoredMCPClient(t, store, "billing_tools", func(row *tables.TableMCPClient) {
+				row.Headers = map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("dashboard")}
+				row.ToolPricing = tc.storedPrices
+				row.MaxInstructionsLength = 4096
+				row.TLSConfig = &schemas.MCPTLSConfig{InsecureSkipVerify: true}
+			})
+
+			catalog := bootMCPToolPricing(t, store, "", billingToolsFileClient(tc.fileCodeMode, filePrices))
+			row, err := store.GetMCPClientByName(ctx, "billing_tools")
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantPrices, row.ToolPricing, "stored prices")
+			header := row.Headers["X-Team"]
+			assert.Equal(t, tc.wantHeader, header.GetValue(), "stored header")
+			if tc.wantHeader == "dashboard" {
+				assert.Equal(t, 4096, row.MaxInstructionsLength, "a dashboard max_instructions_length survives")
+				assert.Equal(t, &schemas.MCPTLSConfig{InsecureSkipVerify: true}, row.TLSConfig, "a dashboard TLS config survives")
+			}
+			assert.Equal(t, hashOf(billingToolsFileClient(tc.fileCodeMode, filePrices)), row.ConfigHash, "the stored hash moves to the current form")
+			for tool, price := range tc.wantPrices {
+				assert.Equal(t, price, toolPrice(t, catalog, "billing_tools", tool), "catalog price of %s", tool)
+			}
+
+			bootMCPToolPricing(t, store, "", billingToolsFileClient(tc.fileCodeMode, filePrices))
+			again, err := store.GetMCPClientByName(ctx, "billing_tools")
+			require.NoError(t, err)
+			assert.Equal(t, row.ToolPricing, again.ToolPricing, "the next boot keeps the prices")
+			assert.Equal(t, row.Headers, again.Headers, "the next boot keeps the header")
+			assert.Equal(t, row.ConfigHash, again.ConfigHash, "the next boot keeps the hash")
+			assert.True(t, row.UpdatedAt.Equal(again.UpdatedAt), "the next boot writes nothing")
+		})
+	}
+}
+
+// TestLoadMCPConfig_UpgradeFillKeepsEveryStoredField: the upgrade boot writes the price fill back as one
+// full-row update, and that update writes nearly every column, so each must carry the stored value. A
+// stored row that differs from config.json in each of them comes back unchanged except for the added price
+// and the moved hash, both in the database and in the client the boot keeps.
+func TestLoadMCPConfig_UpgradeFillKeepsEveryStoredField(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.CreateOauthConfig(ctx, &tables.TableOauthConfig{
+		ID: "billing-oauth", ClientID: schemas.NewSecretVar("registered"), ClientSecret: schemas.NewSecretVar("secret"),
+		AuthorizeURL: "https://auth.example.com/authorize", TokenURL: "https://auth.example.com/token",
+		RedirectURI: "http://127.0.0.1/cb", Scopes: `["read"]`, Status: "authorized",
+	}))
+	description := "Search the billing records"
+	// Stored by an older build from config.json, under that build's hash, then edited everywhere it can be.
+	stored := billingToolsFileClient(false, map[string]float64{"search": 0.9})
+	stored.ID = "billing-1"
+	stored.ConfigHash = mcpFileClientHash(t, billingToolsFileClient(false, nil))
+	stored.ConnectionString = schemas.NewSecretVar("http://localhost:3002/mcp")
+	stored.Headers = map[string]schemas.SecretVar{"X-Team": *schemas.NewSecretVar("dashboard")}
+	stored.TLSConfig = &schemas.MCPTLSConfig{InsecureSkipVerify: true}
+	stored.MaxInstructionsLength = 4096
+	stored.OpenAPIConfig = &schemas.MCPOpenAPIConfig{
+		Spec:    `{"openapi":"3.0.0","info":{"title":"billing","version":"1"},"paths":{}}`,
+		BaseURL: schemas.Ptr("https://billing.example.com"),
+	}
+	stored.TokenExchange = &schemas.MCPTokenExchangeConfig{
+		Audience: "api://billing", ClientID: schemas.NewSecretVar("exchange-app"),
+		ClientSecret: schemas.NewSecretVar("exchange-secret"), Scopes: []string{"billing.read"},
+	}
+	stored.PendingOAuthConfig = &schemas.OAuth2Config{AuthorizeURL: "https://auth.example.com/authorize", TokenURL: "https://auth.example.com/token", Scopes: []string{"read"}}
+	stored.OauthConfigID = schemas.Ptr("billing-oauth")
+	stored.DiscoveredTools = map[string]schemas.ChatTool{"search": {Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "search", Description: &description}}}
+	stored.DiscoveredInstructions = "Call search first."
+	stored.PerUserHeaderKeys = []string{"x-user-token"} // canonical, as the dashboard stores them
+	stored.ToolsToExecute = schemas.WhiteList{"search"}
+	stored.ToolsToAutoExecute = schemas.WhiteList{"search"}
+	stored.AllowByDefault = true
+	stored.Disabled = true
+	stored.ToolExecutionTimeout = 45 * time.Second
+	stored.IsPingAvailable = schemas.Ptr(false)
+	require.NoError(t, store.CreateMCPClientConfig(ctx, stored))
+	before, err := store.GetMCPClientByName(ctx, "billing_tools")
+	require.NoError(t, err)
+
+	filePrices := map[string]float64{"search": 0.25, "fetch": 0.1}
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, boot: &bootConfig{}}
+	loadMCPConfig(ctx, cfg, &ConfigData{MCP: &MCPFileConfig{ClientConfigs: []*schemas.MCPClientConfig{billingToolsFileClient(false, filePrices)}}})
+
+	after, err := store.GetMCPClientByName(ctx, "billing_tools")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]float64{"search": 0.9, "fetch": 0.1}, after.ToolPricing, "the missing price is added and the stored one wins")
+	assert.Equal(t, mcpFileClientHash(t, billingToolsFileClient(false, filePrices)), after.ConfigHash, "the hash moves to the current form")
+	want := *before
+	want.ToolPricing, want.ToolPricingJSON = after.ToolPricing, after.ToolPricingJSON
+	want.ConfigHash, want.UpdatedAt = after.ConfigHash, after.UpdatedAt
+	assert.Equal(t, want, *after, "every other stored column keeps its value")
+	require.Len(t, cfg.boot.mcpClients, 1)
+	assert.Equal(t, configstore.MCPClientConfigFromTable(after), *cfg.boot.mcpClients[0], "the client the boot keeps matches the row written")
+}
+
+// TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored: an update that leaves
+// per_user_discovery unset keeps the stored value, matching the database and
+// the runtime, instead of clearing the management copy.
+func TestUpdateMCPClient_UnsetPerUserDiscoveryKeepsStored(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
+	stored.PerUserDiscovery = schemas.Ptr(false)
+	storeMCPClientEdit(t, cfg, stored)
+	require.NoError(t, cfg.refreshMCPClient(context.Background(), stored.ID))
+	update := *stored
+	update.PerUserDiscovery = nil
+	storeMCPClientEdit(t, cfg, &update)
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID))
+	live, ok := cfg.liveMCPClient(stored.ID)
+	require.True(t, ok)
+	got := live.Config.PerUserDiscovery
+	require.NotNil(t, got)
+	assert.False(t, *got)
 }
 
 // TestLoadClientConfigExplicitEmptySkillsURL disables a stored marketplace URL while omission preserves dashboard edits.
@@ -25759,6 +28040,34 @@ func TestLoadClientConfigExplicitEmptySkillsURL(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, stored.SkillsExternalClientURL.GetValue())
 	require.Empty(t, start(`{"client":{"log_retention_days":7,"skills_external_client_url":""}}`).GetSkillsExternalClientURL())
+}
+
+// TestLoadClientConfigMCPClientMetadataURL loads the hosted document URL from config.json into the store,
+// keeps a dashboard edit while the file is unchanged, and applies the file when it changes: an explicit empty
+// value clears the URL, and an unusable one is dropped.
+func TestLoadClientConfigMCPClientMetadataURL(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	start := func(raw string) *Config {
+		t.Helper()
+		cfg := &Config{ConfigStore: store}
+		require.NoError(t, loadClientConfig(ctx, cfg, parseConfigData(t, raw)))
+		return cfg
+	}
+	const hosted = "https://public.example.com/bifrost/client.json"
+	file := `{"client":{"log_retention_days":7,"mcp_client_metadata_url":"` + hosted + `"}}`
+	require.Equal(t, hosted, start(file).GetMCPClientMetadataURL())
+	stored, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.Equal(t, hosted, stored.MCPClientMetadataURL.GetValue())
+
+	stored.MCPClientMetadataURL = schemas.NewSecretVar("https://public.example.com/bifrost/v2/client.json")
+	require.NoError(t, store.UpdateClientConfig(ctx, stored))
+	require.Equal(t, "https://public.example.com/bifrost/v2/client.json", start(file).GetMCPClientMetadataURL(), "an unchanged file keeps the dashboard's URL")
+
+	require.Empty(t, start(`{"client":{"log_retention_days":7,"mcp_client_metadata_url":""}}`).GetMCPClientMetadataURL())
+	require.Empty(t, start(`{"client":{"log_retention_days":7,"mcp_client_metadata_url":"https://localhost/client.json"}}`).GetMCPClientMetadataURL(), "an unusable URL is dropped")
 }
 
 // TestLoadClientConfigExplicitEmptyA2AURL disables a stored Agent Gateway URL while omission preserves dashboard edits.
@@ -25823,6 +28132,48 @@ func TestPublicURLPolicyAppliesToMCPAndA2A(t *testing.T) {
 	}
 }
 
+// TestMCPClientMetadataURLPolicy is the one table for which hosted Client ID Metadata Document URLs are
+// accepted, how they are normalised, and that config.json and env references go through the same check.
+func TestMCPClientMetadataURLPolicy(t *testing.T) {
+	initTestLogger()
+	for _, tc := range []struct {
+		value, want string // want "" means refused
+	}{
+		{"https://public.example.com/bifrost/client.json", "https://public.example.com/bifrost/client.json"},
+		{"HTTPS://Public.Example.com:443/Bifrost/client.json", "https://public.example.com/Bifrost/client.json"},
+		{"https://public.example.com:8443/client.json", "https://public.example.com:8443/client.json"},
+		{"https://8.8.8.8/client.json", "https://8.8.8.8/client.json"},
+		{"http://public.example.com/client.json", ""},      // not https
+		{"https://public.example.com", ""},                 // no path
+		{"https://public.example.com/", ""},                // root path
+		{"https://public.example.com/client.json?v=1", ""}, // query
+		{"https://public.example.com/client.json?", ""},    // empty query
+		{"https://public.example.com/client.json#x", ""},   // fragment
+		{"https://user:pw@public.example.com/client.json", ""},
+		{"https://public.example.com/a/../client.json", ""},
+		{"https://localhost/client.json", ""}, // loopback: never fetched
+		{"https://bifrost.localhost/client.json", ""},
+		{"https://127.0.0.1/client.json", ""},
+		{"https://[::1]/client.json", ""},
+		{"https://10.0.0.5/client.json", ""}, // private: authorization servers must not fetch it
+		{"https://169.254.169.254/client.json", ""},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			require.Equal(t, tc.want == "", ValidateClientMetadataURL(tc.value) != nil)
+			client := &configstore.ClientConfig{MCPClientMetadataURL: schemas.NewSecretVar(tc.value)}
+			require.Equal(t, tc.want, (&Config{ClientConfig: client}).GetMCPClientMetadataURL())
+			sanitizeMCPExternalOAuthURLs(client)
+			require.Equal(t, tc.want == "", client.MCPClientMetadataURL == nil, "config.json drops a refused URL")
+		})
+	}
+	t.Setenv("BIFROST_TEST_CIMD_URL", "https://public.example.com/bifrost/client.json")
+	client := &configstore.ClientConfig{MCPClientMetadataURL: schemas.NewSecretVar("env.BIFROST_TEST_CIMD_URL")}
+	sanitizeMCPExternalOAuthURLs(client)
+	require.Equal(t, "https://public.example.com/bifrost/client.json", (&Config{ClientConfig: client}).GetMCPClientMetadataURL())
+	require.Empty(t, (*Config)(nil).GetMCPClientMetadataURL())
+	require.NoError(t, ValidateClientMetadataURL(""), "empty means none is hosted")
+}
+
 // TestA2APrivateAllowlist validates configuration and prevents callers from mutating live permissions.
 func TestA2APrivateAllowlist(t *testing.T) {
 	cc := &configstore.ClientConfig{A2APrivateAllowlist: []string{"localhost", "10.0.0.0/8"}}
@@ -25841,4 +28192,440 @@ func TestA2APrivateAllowlist(t *testing.T) {
 	empty, err := (&configstore.ClientConfig{A2APrivateAllowlist: []string{}}).GenerateClientConfigHash()
 	require.NoError(t, err)
 	assert.NotEqual(t, absent, empty)
+}
+
+// reauthRecordingStore records which MCP clients' admin exchange credentials
+// were marked needs_reauth; every other ConfigStore method is unused here.
+type reauthRecordingStore struct {
+	configstore.ConfigStore
+	marked []string
+}
+
+// MarkAdminExchangeTokenNeedsReauthByMCPClientID records the client.
+func (s *reauthRecordingStore) MarkAdminExchangeTokenNeedsReauthByMCPClientID(_ context.Context, mcpClientID, _ string) error {
+	s.marked = append(s.marked, mcpClientID)
+	return nil
+}
+
+// TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields checks a config.json
+// edit to an id_jag field re-verifies the retained admin credential, while an
+// unchanged block, direct profile (an existing deployment's) or id_jag, marks
+// nothing.
+func TestRotateMCPTokenExchangeConfigFromFile_IDJAGFields(t *testing.T) {
+	SetLogger(&testLogger{})
+	endpoint := "https://as.example.com/token"
+	idjag := func() *schemas.MCPTokenExchangeConfig {
+		return &schemas.MCPTokenExchangeConfig{
+			Profile: schemas.TokenExchangeProfileIDJAG, Audience: "https://as.example.com", Scopes: []string{"read"},
+			Resource: "https://mcp.example.com", ResourceTokenEndpoint: &endpoint,
+			ResourceClientID: schemas.NewSecretVar("bifrost-at-upstream"), ResourceClientSecret: schemas.NewSecretVar("s3cret"),
+		}
+	}
+	direct := func() *schemas.MCPTokenExchangeConfig {
+		return &schemas.MCPTokenExchangeConfig{Audience: "api://mcp", ClientID: schemas.NewSecretVar("exchange-app"), Scopes: []string{"mcp"}}
+	}
+	moved := "https://other.example.com/token"
+	for name, tc := range map[string]struct {
+		existing, file *schemas.MCPTokenExchangeConfig
+		reauth         bool
+	}{
+		"unchanged direct block":        {existing: direct(), file: direct()},
+		"unchanged id_jag block":        {existing: idjag(), file: idjag()},
+		"direct switched to id_jag":     {existing: direct(), file: idjag(), reauth: true},
+		"resource changed":              {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.Resource = "https://x.example.com"; return c }(), reauth: true},
+		"resource token endpoint moved": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig { c := idjag(); c.ResourceTokenEndpoint = &moved; return c }(), reauth: true},
+		"resource client ID changed": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig {
+			c := idjag()
+			c.ResourceClientID = schemas.NewSecretVar("other")
+			return c
+		}(), reauth: true},
+		"resource secret rotated": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig {
+			c := idjag()
+			c.ResourceClientSecret = schemas.NewSecretVar("rotated")
+			return c
+		}(), reauth: true},
+		"secret switched to a key": {existing: idjag(), file: func() *schemas.MCPTokenExchangeConfig {
+			c := idjag()
+			c.ResourceClientSecret = nil
+			c.ResourcePrivateKey = schemas.NewSecretVar("pem")
+			return c
+		}(), reauth: true},
+	} {
+		store := &reauthRecordingStore{}
+		rotateMCPTokenExchangeConfigFromFile(context.Background(), store, "client-1", "linear", tc.file, tc.existing)
+		if got := len(store.marked) == 1; got != tc.reauth {
+			t.Errorf("%s: marked needs_reauth = %v, want %v", name, got, tc.reauth)
+		}
+	}
+}
+
+// A config.json edit that changes only the scopes keeps the authorization-server binding: the issuer
+// and the dynamic-registration flag describe credentials the file did not touch.
+func TestRotateMCPOauthConfigFromFile_KeepsBinding(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	require.NoError(t, store.CreateOauthConfig(ctx, &configstoreTables.TableOauthConfig{
+		ID: "cfg-binding", ClientID: schemas.NewSecretVar("registered"), ClientSecret: schemas.NewSecretVar("secret"),
+		AuthorizeURL: "https://auth.example.com/authorize", TokenURL: "https://auth.example.com/token",
+		RedirectURI: "http://127.0.0.1/cb", Scopes: `["read"]`, Status: "authorized",
+		Issuer: "https://auth.example.com", IssParameterSupported: true, DynamicallyRegistered: true,
+	}))
+	stored, err := store.GetOauthConfigByID(ctx, "cfg-binding")
+	require.NoError(t, err)
+
+	incomplete := rotateMCPOauthConfigFromFile(ctx, store, "docs", &schemas.OAuth2Config{Scopes: []string{"read", "write"}}, stored)
+	require.False(t, incomplete)
+	stored, err = store.GetOauthConfigByID(ctx, "cfg-binding")
+	require.NoError(t, err)
+	assert.Equal(t, `["read","write"]`, stored.Scopes, "fixture check: the scopes rotated")
+	assert.Equal(t, "https://auth.example.com", stored.Issuer)
+	assert.True(t, stored.IssParameterSupported)
+	assert.True(t, stored.DynamicallyRegistered)
+}
+
+func relayNamesInStore(t *testing.T, store configstore.ConfigStore) map[string]*schemas.RelayConfig {
+	t.Helper()
+	cfgs, err := store.ListRelays(context.Background())
+	require.NoError(t, err)
+	out := make(map[string]*schemas.RelayConfig, len(cfgs))
+	for _, cfg := range cfgs {
+		out[cfg.Name] = cfg
+	}
+	return out
+}
+
+func TestLoadRelaysConfig(t *testing.T) {
+	initTestLogger()
+	t.Setenv("TAVILY_KEY", "tvly-from-env")
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+
+	configData := parseConfigData(t, `{
+		"relays": [
+			{"name": "tavily", "base_url": "https://search.example.com", "auth": {"type": "bearer"}, "credential": {"value": "env.TAVILY_KEY"},
+			 "usage": {"cost_per_request": 0.001}, "routes": [{"method": "POST", "path": "/search", "usage": {"units_path": "usage.credits", "cost_per_unit": 0.008}}]},
+			{"name": "broken", "enabled": true, "base_url": "not a url"}
+		]
+	}`)
+	loadRelaysConfig(context.Background(), config, configData)
+	stored := relayNamesInStore(t, store)
+	require.Len(t, stored, 1, "an invalid declaration is skipped")
+	tavily := stored["tavily"]
+	require.NotNil(t, tavily)
+	assert.Equal(t, "tvly-from-env", tavily.Credential.Value.GetValue(), "an env reference resolves")
+	assert.True(t, tavily.Credential.Value.IsFromEnv(), "and stays a reference")
+	require.Len(t, tavily.Routes, 1)
+
+	hashes, err := store.GetRelayConfigHashes(context.Background())
+	require.NoError(t, err)
+	firstHash := hashes["tavily"]
+	require.NotEmpty(t, firstHash)
+	loadRelaysConfig(context.Background(), config, configData)
+	hashes, _ = store.GetRelayConfigHashes(context.Background())
+	assert.Equal(t, firstHash, hashes["tavily"], "an unchanged file rewrites nothing")
+
+	// An endpoint created through the API survives a merge reload, and is pruned only when
+	// config.json is the source of truth and declares the section.
+	require.NoError(t, store.CreateRelay(context.Background(), &schemas.RelayConfig{
+		Name: "from-api", BaseURL: "https://example.com", Auth: schemas.RelayAuthConfig{Type: schemas.RelayAuthNone},
+	}, ""))
+	loadRelaysConfig(context.Background(), config, configData)
+	assert.Len(t, relayNamesInStore(t, store), 2)
+
+	sourceOfTruth := parseConfigData(t, `{
+		"source_of_truth": "config.json",
+		"relays": [
+			{"name": "tavily", "description": "changed", "base_url": "https://search.example.com", "auth": {"type": "bearer"}, "credential": {"value": "env.TAVILY_KEY"}}
+		]
+	}`)
+	loadRelaysConfig(context.Background(), config, sourceOfTruth)
+	stored = relayNamesInStore(t, store)
+	require.Len(t, stored, 1, "the file is the source of truth: the API-created endpoint is pruned")
+	assert.Equal(t, "changed", stored["tavily"].Description, "a changed declaration updates the row")
+}
+
+// A key's relay_grants in config.json may repeat a name or name a relay that was never stored (a
+// typo, or a declaration skipped as invalid): both would be refused by the store and fail the
+// governance sync, so they are dropped before the store call, the unknown one with a warning.
+func TestGrantableRelayNames(t *testing.T) {
+	initTestLogger()
+	stored := map[string]bool{"tavily": true, "textract": true}
+	assert.Equal(t, []string{"tavily", "textract"}, grantableRelayNames([]string{"tavily", "tavily", "textract", "tavi1y"}, stored, "vk-1", "search"))
+	assert.Equal(t, []string{}, grantableRelayNames([]string{"missing"}, stored, "vk-1", "search"))
+	assert.Equal(t, []string{}, grantableRelayNames(nil, stored, "vk-1", "search"), "no grants stays an explicit empty replacement")
+}
+
+// loadRelayGrantsConfig writes config.json into dir with the given relays and virtual keys, runs
+// the full LoadConfig a restarted pod runs, and returns each key's relay grants as stored.
+func loadRelayGrantsConfig(t *testing.T, dir, sourceOfTruth, relays, virtualKeys string) map[string][]string {
+	t.Helper()
+	sot := ""
+	if sourceOfTruth != "" {
+		sot = `"source_of_truth":"` + sourceOfTruth + `",`
+	}
+	raw := `{` + sot + `
+		"client": {"initial_pool_size": 10, "allowed_origins": ["*"]},
+		"config_store": {"enabled": true, "type": "sqlite", "config": {"path": ` + fmt.Sprintf("%q", filepath.Join(dir, "config.db")) + `}},
+		` + relays + `
+		"governance": {"virtual_keys": ` + virtualKeys + `}
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(raw), 0o644))
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	return relayGrantsInStore(t, config.ConfigStore)
+}
+
+func relayGrantsInStore(t *testing.T, store configstore.ConfigStore) map[string][]string {
+	t.Helper()
+	rdb, ok := store.(*configstore.RDBConfigStore)
+	require.True(t, ok, "fixture check: a sqlite config store")
+	var rows []tables.TableVirtualKeyRelayGrant
+	require.NoError(t, rdb.DB().Order("virtual_key_id, relay_name").Find(&rows).Error)
+	out := map[string][]string{}
+	for _, row := range rows {
+		out[row.VirtualKeyID] = append(out[row.VirtualKeyID], row.RelayName)
+	}
+	return out
+}
+
+// TestRelayGrantsFromConfigFile drives virtual-key relay_grants and the relays section through
+// repeated full loads, as a Helm upgrade restarts the pods with a new config.json. A key whose file
+// entry is unchanged keeps grants made through the API (its hash matches, so nothing is written).
+// A key synced from the file takes its declaration as a whole: a changed list replaces the stored
+// grants, and an entry that lists none (relay_grants omitted or []) is left with none, both when a
+// change to the entry moves its hash and on every load with config.json as the source of truth.
+func TestRelayGrantsFromConfigFile(t *testing.T) {
+	initTestLogger()
+	dir := t.TempDir()
+	relays := `"relays": [
+		{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}},
+		{"name": "exa", "base_url": "https://api.exa.ai", "auth": {"type": "none"}}
+	],`
+	vk := func(id, description, grants string) string {
+		out := `{"id": "` + id + `", "name": "` + id + `", "value": "sk-bf-` + id + `"`
+		if description != "" {
+			out += `, "description": "` + description + `"`
+		}
+		if grants != "" {
+			out += `, "relay_grants": ` + grants
+		}
+		return out + `}`
+	}
+	grantThroughAPI := func(vkID string, names ...string) {
+		ctx := context.Background()
+		config, err := LoadConfig(ctx, dir)
+		require.NoError(t, err)
+		require.NoError(t, config.ConfigStore.ReplaceVirtualKeyRelayGrants(ctx, vkID, names))
+		config.Close(ctx)
+	}
+	search := vk("vk-search", "", `[{"relay_name": "tavily"}]`)
+
+	got := loadRelayGrantsConfig(t, dir, "", relays, `[`+search+`, `+vk("vk-plain", "", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "a new key's declared grants are stored")
+
+	grantThroughAPI("vk-plain", "exa")
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+search+`, `+vk("vk-plain", "", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}, "vk-plain": {"exa"}}, got, "an unchanged entry is not synced, so the API grant stays")
+
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", "", `[{"relay_name": "tavily"}, {"relay_name": "exa"}]`)+`, `+vk("vk-plain", "", "")+`]`)
+	assert.Equal(t, []string{"exa", "tavily"}, got["vk-search"], "a changed grant list changes the key hash and is applied")
+	assert.Equal(t, []string{"exa"}, got["vk-plain"], "a key whose entry did not change is left alone")
+
+	got = loadRelayGrantsConfig(t, dir, "", relays, `[`+vk("vk-search", "", `[]`)+`, `+vk("vk-plain", "edited", "")+`]`)
+	assert.NotContains(t, got, "vk-search", "an explicit [] clears the key's grants")
+	assert.NotContains(t, got, "vk-plain", "an entry synced for another change takes its declaration whole: no relay_grants, no grants")
+
+	grantThroughAPI("vk-plain", "exa")
+	got = loadRelayGrantsConfig(t, dir, "config.json", relays, `[`+search+`, `+vk("vk-plain", "edited", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "with config.json as the source of truth every declared key is synced, so the API grant is cleared")
+
+	// config.json as the source of truth, declaring only tavily: exa is pruned, and its grant goes with it.
+	got = loadRelayGrantsConfig(t, dir, "config.json", `"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}}],`,
+		`[`+vk("vk-search", "", `[{"relay_name": "tavily"}, {"relay_name": "exa"}]`)+`, `+vk("vk-plain", "edited", "")+`]`)
+	assert.Equal(t, map[string][]string{"vk-search": {"tavily"}}, got, "a relay left out of the source-of-truth file is pruned, and a grant naming it is skipped")
+}
+
+// A new key whose relay_grants names a relay that is not configured (a typo, or a relay skipped as
+// invalid) keeps its valid grants, as an existing key's update does, instead of failing the load.
+func TestRelayGrantsFromConfigFile_NewKeyUnknownRelay(t *testing.T) {
+	initTestLogger()
+	got := loadRelayGrantsConfig(t, t.TempDir(), "",
+		`"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "none"}}],`,
+		`[{"id": "vk-new", "name": "vk-new", "value": "sk-bf-new", "relay_grants": [{"relay_name": "tavily"}, {"relay_name": "tavi1y"}]}]`)
+	assert.Equal(t, map[string][]string{"vk-new": {"tavily"}}, got)
+}
+
+// A relay edited in the dashboard keeps the edit across a restart in split mode when config.json is
+// unchanged, even if the env var behind its credential was rotated in between: the hash records the
+// credential's reference, not the resolved value, so the rotation is not read as a file change.
+func TestRelayFromConfigFile_DashboardEditSurvivesCredentialRotation(t *testing.T) {
+	initTestLogger()
+	dir := t.TempDir()
+	relays := `"relays": [{"name": "tavily", "base_url": "https://api.tavily.com", "auth": {"type": "bearer"}, "credential": {"value": "env.RELAY_ROTATION_TOKEN"}}],`
+	t.Setenv("RELAY_ROTATION_TOKEN", "tvly-first")
+	loadRelayGrantsConfig(t, dir, "", relays, `[]`)
+
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	edited, err := config.ConfigStore.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	edited.Description = "edited in the dashboard"
+	// An API edit leaves the stored hash in place, as the relays handler does.
+	require.NoError(t, config.ConfigStore.UpdateRelay(ctx, edited, ""))
+	config.Close(ctx)
+
+	t.Setenv("RELAY_ROTATION_TOKEN", "tvly-rotated")
+	loadRelayGrantsConfig(t, dir, "", relays, `[]`)
+	config, err = LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	got, err := config.ConfigStore.GetRelay(ctx, "tavily")
+	require.NoError(t, err)
+	assert.Equal(t, "edited in the dashboard", got.Description, "an unchanged file does not re-sync the relay over its dashboard edit")
+	assert.Equal(t, "tvly-rotated", got.Credential.Value.GetValue(), "the stored reference resolves to the rotated value")
+}
+
+// A new key's agent_grants naming an agent that is not stored yet (agents are reconciled after
+// governance, so one declared in the same file is not there on its first load) skips that grant
+// instead of failing the governance sync, which would keep every key out of the store.
+func TestAgentGrantsFromConfigFile_NewKeyUnknownAgent(t *testing.T) {
+	initTestLogger()
+	dir := t.TempDir()
+	loadRelayGrantsConfig(t, dir, "", "",
+		`[{"id": "vk-agents", "name": "vk-agents", "value": "sk-bf-agents", "agent_grants": [{"agent_name": "travel-planner"}]},
+		  {"id": "vk-other", "name": "vk-other", "value": "sk-bf-other"}]`)
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, dir)
+	require.NoError(t, err)
+	defer config.Close(ctx)
+	for _, id := range []string{"vk-agents", "vk-other"} {
+		vk, err := config.ConfigStore.GetVirtualKey(ctx, id)
+		require.NoError(t, err, "virtual key %s is stored", id)
+		assert.Empty(t, vk.AgentGrants)
+	}
+}
+
+func TestNormalizeUsageEstimationTokenizers(t *testing.T) {
+	got, err := NormalizeUsageEstimationTokenizers([]string{" Anthropic ", "", "llama3", "anthropic", "ALL"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"anthropic", "llama3", "all"}, got)
+
+	got, err = NormalizeUsageEstimationTokenizers([]string{" ", ""})
+	require.NoError(t, err)
+	assert.Nil(t, got, "nothing left is a single nil representation")
+
+	_, err = NormalizeUsageEstimationTokenizers([]string{"anthropic", "gpt2"})
+	require.ErrorContains(t, err, `"gpt2"`)
+
+	// config.json and stored rows reach the runtime through validateClientConfig.
+	require.Error(t, validateClientConfig(&configstore.ClientConfig{UsageEstimationTokenizers: []string{"gpt2"}}))
+}
+
+// TestIgnoreBudgetBusinessUnitIDs pins that business_unit_id on a governance.budgets entry is not
+// read: it is cleared with a warning naming the budget, and every other field and entry is kept.
+func TestIgnoreBudgetBusinessUnitIDs(t *testing.T) {
+	buID := "bu-1"
+	teamID := "team-1"
+	data := &ConfigData{Governance: &configstore.GovernanceConfig{Budgets: []configstoreTables.TableBudget{
+		{ID: "named", MaxLimit: 10, ResetDuration: "1M", BusinessUnitID: &buID},
+		{ID: "team", MaxLimit: 20, ResetDuration: "1w", TeamID: &teamID},
+	}}}
+	var warned []string
+	ignoreBudgetBusinessUnitIDs(data, func(format string, args ...any) { warned = append(warned, args[0].(string)) })
+
+	assert.Nil(t, data.Governance.Budgets[0].BusinessUnitID)
+	assert.Equal(t, 10.0, data.Governance.Budgets[0].MaxLimit)
+	assert.Equal(t, &teamID, data.Governance.Budgets[1].TeamID, "other owners are left alone")
+	assert.Equal(t, []string{"named"}, warned)
+
+	ignoreBudgetBusinessUnitIDs(nil, func(string, ...any) { t.Fatal("no warning for a nil config") })
+	ignoreBudgetBusinessUnitIDs(&ConfigData{}, func(string, ...any) { t.Fatal("no warning without governance") })
+}
+
+// TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate verifies that registering a client
+// named only by a later duplicate declaration leaves the first declaration in place, as the load
+// did, while a unique declaration naming the client still re-links.
+func TestReconcileFileVirtualMCPsForClient_KeepsFirstDuplicate(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+	store := createTestSQLiteConfigStore(t, createTempDir(t))
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-github", Name: "github", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	fileVMCPs := []schemas.VirtualMCPConfig{
+		{Name: "Shared", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "github", ToolNames: []string{"*"}}}},
+		{Name: "Shared", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}}},
+		{Name: "Jira Only", Tools: []schemas.MCPToolSpecConfig{{MCPClientName: "jira", ToolNames: []string{"*"}}}},
+	}
+	cfg := &Config{ConfigStore: store}
+	cfg.rememberFileVirtualMCPs(fileVMCPs)
+	require.NoError(t, reconcileVirtualMCPsConfig(ctx, store, fileVMCPs, false))
+
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID: "client-jira", Name: "jira", ConnectionType: schemas.MCPConnectionTypeHTTP,
+	}))
+	ids, err := cfg.ReconcileFileVirtualMCPsForClient(ctx, "jira")
+	require.NoError(t, err)
+
+	shared, err := store.GetVirtualMCPByName(ctx, "Shared")
+	require.NoError(t, err)
+	require.Len(t, shared.ParsedTools, 1)
+	assert.Equal(t, "client-github", shared.ParsedTools[0].MCPClientID, "the skipped duplicate must not overwrite the first declaration")
+	jiraOnly, err := store.GetVirtualMCPByName(ctx, "Jira Only")
+	require.NoError(t, err)
+	assert.Equal(t, []uint{jiraOnly.ID}, ids, "the unique declaration still re-links")
+	require.Len(t, jiraOnly.ParsedTools, 1)
+	assert.Equal(t, "client-jira", jiraOnly.ParsedTools[0].MCPClientID)
+}
+
+// storedGovernance reads the governance entities boot left in the config store. The live store
+// loads from those rows, and LoadConfig drops its own boot copy once the live store holds them, so
+// this is where a test checks what boot kept.
+func storedGovernance(t *testing.T, config *Config) *configstore.GovernanceConfig {
+	t.Helper()
+	gov, err := config.ConfigStore.GetGovernanceConfig(context.Background())
+	if err != nil {
+		t.Fatalf("read stored governance: %v", err)
+	}
+	if gov == nil {
+		return &configstore.GovernanceConfig{}
+	}
+	return gov
+}
+
+// BenchmarkGetOAuth2SigningKey measures the signing-key read every OAuth2 token issuance and JWT
+// check makes once the key is cached: one request at a time, and from every core at once.
+func BenchmarkGetOAuth2SigningKey(b *testing.B) {
+	live, err := livestore.New()
+	require.NoError(b, err)
+	b.Cleanup(live.Close)
+	cfg := &Config{ConfigStore: NewMockConfigStore()}
+	require.NoError(b, cfg.AttachLiveStore(live))
+	ctx := context.Background()
+	_, err = cfg.GetOAuth2SigningKey(ctx)
+	require.NoError(b, err)
+
+	b.Run("cached", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := cfg.GetOAuth2SigningKey(ctx); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("cached-parallel", func(b *testing.B) {
+		b.ReportAllocs()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				if _, err := cfg.GetOAuth2SigningKey(ctx); err != nil {
+					b.Error(err)
+					return
+				}
+			}
+		})
+	})
 }

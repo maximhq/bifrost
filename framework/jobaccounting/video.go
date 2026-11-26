@@ -57,6 +57,7 @@ var videoProviders = map[schemas.ModelProvider]struct{}{
 	schemas.Runware:   {},
 	schemas.MiniMax:   {},
 	schemas.BytePlus:  {},
+	schemas.MachGen:   {},
 }
 
 // VideoRetriever is the provider call the video settler needs: given a job row,
@@ -159,6 +160,12 @@ func (s *VideoSettler) Settle(ctx context.Context, pricing PricingManager, jobRe
 		Model:  dims.Model,
 		Object: videoObjectFor(dims.RequestType),
 	}
+	// A token-metered provider (Seedance's completion_tokens) reports what it billed.
+	// The settlement row is the only row that bills the job, so its token columns and
+	// the count governance is told come from here; polls never carry them.
+	if dims.OutputTokens > 0 {
+		settlement.Usage = schemas.BifrostLLMUsage{CompletionTokens: dims.OutputTokens, TotalTokens: dims.OutputTokens}
+	}
 
 	// Attached on every path below, including the unpriceable ones: a row with no
 	// cost is exactly the row an operator needs the detail on.
@@ -213,6 +220,7 @@ func videoDebugFor(videoID string, status schemas.VideoStatus, dims modelcatalog
 				Seconds:      dims.Seconds,
 				Size:         dims.Size,
 				OutputCount:  dims.OutputCount,
+				OutputTokens: dims.OutputTokens,
 				Incomplete:   incomplete,
 				RequestType:  videoRequestTypeFor(dims.RequestType),
 				ProviderCost: dims.ProviderCost,
@@ -280,11 +288,12 @@ func (s *VideoSettler) RepriceFromLog(entry *logstore.Log, pricing PricingManage
 
 	scopes := PricingScopesForLog(entry)
 	details := pricing.CalculateVideoCostDetails(modelcatalog.VideoPricingDimensions{
-		Model:       entry.Model,
-		RequestType: requestType,
-		Seconds:     accounting.Seconds,
-		Size:        accounting.Size,
-		OutputCount: accounting.OutputCount,
+		Model:        entry.Model,
+		RequestType:  requestType,
+		Seconds:      accounting.Seconds,
+		Size:         accounting.Size,
+		OutputCount:  accounting.OutputCount,
+		OutputTokens: accounting.OutputTokens,
 	}, schemas.ModelProvider(entry.Provider), &scopes)
 	if !details.Priced {
 		return nil, fmt.Errorf("%w: no video rate for log %s", ErrPricingInputsUnavailable, entry.ID)
