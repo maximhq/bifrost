@@ -4,11 +4,18 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -237,4 +244,165 @@ func TestStreamingResponseTeardownPanicIsRecovered(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("trace completer never ran")
 	}
+}
+
+// TestStreamIdleHarnessFixture runs the provider-harness assertions over HTTP
+// using the real provider loops and gateway SSE writer. It uses only loopback
+// listeners and is opt-in so the default Go suite does not require Node.
+func TestStreamIdleHarnessFixture(t *testing.T) {
+	if os.Getenv("BIFROST_TEST_STREAM_IDLE_HARNESS") != "1" {
+		t.Skip("set BIFROST_TEST_STREAM_IDLE_HARNESS=1 to run the loopback collection fixture")
+	}
+	const idle = time.Second
+	const responseID = "resp_idle_fixture"
+	responsePath := "/v1/responses/" + responseID
+	fixtureCtx, stop := context.WithTimeout(t.Context(), 25*time.Second)
+	pauseStarted := make(chan struct{})
+	secondWritten := make(chan struct{})
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/chat/completions":
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, `data: {"id":"chatcmpl-idle","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"before-pause"}}]}`+"\n\n")
+			w.(http.Flusher).Flush()
+			select {
+			case <-pauseStarted:
+			case <-r.Context().Done():
+				return
+			case <-fixtureCtx.Done():
+				return
+			}
+			if _, err := io.WriteString(w, `data: {"id":"chatcmpl-idle","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":"after-pause"}}]}`+"\n\n"+
+				`data: {"id":"chatcmpl-idle","object":"chat.completion.chunk","model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n"); err == nil {
+				w.(http.Flusher).Flush()
+				close(secondWritten)
+			}
+		case responsePath:
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, `data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_idle_fixture","model":"gpt-4o-mini","status":"in_progress"}}`+"\n\n"+
+				`data: {"type":"error","sequence_number":1,"message":"terminal failure","code":"bifrost_terminal_error_fixture"}`+"\n\n")
+			w.(http.Flusher).Flush()
+			// Wait for the gateway to discard the incomplete body. A client
+			// timeout cannot satisfy the assertion that the response completes.
+			select {
+			case <-r.Context().Done():
+			case <-fixtureCtx.Done():
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	defer stop()
+
+	provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, StreamIdleTimeoutInSeconds: int(idle.Seconds())},
+	}, &mockLogger{})
+	key := schemas.Key{Value: *schemas.NewSecretVar("stream-idle-fixture")}
+	transport := &CompletionHandler{config: &lib.Config{}}
+	gateway := &fasthttp.Server{Handler: func(req *fasthttp.RequestCtx) {
+		parent, cancel := context.WithCancel(fixtureCtx)
+		ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+		switch string(req.Request.Header.Peek("x-bf-test-fixture")) {
+		case "stream-idle-pause-v1":
+			var payload struct {
+				Model    string                `json:"model"`
+				Messages []schemas.ChatMessage `json:"messages"`
+				Stream   bool                  `json:"stream"`
+			}
+			if !req.IsPost() || string(req.Path()) != "/v1/chat/completions" ||
+				schemas.Unmarshal(req.PostBody(), &payload) != nil || !payload.Stream || payload.Model != "openai/gpt-4o-mini" {
+				cancel()
+				req.Error("invalid chat fixture request", http.StatusBadRequest)
+				return
+			}
+			paused := false
+			hook := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				if paused || result == nil || result.ChatResponse == nil {
+					return result, err
+				}
+				paused = true
+				// The provider calls this hook synchronously after reading the
+				// first event. Its loop cannot start the next Read until we return.
+				start := time.Now()
+				close(pauseStarted)
+				timer := time.NewTimer(3 * idle)
+				defer timer.Stop()
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					return result, err
+				}
+				select {
+				case <-secondWritten:
+					result.ChatResponse.ExtraFields.RawResponse = map[string]any{
+						"stream_idle_pause_fixture": map[string]any{
+							"version":                          1,
+							"paused_in_provider_post_hook":     true,
+							"idle_timeout_ms":                  providerUtils.GetStreamIdleTimeout(ctx).Milliseconds(),
+							"pause_ms":                         time.Since(start).Milliseconds(),
+							"second_chunk_ready_before_resume": true,
+						},
+					}
+				case <-ctx.Done():
+				}
+				return result, err
+			}
+			transport.handleStreamingResponse(req, ctx, schemas.ChatCompletionStreamRequest, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return provider.ChatCompletionStream(ctx, hook, nil, key, &schemas.BifrostChatRequest{
+					Provider: schemas.OpenAI, Model: "gpt-4o-mini", Input: payload.Messages,
+				})
+			}, cancel)
+		case "stream-terminal-error-v1":
+			if !req.IsGet() || string(req.Path()) != responsePath || string(req.QueryArgs().Peek("stream")) != "true" {
+				cancel()
+				req.Error("invalid Responses fixture request", http.StatusBadRequest)
+				return
+			}
+			hook := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				if err != nil {
+					// The SDK post-hook runner sets the request type before the HTTP writer sees the error.
+					err.ExtraFields.RequestType = schemas.ResponsesRetrieveStreamRequest
+					timer := time.NewTimer(3 * idle)
+					defer timer.Stop()
+					select {
+					case <-timer.C:
+					case <-ctx.Done():
+					}
+				}
+				return result, err
+			}
+			transport.handleStreamingResponse(req, ctx, schemas.ResponsesRetrieveStreamRequest, func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+				return provider.ResponsesRetrieveStream(ctx, hook, nil, key, &schemas.BifrostResponsesRetrieveRequest{
+					Provider: schemas.OpenAI, ResponseID: responseID,
+				})
+			}, cancel)
+		default:
+			cancel()
+			req.Error("unknown stream fixture", http.StatusNotFound)
+		}
+	}}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() { _ = gateway.Serve(listener) }()
+	defer func() {
+		stop()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := gateway.ShutdownWithContext(shutdownCtx); err != nil {
+			t.Errorf("fixture shutdown: %v", err)
+		}
+	}()
+
+	cmd := exec.CommandContext(fixtureCtx, "node", "../../../tests/e2e/api/collections/collection-scripts.test.mjs")
+	cmd.Env = append(os.Environ(), "BIFROST_STREAM_IDLE_FIXTURE_URL=http://"+listener.Addr().String())
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("live fixture collection assertions: %v\n%s", err, output)
+	}
+	t.Logf("%s", output)
 }

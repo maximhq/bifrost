@@ -736,3 +736,51 @@ func TestAnthropicStreamMarksProvisionalUsage(t *testing.T) {
 		}
 	}
 }
+
+// Anthropic stops reading after its terminal error event even if the HTTP
+// body remains open. Cleanup must finish and preserve the upstream error.
+func TestAnthropicChatStreamTerminalErrorClosesParkedBody(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: error\ndata: "+`{"type":"error","error":{"type":"overloaded_error","message":"terminal failure"}}`+"\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 100*time.Millisecond)
+	hook := func(_ *schemas.BifrostContext, response *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		time.Sleep(300 * time.Millisecond)
+		return response, err
+	}
+	stream, err := newTruncationTestProvider(server.URL).ChatCompletionStream(ctx, hook, nil,
+		schemas.Key{Value: *schemas.NewSecretVar("test-key")}, truncationChatRequest())
+	if err != nil {
+		t.Fatalf("stream setup: %v", err)
+	}
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case chunk := <-stream:
+		if chunk == nil || chunk.BifrostError == nil || chunk.BifrostError.Error == nil || chunk.BifrostError.Error.Message != "terminal failure" {
+			t.Fatalf("expected original provider error, got %+v", chunk)
+		}
+	case <-timer.C:
+		t.Fatal("never received the upstream terminal error")
+	}
+	select {
+	case _, ok := <-stream:
+		if ok {
+			t.Fatal("unexpected chunk after the terminal error")
+		}
+	case <-timer.C:
+		t.Fatal("terminal error stream did not close while upstream body remained open")
+	}
+}

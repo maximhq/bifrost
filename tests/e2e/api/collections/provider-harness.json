@@ -351858,6 +351858,181 @@
           }
         }
       ]
+    },
+    {
+      "name": "389. Stream idle timeout excludes consumer processing (#10165 / PR #10172)",
+      "description": "Loopback fixture for a slow consumer and a stalled terminal-error drain. TestStreamIdleHarnessFixture runs these collection assertions against a test gateway backed by a controlled upstream. The real provider post-hook pauses between reads and records how long it waited on the first chat chunk. The Responses retrieval case receives the original terminal error while the upstream body stays open. Both cases are [PREVIEW] when selected in the general provider harness. See HARNESS_COVERAGE_BACKLOG.md for the local run command.",
+      "item": [
+        {
+          "name": "389.1 [PREVIEW] openai gpt-4o-mini streaming survives a controlled consumer pause - #10165",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-test-fixture",
+                "value": "stream-idle-pause-v1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Run the controlled stream idle consumer pause fixture.\"\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 16\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var enabled = (pm.environment.get('include_preview') || pm.variables.get('include_preview') || '') === '1';",
+                  "if (enabled && pm.variables.get('streamIdlePauseFixtureReady') !== 'v1') {",
+                  "  pm.test('controlled consumer-pause fixture is configured', function () {",
+                  "    pm.expect.fail('Run the loopback fixture with TestStreamIdleHarnessFixture. See HARNESS_COVERAGE_BACKLOG.md.');",
+                  "  });",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "var receipts = [];",
+                  "pm.test('consumer pause preserves the next SSE chunk and normal completion', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', text).to.include('text/event-stream');",
+                  "  pm.expect(text, text).not.to.include('stream idle timeout');",
+                  "  var content = '';",
+                  "  var done = false;",
+                  "  var frames = text.replace(/\\r\\n|\\r/g, '\\n').split('\\n\\n');",
+                  "  frames.pop(); // Ignore an unfinished frame: EOF alone does not dispatch SSE.",
+                  "  frames.forEach(function (frame) {",
+                  "    var fields = [];",
+                  "    frame.split('\\n').forEach(function (line) {",
+                  "      if (line.charAt(0) === ':') { return; }",
+                  "      var colon = line.indexOf(':');",
+                  "      var field = colon < 0 ? line : line.slice(0, colon);",
+                  "      var value = colon < 0 ? '' : line.slice(colon + 1);",
+                  "      if (value.charAt(0) === ' ') { value = value.slice(1); }",
+                  "      if (field === 'data') { fields.push(value); }",
+                  "    });",
+                  "    if (fields.length === 0) { return; }",
+                  "    var data = fields.join('\\n');",
+                  "    pm.expect(done, 'data event after [DONE]: ' + text).to.equal(false);",
+                  "    if (data === '[DONE]') {",
+                  "      pm.expect(content, text).to.equal('before-pauseafter-pause');",
+                  "      done = true;",
+                  "      return;",
+                  "    }",
+                  "    var event = JSON.parse(data);",
+                  "    var raw = event.extra_fields && event.extra_fields.raw_response;",
+                  "    if (raw && raw.stream_idle_pause_fixture) { receipts.push(raw.stream_idle_pause_fixture); }",
+                  "    pm.expect(event.error, text).to.equal(undefined);",
+                  "    (event.choices || []).forEach(function (choice) { content += (choice.delta && choice.delta.content) || ''; });",
+                  "  });",
+                  "  pm.expect(content, text).to.equal('before-pauseafter-pause');",
+                  "  pm.expect(done, text).to.equal(true);",
+                  "});",
+                  "pm.test('fixture proves the pause happened between upstream reads', function () {",
+                  "  pm.expect(receipts.length, text).to.equal(1);",
+                  "  var receipt = receipts[0];",
+                  "  pm.expect(receipt.version, text).to.equal(1);",
+                  "  pm.expect(receipt.paused_in_provider_post_hook, text).to.equal(true);",
+                  "  pm.expect(receipt.idle_timeout_ms, text).to.equal(1000);",
+                  "  pm.expect(receipt.pause_ms, text).to.be.at.least(3 * receipt.idle_timeout_ms);",
+                  "  pm.expect(receipt.second_chunk_ready_before_resume, text).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "389.2 [PREVIEW] openai gpt-4o-mini Responses retrieval error closes after a controlled consumer pause - #10165",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-test-fixture",
+                "value": "stream-terminal-error-v1"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/responses/resp_idle_fixture?stream=true"
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var enabled = (pm.environment.get('include_preview') || pm.variables.get('include_preview') || '') === '1';",
+                  "if (enabled && pm.variables.get('streamIdlePauseFixtureReady') !== 'v1') {",
+                  "  pm.test('controlled consumer-pause fixture is configured', function () {",
+                  "    pm.expect.fail('Run the loopback fixture with TestStreamIdleHarnessFixture. See HARNESS_COVERAGE_BACKLOG.md.');",
+                  "  });",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text();",
+                  "pm.test('terminal provider error completes without waiting for upstream EOF', function () {",
+                  "  pm.expect(pm.response.code, text).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', text).to.include('text/event-stream');",
+                  "  var terminalErrorSeen = false;",
+                  "  var frames = text.replace(/\\r\\n|\\r/g, '\\n').split('\\n\\n');",
+                  "  frames.pop(); // SSE dispatch requires a blank line; discard an unfinished tail.",
+                  "  frames.forEach(function (frame) {",
+                  "    var eventType = 'message';",
+                  "    var data = [];",
+                  "    frame.split('\\n').forEach(function (line) {",
+                  "      if (line.charAt(0) === ':') { return; }",
+                  "      var colon = line.indexOf(':');",
+                  "      var field = colon < 0 ? line : line.slice(0, colon);",
+                  "      var value = colon < 0 ? '' : line.slice(colon + 1);",
+                  "      if (value.charAt(0) === ' ') { value = value.slice(1); }",
+                  "      if (field === 'event') { eventType = value; }",
+                  "      if (field === 'data') { data.push(value); }",
+                  "    });",
+                  "    if (data.length === 0) { return; }",
+                  "    pm.expect(terminalErrorSeen, 'data event after terminal error: ' + text).to.equal(false);",
+                  "    var payload = JSON.parse(data.join('\\n'));",
+                  "    pm.expect(eventType === 'response.completed' || payload.type === 'response.completed', text).to.equal(false);",
+                  "    if (eventType !== 'error') { return; }",
+                  "    pm.expect(payload.type, text).to.equal('error');",
+                  "    var error = payload.error || {};",
+                  "    pm.expect(error.message, text).to.equal('terminal failure');",
+                  "    pm.expect(error.code, text).to.equal('bifrost_terminal_error_fixture');",
+                  "    terminalErrorSeen = true;",
+                  "  });",
+                  "  pm.expect(terminalErrorSeen, text).to.equal(true);",
+                  "  pm.expect(text, text).not.to.include('stream idle timeout');",
+                  "  pm.expect(pm.response.responseTime, text).to.be.below(10000);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

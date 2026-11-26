@@ -4286,23 +4286,24 @@ func closeBodyStream(bodyStream io.Reader, err error) {
 }
 
 // idleTimeoutReader wraps an io.Reader and closes the underlying body stream
-// if no data arrives within the configured timeout. This unblocks any pending
-// Read() call on the wrapped reader.
+// if a Read blocks beyond the configured timeout, unblocking that Read.
+// The timer is disarmed while the consumer processes returned data.
 type idleTimeoutReader struct {
-	ctx           *schemas.BifrostContext
-	reader        io.Reader
-	bodyStream    io.Reader // closed via type assertion to io.Closer on timeout
-	timeout       time.Duration
-	timer         *time.Timer
-	once          sync.Once
-	cleanupOnce   sync.Once
-	timerDoneOnce sync.Once
-	timerDone     chan struct{}
-	fired         atomic.Bool // set true when the idle timer fires
+	ctx        *schemas.BifrostContext
+	reader     io.Reader
+	bodyStream io.Reader
+	timeout    time.Duration
+	mu         sync.Mutex // serializes timer state and body closure with cleanup
+	timer      *time.Timer
+	deadline   time.Time
+	reading    bool
+	stopped    bool
+	fired      atomic.Bool
 }
 
-// NewIdleTimeoutReader wraps reader with idle detection. If reader.Read() returns
-// no data for the given timeout duration, bodyStream is closed to unblock the read.
+// NewIdleTimeoutReader wraps reader with idle detection. Only time spent waiting
+// in Read counts toward the timeout; processing between reads does not. A blocked
+// Read exceeding timeout closes bodyStream to unblock it. Reads must be sequential.
 // Supports both io.Closer and fasthttp's CloseWithError interface — the latter
 // closes the underlying TCP connection when called with a non-nil error, which is
 // required to interrupt a blocked Read on fasthttp streaming responses.
@@ -4334,53 +4335,67 @@ func NewIdleTimeoutReader(reader io.Reader, bodyStream io.Reader, timeout time.D
 		reader:     reader,
 		bodyStream: bodyStream,
 		timeout:    timeout,
-		timerDone:  make(chan struct{}),
 	}
-	r.timer = time.AfterFunc(timeout, func() {
-		defer r.timerDoneOnce.Do(func() { close(r.timerDone) })
-		r.once.Do(func() {
-			// Atomically claim the close before tearing anything down. If a
-			// cancellation/release owner already closed the stream, do nothing:
-			// a second closeBodyStream re-runs releaseRequestStream and
-			// double-Puts the pooled requestStream, poisoning another request.
-			// Setting r.fired only on the winning path keeps the Read recover's
-			// idle-timeout vs closed error classification accurate.
-			if ctx != nil {
-				if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
-					return
-				}
-			}
-			r.fired.Store(true)
-			// closeBodyStream may panic: an orphaned timer can fire after the
-			// stream's connection has already been released to / reused from
-			// the fasthttp pool, so CloseWithError nil-derefs in
-			// (*HostClient).CloseConn. Because this runs in the timer goroutine,
-			// that panic is unrecoverable by callers and crashes the whole
-			// process. Recover here so a stale idle timer can never take the
-			// process down (companion to the Read() recover added in #3677).
-			// Unlike the Read() path we cannot re-panic an unexpected value
-			// (that would crash the process — the very thing we are guarding
-			// against), so log the recovered value to leave a forensic trace
-			// for any future, unrelated panic introduced into this path.
-			defer func() {
-				if rec := recover(); rec != nil {
-					getLogger().Debug("recovered panic in idle-timeout timer closeBodyStream: %v", rec)
-				}
-			}()
-			closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
-		})
-	})
 	return r, r.cleanup
 }
 
-func (r *idleTimeoutReader) cleanup() {
-	r.cleanupOnce.Do(func() {
-		if r.timer.Stop() {
-			r.timerDoneOnce.Do(func() { close(r.timerDone) })
+func (r *idleTimeoutReader) startRead() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.stopped || r.connectionClosed() {
+		return false
+	}
+	r.reading = true
+	r.deadline = time.Now().Add(r.timeout)
+	if r.timer == nil {
+		r.timer = time.AfterFunc(r.timeout, r.onTimeout)
+	} else {
+		r.timer.Reset(r.timeout)
+	}
+	return true
+}
+
+func (r *idleTimeoutReader) finishRead() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.reading = false
+	r.timer.Stop()
+}
+
+func (r *idleTimeoutReader) onTimeout() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Stop cannot retract a callback that is already queued. Ignore callbacks
+	// between reads and callbacks from an earlier read whose timer was reset.
+	if r.stopped || !r.reading || time.Now().Before(r.deadline) {
+		return
+	}
+	r.stopped = true
+	// Cancellation and response release share this atomic ownership claim.
+	// Only the winner may close the body or classify the error as idle timeout.
+	if r.ctx != nil {
+		if prev, _ := r.ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 			return
 		}
-		<-r.timerDone
-	})
+	}
+	r.fired.Store(true)
+	defer func() {
+		if rec := recover(); rec != nil {
+			getLogger().Debug("recovered panic in idle-timeout timer closeBodyStream: %v", rec)
+		}
+	}()
+	// Hold mu through close: cleanup must wait for the callback to finish
+	// touching the body before the caller can release/reuse the response.
+	closeBodyStream(r.bodyStream, ErrStreamIdleTimeout)
+}
+
+func (r *idleTimeoutReader) cleanup() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.stopped = true
+	if r.timer != nil {
+		r.timer.Stop()
+	}
 }
 
 func (r *idleTimeoutReader) connectionClosed() bool {
@@ -4399,32 +4414,30 @@ func (r *idleTimeoutReader) closedReadError() error {
 }
 
 func (r *idleTimeoutReader) Read(p []byte) (n int, err error) {
+	if !r.startRead() {
+		return 0, r.closedReadError()
+	}
+	readStart := time.Now()
 	defer func() {
+		elapsed := time.Since(readStart)
+		r.finishRead()
 		if recovered := recover(); recovered != nil {
 			if r.fired.Load() || r.connectionClosed() {
 				n = 0
 				err = r.closedReadError()
 				return
 			}
+			panic(recovered)
+		}
+		if r.ctx != nil {
+			schemas.AddUpstreamLatency(r.ctx, elapsed)
+		}
+		if err != nil && err != io.EOF && r.fired.Load() {
+			err = ErrStreamIdleTimeout
 		}
 	}()
 
-	// Checking if stream is already closed
-	if r.connectionClosed() {
-		return 0, r.closedReadError()
-	}
-	readStart := time.Now()
-	n, err = r.reader.Read(p)
-	if r.ctx != nil {
-		schemas.AddUpstreamLatency(r.ctx, time.Since(readStart))
-	}
-	if n > 0 {
-		r.timer.Reset(r.timeout)
-	}
-	if err != nil && err != io.EOF && r.fired.Load() {
-		return n, ErrStreamIdleTimeout
-	}
-	return n, err
+	return r.reader.Read(p)
 }
 
 // ErrStreamIdleTimeout is returned when no data is received within the configured
@@ -4857,31 +4870,20 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 		fasthttp.ReleaseResponse(resp)
 		return
 	}
-	// Atomically claim the close. If a cancel/timeout owner already closed the
-	// stream, skip drain + ReleaseResponse: fasthttp.ReleaseResponse would
-	// re-Close and double-release the pooled requestStream/conn (poisoning
-	// another request, or nil-derefing the TCP conn). Leaking to GC is the
-	// intentional trade-off, so keep the defer below this check. GetAndSetValue
-	// is a single locked compare-and-swap, closing the race the previous
-	// Value-only check left open against a concurrent timer/cancellation close.
+	// Keep response release, cancellation and the read timer mutually exclusive.
+	// A prior owner is responsible for closing the body and releasing its transport resources.
 	if prev, _ := ctx.GetAndSetValue(schemas.BifrostContextKeyConnectionClosed, true).(bool); prev {
 		return
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			getLogger().Debug("stream already closed before drain in ReleaseStreamingResponse: %v\n", r)
+			getLogger().Debug("recovered panic releasing streaming response: %v", r)
 		}
 	}()
-	// Cancelled or timed out: abandon the connection instead of draining it.
-	// Draining here would read the rest of an upstream response nobody wants,
-	// holding the connection for the remainder of the stream. Closing with a
-	// non-nil error makes fasthttp's callback take CloseConn rather than
-	// ReleaseConn (client.go:3176), so a half-read connection is never returned
-	// to the idle pool. The response itself is left to GC for the same reason as
-	// the early return above: fasthttp.ReleaseResponse would Reset and fire the
-	// close callback a second time.
-	if ctx.Err() != nil {
-		closeBodyStream(bodyStream, ctx.Err())
+	// A canceled request no longer needs the remaining bytes. Close with an
+	// error so the transport discards the connection.
+	if err := ctx.Err(); err != nil {
+		closeBodyStream(bodyStream, err)
 		return
 	}
 	// Drain any remaining data from the body stream before releasing.
@@ -4905,24 +4907,48 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
 			return
 		}
-		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		closed, err := drainStreamingResponse(ctx, bodyStream)
+		if closed {
+			return // The drain watchdog has already discarded the connection.
+		}
+		if err != nil {
+			getLogger().Warn("failed to drain streaming response body before release: %v", err)
+			closeBodyStream(bodyStream, err)
+			return
 		}
 	}
-	// Close the body-stream wrapper exactly once HERE and detach it from resp
-	// (CloseBodyStream sets resp.bodyStream = nil). fasthttp's streaming close
-	// callback releases the pooled *bufio.Reader and *requestStream with NO
-	// idempotency guard (client.go: hc.ReleaseReader(br) + releaseRequestStream
-	// are bare sync.Pool.Put). Without detaching, the fasthttp.ReleaseResponse
-	// below runs Reset -> closeBodyStream and fires that callback a SECOND time,
-	// double-Putting the reader; two later requests then acquire and Reset the
-	// same *bufio.Reader and race on it, producing the
-	// "slice bounds out of range [:N] with capacity 4096" panic in
-	// mustPeekBuffered. Detaching makes ReleaseResponse's Reset a no-op
-	// (closeBodyStream short-circuits on nil). The CAS above already serializes
-	// this against the cancellation / idle-timeout closers.
+	// Detach the body so returning the response to its pool does not close it again.
 	resp.CloseBodyStream()
 	fasthttp.ReleaseResponse(resp)
+}
+
+// drainStreamingResponse bounds the entire cleanup read, including upstreams
+// that keep writing after a terminal event. The release caller already owns
+// the body, so the callback closes it directly rather than claiming it again.
+func drainStreamingResponse(ctx *schemas.BifrostContext, body io.Reader) (closed bool, err error) {
+	drainCtx, cancel := context.WithTimeout(ctx, GetStreamIdleTimeout(ctx))
+	defer cancel()
+
+	closeDone := make(chan struct{})
+	stopClose := context.AfterFunc(drainCtx, func() {
+		defer close(closeDone)
+		defer func() {
+			if rec := recover(); rec != nil {
+				getLogger().Debug("recovered panic closing stream during drain: %v", rec)
+			}
+		}()
+		closeBodyStream(body, drainCtx.Err())
+	})
+	defer func() {
+		if !stopClose() {
+			// A Close can unblock Copy before it finishes releasing transport
+			// resources. Wait before the caller returns or reuses the response.
+			<-closeDone
+			closed = true
+		}
+	}()
+	_, err = io.Copy(io.Discard, body)
+	return closed, err
 }
 
 // GetBifrostResponseForStreamResponse converts the provided responses to a bifrost response.

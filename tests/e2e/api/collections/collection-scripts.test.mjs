@@ -1,4 +1,4 @@
-// Unit tests for the inline scripts in bifrost-api-management.postman_collection.json.
+// Unit tests for the inline scripts in the API management and provider collections.
 // Run directly: `node collection-scripts.test.mjs`.
 // No test framework needed (the tests/e2e/api dir has no test runner configured).
 //
@@ -1158,8 +1158,114 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
+// Exercise provider-harness assertions with valid and misleading wire responses.
+// A no-op expect chain would hide these regressions, so this sandbox evaluates
+// the small Chai subset used by the scripts and records real assertion failures.
+function streamExpect(actual, message) {
+  let negate = false;
+  const chain = new Proxy({}, {
+    get(_, key) {
+      if (["to", "be", "at"].includes(key)) return chain;
+      if (key === "not") { negate = !negate; return chain; }
+      const checks = {
+        equal: (expected) => actual === expected,
+        include: (expected) => actual.includes(expected),
+        above: (expected) => actual > expected,
+        below: (expected) => actual < expected,
+        least: (expected) => actual >= expected,
+      };
+      assert.ok(key in checks, `unsupported assertion: ${String(key)}`);
+      return (expected) => assert.ok(negate ? !checks[key](expected) : checks[key](expected), message);
+    },
+  });
+  return chain;
+}
+
+const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
+const idleFolder = providerHarness.item.find((f) => f.name.includes("Stream idle timeout excludes consumer processing"));
+assert.ok(idleFolder, "stream idle regression folder missing");
+function runStreamAssertion(index, responseBody, responseCode = 200, responseTime = 3000, contentType = "text/event-stream") {
+  const ctx = sandbox({ responseBody, responseCode });
+  ctx.pm.expect = streamExpect;
+  ctx.pm.response.headers = { get: (name) => name.toLowerCase() === "content-type" ? contentType : null };
+  ctx.pm.response.responseTime = responseTime;
+  new Function("pm", listenScript(idleFolder.item[index], "test"))(ctx.pm);
+  assert.ok(ctx.state.tests.length > 0, "script registered no assertions");
+  return ctx.state.tests.every((t) => t.passed);
+}
+
+const idleChunk = (content) => `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+const idleReceipt = {
+  version: 1,
+  paused_in_provider_post_hook: true,
+  idle_timeout_ms: 1000,
+  pause_ms: 3000,
+  second_chunk_ready_before_resume: true,
+};
+const beforePause = `data: ${JSON.stringify({
+  choices: [{ delta: { content: "before-pause" } }],
+  extra_fields: { raw_response: { stream_idle_pause_fixture: idleReceipt } },
+})}\n\n`;
+const afterPause = idleChunk("after-pause");
+const doneMarker = "data: [DONE]\n\n";
+const completePauseStream = beforePause + afterPause + doneMarker;
+
+test("idle harness accepts both chunks followed by completion", () => {
+  for (const separator of ["\n", "\r\n", "\r"]) {
+    assert.strictEqual(runStreamAssertion(0, completePauseStream.replaceAll("\n", separator)), true);
+  }
+});
+test("idle harness accepts multiline data in a complete content frame", () => {
+  const multiline = completePauseStream.replace('"choices":[', '"choices":\ndata: [');
+  assert.strictEqual(runStreamAssertion(0, multiline), true);
+});
+test("idle harness rejects an unterminated completion frame", () => {
+  for (const tail of ["data: [DONE]", "data: [DONE]\n"]) {
+    assert.strictEqual(runStreamAssertion(0, beforePause + afterPause + tail), false);
+  }
+});
+test("idle harness rejects a shortened fixture idle window", () => {
+  for (const [idle, pause] of [[1, 3], [999, 3000]]) {
+    const shortened = completePauseStream.replace('"idle_timeout_ms":1000', '"idle_timeout_ms":' + idle).replace('"pause_ms":3000', '"pause_ms":' + pause);
+    assert.strictEqual(runStreamAssertion(0, shortened), false);
+  }
+});
+for (const [name, body] of [
+  ["completion before the second chunk", beforePause + doneMarker + afterPause],
+  ["data after completion", completePauseStream + idleChunk("")],
+  ["duplicate completion", completePauseStream + doneMarker],
+  ["missing completion", beforePause + afterPause],
+]) {
+  test(`idle harness rejects ${name}`, () => assert.strictEqual(runStreamAssertion(0, body), false));
+}
+
+const terminalError = 'event: error\ndata: {"type":"error","error":{"message":"terminal failure","code":"bifrost_terminal_error_fixture"}}\n\n';
+const fakeErrorComment = ': terminal failure bifrost_terminal_error_fixture\n\n';
+const completedEvent = 'event: response.completed\ndata: {"type":"response.completed"}\n\n';
+test("terminal error harness accepts a structured gateway error", () => {
+  assert.strictEqual(runStreamAssertion(1, terminalError), true);
+  assert.strictEqual(runStreamAssertion(1, terminalError.replaceAll("\n", "\r\n")), true);
+});
+test("terminal error harness joins multiline SSE data", () => {
+  assert.strictEqual(runStreamAssertion(1, terminalError.replace(',"error"', ',\ndata: "error"')), true);
+});
+for (const [name, body] of [
+  ["markers only in a comment", fakeErrorComment + completedEvent],
+  ["markers in a successful event", 'event: response.completed\ndata: {"type":"response.completed","message":"terminal failure","code":"bifrost_terminal_error_fixture"}\n\n'],
+  ["wrong error code", fakeErrorComment + terminalError.replace('"code":"bifrost_terminal_error_fixture"', '"code":"different_error"')],
+  ["wrong error event type", terminalError.replace("event: error", "event: response.completed")],
+  ["completion after the error", terminalError + completedEvent],
+  ["an unterminated error frame", terminalError.trimEnd()],
+]) {
+  test(`terminal error harness rejects ${name}`, () => assert.strictEqual(runStreamAssertion(1, body), false));
+}
+test("terminal error harness retains status and timing checks", () => {
+  assert.strictEqual(runStreamAssertion(1, terminalError, 500), false);
+  assert.strictEqual(runStreamAssertion(1, terminalError, 200, 10000), false);
+});
+
 // Execute the collection's own folder scripts, not a copied implementation.
-const registrationFolder = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8")).item.find(
+const registrationFolder = providerHarness.item.find(
   (item) => item.name === "378. Management-created provider prefixes route immediately (provider-prefix-registration)",
 );
 assert.ok(registrationFolder, "provider-prefix-registration folder is missing");
@@ -1313,6 +1419,37 @@ test("provider-prefix-registration: wrong provider, unexpected status, and non-J
     assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 3);
   }
 });
+
+// The opt-in Go fixture supplies this URL after starting the gateway and mock
+// provider. Exercise the exact test scripts with the resulting HTTP responses.
+const streamIdleFixtureURL = process.env.BIFROST_STREAM_IDLE_FIXTURE_URL;
+if (streamIdleFixtureURL) {
+  const fixture = new URL(streamIdleFixtureURL);
+  assert.equal(fixture.protocol, "http:");
+  assert.equal(fixture.hostname, "127.0.0.1");
+  for (const [index, row] of idleFolder.item.entries()) {
+    const request = row.request;
+    const url = new URL(request.url.replace("{{baseUrl}}", fixture.origin));
+    assert.equal(url.origin, fixture.origin);
+    const start = performance.now();
+    try {
+      const response = await fetch(url, {
+        method: request.method,
+        headers: request.header.map(({ key, value }) => [key, value]),
+        body: request.body?.raw,
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
+      const body = await response.text();
+      const elapsed = performance.now() - start;
+      test(`loopback HTTP fixture runs ${row.name}`, () => {
+        assert.ok(runStreamAssertion(index, body, response.status, elapsed, response.headers.get("content-type")), body);
+      });
+    } catch (error) {
+      test(`loopback HTTP fixture runs ${row.name}`, () => { throw error; });
+    }
+  }
+}
 
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
