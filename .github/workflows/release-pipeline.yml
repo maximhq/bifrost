@@ -370,6 +370,14 @@ jobs:
           # config.json, so auditing the seeded provider config does not reveal it.
           allowed-endpoints: >
             127.0.0.1:8080
+            172.38.0.12:8080
+            172.38.0.12:8301
+            172.38.0.12:50051
+            auth.docker.io:443
+            cr.weaviate.io:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            registry-1.docker.io:443
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
             aiplatform.googleapis.com:443
@@ -476,6 +484,9 @@ jobs:
         uses: step-security/setup-gcloud@0d4fd148182bcc22d7b88f0e12ccc0150ab691f4 # v3.0.2
         with:
           version: "575.0.1"
+
+      - name: Start Weaviate
+        run: ./.github/workflows/scripts/start-weaviate.sh
 
       - name: Run core tests
         env:
@@ -854,6 +865,14 @@ jobs:
           egress-policy: block
           allowed-endpoints: &test-core-egress >
             127.0.0.1:8080
+            172.38.0.12:8080
+            172.38.0.12:8301
+            172.38.0.12:50051
+            auth.docker.io:443
+            cr.weaviate.io:443
+            production.cloudflare.docker.com:443
+            production.cloudfront.docker.com:443
+            registry-1.docker.io:443
             7defe2860d5ee49a1e667e1eeea34b25.r2.cloudflarestorage.com:443
             accounts.google.com:443
             aiplatform.googleapis.com:443
@@ -961,6 +980,9 @@ jobs:
       # used to reference through MCP_SSE_URL.
       - name: Build MCP test servers
         run: make setup-mcp-tests
+
+      - name: Start Weaviate
+        run: ./.github/workflows/scripts/start-weaviate.sh
 
       - name: Run core integration test files in parallel
         env:

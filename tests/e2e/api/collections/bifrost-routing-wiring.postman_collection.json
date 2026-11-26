@@ -26536,8 +26536,8 @@
       ]
     },
     {
-      "name": "Alias name not whitelisted is blocked",
-      "description": "The VK whitelists the resolved model id, but the request uses the alias name; the alias isn't in allowed_models, so governance refuses it with 403 model_blocked.",
+      "name": "Alias of a whitelisted model is admitted",
+      "description": "The VK whitelists the resolved model id and the request uses the key's alias for it; since #8528 allowed_models matches key aliases of allowed models, so the alias is served and resolves to the whitelisted id.",
       "item": [
         {
           "id": "rt-alias-vs-whitelist-01-add-provider",
@@ -26760,7 +26760,7 @@
         },
         {
           "id": "rt-alias-vs-whitelist-05-route",
-          "name": "05. unlisted alias refused (403 model_blocked) [alias-vs-whitelist]",
+          "name": "05. alias of an allowed model routes (resolves to the model id) [alias-vs-whitelist]",
           "event": [
             {
               "listen": "test",
@@ -26769,16 +26769,19 @@
                 "exec": [
                   "var cleanupReq = \"cleanup: delete vk [alias-vs-whitelist]\";",
                   "function assertNow() {",
-                  "  if (pm.response.code !== 403) { throw new Error('expected status 403 got ' + pm.response.code + ' body ' + pm.response.text()); }",
+                  "  if (pm.response.code !== 200) { throw new Error('route status ' + pm.response.code + ' body ' + pm.response.text()); }",
                   "  var body = pm.response.json();",
-                  "  var msg = (body.error && (body.error.message || body.error)) || body.message || '';",
-                  "  var expectedSubstr = pm.variables.replaceIn(\"is not allowed\");",
-                  "  if (String(msg).indexOf(expectedSubstr) < 0) { throw new Error('error message=' + msg + ' expected to contain ' + expectedSubstr); }",
-                  "  if (body.type !== \"model_blocked\") { throw new Error('error type=' + body.type + ' expected model_blocked'); }",
+                  "  if (!body.choices || body.choices.length === 0) { throw new Error('no choices'); }",
+                  "  var ri = (body.extra_fields || {}).routing_info || {};",
+                  "  var providerName = 'catwiring-rt-alias-vs-whitelist-' + pm.variables.get('run_id');",
+                  "  if (ri.provider !== providerName) { throw new Error('routing_info.provider=' + ri.provider + ' expected ' + providerName); }",
+                  "  var expectedKey = 'catwiring-rt-alias-vs-whitelist-k1-' + pm.variables.get('run_id');",
+                  "  if (ri.key !== expectedKey) { throw new Error('routing_info.key=' + ri.key + ' expected ' + expectedKey); }",
+                  "  if (!ri.resolved_key_alias || ri.resolved_key_alias.model_id !== \"gpt-4o-mini\") { throw new Error('resolved_key_alias=' + JSON.stringify(ri.resolved_key_alias)); }",
                   "}",
                   "var ok = true, errMsg = '';",
                   "try { assertNow(); } catch (e) { ok = false; errMsg = e.message; }",
-                  "pm.test(\"05. unlisted alias refused (403 model_blocked) [alias-vs-whitelist]\", function () { if (!ok) { throw new Error(errMsg); } });",
+                  "pm.test(\"05. alias of an allowed model routes (resolves to the model id) [alias-vs-whitelist]\", function () { if (!ok) { throw new Error(errMsg); } });",
                   "if (!ok) { pm.execution.setNextRequest(cleanupReq); }"
                 ]
               }

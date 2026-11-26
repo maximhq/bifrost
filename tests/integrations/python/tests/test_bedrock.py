@@ -369,6 +369,10 @@ def extract_system_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return system_messages
 
 
+
+# AWS retired amazon.titan-image-generator-v2:0 and no active Bedrock model takes the Titan image request format.
+TITAN_IMAGE_RETIRED = "amazon.titan-image-generator-v2:0 has reached end of life on Bedrock"
+
 class TestBedrockIntegration:
     """Test suite for Bedrock integration covering core scenarios"""
 
@@ -2129,6 +2133,7 @@ class TestBedrockInvokeEndpoint:
     # 29. Titan image generation                                           #
     # ------------------------------------------------------------------ #
     @skip_if_no_api_key("bedrock")
+    @pytest.mark.skip(reason=TITAN_IMAGE_RETIRED)
     def test_29_invoke_titan_image_generation(self, bedrock_client):
         """Test Case 29: Titan Image Generator v2 via invoke — taskType=TEXT_IMAGE"""
         print("\n=== Test 29: Titan image generation via invoke ===")
@@ -2307,6 +2312,7 @@ class TestBedrockInvokeEndpoint:
     # 33. Titan INPAINTING                                                 #
     # ------------------------------------------------------------------ #
     @skip_if_no_api_key("bedrock")
+    @pytest.mark.skip(reason=TITAN_IMAGE_RETIRED)
     def test_33_invoke_titan_inpainting(self, bedrock_client):
         """Test Case 33: Titan Image Generator v2 via invoke — INPAINTING"""
         print("\n=== Test 33: Titan INPAINTING via invoke ===")
@@ -2335,6 +2341,7 @@ class TestBedrockInvokeEndpoint:
     # 34. Titan OUTPAINTING                                                #
     # ------------------------------------------------------------------ #
     @skip_if_no_api_key("bedrock")
+    @pytest.mark.skip(reason=TITAN_IMAGE_RETIRED)
     def test_34_invoke_titan_outpainting(self, bedrock_client):
         """Test Case 34: Titan Image Generator v2 via invoke — OUTPAINTING"""
         print("\n=== Test 34: Titan OUTPAINTING via invoke ===")
@@ -2363,6 +2370,7 @@ class TestBedrockInvokeEndpoint:
     # 35. Titan BACKGROUND_REMOVAL                                         #
     # ------------------------------------------------------------------ #
     @skip_if_no_api_key("bedrock")
+    @pytest.mark.skip(reason=TITAN_IMAGE_RETIRED)
     def test_35_invoke_titan_background_removal(self, bedrock_client):
         """Test Case 35: Titan Image Generator v2 via invoke — BACKGROUND_REMOVAL"""
         print("\n=== Test 35: Titan BACKGROUND_REMOVAL via invoke ===")
@@ -2385,6 +2393,7 @@ class TestBedrockInvokeEndpoint:
     # 36. Titan IMAGE_VARIATION                                            #
     # ------------------------------------------------------------------ #
     @skip_if_no_api_key("bedrock")
+    @pytest.mark.skip(reason=TITAN_IMAGE_RETIRED)
     def test_36_invoke_titan_image_variation(self, bedrock_client):
         """Test Case 36: Titan Image Generator v2 via invoke — IMAGE_VARIATION"""
         print("\n=== Test 36: Titan IMAGE_VARIATION via invoke ===")
@@ -2534,9 +2543,13 @@ class TestBedrockInvokeEndpoint:
         """
         print("\n=== Test 41: Cohere embeddings via invoke (inputs payload, not text completion) ===")
 
-        # Use 'inputs' field instead of 'texts' — this is the payload shape that was misrouted
+        # Use 'inputs' field instead of 'texts' — this is the payload shape that was misrouted.
+        # Each Cohere input carries a content array of typed parts.
         body = {
-            "inputs": [{"text": "hello world"}, {"text": "goodbye world"}],
+            "inputs": [
+                {"content": [{"type": "text", "text": "hello world"}]},
+                {"content": [{"type": "text", "text": "goodbye world"}]},
+            ],
             "input_type": "search_document",
         }
 

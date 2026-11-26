@@ -15442,6 +15442,116 @@
           ]
         },
         {
+          "name": "[PREVIEW] Vertex: create batch with publisher-prefixed model meta/llama-4-maverick-17b-128e-instruct-maas (/openai)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"input_file_id\": \"{{vertexBatchInputFileId}}\",\n  \"endpoint\": \"/v1/chat/completions\",\n  \"completion_window\": \"24h\",\n  \"provider\": \"vertex\",\n  \"model\": \"meta/llama-4-maverick-17b-128e-instruct-maas\",\n  \"output_folder\": {\n    \"url\": \"gs://{{vertexGcsBucket}}/{{vertexGcsPrefix}}batch-output-publisher\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A <publisher>/<id> batch model must reach Vertex as publishers/<publisher>/models/<id>; sent as written, Vertex rejects the job.",
+                  "pm.test('Vertex publisher-prefixed batch: created (200)', function () { pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.eql(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex publisher-prefixed batch: has id', function () { pm.expect(j.id, pm.response.text()).to.be.a('string').and.not.empty; });",
+                  "var asObj = function (v) { return typeof v === 'string' ? JSON.parse(v) : v; };",
+                  "var ef = j.extra_fields || {};",
+                  "pm.test('Vertex publisher-prefixed batch: job body names publishers/meta/models/llama-4-maverick-17b-128e-instruct-maas', function () {",
+                  "  pm.expect(ef.raw_request, 'raw_request missing: ' + pm.response.text()).to.exist;",
+                  "  pm.expect(asObj(ef.raw_request).model).to.eql('publishers/meta/models/llama-4-maverick-17b-128e-instruct-maas');",
+                  "});",
+                  "if (ef.raw_response && asObj(ef.raw_response).model) {",
+                  "  pm.test('Vertex publisher-prefixed batch: created job model is publishers/meta/models/llama-4-maverick-17b-128e-instruct-maas', function () { pm.expect(asObj(ef.raw_response).model).to.eql('publishers/meta/models/llama-4-maverick-17b-128e-instruct-maas'); });",
+                  "}",
+                  "pm.collectionVariables.set('vertexPublisherBatchId', j.id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[PREVIEW] Vertex: cancel publisher-prefixed model batch (/openai)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"vertex\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/batches/{{vertexPublisherBatchId}}/cancel",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "batches",
+                "{{vertexPublisherBatchId}}",
+                "cancel"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('Vertex cancel publisher-prefixed batch: cancelling/cancelled', function () { pm.expect(['cancelling','cancelled'], pm.response.text()).to.include(j.status); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "[PREVIEW] Vertex: delete batch input file (/openai, cleanup)",
           "request": {
             "method": "DELETE",
