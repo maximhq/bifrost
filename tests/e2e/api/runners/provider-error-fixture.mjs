@@ -14,6 +14,7 @@ const errorBody = (message, type, code) => JSON.stringify({ error: { message, ty
 const SLOW_MS = 2000;
 
 const behaviours = {
+	"upstream-400-detail": () => ({ status: 400, headers: {}, body: JSON.stringify({ detail: 'Error: 400 - Bad Request - {"object":"error","message":"The input exceeds context length.","type":"BadRequestError","code":400}' }) }),
 	"upstream-500": () => ({ status: 500, headers: {}, body: errorBody("internal server error", "server_error", "internal_error") }),
 	"upstream-503": () => ({ status: 503, headers: {}, body: errorBody("service unavailable", "server_error", "service_unavailable") }),
 	"upstream-429": () => ({ status: 429, headers: { "Retry-After": "7" }, body: errorBody("rate limit exceeded", "rate_limit_error", "rate_limit_exceeded") }),

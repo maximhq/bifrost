@@ -16,6 +16,7 @@
           "name": "local-error-fixture",
           "value": "test-key",
           "models": [
+            "upstream-400-detail",
             "upstream-503",
             "upstream-429",
             "upstream-429-ms",

@@ -626,8 +626,13 @@ func TestOpenAIChatRoutesPropagateFastAPIDetailError(t *testing.T) {
 	r.Handler(&ctx)
 
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
-	require.Contains(t, string(ctx.Response.Body()), "The input exceeds context length.")
-	require.NotContains(t, string(ctx.Response.Body()), "provider API error (status 400)")
+	var respBody struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &respBody), "body: %s", ctx.Response.Body())
+	require.Equal(t, upstreamDetail, respBody.Error.Message)
 }
 
 // fileUploadUpstream is a fake OpenAI/Azure Files API that streams the uploaded file into a hash,
