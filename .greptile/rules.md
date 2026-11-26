@@ -44,6 +44,21 @@ When reviewing a PR, first identify which Bifrost area is touched:
 - UI changes must preserve `data-testid` attributes used by E2E tests.
 - E2E API payloads must be constructed directly as object literals. Do not serialize through maps, Records, `Object.fromEntries`, or JSON round trips.
 
+## Live Store
+
+Every piece of data a process keeps (configuration, runtime state, caches) lives in `framework/livestore`. AGENTS.md ("Data lives in the live store", "Writes reach memory the same way for every entity") and `.claude/skills/live-store/SKILL.md` hold the full rules. Review only code a PR adds or changes against them:
+
+- Flag new maps, `sync.Map`s or record slices a component keeps as a cache, index or state. They belong in a live-store collection (every row of a config-database kind), cache (only what was asked for) or table (what the process writes itself), or in `tests/rawmaps/allowlist.txt` with a reason.
+- In-flight working state (one request, stream or run, keyed by its ID and removed when it ends: stream accumulators, pending log entries, traces being built, running jobs) may stay in a map with an `inflight` allowlist entry. Flag one whose entry is not removed on every ending path, errors and cancellation included, and state labelled in-flight that a later request reuses.
+- `Store.Collections` holds config-store collections only; derived tables several packages read go in `Store.Views`, rebuilt by a subscriber once per publish. Records hold only what their loader fills, and provider settings and keys stay separate values.
+- Request-path reads go through typed handles and never modify a value read from the store.
+- Delete: holders are read inside the delete's transaction; the record is removed with a `Remove` ref and no read; bound caches are evicted; holders are re-read with `lib.AdminRetry()`; a failed re-read answers 500.
+- Create or update: the written rows are re-read with `lib.AdminRetry()`; on failure memory keeps the previous record and the handler answers 500.
+- A partial update merges onto a database read, never onto the live record; a settings save never rewrites child rows.
+- Only an explicit delete removes a record without reading it; a reload or reconcile re-reads a held record its list does not name.
+- A change another process made is applied with `lib.DBLookupRetry()`.
+- A write path that re-reads needs a test where the re-read fails; a delete needs a test that it removes without reading.
+
 ## Path-Specific Checks
 
 For `core/providers/**`:
@@ -70,7 +85,7 @@ For `transports/bifrost-http/handlers/**`:
 
 - Verify handler changes keep SDK integration behavior compatible with OpenAI, Anthropic, Bedrock, Google GenAI, LangChain, LiteLLM, and PydanticAI where relevant.
 - Check request parsing, error status codes, and middleware ordering.
-- Keep runtime config updates and persistent store updates rollback-aware so in-memory state, core state, and database state do not silently diverge.
+- Configuration changes go to the database first and memory follows (see Live Store above). A create or update re-reads the written record; if that read fails, memory keeps the record's previous version and the handler answers 500 saying the write was saved but not reloaded. A delete removes its record without a read; if the holders' re-read then fails, the holders keep their previous records and the handler answers 500, while the deleted record stays removed. Do not ask for a rollback of the committed write.
 
 For `plugins/governance/**`:
 
