@@ -396,7 +396,7 @@ func (plugin *Plugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifro
 	// Create state up front so a reused/retried request ID never inherits stale fields.
 	state := plugin.createCacheState(requestID)
 
-	if plugin.isConversationHistoryThresholdExceeded(state, req) {
+	if plugin.isConversationHistoryThresholdExceeded(state, req) || isPrewarmRequest(req) {
 		plugin.clearCacheState(requestID)
 		return req, nil, nil
 	}

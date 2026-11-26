@@ -9,6 +9,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // These tests use schemas.Marshal/Unmarshal (sonic) to verify round-trip
@@ -1732,6 +1733,29 @@ func TestSonic_ChatPromptTokensDetails_OpenAICacheWriteTokensAlias(t *testing.T)
 }
 
 // --- prompt_cache_options / prompt_cache_breakpoint (OpenAI gpt-5.6+) ---
+
+// prewarm, comparison_response_id and background_options survive a decode/encode on
+// every type a request or response passes through.
+func TestSonic_PrewarmAndBackgroundOptions_RoundTrip(t *testing.T) {
+	const opts = `{"prewarm":true,"comparison_response_id":"resp_1","ttl":"12h"}`
+	for name, v := range map[string]any{
+		"responses params": &ResponsesParameters{},
+		"chat params":      &ChatParameters{},
+		"response echo":    &BifrostResponsesResponse{},
+	} {
+		require.NoError(t, Unmarshal([]byte(`{"prompt_cache_options":`+opts+`}`), v), name)
+		out, err := Marshal(v)
+		require.NoError(t, err, name)
+		assert.JSONEq(t, opts, gjson.GetBytes(out, "prompt_cache_options").Raw, name)
+	}
+
+	const bg = `{"completion_window":"8h","continuation_id":"run-1"}`
+	var params ResponsesParameters
+	require.NoError(t, Unmarshal([]byte(`{"background_options":`+bg+`}`), &params))
+	out, err := Marshal(params)
+	require.NoError(t, err)
+	assert.JSONEq(t, bg, gjson.GetBytes(out, "background_options").Raw)
+}
 
 func TestSonic_PromptCacheOptions_RoundTrip(t *testing.T) {
 	mode := "explicit"
