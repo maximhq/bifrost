@@ -874,6 +874,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "Строка расчёта удалена до списания",
+			"relay_job_relay_deleted": "Ретранслятор был удалён или не смог загрузиться до завершения задания",
 			"relay_job_no_usage": "В последнем ответе нет данных об использовании",
 			"relay_job_rejected": "Upstream отклонил идентификатор задания",
 			"relay_job_access_denied": "Upstream отказал в доступе к заданию",
@@ -905,6 +906,7 @@
 		},
 		"columns": {
 			"startsJob": "Запускает задание {{id}}",
+			"jobUntracked": "Задание не отслеживается",
 			"jobUnpriced": "Без цены: {{reason}}",
 			"jobFailed": "Ошибка: {{status}}",
 			"jobBadge": "Задание",
@@ -953,6 +955,7 @@
 			"jobNotSettled": "Ещё не рассчитано",
 			"jobSettlementFailed": "Не удалось проверить расчёт.",
 			"jobSettlement": "Расчёт задания",
+			"jobUntracked": "Задание не отслеживается",
 			"costUnpriced": "без цены",
 			"unpricedBody": "Bifrost не смог определить цену задания, поэтому его стоимость неизвестна и само задание не списано. Стартовый вызов сохранил своё списание.",
 			"unpricedTitle": "Задание без цены",

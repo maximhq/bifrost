@@ -44,7 +44,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
-import { RELAY_JOB_OUTCOME_CLASS, relayJobOutcome, relayJobReason, relayJobSettledAt } from "../relayJob";
+import {
+	RELAY_JOB_OUTCOME_CLASS,
+	relayJobOutcome,
+	relayJobReason,
+	relayJobSettledAt,
+	relayJobStatusLabel,
+	relayJobUntracked,
+} from "../relayJob";
 
 interface RelayLogDetailSheetProps {
 	log: RelayLog | null;
@@ -477,7 +484,7 @@ export function RelayLogDetailSheet({
 										<HeroStat
 											label={t("relayLogs.detail.jobStatusStat")}
 											mono
-											value={display.job_status ?? "—"}
+											value={relayJobStatusLabel(display.job_status) || "—"}
 											sub={jobOutcome ? t(`relayLogs.jobOutcome.${jobOutcome}`) : ""}
 										/>
 									) : (
@@ -670,8 +677,16 @@ export function RelayLogDetailSheet({
 												label={t("relayLogs.fields.job")}
 												id={display.job_id}
 												filterKey="job_id"
-												suffix={display.kind === "job" && display.job_id ? (display.job_status ?? "-") : undefined}
+												suffix={display.kind === "job" && display.job_id ? relayJobStatusLabel(display.job_status) || "-" : undefined}
 											/>
+											{relayJobUntracked(display) != null && (
+												<LogEntryDetailsView
+													className="w-full"
+													label={t("relayLogs.detail.jobUntracked")}
+													testId="relay-log-job-untracked"
+													value={relayJobUntracked(display) || "—"}
+												/>
+											)}
 											{startedJobId && (
 												<LogEntryDetailsView
 													className="w-full"
@@ -725,7 +740,7 @@ export function RelayLogDetailSheet({
 													value={<LogLink id={display.parent_log_id} testId="relay-log-parent-link" />}
 												/>
 											)}
-											{display.job_debug && (
+											{display.kind === "job" && display.job_debug && (
 												<>
 													{display.job_debug.last_status && (
 														<LogEntryDetailsView

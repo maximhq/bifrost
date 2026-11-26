@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "La fila de liquidación se eliminó antes del cobro",
+			"relay_job_relay_deleted": "El relay se eliminó o no se pudo cargar antes de que terminara el trabajo",
 			"relay_job_no_usage": "La respuesta final no tenía uso que cobrar",
 			"relay_job_rejected": "El upstream rechazó el id del job",
 			"relay_job_access_denied": "El upstream denegó el acceso al job",
@@ -857,6 +858,7 @@
 		},
 		"columns": {
 			"startsJob": "Inicia el job {{id}}",
+			"jobUntracked": "Trabajo sin seguimiento",
 			"jobUnpriced": "Sin precio: {{reason}}",
 			"jobFailed": "Fallido: {{status}}",
 			"jobBadge": "Job",
@@ -903,6 +905,7 @@
 			"jobNotSettled": "Aún no liquidado",
 			"jobSettlementFailed": "No se pudo comprobar la liquidación.",
 			"jobSettlement": "Liquidación del job",
+			"jobUntracked": "Trabajo sin seguimiento",
 			"costUnpriced": "sin precio",
 			"unpricedBody": "Bifrost no pudo poner precio a este job, así que su coste es desconocido y el job no se cobró. La llamada de inicio conservó su propio cobro.",
 			"unpricedTitle": "Job sin precio",

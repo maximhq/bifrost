@@ -826,6 +826,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "A linha de liquidação foi excluída antes da cobrança",
+			"relay_job_relay_deleted": "O relay foi excluído ou não pôde ser carregado antes de o job terminar",
 			"relay_job_no_usage": "A resposta final não tinha uso para cobrar",
 			"relay_job_rejected": "O upstream recusou o id da tarefa",
 			"relay_job_access_denied": "O upstream negou acesso à tarefa",
@@ -857,6 +858,7 @@
 		},
 		"columns": {
 			"startsJob": "Inicia a tarefa {{id}}",
+			"jobUntracked": "Job não rastreado",
 			"jobUnpriced": "Sem preço: {{reason}}",
 			"jobFailed": "Falhou: {{status}}",
 			"jobBadge": "Tarefa",
@@ -903,6 +905,7 @@
 			"jobNotSettled": "Ainda não liquidado",
 			"jobSettlementFailed": "Não foi possível verificar a liquidação.",
 			"jobSettlement": "Liquidação da tarefa",
+			"jobUntracked": "Job não rastreado",
 			"costUnpriced": "sem preço",
 			"unpricedBody": "O Bifrost não conseguiu precificar esta tarefa, então o custo é desconhecido e a tarefa não foi cobrada. A chamada de início manteve sua própria cobrança.",
 			"unpricedTitle": "Tarefa sem preço",

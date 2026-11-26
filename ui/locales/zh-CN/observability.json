@@ -821,6 +821,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "结算行在扣费前已被删除",
+			"relay_job_relay_deleted": "作业完成前中继已被删除或无法加载",
 			"relay_job_no_usage": "最终回复中没有可计价的用量",
 			"relay_job_rejected": "上游拒绝了作业 ID",
 			"relay_job_access_denied": "上游拒绝访问该作业",
@@ -852,6 +853,7 @@
 		},
 		"columns": {
 			"startsJob": "启动作业 {{id}}",
+			"jobUntracked": "作业未跟踪",
 			"jobUnpriced": "未计价：{{reason}}",
 			"jobFailed": "失败：{{status}}",
 			"jobBadge": "作业",
@@ -898,6 +900,7 @@
 			"jobNotSettled": "尚未结算",
 			"jobSettlementFailed": "无法检查结算。",
 			"jobSettlement": "作业结算",
+			"jobUntracked": "作业未跟踪",
 			"costUnpriced": "未计价",
 			"unpricedBody": "Bifrost 无法为此作业计价，因此其费用未知，作业本身未扣费。启动调用保留其自身的扣费。",
 			"unpricedTitle": "未计价的作业",

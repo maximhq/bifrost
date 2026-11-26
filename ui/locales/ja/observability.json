@@ -821,6 +821,7 @@
 	"relayLogs": {
 		"jobReasons": {
 			"relay_job_row_missing": "課金前に精算行が削除されました",
+			"relay_job_relay_deleted": "ジョブの完了前にリレーが削除されたか、読み込めませんでした",
 			"relay_job_no_usage": "最終応答に課金できる使用量がありません",
 			"relay_job_rejected": "アップストリームがジョブ ID を拒否しました",
 			"relay_job_access_denied": "アップストリームがアクセスを拒否しました",
@@ -852,6 +853,7 @@
 		},
 		"columns": {
 			"startsJob": "ジョブ {{id}} を開始",
+			"jobUntracked": "ジョブは追跡されていません",
 			"jobUnpriced": "価格なし: {{reason}}",
 			"jobFailed": "失敗: {{status}}",
 			"jobBadge": "ジョブ",
@@ -897,6 +899,7 @@
 			"jobNotSettled": "未精算",
 			"jobSettlementFailed": "精算を確認できませんでした。",
 			"jobSettlement": "ジョブの精算",
+			"jobUntracked": "ジョブは追跡されていません",
 			"costUnpriced": "価格なし",
 			"unpricedBody": "Bifrost はこのジョブの価格を決められなかったため、コストは不明で、ジョブ自体には課金されていません。開始呼び出しの課金はそのままです。",
 			"unpricedTitle": "価格なしのジョブ",
