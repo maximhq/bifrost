@@ -184531,6 +184531,84 @@
           }
         },
         {
+          "name": "anthropic/claude-haiku-5-5 /anthropic/v1/messages per-message effort override (system content [] + output_config.effort low) reaches the provider - haiku55-effort",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "",
+                  "// Pi 0.87.1 (supportsMidConvoEffort) sends a top-level output_config.effort plus an effort-only",
+                  "// role:\"system\" message ({content: [], output_config: {effort: low}}) overriding it for the current",
+                  "// turn, under beta mid-conversation-output-config-2026-07-01. Pre-fix AnthropicMessage kept only",
+                  "// role and content, so the override was dropped and the upstream request ran at the top-level effort.",
+                  "pm.test('anthropic claude-haiku-5-5 per-message effort override request is accepted (200 with text)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200; a 400 means the override reached Anthropic malformed or the beta header was not injected, and any other status is a real failure: ' + txt.slice(0, 400)).to.eql(200);",
+                  "  var hasText = Array.isArray(body.content) && body.content.some(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(hasText, 'expected a text content block: ' + txt.slice(0, 300)).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('anthropic claude-haiku-5-5 per-message effort: the effort-only system message reaches the provider with effort low', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.output_config && rr.output_config.effort, 'top-level output_config.effort must stay high: ' + wire.slice(0, 400)).to.eql('high');",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  var overrides = msgs.filter(function (m) { return m && m.role === 'system' && m.output_config && m.output_config.effort === 'low'; });",
+                  "  pm.expect(overrides.length, 'per-message output_config.effort=low was dropped before the provider (pre-fix: AnthropicMessage kept only role+content): ' + wire.slice(0, 600)).to.eql(1);",
+                  "  pm.expect(Array.isArray(overrides[0].content) && overrides[0].content.length === 0, 'effort-only system message must carry an empty content array: ' + JSON.stringify(overrides[0])).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-output-config-2026-07-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-5-5\",\n  \"max_tokens\": 512,\n  \"thinking\": {\n    \"type\": \"adaptive\"\n  },\n  \"output_config\": {\n    \"effort\": \"high\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [],\n      \"output_config\": {\n        \"effort\": \"low\"\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
           "name": "anthropic/claude-opus-5-5 /anthropic/v1/messages per-message effort override streaming (Pi shape) completes - per-message-effort",
           "event": [
             {
