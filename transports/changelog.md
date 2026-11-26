@@ -88,7 +88,7 @@
   </Note>
 - **Large File Uploads** - Multipart uploads are streamed to temp files and on to the provider instead of being held in memory, on the Files API (OpenAI, Azure), passthrough routes and transport plugins. Body size limits and their 413 still apply
 - **Virtual Key Budgets** - Updating the budget of a config.json virtual key no longer fails with `invalid reset duration format` (thanks [@High-PO](https://github.com/High-PO)!). Moving a quarterly budget to another window, or updating a team's or customer's rate-limit maximum alone, no longer fails with a 500, and a budget window added with Reset Usage starts at zero
-- **Virtual Key Active Defaults** - Omitted `is_active` stays active during config.json sync, legacy NULL states are repaired in the background, and reads remain consistent during rolling upgrades (thanks [@Constantine3](https://github.com/Constantine3)!)
+- **Virtual Key Active Defaults** - New config.json keys default to active. Editing an existing key with `is_active` omitted preserves its stored state, including a dashboard disable. Legacy NULL states are repaired in the background (thanks [@Constantine3](https://github.com/Constantine3)!)
 - **Team and Customer Saves** - Saving a customer or team no longer rewrites its teams, virtual keys or customer, and a team's virtual keys are charged to its new customer right after the change
 - **Duplicate Provider Configs** - A virtual key naming the same provider twice is refused with a 400
 - **MCP OAuth Consent** - The consent page no longer gets stuck when an expired SSO session is refreshed mid-flow, and abandoned client registrations are kept long enough for clients to retry

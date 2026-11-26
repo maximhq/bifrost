@@ -1858,20 +1858,34 @@ func TestVirtualKeyRepairCloseCancelsWorker(t *testing.T) {
 }
 
 func TestUpdateVirtualKeyDefaultsIsActive(t *testing.T) {
-	for _, stored := range []bool{true, false} {
+	for _, stored := range []struct {
+		name   string
+		exists bool
+		active *bool
+	}{
+		{"new", false, nil},
+		{"active", true, schemas.Ptr(true)},
+		{"disabled", true, schemas.Ptr(false)},
+		{"legacy-null", true, nil},
+	} {
 		for _, incoming := range []*bool{nil, schemas.Ptr(true), schemas.Ptr(false)} {
 			name := "omitted"
 			if incoming != nil {
 				name = fmt.Sprint(*incoming)
 			}
-			t.Run(fmt.Sprintf("stored=%t/incoming=%s", stored, name), func(t *testing.T) {
+			t.Run(stored.name+"/incoming="+name, func(t *testing.T) {
 				store := setupRDBTestStore(t)
 				ctx := context.Background()
 				vk := &tables.TableVirtualKey{
 					ID: "active-default", Name: "active-default",
-					Value: *schemas.NewSecretVar("bfvk-active-default"), IsActive: schemas.Ptr(stored),
+					Value: *schemas.NewSecretVar("bfvk-active-default"), IsActive: stored.active,
 				}
-				require.NoError(t, store.CreateVirtualKey(ctx, vk))
+				if stored.exists {
+					require.NoError(t, store.CreateVirtualKey(ctx, vk))
+					if stored.active == nil {
+						require.NoError(t, store.DB().Model(vk).UpdateColumn("is_active", nil).Error)
+					}
+				}
 				vk.IsActive = incoming
 				vk.Description = "updated"
 				require.NoError(t, store.UpdateVirtualKey(ctx, vk))
@@ -1879,9 +1893,12 @@ func TestUpdateVirtualKeyDefaultsIsActive(t *testing.T) {
 				var row struct{ IsActive *bool }
 				require.NoError(t, store.DB().WithContext(ctx).Table((tables.TableVirtualKey{}).TableName()).
 					Select("is_active").Where("id = ?", vk.ID).Take(&row).Error)
-				want := incoming == nil || *incoming
+				want := stored.active == nil || *stored.active
+				if incoming != nil {
+					want = *incoming
+				}
 				assert.Equal(t, &want, row.IsActive, "SQL must store the active state explicitly")
-				assert.Equal(t, &want, vk.IsActive, "caller must see the persisted default")
+				assert.Equal(t, &want, vk.IsActive, "caller must see the persisted state")
 			})
 		}
 	}

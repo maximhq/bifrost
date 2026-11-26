@@ -4305,18 +4305,17 @@ func (s *RDBConfigStore) UpdateVirtualKey(ctx context.Context, virtualKey *table
 		return s.parseGormError(err)
 	}
 
-	// Select(columns) below writes nil pointers as NULL instead of applying the
-	// create-time database default. Keep updates consistent with IsActiveValue.
-	if virtualKey.IsActive == nil {
-		virtualKey.IsActive = schemas.Ptr(true)
-	}
-
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		if err := txDB.WithContext(ctx).Create(virtualKey).Error; err != nil {
 			return s.parseGormError(err)
 		}
 	} else {
 		virtualKey.ID = existing.ID
+		// Select below writes nil as NULL. Carry the state of the locked row
+		// when the caller omits it. AfterFind supplies true for legacy NULLs.
+		if virtualKey.IsActive == nil {
+			virtualKey.IsActive = existing.IsActive
+		}
 		// Rotation grace-period state travels with the row: unless the caller is
 		// itself performing a rotation (RotatedAt set), preserve the stored
 		// previous-value fields so a plain update cannot wipe an in-flight grace

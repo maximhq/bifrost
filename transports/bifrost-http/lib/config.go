@@ -4586,12 +4586,6 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 	// row is untouched and still valid, so their ID stays a legitimate reference.
 	skippedNewVirtualKeyIDs := make(map[string]bool)
 	for i, newVirtualKey := range configData.Governance.VirtualKeys {
-		// Resolve the default before copying into the merged in-memory config.
-		// The store normalizes its own copy, which does not update this snapshot.
-		if newVirtualKey.IsActive == nil {
-			newVirtualKey.IsActive = schemas.Ptr(true)
-			configData.Governance.VirtualKeys[i].IsActive = newVirtualKey.IsActive
-		}
 		fileVKHash, err := configstore.GenerateVirtualKeyHash(newVirtualKey)
 		if err != nil {
 			logger.Warn("failed to generate virtual key hash for %s: %v", newVirtualKey.ID, err)
@@ -4679,6 +4673,11 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 						configData.Governance.VirtualKeys[i].Metadata = existingVirtualKey.Metadata
 					}
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
+					// Leave an omitted state on the queued write so UpdateVirtualKey
+					// reads it under the row lock. The boot snapshot needs its value now.
+					if newVirtualKey.IsActive == nil {
+						configData.Governance.VirtualKeys[i].IsActive = existingVirtualKey.IsActive
+					}
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {
 					logger.Debug("config hash matches for virtual key %s, keeping DB config", newVirtualKey.ID)
@@ -4688,6 +4687,9 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 		}
 		if !found {
 			configData.Governance.VirtualKeys[i].ConfigHash = fileVKHash
+			if newVirtualKey.IsActive == nil {
+				configData.Governance.VirtualKeys[i].IsActive = schemas.Ptr(true)
+			}
 			if configData.Governance.VirtualKeys[i].ID == "" {
 				configData.Governance.VirtualKeys[i].ID = uuid.NewString()
 			}

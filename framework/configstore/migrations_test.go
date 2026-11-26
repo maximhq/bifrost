@@ -4750,15 +4750,13 @@ func TestNormalizeVirtualKeyIsActiveResumesAfterFailure(t *testing.T) {
 }
 
 func TestNormalizeVirtualKeyIsActiveConcurrentSync(t *testing.T) {
-	port := os.Getenv("BIFROST_REPRO_POSTGRES_PORT")
-	if port == "" {
-		t.Skip("set BIFROST_REPRO_POSTGRES_PORT to run PostgreSQL lock regression")
-	}
 	// A private schema isolates the two concurrent writers from other tests.
 	schema := fmt.Sprintf("vk_active_%d", time.Now().UnixNano())
-	dsn := "host=127.0.0.1 user=bifrost password=bifrost_password dbname=bifrost sslmode=disable port=" + port + " search_path=" + schema + " application_name=" + schema
+	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+schema, 1) + " application_name=" + schema
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	require.NoError(t, err)
+	if err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	defer sqlDB.Close()
