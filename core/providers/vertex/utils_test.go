@@ -1424,6 +1424,21 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 	}
 }
 
+func BenchmarkVertexPassthroughAPIVersion(b *testing.B) {
+	for _, bc := range []struct{ name, path string }{
+		{"google", "/projects/proj/locations/global/publishers/google/models/gemini-3.8-flash:generateContent"},
+		{"claude", "/projects/proj/locations/global/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict"},
+		{"interactions", "/projects/proj/locations/global/interactions"},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = vertexPassthroughAPIVersion("v1beta1", bc.path, "global")
+			}
+		})
+	}
+}
+
 // TestVertexPassthroughInteractionsReportsRun pins the Vertex route for stored interactions: a
 // finished run's usage rides on ProviderJob, to be settled once, and never on PassthroughUsage,
 // which governance and the request row would bill on every read. The poll path keeps the project
