@@ -1,0 +1,84 @@
+---
+title: "LLMTR"
+description: "LLMTR API conversion guide - OpenAI-compatible gateway, chat completions, streaming, and model listing"
+icon: "l"
+---
+
+## Overview
+
+LLMTR is an **OpenAI-compatible gateway** at `https://llmtr.com/v1`. Bifrost reuses the OpenAI provider implementation for Chat Completions (including streaming) and `GET /v1/models`. Key characteristics:
+
+- **OpenAI-compatible Chat Completions** - standard messages, tools, and streaming
+- **Live model listing** - `GET /v1/models` with your key is the catalog authority
+- **Namespaced model IDs** - `vendor/model` values such as `minimax/minimax-m3.1-flash`. IDs under `llmtr/` are hosted in Turkey; other vendor/model IDs route to their vendors
+- **API key** - store `LLMTR_API_KEY`. Create a key at [https://llmtr.com/dashboard/keys](https://llmtr.com/dashboard/keys)
+
+### Supported Operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Image Generation | ❌ | ❌ | - |
+| Speech (TTS) | ❌ | ❌ | - |
+| Transcriptions (STT) | ❌ | ❌ | - |
+| Files | ❌ | ❌ | - |
+| Batch | ❌ | ❌ | - |
+
+<Note>
+Chat Completions and `GET /v1/models` are the supported path. Text completions and the Responses API are wired through the same OpenAI-compatible handlers as Cerebras and Groq, but they have not been confirmed against LLMTR, so they are marked unsupported in the overview table. Embeddings, image generation, speech, transcriptions, files, batch and similar operations return `UnsupportedOperationError`.
+</Note>
+
+## Setup & Configuration
+
+Configure LLMTR as a provider.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **LLMTR** under **Configured Providers**. If it is missing, click on **Add New Provider** and select **LLMTR**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.LLMTR_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific model allowlist you want this key to serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "llmtr": {
+      "keys": [
+        {
+          "name": "llmtr-key-1",
+          "value": "env.LLMTR_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.Llmtr:
+    return llmtr.NewLlmtrProvider(config, logger)
+```
+
+Use model IDs such as `minimax/minimax-m3.1-flash`.
+
+</Tab>
+</Tabs>

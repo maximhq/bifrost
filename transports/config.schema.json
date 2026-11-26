@@ -956,6 +956,9 @@
         "kimchi": {
           "$ref": "#/$defs/provider"
         },
+        "llmtr": {
+          "$ref": "#/$defs/provider"
+        },
         "cloudflare": {
           "$ref": "#/$defs/provider_with_cloudflare_config"
         },
@@ -4809,7 +4812,8 @@
                         "cloudflare",
                         "byteplus",
                         "baseten",
-                        "kimchi"
+                        "kimchi",
+                        "llmtr"
                       ]
                     },
                     "embedding_model": {
