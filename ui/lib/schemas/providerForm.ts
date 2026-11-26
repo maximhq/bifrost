@@ -274,6 +274,8 @@ const KeySchema = z.object({
 	oauth_key_config: oauthKeyConfigSchema.optional(),
 	anthropic_key_config: anthropicKeyConfigSchema.optional(),
 	use_for_batch_api: z.boolean().optional(),
+	// Tri-state: null/absent inherits, true forces content off, false forces it on.
+	disable_content_logging: z.boolean().nullable().optional(),
 });
 
 // Main provider form schema

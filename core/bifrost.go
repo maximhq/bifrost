@@ -66,6 +66,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/streamusage"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -166,8 +167,7 @@ type Bifrost struct {
 	dropExcessRequests         atomic.Bool                           // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
 	keySelector                schemas.KeySelector                   // Custom key selector function
 	keyPoolFilter              schemas.KeyPoolFilter                 // optional hook to veto keys before selection (nil = all eligible)
-	kvStore                    schemas.KVStore                       // optional KV store for session stickiness (nil = disabled)
-	sessionAffinity            schemas.SessionAffinity               // decides which key a session stays on; never nil after Init
+	sessionAffinity            schemas.SessionAffinity               // decides which route and key a session stays on; nil when none is configured
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -322,7 +322,6 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		keyPoolFilter: config.KeyPoolFilter,
 		mcpCredStore:  credstore.NewCredStore(config.OAuth2Provider, config.MCPHeadersProvider, config.Logger),
 		logger:        config.Logger,
-		kvStore:       config.KVStore,
 		modelCatalog:  config.ModelCatalog,
 
 		mcpSharedDiscoveryStore:  config.MCPSharedDiscoveryStore,
@@ -355,11 +354,11 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	if bifrost.keySelector == nil {
 		bifrost.keySelector = keyselectors.WeightedRandom
 	}
-	// Always present, so key selection never checks for it: without a KV store the shipped
-	// key affinity has nowhere to keep a binding and declines every request.
+	// Without one configured, session affinity is off: a request that carries a session id is
+	// routed and keyed as if it carried none.
 	bifrost.sessionAffinity = config.SessionAffinity
 	if bifrost.sessionAffinity == nil {
-		bifrost.sessionAffinity = NewSessionAffinity(bifrost.kvStore, bifrost.logger)
+		bifrost.logger.Warn("session affinity is not configured: requests that carry a session id are not kept on the route and key that served them")
 	}
 
 	// Initialize object pools
@@ -446,7 +445,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 				}
 			}
 			codeMode := starlark.NewStarlarkCodeMode(codeModeConfig, bifrost.logger)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
+			bifrost.MCPManager = mcp.NewMCPManager(bifrostCtx, mcpConfig, bifrost.account, bifrost.mcpCredStore, bifrost.logger, codeMode)
 			bifrost.logger.Info("MCP integration initialized successfully")
 		})
 	}
@@ -4787,31 +4786,23 @@ func (bifrost *Bifrost) GetMCPServerInstructions(ctx *schemas.BifrostContext) st
 	return bifrost.MCPManager.GetAggregatedServerInstructions(ctx)
 }
 
-// AddMCPClient adds a new MCP client to the Bifrost instance.
-// This allows for dynamic MCP client management at runtime.
-//
-// Parameters:
-//   - config: MCP client configuration
-//
-// Returns:
-//   - error: Any registration error
-//
-// Example:
-//
-//	err := bifrost.AddMCPClient(ctx, &schemas.MCPClientConfig{
-//	    Name: "my-mcp-client",
-//	    ConnectionType: schemas.MCPConnectionTypeHTTP,
-//	    ConnectionString: &url,
-//	})
-//
-// ConnectConfiguredMCPClients dials the MCP clients supplied to Init. Construction
-// no longer auto-connects, so callers invoke this after all plugins are registered
-// (so every PreMCPConnectionHook participates in the connection). It returns once
-// every client has been attempted; onClientDone, when not nil, is called as each
-// attempt finishes, one call at a time, so a caller running the dial in the
-// background can act on each client as soon as it is ready. No-op if MCP is not
-// configured.
+// ConnectConfiguredMCPClients dials the MCP clients the Account lists. Construction never
+// connects, so callers invoke this after all plugins are registered (so every
+// PreMCPConnectionHook participates in the connection). It returns once every client has been
+// attempted; onClientDone, when not nil, is called as each attempt finishes, one call at a time,
+// so a caller running the dial in the background can act on each client as soon as it is ready.
+// No-op when the Account lists none.
 func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context, onClientDone func(clientID string)) {
+	ids, err := bifrost.account.GetConfiguredMCPClients()
+	if err != nil {
+		bifrost.logger.Warn("failed to list the configured MCP clients: %v", err)
+		return
+	}
+	if len(ids) == 0 {
+		return
+	}
+	// Init creates the manager only with an mcp block; clients the Account lists need one too.
+	bifrost.ensureLazyMCPManager()
 	if bifrost.MCPManager != nil {
 		bifrost.MCPManager.ConnectConfiguredClients(ctx, onClientDone)
 	}
@@ -4823,7 +4814,6 @@ func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context, onClien
 // client added at runtime synthesizes its server exactly as a boot-time one would.
 func (bifrost *Bifrost) lazyMCPConfig() schemas.MCPConfig {
 	return schemas.MCPConfig{
-		ClientConfigs: []*schemas.MCPClientConfig{},
 		PluginPipelineProvider: func() interface{} {
 			return bifrost.getPluginPipeline()
 		},
@@ -4867,14 +4857,20 @@ func (bifrost *Bifrost) ensureLazyMCPManager() {
 		if bifrost.MCPManager != nil {
 			return
 		}
-		bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, bifrost.lazyMCPConfig(), bifrost.mcpCredStore, bifrost.logger, starlark.NewStarlarkCodeMode(nil, bifrost.logger))
+		bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, bifrost.lazyMCPConfig(), bifrost.account, bifrost.mcpCredStore, bifrost.logger, starlark.NewStarlarkCodeMode(nil, bifrost.logger))
 		if bifrost.mcpDiscoveryChangeCallback != nil {
 			bifrost.MCPManager.SetDiscoveryChangeCallback(bifrost.mcpDiscoveryChangeCallback)
 		}
 	})
 }
 
-func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
+// AddMCPClient connects the MCP client with this ID at runtime. Its configuration is read from
+// the Account, so add it there first; the Account must serve it for as long as the client stays.
+//
+// Example:
+//
+//	err := bifrost.AddMCPClient(ctx, "my-mcp-client-id")
+func (bifrost *Bifrost) AddMCPClient(ctx context.Context, id string) error {
 	// Initialize with empty config - client will be added via AddClient below
 	bifrost.ensureLazyMCPManager()
 
@@ -4883,7 +4879,7 @@ func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPCli
 		return fmt.Errorf("MCP manager is not initialized")
 	}
 
-	return bifrost.MCPManager.AddClient(ctx, config)
+	return bifrost.MCPManager.AddClient(ctx, id)
 }
 
 // RemoveMCPClient removes an MCP client from the Bifrost instance.
@@ -4950,36 +4946,27 @@ func (bifrost *Bifrost) SetMCPManager(manager mcp.MCPManagerInterface) {
 	}
 }
 
-// UpdateMCPClient updates the MCP client.
-// This allows for dynamic MCP client tool management at runtime.
-//
-// Parameters:
-//   - id: ID of the client to edit
-//   - updatedConfig: Updated MCP client configuration
-//
-// Returns:
-//   - error: Any edit error
+// UpdateMCPClient applies an edit to the MCP client with this ID at runtime. The edited
+// configuration is read from the Account, so change it there first.
 //
 // Example:
 //
-//	err := bifrost.UpdateMCPClient("my-mcp-client-id", schemas.MCPClientConfig{
-//	    Name:           "my-mcp-client-name",
-//	    ToolsToExecute: []string{"tool1", "tool2"},
-//	})
-func (bifrost *Bifrost) UpdateMCPClient(id string, updatedConfig *schemas.MCPClientConfig) error {
+//	err := bifrost.UpdateMCPClient("my-mcp-client-id")
+func (bifrost *Bifrost) UpdateMCPClient(id string) error {
 	if bifrost.MCPManager == nil {
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 
-	return bifrost.MCPManager.UpdateClient(id, updatedConfig)
+	return bifrost.MCPManager.UpdateClient(id)
 }
 
-// UpdateMCPClientCredentials reconnects an existing MCP client using updated headers
-func (bifrost *Bifrost) UpdateMCPClientCredentials(id string, newConfig *schemas.MCPClientConfig) error {
+// UpdateMCPClientCredentials reconnects an existing MCP client with the credentials its
+// configuration in the Account now holds, so change them there first.
+func (bifrost *Bifrost) UpdateMCPClientCredentials(id string) error {
 	if bifrost.MCPManager == nil {
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
-	return bifrost.MCPManager.UpdateClientCredentials(id, newConfig)
+	return bifrost.MCPManager.UpdateClientCredentials(id)
 }
 
 // ReconnectMCPClient attempts to reconnect an MCP client if it is disconnected.
@@ -5031,25 +5018,6 @@ func (bifrost *Bifrost) CloseAndMarkNeedsReauth(id string) error {
 		return fmt.Errorf("mcp is not configured in this bifrost instance")
 	}
 	return bifrost.MCPManager.CloseAndMarkNeedsReauth(id)
-}
-
-// DisableMCPClient shuts down an MCP client's connection, health monitor, and tool
-// syncer without removing it. The client entry is kept in a "disabled" state so it
-// can be re-enabled via EnableMCPClient.
-func (bifrost *Bifrost) DisableMCPClient(id string) error {
-	if bifrost.MCPManager == nil {
-		return fmt.Errorf("mcp is not configured in this bifrost instance")
-	}
-	return bifrost.MCPManager.DisableClient(id)
-}
-
-// EnableMCPClient reconnects a previously disabled MCP client and restarts its
-// health monitor and tool syncer.
-func (bifrost *Bifrost) EnableMCPClient(id string) error {
-	if bifrost.MCPManager == nil {
-		return fmt.Errorf("mcp is not configured in this bifrost instance")
-	}
-	return bifrost.MCPManager.EnableClient(id)
 }
 
 // VerifyPerUserOAuthConnection delegates to the MCP manager to verify an MCP
@@ -5445,10 +5413,24 @@ func (bifrost *Bifrost) GetProviderByKey(providerKey schemas.ModelProvider) sche
 // AllowedRequests gates such as realtime-only support.
 // additionalModels narrows the pool to keys that also serve those models, for sessions where the
 // provider calls several models on one key (GPT Live's voice model and its Responses backend).
+// The chosen key's content-logging decision is stamped on the caller's context.
 func (bifrost *Bifrost) SelectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, additionalModels ...string) (schemas.Key, error) {
+	requestCtx := ctx
 	if ctx == nil {
 		ctx = bifrost.ctx
 	}
+	key, err := bifrost.selectKeyForProviderRequestType(ctx, requestType, providerKey, model, additionalModels...)
+	// The session's turns are logged on the caller's context, so the key's content-logging decision
+	// is stamped there. Never on bifrost.ctx: that context outlives every request.
+	if err == nil && requestCtx != nil && key.DisableContentLogging != nil {
+		schemas.StampContentLoggingDecision(requestCtx, schemas.BifrostContextKeyProviderKeyDisableContentLogging, *key.DisableContentLogging)
+	}
+	return key, err
+}
+
+// selectKeyForProviderRequestType picks the key SelectKeyForProviderRequestType returns, without
+// stamping anything on the context.
+func (bifrost *Bifrost) selectKeyForProviderRequestType(ctx *schemas.BifrostContext, requestType schemas.RequestType, providerKey schemas.ModelProvider, model string, additionalModels ...string) (schemas.Key, error) {
 	baseProvider := bifrost.baseProviderType(providerKey)
 	supportedKeys, canRotate, err := bifrost.selectKeyFromProviderForModelWithPool(ctx, requestType, providerKey, model, baseProvider, additionalModels...)
 	if err != nil {
@@ -5597,6 +5579,8 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 	// no-ops by design; proper request metadata is preserved and tampering is discouraged.
 	reqProvider, reqModel, _ := req.GetRequestFields()
 
+	requestStartedAt := time.Now()
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
@@ -5654,6 +5638,7 @@ func (bifrost *Bifrost) RunStreamPreHooks(ctx *schemas.BifrostContext, req *sche
 
 	wsProvider, wsModel, _ := preReq.GetRequestFields()
 	postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 		// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
 		// can read requestType/provider/model from the chunk or error.
 		if result != nil {
@@ -5727,6 +5712,17 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 	}
 	provider, model, _ := req.GetRequestFields()
 
+	requestStartedAt, _ := ctx.Value(schemas.BifrostContextKeyStreamStartTime).(time.Time)
+	if req.RequestType == schemas.LiveRequest {
+		// All billing units in a Live session share one log row.
+		if sessionStartedAt, ok := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time); ok {
+			requestStartedAt = sessionStartedAt
+		}
+	}
+	if requestStartedAt.IsZero() {
+		requestStartedAt = time.Now()
+	}
+	ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 	preReq, shortCircuit, preCount := pipeline.RunLLMPreHooks(ctx, req)
 	if preReq == nil && shortCircuit == nil {
 		bifrostErr := newBifrostErrorFromMsg("bifrost request after plugin hooks cannot be nil")
@@ -5775,6 +5771,7 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 
 	return &RealtimeTurnHooks{
 		PostHookRunner: func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			ctx.SetValue(schemas.BifrostContextKeyRequestStartTime, requestStartedAt)
 			resolvedModel := model
 			// Live admits aliases before selecting its session key; the meter supplies the
 			// pinned key's resolution when the unit settles, as normal inference does.
@@ -7550,6 +7547,13 @@ func executeRequestWithRetries[T any](
 			currentKey = selectedKey
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, currentKey.ID)
 			ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, currentKey.Name)
+			// The key's content-logging decision, for the post-hooks. The stamp merges with any
+			// "off" already recorded, so a key this request was already sent on that turned
+			// content off is not reopened by a retry onto another key, and it is kept on the
+			// failure paths below that clear the selected key.
+			if currentKey.DisableContentLogging != nil {
+				schemas.StampContentLoggingDecision(ctx, schemas.BifrostContextKeyProviderKeyDisableContentLogging, *currentKey.DisableContentLogging)
+			}
 		}
 
 		if attempts > 0 {
@@ -8986,6 +8990,96 @@ func promptCacheResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Pr
 	return &cp
 }
 
+// resolveAdvisorToolAliases applies the attempt key's aliases to advisor tool models, copy-on-write.
+func resolveAdvisorToolAliases(ctx *schemas.BifrostContext, key schemas.Key, r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if r == nil || len(key.Aliases) == 0 {
+		return r
+	}
+	var tools []schemas.ResponsesTool
+	if r.Params != nil {
+		for i := range r.Params.Tools {
+			advisor := r.Params.Tools[i].ResponsesToolAdvisor
+			if advisor == nil {
+				continue
+			}
+			resolved, ok := resolveToolModelAlias(key.Aliases, advisor.Model)
+			if !ok {
+				continue
+			}
+			if tools == nil {
+				tools = slices.Clone(r.Params.Tools)
+			}
+			aliased := *advisor
+			aliased.Model = resolved
+			tools[i].ResponsesToolAdvisor = &aliased
+		}
+	}
+	var raw []byte
+	if useRawBody, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); useRawBody && len(r.RawRequestBody) > 0 {
+		raw = resolveRawAdvisorToolAliases(key.Aliases, r.RawRequestBody)
+	}
+	if tools == nil && raw == nil {
+		return r
+	}
+	cp := *r
+	if tools != nil {
+		params := *r.Params
+		params.Tools = tools
+		cp.Params = &params
+	}
+	if raw != nil {
+		cp.RawRequestBody = raw
+	}
+	return &cp
+}
+
+// resolveRawAdvisorToolAliases returns body with advisor tool models aliased, or nil when none is.
+func resolveRawAdvisorToolAliases(aliases schemas.KeyAliases, body []byte) []byte {
+	tools := providerUtils.GetJSONField(body, "tools")
+	if !tools.IsArray() {
+		return nil
+	}
+	var paths, models []string
+	index := 0
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		if model := tool.Get("model"); model.Type == gjson.String && strings.HasPrefix(tool.Get("type").String(), "advisor") {
+			if resolved, ok := resolveToolModelAlias(aliases, model.Str); ok {
+				paths = append(paths, fmt.Sprintf("tools.%d.model", index))
+				models = append(models, resolved)
+			}
+		}
+		index++
+		return true
+	})
+	if len(paths) == 0 {
+		return nil
+	}
+	out := body
+	for i := range paths {
+		updated, err := providerUtils.SetJSONField(out, paths[i], models[i])
+		if err != nil {
+			return nil
+		}
+		out = updated
+	}
+	return out
+}
+
+// resolveToolModelAlias returns the alias model id for a tool's model, matched on its bare name.
+func resolveToolModelAlias(aliases schemas.KeyAliases, model string) (string, bool) {
+	if model == "" {
+		return "", false
+	}
+	if prefixProvider, bare := schemas.ParseModelString(model, ""); prefixProvider != "" {
+		model = bare
+	}
+	aliasConfig := aliases.ResolveConfig(model)
+	if aliasConfig == nil || aliasConfig.ModelID == "" {
+		return "", false
+	}
+	return aliasConfig.ModelID, true
+}
+
 // prepareResponsesRequest returns the Responses request to dispatch for one attempt:
 // billing metadata restored for Anthropic models, prompt-cache breakpoints
 // injected, then embedded client tools promoted and namespace
@@ -9106,7 +9200,8 @@ func prepareResponsesRequest(ctx *schemas.BifrostContext, config *schemas.Provid
 			return nil, bifrostErr
 		}
 	}
-	// Last, so tools hoisted out of additional_tools items and namespaces are normalized too.
+	r = resolveAdvisorToolAliases(ctx, key, r)
+	// Last, so tools hoisted out of additional_tools items and namespaces are normalized and aliased too.
 	return normalizeResponsesToolSchemas(ctx, provider.GetProviderKey(), r), nil
 }
 
@@ -11604,6 +11699,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 			requestType != schemas.WebSocketResponsesRequest &&
 			!isBatchRequestType(requestType) &&
 			!isFileRequestType(requestType) &&
+			bifrost.sessionAffinity != nil &&
 			schemas.IsSessionAffinityActive(ctx) {
 			bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys)
 		}
@@ -11615,7 +11711,7 @@ func (bifrost *Bifrost) selectKeyFromProviderForModelWithPool(ctx *schemas.Bifro
 	// provider rejects it outright, as long as that key is one of the eligible ones. A policy
 	// naming anything else is ignored, so a disabled or model-incompatible key can never reach a
 	// request through it.
-	if schemas.IsSessionAffinityActive(ctx) {
+	if bifrost.sessionAffinity != nil && schemas.IsSessionAffinityActive(ctx) {
 		if key, ok := bifrost.sessionAffinity.ResolveKey(ctx, providerKey, model, supportedKeys); ok {
 			for _, eligible := range supportedKeys {
 				if eligible.ID == key.ID {

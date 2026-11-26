@@ -17,18 +17,15 @@ import (
 // InitializeRelays builds the Relays manager from the config store,
 // wires it to the core plugin pipeline (so governance and logging see every call) and to the global
 // proxy, and builds the management handler. Without a config store there is nothing to serve.
-// relayManager owns relay writes; nil uses this server, and a deployment that wraps them (cluster
-// broadcast) passes its own, as for the Agent Gateway. vkReloader reloads the keys a relay delete
-// touches; nil uses this server.
-func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager handlers.RelayManager, vkReloader handlers.VirtualKeyReloader) {
+// callbacks is the same object RegisterAPIRoutes receives: it owns relay writes, which a
+// deployment may wrap with its own coordination, and reloads the keys a relay delete touches, as it
+// does for the other governance handlers. nil uses this server.
+func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, callbacks ServerCallbacks) {
 	if s.relays != nil || s.Config == nil || s.Config.ConfigStore == nil {
 		return
 	}
-	if relayManager == nil {
-		relayManager = s
-	}
-	if vkReloader == nil {
-		vkReloader = s
+	if callbacks == nil {
+		callbacks = s
 	}
 	manager := relay.NewManager(s.Config.ConfigStore, logger)
 	if s.Client != nil {
@@ -46,7 +43,7 @@ func (s *BifrostHTTPServer) InitializeRelays(ctx context.Context, relayManager h
 		logger.Warn("failed to load relays: %v", err)
 	}
 	s.relays = manager
-	s.RelaysHandler = handlers.NewRelaysHandler(manager, relayManager, s.Config, vkReloader)
+	s.RelaysHandler = handlers.NewRelaysHandler(manager, callbacks, s.Config, callbacks)
 	// The server resolves redacted keys for the LLM logs filter data; Relay Logs use the same.
 	s.RelaysHandler.SetRedactedKeysManager(s)
 	if names := manager.Names(); len(names) > 0 {

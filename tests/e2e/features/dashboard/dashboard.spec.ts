@@ -120,6 +120,50 @@ test.describe('Dashboard', () => {
     }
   })
 
+  test.describe('Refresh', () => {
+    test('should refetch dashboard data and keep the URL', async ({ dashboardPage }) => {
+      await dashboardPage.waitForChartsToLoad()
+      const urlBefore = dashboardPage.page.url()
+
+      const histogram = dashboardPage.page.waitForRequest((req) => req.url().includes('/logs/histogram'), { timeout: 15000 })
+      const mcpFilterData = dashboardPage.page.waitForRequest((req) => req.url().includes('/mcp-logs/filterdata'), { timeout: 15000 })
+
+      await dashboardPage.refreshButton.click()
+
+      await histogram
+      await mcpFilterData
+      expect(dashboardPage.page.url()).toBe(urlBefore)
+    })
+
+    test('should stay disabled until the refetches settle', async ({ dashboardPage }) => {
+      await dashboardPage.waitForChartsToLoad()
+
+      // Hold the histogram replies so the in-flight window is long enough to observe.
+      await dashboardPage.page.route('**/logs/histogram**', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        await route.continue()
+      })
+
+      await dashboardPage.refreshButton.click()
+      await expect(dashboardPage.refreshButton).toBeDisabled()
+      await expect(dashboardPage.refreshButton).toBeEnabled({ timeout: 15000 })
+
+      await dashboardPage.page.unroute('**/logs/histogram**')
+    })
+
+    test('should be disabled while an export runs', async ({ dashboardPage }) => {
+      await dashboardPage.waitForChartsToLoad()
+      await expect(dashboardPage.refreshButton).toBeEnabled()
+
+      const download = dashboardPage.page.waitForEvent('download', { timeout: 60000 })
+      await dashboardPage.startPdfExportAllTabs()
+
+      await expect(dashboardPage.refreshButton).toBeDisabled()
+      await download
+      await expect(dashboardPage.refreshButton).toBeEnabled({ timeout: 10000 })
+    })
+  })
+
   test.describe('Chart Type Toggling', () => {
     test('should toggle volume chart type', async ({ dashboardPage }) => {
       // Get initial toggle state from DOM

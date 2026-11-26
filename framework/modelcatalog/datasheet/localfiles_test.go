@@ -66,7 +66,7 @@ func TestLoadFromLocalFiles(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelWarn)
 	ctx := context.Background()
 
-	store := New(nil, logger, Config{
+	store := newForTest(t, nil, logger, Config{
 		URL:                fileURL(t, "testdata/pricing.json"),
 		ModelParametersURL: fileURL(t, "testdata/model-parameters.json"),
 	})
@@ -116,7 +116,7 @@ func TestLoadFromLocalFiles_NeverResolvesHostname(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelWarn)
 	ctx := context.Background()
 
-	store := New(nil, logger, Config{
+	store := newForTest(t, nil, logger, Config{
 		URL:                fileURL(t, "testdata/pricing.json"),
 		ModelParametersURL: fileURL(t, "testdata/model-parameters.json"),
 	})

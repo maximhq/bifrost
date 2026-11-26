@@ -35,6 +35,15 @@
           "weight": 1,
           "models": ["*"],
           "use_for_batch_api": true
+        },
+        {
+          "id": "openai-key-nocontent",
+          "name": "OpenAI API Key (content logging off)",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["bf-nocontent-gpt-4o-mini"],
+          "aliases": { "bf-nocontent-gpt-4o-mini": { "model_id": "gpt-4o-mini" } },
+          "disable_content_logging": true
         }
       ],
       "network_config": {
@@ -1646,6 +1655,13 @@
         "virtual_key_id": "vk-harness-relay-budget"
       }
     ],
+    "teams": [
+      {
+        "id": "team-nocontent",
+        "name": "Test Team (content logging off)",
+        "disable_content_logging": true
+      }
+    ],
     "virtual_keys": [
       {
         "name": "Harness config.json budget key",
@@ -1877,6 +1893,22 @@
         "relay_grants": [
           {
             "relay_name": "harness-relay-pricing"
+          }
+        ]
+      },
+      {
+        "name": "Test Key (content logging on, team off)",
+        "id": "vk-test-teamoff",
+        "value": "sk-bf-test-key-teamoff",
+        "is_active": true,
+        "team_id": "team-nocontent",
+        "disable_content_logging": false,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
           }
         ]
       }

@@ -87,6 +87,11 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"github-copilot",
 ] as const;
 
+// Built-in providers whose Bifrost implementation rejects chat requests (Chat
+// Completions and Responses). Also checked against a custom provider's base type,
+// since the base decides what the provider can serve.
+export const ChatUnsupportedProviders: readonly ProviderName[] = ["elevenlabs", "machgen", "runway", "soniox", "typesafe"] as const;
+
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 // MCP logs also have input_required: the server asked the caller for input, and the retry is its own row.

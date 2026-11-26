@@ -310,6 +310,34 @@ test.describe('Routers', () => {
     await expect(page.getByTestId('model-router-tier-simple')).not.toContainText("Keeps the request's model")
   })
 
+  test('should suggest key aliases as fallback models', async ({ page }) => {
+    const listings: URLSearchParams[] = []
+    await page.route(
+      (url) => url.pathname === '/api/models',
+      (route) => {
+        const params = new URL(route.request().url()).searchParams
+        listings.push(params)
+        // As the gateway answers: an unfiltered listing has aliases only when asked for them.
+        const names = params.get('include_aliases') === 'true' ? ['gpt-4o-mini', 'team-gpt'] : ['gpt-4o-mini']
+        return route.fulfill({ json: { models: names.map((name) => ({ name, provider: 'openai' })), total: names.length } })
+      },
+    )
+    await page.goto('/workspace/model-routers?router=support&tab=models')
+    await page.getByTestId('model-routing-target-simple-0-add-fallback-button').click()
+    const fallback = page.getByTestId('model-routing-target-simple-0-fallback-0')
+    await fallback.getByTestId('model-routing-target-simple-0-fallback-0-provider-select').click()
+    await page.getByRole('option', { name: 'OpenAI' }).click()
+    const modelTrigger = fallback.getByTestId('model-routing-target-simple-0-fallback-0-model-select').getByRole('combobox')
+    await modelTrigger.click()
+    await page.getByRole('option', { name: 'team-gpt', exact: true }).click()
+    await expect(modelTrigger).toContainText('team-gpt')
+    expect(listings.at(-1)?.get('unfiltered')).toBe('true')
+
+    await page.getByTestId('model-router-models-save-button').click()
+    await expect.poll(() => targetBodies.length).toBe(1)
+    expect(JSON.stringify(targetBodies[0])).toContain('team-gpt')
+  })
+
   test('should save a router routing from its Routing tab', async ({ page }) => {
     await page.goto('/workspace/model-routers?router=billing&tab=routing')
     await expect(page.getByTestId('model-router-routing-row')).toContainText('Every request in scope')

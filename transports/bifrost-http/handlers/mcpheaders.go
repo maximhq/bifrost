@@ -380,10 +380,6 @@ func (h *MCPPerUserHeadersHandler) revoke(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "per-user headers credential provider is not configured")
 		return
 	}
-	if h.store.ConfigStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "config store is not configured")
-		return
-	}
 	id, ok := ctx.UserValue("id").(string)
 	if !ok || strings.TrimSpace(id) == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "id is required")

@@ -380,6 +380,39 @@ func BenchmarkPrepareResponsesRequestClaudeWithoutToolSearch(b *testing.B) {
 	}
 }
 
+// BenchmarkResolveAdvisorToolAliases measures the advisor alias step; the common cases must not allocate.
+func BenchmarkResolveAdvisorToolAliases(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	plain := responsesReqWithText("hello")
+	plain.Model = "claude-opus-5"
+	plain.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+	}}
+	advisor := responsesReqWithText("hello")
+	advisor.Model = "claude-opus-5"
+	advisor.Params = &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("shell"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		{Type: schemas.ResponsesToolTypeAdvisor, ResponsesToolAdvisor: &schemas.ResponsesToolAdvisor{Model: "anthropic.claude-opus-5"}},
+	}}
+	aliased := schemas.Key{Aliases: schemas.KeyAliases{"anthropic.claude-opus-5": {ModelID: "claude-opus-5"}}}
+	for _, testCase := range []struct {
+		name    string
+		key     schemas.Key
+		request *schemas.BifrostResponsesRequest
+	}{
+		{"no aliases", schemas.Key{}, advisor},
+		{"aliases without advisor", aliased, plain},
+		{"aliased advisor", aliased, advisor},
+	} {
+		b.Run(testCase.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = resolveAdvisorToolAliases(ctx, testCase.key, testCase.request)
+			}
+		})
+	}
+}
+
 // BenchmarkPrepareCountTokensRequest measures the preparation count tokens now shares with
 // dispatch: the common case (plain tools) and a request whose custom tool is rewritten.
 func BenchmarkPrepareCountTokensRequest(b *testing.B) {
@@ -608,6 +641,94 @@ func TestHoistResponsesAdditionalToolsRedeclaration(test *testing.T) {
 
 			_, bifrostErr = providerUtils.UnwrapDefaultNamespaceTools(prepared)
 			assert.Nil(test, bifrostErr)
+		})
+	}
+}
+
+// A later additional_tools item that extends a namespace merges its members into the
+// first declaration's namespace entry. Each member keeps the deferral the item that
+// declared it gave it, not the first declaration's: the gateway tool search and the
+// flattening both read a member's deferral from its namespace when it has none.
+func TestHoistResponsesAdditionalToolsNamespaceDeferral(test *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		items []string
+		want  map[string]bool // member -> deferred
+	}{
+		{
+			name: "eager namespace, then a deferred fragment",
+			items: []string{
+				`[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"a"}]}]`,
+				`[{"type":"namespace","name":"mcp","defer_loading":true,"tools":[{"type":"function","name":"b"}]}]`,
+			},
+			want: map[string]bool{"a": false, "b": true},
+		},
+		{
+			name: "deferred namespace, then an eager fragment",
+			items: []string{
+				`[{"type":"namespace","name":"mcp","defer_loading":true,"tools":[{"type":"function","name":"a"}]}]`,
+				`[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"b"}]}]`,
+			},
+			want: map[string]bool{"a": true, "b": false},
+		},
+		{
+			name: "an explicit member value wins over its fragment",
+			items: []string{
+				`[{"type":"namespace","name":"mcp","defer_loading":true,"tools":[{"type":"function","name":"a"}]}]`,
+				`[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"b","defer_loading":true}]}]`,
+			},
+			want: map[string]bool{"a": true, "b": true},
+		},
+		{
+			name: "a re-declared member takes the later fragment's deferral",
+			items: []string{
+				`[{"type":"namespace","name":"mcp","tools":[{"type":"function","name":"a","description":"v1"},{"type":"function","name":"b"}]}]`,
+				`[{"type":"namespace","name":"mcp","defer_loading":true,"tools":[{"type":"function","name":"a","description":"v2"}]}]`,
+			},
+			want: map[string]bool{"a": true, "b": false},
+		},
+		// A re-declaration keeps the earlier one's container, across the top level and
+		// the default namespace too, so it carries its own deferral into that container.
+		{
+			name: "an eager bare function replaces a member of a deferred default namespace",
+			items: []string{
+				`[{"type":"namespace","name":"functions","defer_loading":true,"tools":[{"type":"function","name":"exec","description":"v1"},{"type":"function","name":"wait"}]}]`,
+				`[{"type":"function","name":"exec","description":"v2"}]`,
+			},
+			want: map[string]bool{"exec": false, "wait": true},
+		},
+		{
+			name: "a member of a deferred default namespace replaces an eager bare function",
+			items: []string{
+				`[{"type":"function","name":"exec","description":"v1"}]`,
+				`[{"type":"namespace","name":"functions","defer_loading":true,"tools":[{"type":"function","name":"exec","description":"v2"},{"type":"function","name":"wait"}]}]`,
+			},
+			want: map[string]bool{"exec": true, "wait": true},
+		},
+	} {
+		test.Run(testCase.name, func(test *testing.T) {
+			request := &schemas.BifrostResponsesRequest{}
+			for _, raw := range testCase.items {
+				request.Input = append(request.Input, schemas.ResponsesMessage{
+					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
+					AdditionalTools: []byte(raw),
+				})
+			}
+			prepared, bifrostErr := hoistResponsesAdditionalTools(request)
+			require.Nil(test, bifrostErr)
+			got := map[string]bool{}
+			for i := range prepared.Params.Tools {
+				tool := &prepared.Params.Tools[i]
+				if tool.Type != schemas.ResponsesToolTypeNamespace {
+					got[*tool.Name] = tool.DeferLoading != nil && *tool.DeferLoading
+					continue
+				}
+				for j := range tool.ResponsesToolNamespace.Tools {
+					member := &tool.ResponsesToolNamespace.Tools[j]
+					got[*member.Name] = schemas.IsDeferredNamespaceMember(tool, member)
+				}
+			}
+			assert.Equal(test, testCase.want, got)
 		})
 	}
 }

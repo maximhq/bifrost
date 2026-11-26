@@ -629,6 +629,7 @@ export interface GuardrailMatch {
 	phase?: string;
 	rule_id?: number;
 	rule_name?: string;
+	profile_id?: number; // Guardrail profile that matched; guardrail_name is its name.
 	guardrail_name?: string;
 	guardrail_provider?: string;
 	reason?: string;
@@ -648,8 +649,9 @@ export interface GuardrailMetadata {
 	interventions?: GuardrailMatch[];
 }
 
-// GuardrailOutcome values accepted by the logs API's guardrail_outcomes filter.
-export type GuardrailOutcome = "blocked" | "detected";
+// GuardrailMatchAction is what a guardrail did for one recorded match, as shown
+// to users; the logs API's guardrail_actions filter takes the same values.
+export type GuardrailMatchAction = "blocked" | "redacted" | "monitored" | "detected";
 
 export interface RoutingCall {
 	request_type?: string;
@@ -927,7 +929,12 @@ export interface LogFilters {
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
-	guardrail_outcomes?: GuardrailOutcome[]; // Requests a guardrail blocked and/or flagged (detect-only)
+	// Requests with one recorded guardrail match meeting every guardrail filter set: what the guardrail did,
+	// its rule and profile ids, and the phase. Values within one filter are OR-ed.
+	guardrail_actions?: GuardrailMatchAction[];
+	guardrail_rule_ids?: string[];
+	guardrail_profile_ids?: string[];
+	guardrail_phases?: string[];
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs

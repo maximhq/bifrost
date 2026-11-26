@@ -72,7 +72,11 @@ export default function DatasheetEntrySheet({ target, canEdit, onClose }: Datash
 
 	return (
 		<Sheet open onOpenChange={(open) => !open && onClose()}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-2xl" data-testid="datasheet-sheet">
+			<SheetContent
+				resizeKey="datasheet-entry"
+				className="flex w-full flex-col overflow-x-hidden pt-4 sm:max-w-2xl"
+				data-testid="datasheet-sheet"
+			>
 				<SheetHeader className="flex flex-col items-start p-0 py-4" headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8">
 					<SheetTitle>{target ? t("datasheet.editEntry") : t("datasheet.addCustomModel")}</SheetTitle>
 					<SheetDescription>{target ? t("datasheet.editEntryDescription") : t("datasheet.addCustomModelDescription")}</SheetDescription>

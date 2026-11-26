@@ -13,7 +13,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scrollArea";
-import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
+import { ChatUnsupportedProviders, EmbeddingSupportedProviders } from "@/lib/constants/logs";
 import { getErrorMessage, useGetCoreConfigQuery, useGetProvidersQuery } from "@/lib/store";
 import { useGetAllKeysQuery } from "@/lib/store/apis/providersApi";
 import {
@@ -65,17 +65,16 @@ import {
 	DecisionProviderAlert,
 } from "./views/sections";
 
-// Embedding-capable providers gate this page, matching the local cache screen's
-// rule: built-ins are listed in EmbeddingSupportedProviders, custom providers
-// declare support through allowed_requests.embedding. A custom provider with no
-// allowed_requests block at all is unrestricted, which is how the Go side reads
-// a nil AllowedRequests.
+// Embedding-capable providers gate this page: built-ins are listed in
+// EmbeddingSupportedProviders, and a custom provider qualifies when its base type
+// is one of them and its allowed_requests allows embedding. A custom provider
+// with no allowed_requests block at all is unrestricted, which is how the Go side
+// reads a nil AllowedRequests.
 const supportsEmbedding = (provider: ModelProvider): boolean => {
-	if (provider.custom_provider_config) {
-		const allowed = provider.custom_provider_config.allowed_requests;
-		return !allowed || allowed.embedding === true;
-	}
-	return (EmbeddingSupportedProviders as readonly string[]).includes(provider.name);
+	const providerType = provider.custom_provider_config?.base_provider_type ?? provider.name;
+	if (!(EmbeddingSupportedProviders as readonly string[]).includes(providerType)) return false;
+	const allowed = provider.custom_provider_config?.allowed_requests;
+	return !allowed || allowed.embedding === true;
 };
 
 // Supporting embeddings is not enough to be selectable: every embedding call
@@ -87,16 +86,16 @@ const supportsEmbedding = (provider: ModelProvider): boolean => {
 const hasEnabledKey = (provider: ModelProvider, keys: DBKey[]): boolean =>
 	keys.some((key) => key.provider === provider.name && key.enabled !== false);
 
-// The llm classifier needs chat completions rather than embeddings. Built-in
-// providers all serve chat; custom providers declare support through
-// allowed_requests.chat_completion, and no allowed_requests block at all means
-// unrestricted, matching how the Go side reads a nil AllowedRequests.
+// The llm classifier needs chat completions rather than embeddings. Every
+// provider type serves chat except those in ChatUnsupportedProviders (a custom
+// provider is judged by its base type); custom providers also declare support
+// through allowed_requests.chat_completion, and no allowed_requests block at all
+// means unrestricted, matching how the Go side reads a nil AllowedRequests.
 const supportsChat = (provider: ModelProvider): boolean => {
-	if (provider.custom_provider_config) {
-		const allowed = provider.custom_provider_config.allowed_requests;
-		return !allowed || allowed.chat_completion === true;
-	}
-	return true;
+	const providerType = provider.custom_provider_config?.base_provider_type ?? provider.name;
+	if ((ChatUnsupportedProviders as readonly string[]).includes(providerType)) return false;
+	const allowed = provider.custom_provider_config?.allowed_requests;
+	return !allowed || allowed.chat_completion === true;
 };
 
 export default function ComplexityRouterPage() {
