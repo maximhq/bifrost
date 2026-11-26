@@ -18,7 +18,6 @@ import (
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -72,23 +71,15 @@ type AgentGatewayVirtualKeyValidator interface {
 	GetVirtualKey(ctx context.Context, value string) (*registry.VirtualKey, bool)
 }
 
-// VirtualKeyReloader refreshes one virtual key in the governance plugin's
-// in-memory store. The Agent Gateway needs it because the agent-side
-// virtual_key_ids field writes the same grant rows the virtual-key-side
-// agent_grants field writes, and the governance authorization decision reads
-// those rows from the cached virtual key; the virtual-key APIs already reload
-// after their own writes, so the agent APIs must do the same for the virtual keys
-// they touch, exactly as the MCP client APIs do after changing VK assignments.
-type VirtualKeyReloader interface {
-	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
-}
-
 // AgentRegistrationManager owns registration mutations and the local runtime
 // updates they require. Deployments may wrap these callbacks with additional
 // coordination without exposing that concern to the HTTP handler.
 type AgentRegistrationManager interface {
 	CreateAgentRegistration(ctx context.Context, req agent.CreateRequest) (schemas.AgentRegistrationView, error)
 	UpdateAgentRegistration(ctx context.Context, name string, req agent.UpdateRequest) (schemas.AgentRegistrationView, error)
+	// DeleteAgentRegistration deletes a registration. When the delete is saved but an in-memory
+	// follow-up fails, it returns an error wrapping ErrSavedButNotReloaded, which the handler answers
+	// as a saved delete whose memory is stale.
 	DeleteAgentRegistration(ctx context.Context, name string) error
 }
 
@@ -116,23 +107,25 @@ type AgentGatewayHandler struct {
 	manager             *agent.Manager
 	registrationManager AgentRegistrationManager
 	config              *lib.Config
-	// vkReloader refreshes the governance in-memory copy of every virtual key an
-	// agent mutation granted or revoked. Optional: without it, agent-side grant
-	// changes would only be observed after the next virtual-key reload.
-	vkReloader VirtualKeyReloader
+	// governanceManager reloads every virtual key an agent mutation granted or revoked, as the MCP
+	// client APIs do after changing VK assignments: the agent-side virtual_key_ids field writes the
+	// same grant rows the virtual-key-side agent_grants field writes, and the governance decision
+	// reads them from the cached key. Optional: without it, agent-side grant changes would only be
+	// observed after the next virtual-key reload.
+	governanceManager GovernanceManager
 }
 
 // NewAgentGatewayHandler returns nil when a required dependency is missing. The
 // handler owns protocol dispatch and management only; request authentication is
 // supplied independently when protocol routes are registered.
-func NewAgentGatewayHandler(manager *agent.Manager, registrationManager AgentRegistrationManager, config *lib.Config, vkReloader VirtualKeyReloader) *AgentGatewayHandler {
+func NewAgentGatewayHandler(manager *agent.Manager, registrationManager AgentRegistrationManager, config *lib.Config, governanceManager GovernanceManager) *AgentGatewayHandler {
 	if manager == nil || config == nil {
 		return nil
 	}
 	if registrationManager == nil {
 		registrationManager = localAgentRegistrationManager{manager: manager}
 	}
-	return &AgentGatewayHandler{manager: manager, registrationManager: registrationManager, config: config, vkReloader: vkReloader}
+	return &AgentGatewayHandler{manager: manager, registrationManager: registrationManager, config: config, governanceManager: governanceManager}
 }
 
 // ResyncFromStore rebuilds every agent runtime from persisted registrations and re-reads every
@@ -142,11 +135,6 @@ func (h *AgentGatewayHandler) ResyncFromStore(ctx context.Context) error {
 		return err
 	}
 	return h.config.LiveStore.RefreshKind(ctx, livestore.KindAgent)
-}
-
-// GetRegistration returns one redacted persisted registration.
-func (h *AgentGatewayHandler) GetRegistration(ctx context.Context, name string) (schemas.AgentRegistrationView, error) {
-	return h.manager.Get(ctx, name)
 }
 
 // ReloadRegistration replaces one runtime and its enabled-agent policy from the persisted
@@ -376,16 +364,16 @@ func (h *AgentGatewayHandler) create(ctx *fasthttp.RequestCtx) {
 		h.registrationMutationError(ctx, err)
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent.created", "agent", view.Name, view.Name, nil, auditAgentRegistration(&view))
 	refreshErr := h.refreshAgent(workCtx, view.Name, false)
 	// The keys are reloaded even when the agent's own refresh failed: a retried create is refused
 	// as a duplicate, so it would never reload them.
-	h.reloadGrantedVirtualKeys(workCtx, view.VirtualKeyIDs)
-	if refreshErr != nil {
-		logger.Error("failed to reload agent after create: %v", refreshErr)
+	reloadErr := reloadGrantingVirtualKeys(workCtx, h.governanceManager, view.VirtualKeyIDs)
+	if err := errors.Join(refreshErr, reloadErr); err != nil {
+		logger.Error("failed to reload in-memory state after creating agent %s: %v", view.Name, err)
 		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent created in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "agent.created", "agent", view.Name, view.Name, nil, auditAgentRegistration(&view))
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, view)
 }
@@ -455,16 +443,16 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 		h.registrationMutationError(ctx, err)
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent.updated", "agent", view.Name, view.Name, auditAgentRegistration(&previous), auditAgentRegistration(&view))
 	refreshErr := h.refreshAgent(workCtx, view.Name, false)
 	// The keys are reloaded even when the agent's own refresh failed: a retry reads the registration
 	// already written, which no longer names a key this update dropped.
-	h.reloadGrantedVirtualKeys(workCtx, previous.VirtualKeyIDs, view.VirtualKeyIDs)
-	if refreshErr != nil {
-		logger.Error("failed to reload agent after update: %v", refreshErr)
+	reloadErr := reloadGrantingVirtualKeys(workCtx, h.governanceManager, previous.VirtualKeyIDs, view.VirtualKeyIDs)
+	if err := errors.Join(refreshErr, reloadErr); err != nil {
+		logger.Error("failed to reload in-memory state after updating agent %s: %v", view.Name, err)
 		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent updated in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "agent.updated", "agent", view.Name, view.Name, auditAgentRegistration(&previous), auditAgentRegistration(&view))
 	SendJSON(ctx, view)
 }
 
@@ -506,20 +494,21 @@ func (h *AgentGatewayHandler) delete(ctx *fasthttp.RequestCtx) {
 		h.managementError(ctx, err)
 		return
 	}
-	if err := h.registrationManager.DeleteAgentRegistration(workCtx, name); err != nil {
-		h.managementError(ctx, err)
-		return
-	}
-	refreshErr := h.refreshAgent(workCtx, name, true)
-	// The keys are reloaded even when the agent's own refresh failed: a retried delete finds no
-	// registration, so it would never reach the keys the agent was granted to.
-	h.reloadGrantedVirtualKeys(workCtx, previous.VirtualKeyIDs)
-	if refreshErr != nil {
-		logger.Error("failed to reload agent after delete: %v", refreshErr)
-		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent deleted in database but failed to reload in-memory state")
+	saveErr := h.registrationManager.DeleteAgentRegistration(workCtx, name)
+	if saveErr != nil && !errors.Is(saveErr, ErrSavedButNotReloaded) {
+		h.managementError(ctx, saveErr)
 		return
 	}
 	lib.RecordAuditChange(ctx, "agent.deleted", "agent", name, name, auditAgentRegistration(&previous), nil)
+	refreshErr := h.refreshAgent(workCtx, name, true)
+	// The keys are reloaded even when the agent's own refresh failed: a retried delete finds no
+	// registration, so it would never reach the keys the agent was granted to.
+	reloadErr := reloadGrantingVirtualKeys(workCtx, h.governanceManager, previous.VirtualKeyIDs)
+	if err := errors.Join(refreshErr, reloadErr, saveErr); err != nil {
+		logger.Error("failed to reload in-memory state after deleting agent %s: %v", name, err)
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent deleted in database but failed to reload in-memory state")
+		return
+	}
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -864,34 +853,6 @@ func redactAgentHistoryValue(value any, oauthDefinition bool) {
 	case []any:
 		for _, child := range typed {
 			redactAgentHistoryValue(child, oauthDefinition)
-		}
-	}
-}
-
-// reloadGrantedVirtualKeys refreshes the governance in-memory copy of every
-// virtual key whose agent grants an agent mutation just changed, so the
-// authorization decision observes the new rows on the very next protocol request
-// without reading them from the database. Each key is reloaded at most once, and
-// a failure is logged rather than failing the mutation, which is already durably
-// committed. This mirrors what the MCP client APIs do after changing virtual-key
-// assignments.
-func (h *AgentGatewayHandler) reloadGrantedVirtualKeys(ctx context.Context, virtualKeyIDSets ...[]string) {
-	if h.vkReloader == nil {
-		return
-	}
-	reloaded := make(map[string]struct{})
-	for _, virtualKeyIDs := range virtualKeyIDSets {
-		for _, id := range virtualKeyIDs {
-			if id == "" {
-				continue
-			}
-			if _, done := reloaded[id]; done {
-				continue
-			}
-			reloaded[id] = struct{}{}
-			if _, err := h.vkReloader.ReloadVirtualKey(ctx, id); err != nil {
-				logger.Error("failed to reload virtual key %s after agent grant change: %v", id, err)
-			}
 		}
 	}
 }

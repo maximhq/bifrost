@@ -519,3 +519,70 @@ func TestRSSNewsSwitchStopsFetching(t *testing.T) {
 	require.Len(t, response.Items, 1)
 	require.Equal(t, 1, hits)
 }
+
+// TestRSSFeedWritesRecordAuditEvents pins a typed audit event for every feed and news-switch
+// write, none for a write the store refused, and no inline logo in a snapshot.
+func TestRSSFeedWritesRecordAuditEvents(t *testing.T) {
+	srv := newRSSFeedTestServer(t)
+	h, store := newTestRSSFeedsHandler(t, srv)
+
+	ctx := rssRequest(`{"name":"Releases","url":"`+srv.URL+`/atom"}`, 0)
+	h.createFeed(ctx)
+	require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	created := requireSingleAuditChange(t, ctx, "rss_feed.created")
+	require.Contains(t, string(created.After), `"name":"Releases"`)
+	id := store.feeds[0].ID
+
+	ctx = rssRequest(`{"name":"Renamed","icon_url":"data:image/png;base64,iVBORw0KGgo="}`, id)
+	h.updateFeed(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	updated := requireSingleAuditChange(t, ctx, "rss_feed.updated")
+	require.Contains(t, string(updated.Before), `"name":"Releases"`)
+	require.Contains(t, string(updated.After), `"name":"Renamed"`)
+	require.NotContains(t, string(updated.After), "iVBORw0KGgo", "an inline logo is not copied into the audit log")
+
+	ctx = rssRequest(`{"enabled":false}`, 0)
+	h.updateSettings(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	settings := requireSingleAuditChange(t, ctx, "rss_settings.updated")
+	require.JSONEq(t, `{"enabled":true}`, string(settings.Before))
+	require.JSONEq(t, `{"enabled":false}`, string(settings.After))
+
+	store.writeErr = errors.New("database is locked")
+	ctx = rssRequest(`{"enabled":false}`, id)
+	h.updateFeed(ctx)
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	require.Empty(t, liveAuditChanges(ctx), "a refused write records nothing")
+	store.writeErr = nil
+
+	ctx = rssRequest("", id)
+	h.deleteFeed(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	requireSingleAuditChange(t, ctx, "rss_feed.deleted")
+}
+
+// TestRSSFeedAuditKeepsOnlyTheURLOrigin pins that a private feed's token, which a feed URL can
+// carry in its path as well as in userinfo or the query, never reaches the audit log: the
+// snapshots record the scheme and host only, and a URL that does not parse not at all.
+func TestRSSFeedAuditKeepsOnlyTheURLOrigin(t *testing.T) {
+	srv := newRSSFeedTestServer(t)
+	h, _ := newTestRSSFeedsHandler(t, srv, tables.TableRSSFeed{
+		ID: 1, Slug: "private", Name: "Private", Source: "custom", Enabled: true,
+		URL:     "https://feeds.example.com/private/tok-feed-4f9a/rss?key=q-secret",
+		IconURL: "https://cdn.example.com/logos/tok-icon-77c1/logo.png",
+	})
+
+	ctx := rssRequest(`{"name":"Renamed"}`, 1)
+	h.updateFeed(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	updated := requireSingleAuditChange(t, ctx, "rss_feed.updated")
+	for _, snap := range []string{string(updated.Before), string(updated.After)} {
+		for _, secret := range []string{"tok-feed-4f9a", "q-secret", "/private", "tok-icon-77c1"} {
+			require.NotContains(t, snap, secret, "the audit snapshot carries part of a private feed URL")
+		}
+	}
+	require.Contains(t, string(updated.After), `"url":"https://feeds.example.com"`)
+	require.Contains(t, string(updated.After), `"icon_url":"https://cdn.example.com"`)
+
+	require.Equal(t, "<redacted: unparseable url>", auditRSSFeed(&tables.TableRSSFeed{URL: "https://user:p%zztok@feeds.example.com/rss"})["url"])
+}

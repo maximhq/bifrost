@@ -223,6 +223,10 @@ const FilterSchema = `{
     "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values. overloaded_error and rate_limit_error are error types - put them in error_types, never here."},
     "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}, "minItems": 1, "maxItems": 50, "description": "HTTP status the failure came back with, e.g. 400, 429, 529. Populated on every failed request."},
     "guardrail_outcomes": {"type": "array", "items": {"type": "string", "enum": ["blocked", "detected"]}, "minItems": 1, "description": "Requests a guardrail acted on: blocked (a guardrail stopped the request) or detected (a detect-only rule matched). Several values are OR-ed together."},
+    "guardrail_actions": {"type": "array", "items": {"type": "string", "enum": ["blocked", "redacted", "detected", "monitored"]}, "minItems": 1, "description": "What a guardrail did on one recorded match: blocked, redacted (content masked or rewritten), detected (flagged, request continued) or monitored (matched but not enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and guardrail_phases must hold on that same match."},
+    "guardrail_rule_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Guardrail rule ids, as a log's guardrail matches record them (rule_id): requests one of these rules matched."},
+    "guardrail_profile_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "Guardrail profile ids, as a log's guardrail matches record them (profile_id): requests one of these profiles matched."},
+    "guardrail_phases": {"type": "array", "items": {"type": "string", "enum": ["input", "output"]}, "minItems": 1, "description": "Where the guardrail match happened: input (the request) or output (the response)."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
     "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
   }
@@ -268,6 +272,7 @@ func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.D
 		"min_tokens": true, "max_tokens": true, "min_cost": true, "max_cost": true,
 		"cache_hit_types": true, "content_search": true, "scope": true,
 		"error_types": true, "error_codes": true, "status_codes": true, "guardrail_outcomes": true,
+		"guardrail_actions": true, "guardrail_rule_ids": true, "guardrail_profile_ids": true, "guardrail_phases": true,
 		"routing_rule_ids": true, "routing_engine_used": true, "selected_key_ids": true, "aliases": true,
 		"model_router_ids": true, "complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
 		"metadata_filters": true, "session_id": true, "request_id": true, "parent_request_id": true,
@@ -332,6 +337,8 @@ func parseFiltersWithLookback(raw map[string]any, now time.Time, lookback time.D
 		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs, "topic_ids": &filters.TopicIDs,
 		"apps": &filters.Apps, "cache_hit_types": &filters.CacheHitTypes,
 		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes, "guardrail_outcomes": &filters.GuardrailOutcomes,
+		"guardrail_actions": &filters.GuardrailActions, "guardrail_rule_ids": &filters.GuardrailRuleIDs,
+		"guardrail_profile_ids": &filters.GuardrailProfileIDs, "guardrail_phases": &filters.GuardrailPhases,
 		"routing_rule_ids": &filters.RoutingRuleIDs, "routing_engine_used": &filters.RoutingEngineUsed,
 		"model_router_ids": &filters.ModelRouterIDs,
 		"selected_key_ids": &filters.SelectedKeyIDs, "aliases": &filters.Aliases,

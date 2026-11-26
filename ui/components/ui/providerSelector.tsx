@@ -20,7 +20,13 @@ import { ChevronDownIcon, Loader2Icon, XIcon } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { normalizeValueOption, type ProviderSelectorOption, type ProviderSelectorValue } from "./providerSelector.utils";
+import {
+	customGroupHeading,
+	normalizeValueOption,
+	providerListClassName,
+	type ProviderSelectorOption,
+	type ProviderSelectorValue,
+} from "./providerSelector.utils";
 
 export type { ProviderSelectorOption, ProviderSelectorValue } from "./providerSelector.utils";
 
@@ -63,6 +69,8 @@ interface ProviderSelectorBaseProps {
 	allOption?: { value: string; label?: string };
 	/** Renders base and custom providers under separate headings. */
 	groupByCustom?: boolean;
+	/** Heading for the `isCustom` rows when `groupByCustom` is on, for a caller whose second group is not custom providers. */
+	customGroupLabel?: string;
 	placeholder?: string;
 	searchPlaceholder?: string;
 	emptyMessage?: string;
@@ -71,6 +79,8 @@ interface ProviderSelectorBaseProps {
 	size?: "sm" | "default";
 	className?: string;
 	contentClassName?: string;
+	/** Classes for the scrolling list, e.g. a taller max-h where the caller has room. */
+	listClassName?: string;
 	/**
 	 * Widens the dropdown past the trigger, for a narrow trigger with long provider names.
 	 * A number is px. Always clamped to the room radix reports, so it never leaves the
@@ -141,6 +151,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 		contentTestId,
 		allOption,
 		groupByCustom = false,
+		customGroupLabel,
 		placeholder: placeholderProp,
 		searchPlaceholder: searchPlaceholderProp,
 		emptyMessage,
@@ -148,6 +159,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 		size = "default",
 		className,
 		contentClassName,
+		listClassName,
 		contentWidth,
 		noPortal,
 		renderValueLabel,
@@ -444,7 +456,12 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 				highlightedValue={highlighted}
 				onHighlightedValueChange={setHighlighted}
 			>
-				<ComboboxList searchPlaceholder={searchPlaceholder} showSearchIcon className="max-h-[300px]" onInputKeyDown={handleInputKeyDown}>
+				<ComboboxList
+					searchPlaceholder={searchPlaceholder}
+					showSearchIcon
+					className={providerListClassName(listClassName)}
+					onInputKeyDown={handleInputKeyDown}
+				>
 					{visibleExtras.map(renderOption)}
 					{visibleAll.map(renderOption)}
 
@@ -461,7 +478,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 							{base.map(renderOption)}
 							{custom.length > 0 && (
 								<ComboboxGroup>
-									<ComboboxLabel>{t("providerSelect.customProviders")}</ComboboxLabel>
+									<ComboboxLabel>{customGroupHeading(customGroupLabel, t("providerSelect.customProviders"))}</ComboboxLabel>
 									{custom.map(renderOption)}
 								</ComboboxGroup>
 							)}
