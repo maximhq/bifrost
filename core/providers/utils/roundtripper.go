@@ -469,6 +469,10 @@ const (
 
 var errStreamDrainIncomplete = errors.New("streaming response body did not reach EOF within release drain budget")
 
+// testHookStreamDrainStart runs in (*streamBody).drainForReuse right before the
+// bounded io.Copy begins. Nil outside tests; lets a test synchronize on drain entry.
+var testHookStreamDrainStart atomic.Pointer[func()]
+
 // drainForReuse consumes any unread chunk terminator / trailer within a fixed
 // wall-clock deadline and byte cap, while keeping ctx cancellation wired so a
 // caller disconnect interrupts the drain immediately. If the body reaches true
@@ -506,6 +510,9 @@ func (s *streamBody) drainForReuse(ctx context.Context, timeout time.Duration, m
 		stopCancel = context.AfterFunc(ctx, func() {
 			_ = s.CloseWithError(ctx.Err())
 		})
+	}
+	if hook := testHookStreamDrainStart.Load(); hook != nil {
+		(*hook)()
 	}
 	_, copyErr := io.Copy(io.Discard, io.LimitReader(s, maxBytes))
 	if stopCancel != nil {

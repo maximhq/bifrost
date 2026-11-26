@@ -968,7 +968,9 @@ func TestAnthropicStreamingSequentialConnectionReuse(t *testing.T) {
 
 func newAnthropicMultiChunkSSEServer(t *testing.T, deltaCount int, interval time.Duration) *httptest.Server {
 	t.Helper()
+	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		holdForCancel := r.Header.Get("X-Hold-For-Cancel") == "1"
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(http.StatusOK)
@@ -981,17 +983,30 @@ func newAnthropicMultiChunkSSEServer(t *testing.T, deltaCount int, interval time
 		}
 		flusher.Flush()
 
-		for i := range deltaCount {
+		emitCount := deltaCount
+		if holdForCancel && emitCount > 4 {
+			emitCount = 4
+		}
+		for i := range emitCount {
 			frame := fmt.Sprintf("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"[%d]\"}}\n\n", i)
 			if _, err := w.Write([]byte(frame)); err != nil {
 				return
 			}
 			flusher.Flush()
 			select {
+			case <-release:
+				return
 			case <-r.Context().Done():
 				return
 			case <-time.After(interval):
 			}
+		}
+		if holdForCancel {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
 		}
 
 		if _, err := w.Write([]byte(anthropicMessageStop)); err != nil {
@@ -1000,6 +1015,7 @@ func newAnthropicMultiChunkSSEServer(t *testing.T, deltaCount int, interval time
 		flusher.Flush()
 	}))
 	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
 	return srv
 }
 
@@ -1048,6 +1064,11 @@ func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 	headers := map[string]string{
 		"Accept":        "text/event-stream",
 		"Cache-Control": "no-cache",
+	}
+	cancelHeaders := map[string]string{
+		"Accept":            "text/event-stream",
+		"Cache-Control":     "no-cache",
+		"X-Hold-For-Cancel": "1",
 	}
 
 	runCleanOnce := func(useResponses bool) (err error) {
@@ -1199,13 +1220,13 @@ func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 					var bErr *schemas.BifrostError
 					if useResponses {
 						stream, bErr = HandleAnthropicResponsesStream(
-							ctx, client, srv.URL, body, headers, nil, 30, nil,
+							ctx, client, srv.URL, body, cancelHeaders, nil, 30, nil,
 							false, false, schemas.Anthropic, truncationPassthroughPostHook,
 							nil, nil, truncationTestLogger{}, nil,
 						)
 					} else {
 						stream, bErr = HandleAnthropicChatCompletionStreaming(
-							ctx, client, srv.URL, body, headers, nil, 30, nil,
+							ctx, client, srv.URL, body, cancelHeaders, nil, 30, nil,
 							false, false, schemas.Anthropic, truncationPassthroughPostHook,
 							nil, nil, truncationTestLogger{}, nil,
 						)
@@ -1226,7 +1247,12 @@ func TestAnthropicStreamingConcurrentCancellationStress(t *testing.T) {
 				}()
 				select {
 				case <-started:
-					midBodyCancels.Add(1)
+					select {
+					case <-drained:
+					default:
+						cancel()
+						midBodyCancels.Add(1)
+					}
 				case <-drained:
 				}
 				cancel()

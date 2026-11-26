@@ -2616,6 +2616,7 @@ func TestOpenAIStreamingDoneWithOpenBodyDoesNotHang(t *testing.T) {
 	t.Run("ChatCompletion_SilentOpenBodyAfterDone", func(t *testing.T) {
 		var holdOpen atomic.Bool
 		holdOpen.Store(true)
+		release := make(chan struct{})
 		stop := "stop"
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -2624,10 +2625,14 @@ func TestOpenAIStreamingDoneWithOpenBodyDoesNotHang(t *testing.T) {
 			_, _ = io.WriteString(w, chatChunk("hello", nil)+chatChunk("", &stop)+chatUsageOnlyChunk+"data: [DONE]\n\n")
 			flusher.Flush()
 			if holdOpen.Load() {
-				<-r.Context().Done()
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
 			}
 		}))
 		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
 
 		client, counter := newOpenAITestStreamingClient(4)
 		start := time.Now()
@@ -2673,11 +2678,23 @@ func TestOpenAIStreamingDoneWithOpenBodyDoesNotHang(t *testing.T) {
 	})
 
 	t.Run("TextCompletion_SilentOpenBodyAfterDone", func(t *testing.T) {
-		srv := silentParkSSEServer(t,
-			`data: {"id":"cmpl-open","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}`+"\n\n"+
-				`data: {"id":"cmpl-open","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`+"\n\n"+
-				"data: [DONE]\n\n")
+		release := make(chan struct{})
+		body := `data: {"id":"cmpl-open","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}` + "\n\n" +
+			`data: {"id":"cmpl-open","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n" +
+			"data: [DONE]\n\n"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, body)
+			flusher.Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}))
 		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
 
 		client, counter := newOpenAITestStreamingClient(4)
 		req := &schemas.BifrostTextCompletionRequest{

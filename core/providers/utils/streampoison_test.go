@@ -563,6 +563,7 @@ func TestReleaseAfterBodyEOFDoesNotBlock(t *testing.T) {
 // cancellation while draining.
 func TestReleaseStreamingResponse_OpenBodyAfterMarkerIsBoundedAndDiscarded(t *testing.T) {
 	openAfterDone := false
+	releaseServer := make(chan struct{})
 	var mu sync.Mutex
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
@@ -575,10 +576,14 @@ func TestReleaseStreamingResponse_OpenBodyAfterMarkerIsBoundedAndDiscarded(t *te
 		_, _ = fmt.Fprint(w, "data: {\"i\":0}\n\ndata: [DONE]\n\n")
 		flusher.Flush()
 		if holdOpen {
-			<-r.Context().Done()
+			select {
+			case <-releaseServer:
+			case <-r.Context().Done():
+			}
 		}
 	}))
 	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(releaseServer) })
 
 	t.Run("bounded_by_drain_deadline", func(t *testing.T) {
 		mu.Lock()
@@ -623,29 +628,50 @@ func TestReleaseStreamingResponse_OpenBodyAfterMarkerIsBoundedAndDiscarded(t *te
 		openAfterDone = true
 		mu.Unlock()
 
+		enteredDrain := make(chan struct{})
+		var drainOnce sync.Once
+		hook := func() {
+			drainOnce.Do(func() { close(enteredDrain) })
+		}
+		testHookStreamDrainStart.Store(&hook)
+		t.Cleanup(func() { testHookStreamDrainStart.Store(nil) })
+
 		client, counter := newTestStreamingClient(4)
 		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
 
-		done := make(chan error, 1)
-		start := time.Now()
+		type streamResult struct {
+			frames int
+			err    error
+		}
+		done := make(chan streamResult, 1)
 		go func() {
-			_, err := runSSEStream(ctx, client, srv.URL)
-			done <- err
+			frames, err := runSSEStream(ctx, client, srv.URL)
+			done <- streamResult{frames: frames, err: err}
 		}()
 
-		time.Sleep(30 * time.Millisecond)
+		select {
+		case <-enteredDrain:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for stream to enter post-[DONE] drain")
+		}
+
+		cancelStart := time.Now()
 		cancel()
 
 		select {
-		case err := <-done:
-			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Fatalf("unexpected error: %v", err)
+		case res := <-done:
+			if res.err != nil {
+				t.Fatalf("unexpected error after entering drain: %v", res.err)
+			}
+			if res.frames != 1 {
+				t.Fatalf("frames = %d, want 1", res.frames)
 			}
 		case <-time.After(1 * time.Second):
 			t.Fatal("ReleaseStreamingResponse ignored context cancellation during drain")
 		}
-		if elapsed := time.Since(start); elapsed >= defaultStreamDrainTimeout {
-			t.Fatalf("cancelled drain took %v, expected immediate interruption before %v drain timeout", elapsed, defaultStreamDrainTimeout)
+		if elapsed := time.Since(cancelStart); elapsed >= defaultStreamDrainTimeout {
+			t.Fatalf("cancelled drain took %v after cancel(), expected immediate interruption before %v drain timeout", elapsed, defaultStreamDrainTimeout)
 		}
 		if got := counter.open(); got != 0 {
 			t.Fatalf("open connections = %d, want 0 after cancelled drain", got)
