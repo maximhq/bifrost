@@ -42,6 +42,12 @@ func TestPrepareSpeechRequestVoiceValidation(t *testing.T) {
 			body:      `{"model":"openai/tts-1","input":"hello there"}`,
 			wantError: true,
 		},
+		{
+			// xAI's /v1/tts has a default voice (eve) that the provider fills in.
+			name:      "xai without voice is allowed and gets the provider default",
+			body:      `{"model":"xai/grok-tts","input":"hello there"}`,
+			wantError: false,
+		},
 	}
 
 	for _, tt := range tests {
