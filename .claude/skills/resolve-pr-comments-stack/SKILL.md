@@ -139,6 +139,8 @@ red → green, **including findings about comments and documentation**:
    `.claude/skills/mcp-harness/SKILL.md`, not in the provider harness. If the fix also
    changes how a provider converts tool definitions or tool calls, add a provider-harness
    case as well.
+   A finding about semantic cache behaviour gets its case in the semantic cache wiring
+   suite, following `.claude/skills/semantic-cache-wiring/SKILL.md`.
 2. **Run it and confirm it is red for the right reason.** A test that fails on a compile
    error, a missing import, or an assertion earlier than the one under test has proved
    nothing. Read the failure message and check it names the behavior in the finding. If it

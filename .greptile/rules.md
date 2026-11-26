@@ -59,6 +59,32 @@ Every piece of data a process keeps (configuration, runtime state, caches) lives
 - A change another process made is applied with `lib.DBLookupRetry()`.
 - A write path that re-reads needs a test where the re-read fails; a delete needs a test that it removes without reading.
 
+## MCP Harness
+
+Every MCP change a client can observe ships with cases in the MCP harness, `tests/e2e/api/runners/build-mcp-harness.mjs`. AGENTS.md ("Every MCP change ships with MCP harness cases") and `.claude/skills/mcp-harness/SKILL.md` hold the full rules and, in section 3, the cases each kind of change needs. Review only behaviour a PR adds or changes against them:
+
+- MCP behaviour covers MCP clients and their upstream auth, connection types, `/mcp` and `/mcp/<slug>`, `/v1/mcp/tool/execute`, MCP tools in inference and code mode, tool filtering, virtual keys' MCP grants and Virtual MCPs, per-user discovery and sessions, MCP logs and pricing, the MCP library, Bifrost's OAuth server and the Bifrost MCP on `/v1/mcp`. Its cases go in the MCP harness, never in `provider-harness.json`.
+- A new or changed upstream auth type is covered on every connection type that can carry it, from the API and from `config.json`, through expiry and refresh, per caller and shared, in each inbound auth mode, with the credential reaching the upstream on every call path and no answer or log echoing it.
+- A connection type or transport change covers every auth type that applies, failure at create and mid-call, recovery and tool sync.
+- An inbound auth change covers each auth mode with enforce on and off, every caller credential alone and in pairs, every surface, and the exact refusal (`WWW-Authenticate` only where the mode advertises OAuth).
+- A filtering, MCP grant or Virtual MCP change covers each level alone and combined, with every surface that lists or calls tools answering the same.
+- Flag cases that cover one connection type, auth mode or surface when the change reaches more and the PR does not say why the others are out of reach.
+- A new value on an axis (an upstream auth type, connection type, discovery or credential kind, inbound auth mode, caller credential, surface) is also added to every existing test that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new tests.
+- Harness conventions: one folder per test named by its ID, every request titled with the ID, independent tests that restore what they change, exact assertions, no early return on an error status, no 500 as the expected answer, a known bug asserted with `A.skip(...)`.
+
+## Semantic Cache Wiring
+
+Every semantic cache change a client can observe ships with rows in the semantic cache wiring suite, `tests/e2e/api/runners/build-semantic-cache-wiring.mjs`. AGENTS.md ("Every semantic cache change ships with semantic cache wiring cases") and `.claude/skills/semantic-cache-wiring/SKILL.md` hold the full rules and, in section 3, the cases each kind of change needs. Review only behaviour a PR adds or changes against them:
+
+- Semantic cache behaviour covers the `semantic_cache` plugin and its config, what a request writes, hits or misses and what a hit replays, direct and semantic mode on every cacheable request type and route, streams, the `x-bf-cache-*` request headers, `extra_fields.cache_debug` and the `x-bifrost-cache-*` response headers, identity scoping, the `/api/cache` clear endpoints, the vector stores and the cache fields on log rows, logs filters and stats. Its cases go in the semantic cache wiring suite, never in `provider-harness.json`.
+- A config field is covered with its default, `null` on a PUT, its exact 400s on create and update, GET echoing it, and its effect in direct and semantic mode.
+- A cache key input is covered with a hit on the same request, a miss with only that input changed when it must keep entries apart, and a hit on the first entry when it must not (reordered tools, letter case, surrounding whitespace), in both modes, streamed and not, plus the paraphrase in semantic mode.
+- A request type, route or replay change covers a write, a hit and a miss on that type and its stream, a replay equal to the original, the body `cache_debug` and headers agreeing on `/v1` and `/openai` (headers only, with no body `cache_debug`, on the other SDK routes), and the log row.
+- A vector store change passes the same rows on Redis and on Weaviate, plus that store's own test file.
+- Flag rows that cover one cache mode, request type, route or stream when the change reaches more and the PR does not say why the others are out of reach.
+- A new value on an axis (a request type, route, config field, request header, `cache_debug` field or response header, vector store, caller identity, cache key input) is also added to every existing row that enumerates that axis, and the skill's sections 2 and 3 name it (skill section 6). Flag a PR that adds only its own new rows.
+- Suite conventions: the collection is regenerated from the generator and never hand-edited; every request of a case is named by its ID; reads that must hit go through `hit()` and are polled with `x-bf-cache-no-store`; a miss runs only after its isolation hit; keys and namespaces carry the run ID; a row that changes the plugin restores the folder's baseline; exact assertions, no early return on an error status, no 500 as the expected answer.
+
 ## Path-Specific Checks
 
 For `core/providers/**`:
@@ -74,6 +100,7 @@ For `core/mcp/**`:
 - Check tool filtering across global, client, tool, and per-request filters.
 - Review agent loops for bounded depth, deterministic tool execution behavior, and safe error propagation.
 - Preserve deterministic tool registration, discovery, and filtering behavior across in-process, SSE, streamable HTTP, and code-mode clients.
+- Ask for MCP harness cases for observable behaviour changes (see MCP Harness above).
 
 For `framework/streaming/**`:
 
@@ -86,6 +113,11 @@ For `transports/bifrost-http/handlers/**`:
 - Verify handler changes keep SDK integration behavior compatible with OpenAI, Anthropic, Bedrock, Google GenAI, LangChain, LiteLLM, and PydanticAI where relevant.
 - Check request parsing, error status codes, and middleware ordering.
 - Configuration changes go to the database first and memory follows (see Live Store above). A create or update re-reads the written record; if that read fails, memory keeps the record's previous version and the handler answers 500 saying the write was saved but not reloaded. A delete removes its record without a read; if the holders' re-read then fails, the holders keep their previous records and the handler answers 500, while the deleted record stays removed. Do not ask for a rollback of the committed write.
+
+For `plugins/semanticcache/**` and `framework/vectorstore/**`:
+
+- Every vector store gives the same answer for the same rows: similarity is cosine on every store, and a store-specific change ships with the cosine check in that store's test file.
+- Ask for semantic cache wiring rows for observable behaviour changes (see Semantic Cache Wiring above).
 
 For `plugins/governance/**`:
 

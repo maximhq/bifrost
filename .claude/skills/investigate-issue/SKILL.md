@@ -586,6 +586,24 @@ type, auth mode and surface it reaches, not only the one the issue names), add t
 after with `TESTS=<ID>,<ID> make run-mcp-harness-test`. The MCP harness is hermetic, so
 this run is yours, not the user's.
 
+**Semantic cache issues** take semantic cache wiring cases instead of provider-harness
+cases: anything about the `semantic_cache` plugin and its config, what a request writes,
+hits or misses and what a hit replays, `cache_debug` and the `x-bifrost-cache-*` headers,
+the `x-bf-cache-*` request headers, identity scoping, the cache clear endpoints or the
+vector stores. Plan the cases from `.claude/skills/semantic-cache-wiring/SKILL.md`
+section 3 for the kind of change (both cache modes, and every request type, route and
+stream it reaches, not only the one the issue names), add them to
+`tests/e2e/api/runners/build-semantic-cache-wiring.mjs`, regenerate the collection, and
+run the offline checks from skill section 5 (unit tests on the plugin's fake stores, the
+transport tests, `node tests/e2e/api/runners/lib/semantic-cache-wiring.test.mjs`). Most of
+the plugin package's existing tests need `OPENAI_API_KEY` and a running Weaviate and skip
+themselves without them, so report a skip as a skip, never as a pass. The whole plugin
+package and the suite's live run need provider keys and are paid, so hand the user both,
+scoped to the folders the change reaches (skill section 5), instead of the
+provider-harness command. A change that also alters what a provider receives or returns
+on a request the cache does not answer takes a provider-harness case as well, and the
+hand-over includes its provider-harness command too.
+
 ## Step 6: Present Findings
 
 Present everything to the user in this structured format:

@@ -628,13 +628,14 @@ Any issue fix or code change lands together with regression tests that pin the n
 - **Unit tests wherever possible**, added to the existing test file per the convention below.
 - **A provider-harness case for every wire-visible change** (next sections).
 - **MCP harness cases for every MCP behaviour change** ("Every MCP change ships with MCP harness cases" below). MCP cases go in the MCP harness, not the provider harness.
+- **Semantic cache wiring cases for every semantic cache behaviour change** ("Every semantic cache change ships with semantic cache wiring cases" below). Semantic cache cases go in the semantic cache wiring suite, not the provider harness.
 - **E2E coverage for `ui/` changes** (`tests/e2e/`) - the harness cannot see the UI.
 
 The only exemptions: no wire-visible effect AND no testable behavior change (comments, internal renames, log lines). An exempt change must say so explicitly in the PR.
 
 ### Bug fixes: red before green
 
-Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development. For MCP bugs, the end-to-end pin is an MCP harness case instead (`.claude/skills/mcp-harness/SKILL.md`), run red and green with `TESTS=<ID> make run-mcp-harness-test`.
+Before writing a fix, add (or extend) a test that reproduces the bug and confirm it fails for the expected reason — a wrong assertion, not a compile error or an unrelated panic. Only then implement the fix, and confirm the same test now passes. For bugs reachable through `make run-provider-harness-test`, add the harness regression case (see `.claude/skills/harness-test-writer/SKILL.md`) alongside Go-level tests: Go tests give a fast, free red/green loop while coding; the harness case is the live end-to-end pin, expected red pre-fix and green post-fix, validated structurally (`augment-provider-harness.mjs` / `filter-collection.mjs`) without needing a live paid run during development. For MCP bugs, the end-to-end pin is an MCP harness case instead (`.claude/skills/mcp-harness/SKILL.md`), run red and green with `TESTS=<ID> make run-mcp-harness-test`. For semantic cache bugs, it is a semantic cache wiring row (`.claude/skills/semantic-cache-wiring/SKILL.md`): check it with the generator and the suite's library tests while coding, and hand the user its live run.
 
 ### Add tests to existing test files, never new ones
 
@@ -642,7 +643,7 @@ Do not create a new `_test.go` file for a package that already has one. Put the 
 
 ### Every wire-visible change ships with a provider-harness case
 
-Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one. MCP behaviour is the exception: its cases go in the MCP harness ("Every MCP change ships with MCP harness cases"); only a change to how a provider converts tool definitions or tool calls also needs a provider-harness case.
+Any change under `core/`, `framework/`, `transports/bifrost-http/`, or `plugins/` that a client can observe on the wire must land together with a case in `tests/e2e/api/collections/provider-harness.json` (see `.claude/skills/harness-test-writer/SKILL.md`). This covers new features and refactors, not only bug fixes - the rule in the previous section is the narrower instance of this one. MCP behaviour is the exception: its cases go in the MCP harness ("Every MCP change ships with MCP harness cases"); only a change to how a provider converts tool definitions or tool calls also needs a provider-harness case. Semantic cache behaviour is the other exception: its cases go in the semantic cache wiring suite ("Every semantic cache change ships with semantic cache wiring cases"); only a change that also alters what a provider receives or returns on a request the cache does not answer needs a provider-harness case too.
 
 These layers all sit on the request path, so any of them can change the bytes a client sees - and that end-to-end behaviour is what the harness exists to pin. A Go unit test proves the function does what you meant; only the harness proves the bytes a real client sends still come back correct through the whole stack. The gap between those two is where regressions live: a fail-soft that fires on one request shape and silently skips a sibling shape passes every unit test it has.
 
@@ -673,6 +674,25 @@ TESTS=<ID>,<ID> make run-mcp-harness-test
 
 The same harness rules as above apply: never skip an error status in a test script, assert exact statuses and messages, and never assert a 500 as the expected answer; a known bug is asserted with `A.skip(...)` until its fix lands.
 
+### Every semantic cache change ships with semantic cache wiring cases
+
+Any change to semantic cache behaviour a client can observe lands together with cases in the semantic cache wiring suite, `tests/e2e/api/runners/build-semantic-cache-wiring.mjs` (see `.claude/skills/semantic-cache-wiring/SKILL.md`). Semantic cache behaviour covers the `semantic_cache` plugin and its config, what a request writes, hits or misses and what a hit replays, direct and semantic mode on every cacheable request type and route, streams, the `x-bf-cache-*` request headers, `extra_fields.cache_debug` and the `x-bifrost-cache-*` response headers, identity scoping, the `/api/cache` clear endpoints, the vector stores the plugin runs on, and the cache fields on log rows, logs filters and stats. These cases never go in `provider-harness.json`.
+
+The skill lists, for each kind of semantic cache change, every case it needs: a new input to the cache key is checked with a hit and a miss in direct and semantic mode, streamed and not; a new request type with a write, a hit, a replay equal to the original, the response headers and the log row; a config field with its default, its exact 400s and its effect. Cover every value the change reaches, not only the one named in the issue, and state in the PR any the change cannot reach.
+
+The suite is generated: edit the generator, regenerate the committed collection with `node tests/e2e/api/runners/build-semantic-cache-wiring.mjs`, and commit both. Its run is live and paid (it boots a clean Bifrost on Redis and on Weaviate and calls real providers), so, like the provider harness, it is the user's to trigger. Run the offline checks yourself: unit tests written on the plugin's fake stores, the transport tests, and `node tests/e2e/api/runners/lib/semantic-cache-wiring.test.mjs`. Most of the plugin package's existing tests call OpenAI through `env.OPENAI_API_KEY` and a running Weaviate, and skip themselves when either is missing, so `go test ./...` there prints `ok` without proving anything; report every `--- SKIP` as skipped, never as passed. Then end the report with the whole plugin package and the suite's run scoped to the folders the change reaches (`--folder`, repeatable), every placeholder filled in:
+
+```bash
+docker compose -f tests/docker-compose.yml up -d
+(cd plugins/semanticcache && set -o pipefail && go test -count=1 -v ./... 2>&1 | grep -E -- '--- (FAIL|SKIP)|^(ok|FAIL)')
+# build from the local modules: a plain `make build` sets GOWORK=off and uses the published plugin
+[ -f go.work ] || make setup-workspace
+make build LOCAL=1
+tests/e2e/api/runners/individual/run-newman-semantic-cache-wiring-tests.sh --binary tmp/bifrost-http --port <port> --store both --folder "<folder>"
+```
+
+The same harness rules as above apply: never skip an error status in a test script, assert exact statuses and messages, and never assert a 500 as the expected answer. The suite has no skip, so a known bug's row lands with its fix.
+
 ### Provider-native features are tested on every route that reaches the provider
 
 A provider is reachable through more than its own SDK endpoint, and a fix that only looks at the route named in the issue is incomplete. Before calling a provider-native feature (a content block type, a beta header, a request parameter) fixed or added, enumerate every inbound route that can carry it to that provider and cover each one:
@@ -688,7 +708,7 @@ For each route the change reaches: a unit test that drives that route's ingress 
 
 Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
 
-The live provider harness is the user's to run, not the agent's. Do not launch it. Instead, end the report with both final commands in a plain code block, ready to paste: the `make dev` line that starts Bifrost from the code under test, and the single-line `make run-provider-harness-test` line that runs against it. No box drawing around them, since border characters make the commands impossible to select. Naming the scope is the agent's job; spending the money is the user's call.
+The live provider harness is the user's to run, not the agent's. Do not launch it. Instead, end the report with both final commands in a plain code block, ready to paste: the `make dev` line that starts Bifrost from the code under test, and the single-line `make run-provider-harness-test` line that runs against it. No box drawing around them, since border characters make the commands impossible to select. Naming the scope is the agent's job; spending the money is the user's call. A semantic cache change hands over the semantic cache wiring run instead ("Every semantic cache change ships with semantic cache wiring cases"), and both when it also changes what a provider receives or returns on a request the cache does not answer.
 
 **RUN THE PROVIDER HARNESS.** Unit tests are green. The live run is yours to trigger.
 
@@ -814,6 +834,9 @@ Add regression test cases to the provider harness (`tests/e2e/api/collections/pr
 
 ### `mcp-harness`
 Which MCP harness cases each kind of MCP change needs (upstream auth, connection types, inbound auth on `/mcp`, filtering and Virtual MCPs, tool execution, MCP tools in inference, per-user discovery, logs, the library, the Bifrost MCP), where they go in `tests/e2e/api/runners/build-mcp-harness.mjs`, how to write them and how to run them. This is the skill the Testing section's MCP harness rule points at.
+
+### `semantic-cache-wiring`
+Which semantic cache wiring cases each kind of semantic cache change needs (config fields, cache key inputs, request types and routes, streams, per-request headers, semantic matching, identity scoping, the plugin and clear APIs, vector stores, `cache_debug`, response headers and logs), where they go in `tests/e2e/api/runners/build-semantic-cache-wiring.mjs`, how to write them and how to run them. This is the skill the Testing section's semantic cache rule points at.
 
 ### `/investigate-issue <issue-id>`
 Investigate a GitHub issue from `maximhq/bifrost`. Fetches issue details, classifies by type/area, searches codebase, traces dependencies, analyzes side effects, plans the required regression tests (unit/harness/LLM/MCP/E2E), and presents an implementation plan with per-change approval gates.
