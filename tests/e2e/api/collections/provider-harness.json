@@ -363163,6 +363163,468 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "389. OpenRouter replays reasoning_details on chat completions (openrouter reasoning replay)",
+      "description": "Issue #5274. A client replaying an assistant tool-call turn on /v1/chat/completions sends Claude's signed thinking back in reasoning_details. Bifrost parsed the field but ConvertBifrostMessagesToOpenAIMessages never wrote it out, so OpenRouter got only the unsigned reasoning_content text and Claude re-reasoned every tool-call turn (134k vs 22k reasoning tokens on one agent run). ToOpenAIChatRequest now copies reasoning_details onto outbound assistant messages for OpenRouter only. Claude counts a replayed thinking block as input, so the pin is prompt_tokens: a control replay with the reasoning removed, then the same replay with reasoning_details (unary and streamed) must cost more input tokens. Only details carrying a signature or encrypted data are forwarded: a plain reasoning string replayed to Claude must still answer 200 (an unsigned detail would become an unsigned thinking block). GPT and Gemini on OpenRouter replay their own encrypted reasoning without a format tag and must answer 200 on the first attempt, checked against the log row's routing_engine_logs for Bifrost's strip-and-retry note. A corrupted-signature probe cannot pin this: Claude's 400 triggers Bifrost's strip-and-retry (shouldStripReasoningAfterClientError), which answers 200 with or without the fix.",
+      "item": [
+        {
+          "name": "openrouter/anthropic/claude-sonnet-5 /v1/chat/completions tool call returns signed reasoning_details - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('turn 1 returns a tool call with signed reasoning_details', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.tool_calls, 'no tool call returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(msg.reasoning_details, 'no reasoning_details returned (model did not think): ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var signed = msg.reasoning_details.filter(function (d) { return (d.signature && d.signature.length) || (d.data && d.data.length); });",
+                  "  pm.expect(signed.length, 'reasoning_details carry no signature or encrypted data: ' + body).to.be.above(0);",
+                  "  // Answer every tool call: Claude requires a tool_result per tool_use.",
+                  "  var results = msg.tool_calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: '{\"record\":\"found\"}' }; });",
+                  "  var user = { role: 'user', content: \"Find the smallest prime number greater than 1000 whose digits sum to 20. Work it out, then call lookup_code with that number.\" };",
+                  "  var bare = { role: 'assistant', content: msg.content || '', tool_calls: msg.tool_calls };",
+                  "  pm.collectionVariables.set('openrouterReasoningControlMessages5274', JSON.stringify([user, bare].concat(results)));",
+                  "  pm.collectionVariables.set('openrouterReasoningReplayMessages5274', JSON.stringify([user, msg].concat(results)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/anthropic/claude-sonnet-5\",\"messages\":[{\"role\":\"user\",\"content\":\"Find the smallest prime number greater than 1000 whose digits sum to 20. Work it out, then call lookup_code with that number.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"high\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/anthropic/claude-sonnet-5 /v1/chat/completions control replay without reasoning - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('control replay without reasoning answers', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'control replay failed: ' + body).to.equal(200);",
+                  "  var usage = pm.response.json().usage;",
+                  "  pm.expect(usage && usage.prompt_tokens, 'no usage.prompt_tokens: ' + body).to.be.above(0);",
+                  "  pm.collectionVariables.set('openrouterReasoningControlPromptTokens5274', String(usage.prompt_tokens));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/anthropic/claude-sonnet-5\",\"messages\":{{openrouterReasoningControlMessages5274}},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"high\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/anthropic/claude-sonnet-5 /v1/chat/completions replayed reasoning_details reach Claude - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('replayed reasoning_details add input tokens over the control', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.equal(200);",
+                  "  pm.expect(pm.response.json().choices[0].message, 'no message: ' + body).to.be.an('object');",
+                  "  var m = body.match(/\"usage\":\\{\"prompt_tokens\":(\\d+)/g) || [];",
+                  "  pm.expect(m.length, 'no usage.prompt_tokens in response: ' + body).to.be.above(0);",
+                  "  var withReasoning = parseInt(m[m.length - 1].replace(/\\D+/g, ''), 10);",
+                  "  var without = parseInt(pm.collectionVariables.get('openrouterReasoningControlPromptTokens5274'), 10);",
+                  "  // Claude counts a replayed thinking block as input; equal counts mean reasoning_details never reached it.",
+                  "  pm.expect(withReasoning, 'prompt_tokens with reasoning_details (' + withReasoning + ') not above the control without it (' + without + ')').to.be.above(without);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/anthropic/claude-sonnet-5\",\"messages\":{{openrouterReasoningReplayMessages5274}},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"high\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/anthropic/claude-sonnet-5 /v1/chat/completions stream replayed reasoning_details reach Claude - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed: replayed reasoning_details add input tokens over the control', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.equal(200);",
+                  "  pm.expect(body, 'stream did not finish: ' + body).to.include('[DONE]');",
+                  "  var m = body.match(/\"usage\":\\{\"prompt_tokens\":(\\d+)/g) || [];",
+                  "  pm.expect(m.length, 'no usage.prompt_tokens in response: ' + body).to.be.above(0);",
+                  "  var withReasoning = parseInt(m[m.length - 1].replace(/\\D+/g, ''), 10);",
+                  "  var without = parseInt(pm.collectionVariables.get('openrouterReasoningControlPromptTokens5274'), 10);",
+                  "  // Claude counts a replayed thinking block as input; equal counts mean reasoning_details never reached it.",
+                  "  pm.expect(withReasoning, 'prompt_tokens with reasoning_details (' + withReasoning + ') not above the control without it (' + without + ')').to.be.above(without);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/anthropic/claude-sonnet-5\",\"stream\":true,\"messages\":{{openrouterReasoningReplayMessages5274}},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"high\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/anthropic/claude-sonnet-5 /v1/chat/completions plain reasoning string replay stays reasoning_content - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('plain reasoning string replay answers', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'unsigned reasoning replay was rejected: ' + body).to.equal(200);",
+                  "  pm.expect(pm.response.json().choices[0].message, 'no message: ' + body).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/anthropic/claude-sonnet-5\",\"messages\":[{\"role\":\"user\",\"content\":\"What is 17 times 23? Work it out, then call lookup_code with the result.\"},{\"role\":\"assistant\",\"content\":\"\",\"reasoning\":\"17 times 23 is 391, so I should call lookup_code with 391.\",\"tool_calls\":[{\"id\":\"toolu_bfharness_plain_01\",\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"arguments\":\"{\\\"code\\\":391}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"toolu_bfharness_plain_01\",\"content\":\"{\\\"record\\\":\\\"found\\\"}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"high\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/openai/gpt-5.6 /v1/chat/completions tool call returns reasoning_details - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('turn 1 returns a tool call with signed or encrypted reasoning_details', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.tool_calls, 'no tool call returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var details = msg.reasoning_details || [];",
+                  "  var carried = details.filter(function (d) { return (d.signature && d.signature.length) || (d.data && d.data.length); });",
+                  "  pm.expect(carried.length, 'no signed or encrypted reasoning_details to replay: ' + body).to.be.above(0);",
+                  "  var results = msg.tool_calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: '{\"record\":\"found\"}' }; });",
+                  "  pm.collectionVariables.set('openrouterGptReasoningReplayMessages5274', JSON.stringify([{ role: 'user', content: \"What is 17 times 23? Work it out, then call lookup_code with the result.\" }, msg].concat(results)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/openai/gpt-5.6\",\"messages\":[{\"role\":\"user\",\"content\":\"What is 17 times 23? Work it out, then call lookup_code with the result.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"medium\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/openai/gpt-5.6 /v1/chat/completions replays its own reasoning_details without strip-retry - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gpt-5.6 replay: answered', function () {",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('gpt-5.6 replay: replayed reasoning_details sent upstream', function () {",
+                  "  var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  var sent = ((rr && rr.messages) || []).filter(function (m) { return m.role === 'assistant' && m.reasoning_details && m.reasoning_details.length; });",
+                  "  pm.expect(sent.length, 'upstream request carried no reasoning_details on the replayed assistant turn: ' + JSON.stringify(rr && rr.messages)).to.be.above(0);",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "// A 200 can hide a strip-and-retry: the first attempt was refused and Bifrost resent without the reasoning.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('gpt-5.6 replay: first attempt accepted the replayed reasoning', function () {",
+                  "        pm.expect(String(j.routing_engine_logs || ''), 'Bifrost stripped the replayed reasoning and retried: ' + j.routing_engine_logs).to.not.match(/Stripped unverifiable/);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gpt-5.6 replay: log row appeared', function () { pm.expect.fail('log ' + reqId + ' not complete after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "pm.test('gpt-5.6 replay: request id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/openai/gpt-5.6\",\"messages\":{{openrouterGptReasoningReplayMessages5274}},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"medium\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/google/gemini-3.8-flash /v1/chat/completions tool call returns reasoning_details - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('turn 1 returns a tool call with signed or encrypted reasoning_details', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var msg = pm.response.json().choices[0].message;",
+                  "  pm.expect(msg.tool_calls, 'no tool call returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "  var details = msg.reasoning_details || [];",
+                  "  var carried = details.filter(function (d) { return (d.signature && d.signature.length) || (d.data && d.data.length); });",
+                  "  pm.expect(carried.length, 'no signed or encrypted reasoning_details to replay: ' + body).to.be.above(0);",
+                  "  var results = msg.tool_calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: '{\"record\":\"found\"}' }; });",
+                  "  pm.collectionVariables.set('openrouterGeminiReasoningReplayMessages5274', JSON.stringify([{ role: 'user', content: \"What is 17 times 23? Work it out, then call lookup_code with the result.\" }, msg].concat(results)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/google/gemini-3.8-flash\",\"messages\":[{\"role\":\"user\",\"content\":\"What is 17 times 23? Work it out, then call lookup_code with the result.\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"medium\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openrouter/google/gemini-3.8-flash /v1/chat/completions replays its own reasoning_details without strip-retry - openrouter reasoning replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini-3.8-flash replay: answered', function () {",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('gemini-3.8-flash replay: replayed reasoning_details sent upstream', function () {",
+                  "  var rr = ((pm.response.json() || {}).extra_fields || {}).raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  var sent = ((rr && rr.messages) || []).filter(function (m) { return m.role === 'assistant' && m.reasoning_details && m.reasoning_details.length; });",
+                  "  pm.expect(sent.length, 'upstream request carried no reasoning_details on the replayed assistant turn: ' + JSON.stringify(rr && rr.messages)).to.be.above(0);",
+                  "});",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "// A 200 can hide a strip-and-retry: the first attempt was refused and Bifrost resent without the reasoning.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.status && j.status !== 'processing') {",
+                  "      pm.test('gemini-3.8-flash replay: first attempt accepted the replayed reasoning', function () {",
+                  "        pm.expect(String(j.routing_engine_logs || ''), 'Bifrost stripped the replayed reasoning and retried: ' + j.routing_engine_logs).to.not.match(/Stripped unverifiable/);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini-3.8-flash replay: log row appeared', function () { pm.expect.fail('log ' + reqId + ' not complete after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "pm.test('gemini-3.8-flash replay: request id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openrouter/google/gemini-3.8-flash\",\"messages\":{{openrouterGeminiReasoningReplayMessages5274}},\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"lookup_code\",\"description\":\"Look up the record for a numeric code\",\"parameters\":{\"type\":\"object\",\"properties\":{\"code\":{\"type\":\"integer\"}},\"required\":[\"code\"]}}}],\"reasoning\":{\"effort\":\"medium\"},\"max_completion_tokens\":4096}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

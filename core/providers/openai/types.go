@@ -504,10 +504,10 @@ type OpenAIChatAssistantMessage struct {
 	// ReasoningAlias and ReasoningDetails capture the other two spellings callers use to
 	// replay assistant reasoning: OpenRouter-style "reasoning" and "reasoning_details".
 	//
-	// These are inbound-only. ConvertBifrostMessagesToOpenAIMessages is the sole
-	// construction site on the outbound path and never populates them, so they stay nil
-	// there and omitempty keeps them off the wire for every provider. Read them via
-	// ConvertOpenAIMessagesToBifrostMessages, which folds them into the Bifrost schema.
+	// ConvertBifrostMessagesToOpenAIMessages never populates them, so omitempty keeps them
+	// off the wire; the one exception is ToOpenAIChatRequest setting signed or encrypted
+	// ReasoningDetails for OpenRouter, which replays them upstream. Read them via ConvertOpenAIMessagesToBifrostMessages,
+	// which folds them into the Bifrost schema.
 	ReasoningAlias   *string                        `json:"reasoning,omitempty"`
 	ReasoningDetails []schemas.ChatReasoningDetails `json:"reasoning_details,omitempty"`
 

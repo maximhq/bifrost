@@ -3752,3 +3752,60 @@ func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
 }
+
+// Issue #5274: an assistant turn replayed with reasoning_details (signed thinking and
+// redacted blocks) must reach OpenRouter intact, or Claude re-reasons every tool-call turn.
+// Every other OpenAI-compatible target keeps reasoning_details off the wire.
+func TestToOpenAIChatRequest_OpenRouterReplaysReasoningDetails(t *testing.T) {
+	raw := []byte(`{"model":"anthropic/claude-opus-5.5","messages":[
+		{"role":"user","content":"weather in paris?"},
+		{"role":"assistant","content":"","reasoning_details":[
+			{"index":0,"type":"reasoning.text","text":"need the tool","signature":"sig-1"},
+			{"index":1,"type":"reasoning.encrypted","data":"REDACTED"}],
+		 "tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}}]},
+		{"role":"tool","tool_call_id":"toolu_1","content":"22C"}]}`)
+	var inbound OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal(raw, &inbound))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := inbound.ToBifrostChatRequest(ctx)
+
+	bifrostReq.Provider = schemas.OpenRouter
+	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+	require.NoError(t, err)
+	details := gjson.GetBytes(body, "messages.1.reasoning_details")
+	require.Len(t, details.Array(), 2, string(body))
+	require.Equal(t, "reasoning.text", details.Get("0.type").String())
+	require.Equal(t, "need the tool", details.Get("0.text").String())
+	require.Equal(t, "sig-1", details.Get("0.signature").String())
+	require.Equal(t, "reasoning.encrypted", details.Get("1.type").String())
+	require.Equal(t, "REDACTED", details.Get("1.data").String())
+	require.Equal(t, "toolu_1", gjson.GetBytes(body, "messages.1.tool_calls.0.id").String())
+
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Mistral, schemas.Groq, schemas.DeepSeek} {
+		bifrostReq.Provider = provider
+		body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, bifrostReq))
+		require.NoError(t, err)
+		require.False(t, gjson.GetBytes(body, "messages.1.reasoning_details").Exists(), "%s: %s", provider, body)
+	}
+}
+
+// A plain reasoning string replayed on /v1/chat/completions is synthesized into an unsigned
+// reasoning.text detail. OpenRouter must keep getting only reasoning_content for it: an unsigned
+// detail can become an unsigned Claude thinking block, which Anthropic rejects with no strip-retry.
+func TestToOpenAIChatRequest_OpenRouterKeepsUnsignedReasoningAsContent(t *testing.T) {
+	var messages []schemas.ChatMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"role":"user","content":"weather in paris?"},
+		{"role":"assistant","content":"","reasoning":"need the tool",
+		 "tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"toolu_1","content":"22C"}]`), &messages))
+	require.Len(t, messages[1].ChatAssistantMessage.ReasoningDetails, 1, "precondition: unsigned detail synthesized")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	body, err := sonic.Marshal(ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenRouter, Model: "anthropic/claude-opus-5.5", Input: messages,
+	}))
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(body, "messages.1.reasoning_details").Exists(), string(body))
+	require.Equal(t, "need the tool", gjson.GetBytes(body, "messages.1.reasoning_content").String(), string(body))
+}
