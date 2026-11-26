@@ -310,10 +310,10 @@ func (gs *LocalGovernanceStore) createTables(ctx context.Context) error {
 	if gs.modelConfigKeyOf, err = gs.live.NewTable[string, string](ctx, modelConfigKeyOfTable); err != nil {
 		return err
 	}
-	if gs.budgetUsage, err = gs.live.RegisterState[LimitState](ctx, budgetUsageTable, livestore.KindBudget); err != nil {
+	if gs.budgetUsage, err = gs.live.NewStateTable[LimitState](ctx, budgetUsageTable, livestore.KindBudget); err != nil {
 		return err
 	}
-	if gs.rateLimitUsage, err = gs.live.RegisterState[LimitState](ctx, rateLimitUsageTable, livestore.KindRateLimit); err != nil {
+	if gs.rateLimitUsage, err = gs.live.NewStateTable[LimitState](ctx, rateLimitUsageTable, livestore.KindRateLimit); err != nil {
 		return err
 	}
 	if gs.permitViews, err = gs.live.NewTable[livestore.Hash, *permitView](ctx, permitViewsTable, livestore.WithGeneration(gs.permitGen.Load)); err != nil {

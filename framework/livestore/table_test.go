@@ -106,7 +106,7 @@ func TestStateTable(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	f.load(t)
-	usage, err := f.s.RegisterState[int](context.Background(), "usage", Kind("group"))
+	usage, err := f.s.NewStateTable[int](context.Background(), "usage", Kind("group"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,17 +132,17 @@ func TestStateTable(t *testing.T) {
 	}
 }
 
-// TestRegisterStateNeedsAKind checks that a state table must name the kind whose records key it:
+// TestNewStateTableNeedsAKind checks that a state table must name the kind whose records key it:
 // with no kind, removing a record would never clear its entry. The refused name stays free.
-func TestRegisterStateNeedsAKind(t *testing.T) {
+func TestNewStateTableNeedsAKind(t *testing.T) {
 	f := newFixture(t)
 	f.load(t)
 	ctx := context.Background()
-	if _, err := f.s.RegisterState[int](ctx, "usage", Kind("")); err == nil {
-		t.Fatal("RegisterState with an empty kind must fail")
+	if _, err := f.s.NewStateTable[int](ctx, "usage", Kind("")); err == nil {
+		t.Fatal("NewStateTable with an empty kind must fail")
 	}
 	if _, err := f.s.NewTable[string, int](ctx, "usage"); err != nil {
-		t.Fatalf("a name RegisterState refused must stay free: %v", err)
+		t.Fatalf("a name NewStateTable refused must stay free: %v", err)
 	}
 }
 

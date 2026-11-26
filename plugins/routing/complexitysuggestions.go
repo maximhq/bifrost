@@ -265,7 +265,7 @@ func complexitySuggestionPartition(routerID string) string {
 // startComplexitySuggestions starts the schedule check, its schedule view in the plugin's live
 // store. tick <= 0 starts no ticker, for tests that drive the check themselves.
 func (p *RoutingPlugin) startComplexitySuggestions(ctx context.Context, tick time.Duration) error {
-	next, err := p.live.RegisterState[complexitySuggestionNext](ctx, complexitySuggestionScheduleTable, livestore.KindModelRouter)
+	next, err := p.live.NewStateTable[complexitySuggestionNext](ctx, complexitySuggestionScheduleTable, livestore.KindModelRouter)
 	if err != nil {
 		return err
 	}
