@@ -2,16 +2,21 @@ package vertex
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 )
 
-// oldRewrite is the pre-refactor implementation, kept as a differential oracle
-// and as the benchmark baseline.
+var (
+	oldBodyProjectsRe   = regexp.MustCompile(`(["/])projects/[^/"]+`)
+	oldBodyShortModelRe = regexp.MustCompile(`"(models/[^/"]+)"`)
+)
+
+// oldRewrite is the whole-body regex rewrite this package used to run, kept as the benchmark baseline.
 func oldRewrite(body []byte, projectID, region string) []byte {
-	bodyStr := vertexBodyProjectsRe.ReplaceAllString(string(body), "${1}projects/"+projectID)
+	bodyStr := oldBodyProjectsRe.ReplaceAllString(string(body), "${1}projects/"+projectID)
 	bodyStr = vertexLocationsPathRe.ReplaceAllString(bodyStr, "/locations/"+region)
-	bodyStr = vertexShortModelRe.ReplaceAllString(bodyStr,
+	bodyStr = oldBodyShortModelRe.ReplaceAllString(bodyStr,
 		fmt.Sprintf(`"projects/%s/locations/%s/publishers/google/$1"`, projectID, region))
 	return []byte(bodyStr)
 }
@@ -38,27 +43,52 @@ func jsonBodyWithImage(sizeBytes int, withResourceNames bool) []byte {
 	return []byte(b.String())
 }
 
-func TestRewritePassthroughBodyMatchesOldImplementation(t *testing.T) {
-	cases := map[string][]byte{
-		"placeholder resource names": []byte(`{"model":"projects/None/locations/None/publishers/google/models/gemini-2.5-flash"}`),
-		"short form model":           []byte(`{"model":"models/gemini-2.5-flash"}`),
-		"mid path projects":          []byte(`{"name":"/projects/other/locations/us-central1/operations/123"}`),
-		"multiple occurrences":       []byte(`{"a":"projects/x/locations/us/y","b":"/projects/z/locations/asia/w"}`),
-		"no patterns":                []byte(`{"contents":[{"parts":[{"text":"hello world"}]}]}`),
-		"empty object":               []byte(`{}`),
-		"large image with names":     jsonBodyWithImage(64*1024, true),
-		"large image without names":  jsonBodyWithImage(64*1024, false),
+// TestRewritePassthroughBodyLeavesContentUntouched pins that prompt text and any field other than the
+// resource-name fields pass through byte-identical, even when they spell resource paths.
+func TestRewritePassthroughBodyLeavesContentUntouched(t *testing.T) {
+	cases := map[string]string{
+		"prompt text with projects and locations":  `{"contents":[{"role":"user","parts":[{"text":"see github.com/acme/projects/roadmap and /locations/paris"}]}],"generationConfig":{"temperature":0}}`,
+		"prompt text that is a full resource name": `{"contents":[{"parts":[{"text":"projects/acme/locations/us-east1/cachedContents/1"}]}]}`,
+		"prompt text that is a short model name":   `{"contents":[{"parts":[{"text":"models/gemini-2.5-flash"}]}]}`,
+		"system instruction":                       `{"systemInstruction":{"parts":[{"text":"our projects/alpha repo lives at /locations/hq"}]},"contents":[{"parts":[{"text":"hi"}]}]}`,
+		"function call args named model":           `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"f","args":{"model":"models/x","cachedContent":"projects/p/locations/l/cachedContents/1"}}}]}]}`,
+		"tool schema enum":                         `{"tools":[{"functionDeclarations":[{"name":"f","parameters":{"type":"object","properties":{"p":{"type":"string","enum":["projects/a","/locations/b"]}}}}]}]}`,
+		"anthropic messages":                       `{"anthropic_version":"vertex-2023-10-16","messages":[{"role":"user","content":"check projects/foo and /locations/bar"}],"max_tokens":10}`,
+		"openai chat":                              `{"model":"google/gemini-2.5-flash","messages":[{"role":"user","content":"projects/foo/locations/bar"}]}`,
+		"unlisted top-level field":                 `{"name":"/projects/other/locations/us-central1/operations/123","labels":{"k":"projects/x"}}`,
 	}
-
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			want := oldRewrite(body, benchProject, benchRegion)
-			got, changed := rewritePassthroughBody(body, benchProject, benchRegion)
-			if string(got) != string(want) {
-				t.Errorf("rewrite mismatch\n got: %s\nwant: %s", truncate(got), truncate(want))
+			got, changed := rewritePassthroughBody([]byte(body), benchProject, benchRegion)
+			if changed || string(got) != body {
+				t.Errorf("body rewritten\n got: %s\nwant: %s", got, body)
 			}
-			// changed must be a faithful report of whether anything differs.
-			if wantChanged := string(want) != string(body); changed != wantChanged {
+		})
+	}
+}
+
+// TestRewritePassthroughBodyResourceFields pins each body field the google-genai SDK (Vertex mode) fills with
+// the client's project and location.
+func TestRewritePassthroughBodyResourceFields(t *testing.T) {
+	const full = "projects/" + benchProject + "/locations/" + benchRegion
+	cases := []struct{ name, body, want string }{
+		{"cache create model", `{"model":"projects/dummy/locations/us-central1/publishers/google/models/gemini-2.5-flash","contents":[{"parts":[{"text":"projects/keep"}]}]}`,
+			`{"model":"` + full + `/publishers/google/models/gemini-2.5-flash","contents":[{"parts":[{"text":"projects/keep"}]}]}`},
+		{"short model", `{"model":"models/gemini-2.5-flash"}`, `{"model":"` + full + `/publishers/google/models/gemini-2.5-flash"}`},
+		{"publisher model untouched", `{"model":"publishers/google/models/gemini-2.5-flash"}`, `{"model":"publishers/google/models/gemini-2.5-flash"}`},
+		{"cachedContent", `{"contents":[{"parts":[{"text":"hi"}]}],"cachedContent":"projects/dummy/locations/us-central1/cachedContents/123"}`,
+			`{"contents":[{"parts":[{"text":"hi"}]}],"cachedContent":"` + full + `/cachedContents/123"}`},
+		{"leading slash", `{"cachedContent":"/projects/dummy/locations/us-central1/cachedContents/1"}`, `{"cachedContent":"/` + full + `/cachedContents/1"}`},
+		{"veo operationName", `{"operationName":"projects/dummy/locations/us-central1/publishers/google/models/veo-3.0-generate-001/operations/abc"}`,
+			`{"operationName":"` + full + `/publishers/google/models/veo-3.0-generate-001/operations/abc"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, changed := rewritePassthroughBody([]byte(tc.body), benchProject, benchRegion)
+			if string(got) != tc.want {
+				t.Errorf("rewrite mismatch\n got: %s\nwant: %s", got, tc.want)
+			}
+			if wantChanged := tc.want != tc.body; changed != wantChanged {
 				t.Errorf("changed = %v, want %v", changed, wantChanged)
 			}
 		})
@@ -85,13 +115,6 @@ func TestRewritePassthroughBodyNoMatchReturnsSameSlice(t *testing.T) {
 	if &got[0] != &body[0] {
 		t.Error("expected the original slice back, not a copy")
 	}
-}
-
-func truncate(b []byte) string {
-	if len(b) > 200 {
-		return string(b[:200]) + "..."
-	}
-	return string(b)
 }
 
 var sizes = []struct {
