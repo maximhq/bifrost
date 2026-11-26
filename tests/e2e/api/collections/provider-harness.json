@@ -362466,7 +362466,7 @@
     },
     {
       "name": "352. Bedrock Invoke Route Anthropic-Native Document Blocks (#9308)",
-      "description": "Regression for #9308. The Bedrock InvokeModel route (POST /bedrock/model/{modelId}/invoke and /invoke-with-response-stream) accepts Claude's native Anthropic Messages body, and BedrockContentBlock.UnmarshalJSON normalizes Anthropic-shaped blocks into Converse fields. It had no \"document\" case, so a {\"type\":\"document\"} block decoded to an empty block and was dropped with HTTP 200 (the model answered as if nothing was attached). A document nested in tool_result.content was lost a second time when the Converse tool result was flattened to its text. Decode errors on this ingress were also swallowed, so a block that could not be decoded emptied its message instead of failing the request. Cases 1-2 pin a text-source document on the non-streaming and streaming routes (the model must see the secret word), case 3 pins a document inside a tool_result, cases 4-5 pin a url source (the gateway fetches it, as it does for every other Bedrock file_url, and the model must see its content; RFC 2324 is a small stable text/plain document), and cases 6-7 pin that a url scheme Bifrost cannot fetch (ftp) fails with a 4xx on both routes instead of being dropped.",
+      "description": "Regression for #9308. The Bedrock InvokeModel route (POST /bedrock/model/{modelId}/invoke and /invoke-with-response-stream) accepts Claude's native Anthropic Messages body, and BedrockContentBlock.UnmarshalJSON normalizes Anthropic-shaped blocks into Converse fields. It had no \"document\" case, so a {\"type\":\"document\"} block decoded to an empty block and was dropped with HTTP 200 (the model answered as if nothing was attached). A document nested in tool_result.content was lost a second time when the Converse tool result was flattened to its text. Decode errors on this ingress were also swallowed, so a block that could not be decoded emptied its message instead of failing the request. Cases 1-2 pin a text-source document on the non-streaming and streaming routes (the model must see the secret word), case 3 pins a document inside a tool_result, cases 4-5 pin a url source (the gateway fetches it, as it does for every other Bedrock file_url, and the model must see its content; the document is tests/e2e/api/fixtures/cowork-marker-inline.pdf pinned at the transports/v2.6.0 tag, whose only text is the marker indigo-418, absent from the title, URL and question, so the model can name it only from the fetched bytes), and cases 6-7 pin that a url scheme Bifrost cannot fetch (ftp) fails with a 4xx on both routes instead of being dropped.",
       "item": [
         {
           "name": "Bedrock invoke: Anthropic-native document block reaches the model (Haiku 4.5) - #9308",
@@ -362623,7 +362623,7 @@
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "  var body = pm.response.json();",
                   "  var text = (body.content || []).map(function (c) { return c.text || ''; }).join(' ').toUpperCase();",
-                  "  pm.expect(text, 'model response: ' + JSON.stringify(body.content)).to.include('HYPER');",
+                  "  pm.expect(text, 'model response: ' + JSON.stringify(body.content)).to.include('INDIGO-418');",
                   "  pm.expect(text, 'the document was silently dropped (#9308): ' + text).to.not.include('NOT_PROVIDED');",
                   "});"
                 ],
@@ -362641,7 +362641,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What do the letters in the acronym in the title of the attached document stand for? Answer with the first word of the expansion only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"title\": \"RFC 2324\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://www.rfc-editor.org/rfc/rfc2324.txt\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the document marker stated in the attached document? Reply with the marker only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"title\": \"Attachment\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/refs/tags/transports/v2.6.0/tests/e2e/api/fixtures/cowork-marker-inline.pdf\"\n          }\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke",
@@ -362675,7 +362675,7 @@
                   "    try { return JSON.parse(Buffer.from(b64, 'base64').toString('utf8')); } catch (e) { return null; }",
                   "  }).filter(function (e) { return e && e.delta && typeof e.delta.text === 'string'; })",
                   "    .map(function (e) { return e.delta.text; }).join('').toUpperCase();",
-                  "  pm.expect(text, 'streamed text: ' + text.slice(0, 500)).to.include('HYPER');",
+                  "  pm.expect(text, 'streamed text: ' + text.slice(0, 500)).to.include('INDIGO-418');",
                   "  pm.expect(text, 'the document was silently dropped (#9308): ' + text).to.not.include('NOT_PROVIDED');",
                   "});"
                 ],
@@ -362693,7 +362693,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What do the letters in the acronym in the title of the attached document stand for? Answer with the first word of the expansion only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"title\": \"RFC 2324\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://www.rfc-editor.org/rfc/rfc2324.txt\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the document marker stated in the attached document? Reply with the marker only. If no document is provided, answer exactly: NOT_PROVIDED\"\n        },\n        {\n          \"type\": \"document\",\n          \"title\": \"Attachment\",\n          \"source\": {\n            \"type\": \"url\",\n            \"url\": \"https://raw.githubusercontent.com/maximhq/bifrost/refs/tags/transports/v2.6.0/tests/e2e/api/fixtures/cowork-marker-inline.pdf\"\n          }\n        }\n      ]\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-haiku-4-5-20251001-v1:0/invoke-with-response-stream",
