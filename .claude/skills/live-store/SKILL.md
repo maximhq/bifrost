@@ -113,7 +113,7 @@ What `framework/livestore` offers, by type: when to use each and the contract it
 - `ParentIndex(parent)`: the index `ChildOf` adds; `List(ParentIndex(parent), id)` lists one parent's children (`rebuildProviderKeyLists`).
 - `ReadInBatches(size)`: every read by ID hands `ByID` at most `size` IDs and `Page` is asked for at most `size` rows, for a loader that binds a parameter per record (a preload does). Use `DefaultReadBatch`; the collection's links must be `ChildIDsOf`, since `Register` refuses `ChildOf` (virtual keys, routing rules).
 - `WithNegativeTTL(ttl)`: `Load` remembers a miss for `ttl` in the store's own table `internal:negative_<kind>`, so an ID with no row is read at most once per `ttl`.
-- `Uses(interned, ref)`: each record references an interned value by its `Hash`; publishes count the uses, and a zero hash references nothing (`VirtualKeys` on `GrantSets`).
+- `Interns(pool, part)`: `part` returns the address of a field of the record that is interned in `pool` (`func(k *VirtualKey) **GrantSet { return &k.Grants }`). The loader fills the field with the record's own copy; as the record publishes, the collection puts the pool's shared copy in it and counts the use. Readers use the field as it is, with no lookup. One `Interns` per interned part; a nil field holds nothing (`VirtualKeys` on `GrantSets`).
 - `ShareIDs(share)`: before a record publishes, `share` swaps each ID it names for the copy the named record holds (`shared(kind, id)`, or the ID itself when none is held), so an ID is one string in memory. Kinds load in dependency order, so list the named kinds in `dependsOn`.
 
 ### Collection methods
@@ -126,12 +126,19 @@ What `framework/livestore` offers, by type: when to use each and the contract it
 
 ### Interning
 
-- `Store.RegisterInterned[T](kind, hash)`: values stored once per content `Hash` (16 bytes); `hash` computes a value's hash or returns one stored with it. Fails after a load or on a taken kind (`Collections.GrantSets` in `registerCollections`).
-- `Interned.Intern(v) Hash`: stores `v` unless an equal value is held, and equal values share the first copy; `Get(h)` returns it. Intern in the loader as it builds the record, keep the hash on the record and declare `Uses`: a value is visible once interned, so it is there before the record naming it publishes. Never change a value after interning it.
-- `registry.ContentHasher` (`NewContentHasher`, `Num`, `Flag`, `Count`, `Str`, `Strs`, `Sum`): writes every field length-prefixed and a nil list apart from an empty one, so two values that differ in anything hash differently. A new interned type hashes its fields through it.
-- `registry.SealGrantSet(g)`: sets a `GrantSet`'s ID from its content. Seal once, after building and before interning.
-- Grant sets: `Collections.GrantSets` holds each virtual key's grants once per content; a key names its set by `VirtualKey.Grants`, and `Collections.GrantSet(id)` looks it up (`LocalGovernanceStore.permitViewOf`).
-- Sweep: every 30 seconds a background sweep drops a value no record uses once it has been unused for `internedGrace` (5 minutes); interning an idle value restarts its grace. Nothing is dropped before `LoadAll` or `LoadRecords` has published, nor a value interned since the oldest `Refresh` or `RefreshKind` still running started (`Load` runs a `Refresh`), so a read never publishes a record whose value was swept. A value interned outside a loader that no record uses is gone after the grace.
+Intern a part of a record when many records hold equal copies of it (a grant set, a discovery): the pool keeps one copy, and every record points at it.
+
+1. **Make the part a pointer field.** Only a pointer can be shared: `Grants *GrantSet`, not `Grants GrantSet`; to intern a slice or map, wrap it in a named type and hold a pointer to it.
+2. **Register a pool per value type,** before `LoadAll`: `pool, err := s.RegisterInterned[GrantSet](KindGrantSet, hash)`. `hash` returns the value's content hash, or one stored with it (`SealGrantSet` puts it in `GrantSet.ID`). Write it with `registry.ContentHasher` (`NewContentHasher`, then `Num`, `Flag`, `Count`, `Str`, `Strs`, and `Sum`), and hash every field the value is shared by: a field left out makes two different values share one copy. Pin that with a test that walks the struct's fields with reflection, as `TestDiscoveryHash_CoversEveryFieldADiscoveryServes` does (`framework/mcpdiscovery`). Several collections may share one pool.
+3. **Declare it on the collection:** `Interns(pool, part)`, where `part` returns the field's address: `func(k *VirtualKey) **GrantSet { return &k.Grants }`. A nested field works the same (`return &a.D.F`); when the struct holding it may be absent, return nil (`if a.D == nil { return nil }`). One `Interns` per part.
+4. **Loaders fill the field with the record's own copy,** never interning by hand. As the record publishes, the collection swaps it for the shared copy and counts the use; the loader's copy is garbage after that.
+5. **Readers use the field as it is.** A `Get` returns the record, whose field already points at the shared copy; there is no lookup and nothing is attached on read. Never change a shared value: every record holding it sees the change. A change arrives as a new record pointing at another copy.
+6. **Memo by the value's ID,** not the record's, to share derived data across holders (`LocalGovernanceStore.permitViewOf` keys on `GrantSet.ID`).
+
+Memory: the shared value once, one pointer per record, and one pool entry per distinct value. The pool is bookkeeping only, never read on a request: it finds the existing copy for equal content as a record publishes, and counts uses so it can let go. A copy no record has used for `internedGrace` (5 minutes) is dropped by the sweep, which runs every 30 seconds; nothing is interned before its record publishes, so no read in progress can lose a value. The pool has no methods of its own.
+
+- `registry.SealGrantSet(g)`: sets a `GrantSet`'s ID from its content. Seal once, after building it and before the record publishes.
+- Grant sets: the grant-set pool holds each virtual key's grants once per content; `VirtualKey.Grants` holds the key's shared copy.
 
 ### Cache
 

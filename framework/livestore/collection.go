@@ -63,7 +63,7 @@ type Collection[T any] struct {
 	loader   Loader[T]
 	records  *shardedMap[*T]
 	indexes  map[string]*keyIndex[T]
-	uses     []usesLink[T]
+	interns  []internLink[T]
 	parents  []parentLink[T]
 	negTTL   time.Duration
 	batch    int // the most IDs one Loader.ByID call is given, 0 for no limit (ReadInBatches)
@@ -139,11 +139,31 @@ func MultiIndex[T any](name string, keys func(*T) []string) Option[T] {
 	}
 }
 
-// Uses records that each record references a value in interned by its hash. Refresh counts the
-// records that use each value, and a value no record uses is dropped after a grace period.
-func Uses[T, V any](interned *Interned[V], ref func(*T) Hash) Option[T] {
+// Interns declares that part of each record is interned in pool: part returns the address of the
+// record's interned field, which must be a pointer, and which the loader fills with the record's
+// own copy. As a record publishes, the collection puts the pool's shared copy of that value in the
+// field and counts the use, so records holding equal values share one copy and readers use the
+// field as it is, with no lookup; a replaced or removed record gives its use back, and a value no
+// record has used for the grace period is dropped. A record may intern several parts, with one
+// Interns each. A nil field holds nothing, and part returns nil when the record has no such field,
+// as when the struct holding it is absent:
+//
+//	type A struct {
+//		C *C  // interned
+//		D *D  // holds F, may be nil
+//	}
+//	type D struct{ F *F } // F interned
+//
+//	Interns(cPool, func(a *A) **C { return &a.C })
+//	Interns(fPool, func(a *A) **F {
+//		if a.D == nil {
+//			return nil
+//		}
+//		return &a.D.F
+//	})
+func Interns[T, P any](pool *Interned[P], part func(*T) **P) Option[T] {
 	return func(c *Collection[T]) error {
-		c.uses = append(c.uses, usesLink[T]{ref: ref, target: interned})
+		c.interns = append(c.interns, internPart[T, P]{pool: pool, part: part})
 		return nil
 	}
 }
@@ -566,28 +586,33 @@ func (c *Collection[T]) idOf(v any) string { return c.loader.ID(v.(*T)) }
 // that did not change, and returns what changed. It writes every record and adds its index keys
 // before it drops any record's old keys, so a key passing from one record to another in the same
 // publish is never missing to a reader: until the publish drops it, a reader finds the record that
-// held the key before the publish. Use counts move with each record. The store lock is held.
+// held the key before the publish. Each record's interned parts take their shared copies, and a
+// replaced record gives its uses back. The store lock is held.
 func (c *Collection[T]) putAll(ids []string, ups map[string]any) []anyChange {
 	var changes []anyChange
 	for _, id := range ids {
 		next := ups[id].(*T)
+		// The record is the loader's, not yet shared, so its interned parts take their shared
+		// copies in place; a record equal to the one held then compares by pointer.
+		for _, l := range c.interns {
+			l.share(next)
+		}
 		old, had := c.records.get(id)
 		if had && reflect.DeepEqual(old, next) {
+			for _, l := range c.interns {
+				l.release(next)
+			}
 			continue
 		}
 		c.records.set(id, next)
-		var prev *T
-		if had {
-			prev = old
-		}
 		for _, ix := range c.indexes {
 			ix.add(id, next)
 		}
-		for _, u := range c.uses {
-			u.swap(prev, next)
-		}
 		ch := anyChange{id: id, new: next}
 		if had {
+			for _, l := range c.interns {
+				l.release(old)
+			}
 			ch.old = old
 		}
 		changes = append(changes, ch)
@@ -664,8 +689,8 @@ func (c *Collection[T]) remove(id string) any {
 	for _, ix := range c.indexes {
 		ix.drop(id, old, nil)
 	}
-	for _, u := range c.uses {
-		u.swap(old, nil)
+	for _, l := range c.interns {
+		l.release(old)
 	}
 	return old
 }
@@ -727,33 +752,30 @@ type parentLink[T any] struct {
 	onDelete OnDelete
 }
 
-// usesLink is one Uses declaration.
-type usesLink[T any] struct {
-	ref    func(*T) Hash
-	target interface {
-		acquire(Hash)
-		release(Hash)
+// internLink is one Interns declaration, seen without the interned value's type.
+type internLink[T any] interface {
+	share(rec *T)   // put the shared copy in rec's part, counting a use
+	release(rec *T) // give back the use rec's part holds
+}
+
+// internPart is one Interns declaration: pool holds the shared copies of the field part addresses.
+type internPart[T, P any] struct {
+	pool *Interned[P]
+	part func(*T) **P
+}
+
+// share puts the pool's shared copy of rec's part in rec, counting one more use of it. A part that
+// is not there (a nil address) or holds nothing (a nil field) is skipped.
+func (l internPart[T, P]) share(rec *T) {
+	if f := l.part(rec); f != nil && *f != nil {
+		*f = l.pool.share(*f)
 	}
 }
 
-// swap moves a use from the value old references to the one next references. Either may be
-// nil, and a zero hash references nothing.
-func (u usesLink[T]) swap(old, next *T) {
-	var from, to Hash
-	if old != nil {
-		from = u.ref(old)
-	}
-	if next != nil {
-		to = u.ref(next)
-	}
-	if from == to {
-		return
-	}
-	if to != (Hash{}) {
-		u.target.acquire(to)
-	}
-	if from != (Hash{}) {
-		u.target.release(from)
+// release gives back the use rec's part holds, if it holds one.
+func (l internPart[T, P]) release(rec *T) {
+	if f := l.part(rec); f != nil && *f != nil {
+		l.pool.release(*f)
 	}
 }
 

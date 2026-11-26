@@ -998,9 +998,7 @@ func virtualKeyRecord(live *livestore.Store, vk *configstoreTables.TableVirtualK
 	for _, b := range vk.Budgets {
 		budgetIDs = append(budgetIDs, b.ID)
 	}
-	rec := registry.VirtualKeyFromTable(&clone, budgetIDs, virtualMCPIDs, func(g *registry.GrantSet) registry.GrantSetID {
-		return registry.GrantSetID(live.Collections.GrantSets.Intern(g))
-	})
+	rec := registry.VirtualKeyFromTable(&clone, budgetIDs, virtualMCPIDs)
 	if rec.RateLimitID == "" && vk.RateLimit != nil {
 		rec.RateLimitID = vk.RateLimit.ID
 	}
@@ -1026,12 +1024,12 @@ func storedVirtualKey(t testing.TB, store *LocalGovernanceStore, id string) *reg
 }
 
 // storedGrantSet returns the grant set of the key store holds with this ID, failing the test when
-// there is no such key or its set is missing.
+// there is no such key or it holds no set.
 func storedGrantSet(t testing.TB, store *LocalGovernanceStore, id string) *registry.GrantSet {
 	t.Helper()
-	set, ok := store.live.Collections.GrantSet(storedVirtualKey(t, store, id).Grants)
-	if !ok {
-		t.Fatalf("virtual key %s names a grant set the live store does not hold", id)
+	set := storedVirtualKey(t, store, id).Grants
+	if set == nil {
+		t.Fatalf("virtual key %s holds no grant set", id)
 	}
 	return set
 }

@@ -94,12 +94,9 @@ const (
 	recordLockStripes = 1024
 	// sweepInterval is how often expired table entries and unused interned values are removed.
 	sweepInterval = 30 * time.Second
-	// internedGrace is how long an interned value nothing uses is kept. A loader can intern a
-	// value, or find one already there, before the refresh that uses it publishes, so a value
-	// is dropped only after it has been unused for this long. A read can last longer than this
-	// before it publishes anything, so no interned value is dropped before LoadAll or LoadRecords
-	// has published every record, nor while a Refresh or RefreshKind that may have interned it
-	// still runs.
+	// internedGrace is how long an interned value no record uses is kept, so a record that gives
+	// its value up and takes it back soon after, as a reload or a reverted edit does, finds the
+	// copy still there.
 	internedGrace = 5 * time.Minute
 )
 
@@ -235,9 +232,7 @@ func Rec[T any](c *Collection[T], v *T) Record {
 // from those collections for every component.
 //
 // tablesMu is separate from mu, which a publish holds while subscribers run, so a table call made
-// from a subscriber can never wait on its own publish. reads holds when each Refresh and
-// RefreshKind still running started, so the sweep keeps every value their loaders have interned
-// for the records they have yet to publish.
+// from a subscriber can never wait on its own publish.
 type Store struct {
 	Collections *Collections
 	Views       *Views
@@ -256,9 +251,6 @@ type Store struct {
 	states   map[Kind][]tableHandle
 
 	recordLocks [recordLockStripes]sync.Mutex
-
-	readsMu sync.Mutex // guards reads
-	reads   []int64    // start times of the running refreshes; see Store
 
 	sweepOnce sync.Once
 	closeOnce sync.Once
@@ -370,7 +362,7 @@ func (s *Store) freeze() error {
 		slices.Sort(deps)
 		for _, d := range deps {
 			if _, ok := s.interned[d]; ok {
-				continue // interned values are visible as soon as they are interned
+				continue // interned values are shared as the records holding them publish
 			}
 			if _, ok := s.kinds[d]; !ok {
 				return fmt.Errorf("livestore: %q depends on unknown kind %q", k, d)
@@ -587,7 +579,6 @@ func (s *Store) Refresh(ctx context.Context, refs []Ref, opts ...RefreshOption) 
 	if len(reads) == 0 && len(holders) == 0 {
 		return nil
 	}
-	defer s.startRead()()
 	// Each pass that conflicts adds the records memory holds under the contested keys and runs
 	// again, so a chain of renames is followed to its end. Holders only grow, so this ends: once a
 	// pass finds no new holder, the database itself gives a key to two records.
@@ -849,7 +840,6 @@ func (s *Store) RefreshKind(ctx context.Context, kind Kind) error {
 	if !ok {
 		return fmt.Errorf("livestore: refresh of unknown kind %q", kind)
 	}
-	defer s.startRead()()
 	unlock := s.lockAllRecords()
 	defer unlock()
 
@@ -1211,38 +1201,9 @@ func (s *Store) sweepLoop() {
 	}
 }
 
-// startRead records that a read whose loaders may intern values starts now, and returns the
-// function that ends it, which its caller defers so that it runs whether the read publishes, fails
-// or is abandoned. Until then the sweep keeps every value interned since the read started.
-func (s *Store) startRead() (end func()) {
-	at := now().UnixNano()
-	s.readsMu.Lock()
-	s.reads = append(s.reads, at)
-	s.readsMu.Unlock()
-	return func() {
-		s.readsMu.Lock()
-		defer s.readsMu.Unlock()
-		if i := slices.Index(s.reads, at); i >= 0 {
-			s.reads = slices.Delete(s.reads, i, i+1)
-		}
-	}
-}
-
-// oldestRead returns when the oldest read still running started, and false when none is.
-func (s *Store) oldestRead() (int64, bool) {
-	s.readsMu.Lock()
-	defer s.readsMu.Unlock()
-	if len(s.reads) == 0 {
-		return 0, false
-	}
-	return slices.Min(s.reads), true
-}
-
 // sweep removes expired table entries and interned values no record has used for the grace
-// period. It runs in the background so no publish pays for a scan. Interned values are left alone
-// until the store has loaded: until the boot publishes, the values its loaders interned have no
-// user yet, however long the reads take. After that, a value interned since the oldest read still
-// running started is kept for the same reason: that read has yet to publish the records using it.
+// period. It runs in the background so no publish pays for a scan. Interned values are shared and
+// counted as records publish, so a value no record uses was used before and has been released.
 func (s *Store) sweep() {
 	s.tablesMu.RLock()
 	tables := make([]tableHandle, 0, len(s.tables))
@@ -1254,9 +1215,6 @@ func (s *Store) sweep() {
 	for _, t := range tables {
 		t.sweep(at.UnixNano())
 	}
-	if !s.loaded.Load() {
-		return
-	}
 	s.mu.Lock()
 	interned := make([]internedHandle, 0, len(s.interned))
 	for _, in := range s.interned {
@@ -1264,9 +1222,6 @@ func (s *Store) sweep() {
 	}
 	s.mu.Unlock()
 	cutoff := at.Add(-internedGrace).UnixNano()
-	if oldest, ok := s.oldestRead(); ok && oldest < cutoff {
-		cutoff = oldest
-	}
 	for _, in := range interned {
 		in.sweep(cutoff)
 	}

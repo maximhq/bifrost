@@ -34,8 +34,9 @@ type VirtualKey struct {
 	CreatedByUserID        string
 	RateLimitID            string
 	BudgetIDs              []string
-	// Grants names the key's grant set.
-	Grants GrantSetID
+	// Grants is the key's grant set, the one copy every key granted the same things shares (the
+	// store interns it as the key publishes).
+	Grants *GrantSet
 	// ProviderLimits fund the key's provider configs, one per config in the order of its grant
 	// set's Providers.
 	ProviderLimits []ProviderLimit
@@ -90,16 +91,10 @@ func VirtualKeyTeamID(k *VirtualKey) string { return k.TeamID }
 // VirtualKeyCustomerID is the customer a key sits under directly, "" for none.
 func VirtualKeyCustomerID(k *VirtualKey) string { return k.CustomerID }
 
-// KeyReads reads virtual keys. Grants stores each key's grant set as the key is built and returns
-// the ID the key records.
-type KeyReads struct {
-	Grants func(*GrantSet) GrantSetID
-}
-
-// Page reads up to limit virtual keys with IDs after the cursor, in ID order, and returns the
-// next cursor, "" after the last page.
-func (r KeyReads) Page(ctx context.Context, db *gorm.DB, after string, limit int) ([]*VirtualKey, string, error) {
-	rows, err := r.read(ctx, db, func(q *gorm.DB) *gorm.DB {
+// VirtualKeysPage reads up to limit virtual keys with IDs after the cursor, in ID order, and returns
+// the next cursor, "" after the last page.
+func VirtualKeysPage(ctx context.Context, db *gorm.DB, after string, limit int) ([]*VirtualKey, string, error) {
+	rows, err := readVirtualKeys(ctx, db, func(q *gorm.DB) *gorm.DB {
 		return q.Where("id > ?", after).Order("id").Limit(limit)
 	})
 	if err != nil || len(rows) < limit {
@@ -108,9 +103,9 @@ func (r KeyReads) Page(ctx context.Context, db *gorm.DB, after string, limit int
 	return rows, rows[len(rows)-1].ID, nil
 }
 
-// ByID reads the virtual keys with these IDs; an ID with no row is left out.
-func (r KeyReads) ByID(ctx context.Context, db *gorm.DB, ids []string) ([]*VirtualKey, error) {
-	return r.read(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where(queryscope.InStrings(q, "id", ids)) })
+// VirtualKeysByID reads the virtual keys with these IDs; an ID with no row is left out.
+func VirtualKeysByID(ctx context.Context, db *gorm.DB, ids []string) ([]*VirtualKey, error) {
+	return readVirtualKeys(ctx, db, func(q *gorm.DB) *gorm.DB { return q.Where(queryscope.InStrings(q, "id", ids)) })
 }
 
 // VirtualKeyIDsByTeams returns the IDs of the virtual keys under these teams. A team's refresh
@@ -138,9 +133,10 @@ func virtualKeyIDsWhere(ctx context.Context, db *gorm.DB, column string, ids []s
 
 // VirtualKeyFromTable builds a key's record from its table struct, which must carry its grants;
 // budgetIDs and virtualMCPIDs are the IDs of the budgets it holds directly and the virtual MCPs
-// assigned to it, and grants stores the key's grant set. The loader calls it on the rows it read; a
-// gateway without a config store calls it on the keys config.json declares.
-func VirtualKeyFromTable(t *tables.TableVirtualKey, budgetIDs []string, virtualMCPIDs []uint, grants func(*GrantSet) GrantSetID) *VirtualKey {
+// assigned to it. The record holds its own copy of its grant set, which the store swaps for the
+// shared one as the key publishes. The loader calls it on the rows it read; a gateway without a
+// config store calls it on the keys config.json declares.
+func VirtualKeyFromTable(t *tables.TableVirtualKey, budgetIDs []string, virtualMCPIDs []uint) *VirtualKey {
 	k := &VirtualKey{
 		ID:                    t.ID,
 		Name:                  t.Name,
@@ -201,13 +197,13 @@ func VirtualKeyFromTable(t *tables.TableVirtualKey, budgetIDs []string, virtualM
 	for _, r := range t.RelayGrants {
 		set.Relays = append(set.Relays, r.RelayName)
 	}
-	k.Grants = grants(SealGrantSet(set))
+	k.Grants = SealGrantSet(set)
 	return k
 }
 
-// read loads the key rows where selects, with their grants, the IDs of the budgets they hold
-// directly and the virtual MCPs assigned to them.
-func (r KeyReads) read(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.DB) ([]*VirtualKey, error) {
+// readVirtualKeys loads the key rows where selects, with their grants, the IDs of the budgets they
+// hold directly and the virtual MCPs assigned to them.
+func readVirtualKeys(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.DB) ([]*VirtualKey, error) {
 	var rows []tables.TableVirtualKey
 	q := db.WithContext(ctx).
 		Preload("ProviderConfigs").
@@ -247,7 +243,7 @@ func (r KeyReads) read(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *g
 	for i := range rows {
 		assigned := virtualMCPs[rows[i].ID]
 		sort.Slice(assigned, func(a, b int) bool { return assigned[a] < assigned[b] })
-		out = append(out, VirtualKeyFromTable(&rows[i], budgets[rows[i].ID], assigned, r.Grants))
+		out = append(out, VirtualKeyFromTable(&rows[i], budgets[rows[i].ID], assigned))
 	}
 	return out, nil
 }

@@ -154,7 +154,7 @@ func agentAuthRecord(vk *tables.TableVirtualKey) (*registry.VirtualKey, bool) {
 	if vk == nil {
 		return nil, false
 	}
-	return registry.VirtualKeyFromTable(vk, nil, nil, func(g *registry.GrantSet) registry.GrantSetID { return g.ID }), true
+	return registry.VirtualKeyFromTable(vk, nil, nil), true
 }
 
 func newAgentAuthMiddleware(enforce bool, store *agentAuthStore) schemas.BifrostHTTPMiddleware {

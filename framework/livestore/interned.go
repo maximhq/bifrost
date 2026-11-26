@@ -3,9 +3,10 @@ package livestore
 import "sync"
 
 // Interned holds values stored once per content hash, such as a set of grants many records
-// share. Loaders intern values as they build records, and records reference them by hash
-// through Uses. A value is visible as soon as it is interned, so it is there before any record
-// that references it is published.
+// share. A collection declares which part of its records is interned here (Interns): as a record
+// publishes, the collection puts the shared copy in that part and counts the use, so records
+// holding equal values share one copy and readers use the part as it is. A value no record has
+// used for the grace period is dropped by the store's sweep.
 type Interned[T any] struct {
 	kind Kind
 	hash func(*T) Hash
@@ -14,13 +15,11 @@ type Interned[T any] struct {
 	vals map[Hash]*internedEntry[T]
 }
 
-// internedEntry is one interned value and how many records use it. v is nil while records use a
-// hash no value is held under; the entry keeps their uses so that the next Intern of the value
-// fills it in counted.
+// internedEntry is one shared copy and how many records use it.
 type internedEntry[T any] struct {
 	v         *T
 	uses      int
-	idleSince int64 // when uses last reached zero, or when the value was interned
+	idleSince int64 // when uses last reached zero
 }
 
 // RegisterInterned adds an interned set under kind. hash computes a value's hash, or returns
@@ -34,55 +33,25 @@ func (s *Store) RegisterInterned[T any](kind Kind, hash func(*T) Hash) (*Interne
 	return in, nil
 }
 
-// Intern stores v unless an equal value is already held, and returns its hash. Equal values
-// share the first copy. A value records already use without it being held is stored with their
-// uses.
-func (in *Interned[T]) Intern(v *T) Hash {
+// share returns the copy held under v's hash, storing v when there is none, and counts one more
+// use of it.
+func (in *Interned[T]) share(v *T) *T {
 	h := in.hash(v)
-	at := now().UnixNano()
-	in.mu.Lock()
-	defer in.mu.Unlock()
-	if e, ok := in.vals[h]; ok {
-		if e.v == nil {
-			e.v = v
-		}
-		if e.uses == 0 {
-			e.idleSince = at // a loader is about to use it: restart the grace period
-		}
-		return h
-	}
-	in.vals[h] = &internedEntry[T]{v: v, idleSince: at}
-	return h
-}
-
-// Get returns the value with hash h.
-func (in *Interned[T]) Get(h Hash) (*T, bool) {
-	in.mu.RLock()
-	defer in.mu.RUnlock()
-	e, ok := in.vals[h]
-	if !ok || e.v == nil {
-		return nil, false
-	}
-	return e.v, true
-}
-
-// acquire counts one more record using h. A use of a hash not held is kept on an entry with no
-// value, so the value counts it once a later Intern stores it and no sweep drops it while the
-// record uses it. The sweep keeps what a read still running interned, so a refresh never
-// publishes a record whose value it interned and then lost.
-func (in *Interned[T]) acquire(h Hash) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	e, ok := in.vals[h]
 	if !ok {
-		e = &internedEntry[T]{}
+		e = &internedEntry[T]{v: v}
 		in.vals[h] = e
 	}
 	e.uses++
+	return e.v
 }
 
-// release counts one fewer record using h, starting its grace period when none is left.
-func (in *Interned[T]) release(h Hash) {
+// release counts one fewer use of the copy under v's hash, starting its grace period when none is
+// left.
+func (in *Interned[T]) release(v *T) {
+	h := in.hash(v)
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	e, ok := in.vals[h]
@@ -96,8 +65,7 @@ func (in *Interned[T]) release(h Hash) {
 	}
 }
 
-// sweep drops values no record has used since before cutoff. An entry any record uses is kept,
-// with or without its value.
+// sweep drops the copies no record has used since before cutoff.
 func (in *Interned[T]) sweep(cutoff int64) {
 	in.mu.Lock()
 	defer in.mu.Unlock()

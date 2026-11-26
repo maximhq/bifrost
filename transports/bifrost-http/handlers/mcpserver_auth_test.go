@@ -37,9 +37,7 @@ func liveKeys(t *testing.T, keys ...*configtables.TableVirtualKey) *livestore.St
 	t.Cleanup(live.Close)
 	records := make([]livestore.Record, 0, len(keys))
 	for _, k := range keys {
-		records = append(records, livestore.Rec(live.Collections.VirtualKeys, registry.VirtualKeyFromTable(k, nil, nil, func(g *registry.GrantSet) registry.GrantSetID {
-			return registry.GrantSetID(live.Collections.GrantSets.Intern(g))
-		})))
+		records = append(records, livestore.Rec(live.Collections.VirtualKeys, registry.VirtualKeyFromTable(k, nil, nil)))
 	}
 	require.NoError(t, live.LoadRecords(context.Background(), records))
 	return live

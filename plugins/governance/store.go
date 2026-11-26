@@ -1507,8 +1507,8 @@ func (gs *LocalGovernanceStore) grantKeys(p *registry.ProviderGrant) []configsto
 // of their own: MCP configs carry no row ID, and agent and relay grants no creation time.
 func (gs *LocalGovernanceStore) virtualKeyView(ctx context.Context, k *registry.VirtualKey) *configstoreTables.TableVirtualKey {
 	active := k.Active
-	set, ok := gs.live.Collections.GrantSet(k.Grants)
-	if !ok {
+	set := k.Grants
+	if set == nil {
 		set = &registry.GrantSet{}
 	}
 	vk := &configstoreTables.TableVirtualKey{

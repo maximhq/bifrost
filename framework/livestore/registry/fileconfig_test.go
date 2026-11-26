@@ -140,9 +140,8 @@ func TestFromConfigJoins(t *testing.T) {
 	require.Equal(t, "vk-1", rateLimits["rl-vk"].KeyID)
 	require.Equal(t, []ProviderLimit{{ConfigID: 7, Provider: "openai", BudgetIDs: []string{"b-pc"}, RateLimitID: "rl-pc"}}, vk.ProviderLimits,
 		"a provider config's limits are carried by ID")
-	require.Len(t, g.GrantSets, 1, "the key's grant set is kept for the store to intern")
-	require.Equal(t, vk.Grants, g.GrantSets[0].ID)
-	require.Len(t, g.GrantSets[0].Providers, 1)
+	require.NotNil(t, vk.Grants, "the key carries its grant set, which the store shares as it loads")
+	require.Len(t, vk.Grants.Providers, 1)
 	require.Equal(t, "vk-1", BudgetKeyID(budgets["b-pc"]), "a provider config's budget is the key's")
 	require.Equal(t, uint(7), *budgets["b-pc"].ProviderConfigID)
 	require.True(t, budgets["b-pc"].IsCalendarAligned, "a provider config's limits follow the key's flag")

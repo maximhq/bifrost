@@ -134,10 +134,9 @@ func TestLoadAllFailedReadPublishesNothing(t *testing.T) {
 	}
 }
 
-// TestLoadAllKeepsInternedValuesUntilTheBootPublishes: a value a loader interns survives a boot
-// that reads for longer than the grace period before it publishes. The background sweep runs while
-// kinds are read, when no published record uses the value yet, and the records about to publish
-// still need it.
+// TestLoadAllKeepsInternedValuesUntilTheBootPublishes: a boot that reads for longer than the grace
+// period, with the sweep running meanwhile, publishes its records holding their shared copies, and
+// the pool keeps them: values are shared as records publish.
 func TestLoadAllKeepsInternedValuesUntilTheBootPublishes(t *testing.T) {
 	clock := setClock(t, time.Unix(1_000_000, 0))
 	s := newStore()
@@ -153,14 +152,14 @@ func TestLoadAllKeepsInternedValuesUntilTheBootPublishes(t *testing.T) {
 	groups, err := s.Register(Kind("group"), nil, Loader[group]{
 		ID: func(g *group) string { return g.ID },
 		Page: func(context.Context, *gorm.DB, string, int) ([]*group, string, error) {
-			g := &group{ID: "g1", Set: tags.Intern(&tagSet{Tag: "a"})}
+			g := &group{ID: "g1", Set: &tagSet{Tag: "a"}}
 			// The boot reads for longer than the grace period, and the sweep runs meanwhile.
 			*clock = clock.Add(internedGrace + time.Minute)
 			s.sweep()
 			return []*group{g}, "", nil
 		},
 		ByID: func(context.Context, *gorm.DB, []string) ([]*group, error) { return nil, nil },
-	}, Uses(tags, func(g *group) Hash { return g.Set }))
+	}, Interns(tags, func(g *group) **tagSet { return &g.Set }))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,12 +170,12 @@ func TestLoadAllKeepsInternedValuesUntilTheBootPublishes(t *testing.T) {
 	if !ok {
 		t.Fatal("g1 not loaded")
 	}
-	if _, ok := tags.Get(g.Set); !ok {
+	if _, ok := sharedCopy(tags, tags.hash(g.Set)); !ok {
 		t.Fatal("the sweep dropped a value the boot interned before publishing the record that uses it")
 	}
 	*clock = clock.Add(internedGrace + time.Minute)
 	s.sweep()
-	if _, ok := tags.Get(g.Set); !ok {
+	if _, ok := sharedCopy(tags, tags.hash(g.Set)); !ok {
 		t.Fatal("a value a published record uses must never be swept")
 	}
 }

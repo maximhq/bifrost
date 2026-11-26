@@ -87,23 +87,14 @@ type Collections struct {
 	// PromptVersions holds every prompt version, by prompt and number and as each prompt's latest;
 	// a prompt's refresh re-reads its versions and its removal removes them.
 	PromptVersions *Collection[registry.PromptVersion]
-	// GrantSets holds the grant set of every key, once per content. A key names its own by
-	// VirtualKey.Grants; GrantSet looks one up.
-	GrantSets *Interned[registry.GrantSet]
+	// grantSets holds the grant set of every key, once per content; VirtualKey.Grants holds the
+	// key's shared copy.
+	grantSets *Interned[registry.GrantSet]
 }
 
-// GrantSet returns the grant set id names, and false when the store holds none under it.
-func (c *Collections) GrantSet(id registry.GrantSetID) (*registry.GrantSet, bool) {
-	return c.GrantSets.Get(Hash(id))
-}
-
-// FileRecords interns the grant sets of the keys fc holds and returns every record in fc, for
-// LoadRecords: what a gateway without a config store loads from config.json. The sets are interned
-// first, so each is there when its key is.
+// FileRecords returns every record in fc, for LoadRecords: what a gateway without a config store
+// loads from config.json.
 func (c *Collections) FileRecords(fc *registry.FileRecords) []Record {
-	for _, set := range fc.GrantSets {
-		c.GrantSets.Intern(set)
-	}
 	recs := make([]Record, 0, len(fc.Providers)+len(fc.ProviderKeys)+len(fc.VirtualKeys)+len(fc.Teams)+
 		len(fc.Customers)+len(fc.Budgets)+len(fc.RateLimits)+len(fc.ModelConfigs)+len(fc.PricingOverrides))
 	for _, p := range fc.Providers {
@@ -183,13 +174,6 @@ type storeOptions struct {
 	limits registry.LimitReads
 }
 
-// keyReads is how the store reads virtual keys, interning each key's grant set in grants.
-func (o *storeOptions) keyReads(grants *Interned[registry.GrantSet]) registry.KeyReads {
-	return registry.KeyReads{Grants: func(g *registry.GrantSet) registry.GrantSetID {
-		return registry.GrantSetID(grants.Intern(g))
-	}}
-}
-
 // LimitOwners adds a build's own owners of budgets and rate limits to the ones the registry knows,
 // for a build whose own entities hold limits. Every read of budgets and rate limits reads them in
 // the same query as the registry's own, and a limit no holder the registry knows holds is calendar
@@ -211,7 +195,7 @@ func LimitOwners(budgets, rateLimits []registry.LimitOwner) StoreOption {
 func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 	c := &Collections{}
 	var err error
-	if c.GrantSets, err = s.RegisterInterned[registry.GrantSet](KindGrantSet, func(g *registry.GrantSet) Hash { return Hash(g.ID) }); err != nil {
+	if c.grantSets, err = s.RegisterInterned[registry.GrantSet](KindGrantSet, func(g *registry.GrantSet) Hash { return Hash(g.ID) }); err != nil {
 		return nil, err
 	}
 	if c.Providers, err = s.Register(KindProvider, []Kind{KindBudget, KindRateLimit}, Loader[registry.Provider]{
@@ -359,11 +343,10 @@ func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 	); err != nil {
 		return err
 	}
-	reads := o.keyReads(c.GrantSets)
 	if c.VirtualKeys, err = s.Register(KindVirtualKey, []Kind{KindBudget, KindRateLimit, KindTeam, KindCustomer, KindVirtualMCP}, Loader[registry.VirtualKey]{
 		ID:   registry.VirtualKeyID,
-		Page: reads.Page,
-		ByID: reads.ByID,
+		Page: registry.VirtualKeysPage,
+		ByID: registry.VirtualKeysByID,
 	},
 		UniqueIndex(registry.VirtualKeyByValue, registry.VirtualKeyValue),
 		MultiIndex(registry.VirtualKeyByPreviousValue, registry.VirtualKeyPreviousValue),
@@ -372,7 +355,7 @@ func registerGovernance(s *Store, c *Collections, o *storeOptions) error {
 		ReadInBatches[registry.VirtualKey](DefaultReadBatch),
 		ChildIDsOf(KindTeam, registry.VirtualKeyTeamID, registry.VirtualKeyIDsByTeams, SetNull),
 		ChildIDsOf(KindCustomer, registry.VirtualKeyCustomerID, registry.VirtualKeyIDsByCustomers, SetNull),
-		Uses(c.GrantSets, func(k *registry.VirtualKey) Hash { return Hash(k.Grants) }),
+		Interns(c.grantSets, func(k *registry.VirtualKey) **registry.GrantSet { return &k.Grants }),
 	); err != nil {
 		return err
 	}

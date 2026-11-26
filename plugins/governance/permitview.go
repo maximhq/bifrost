@@ -60,17 +60,16 @@ func (gs *LocalGovernanceStore) permitForVirtualKey(ctx context.Context, vk *reg
 		grant.WithRelayPermits(view.relays))
 }
 
-// permitViewOf returns the view of the grant set id names, building it when the table holds none
-// from the current generation. The table stores a view for permitViewTTL under the generation read
-// before it was built, so a view built while a change bumped the generation is built again on the
-// next read. A set the store does not hold grants nothing, not even the MCP clients allowed by
-// default, which the key's own set may have restricted or blocked, and its empty view is not kept.
-func (gs *LocalGovernanceStore) permitViewOf(id registry.GrantSetID) *permitView {
-	return gs.permitViews.GetOrCompute(livestore.Hash(id), func() (*permitView, time.Duration, bool) {
-		set, ok := gs.live.Collections.GrantSet(id)
-		if !ok {
-			return &permitView{}, 0, false
-		}
+// permitViewOf returns the view of set, keyed by the set's ID, building it when the table holds
+// none from the current generation. The table stores a view for permitViewTTL under the generation
+// read before it was built, so a view built while a change bumped the generation is built again on
+// the next read. A nil set grants nothing, not even the MCP clients allowed by default, which the
+// key's own set may have restricted or blocked, and its empty view is not kept.
+func (gs *LocalGovernanceStore) permitViewOf(set *registry.GrantSet) *permitView {
+	if set == nil {
+		return &permitView{}
+	}
+	return gs.permitViews.GetOrCompute(livestore.Hash(set.ID), func() (*permitView, time.Duration, bool) {
 		return gs.buildPermitView(set), permitViewTTL, true
 	})
 }

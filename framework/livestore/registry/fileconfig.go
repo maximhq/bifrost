@@ -29,8 +29,6 @@ type FileRecords struct {
 	ModelConfigs []*ModelConfig
 	// PricingOverrides are the pricing overrides governance lists.
 	PricingOverrides []*PricingOverride
-	// GrantSets are the keys' grant sets, which the store interns before it loads the keys.
-	GrantSets []*GrantSet
 }
 
 // FromConfig builds the records config.json declares, for a gateway without a config store: a
@@ -67,12 +65,6 @@ func FromConfig(in FileInput) *FileRecords {
 		}
 	}
 	return g
-}
-
-// addGrantSet keeps a key's grant set for the store to intern, and returns its ID.
-func (g *FileRecords) addGrantSet(set *GrantSet) GrantSetID {
-	g.GrantSets = append(g.GrantSets, set)
-	return set.ID
 }
 
 // governanceRecords adds cfg's governance records to g, joined as FromConfig describes, and
@@ -207,7 +199,7 @@ func governanceRecords(g *FileRecords, cfg *configstore.GovernanceConfig) (provi
 			configs[j] = pc
 		}
 		vk.ProviderConfigs = configs
-		rec := VirtualKeyFromTable(&vk, ids, nil, g.addGrantSet)
+		rec := VirtualKeyFromTable(&vk, ids, nil)
 		rec.RateLimitID = rateLimitID
 		g.VirtualKeys = append(g.VirtualKeys, rec)
 	}
