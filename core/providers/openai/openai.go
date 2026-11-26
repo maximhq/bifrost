@@ -744,8 +744,8 @@ func HandleOpenAITextCompletionStreaming(
 		// that legitimately reports zero tokens still terminates.
 		trailingUsageSeen := false
 
-		var finishReason *string
 		var choiceZeroFinishReason *string // the synthetic final chunk is choice 0, so it carries only choice 0's reason
+		var choicesFinished streamChoiceFinishTracker
 		var messageID string
 		var created int
 		modelName := request.Model
@@ -765,7 +765,7 @@ func HandleOpenAITextCompletionStreaming(
 				// idle timeout that finally unblocked the read ends the stream cleanly instead
 				// of failing a response the client already has. The timer closed the socket
 				// and claimed ConnectionClosed, so the deferred release skips the drain.
-				if errors.Is(readErr, providerUtils.ErrStreamIdleTimeout) && finishReason != nil {
+				if errors.Is(readErr, providerUtils.ErrStreamIdleTimeout) && choicesFinished.all() {
 					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 					if usage.TotalTokens == 0 {
 						logger.Warn("provider %s went silent after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
@@ -861,16 +861,14 @@ func HandleOpenAITextCompletionStreaming(
 				modelName = response.Model
 			}
 
-			// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
-			// OpenAI-compatible upstreams report usage incrementally (vLLM's
+			// Only usage observed once every choice has finished ends a wait_for_usage wait.
+			// Some OpenAI-compatible upstreams report usage incrementally (vLLM's
 			// stream_continuous_usage_stats; see the "usage comes before final message" note
 			// below), and a preliminary frame satisfying the wait would let the finish frame
 			// end the stream before the authoritative trailing total arrives - which is #7143
-			// again. Computed before the usage block so a frame carrying BOTH usage and
-			// finish_reason still counts: that upstream has nothing further to send.
-			finishInThisFrame := len(response.Choices) > 0 &&
-				response.Choices[0].FinishReason != nil &&
-				*response.Choices[0].FinishReason != ""
+			// again. Decided after this frame's choices are recorded, so a frame carrying BOTH
+			// usage and the last finish_reason still counts: that upstream has nothing further to send.
+			usageInFrame := false
 
 			// Handle usage-only chunks (when stream_options include_usage is true)
 			if response.Usage != nil {
@@ -900,9 +898,7 @@ func HandleOpenAITextCompletionStreaming(
 				if response.Usage.PromptTokensDetails != nil {
 					usage.PromptTokensDetails = response.Usage.PromptTokensDetails
 				}
-				if finishReason != nil || finishInThisFrame {
-					trailingUsageSeen = true
-				}
+				usageInFrame = true
 				response.Usage = nil
 			}
 
@@ -910,11 +906,14 @@ func HandleOpenAITextCompletionStreaming(
 			// here, so under wait_for_usage termination has to be evaluated before skipping
 			// it: that frame is the exact thing the loop stayed open for, and the check at
 			// the bottom of the loop is unreachable once we continue. Guarded and added
-			// rather than relocated - finishReason is assigned below this point, so moving
+			// rather than relocated - the finish state is recorded below this point, so moving
 			// the shared check up would stop plain does_not_send_done_marker from breaking
 			// on finish_reason at all.
 			if len(response.Choices) == 0 {
-				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+				if usageInFrame && choicesFinished.all() {
+					trailingUsageSeen = true
+				}
+				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && choicesFinished.all() &&
 					providerUtils.WaitForStreamUsage(ctx) && trailingUsageSeen {
 					break
 				}
@@ -931,20 +930,22 @@ func HandleOpenAITextCompletionStreaming(
 				choice := &response.Choices[i]
 				choiceFinished := choice.FinishReason != nil && *choice.FinishReason != ""
 				if choiceFinished {
-					// Collect finish reason and send at the end of the stream
-					finishReason = choice.FinishReason
 					eventFinished = true
 					if choice.Index == 0 {
 						choiceZeroFinishReason = choice.FinishReason
 						choice.FinishReason = nil
 					}
 				}
+				choicesFinished.observe(choice.Index, choiceFinished)
 				if (choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil) ||
 					(choiceFinished && choice.Index != 0) {
 					forwardEvent = true
 				}
 			}
-			if eventFinished {
+			if usageInFrame && choicesFinished.all() {
+				trailingUsageSeen = true
+			}
+			if eventFinished && choicesFinished.all() {
 				// An upstream that parks instead of sending [DONE] can only heartbeat now.
 				providerUtils.SSEEndOnCommentAfterFinish(sseReader)
 			}
@@ -978,7 +979,7 @@ func HandleOpenAITextCompletionStreaming(
 			// hold the loop open for it - breaking here bills the request at zero tokens
 			// (#7143). The wait stays bounded: the usage frame above, the two post-finish
 			// heartbeat comments armed on finish_reason, EOF, or the stream idle timeout.
-			if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+			if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && choicesFinished.all() &&
 				(!providerUtils.WaitForStreamUsage(ctx) || trailingUsageSeen) {
 				break
 			}
@@ -987,7 +988,7 @@ func HandleOpenAITextCompletionStreaming(
 		// See HandleOpenAIChatCompletionStreaming: a plain io.EOF cannot distinguish a
 		// finished provider from a dead connection, so a terminal marker is required
 		// before synthesizing the final chunk.
-		if !providerUtils.SSEStreamEndedOnMarker(sseReader) && finishReason == nil {
+		if !providerUtils.SSEStreamEndedOnMarker(sseReader) && !choicesFinished.all() {
 			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
 			return
 		}
@@ -1289,6 +1290,54 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	)
 }
 
+// streamChoiceFinishTracker reports when every choice a stream has shown has finished. With n>1 each choice
+// ends on its own, so the first finish_reason must not end the stream for the choices still generating. It
+// counts the choices the upstream actually sends rather than the requested n, which a provider may drop
+// (Perplexity's request has no n) or cap. Single-choice streams allocate nothing.
+type streamChoiceFinishTracker struct {
+	others      map[int]bool // finished state of choices other than 0, allocated when the first one appears
+	unfinished  int          // choices seen that have not finished yet
+	zeroSeen    bool
+	zeroDone    bool
+	anyFinished bool
+}
+
+// observe records one choice of a stream event and whether it carries the choice's finish_reason.
+func (t *streamChoiceFinishTracker) observe(index int, finished bool) {
+	if finished {
+		t.anyFinished = true
+	}
+	if index == 0 {
+		if !t.zeroSeen {
+			t.zeroSeen = true
+			t.unfinished++
+		}
+		if finished && !t.zeroDone {
+			t.zeroDone = true
+			t.unfinished--
+		}
+		return
+	}
+	if t.others == nil {
+		t.others = make(map[int]bool)
+	}
+	done, seen := t.others[index]
+	if !seen {
+		t.unfinished++
+	}
+	if finished && !done {
+		t.unfinished--
+		t.others[index] = true
+	} else if !seen {
+		t.others[index] = false
+	}
+}
+
+// all reports whether at least one choice finished and no choice seen so far is still generating.
+func (t *streamChoiceFinishTracker) all() bool {
+	return t.anyFinished && t.unfinished == 0
+}
+
 // chatStreamChoiceCarriesDelta reports whether a streamed chat choice carries anything a client must
 // see, including the initial role-only delta. OpenAI commonly sends role:"assistant" with empty content
 // first; dropping it leaves strict streaming clients unable to reconstruct a valid message. Refusal and
@@ -1532,8 +1581,8 @@ func HandleOpenAIChatCompletionStreaming(
 
 		lastChunkTime := startTime
 
-		var finishReason *string
 		var choiceZeroFinishReason *string // the synthetic final chunk is choice 0, so it carries only choice 0's reason
+		var choicesFinished streamChoiceFinishTracker
 		var messageID string
 		var modelName string
 		var created int
@@ -1608,7 +1657,7 @@ func HandleOpenAIChatCompletionStreaming(
 				// the terminal signal is the pending completed/incomplete event. The timer
 				// closed the socket and claimed ConnectionClosed, so the deferred release
 				// skips the drain.
-				if errors.Is(readErr, providerUtils.ErrStreamIdleTimeout) && (finishReason != nil || pendingFinalEvent != nil) {
+				if errors.Is(readErr, providerUtils.ErrStreamIdleTimeout) && (choicesFinished.all() || pendingFinalEvent != nil) {
 					ctx.SetValue(schemas.BifrostContextKeyStreamParkedAfterFinish, true)
 					if usage.TotalTokens == 0 {
 						logger.Warn("provider %s went silent after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
@@ -1824,16 +1873,14 @@ func HandleOpenAIChatCompletionStreaming(
 					serviceTier = response.ServiceTier
 				}
 
-				// Only usage observed at or after finish_reason ends a wait_for_usage wait. Some
-				// OpenAI-compatible upstreams report usage incrementally (vLLM's
+				// Only usage observed once every choice has finished ends a wait_for_usage wait.
+				// Some OpenAI-compatible upstreams report usage incrementally (vLLM's
 				// stream_continuous_usage_stats; see the "usage comes before final message" note
 				// below), and a preliminary frame satisfying the wait would let the finish frame
 				// end the stream before the authoritative trailing total arrives - which is #7143
-				// again. Computed before the usage block so a frame carrying BOTH usage and
-				// finish_reason still counts: that upstream has nothing further to send.
-				finishInThisFrame := len(response.Choices) > 0 &&
-					response.Choices[0].FinishReason != nil &&
-					*response.Choices[0].FinishReason != ""
+				// again. Decided after this frame's choices are recorded, so a frame carrying BOTH
+				// usage and the last finish_reason still counts: that upstream has nothing further to send.
+				usageInFrame := false
 
 				// Handle usage-only chunks (when stream_options include_usage is true)
 				if response.Usage != nil {
@@ -1869,9 +1916,7 @@ func HandleOpenAIChatCompletionStreaming(
 					// usageSeen is deliberately not set here: it belongs to the Responses
 					// fallback branch above, which is the only reader (the Mantle exit and the
 					// terminal-event usage attach). This branch gates on trailingUsageSeen.
-					if finishReason != nil || finishInThisFrame {
-						trailingUsageSeen = true
-					}
+					usageInFrame = true
 					response.Usage = nil
 				}
 
@@ -1883,11 +1928,14 @@ func HandleOpenAIChatCompletionStreaming(
 				// here, so under wait_for_usage termination has to be evaluated before skipping
 				// it: that frame is the exact thing the loop stayed open for, and the check at
 				// the bottom of the loop is unreachable once we continue. Guarded and added
-				// rather than relocated - finishReason is assigned below this point, so moving
+				// rather than relocated - the finish state is recorded below this point, so moving
 				// the shared check up would stop plain does_not_send_done_marker from breaking
 				// on finish_reason at all.
 				if len(response.Choices) == 0 {
-					if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+					if usageInFrame && choicesFinished.all() {
+						trailingUsageSeen = true
+					}
+					if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && choicesFinished.all() &&
 						providerUtils.WaitForStreamUsage(ctx) && trailingUsageSeen {
 						break
 					}
@@ -1905,19 +1953,21 @@ func HandleOpenAIChatCompletionStreaming(
 					choice := &response.Choices[i]
 					choiceFinished := choice.FinishReason != nil && *choice.FinishReason != ""
 					if choiceFinished {
-						// Collect finish reason and send at the end of the stream
-						finishReason = choice.FinishReason
 						eventFinished = true
 						if choice.Index == 0 {
 							choiceZeroFinishReason = choice.FinishReason
 							choiceZeroFinishedInEvent = true
 						}
 					}
+					choicesFinished.observe(choice.Index, choiceFinished)
 					if chatStreamChoiceCarriesDelta(choice) || (choiceFinished && choice.Index != 0) {
 						forwardEvent = true
 					}
 				}
-				if eventFinished {
+				if usageInFrame && choicesFinished.all() {
+					trailingUsageSeen = true
+				}
+				if eventFinished && choicesFinished.all() {
 					// An upstream that parks instead of sending [DONE] can only heartbeat now.
 					providerUtils.SSEEndOnCommentAfterFinish(sseReader)
 				}
@@ -1954,7 +2004,7 @@ func HandleOpenAIChatCompletionStreaming(
 				// hold the loop open for it - breaking here bills the request at zero tokens
 				// (#7143). The wait stays bounded: the usage frame above, the two post-finish
 				// heartbeat comments armed on finish_reason, EOF, or the stream idle timeout.
-				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && finishReason != nil &&
+				if !providerUtils.ProviderSendsDoneMarker(ctx, providerName) && choicesFinished.all() &&
 					(!providerUtils.WaitForStreamUsage(ctx) || trailingUsageSeen) {
 					break
 				}
@@ -1975,7 +2025,7 @@ func HandleOpenAIChatCompletionStreaming(
 			// rather than a silent stream close, even though [DONE] may have arrived.
 			terminalSignalSeen = pendingFinalEvent != nil || (terminalSignalSeen && !fallbackFinishReasonSeen)
 		} else {
-			terminalSignalSeen = terminalSignalSeen || finishReason != nil
+			terminalSignalSeen = terminalSignalSeen || choicesFinished.all()
 		}
 		if !terminalSignalSeen {
 			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)

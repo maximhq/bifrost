@@ -2382,3 +2382,203 @@ func TestTextCompletionStreamBundledFinishOnlyChoiceZeroKeepsChoiceOneContent(t 
 		t.Errorf("finish reasons by choice = %v, want %v", got, want)
 	}
 }
+
+// n2ChatStreamBody is an n=2 chat stream where choice 1 finishes in an event bundled with choice 0's
+// content, while choice 0 keeps generating afterwards. between is written right after that event.
+func n2ChatStreamBody(between string) string {
+	event := func(choices string) string {
+		return `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[` + choices + `]}` + "\n\n"
+	}
+	return event(`{"index":0,"delta":{"role":"assistant","content":"a"},"finish_reason":null},{"index":1,"delta":{"role":"assistant","content":"x"},"finish_reason":null}`) +
+		event(`{"index":0,"delta":{"content":"b"},"finish_reason":null},{"index":1,"delta":{},"finish_reason":"length"}`) +
+		between +
+		event(`{"index":0,"delta":{"content":"c"},"finish_reason":null}`) +
+		event(`{"index":0,"delta":{},"finish_reason":"stop"}`)
+}
+
+func n2ChatRequest() *schemas.BifrostChatRequest {
+	request := basicChatRequest()
+	request.Params = &schemas.ChatParameters{N: schemas.Ptr(2)}
+	return request
+}
+
+func assertN2ChatStreamComplete(t *testing.T, chunks []*schemas.BifrostStreamChunk) {
+	t.Helper()
+	if got, want := streamContentByChoice(chunks), map[int]string{0: "abc", 1: "x"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("content by choice = %v, want %v (a choice was cut off when another finished)", got, want)
+	}
+	if got, want := streamFinishReasonsByChoice(t, chunks), map[int][]string{0: {"stop"}, 1: {"length"}}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("finish reasons by choice = %v, want %v", got, want)
+	}
+}
+
+// An upstream without a [DONE] marker ends on finish_reason, but with n>1 only once every
+// requested choice has finished: choice 1 finishing must not cut choice 0 off.
+func TestChatStreamWithoutDoneMarkerWaitsForEveryChoice(t *testing.T) {
+	server := completeSSEServer(t, n2ChatStreamBody(""))
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), n2ChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	assertN2ChatStreamComplete(t, collectChunks(t, stream))
+}
+
+// Heartbeat comments after one choice finished must not end an n>1 stream whose other
+// choices are still generating; the post-finish comment rule applies once all are done.
+func TestChatStreamHeartbeatBetweenChoiceFinishesKeepsStreaming(t *testing.T) {
+	server := completeSSEServer(t, n2ChatStreamBody(": ping\n\n: ping\n\n")+"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), n2ChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	assertN2ChatStreamComplete(t, collectChunks(t, stream))
+}
+
+// The text completion mirror of TestChatStreamWithoutDoneMarkerWaitsForEveryChoice.
+func TestTextCompletionStreamWithoutDoneMarkerWaitsForEveryChoice(t *testing.T) {
+	event := func(choices string) string {
+		return `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[` + choices + `]}` + "\n\n"
+	}
+	server := completeSSEServer(t, event(`{"index":0,"text":"a","finish_reason":null},{"index":1,"text":"x","finish_reason":null}`)+
+		event(`{"index":0,"text":"b","finish_reason":null},{"index":1,"text":"","finish_reason":"length"}`)+
+		event(`{"index":0,"text":"c","finish_reason":null}`)+
+		event(`{"index":0,"text":"","finish_reason":"stop"}`))
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+		Params:   &schemas.TextCompletionParameters{N: schemas.Ptr(2)},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(ctx, passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+	if got, want := streamContentByChoice(chunks), map[int]string{0: "abc", 1: "x"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("content by choice = %v, want %v (a choice was cut off when another finished)", got, want)
+	}
+	if got, want := streamFinishReasonsByChoice(t, chunks), map[int][]string{0: {"stop"}, 1: {"length"}}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("finish reasons by choice = %v, want %v", got, want)
+	}
+}
+
+// A provider can drop or cap n (Perplexity's request has no n field), so an n=2 request may get
+// a single-choice stream. An upstream without [DONE] that then parks must still end on that one
+// choice's finish_reason, not wait for a choice that never comes until the idle timeout.
+func TestChatStreamWithoutDoneMarkerEndsWhenUpstreamIgnoresN(t *testing.T) {
+	stop := "stop"
+	server := heartbeatSSEServer(t, chatChunk("hello", nil)+chatChunk("", &stop))
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), n2ChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	started := time.Now()
+	chunks := collectChunks(t, stream)
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Errorf("stream took %v to end; it should end on the only choice's finish_reason", elapsed)
+	}
+	if got, want := streamFinishReasonsByChoice(t, chunks), map[int][]string{0: {"stop"}}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("finish reasons by choice = %v, want %v", got, want)
+	}
+}
+
+// One finished choice does not make an n>1 stream complete: an upstream that dies while
+// another choice is still generating is truncated, not a clean completion.
+func TestChatStreamTruncatedWhileAnotherChoiceIsGeneratingIsAnError(t *testing.T) {
+	event := func(choices string) string {
+		return `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[` + choices + `]}` + "\n\n"
+	}
+	server := truncatingSSEServer(t, event(`{"index":0,"delta":{"role":"assistant","content":"a"},"finish_reason":null}`)+
+		event(`{"index":1,"delta":{"role":"assistant","content":"x"},"finish_reason":null}`)+
+		event(`{"index":1,"delta":{},"finish_reason":"length"}`))
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), n2ChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks before the truncation error")
+	}
+	assertTruncationError(t, chunks[len(chunks)-1].BifrostError)
+}
+
+// The text completion mirror of the chat truncation case above.
+func TestTextCompletionStreamTruncatedWhileAnotherChoiceIsGeneratingIsAnError(t *testing.T) {
+	event := func(choices string) string {
+		return `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model","choices":[` + choices + `]}` + "\n\n"
+	}
+	server := truncatingSSEServer(t, event(`{"index":0,"text":"a","finish_reason":null}`)+
+		event(`{"index":1,"text":"x","finish_reason":null}`)+
+		event(`{"index":1,"text":"","finish_reason":"length"}`))
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+		Params:   &schemas.TextCompletionParameters{N: schemas.Ptr(2)},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks before the truncation error")
+	}
+	assertTruncationError(t, chunks[len(chunks)-1].BifrostError)
+}
+
+// With n>1 and an upstream reporting usage on every frame, usage seen after only one choice
+// finished is still preliminary: wait_for_usage must hold for the trailing total (#7143).
+func TestChatStreamWaitForUsageWaitsForEveryChoiceBeforeTrailingUsage(t *testing.T) {
+	event := func(choices, usage string) string {
+		return `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[` + choices + `]` + usage + `}` + "\n\n"
+	}
+	interim := `,"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}`
+	server := completeSSEServer(t, event(`{"index":0,"delta":{"role":"assistant","content":"a"},"finish_reason":null},{"index":1,"delta":{"role":"assistant","content":"x"},"finish_reason":null}`, "")+
+		event(`{"index":1,"delta":{},"finish_reason":"length"}`, "")+
+		event(`{"index":0,"delta":{"content":"b"},"finish_reason":null}`, interim)+
+		event(`{"index":0,"delta":{},"finish_reason":"stop"}`, "")+
+		event(``, `,"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}`))
+	defer server.Close()
+
+	ctx := newStreamTestContext()
+	ctx.SetValue(schemas.BifrostContextKeyDoesNotSendDoneMarker, true)
+	ctx.SetValue(schemas.BifrostContextKeyWaitForUsage, true)
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(ctx, passthroughPostHook, nil, testKey(), n2ChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+	chunks := collectChunks(t, stream)
+	final := chunks[len(chunks)-1]
+	if final.BifrostChatResponse == nil || final.BifrostChatResponse.Usage == nil {
+		t.Fatalf("expected the final chunk to carry usage, got %+v", final)
+	}
+	if got := final.BifrostChatResponse.Usage.TotalTokens; got != 1100 {
+		t.Errorf("total_tokens = %d, want the trailing 1100 (usage after only one choice finished ended the wait)", got)
+	}
+}
