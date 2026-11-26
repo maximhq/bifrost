@@ -192,6 +192,8 @@ func (g *fileLastGuard) scan(data []byte) {
 		if closing {
 			if !partial {
 				g.state = guardDone // closing delimiter
+			} else if len(g.buf) >= maxPartHeaderBytes {
+				g.err = fmt.Errorf("xAI transcription: multipart part headers exceed %d bytes, so the file cannot be confirmed as the last part", maxPartHeaderBytes)
 			}
 			return
 		}

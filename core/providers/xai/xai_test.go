@@ -372,6 +372,41 @@ func TestXAITranscriptionLargePayloadOversizedPartHeaderIsRefused(t *testing.T) 
 	assert.Contains(t, bifrostErr.Error.Message, "headers exceed")
 }
 
+// A closing marker followed by padding that fills the guard's 8 KiB buffer cannot be
+// confirmed as the end of the body. The guard refuses it instead of waiting forever, so a
+// field after it is not silently dropped by xAI.
+func TestXAITranscriptionLargePayloadOversizedClosingPaddingIsRefused(t *testing.T) {
+	t.Parallel()
+
+	body := "--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\x00\x00\x00\x00WAVEfake" +
+		"\r\n--b--" + strings.Repeat(" ", 8190) + "X\r\n" +
+		"--b\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\nsv\r\n--b--\r\n"
+
+	readers := map[string]func(string) io.Reader{
+		"whole":    func(s string) io.Reader { return strings.NewReader(s) },
+		"one byte": func(s string) io.Reader { return iotest.OneByteReader(strings.NewReader(s)) },
+	}
+	for name, newReader := range readers {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(xaiSTTResponse))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stageLargePayload(ctx, body, "multipart/form-data; boundary=b")
+			ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, newReader(body))
+			resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
+			require.Nil(t, resp)
+			require.NotNil(t, bifrostErr)
+			require.NotNil(t, bifrostErr.StatusCode)
+			assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+			assert.Contains(t, bifrostErr.Error.Message, "headers exceed")
+		})
+	}
+}
+
 // With a large-response threshold set, a transcript over it must still be decoded from
 // xAI's shape (words named "text", duration usage) instead of streamed to the client raw,
 // on both the normal and the staged path. The threshold is restored afterwards.
