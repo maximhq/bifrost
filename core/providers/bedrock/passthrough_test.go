@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -254,6 +255,8 @@ func TestBedrockPassthroughRejectsEverythingOutsideTheAllowList(t *testing.T) {
 		{"inference profile ARN with a slash", http.MethodGet, "/inference-profiles/arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.x"},
 		{"dot-only inference profile id", http.MethodGet, "/inference-profiles/.."},
 		{"dot-only foundation model id", http.MethodGet, "/foundation-models/..."},
+		{"foundation model id that does not start with an alphanumeric", http.MethodGet, "/foundation-models/.:"},
+		{"inference profile id of colons only", http.MethodGet, "/inference-profiles/::"},
 		{"extra segment after a foundation model", http.MethodGet, "/foundation-models/anthropic.claude-v2/extra"},
 		{"inference profile deletion is not allowed", http.MethodDelete, "/inference-profiles/us.anthropic.claude-sonnet-4-6"},
 		{"traversal in an identifier", http.MethodPost, "/agents/../model/x/agentAliases/a/sessions/s/text"},
@@ -624,4 +627,76 @@ func TestIsControlPlaneListingPathIsLimitedToListings(t *testing.T) {
 	assert.False(t, IsControlPlaneListingPath(http.MethodPost, "/inference-profiles"))
 	assert.False(t, IsControlPlaneListingPath(http.MethodPost, retrievePassthroughPath))
 	assert.False(t, IsControlPlaneListingPath(http.MethodGet, "/model-invocation-jobs"))
+}
+
+// A list runs no model and is trimmed to the caller's access; a get addresses its id as the model, so
+// the allowlist applies to it as to an invocation.
+func TestControlPlaneListAndResourceModel(t *testing.T) {
+	assert.True(t, IsControlPlaneListPath(http.MethodGet, "/inference-profiles"))
+	assert.True(t, IsControlPlaneListPath(http.MethodGet, "/foundation-models"))
+	assert.False(t, IsControlPlaneListPath(http.MethodGet, "/inference-profiles/us.anthropic.claude-sonnet-4-6"))
+	assert.False(t, IsControlPlaneListPath(http.MethodPost, retrievePassthroughPath))
+
+	assert.Equal(t, "us.anthropic.claude-sonnet-4-6", ControlPlaneResourceModel(http.MethodGet, "/inference-profiles/us.anthropic.claude-sonnet-4-6"))
+	assert.Equal(t, "anthropic.claude-3-haiku-20240307-v1:0", ControlPlaneResourceModel(http.MethodGet, "/foundation-models/anthropic.claude-3-haiku-20240307-v1:0"))
+	assert.Empty(t, ControlPlaneResourceModel(http.MethodGet, "/inference-profiles"))
+	assert.Empty(t, ControlPlaneResourceModel(http.MethodGet, "/inference-profiles/arn:aws:bedrock:us-east-1:1:application-inference-profile/abc"))
+	assert.Empty(t, ControlPlaneResourceModel(http.MethodPost, retrievePassthroughPath))
+}
+
+// A filter that cannot read the listing reports it, so governance leaves the body alone rather than
+// returning a broken one.
+func TestControlPlaneListFilterRejectsInvalidJSON(t *testing.T) {
+	filter := ControlPlaneListFilter(http.MethodGet, "/inference-profiles")
+	require.NotNil(t, filter)
+	_, err := filter([]byte(`<html>`), func(string) bool { return true })
+	assert.Error(t, err)
+	body, err := filter([]byte(`{"nextToken":"t"}`), func(string) bool { return false })
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"nextToken":"t"}`, string(body))
+}
+
+// A method no allow-listed operation uses is refused before the path is split, so it allocates nothing.
+func TestMatchBedrockPassthroughRouteRefusesOtherMethodsWithoutAllocating(t *testing.T) {
+	allocs := testing.AllocsPerRun(100, func() {
+		_, _ = matchBedrockPassthroughRoute(http.MethodDelete, "/inference-profiles/us.anthropic.claude-sonnet-4-6")
+	})
+	assert.Zero(t, allocs)
+}
+
+func BenchmarkMatchBedrockPassthroughRoute(b *testing.B) {
+	cases := []struct{ name, method, path string }{
+		{"RetrievePOST", http.MethodPost, retrievePassthroughPath},
+		{"RefusedDELETE", http.MethodDelete, "/inference-profiles/us.anthropic.claude-sonnet-4-6"},
+		{"GetFoundationModel", http.MethodGet, "/foundation-models/anthropic.claude-3-haiku-20240307-v1:0"},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = matchBedrockPassthroughRoute(tc.method, tc.path)
+			}
+		})
+	}
+}
+
+func BenchmarkControlPlaneListFilter(b *testing.B) {
+	var body strings.Builder
+	body.WriteString(`{"inferenceProfileSummaries":[`)
+	for i := range 1000 {
+		if i > 0 {
+			body.WriteByte(',')
+		}
+		body.WriteString(`{"inferenceProfileId":"us.vendor.model-` + strconv.Itoa(i) + `","inferenceProfileArn":"arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.vendor.model","status":"ACTIVE"}`)
+	}
+	body.WriteString(`],"nextToken":"t"}`)
+	raw := []byte(body.String())
+	filter := ControlPlaneListFilter(http.MethodGet, "/inference-profiles")
+	keep := func(model string) bool { return strings.HasSuffix(model, "7") }
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := filter(raw, keep); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

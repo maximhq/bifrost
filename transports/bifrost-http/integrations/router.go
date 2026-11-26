@@ -572,6 +572,9 @@ type PassthroughConfig struct {
 	PathModel     func(path string) string         // optional: the model a provider-shaped path addresses, used for key selection and governance
 	BodyModelKey  func(method, path string) string // optional: a body key that names what the request runs in place of "model" (an agent id)
 	NoPathModel   func(method, path string) bool   // optional: paths that never name a model, so the model comes from the body alone
+	// ResourceModel, when it returns a name, is the model a request addresses by an identifier in its path
+	// (a Bedrock GetFoundationModel id): it replaces the resolved model for key selection and governance.
+	ResourceModel func(method, path string) string
 
 	BodyModelKeyOnly bool // the BodyModelKey is the only body field that names the model, for an upstream that ignores "model"
 	// ModelList, when it returns a filter, is a model-list request whose response governance trims to the caller's access.
@@ -3886,6 +3889,11 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	}
 	if cfg.PathModel != nil {
 		resolvedModel = cfg.PathModel(path)
+	}
+	if cfg.ResourceModel != nil {
+		if model := cfg.ResourceModel(string(ctx.Method()), path); model != "" {
+			resolvedModel = model
+		}
 	}
 	provider := cfg.Provider
 	if cfg.ProviderDetector != nil {

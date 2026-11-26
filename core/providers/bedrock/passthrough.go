@@ -14,6 +14,7 @@ import (
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // bedrockPassthroughSegment is one path segment of an allow-listed operation: either a literal that must
@@ -48,9 +49,10 @@ var (
 	bedrockPassthroughSessionRe = regexp.MustCompile(`^[0-9a-zA-Z._:-]{1,128}$`)
 	// guardrailVersion: ([1-9][0-9]{0,7})|DRAFT
 	bedrockPassthroughVersionRe = regexp.MustCompile(`^(DRAFT|[1-9][0-9]{0,7})$`)
-	// inferenceProfileIdentifier and modelIdentifier, in their id form: [a-zA-Z0-9-:.]+
-	// (e.g. "us.anthropic.claude-sonnet-4-6", "anthropic.claude-3-haiku-20240307-v1:0").
-	bedrockPassthroughResourceIDRe = regexp.MustCompile(`^[a-zA-Z0-9.:-]+$`)
+	// inferenceProfileIdentifier and modelIdentifier, in their id form: [a-zA-Z0-9-:.]+, starting with an
+	// alphanumeric as AWS's ids do (e.g. "us.anthropic.claude-sonnet-4-6", "anthropic.claude-3-haiku-20240307-v1:0").
+	// The anchor also refuses dot-only segments ("..") and ids such as ".:" that AWS never issues.
+	bedrockPassthroughResourceIDRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9.:-]*$`)
 )
 
 func isBedrockPassthroughAlnum(s string) bool { return bedrockPassthroughAlnumRe.MatchString(s) }
@@ -65,11 +67,10 @@ func isBedrockPassthroughGuardrailVersion(s string) bool {
 	return bedrockPassthroughVersionRe.MatchString(s)
 }
 
-// An inference profile or foundation model id contains dots, so like a session id a segment made only
-// of dots is refused explicitly.
+// isBedrockPassthroughResourceID accepts an inference profile or foundation model id.
 func isBedrockPassthroughResourceID(s string) bool {
 	// AWS caps these identifiers at 2048 characters, above Go's regexp repeat limit, so length is checked here.
-	return len(s) <= 2048 && bedrockPassthroughResourceIDRe.MatchString(s) && strings.Trim(s, ".") != ""
+	return len(s) <= 2048 && bedrockPassthroughResourceIDRe.MatchString(s)
 }
 
 // The passthrough is deliberately not a general AWS proxy: it forwards exactly the Bedrock
@@ -93,7 +94,8 @@ var bedrockPassthroughRoutes = []bedrockPassthroughRoute{
 
 // matchBedrockPassthroughRoute returns the allow-listed route for a method and stripped path.
 func matchBedrockPassthroughRoute(method, path string) (bedrockPassthroughRoute, bool) {
-	if path == "" {
+	// Every allow-listed operation is a POST or a GET; any other method is refused before the path is split.
+	if path == "" || (method != http.MethodPost && method != http.MethodGet) {
 		return bedrockPassthroughRoute{}, false
 	}
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
@@ -149,12 +151,79 @@ func IsPassthroughRoute(method, path string) bool {
 	return ok
 }
 
-// IsControlPlaneListingPath reports whether a request is one of the read-only control-plane listings
-// (inference profiles and foundation models). They run and name no model, so the HTTP router skips
-// model allowlists for them.
+// IsControlPlaneListingPath reports whether a request is one of the read-only control-plane operations
+// (list or get an inference profile or a foundation model). No model is named by their path or body,
+// so the HTTP router does not parse one from either.
 func IsControlPlaneListingPath(method, path string) bool {
 	route, ok := matchBedrockPassthroughRoute(method, path)
 	return ok && route.service == bedrockServiceControlPlane
+}
+
+// IsControlPlaneListPath reports whether a request is ListInferenceProfiles or ListFoundationModels.
+// A list runs no model, so the HTTP router skips model allowlists for it and trims its response to the
+// caller's access instead (see ControlPlaneListFilter).
+func IsControlPlaneListPath(method, path string) bool {
+	route, ok := matchBedrockPassthroughRoute(method, path)
+	return ok && (route.operation == "ListInferenceProfiles" || route.operation == "ListFoundationModels")
+}
+
+// ControlPlaneResourceModel returns the inference profile or foundation model a GetInferenceProfile or
+// GetFoundationModel request addresses, and "" for any other request. The HTTP router uses it as the
+// request's model, so a caller can describe only what its access lets it run.
+func ControlPlaneResourceModel(method, path string) string {
+	route, ok := matchBedrockPassthroughRoute(method, path)
+	if !ok || (route.operation != "GetInferenceProfile" && route.operation != "GetFoundationModel") {
+		return ""
+	}
+	return path[strings.LastIndexByte(path, '/')+1:]
+}
+
+// ControlPlaneListFilter returns the filter that trims a ListInferenceProfiles or ListFoundationModels
+// response to the entries the caller's access allows, and nil for any other request. A profile is kept
+// by its inferenceProfileId and a foundation model by its modelId, the names a caller invokes them by.
+func ControlPlaneListFilter(method, path string) schemas.PassthroughModelListFilter {
+	route, ok := matchBedrockPassthroughRoute(method, path)
+	if !ok {
+		return nil
+	}
+	switch route.operation {
+	case "ListInferenceProfiles":
+		return func(body []byte, keep func(model string) bool) ([]byte, error) {
+			return filterBedrockListing(body, "inferenceProfileSummaries", "inferenceProfileId", keep)
+		}
+	case "ListFoundationModels":
+		return func(body []byte, keep func(model string) bool) ([]byte, error) {
+			return filterBedrockListing(body, "modelSummaries", "modelId", keep)
+		}
+	}
+	return nil
+}
+
+// filterBedrockListing keeps the entries of the array field listField whose idField keep accepts. The rest
+// of the body (nextToken included) is left as AWS sent it, so pagination keeps working.
+func filterBedrockListing(body []byte, listField, idField string, keep func(model string) bool) ([]byte, error) {
+	if !gjson.ValidBytes(body) {
+		return nil, fmt.Errorf("bedrock %s listing is not valid JSON", listField)
+	}
+	entries := providerUtils.GetJSONField(body, listField)
+	if !entries.IsArray() {
+		return body, nil
+	}
+	var kept bytes.Buffer
+	kept.WriteByte('[')
+	n := 0
+	for _, entry := range entries.Array() {
+		if !keep(entry.Get(idField).String()) {
+			continue
+		}
+		if n > 0 {
+			kept.WriteByte(',')
+		}
+		kept.WriteString(entry.Raw)
+		n++
+	}
+	kept.WriteByte(']')
+	return providerUtils.SetRawJSONField(body, listField, kept.Bytes())
 }
 
 // IsPassthroughStreamPath reports whether a request is an allow-listed operation whose AWS response is an
@@ -230,14 +299,16 @@ func passthroughTransportError(err error, latency time.Duration) *schemas.Bifros
 	return providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
 }
 
-// Passthrough forwards InvokeAgent, knowledge-base Retrieve and ApplyGuardrail requests to AWS,
-// signed with the key's credentials, and returns the upstream status, headers and body verbatim.
+// Passthrough forwards InvokeAgent, knowledge-base Retrieve, ApplyGuardrail and the read-only
+// control-plane operations (ListInferenceProfiles, GetInferenceProfile, ListFoundationModels,
+// GetFoundationModel) to AWS, authenticated with the key, and returns the upstream status, headers and
+// body verbatim.
 //
 // This is the buffered entry point. The HTTP router sends InvokeAgent to PassthroughStream, so it is
 // forwarded as AWS produces it; an SDK caller that uses Passthrough for InvokeAgent still gets a
 // bounded read: the streaming client (no whole-response timeout, so a long agent run is not cut off),
-// the idle timeout, and a cap on the buffered body. Retrieve and ApplyGuardrail are plain
-// request/response operations and keep the unary client's timeout.
+// the idle timeout, and a cap on the buffered body. Retrieve, ApplyGuardrail and the control-plane
+// operations are plain request/response operations and keep the unary client's timeout.
 func (provider *BedrockProvider) Passthrough(ctx *schemas.BifrostContext, key schemas.Key, req *schemas.BifrostPassthroughRequest) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.Bedrock, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
