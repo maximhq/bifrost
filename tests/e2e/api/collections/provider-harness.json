@@ -351792,17 +351792,18 @@
           }
         },
         {
-          "name": "388.3 openai/gpt-3.5-turbo-instruct /v1/completions stream n=2 keeps each choice and its finish_reason (stream n choices)",
+          "name": "388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2 keeps each choice and its finish_reason (stream n choices)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('388.3 openai/gpt-3.5-turbo-instruct /v1/completions stream n=2: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
                   "// Rebuild each choice from the SSE events the client received, keyed by choice index.",
                   "var texts = {};",
                   "var finishReasons = {};",
+                  "var errorEvents = [];",
                   "pm.response.text().split('\\n').forEach(function (line) {",
                   "  line = line.trim();",
                   "  if (line.indexOf('data:') !== 0) { return; }",
@@ -351810,6 +351811,7 @@
                   "  if (!payload || payload === '[DONE]') { return; }",
                   "  var event;",
                   "  try { event = JSON.parse(payload); } catch (e) { return; }",
+                  "  if (event.error) { errorEvents.push(payload); }",
                   "  (event.choices || []).forEach(function (choice) {",
                   "    var index = choice.index || 0;",
                   "    if (texts[index] === undefined) { texts[index] = ''; }",
@@ -351817,12 +351819,13 @@
                   "    if (choice.finish_reason) { finishReasons[index] = choice.finish_reason; }",
                   "  });",
                   "});",
-                  "pm.test('388.3 openai/gpt-3.5-turbo-instruct /v1/completions stream n=2: client received two separate choices', function () {",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: stream carried no error event', function () { pm.expect(errorEvents, pm.response.text()).to.eql([]); });",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: client received two separate choices', function () {",
                   "  pm.expect(Object.keys(texts).sort(), pm.response.text()).to.eql(['0', '1']);",
                   "  pm.expect(texts[0], 'choice 0 text').to.not.eql('');",
                   "  pm.expect(texts[1], 'choice 1 text').to.not.eql('');",
                   "});",
-                  "pm.test('388.3 openai/gpt-3.5-turbo-instruct /v1/completions stream n=2: each choice received its own finish_reason', function () {",
+                  "pm.test('388.3 fireworks/accounts/fireworks/models/qwen3p8-max /v1/completions stream n=2: each choice received its own finish_reason', function () {",
                   "  pm.expect(finishReasons[0], 'choice 0 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
                   "  pm.expect(finishReasons[1], 'choice 1 finish_reason: ' + pm.response.text()).to.be.a('string').and.not.empty;",
                   "});"
@@ -351840,7 +351843,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-3.5-turbo-instruct\",\n  \"n\": 2,\n  \"temperature\": 1,\n  \"max_tokens\": 24,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"prompt\": \"Name one random fruit and give one short reason to eat it.\"\n}"
+              "raw": "{\n  \"model\": \"fireworks/accounts/fireworks/models/qwen3p8-max\",\n  \"n\": 2,\n  \"temperature\": 1,\n  \"max_tokens\": 24,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"prompt\": \"Name one random fruit and give one short reason to eat it.\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/completions",
