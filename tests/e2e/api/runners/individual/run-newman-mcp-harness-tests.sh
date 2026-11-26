@@ -328,7 +328,8 @@ write_config() {
     { "client_id": "pud11-p", "name": "pud11_p", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud11p/mcp", "auth_type": "per_user_headers", "per_user_header_keys": ["x-api-key"], "per_user_discovery": true, "tools_to_execute": ["*"] },
     { "client_id": "set35-c", "name": "set35_c", "endpoint_slug": "set35", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/set35/mcp", "auth_type": "none", "tool_sync_interval": "5s", "tools_to_execute": ["*"], "is_code_mode_client": true, "server_type_on_slug": "disabled" },
     { "client_id": "pud68-o", "name": "pud68_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud68/mcp", "auth_type": "per_user_oauth", "per_user_discovery": true, "tools_to_execute": ["*"] }
-  ] },
+  ],
+  "tool_manager_config": { "code_mode_discovery_ranker": { "decision_model": "openai/mock-model", "fallbacks": ["anthropic/mock-model"], "timeout_seconds": 10 } } },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/openai", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },

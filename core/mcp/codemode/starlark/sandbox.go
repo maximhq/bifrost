@@ -14,6 +14,7 @@ import (
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/starlarkstruct"
 	"github.com/canonical/starlark/syntax"
+	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -107,11 +108,18 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 	calls := 0
 	for client, tools := range bindings {
 		members := starlark.StringDict{}
+		// The same bindings the agent's auto-execute check reads: each tool's
+		// callable name, plus compatibility aliases no callable name takes.
+		names := callableToolNames(client, tools)
+		builtins := make(map[string]*starlark.Builtin, len(tools))
 		for _, tool := range tools {
+			if _, done := builtins[tool]; done {
+				continue
+			}
 			if err := thread.AddAllocs(starlark.SafeInt(512 + len(client) + 3*len(tool))); err != nil {
 				return sandboxFailure(err.Error())
 			}
-			name := getCanonicalToolName(client, tool)
+			name := names[tool]
 			fn := starlark.NewBuiltinWithSafety(name, starlark.CPUSafe|starlark.MemSafe|starlark.TimeSafe,
 				func(thread *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 					calls++
@@ -149,13 +157,10 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 					}
 					return newValueConversion(thread).fromGo(result, 0)
 				})
-			members[name] = fn
-			alias := getCompatibilityToolAlias(client, tool)
-			if alias != name && isValidStarlarkIdentifier(alias) {
-				if _, exists := members[alias]; !exists {
-					members[alias] = fn
-				}
-			}
+			builtins[tool] = fn
+		}
+		for identifier, tool := range codemcp.CodeModeBindings(client, tools) {
+			members[identifier] = builtins[tool]
 		}
 		predeclared[client] = starlarkstruct.FromStringDict(starlark.String(client), members)
 		servers = append(servers, client)

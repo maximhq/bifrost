@@ -280,6 +280,15 @@ func TestIsBasetenDecisionModel(t *testing.T) {
 	}
 }
 
+func TestIsSarvamDecisionModel(t *testing.T) {
+	for _, model := range []string{"sarvam-prism", "Sarvam-Prism", "sarvam-prism-2"} {
+		assert.True(t, IsSarvamDecisionModel(model), model)
+	}
+	for _, model := range []string{"sarvam-105b", "sarvam/sarvam-prism", "prism", ""} {
+		assert.False(t, IsSarvamDecisionModel(model), model)
+	}
+}
+
 func TestIsGeminiDecisionModel(t *testing.T) {
 	for _, model := range []string{"gemini-decision-1", "models/gemini-decision-1", "Gemini-Decision-2-preview"} {
 		assert.True(t, IsGeminiDecisionModel(model), model)

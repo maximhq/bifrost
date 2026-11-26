@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -793,5 +794,226 @@ func testSDKInProcessResults(t *testing.T) {
 	}
 	if after := strings.Join(toolNames(clientNamed(t, b, "results")), ","); after != before || after != "echo,error,image,slow,stops" {
 		t.Fatalf("tools after reconnect = %s (before %s), want echo,error,image,slow,stops", after, before)
+	}
+}
+
+// warnRecorder is a no-op logger that keeps the warnings.
+type warnRecorder struct {
+	schemas.Logger
+	mu    sync.Mutex
+	warns []string
+}
+
+func (l *warnRecorder) Warn(msg string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.warns = append(l.warns, fmt.Sprintf(msg, args...))
+}
+
+func (l *warnRecorder) joined() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return strings.Join(l.warns, "\n")
+}
+
+// TestLazyMCPManagerWiresDecisionRanker starts without MCPConfig, so the MCP
+// manager is created lazily, then installs a decision-model discovery ranker:
+// a ranked listToolFiles query must reach the decision API.
+func TestLazyMCPManagerWiresDecisionRanker(t *testing.T) {
+	a := newAlphaServer(t)
+	logger := &warnRecorder{Logger: NewNoOpLogger()}
+	b := newSDKClient(t, schemas.BifrostConfig{Logger: logger})
+	client := alphaClient(a.url)
+	client.IsCodeModeClient = true
+	if err := addMCPClient(context.Background(), b, client); err != nil {
+		t.Fatalf("AddMCPClient: %v", err)
+	}
+	b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
+		CodeModeDiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "ranker-test-missing/ranker"},
+	})
+
+	msg, bErr := execChat(b, "listToolFiles", `{"query":"echo this text back"}`)
+	if bErr != nil {
+		t.Fatalf("listToolFiles: %s", errorText(bErr))
+	}
+	if !strings.Contains(contentOf(msg), "discovery ranker was not used") {
+		t.Fatalf("expected the lexical fallback after the failing decision call:\n%s", contentOf(msg))
+	}
+	warns := logger.joined()
+	if strings.Contains(warns, "decision API is not available") || !strings.Contains(warns, "decision request to ranker-test-missing/ranker failed") {
+		t.Fatalf("the decision API was not called, warnings:\n%s", warns)
+	}
+}
+
+// A ranked listToolFiles run by the MCP agent loop carries the route that
+// served the conversation's first turn. The decision ranker call must still
+// go to the configured ranker model, not be pinned to the conversation's.
+func TestDecisionRankerIgnoresAgentServedRoute(t *testing.T) {
+	a := newAlphaServer(t)
+	logger := &warnRecorder{Logger: NewNoOpLogger()}
+	b := newSDKClient(t, schemas.BifrostConfig{Logger: logger})
+	client := alphaClient(a.url)
+	client.IsCodeModeClient = true
+	if err := addMCPClient(context.Background(), b, client); err != nil {
+		t.Fatalf("AddMCPClient: %v", err)
+	}
+	b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
+		CodeModeDiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{DecisionModel: "ranker-test-missing/ranker"},
+	})
+
+	ctx := newCtx()
+	ctx.SetValue(schemas.BifrostContextKeyMCPAgentServedRoute, &schemas.RoutingInfo{Provider: "conversation-test-missing", Model: "conversation"})
+	msg, bErr := b.ExecuteChatMCPTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("c1"),
+		Type:     schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("listToolFiles"), Arguments: `{"query":"echo this text back"}`},
+	})
+	if bErr != nil {
+		t.Fatalf("listToolFiles: %s", errorText(bErr))
+	}
+	if !strings.Contains(contentOf(msg), "discovery ranker was not used") {
+		t.Fatalf("expected the lexical fallback after the failing decision call:\n%s", contentOf(msg))
+	}
+	warns := logger.joined()
+	if !strings.Contains(warns, "decision request to ranker-test-missing/ranker failed") || strings.Contains(warns, "conversation-test-missing") {
+		t.Fatalf("the decision call did not go to the configured ranker model, warnings:\n%s", warns)
+	}
+	if route, _ := ctx.Value(schemas.BifrostContextKeyMCPAgentServedRoute).(*schemas.RoutingInfo); route == nil {
+		t.Fatal("the ranker call cleared the agent route on the tool call's own context")
+	}
+}
+
+// A ranker decision call skips the plugin pipeline, so the compat plugin never
+// marks it for emulation. A general model configured as the ranker's decision
+// model must still be answered, through its Responses API, and a native
+// decisions model must still go to the decisions endpoint even when the tool
+// call's own request was marked for conversion.
+func TestDecisionRankerChoosesDecisionPath(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"message":"native decisions unavailable","type":"server_error"}}`))
+			return
+		}
+		// Answer the emit_decision tool over the offered choices: the first
+		// one is the relevant tool.
+		var body struct {
+			Tools []struct {
+				Parameters struct {
+					Properties map[string]struct {
+						Properties struct {
+							Choice struct {
+								Enum []string `json:"enum"`
+							} `json:"choice"`
+						} `json:"properties"`
+					} `json:"properties"`
+				} `json:"parameters"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Tools) != 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		options := body.Tools[0].Parameters.Properties["relevant_tool"].Properties.Choice.Enum
+		if len(options) == 0 {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		probabilities := map[string]float64{}
+		for i, option := range options {
+			probabilities[option] = 0
+			if i == 0 {
+				probabilities[option] = 1
+			}
+		}
+		args, _ := json.Marshal(map[string]any{
+			"relevant_tool":       map[string]any{"choice": options[0], "confidence": 0.9, "probabilities": probabilities},
+			"tools_cover_request": map[string]any{"value": 0.9},
+		})
+		out, _ := json.Marshal(map[string]any{
+			"id": "resp_1", "object": "response", "created_at": 1, "model": "gpt-5-nano", "status": "completed",
+			"output": []any{map[string]any{"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "emit_decision", "arguments": string(args), "status": "completed"}},
+			"usage":  map[string]any{"input_tokens": 5, "output_tokens": 5, "total_tokens": 10},
+		})
+		_, _ = w.Write(out)
+	}))
+	t.Cleanup(upstream.Close)
+
+	for _, tc := range []struct {
+		name, model string
+		// provider defaults to OpenAI.
+		provider schemas.ModelProvider
+		// aliases are the key's model aliases.
+		aliases schemas.KeyAliases
+		// callerMarked marks the tool call's own request for conversion to Responses.
+		callerMarked bool
+		wantPath     string
+		wantRanked   bool
+	}{
+		{name: "general model is emulated", model: "gpt-5-nano", wantPath: "/v1/responses", wantRanked: true},
+		{name: "general model is emulated under a marked caller", model: "gpt-5-nano", callerMarked: true, wantPath: "/v1/responses", wantRanked: true},
+		{name: "native decisions model stays native", model: "gpt-6-luna", wantPath: "/v1/decisions"},
+		{name: "native decisions model stays native under a marked caller", model: "gpt-6-luna", callerMarked: true, wantPath: "/v1/decisions"},
+		// The path follows the model the key's alias resolves to, not the alias name.
+		{name: "alias of a native decisions model stays native", model: "ranker", aliases: schemas.KeyAliases{"ranker": {ModelID: "gpt-6-luna"}}, wantPath: "/v1/decisions"},
+		{name: "alias of a general model is emulated", model: "luna", aliases: schemas.KeyAliases{"luna": {ModelID: "gpt-5-nano"}}, wantPath: "/v1/responses", wantRanked: true},
+		{name: "sarvam prism stays native", provider: schemas.Sarvam, model: "sarvam-prism", wantPath: "/v2/systemone"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			paths = nil
+			mu.Unlock()
+			provider := tc.provider
+			if provider == "" {
+				provider = schemas.OpenAI
+			}
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(provider, 1, 10, upstream.URL)
+			account.configs[provider].NetworkConfig.AllowPrivateNetwork = true
+			account.configs[provider].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(provider, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1, Aliases: tc.aliases}})
+			a := newAlphaServer(t)
+			logger := &warnRecorder{Logger: NewNoOpLogger()}
+			b := newSDKClient(t, schemas.BifrostConfig{Account: account, Logger: logger})
+			client := alphaClient(a.url)
+			client.IsCodeModeClient = true
+			if err := addMCPClient(context.Background(), b, client); err != nil {
+				t.Fatalf("AddMCPClient: %v", err)
+			}
+			b.MCPManager.UpdateToolManagerConfig(&schemas.MCPToolManagerConfig{
+				CodeModeDiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{DecisionModel: string(provider) + "/" + tc.model},
+			})
+
+			ctx := newCtx()
+			if tc.callerMarked {
+				ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+			}
+			msg, bErr := b.ExecuteChatMCPTool(ctx, &schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("c1"),
+				Type:     schemas.Ptr("function"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("listToolFiles"), Arguments: `{"query":"echo this text back"}`},
+			})
+			if bErr != nil {
+				t.Fatalf("listToolFiles: %s", errorText(bErr))
+			}
+			mu.Lock()
+			got := slices.Clone(paths)
+			mu.Unlock()
+			if len(got) != 1 || got[0] != tc.wantPath {
+				t.Fatalf("upstream paths = %v, want one call to %s; warnings:\n%s", got, tc.wantPath, logger.joined())
+			}
+			if ranked := strings.Contains(contentOf(msg), "(discovery ranker)"); ranked != tc.wantRanked {
+				t.Fatalf("ranked by the decision model = %t, want %t:\n%s\nwarnings:\n%s", ranked, tc.wantRanked, contentOf(msg), logger.joined())
+			}
+			if changeType, _ := ctx.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); (changeType == schemas.ResponsesRequest) != tc.callerMarked {
+				t.Fatalf("the ranker call changed the tool call's own request type mark to %q", changeType)
+			}
+		})
 	}
 }

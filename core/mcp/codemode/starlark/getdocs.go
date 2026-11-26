@@ -67,34 +67,20 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find matching client
-	var matchedClientName string
 	var matchedTool *schemas.ChatTool
-
-	serverNameLower := strings.ToLower(serverName)
-	for clientName, tools := range availableToolsPerClient {
-		client := s.clientManager.GetClientByName(clientName)
-		if client == nil {
-			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
-			continue
+	matchedClientName, candidates := s.matchCodeModeServer(ctx, availableToolsPerClient, serverName)
+	if len(candidates) > 1 {
+		errorMsg := fmt.Sprintf("Multiple servers match '%s':\n", serverName)
+		for _, name := range candidates {
+			errorMsg += fmt.Sprintf("  - %s\n", name)
 		}
-		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
-			continue
-		}
-
-		clientNameLower := strings.ToLower(clientName)
-		if clientNameLower == serverNameLower {
-			matchedClientName = clientName
-
-			// Find the specific tool
-			for i, tool := range tools {
-				if tool.Function != nil {
-					if matchesToolReference(toolName, clientName, tool.Function.Name) {
-						matchedTool = &tools[i]
-						break
-					}
-				}
-			}
-			break
+		errorMsg += "\nUse the exact server name from listToolFiles."
+		return createToolResponseMessage(toolCall, errorMsg, true), nil
+	}
+	if matchedClientName != "" {
+		tools := availableToolsPerClient[matchedClientName]
+		if i := findToolReference(tools, toolName, matchedClientName); i >= 0 {
+			matchedTool = &tools[i]
 		}
 	}
 
@@ -117,10 +103,11 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	// Handle tool not found
 	if matchedTool == nil {
 		tools := availableToolsPerClient[matchedClientName]
+		names := callableChatToolNames(matchedClientName, tools)
 		var availableTools []string
 		for _, tool := range tools {
 			if tool.Function != nil {
-				availableTools = append(availableTools, getCanonicalToolName(matchedClientName, tool.Function.Name))
+				availableTools = append(availableTools, names[tool.Function.Name])
 			}
 		}
 		errorMsg := fmt.Sprintf("Tool '%s' not found in server '%s'. Available tools are:\n", toolName, matchedClientName)
@@ -131,7 +118,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Generate detailed documentation using generateTypeDefinitions
-	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
+	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, callableChatToolNames(matchedClientName, availableToolsPerClient[matchedClientName]), true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
 }
@@ -139,13 +126,14 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.
 // jsonModuleAvailable says whether the sandbox's json module is reachable, so the docs only point at
 // json.decode when a script can call it.
-func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
+// names maps each raw tool name to its callable name (see callableToolNames).
+func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, names map[string]string, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
 	var sb strings.Builder
 
 	// Write comprehensive header
 	sb.WriteString("# ============================================================================\n")
 	if isToolLevel && len(tools) == 1 && tools[0].Function != nil {
-		sb.WriteString(fmt.Sprintf("# Documentation for %s.%s tool\n", clientName, getCanonicalToolName(clientName, tools[0].Function.Name)))
+		sb.WriteString(fmt.Sprintf("# Documentation for %s.%s tool\n", clientName, names[tools[0].Function.Name]))
 	} else {
 		sb.WriteString(fmt.Sprintf("# Documentation for %s MCP server\n", clientName))
 	}
@@ -190,7 +178,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		}
 
 		originalToolName := tool.Function.Name
-		toolName := getCanonicalToolName(clientName, originalToolName)
+		toolName := names[originalToolName]
 		description := ""
 		if tool.Function.Description != nil {
 			description = *tool.Function.Description

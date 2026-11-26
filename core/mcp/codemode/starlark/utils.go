@@ -478,9 +478,28 @@ func parseToolName(toolName string) string {
 	return parsed
 }
 
-// getCanonicalToolName returns the exact callable tool identifier exposed in Starlark.
+// getCanonicalToolName returns the identifier a raw tool name normalizes to. Two
+// raw names on one server can share it; callableToolNames gives each its own.
 func getCanonicalToolName(clientName, originalToolName string) string {
 	return parseToolName(stripClientPrefix(originalToolName, clientName))
+}
+
+// callableToolNames maps each raw tool name of one server to the exact
+// identifier it is called by in executeToolCode, which is also its file name
+// and its def name (see codemcp.CodeModeCallableNames).
+func callableToolNames(clientName string, rawNames []string) map[string]string {
+	return codemcp.CodeModeCallableNames(clientName, rawNames)
+}
+
+// callableChatToolNames is callableToolNames for a server's tool definitions.
+func callableChatToolNames(clientName string, tools []schemas.ChatTool) map[string]string {
+	rawNames := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Function != nil && tool.Function.Name != "" {
+			rawNames = append(rawNames, tool.Function.Name)
+		}
+	}
+	return callableToolNames(clientName, rawNames)
 }
 
 // getCompatibilityToolAlias returns the case-preserving alias derived from the raw tool name.
@@ -512,25 +531,42 @@ func matchesToolReference(requestedToolName, clientName, originalToolName string
 	return false
 }
 
-// isValidStarlarkIdentifier reports whether name can be used directly in Starlark code.
-func isValidStarlarkIdentifier(name string) bool {
-	if name == "" {
-		return false
-	}
-
-	runes := []rune(name)
-	first := runes[0]
-	if !unicode.IsLetter(first) && first != '_' && first != '$' {
-		return false
-	}
-
-	for _, r := range runes[1:] {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '$' {
-			return false
+// findToolReference returns the index of the tool requestedToolName names, or
+// -1. Two raw names such as get-user and get_user share one canonical name, so
+// an identifier executeToolCode binds (see codemcp.CodeModeBindings) wins,
+// then an exact raw name, then the first loose match: a listed file or a
+// stub's name resolves to the tool it was shown for, and a bound alias to the
+// tool it calls.
+func findToolReference(tools []schemas.ChatTool, requestedToolName, clientName string) int {
+	rawNames := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		if tool.Function != nil && tool.Function.Name != "" {
+			rawNames = append(rawNames, tool.Function.Name)
 		}
 	}
-
-	return true
+	bound := codemcp.CodeModeBindings(clientName, rawNames)[requestedToolName]
+	match, raw, loose := -1, -1, -1
+	for i, tool := range tools {
+		if tool.Function == nil {
+			continue
+		}
+		if match < 0 && bound != "" && tool.Function.Name == bound {
+			match = i
+		}
+		if raw < 0 && stripClientPrefix(tool.Function.Name, clientName) == requestedToolName {
+			raw = i
+		}
+		if loose < 0 && matchesToolReference(requestedToolName, clientName, tool.Function.Name) {
+			loose = i
+		}
+	}
+	switch {
+	case match >= 0:
+		return match
+	case raw >= 0:
+		return raw
+	}
+	return loose
 }
 
 // validateNormalizedToolName validates a normalized tool name to prevent path traversal.

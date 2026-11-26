@@ -1,0 +1,1184 @@
+//go:build !tinygo && !wasm
+
+package starlark
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	codemcp "github.com/maximhq/bifrost/core/mcp"
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+func discoveryTestTool(name, description string, params ...string) schemas.ChatTool {
+	properties := schemas.NewOrderedMap()
+	for _, p := range params {
+		// Several keys per schema, so the revision checks cover nested key order.
+		properties.Set(p, map[string]interface{}{"type": "string", "description": p + " value", "minLength": 1, "title": p})
+	}
+	return schemas.ChatTool{Function: &schemas.ChatToolFunction{
+		Name:        name,
+		Description: schemas.Ptr(description),
+		Parameters:  &schemas.ToolFunctionParameters{Type: "object", Properties: properties},
+	}}
+}
+
+// newDiscoveryCodeMode builds a code mode with three code mode servers and one
+// server that is connected but not in code mode.
+func newDiscoveryCodeMode(level schemas.CodeModeBindingLevel) *StarlarkCodeMode {
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{BindingLevel: level, ToolExecutionTimeout: time.Second}, nil)
+	client := func(name string, codeMode bool) *schemas.MCPClientState {
+		return &schemas.MCPClientState{Name: name, ExecutionConfig: &schemas.MCPClientConfig{ID: name + "-id", Name: name, IsCodeModeClient: codeMode}}
+	}
+	mode.clientManager = &testClientManager{
+		clients: map[string]*schemas.MCPClientState{
+			"github":  client("github", true),
+			"slack":   client("slack", true),
+			"jira":    client("jira", true),
+			"billing": client("billing", false),
+		},
+		tools: map[string][]schemas.ChatTool{
+			"github": {
+				discoveryTestTool("search_repos", "Search repositories by keyword", "keyword"),
+				discoveryTestTool("create_issue", "Open a new issue in a repository", "repo", "title", "body"),
+				discoveryTestTool("list_pull_requests", "List pull requests of a repository", "repo"),
+			},
+			"slack": {
+				discoveryTestTool("send_message", "Post a message to a channel", "channel", "text"),
+				discoveryTestTool("search_messages", "Search messages across channels", "query"),
+			},
+			"jira": {
+				discoveryTestTool("create_issue", "Create a ticket in a project", "project", "summary"),
+			},
+			"billing": {
+				discoveryTestTool("create_invoice", "Create an invoice for an issue", "customer"),
+			},
+		},
+		instructions: map[string]string{"slack-id": "Prefer search_messages before send_message."},
+	}
+	return mode
+}
+
+func listToolFiles(t *testing.T, mode *StarlarkCodeMode, args string) string {
+	t.Helper()
+	msg, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(codemcp.ToolTypeListToolFiles), Arguments: args},
+	})
+	if err != nil {
+		t.Fatalf("listToolFiles(%s) returned error: %v", args, err)
+	}
+	if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+		t.Fatalf("listToolFiles(%s) returned no content", args)
+	}
+	return *msg.Content.ContentStr
+}
+
+// shortlistPaths returns the file lines of a shortlist, in order, without annotations.
+func shortlistPaths(text string) []string {
+	var paths []string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "servers/") {
+			paths = append(paths, strings.SplitN(line, "  #", 2)[0])
+		}
+	}
+	return paths
+}
+
+func TestListToolFilesWithoutQueryKeepsCompleteListing(t *testing.T) {
+	for _, level := range []schemas.CodeModeBindingLevel{schemas.CodeModeBindingLevelServer, schemas.CodeModeBindingLevelTool} {
+		mode := newDiscoveryCodeMode(level)
+		complete, err := mode.handleCompleteToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("call-1")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := *complete.Content.ContentStr
+		for _, args := range []string{"", "{}", "null", `{"query":""}`, `{"query":"   "}`, `{"limit":3}`, `{"query":null}`,
+			// limit is ignored, not validated, without a query.
+			`{"limit":0}`, `{"limit":99}`, `{"limit":"x"}`, `{"query":"","limit":0}`, `{"query":" ","limit":2.5}`,
+			// A blank query over the length cap is still blank.
+			`{"query":"` + strings.Repeat(" ", discoveryMaxQueryRunes+1) + `","limit":0}`} {
+			if got := listToolFiles(t, mode, args); got != want {
+				t.Fatalf("%s binding, args %q: listing changed\nwant:\n%s\ngot:\n%s", level, args, want, got)
+			}
+		}
+		if strings.Contains(want, "billing") {
+			t.Fatalf("complete listing shows a non code mode server:\n%s", want)
+		}
+	}
+}
+
+func TestListToolFilesToolDeclaresQueryAndLimit(t *testing.T) {
+	tool := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool).createListToolFilesTool()
+	params := tool.Function.Parameters
+	if len(params.Required) != 0 {
+		t.Fatalf("listToolFiles must not require arguments, got %v", params.Required)
+	}
+	if keys := params.Properties.Keys(); len(keys) != 2 || keys[0] != "query" || keys[1] != "limit" {
+		t.Fatalf("expected query and limit properties, got %v", keys)
+	}
+	limit, _ := params.Properties.Get("limit")
+	spec := limit.(map[string]interface{})
+	if spec["minimum"] != 1 || spec["maximum"] != discoveryMaxLimit {
+		t.Fatalf("unexpected limit bounds %v", spec)
+	}
+}
+
+func TestListToolFilesLexicalRanking(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	out := listToolFiles(t, mode, `{"query":"create an issue"}`)
+	paths := shortlistPaths(out)
+	want := []string{"servers/github/create_issue.pyi", "servers/jira/create_issue.pyi"}
+	if len(paths) < 2 || paths[0] != want[0] || paths[1] != want[1] {
+		t.Fatalf("expected %v first, got %v\n%s", want, paths, out)
+	}
+	if !strings.Contains(out, "lexical match") || !strings.Contains(out, "without query for the complete listing") {
+		t.Fatalf("shortlist header missing:\n%s", out)
+	}
+	if strings.Contains(out, "billing") {
+		t.Fatalf("shortlist shows a tool the caller cannot list:\n%s", out)
+	}
+
+	// Description and parameter words count, below name words.
+	out = listToolFiles(t, mode, `{"query":"post to a channel"}`)
+	if paths := shortlistPaths(out); len(paths) == 0 || paths[0] != "servers/slack/send_message.pyi" {
+		t.Fatalf("expected send_message first, got %v\n%s", paths, out)
+	}
+	if !strings.Contains(out, "Servers with their own usage instructions: slack") {
+		t.Fatalf("expected instructions pointer for slack:\n%s", out)
+	}
+
+	// Naming a tool outright returns just that tool.
+	out = listToolFiles(t, mode, `{"query":"jira.create_issue"}`)
+	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/jira/create_issue.pyi" {
+		t.Fatalf("expected exact match, got %v\n%s", paths, out)
+	}
+
+	out = listToolFiles(t, mode, `{"query":"zzz qqq"}`)
+	if len(shortlistPaths(out)) != 0 || !strings.Contains(out, "No tool names or descriptions matched") {
+		t.Fatalf("expected no match message:\n%s", out)
+	}
+}
+
+func TestListToolFilesExplicitReferenceNeedsNameBoundary(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.tools["slack"] = append(manager.tools["slack"], discoveryTestTool("search", ""), discoveryTestTool("search_a", ""))
+	out := listToolFiles(t, mode, `{"query":"use slack.search_a","limit":1}`)
+	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/slack/search_a.pyi" {
+		t.Fatalf("expected the tool named in full, got %v\n%s", paths, out)
+	}
+	out = listToolFiles(t, mode, `{"query":"use slack.search, then reply","limit":1}`)
+	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/slack/search.pyi" {
+		t.Fatalf("expected the shorter tool when it is the one named, got %v\n%s", paths, out)
+	}
+}
+
+// A server that runs in code mode only on its own /mcp/<slug> is ranked there,
+// as the complete listing shows it there.
+func TestListToolFilesRankedFollowsServerTypeOnSlug(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["direct"] = &schemas.MCPClientState{
+		Name:            "direct",
+		ExecutionConfig: &schemas.MCPClientConfig{ID: "direct-id", Name: "direct", ServerTypeOnSlug: schemas.MCPServerTypeOnSlugEnabled},
+	}
+	manager.tools["direct"] = []schemas.ChatTool{discoveryTestTool("ping_host", "Ping a host")}
+	list := func(ctx context.Context) string {
+		msg, err := mode.handleListToolFiles(ctx, schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"query":"ping host"}`},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return *msg.Content.ContentStr
+	}
+	onSlug := context.WithValue(context.Background(), schemas.BifrostContextKeyMCPGatewayClient, "direct")
+	if out := list(onSlug); !strings.Contains(out, "servers/direct/ping_host.pyi") {
+		t.Fatalf("expected the slug's own code mode server to be ranked:\n%s", out)
+	}
+	if out := list(context.Background()); strings.Contains(out, "servers/direct/") {
+		t.Fatalf("a direct server must not be ranked on /mcp:\n%s", out)
+	}
+}
+
+func TestListToolFilesServerBindingGroupsTools(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelServer)
+	out := listToolFiles(t, mode, `{"query":"search"}`)
+	paths := shortlistPaths(out)
+	if len(paths) != 2 {
+		t.Fatalf("expected one file per server, got %v\n%s", paths, out)
+	}
+	if !strings.Contains(out, "servers/github.pyi  # tools: search_repos") || !strings.Contains(out, "servers/slack.pyi  # tools: search_messages") {
+		t.Fatalf("expected server files annotated with matching tools:\n%s", out)
+	}
+}
+
+func TestListToolFilesServerBindingCapsToolNames(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	for i := range discoveryMaxToolsPerFile + 4 {
+		manager.tools["github"] = append(manager.tools["github"], discoveryTestTool(fmt.Sprintf("report_%02d", i), "Build a report"))
+	}
+	out := listToolFiles(t, mode, `{"query":"report"}`)
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "servers/github.pyi") {
+			line = l
+		}
+	}
+	if strings.Count(line, "report_") != discoveryMaxToolsPerFile || !strings.Contains(line, ", +4 more") {
+		t.Fatalf("expected %d tool names and a +4 more summary, got %q\n%s", discoveryMaxToolsPerFile, line, out)
+	}
+}
+
+func TestListToolFilesLimitBounds(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	call := func(args string) error {
+		_, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: args},
+		})
+		return err
+	}
+	for _, args := range []string{
+		`{"query":"issue","limit":0}`,
+		`{"query":"issue","limit":21}`,
+		`{"query":"issue","limit":2.5}`,
+		`{"query":"issue","limit":"3"}`,
+		`{"query":"issue","limit":-1}`,
+		`{"query":7}`,
+		`{"query":"` + strings.Repeat("a", discoveryMaxQueryRunes+1) + `"}`,
+		`{not json`,
+	} {
+		if err := call(args); err == nil {
+			t.Fatalf("expected %s to be rejected", args)
+		}
+	}
+	if paths := shortlistPaths(listToolFiles(t, mode, `{"query":"issue repository","limit":1}`)); len(paths) != 1 {
+		t.Fatalf("limit 1 returned %v", paths)
+	}
+	if paths := shortlistPaths(listToolFiles(t, mode, `{"query":"issue repository","limit":20}`)); len(paths) < 2 {
+		t.Fatalf("limit 20 returned %v", paths)
+	}
+
+	// Default limit is 8, over a fleet bigger than that.
+	tools := make([]schemas.ChatTool, 0, 30)
+	for i := range 30 {
+		tools = append(tools, discoveryTestTool(fmt.Sprintf("report_%02d", i), "Build a report"))
+	}
+	mode.clientManager.(*testClientManager).tools["reports"] = tools
+	mode.clientManager.(*testClientManager).clients["reports"] = &schemas.MCPClientState{Name: "reports", ExecutionConfig: &schemas.MCPClientConfig{ID: "reports-id", Name: "reports", IsCodeModeClient: true}}
+	if paths := shortlistPaths(listToolFiles(t, mode, `{"query":"report"}`)); len(paths) != discoveryDefaultLimit {
+		t.Fatalf("default limit returned %d files: %v", len(paths), paths)
+	}
+}
+
+// rankerServer serves the ranking contract with answer, recording each request.
+type rankerServer struct {
+	*httptest.Server
+	calls    atomic.Int32
+	requests chan discoveryRankRequest
+}
+
+func newRankerServer(t *testing.T, answer func(w http.ResponseWriter, r *http.Request, req discoveryRankRequest)) *rankerServer {
+	t.Helper()
+	rs := &rankerServer{requests: make(chan discoveryRankRequest, 16)}
+	rs.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rs.calls.Add(1)
+		var req discoveryRankRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		rs.requests <- req
+		answer(w, r, req)
+	}))
+	t.Cleanup(rs.Close)
+	return rs
+}
+
+func writeRankResponse(w http.ResponseWriter, resp interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func useRanker(t *testing.T, mode *StarlarkCodeMode, ranker schemas.MCPCodeModeDiscoveryRanker) {
+	t.Helper()
+	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &ranker})
+	if mode.discoveryRanker.Load() == nil {
+		t.Fatalf("ranker %+v was not installed", ranker)
+	}
+}
+
+// httpRankerOf returns the installed HTTP ranker.
+func httpRankerOf(t *testing.T, mode *StarlarkCodeMode) *httpDiscoveryRanker {
+	t.Helper()
+	ref := mode.discoveryRanker.Load()
+	if ref == nil {
+		t.Fatal("no ranker is installed")
+	}
+	ranker, ok := (*ref).(*httpDiscoveryRanker)
+	if !ok {
+		t.Fatalf("installed ranker is %T, not the HTTP ranker", *ref)
+	}
+	return ranker
+}
+
+// nextRankRequest waits a bounded time for the ranker to receive a request.
+func nextRankRequest(t *testing.T, rs *rankerServer, query, out string) discoveryRankRequest {
+	t.Helper()
+	select {
+	case req := <-rs.requests:
+		return req
+	case <-time.After(5 * time.Second):
+		t.Fatalf("ranker received no request for query %q; listToolFiles returned:\n%s", query, out)
+		return discoveryRankRequest{}
+	}
+}
+
+func TestListToolFilesExternalRankerSuccess(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("secret-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var authorization atomic.Value
+	rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, req discoveryRankRequest) {
+		authorization.Store(r.Header.Get("Authorization"))
+		scores := []map[string]interface{}{}
+		for _, c := range req.Candidates {
+			relevance := 0.0
+			switch c.ID {
+			case "servers/slack/send_message.pyi":
+				relevance = 0.9
+			case "servers/slack/search_messages.pyi":
+				relevance = 0.4
+			}
+			scores = append(scores, map[string]interface{}{"id": c.ID, "relevance": relevance})
+		}
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": scores, "sufficient": 0.95})
+	})
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL, TokenFile: tokenFile})
+
+	out := listToolFiles(t, mode, `{"query":"tell the team the deploy finished"}`)
+	paths := shortlistPaths(out)
+	want := []string{"servers/slack/send_message.pyi", "servers/slack/search_messages.pyi"}
+	if len(paths) != 2 || paths[0] != want[0] || paths[1] != want[1] {
+		t.Fatalf("expected ranker order %v, got %v\n%s", want, paths, out)
+	}
+	if !strings.Contains(out, "(discovery ranker)") || !strings.Contains(out, "relevance=0.90") || strings.Contains(out, "may not cover") {
+		t.Fatalf("unexpected ranked output:\n%s", out)
+	}
+	if got := authorization.Load(); got != "Bearer secret-token" {
+		t.Fatalf("expected bearer token from file, got %v", got)
+	}
+
+	req := nextRankRequest(t, rs, "tell the team the deploy finished", out)
+	if req.Version != 1 || req.Query != "tell the team the deploy finished" || req.Revision == "" {
+		t.Fatalf("unexpected request %+v", req)
+	}
+	if len(req.Candidates) != 6 {
+		t.Fatalf("expected the 6 visible tools as candidates, got %d", len(req.Candidates))
+	}
+	for _, c := range req.Candidates {
+		if c.Server == "billing" {
+			t.Fatalf("ranker was sent a tool the caller cannot list: %+v", c)
+		}
+		if c.ID == "servers/github/create_issue.pyi" {
+			if c.Name != "create_issue" || c.Description != "Open a new issue in a repository" || strings.Join(c.Parameters, ",") != "repo,title,body" {
+				t.Fatalf("unexpected candidate %+v", c)
+			}
+		}
+	}
+
+	// Same catalogue, same revision; a changed tool changes it.
+	out = listToolFiles(t, mode, `{"query":"tell the team"}`)
+	again := nextRankRequest(t, rs, "tell the team", out)
+	if again.Revision != req.Revision {
+		t.Fatalf("revision changed without a catalogue change")
+	}
+	mode.clientManager.(*testClientManager).tools["jira"][0] = discoveryTestTool("create_issue", "Create a ticket", "project")
+	out = listToolFiles(t, mode, `{"query":"tell the team"}`)
+	if changed := nextRankRequest(t, rs, "tell the team", out); changed.Revision == req.Revision {
+		t.Fatalf("revision did not change with the catalogue")
+	}
+
+	// A query that names a tool needs no ranking call.
+	before := rs.calls.Load()
+	listToolFiles(t, mode, `{"query":"servers/github/search_repos.pyi"}`)
+	if rs.calls.Load() != before {
+		t.Fatalf("exact reference called the ranker")
+	}
+	// Nor does the complete listing.
+	listToolFiles(t, mode, `{}`)
+	if rs.calls.Load() != before {
+		t.Fatalf("complete listing called the ranker")
+	}
+}
+
+// Two raw tool names that come to one canonical name get distinct callable
+// names, so a ranker that scores every candidate once is accepted, and each id
+// still names its own tool, whatever order the tools are listed in.
+func TestListToolFilesExternalRankerSharedFileGetsUniqueIDs(t *testing.T) {
+	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+		scores := []map[string]interface{}{}
+		for _, c := range req.Candidates {
+			relevance := 0.0
+			if c.Server == "crm" {
+				relevance = 0.8
+			}
+			scores = append(scores, map[string]interface{}{"id": c.ID, "relevance": relevance})
+		}
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": scores})
+	})
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	manager.tools["crm"] = []schemas.ChatTool{
+		discoveryTestTool("get_user", "Look up a user record", "id"),
+		discoveryTestTool("get-user", "Fetch a user by email", "email"),
+	}
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+
+	out := listToolFiles(t, mode, `{"query":"find a user"}`)
+	if !strings.Contains(out, "(discovery ranker)") {
+		t.Fatalf("expected the ranker answer to be used:\n%s", out)
+	}
+	if paths := shortlistPaths(out); len(paths) != 2 || paths[0] == paths[1] {
+		t.Fatalf("expected one distinct file per colliding tool, got %v\n%s", paths, out)
+	}
+	req := nextRankRequest(t, rs, "find a user", out)
+	descriptions := map[string]string{}
+	for _, c := range req.Candidates {
+		if _, dup := descriptions[c.ID]; dup {
+			t.Fatalf("candidate id %q sent twice", c.ID)
+		}
+		descriptions[c.ID] = c.Description
+	}
+	if descriptions["servers/crm/get_user.pyi"] == descriptions["servers/crm/get_user_2.pyi"] {
+		t.Fatalf("ids do not map to distinct tools: %v", descriptions)
+	}
+
+	// The listing order of the tools does not change the ids or the revision.
+	items, revision := mode.discoveryCatalogue(context.Background(), schemas.CodeModeBindingLevelTool)
+	manager.tools["crm"][0], manager.tools["crm"][1] = manager.tools["crm"][1], manager.tools["crm"][0]
+	swappedItems, swapped := mode.discoveryCatalogue(context.Background(), schemas.CodeModeBindingLevelTool)
+	if swapped != revision {
+		t.Fatal("revision changed with the order the tools were listed in")
+	}
+	for i := range items {
+		if items[i].candidate.ID != swappedItems[i].candidate.ID || items[i].candidate.Description != swappedItems[i].candidate.Description {
+			t.Fatalf("id moved to another tool after reordering: %+v vs %+v", items[i].candidate, swappedItems[i].candidate)
+		}
+	}
+}
+
+// A colliding tool picked by the ranker is listed under a file that
+// readToolFile resolves to that tool, not to the other tool sharing its
+// canonical name, whichever of the two is listed first.
+func TestListToolFilesSharedFilePathReadsRankedTool(t *testing.T) {
+	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+		scores := []map[string]interface{}{}
+		for _, c := range req.Candidates {
+			relevance := 0.0
+			if c.Description == "Fetch a user by email" {
+				relevance = 0.9
+			}
+			scores = append(scores, map[string]interface{}{"id": c.ID, "relevance": relevance})
+		}
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": scores})
+	})
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+
+	for _, tools := range [][]schemas.ChatTool{
+		{discoveryTestTool("get_user", "Look up a user record", "id"), discoveryTestTool("get-user", "Fetch a user by email", "email")},
+		{discoveryTestTool("get-user", "Fetch a user by email", "email"), discoveryTestTool("get_user", "Look up a user record", "id")},
+	} {
+		manager.tools["crm"] = tools
+		out := listToolFiles(t, mode, `{"query":"find a user by email"}`)
+		nextRankRequest(t, rs, "find a user by email", out)
+		if !strings.Contains(out, "(discovery ranker)") {
+			t.Fatalf("expected the ranker answer to be used:\n%s", out)
+		}
+		paths := shortlistPaths(out)
+		if len(paths) != 1 {
+			t.Fatalf("expected only the ranked tool, got %v\n%s", paths, out)
+		}
+		msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call-2"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: fmt.Sprintf(`{"fileName":%q}`, paths[0])},
+		})
+		if err != nil || msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+			t.Fatalf("readToolFile(%s) failed: %v", paths[0], err)
+		}
+		if content := *msg.Content.ContentStr; !strings.Contains(content, "email") || strings.Contains(content, "Look up a user record") {
+			t.Fatalf("readToolFile(%s) returned the other colliding tool:\n%s", paths[0], content)
+		}
+	}
+}
+
+// Colliding tools each get a callable name that names exactly that tool: the
+// listed file, the def name and the getToolDocs name in its stub, and the
+// executeToolCode binding all reach the same tool, whatever order the tools
+// are listed in.
+func TestCollidingToolNamesStayConsistent(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	byEmail := discoveryTestTool("crm-get-user", "Fetch a user by email", "email")
+	byID := discoveryTestTool("crm-get_user", "Look up a user record", "id")
+	byName := discoveryTestTool("crm-Get User", "Find a user by name", "name")
+	suffixed := discoveryTestTool("crm-get_user_2", "List user groups", "group")
+	descriptions := []string{"Fetch a user by email", "Look up a user record", "Find a user by name", "List user groups"}
+	defLine := regexp.MustCompile(`(?m)^def (\w+)\(`)
+	docsName := regexp.MustCompile(`getToolDocs\(server="crm", tool="([^"]+)"\)`)
+
+	for _, tools := range [][]schemas.ChatTool{{byEmail, byID, byName, suffixed}, {suffixed, byName, byID, byEmail}} {
+		manager.tools["crm"] = tools
+		// The complete listing renders the crm directory as "  crm/" followed
+		// by its files, one level deeper.
+		var files []string
+		inCRM := false
+		for _, line := range strings.Split(listToolFiles(t, mode, `{}`), "\n") {
+			switch {
+			case line == "  crm/":
+				inCRM = true
+			case inCRM && strings.HasPrefix(line, "    "):
+				files = append(files, "servers/crm/"+strings.TrimSpace(line))
+			default:
+				inCRM = false
+			}
+		}
+		if len(files) != len(tools) {
+			t.Fatalf("expected one file per crm tool, got %v", files)
+		}
+		bindings := map[string][]string{}
+		for _, tool := range tools {
+			bindings["crm"] = append(bindings["crm"], tool.Function.Name)
+		}
+		seen := map[string]bool{}
+		for _, file := range files {
+			stub := readFileContent(t, mode, file)
+			description := ""
+			for _, d := range descriptions {
+				if strings.Contains(stub, d) {
+					if description != "" {
+						t.Fatalf("%s documents more than one tool:\n%s", file, stub)
+					}
+					description = d
+				}
+			}
+			if description == "" || seen[description] {
+				t.Fatalf("%s does not document its own tool:\n%s", file, stub)
+			}
+			seen[description] = true
+			def := defLine.FindStringSubmatch(stub)
+			if def == nil || "servers/crm/"+def[1]+".pyi" != file {
+				t.Fatalf("%s: def name does not match the file:\n%s", file, stub)
+			}
+			docs := docsName.FindStringSubmatch(stub)
+			if docs == nil || docs[1] != def[1] {
+				t.Fatalf("%s: getToolDocs guidance does not name the tool:\n%s", file, stub)
+			}
+			if doc := getToolDocsContent(t, mode, "crm", docs[1]); !strings.Contains(doc, description) {
+				t.Fatalf("getToolDocs(%s) documents another tool:\n%s", docs[1], doc)
+			}
+			var called string
+			result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = crm."+def[1]+"()", bindings,
+				func(_ context.Context, _, tool string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+					called = tool
+					return "ok", nil
+				})
+			if result.Errors != nil {
+				t.Fatalf("crm.%s failed: %+v", def[1], result.Errors)
+			}
+			for _, tool := range tools {
+				if tool.Function.Name == called && *tool.Function.Description != description {
+					t.Fatalf("crm.%s called %s, but its stub documents %q", def[1], called, description)
+				}
+			}
+		}
+	}
+}
+
+// A reference that names one tool exactly wins over another tool that only
+// matches when case is ignored.
+func TestListToolFilesExactReferencePrefersExactCase(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	for _, name := range []string{"crm", "CRM"} {
+		manager.clients[name] = &schemas.MCPClientState{Name: name, ExecutionConfig: &schemas.MCPClientConfig{ID: name + "-id", Name: name, IsCodeModeClient: true}}
+	}
+	manager.tools["CRM"] = []schemas.ChatTool{discoveryTestTool("lookup", "Look up a user record", "id")}
+	manager.tools["crm"] = []schemas.ChatTool{
+		discoveryTestTool("lookup", "Fetch a user by email", "email"),
+		discoveryTestTool("GetUser", "Look up a user record", "id"),
+		discoveryTestTool("getuser", "Fetch a user by email", "email"),
+	}
+	for query, want := range map[string]string{
+		"servers/crm/lookup.pyi":  "servers/crm/lookup.pyi",
+		"servers/CRM/lookup.pyi":  "servers/CRM/lookup.pyi",
+		"crm.lookup":              "servers/crm/lookup.pyi",
+		"CRM.lookup":              "servers/CRM/lookup.pyi",
+		"servers/crm/getuser.pyi": "servers/crm/getuser.pyi",
+	} {
+		out := listToolFiles(t, mode, fmt.Sprintf(`{"query":%q}`, query))
+		if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != want {
+			t.Fatalf("query %q: expected %s, got %v\n%s", query, want, paths, out)
+		}
+	}
+}
+
+// A raw name that is itself a valid identifier names its own tool both in the
+// sandbox and in getToolDocs: Get_User is crm-Get_User's raw name, so the
+// hyphen alias of crm-Get-User must not take it.
+func TestExactRawIdentifierBindsItsOwnTool(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	byEmail := discoveryTestTool("crm-Get-User", "Fetch a user by email", "email")
+	byID := discoveryTestTool("crm-Get_User", "Look up a user record", "id")
+	for _, tools := range [][]schemas.ChatTool{{byEmail, byID}, {byID, byEmail}} {
+		manager.tools["crm"] = tools
+		if doc := getToolDocsContent(t, mode, "crm", "Get_User"); !strings.Contains(doc, "Look up a user record") {
+			t.Fatalf("getToolDocs(Get_User) documents another tool:\n%s", doc)
+		}
+		var called string
+		result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = crm.Get_User()",
+			map[string][]string{"crm": {tools[0].Function.Name, tools[1].Function.Name}},
+			func(_ context.Context, _, tool string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+				called = tool
+				return "ok", nil
+			})
+		if result.Errors != nil || called != "crm-Get_User" {
+			t.Fatalf("crm.Get_User() called %q (errors %+v), want crm-Get_User", called, result.Errors)
+		}
+	}
+}
+
+// A hyphen alias that executeToolCode binds documents the tool it calls, not
+// another tool whose alias only matches when case is ignored: crm.Get_User
+// calls crm-Get-User, whichever order the server lists the two tools in.
+func TestBoundHyphenAliasDocumentsItsOwnTool(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["crm"] = &schemas.MCPClientState{Name: "crm", ExecutionConfig: &schemas.MCPClientConfig{ID: "crm-id", Name: "crm", IsCodeModeClient: true}}
+	byEmail := discoveryTestTool("crm-GET-USER", "Fetch a user by email", "email")
+	byID := discoveryTestTool("crm-Get-User", "Look up a user record", "id")
+	for _, tools := range [][]schemas.ChatTool{{byEmail, byID}, {byID, byEmail}} {
+		manager.tools["crm"] = tools
+		var called string
+		result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = crm.Get_User()",
+			map[string][]string{"crm": {tools[0].Function.Name, tools[1].Function.Name}},
+			func(_ context.Context, _, tool string, _ map[string]interface{}, _ func(string)) (interface{}, error) {
+				called = tool
+				return "ok", nil
+			})
+		if result.Errors != nil || called != "crm-Get-User" {
+			t.Fatalf("crm.Get_User() called %q (errors %+v), want crm-Get-User", called, result.Errors)
+		}
+		if doc := getToolDocsContent(t, mode, "crm", "Get_User"); !strings.Contains(doc, "Look up a user record") {
+			t.Fatalf("getToolDocs(Get_User) documents another tool:\n%s", doc)
+		}
+		if stub := readFileContent(t, mode, "servers/crm/Get_User.pyi"); !strings.Contains(stub, "Look up a user record") {
+			t.Fatalf("readToolFile(servers/crm/Get_User.pyi) reads another tool:\n%s", stub)
+		}
+	}
+}
+
+// Servers whose names differ only by case: the path or server name discovery
+// returns reads that exact server's file and docs, not an ambiguity error or
+// whichever server map iteration reaches first.
+func TestCaseDistinctServersReadExactServer(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	for _, name := range []string{"crm", "CRM"} {
+		manager.clients[name] = &schemas.MCPClientState{Name: name, ExecutionConfig: &schemas.MCPClientConfig{ID: name + "-id", Name: name, IsCodeModeClient: true}}
+	}
+	manager.tools["crm"] = []schemas.ChatTool{discoveryTestTool("crm-lookup", "Fetch a user by email", "email")}
+	manager.tools["CRM"] = []schemas.ChatTool{discoveryTestTool("CRM-lookup", "Look up a user record", "id")}
+	for server, description := range map[string]string{"crm": "Fetch a user by email", "CRM": "Look up a user record"} {
+		paths := shortlistPaths(listToolFiles(t, mode, fmt.Sprintf(`{"query":"servers/%s/lookup.pyi"}`, server)))
+		if len(paths) != 1 || paths[0] != "servers/"+server+"/lookup.pyi" {
+			t.Fatalf("discovery for %s returned %v", server, paths)
+		}
+		for range 20 {
+			if stub := readFileContent(t, mode, paths[0]); !strings.Contains(stub, description) {
+				t.Fatalf("readToolFile(%s) did not read %s's tool:\n%s", paths[0], server, stub)
+			}
+			if doc := getToolDocsContent(t, mode, server, "lookup"); !strings.Contains(doc, description) {
+				t.Fatalf("getToolDocs(%s, lookup) did not document %s's tool:\n%s", server, server, doc)
+			}
+		}
+	}
+	// A name that matches neither exactly is still ambiguous.
+	if stub := readFileContent(t, mode, "servers/Crm/lookup.pyi"); !strings.Contains(stub, "Multiple servers match") {
+		t.Fatalf("readToolFile(servers/Crm/lookup.pyi) was not reported as ambiguous:\n%s", stub)
+	}
+	if doc := getToolDocsContent(t, mode, "Crm", "lookup"); !strings.Contains(doc, "Multiple servers match") {
+		t.Fatalf("getToolDocs(Crm, lookup) was not reported as ambiguous:\n%s", doc)
+	}
+}
+
+func readFileContent(t *testing.T, mode *StarlarkCodeMode, fileName string) string {
+	t.Helper()
+	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-read"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: fmt.Sprintf(`{"fileName":%q}`, fileName)},
+	})
+	if err != nil || msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+		t.Fatalf("readToolFile(%s) failed: %v", fileName, err)
+	}
+	return *msg.Content.ContentStr
+}
+
+func getToolDocsContent(t *testing.T, mode *StarlarkCodeMode, server, tool string) string {
+	t.Helper()
+	msg, err := mode.handleGetToolDocs(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call-docs"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: fmt.Sprintf(`{"server":%q,"tool":%q}`, server, tool)},
+	})
+	if err != nil || msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+		t.Fatalf("getToolDocs(%s, %s) failed: %v", server, tool, err)
+	}
+	return *msg.Content.ContentStr
+}
+
+func TestListToolFilesExternalRankerInsufficientHint(t *testing.T) {
+	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+		writeRankResponse(w, map[string]interface{}{
+			"version": 1, "revision": req.Revision, "sufficient": 0.2,
+			"candidates": []map[string]interface{}{{"id": "servers/github/search_repos.pyi", "relevance": 0.6}},
+		})
+	})
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+	out := listToolFiles(t, mode, `{"query":"find code"}`)
+	if paths := shortlistPaths(out); len(paths) != 1 || paths[0] != "servers/github/search_repos.pyi" {
+		t.Fatalf("unexpected shortlist %v\n%s", paths, out)
+	}
+	if !strings.Contains(out, "may not cover the request") {
+		t.Fatalf("expected a hint to widen the search:\n%s", out)
+	}
+}
+
+// A binding level change during the ranker call applies to the next request:
+// this one is rendered at the level its revision was computed for.
+func TestListToolFilesExternalRankerKeepsBindingLevelForTheCall(t *testing.T) {
+	var mode *StarlarkCodeMode
+	rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+		mode.UpdateConfig(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelServer})
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
+			{"id": "servers/slack/send_message.pyi", "relevance": 0.9},
+			{"id": "servers/slack/search_messages.pyi", "relevance": 0.8},
+		}})
+	})
+	mode = newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+	out := listToolFiles(t, mode, `{"query":"tell the team"}`)
+	want := []string{"servers/slack/send_message.pyi", "servers/slack/search_messages.pyi"}
+	if paths := shortlistPaths(out); len(paths) != 2 || paths[0] != want[0] || paths[1] != want[1] {
+		t.Fatalf("expected tool binding files %v, got %v\n%s", want, paths, out)
+	}
+}
+
+func assertLexicalFallback(t *testing.T, out string) {
+	t.Helper()
+	if !strings.Contains(out, "(lexical match)") || !strings.Contains(out, "discovery ranker was not used") {
+		t.Fatalf("expected lexical fallback:\n%s", out)
+	}
+	if paths := shortlistPaths(out); len(paths) == 0 || paths[0] != "servers/github/create_issue.pyi" {
+		t.Fatalf("expected the lexical shortlist, got %v\n%s", paths, out)
+	}
+}
+
+// callListToolFiles runs listToolFiles off the test goroutine and fails if it
+// does not return within wait.
+func callListToolFiles(t *testing.T, mode *StarlarkCodeMode, args string, wait time.Duration) string {
+	t.Helper()
+	type result struct {
+		msg *schemas.ChatMessage
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		msg, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("call-1"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: args},
+		})
+		done <- result{msg, err}
+	}()
+	select {
+	case res := <-done:
+		if res.err != nil || res.msg == nil || res.msg.Content == nil || res.msg.Content.ContentStr == nil {
+			t.Fatalf("listToolFiles(%s) returned %+v, %v", args, res.msg, res.err)
+		}
+		return *res.msg.Content.ContentStr
+	case <-time.After(wait):
+		t.Fatalf("listToolFiles(%s) did not return within %v", args, wait)
+		return ""
+	}
+}
+
+func TestListToolFilesExternalRankerTimeoutFallsBack(t *testing.T) {
+	release := make(chan struct{})
+	rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, req discoveryRankRequest) {
+		// The timer ends the handler on its own when the ranker timeout is broken,
+		// so the elapsed-time check below still runs and reports it.
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		case <-time.After(5 * time.Second):
+		}
+	})
+	// Registered after the server's own cleanup, so it runs first and frees the handler.
+	t.Cleanup(func() { close(release) })
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+	httpRankerOf(t, mode).timeout = 50 * time.Millisecond
+
+	out := callListToolFiles(t, mode, `{"query":"create an issue"}`, 2*time.Second)
+	nextRankRequest(t, rs, "create an issue", out)
+	assertLexicalFallback(t, out)
+}
+
+// warnCapture records warnings so a test can check what reaches the logs.
+type warnCapture struct {
+	schemas.Logger
+	mu       sync.Mutex
+	warnings []string
+}
+
+func (w *warnCapture) Warn(msg string, args ...any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.warnings = append(w.warnings, fmt.Sprintf(msg, args...))
+}
+
+func TestListToolFilesExternalRankerFailureLogOmitsEndpoint(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	endpoint := closed.URL + "/rank?signature=secret-signature"
+	closed.Close()
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	logs := &warnCapture{Logger: mode.logger}
+	mode.logger = logs
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: endpoint})
+	assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
+
+	logs.mu.Lock()
+	defer logs.mu.Unlock()
+	if len(logs.warnings) == 0 {
+		t.Fatal("expected a warning for the failed ranker call")
+	}
+	for _, warning := range logs.warnings {
+		if strings.Contains(warning, "secret-signature") || strings.Contains(warning, strings.TrimPrefix(closed.URL, "http://")) {
+			t.Fatalf("warning quotes the ranker endpoint: %s", warning)
+		}
+	}
+}
+
+// A token file read that stalls past the ranker deadline falls back to the
+// lexical shortlist without calling the ranker, stalled reads stay bounded,
+// and a healthy read afterwards is used again.
+func TestListToolFilesExternalRankerStalledTokenReadFallsBack(t *testing.T) {
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tokenFile, []byte("fresh-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var authorization atomic.Value
+	rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, req discoveryRankRequest) {
+		authorization.Store(r.Header.Get("Authorization"))
+		writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
+			{"id": "servers/jira/create_issue.pyi", "relevance": 0.9},
+		}})
+	})
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL, TokenFile: tokenFile})
+	ranker := httpRankerOf(t, mode)
+	ranker.timeout = 50 * time.Millisecond
+	var stalled atomic.Bool
+	var stalledReads atomic.Int32
+	stalled.Store(true)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	ranker.readToken = func(path string) (string, error) {
+		if stalled.Load() {
+			stalledReads.Add(1)
+			<-release
+		}
+		return readDiscoveryToken(path)
+	}
+
+	for range discoveryMaxTokenReads + 2 {
+		assertLexicalFallback(t, callListToolFiles(t, mode, `{"query":"create an issue"}`, 2*time.Second))
+	}
+	if got := rs.calls.Load(); got != 0 {
+		t.Fatalf("the ranker was called %d times without its token", got)
+	}
+	if got := stalledReads.Load(); got > discoveryMaxTokenReads {
+		t.Fatalf("%d token reads in flight, want at most %d", got, discoveryMaxTokenReads)
+	}
+
+	stalled.Store(false)
+	releaseOnce.Do(func() { close(release) })
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		out := callListToolFiles(t, mode, `{"query":"create an issue"}`, 2*time.Second)
+		if strings.Contains(out, "(discovery ranker)") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the ranker was not used again after the token read recovered:\n%s", out)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := authorization.Load(); got != "Bearer fresh-token" {
+		t.Fatalf("expected the token from the file, got %v", got)
+	}
+}
+
+func TestListToolFilesExternalRankerErrorsFallBack(t *testing.T) {
+	cases := map[string]func(w http.ResponseWriter, r *http.Request, req discoveryRankRequest){
+		"http 500": func(w http.ResponseWriter, _ *http.Request, _ discoveryRankRequest) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		},
+		"not json": func(w http.ResponseWriter, _ *http.Request, _ discoveryRankRequest) {
+			_, _ = w.Write([]byte("<html>"))
+		},
+		"unknown id": func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
+				{"id": "servers/billing/create_invoice.pyi", "relevance": 0.9},
+			}})
+		},
+		"relevance above 1": func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
+				{"id": req.Candidates[0].ID, "relevance": 1.5},
+			}})
+		},
+		"negative relevance": func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
+				{"id": req.Candidates[0].ID, "relevance": -0.1},
+			}})
+		},
+		"missing relevance": func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{
+				{"id": req.Candidates[0].ID},
+			}})
+		},
+		"stale revision": func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": "other", "candidates": []map[string]interface{}{
+				{"id": req.Candidates[0].ID, "relevance": 0.9},
+			}})
+		},
+		"nothing relevant": func(w http.ResponseWriter, _ *http.Request, req discoveryRankRequest) {
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": req.Revision, "candidates": []map[string]interface{}{}})
+		},
+	}
+	for name, answer := range cases {
+		t.Run(name, func(t *testing.T) {
+			rs := newRankerServer(t, answer)
+			mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+			useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+			assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
+		})
+	}
+
+	t.Run("redirect is not followed", func(t *testing.T) {
+		var destinationCalls atomic.Int32
+		destination := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			destinationCalls.Add(1)
+			writeRankResponse(w, map[string]interface{}{"version": 1, "revision": "any", "candidates": []map[string]interface{}{}})
+		}))
+		t.Cleanup(destination.Close)
+		rs := newRankerServer(t, func(w http.ResponseWriter, r *http.Request, _ discoveryRankRequest) {
+			http.Redirect(w, r, destination.URL+"/rank", http.StatusTemporaryRedirect)
+		})
+		mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+		useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL})
+		assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
+		if got := rs.calls.Load(); got != 1 {
+			t.Fatalf("expected one request to the configured endpoint, got %d", got)
+		}
+		if got := destinationCalls.Load(); got != 0 {
+			t.Fatalf("the redirect destination was contacted %d times", got)
+		}
+	})
+
+	t.Run("unreadable token file", func(t *testing.T) {
+		rs := newRankerServer(t, func(w http.ResponseWriter, _ *http.Request, _ discoveryRankRequest) {
+			t.Error("ranker must not be called without its token")
+		})
+		mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+		useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: rs.URL, TokenFile: filepath.Join(t.TempDir(), "missing")})
+		assertLexicalFallback(t, listToolFiles(t, mode, `{"query":"create an issue"}`))
+	})
+}
+
+func TestValidateDiscoveryRankResponse(t *testing.T) {
+	req := discoveryRankRequest{Version: 1, Revision: "r1", Candidates: []discoveryCandidate{{ID: "a"}, {ID: "b"}}}
+	f := func(v float64) *float64 { return &v }
+	ok := discoveryRankResponse{Version: 1, Revision: "r1", Sufficient: f(1), Candidates: []discoveryRankScore{{ID: "a", Relevance: f(0)}, {ID: "b", Relevance: f(1)}}}
+	scores, err := validateDiscoveryRankResponse(req, ok)
+	if err != nil || scores["a"] != 0 || scores["b"] != 1 {
+		t.Fatalf("valid response rejected: %v %v", scores, err)
+	}
+	partial := discoveryRankResponse{Version: 1, Revision: "r1", Candidates: []discoveryRankScore{{ID: "b", Relevance: f(0.5)}}}
+	if _, err := validateDiscoveryRankResponse(req, partial); err != nil {
+		t.Fatalf("a response may leave candidates out: %v", err)
+	}
+	for name, resp := range map[string]discoveryRankResponse{
+		"version":           {Version: 2, Revision: "r1"},
+		"revision":          {Version: 1, Revision: "r0"},
+		"unknown id":        {Version: 1, Revision: "r1", Candidates: []discoveryRankScore{{ID: "c", Relevance: f(0.5)}}},
+		"duplicate id":      {Version: 1, Revision: "r1", Candidates: []discoveryRankScore{{ID: "a", Relevance: f(0.5)}, {ID: "a", Relevance: f(0.4)}}},
+		"missing relevance": {Version: 1, Revision: "r1", Candidates: []discoveryRankScore{{ID: "a"}}},
+		"relevance > 1":     {Version: 1, Revision: "r1", Candidates: []discoveryRankScore{{ID: "a", Relevance: f(1.01)}}},
+		"relevance < 0":     {Version: 1, Revision: "r1", Candidates: []discoveryRankScore{{ID: "a", Relevance: f(-0.01)}}},
+		"sufficient > 1":    {Version: 1, Revision: "r1", Sufficient: f(2)},
+	} {
+		if _, err := validateDiscoveryRankResponse(req, resp); err == nil {
+			t.Fatalf("%s: invalid response accepted", name)
+		}
+	}
+}
+
+// rankedServers checks selected for duplicates and returns its servers.
+func rankedServers(t *testing.T, selected []discoveryTool, maxCandidates int) map[string]bool {
+	t.Helper()
+	if len(selected) != maxCandidates {
+		t.Fatalf("expected %d candidates, got %d", maxCandidates, len(selected))
+	}
+	servers := map[string]bool{}
+	ids := map[string]bool{}
+	for _, item := range selected {
+		servers[item.candidate.Server] = true
+		if ids[item.candidate.ID] {
+			t.Fatalf("duplicate candidate %s", item.candidate.ID)
+		}
+		ids[item.candidate.ID] = true
+	}
+	return servers
+}
+
+func TestRankCandidatesKeepsEveryServer(t *testing.T) {
+	tools := func(server string, n int, best float64) []discoveryTool {
+		items := make([]discoveryTool, 0, n)
+		for i := range n {
+			items = append(items, discoveryTool{candidate: discoveryCandidate{ID: fmt.Sprintf("servers/%s/t%02d.pyi", server, i), Server: server}, lexical: best - float64(i)})
+		}
+		return items
+	}
+
+	// One dominant server and seven smaller ones fit a decision ranker's cap:
+	// every server keeps a candidate, and the rest go to the best matches.
+	items := tools("a", 40, 100)
+	for _, server := range []string{"b", "c", "d", "e", "f", "g", "h"} {
+		items = append(items, tools(server, 3, 10)...)
+	}
+	selected := rankCandidates(items, discoveryMaxDecisionChoices)
+	if servers := rankedServers(t, selected, discoveryMaxDecisionChoices); len(servers) != 8 {
+		t.Fatalf("expected all 8 servers, got %v", servers)
+	}
+	if selected[0].candidate.ID != "servers/a/t00.pyi" || selected[18].candidate.ID != "servers/a/t18.pyi" {
+		t.Fatalf("the best lexical matches must fill the remaining slots in order, got %s and %s", selected[0].candidate.ID, selected[18].candidate.ID)
+	}
+
+	// The same with the HTTP ranker's cap and ten single-tool servers.
+	items = tools("big", 50, 100)
+	for i := range 10 {
+		items = append(items, tools(fmt.Sprintf("small%d", i), 1, 0)...)
+	}
+	selected = rankCandidates(items, discoveryMaxRankCandidates)
+	if servers := rankedServers(t, selected, discoveryMaxRankCandidates); len(servers) != 11 {
+		t.Fatalf("expected all 11 servers, got %d", len(servers))
+	}
+	if selected[0].candidate.ID != "servers/big/t00.pyi" {
+		t.Fatalf("best lexical match must come first, got %s", selected[0].candidate.ID)
+	}
+
+	// More servers than slots: the best matches take three quarters of the
+	// slots and the rest go to servers not yet represented.
+	items = tools("big", 50, 100)
+	for i := range 40 {
+		items = append(items, tools(fmt.Sprintf("small%02d", i), 1, 0)...)
+	}
+	selected = rankCandidates(items, discoveryMaxRankCandidates)
+	if servers := rankedServers(t, selected, discoveryMaxRankCandidates); len(servers) != 9 {
+		t.Fatalf("expected the big server plus 8 small servers, got %d servers", len(servers))
+	}
+	if selected[23].candidate.ID != "servers/big/t23.pyi" || selected[24].candidate.Server != "small00" {
+		t.Fatalf("unexpected split between lexical and server slots: %s, %s", selected[23].candidate.ID, selected[24].candidate.ID)
+	}
+}
+
+func TestDiscoveryRankerConfigUpdates(t *testing.T) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	if mode.discoveryRanker.Load() != nil {
+		t.Fatal("no ranker is configured by default")
+	}
+	useRanker(t, mode, schemas.MCPCodeModeDiscoveryRanker{URL: "http://127.0.0.1:1/rank", TimeoutSeconds: 3})
+	if got := httpRankerOf(t, mode).timeout; got != 3*time.Second {
+		t.Fatalf("expected 3s timeout, got %v", got)
+	}
+	// An invalid update keeps the current ranker, fallbacks alone included; nil
+	// leaves it; an empty object removes it.
+	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{URL: "ftp://x"}})
+	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{Fallbacks: []string{"openai/gpt-5-nano"}}})
+	mode.UpdateConfig(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelTool})
+	if got := httpRankerOf(t, mode); got.endpoint != "http://127.0.0.1:1/rank" {
+		t.Fatalf("ranker changed unexpectedly: %+v", got)
+	}
+	mode.UpdateConfig(&codemcp.CodeModeConfig{DiscoveryRanker: &schemas.MCPCodeModeDiscoveryRanker{}})
+	if mode.discoveryRanker.Load() != nil {
+		t.Fatal("an empty URL must remove the ranker")
+	}
+}
+
+// BenchmarkListToolFiles measures listToolFiles on a large catalogue (40 code
+// mode servers of 25 tools each): the complete listing, and a ranked lexical
+// shortlist, which walks and scores every visible tool.
+func BenchmarkListToolFiles(b *testing.B) {
+	mode := newDiscoveryCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := mode.clientManager.(*testClientManager)
+	for s := range 40 {
+		server := fmt.Sprintf("server%02d", s)
+		manager.clients[server] = &schemas.MCPClientState{Name: server, ExecutionConfig: &schemas.MCPClientConfig{ID: server + "-id", Name: server, IsCodeModeClient: true}}
+		for i := range 25 {
+			manager.tools[server] = append(manager.tools[server], discoveryTestTool(fmt.Sprintf("tool_%02d", i), fmt.Sprintf("Read and update record kind %d of %s", i, server), "id", "filter", "limit"))
+		}
+	}
+	for _, bc := range []struct{ name, args string }{
+		{"complete", `{}`},
+		{"ranked", `{"query":"update record kind 7 of server12"}`},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			call := schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("call-bench"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(codemcp.ToolTypeListToolFiles), Arguments: bc.args},
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := mode.handleListToolFiles(context.Background(), call); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

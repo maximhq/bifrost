@@ -2492,6 +2492,13 @@ func IsBasetenDecisionModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "decision-models/")
 }
 
+// IsSarvamDecisionModel checks if the model is Sarvam Prism ("sarvam-prism"),
+// Sarvam's decision model, served on /v2/systemone rather than chat. Variants
+// share the prefix.
+func IsSarvamDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "sarvam-prism")
+}
+
 // IsGeminiDecisionModel checks if the model is a Gemini Decision model
 // ("gemini-decision-1"), served on the Gemini API's /v1beta/decisions rather
 // than generateContent. The API's "models/" resource prefix is accepted.

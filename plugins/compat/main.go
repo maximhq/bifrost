@@ -308,6 +308,7 @@ func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, pro
 		(provider == schemas.Azure && (schemas.IsMicrosoftDecisionModel(model) || schemas.DefaultSupportsDecisions(model))) ||
 		(provider == schemas.Databricks && schemas.IsDatabricksDecisionModel(model)) ||
 		(provider == schemas.Baseten && schemas.IsBasetenDecisionModel(model)) ||
+		(provider == schemas.Sarvam && schemas.IsSarvamDecisionModel(model)) ||
 		(provider == schemas.Gemini && schemas.IsGeminiDecisionModel(model))
 	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback) {
 		return
