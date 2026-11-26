@@ -261,6 +261,7 @@ func (h *RelaysHandler) delete(ctx *fasthttp.RequestCtx) {
 		h.storeError(ctx, err)
 		return
 	}
+	lib.RecordAuditChange(ctx, "relay.deleted", "relay", name, name, endpointView(previous), nil)
 	if err := reloadGrantingVirtualKeys(workCtx, h.governanceManager, granted); err != nil {
 		followUpErr = errors.Join(followUpErr, err)
 	}
@@ -269,7 +270,6 @@ func (h *RelaysHandler) delete(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Relay deleted in database but failed to reload in-memory state")
 		return
 	}
-	lib.RecordAuditChange(ctx, "relay.deleted", "relay", name, name, endpointView(previous), nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 

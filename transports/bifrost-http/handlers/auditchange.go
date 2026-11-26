@@ -2,12 +2,14 @@ package handlers
 
 import (
 	"encoding/json"
+	neturl "net/url"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // auditVirtualKey snapshots a virtual key for the audit log without its value or any nested secret-bearing relation.
@@ -225,4 +227,62 @@ func auditWebhookEndpoint(endpoint *configstoreTables.TableWebhookEndpoint) json
 	c.Secret = nil
 	c.URL = lib.RedactURLCredentials(c.URL)
 	return lib.AuditSnapshot(c)
+}
+
+// unparseableURLPlaceholder stands in for a stored URL url.Parse rejects, whose credentials cannot be located to mask.
+const unparseableURLPlaceholder = "<redacted: unparseable url>"
+
+// auditFrameworkConfig snapshots the framework config with any credentials stripped from its URLs.
+func auditFrameworkConfig(cfg *configstoreTables.TableFrameworkConfig) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	url := func(v *string) any {
+		if v == nil {
+			return nil
+		}
+		// RedactURLCredentials hands back a URL it cannot parse unchanged, and an opaque one
+		// (https:user:pass@host) keeps its credentials in a part it never inspects.
+		if u, err := neturl.Parse(*v); err != nil || u.Opaque != "" {
+			return unparseableURLPlaceholder
+		}
+		return lib.RedactURLCredentials(*v)
+	}
+	return map[string]any{
+		"pricing_url":               url(cfg.PricingURL),
+		"pricing_sync_interval":     cfg.PricingSyncInterval,
+		"model_parameters_url":      url(cfg.ModelParametersURL),
+		"mcp_library_url":           url(cfg.MCPLibraryURL),
+		"mcp_library_sync_interval": cfg.MCPLibrarySyncInterval,
+		"live_models_sync_interval": cfg.LiveModelsSyncInterval,
+		"openapi_url":               url(cfg.OpenAPIURL),
+	}
+}
+
+// recordAuthConfigChange records an auth config write without either credential: only whether
+// auth is on and whether the username or password changed.
+func recordAuthConfigChange(ctx *fasthttp.RequestCtx, before, after *configstore.AuthConfig) {
+	if after == nil {
+		return
+	}
+	var beforeSnap map[string]any
+	if before != nil {
+		beforeSnap = map[string]any{"is_enabled": before.IsEnabled}
+	}
+	changed := func(prev, next *schemas.SecretVar) bool {
+		return !prev.Equals(next) // a swapped reference is a change even when both resolve alike
+	}
+	usernameChanged := before == nil || changed(before.AdminUserName, after.AdminUserName)
+	passwordChanged := before == nil || changed(before.AdminPassword, after.AdminPassword)
+	if before != nil && before.IsEnabled == after.IsEnabled && !usernameChanged && !passwordChanged {
+		return // a save that resubmits the stored auth config changes nothing
+	}
+	afterSnap := map[string]any{"is_enabled": after.IsEnabled}
+	if usernameChanged {
+		afterSnap["admin_username_changed"] = true
+	}
+	if passwordChanged {
+		afterSnap["admin_password_changed"] = true
+	}
+	lib.RecordAuditChange(ctx, "auth_config.updated", "auth_config", "auth_config", "Auth config", beforeSnap, afterSnap)
 }
