@@ -2161,6 +2161,10 @@ type BifrostLLMUsage struct {
 	// turn is priced at the requested model's rates.
 	ServerSideFallbackModel *string                  `json:"-"`
 	Iterations              []ResponsesResponseUsage `json:"-"` // Anthropic per-pass usage, so an interrupted stream still bills its advisor passes
+	// ImageUsage is a passthrough stream's image-generation usage, carried for the same reason:
+	// an interrupted image stream is billed from this bare usage, and its image output must be
+	// priced at the image rate, as the completed stream's ImageUsage is.
+	ImageUsage *ImageUsage `json:"-"`
 
 	PromptTokensExplicitZero     bool `json:"-"` // Completion wire: zero was reported, not missing/null.
 	CompletionTokensExplicitZero bool `json:"-"` // Completion wire: zero was reported, not missing/null.
@@ -3114,6 +3118,7 @@ func (u *BifrostLLMUsage) DeepCopy() *BifrostLLMUsage {
 		m := *u.ServerSideFallbackModel
 		c.ServerSideFallbackModel = &m
 	}
+	c.ImageUsage = u.ImageUsage.DeepCopy()
 	return &c
 }
 

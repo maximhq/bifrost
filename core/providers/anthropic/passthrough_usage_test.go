@@ -1,6 +1,7 @@
 package anthropic_test
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/anthropic"
@@ -627,5 +628,29 @@ func BenchmarkAnthropicPassthroughStreamUsageCacheSplit(b *testing.B) {
 				acc.ObserveEvent(delta)
 			}
 		})
+	}
+}
+
+// A passthrough stream's usage is provisional from message_start until a message_delta reports, as
+// on the typed Anthropic streams, so a cancelled stream's output is estimated.
+func TestAnthropicPassthroughStreamObserverMarksProvisional(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	observe := (&anthropic.AnthropicPassthroughStreamUsage{}).StreamObserver(ctx)
+	provisional := func() any { return ctx.Value(schemas.BifrostContextKeyStreamUsageProvisional) }
+
+	observe([]byte(`{"type":"message_start","message":{"usage":{"input_tokens":26,"output_tokens":1}}}`))
+	if got := provisional(); got != true {
+		t.Fatalf("after message_start provisional=%v, want true", got)
+	}
+	observe([]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}`))
+	if got := provisional(); got != true {
+		t.Fatalf("after a content delta provisional=%v, want true", got)
+	}
+	u := observe([]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12}}`))
+	if got := provisional(); got != false {
+		t.Fatalf("after message_delta provisional=%v, want false", got)
+	}
+	if u == nil || u.LLMUsage == nil || u.LLMUsage.CompletionTokens != 12 {
+		t.Fatalf("usage=%+v, want the observer's usage passed through", u)
 	}
 }

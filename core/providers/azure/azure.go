@@ -3900,9 +3900,9 @@ func (provider *AzureProvider) PassthroughStream(
 	}
 
 	usageRequestBody := providerUtils.PassthroughUsageRequestBody(req)
-	var anthropicUsage *anthropic.AnthropicPassthroughStreamUsage
+	var observeAnthropic func(event []byte) *schemas.BifrostPassthroughUsage
 	if schemas.IsAnthropicModelFamily(ctx, req.Model) {
-		anthropicUsage = &anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}
+		observeAnthropic = (&anthropic.AnthropicPassthroughStreamUsage{RequestBody: req.Body}).StreamObserver(ctx)
 	}
 	return providerUtils.StreamPassthrough(
 		ctx, postHookRunner, postHookSpanFinalizer, resp, rawBodyStream,
@@ -3915,14 +3915,14 @@ func (provider *AzureProvider) PassthroughStream(
 			StartTime:        startTime,
 			Logger:           provider.logger,
 			HasUsage: func(event []byte) bool {
-				if anthropicUsage != nil {
+				if observeAnthropic != nil {
 					return anthropic.HasAnthropicPassthroughUsage(event)
 				}
 				return openai.HasOpenAIPassthroughUsage(event)
 			},
 			Observe: func(event []byte) *schemas.BifrostPassthroughUsage {
-				if anthropicUsage != nil {
-					return anthropicUsage.ObserveEvent(event)
+				if observeAnthropic != nil {
+					return observeAnthropic(event)
 				}
 				return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, usageRequestBody, event)
 			},

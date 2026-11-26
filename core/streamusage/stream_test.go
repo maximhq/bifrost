@@ -925,3 +925,45 @@ func BenchmarkVocabularyLoad(b *testing.B) {
 		})
 	}
 }
+
+// A Claude passthrough stream cancelled after message_start bills message_start's provisional
+// output count until a message_delta reports; the output it forwarded is estimated instead, from
+// the raw SSE body the accumulator holds.
+func TestEstimateAnthropicPassthroughSnapshot(t *testing.T) {
+	const body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":26,\"output_tokens\":1}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"think carefully\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello \"}}\r\n\r\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"world\"}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}\n\n"
+	snapshot := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{Body: []byte(body)}}
+	c, _ := selectCounter("")
+	out, _ := c.count(`hello world{"city":`)
+	rn, _ := c.count("think carefully")
+
+	for _, tc := range []struct {
+		name        string
+		provisional bool
+		want        int
+	}{
+		{name: "provisional", provisional: true, want: out + rn},
+		{name: "reported by message_delta", provisional: false, want: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := newContext()
+			ctx.SetValue(schemas.BifrostContextKeyStreamUsageProvisional, tc.provisional)
+			err := cancellation()
+			err.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{PromptTokens: 26, CompletionTokens: 1, TotalTokens: 27}
+			estimateFrom(ctx, snapshot, &schemas.BifrostRequest{RequestType: schemas.PassthroughStreamRequest}, "unknown", err)
+			got := err.ExtraFields.BilledUsage
+			if got == nil || got.PromptTokens != 26 || got.CompletionTokens != tc.want {
+				t.Fatalf("usage=%+v want prompt=26 completion=%d", got, tc.want)
+			}
+			if (got.Estimation != nil) != tc.provisional {
+				t.Fatalf("estimation=%+v", got.Estimation)
+			}
+			if tc.provisional && (got.CompletionTokensDetails == nil || got.CompletionTokensDetails.ReasoningTokens != rn || got.TotalTokens != 26+tc.want) {
+				t.Fatalf("usage=%+v want reasoning=%d total=%d", got, rn, 26+tc.want)
+			}
+		})
+	}
+}

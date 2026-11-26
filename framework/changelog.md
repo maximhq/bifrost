@@ -1,3 +1,4 @@
+- fix: pricing - billed usage from an interrupted passthrough stream is priced by provider (and image output at the image rate) instead of at $0 (#10279) [@rachit367](https://github.com/rachit367)
 - feat: model routers - `model_routers` and `model_router_targets` tables with config.json support, and the log-store tables and columns for phrase suggestions and routed requests
 - feat: client gateways - `oauth2_server_config.gateways` and device-code columns on `oauth2_authorize_requests` for Claude Code gateway sign-in
 - feat: datasheet overrides - `governance_datasheet_overrides` table merged over the synced datasheet, surviving upstream sync

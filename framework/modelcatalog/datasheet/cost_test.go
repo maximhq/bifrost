@@ -5860,6 +5860,60 @@ func TestCalculateCostForUsage_MatchesCalculateCost(t *testing.T) {
 	assert.Equal(t, respCost, usageCost, "bare-usage cost must equal full-response cost")
 }
 
+// An interrupted passthrough stream bills its usage with the passthrough request type and no path.
+// It must be priced as the completed stream is, not at zero under an unknown mode.
+func TestCalculateCostForUsage_PassthroughStreamMatchesCalculateCost(t *testing.T) {
+	s := testStoreWithPricing(t, map[string]configstoreTables.TableModelPricing{
+		makeKeyNormalized("claude-sonnet-4-5", "anthropic", "chat"): chatPricing(0.000003, 0.000015),
+	})
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 1, TotalTokens: 1001}
+
+	resp := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		PassthroughUsage: &schemas.BifrostPassthroughUsage{LLMUsage: usage},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType:     schemas.PassthroughStreamRequest,
+			PassthroughPath: "/v1/messages",
+			RoutingInfo:     routingInfoFor(schemas.Anthropic, "claude-sonnet-4-5"),
+		},
+	}}
+
+	respCost := s.CalculateCost(resp, nil)
+	// 1000*0.000003 + 1*0.000015
+	assert.InDelta(t, 0.003015, respCost, 1e-12)
+	for _, requestType := range []schemas.RequestType{schemas.PassthroughStreamRequest, schemas.PassthroughRequest} {
+		assert.Equal(t, respCost, s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-sonnet-4-5", requestType, nil), "bare %s usage must cost what the completed stream does", requestType)
+	}
+}
+
+// An interrupted Gemini image passthrough stream carries its image usage on the bare usage, so its
+// image output is priced on the image row at the image rate, as the completed stream is.
+func TestCalculateCostForUsage_PassthroughImageMatchesCalculateCost(t *testing.T) {
+	s := geminiFlashImageStore(t)
+	imageUsage := &schemas.ImageUsage{
+		InputTokens:         8,
+		OutputTokens:        1120,
+		TotalTokens:         1128,
+		OutputTokensDetails: &schemas.ImageTokenDetails{ImageTokens: 1120},
+	}
+	llmUsage := &schemas.BifrostLLMUsage{PromptTokens: 8, CompletionTokens: 1120, TotalTokens: 1128}
+
+	resp := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		PassthroughUsage: &schemas.BifrostPassthroughUsage{LLMUsage: llmUsage, ImageUsage: imageUsage},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType:     schemas.PassthroughStreamRequest,
+			PassthroughPath: "/v1beta/models/gemini-3.1-flash-image:streamGenerateContent",
+			RoutingInfo:     routingInfoFor(schemas.Gemini, "gemini-3.1-flash-image"),
+		},
+	}}
+
+	respCost := s.CalculateCost(resp, nil)
+	// 8*0.0000005 + 1120*0.00006
+	assert.InDelta(t, 0.067204, respCost, 1e-12)
+	billed := *llmUsage
+	billed.ImageUsage = imageUsage
+	assert.Equal(t, respCost, s.CalculateCostForUsage(&billed, schemas.Gemini, "gemini-3.1-flash-image", schemas.PassthroughStreamRequest, nil))
+}
+
 // TestCalculateCostBreakdownForUsage_CarriesSplit verifies the breakdown variant
 // returns the same total as the scalar path and carries the input/output split
 // so bare-usage billing can denormalize per category.
