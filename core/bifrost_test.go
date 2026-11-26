@@ -9898,6 +9898,140 @@ func TestPatternKeyAliasTemplateFollowsSelectedKey(t *testing.T) {
 	}
 }
 
+// TestKeyAliasResolvesAdvisorToolModel pins that advisor tool models follow the attempt key's alias.
+func TestKeyAliasResolvesAdvisorToolModel(t *testing.T) {
+	var mu sync.Mutex
+	var calls [][3]string // key, request model, advisor model
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		model := gjson.GetBytes(body, "model").String()
+		mu.Lock()
+		calls = append(calls, [3]string{r.Header.Get("x-api-key"), model, gjson.GetBytes(body, "tools.0.model").String()})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(model, "fail.") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m",`+
+			`"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	t.Cleanup(server.Close)
+	lastCall := func() [3]string {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls[len(calls)-1]
+	}
+
+	const requested = "anthropic.claude-opus-5"
+	newRequest := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    requested,
+			Input: []schemas.ResponsesMessage{{
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                 schemas.ResponsesToolTypeAdvisor,
+				ResponsesToolAdvisor: &schemas.ResponsesToolAdvisor{Model: requested},
+			}}},
+			RawRequestBody: []byte(`{"model":"` + requested + `","max_tokens":64,"messages":[{"role":"user","content":"hi"}],` +
+				`"tools":[{"type":"advisor_20260301","name":"advisor","model":"` + requested + `"}]}`),
+		}
+	}
+	send := func(client *Bifrost, request *schemas.BifrostResponsesRequest, raw bool) *schemas.BifrostError {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+		defer ctx.Cancel()
+		if raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
+		_, bifrostErr := client.ResponsesRequest(ctx, request)
+		return bifrostErr
+	}
+
+	t.Run("single key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{
+			ID: "sk-alias", Value: *schemas.NewSecretVar("sk-alias"), Models: schemas.WhiteList{"*"}, Weight: 100,
+			Aliases: schemas.KeyAliases{requested: {ModelID: "claude-opus-5"}},
+		}})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for _, raw := range []bool{false, true} {
+			request := newRequest()
+			if bifrostErr := send(client, request, raw); bifrostErr != nil {
+				t.Fatalf("raw=%v: request failed: %s", raw, bifrostErr.Error.Message)
+			}
+			if got := lastCall(); got[1] != "claude-opus-5" || got[2] != "claude-opus-5" {
+				t.Errorf("raw=%v: upstream model=%q advisor model=%q, want both claude-opus-5", raw, got[1], got[2])
+			}
+			if got := request.Params.Tools[0].ResponsesToolAdvisor.Model; got != requested {
+				t.Errorf("raw=%v: caller's advisor model rewritten to %q", raw, got)
+			}
+			if got := gjson.GetBytes(request.RawRequestBody, "tools.0.model").String(); got != requested {
+				t.Errorf("raw=%v: caller's raw advisor model rewritten to %q", raw, got)
+			}
+		}
+
+		// An advisor declared in an additional_tools item is hoisted into the tools during prep.
+		declared := json.RawMessage(`[{"type":"advisor","model":"` + requested + `"}]`)
+		request := newRequest()
+		request.Params = nil
+		request.RawRequestBody = nil
+		request.Input = append(request.Input, schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: declared})
+		if bifrostErr := send(client, request, false); bifrostErr != nil {
+			t.Fatalf("additional_tools: request failed: %s", bifrostErr.Error.Message)
+		}
+		if got := lastCall(); got[2] != "claude-opus-5" {
+			t.Errorf("additional_tools: upstream advisor model=%q, want claude-opus-5", got[2])
+		}
+		if got := string(request.Input[1].AdditionalTools); got != string(declared) {
+			t.Errorf("additional_tools: caller's declaration rewritten to %s", got)
+		}
+	})
+
+	t.Run("each retry follows its key", func(t *testing.T) {
+		account := NewMockAccount()
+		account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, server.URL)
+		account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 2
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffInitial = time.Millisecond
+		account.configs[schemas.Anthropic].NetworkConfig.RetryBackoffMax = 2 * time.Millisecond
+		account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+			{ID: "sk-fail", Value: *schemas.NewSecretVar("sk-fail"), Models: schemas.WhiteList{"*"}, Weight: 1,
+				Aliases: schemas.KeyAliases{requested: {ModelID: "fail.claude-opus-5"}}},
+			{ID: "sk-plain", Value: *schemas.NewSecretVar("sk-plain"), Models: schemas.WhiteList{"*"}, Weight: 1},
+		})
+		client, initErr := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+		if initErr != nil {
+			t.Fatalf("Init failed: %v", initErr)
+		}
+		t.Cleanup(client.Shutdown)
+
+		for i := 0; i < 20; i++ {
+			for _, raw := range []bool{false, true} {
+				if bifrostErr := send(client, newRequest(), raw); bifrostErr != nil {
+					t.Fatalf("raw=%v: request %d failed: %s", raw, i, bifrostErr.Error.Message)
+				}
+			}
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		for _, call := range calls {
+			if call[0] == "sk-fail" && call[2] != "fail.claude-opus-5" || call[0] == "sk-plain" && call[2] != requested {
+				t.Errorf("key %q sent advisor model %q with request model %q", call[0], call[2], call[1])
+			}
+		}
+	})
+}
+
 // customToolProvider answers with a function call to apply_patch, the way a wire that
 // took the rewritten custom tool does, and records what it was sent.
 type customToolProvider struct {
