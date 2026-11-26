@@ -351608,8 +351608,11 @@
                 "exec": [
                   "// Per-run name, also sent as the client_id, so the cleanup deletes this run's client by id however",
                   "// many clients the gateway lists, and the sweep below can reap what an interrupted run left behind.",
+                  "// The id is chosen here and sent with the create, so the cleanup still deletes it when the create's",
+                  "// response is lost after the gateway registered the client.",
                   "pm.collectionVariables.set('codeModeVfsClient', 'harness_codemode_vfs_' + Date.now());",
-                  "pm.collectionVariables.set('codeModeVfsClientId', '');",
+                  "pm.collectionVariables.set('codeModeVfsClientId', pm.collectionVariables.get('codeModeVfsClient'));",
+                  "pm.collectionVariables.set('codeModeVfsCreateConfirmed', '0');",
                   "pm.collectionVariables.set('codeModeVfsDeleteAttempts', '0');"
                 ]
               }
@@ -351624,7 +351627,7 @@
                   "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
                   "});",
                   "if (pm.response.code === 200 || pm.response.code === 201) {",
-                  "  pm.collectionVariables.set('codeModeVfsClientId', pm.collectionVariables.get('codeModeVfsClient'));",
+                  "  pm.collectionVariables.set('codeModeVfsCreateConfirmed', '1');",
                   "}"
                 ]
               }
@@ -351877,7 +351880,20 @@
                   "    });",
                   "    sweep();",
                   "  });",
-                  "})();"
+                  "})();",
+                  "",
+                  "// An unconfirmed create (its response lost or failed) may still have registered this run's client, so",
+                  "// delete it here by the id sent with the create: 404 then means it was never registered. A confirmed",
+                  "// create is removed by the next row instead, which requires 200.",
+                  "var unconfirmedId = pm.collectionVariables.get('codeModeVfsClientId');",
+                  "if (unconfirmedId && pm.collectionVariables.get('codeModeVfsCreateConfirmed') !== '1') {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/mcp/client/' + encodeURIComponent(unconfirmedId), method: 'DELETE' }, function (err, res) {",
+                  "    pm.test('this run\\'s unconfirmed code-mode client is gone', function () {",
+                  "      pm.expect(err, 'delete failed: ' + err).to.equal(null);",
+                  "      pm.expect(res.code, 'cleanup failed - a code-mode client may still be registered and its meta-tools will be injected into every MCP-bearing request: ' + res.text()).to.be.oneOf([200, 404]);",
+                  "    });",
+                  "  });",
+                  "}"
                 ]
               }
             }
@@ -351916,8 +351932,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// No id means the create above already failed: skip, rather than add a second failure.",
-                  "if (!pm.collectionVariables.get('codeModeVfsClientId')) { pm.execution.skipRequest(); }"
+                  "// No id means the create step never ran; an unconfirmed create was cleaned up by the row above.",
+                  "if (!pm.collectionVariables.get('codeModeVfsClientId') || pm.collectionVariables.get('codeModeVfsCreateConfirmed') !== '1') { pm.execution.skipRequest(); }"
                 ]
               }
             },
@@ -351926,7 +351942,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Only this run created this client, so the delete must remove it: 404 is a failure here.",
+                  "// The create was confirmed, so this run's client exists and the delete must remove it: 404 is a failure here.",
                   "pm.test('cleanup removes this run\\'s code-mode client', function () {",
                   "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
                   "});",
