@@ -5898,6 +5898,75 @@ const LOG10 = folder("LOG-10 Code mode inside agent mode", `Setup: ${AGENT_TEXT(
   agentTeardown("LOG-10"),
 ]);
 
+// INF-81: a code-mode script's nested image/audio results. On /mcp, a successful run attaches every successful nested
+// call's media after the reply text; a nested error or a failed run attaches none. Outside the gateway nothing is
+// attached, and a structured result names its media under _media for the script and the Return value.
+const INF81_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+const INF81_WAV = "UklGRiYAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQIAAAAAAA==";
+const INF81_IMAGE = "[image/png, 69 bytes returned by the tool, not shown]";
+const INF81_AUDIO = "[audio/wav, 48 bytes returned by the tool, not shown]";
+const INF81_MEDIA = [{ type: "image", data: INF81_PNG, mimeType: "image/png" }, { type: "audio", data: INF81_WAV, mimeType: "audio/wav" }];
+const INF81_READ = "r = cm.capture()\nresult = [r[\"title\"], r[\"_media\"][0], r[\"_media\"][1]]";
+const INF81_RETURN = `Return value: ${JSON.stringify(["Fixture capture", INF81_IMAGE, INF81_AUDIO], null, 2)}`;
+// noMediaBytes checks a text holds neither the base64 nor an attachment line.
+const inf81NoMedia = (expr) => [
+  `pm.expect(${expr}, 'body: ' + pm.response.text()).to.not.include(${lit(INF81_PNG)});`,
+  `pm.expect(${expr}).to.not.include(${lit(INF81_WAV)});`,
+  `pm.expect(${expr}).to.not.include('Attached media:');`,
+];
+const INF81 = folder("INF-81 Code mode nested media", `Setup: cm serves capture (text "capture complete", a 69-byte PNG, a 48-byte WAV, structuredContent {"title": "Fixture capture"}) and capture_fail (the same blocks with isError true and text "capture failed"); cm registered as a code-mode client, auth none, per call, tools_to_execute ["*"], tools_to_auto_execute ["*"]; ${LLM_TEXT}.`, [
+  ...serveTools("INF-81", "cm", [
+    { name: "capture", reply: { content: [{ type: "text", text: "capture complete" }, ...INF81_MEDIA], structuredContent: { title: "Fixture capture" } } },
+    { name: "capture_fail", reply: { content: [{ type: "text", text: "capture failed" }, ...INF81_MEDIA], structuredContent: { title: "Fixture capture" }, isError: true } },
+  ], "capture and capture_fail"),
+  createClient("INF-81", httpClient("inf-81-cm", "cm", "cm", { tools_to_execute: ["*"], tools_to_auto_execute: ["*"], is_code_mode_client: true }), "setup: register cm as a code-mode client"),
+  rpc("INF-81", "/mcp: a script reads the title and _media; the reply attaches the PNG and the WAV after its text", call("executeToolCode", { code: INF81_READ }), { asserts: [A.status(200), A.custom("content is the text, then the PNG and the WAV", [
+    "var r = pm.response.json().result;",
+    "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+    "pm.expect(r.content.map(function (c) { return c.type; })).to.eql(['text', 'image', 'audio']);",
+    `pm.expect(r.content.slice(1)).to.eql(${lit(INF81_MEDIA)});`,
+    "var text = r.content[0].text;",
+    `pm.expect(text).to.include(${lit(INF81_RETURN)});`,
+    `pm.expect(text).to.include(${lit(`Attached media: ${INF81_IMAGE} ${INF81_AUDIO}`)});`,
+    `pm.expect(text).to.not.include(${lit(INF81_PNG)});`,
+    `pm.expect(text).to.not.include(${lit(INF81_WAV)});`,
+  ])] }),
+  rpc("INF-81", "/mcp: a nested call that answers isError attaches nothing", call("executeToolCode", { code: "r = cm.capture_fail()\nresult = r.error" }), { asserts: [A.status(200), A.custom("one text block naming the failure, no media", [
+    "var r = pm.response.json().result;",
+    "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+    "pm.expect(r.content.map(function (c) { return c.type; })).to.eql(['text']);",
+    "var text = r.content[0].text;",
+    "pm.expect(text).to.include('capture failed');",
+    "pm.expect(text).to.include('Execution completed, but 1 nested tool call failed.');",
+    ...inf81NoMedia("text"),
+  ])] }),
+  rpc("INF-81", "/mcp: a run that fails after a capture attaches nothing", call("executeToolCode", { code: "r = cm.capture()\nprint(\"seen:\", r[\"title\"])\nfail(\"stopped after capture\")" }), { asserts: [A.status(200), toolResultError(null, "stopped after capture"), A.custom("one text block with the print output, no media", [
+    "var r = pm.response.json().result;",
+    "pm.expect(r.content.map(function (c) { return c.type; }), 'body: ' + pm.response.text()).to.eql(['text']);",
+    "pm.expect(r.content[0].text).to.include('seen: Fixture capture');",
+    ...inf81NoMedia("r.content[0].text"),
+  ])] }),
+  mockCalls("INF-81", "cm", "capture", 2),
+  execBody("INF-81", "/v1/mcp/tool/execute: the Return value names the media under _media and nothing is attached", toolCall("executeToolCode", { code: INF81_READ }), [A.status(200), noIsError(), contentHas(INF81_RETURN), A.custom("no media bytes and no attachment line", [
+    "var text = pm.response.json().content;",
+    ...inf81NoMedia("text"),
+  ])]),
+  execBody("INF-81", "/v1/mcp/tool/execute in the Responses format: the same", { call_id: "inf81-call", name: "executeToolCode", arguments: lit({ code: INF81_READ }) }, [A.status(200), A.custom("the output names the media and attaches nothing", [
+    "var raw = pm.response.text();",
+    `pm.expect(raw).to.include(${lit(INF81_IMAGE)});`,
+    `pm.expect(raw).to.include(${lit(INF81_AUDIO)});`,
+    ...inf81NoMedia("raw"),
+  ])], { query: "?format=responses" }),
+  llmScript("INF-81", "inf81", { turns: [{ tool_calls: [llmCall("c1", "executeToolCode", { code: INF81_READ })] }, { text: "done" }] }),
+  infPost("INF-81", "agent mode: the model calls executeToolCode, then answers \"done\"", "/v1/chat/completions", chatBody("inf81"), [A.status(200), chatContent("done")]),
+  llmCaptured("INF-81", "turn 2's tool result names the media under _media and carries no media", "inf81", [reqCount(2), A.custom("tool message c1 has the Return value and no media", [REQS, TOOL_MSGS(1),
+    "var c = typeof tm.c1 === 'string' ? tm.c1 : JSON.stringify(tm.c1);",
+    `pm.expect(c, JSON.stringify(reqs[1].json.messages)).to.include(${lit(INF81_RETURN)});`,
+    ...inf81NoMedia("c"),
+  ])]),
+  deleteClient("INF-81", "inf-81-cm"),
+]);
+
 // ================================================================ provider-injected tools on the mock LLM
 
 // A provider's injected_tools expose one MCP tool to the model under a name of the provider's choosing, and Bifrost
@@ -13589,7 +13658,7 @@ const collection = {
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
     section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39]),
-    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
+    section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80, INF81]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
     section("FAIL Failure handling", "Failure handling tests.", [FAIL01, FAIL02, FAIL04, FAIL05, FAIL06, FAIL07, FAIL09, FAIL10, FAIL12, FAIL14, FAIL16, FAIL18, FAIL19, FAIL23, FAIL24, FAIL25, FAIL27, FAIL28]),
