@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -547,11 +549,18 @@ type commitPointTestManager struct {
 
 var errCommitPointInjected = errors.New("injected failure after commit")
 
+// commitPointReloadedAt marks a row returned by a commitPointTestManager reload, so a test can tell it from the commit-time row.
+var commitPointReloadedAt = time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+
 func (m *commitPointTestManager) ReloadVirtualKey(ctx context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
 	if m.fail == "ReloadVirtualKey" {
 		return nil, errCommitPointInjected
 	}
-	return m.store.GetVirtualKey(ctx, id)
+	vk, err := m.store.GetVirtualKey(ctx, id)
+	if err == nil && vk != nil {
+		vk.UpdatedAt = commitPointReloadedAt
+	}
+	return vk, err
 }
 
 func (m *commitPointTestManager) RemoveVirtualKey(context.Context, string) error { return nil }
@@ -560,21 +569,33 @@ func (m *commitPointTestManager) ReloadTeam(ctx context.Context, id string) (*co
 	if m.fail == "ReloadTeam" {
 		return nil, errCommitPointInjected
 	}
-	return m.store.GetTeam(ctx, id)
+	team, err := m.store.GetTeam(ctx, id)
+	if err == nil && team != nil {
+		team.UpdatedAt = commitPointReloadedAt
+	}
+	return team, err
 }
 
 func (m *commitPointTestManager) ReloadCustomer(ctx context.Context, id string) (*configstoreTables.TableCustomer, error) {
 	if m.fail == "ReloadCustomer" {
 		return nil, errCommitPointInjected
 	}
-	return m.store.GetCustomer(ctx, id)
+	customer, err := m.store.GetCustomer(ctx, id)
+	if err == nil && customer != nil {
+		customer.UpdatedAt = commitPointReloadedAt
+	}
+	return customer, err
 }
 
 func (m *commitPointTestManager) ReloadModelConfig(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error) {
 	if m.fail == "ReloadModelConfig" {
 		return nil, errCommitPointInjected
 	}
-	return m.store.GetModelConfigByID(ctx, id)
+	mc, err := m.store.GetModelConfigByID(ctx, id)
+	if err == nil && mc != nil {
+		mc.UpdatedAt = commitPointReloadedAt
+	}
+	return mc, err
 }
 
 func (m *commitPointTestManager) ResetBudgetUsageInMemory(context.Context, BudgetUsageResetOwner, []string) error {
@@ -744,6 +765,67 @@ func TestCommitPoint_CustomerUpdate(t *testing.T) {
 			requireStatus(t, ctx, tc.status)
 			requireCommitPointChange(t, ctx, "customer.updated", "name", "Renamed Customer")
 		})
+	}
+}
+
+// TestCommitPoint_GovernanceCreates pins both halves of a create's audit event: a successful
+// create records the reloaded row (stamped with reloadedAt by the test manager), and a create
+// whose reload fails still records the committed row together with the child rows saved in
+// the same transaction, such as its rate limit.
+func TestCommitPoint_GovernanceCreates(t *testing.T) {
+	const rateLimit = `"rate_limit":{"request_max_limit":7,"request_reset_duration":"1m"}`
+	for _, tc := range []struct {
+		name      string
+		fail      string
+		body      string
+		create    func(h *GovernanceHandler) fasthttp.RequestHandler
+		event     string
+		field     string
+		want      string
+		childRows bool
+	}{
+		{"virtual key", "ReloadVirtualKey", `{"name":"audit-vk","customer_id":"cust-audit",` + rateLimit + `,"budgets":[{"max_limit":5,"reset_duration":"1M"}]}`, func(h *GovernanceHandler) fasthttp.RequestHandler { return h.createVirtualKey }, "virtual_key.created", "name", "audit-vk", true},
+		{"team", "ReloadTeam", `{"name":"audit-team",` + rateLimit + `}`, func(h *GovernanceHandler) fasthttp.RequestHandler { return h.createTeam }, "team.created", "name", "audit-team", true},
+		{"customer", "ReloadCustomer", `{"name":"audit-customer",` + rateLimit + `}`, func(h *GovernanceHandler) fasthttp.RequestHandler { return h.createCustomer }, "customer.created", "name", "audit-customer", true},
+		{"model config", "ReloadModelConfig", `{"model_name":"gpt-4.1"}`, func(h *GovernanceHandler) fasthttp.RequestHandler { return h.createModelConfig }, "model_config.created", "model_name", "gpt-4.1", false},
+	} {
+		for _, fail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s reload fails=%v", tc.name, fail), func(t *testing.T) {
+				h, manager, _ := newCommitPointGovernanceHandler(t)
+				status := fasthttp.StatusOK
+				if fail {
+					manager.fail = tc.fail
+					status = fasthttp.StatusInternalServerError
+				}
+				ctx := newTestRequestCtx(tc.body)
+				tc.create(h)(ctx)
+				requireStatus(t, ctx, status)
+				change := requireCommitPointChange(t, ctx, tc.event, tc.field, tc.want)
+				if strings.Contains(string(change.After), `"value"`) {
+					t.Fatalf("after snapshot carries a key value: %s", change.After)
+				}
+				var after map[string]any
+				if err := json.Unmarshal(change.After, &after); err != nil {
+					t.Fatalf("decode after %s: %v", change.After, err)
+				}
+				reloaded := after["updated_at"] == commitPointReloadedAt.Format(time.RFC3339Nano)
+				if reloaded == fail {
+					t.Fatalf("after snapshot reloaded=%v, want %v (after=%s)", reloaded, !fail, change.After)
+				}
+				if !tc.childRows {
+					return
+				}
+				rl, _ := after["rate_limit"].(map[string]any)
+				if rl == nil || rl["request_max_limit"] != float64(7) {
+					t.Fatalf("after snapshot missing the saved rate limit: %s", change.After)
+				}
+				if tc.name == "virtual key" {
+					if budgets, _ := after["budgets"].([]any); len(budgets) != 1 {
+						t.Fatalf("after snapshot missing the saved budget: %s", change.After)
+					}
+				}
+			})
+		}
 	}
 }
 
