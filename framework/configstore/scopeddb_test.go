@@ -281,3 +281,35 @@ func TestPromptWrites_HonorQueryScope(t *testing.T) {
 	assert.Equal(t, "prompt-hidden", untouched.PromptID, "a refused update must not re-parent the session")
 	assert.Equal(t, "original", untouched.Name, "a refused update must not overwrite the session")
 }
+
+// TestPromptFolders_HonorQueryScope checks that a folder's prompt count only counts prompts the
+// caller's row scope shows, and that deleting a folder whose cascade would remove a hidden
+// prompt is refused while an unscoped delete still goes through.
+func TestPromptFolders_HonorQueryScope(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	folder := &tables.TableFolder{ID: "folder-1", Name: "shared"}
+	require.NoError(t, store.CreateFolder(ctx, folder))
+	for _, name := range []string{"mine", "hidden"} {
+		require.NoError(t, store.CreatePrompt(ctx, &tables.TablePrompt{ID: "p-" + name, Name: name, FolderID: &folder.ID}))
+	}
+	// Hides one prompt by id. Like the owner columns a real scope filters on, the id never changes
+	// after creation, so editing a prompt cannot move it in or out of the scope.
+	scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where("prompts.id <> ?", "p-hidden")
+	})
+
+	folders, err := store.GetFolders(scoped)
+	require.NoError(t, err)
+	require.Len(t, folders, 1)
+	require.Equal(t, 1, folders[0].PromptsCount, "the hidden prompt is not counted")
+
+	require.ErrorIs(t, store.DeleteFolder(scoped, folder.ID), ErrFolderHasHiddenPrompts)
+	_, err = store.GetPromptByID(ctx, "p-hidden")
+	require.NoError(t, err, "the refused delete removed nothing")
+
+	require.NoError(t, store.DeleteFolder(ctx, folder.ID))
+	_, err = store.GetFolderByID(ctx, folder.ID)
+	require.ErrorIs(t, err, ErrNotFound)
+}

@@ -24,7 +24,7 @@ Bifrost enforces the profile on every request. Editing a profile and propagating
 
 <Info>
 	For the full API contract (every endpoint, request and response shape, error codes), see the **Access Profiles** section of the [API
-	Reference](/api-reference).
+	Reference](/api-reference/access-profiles/list-access-profiles).
 </Info>
 
 ---
@@ -78,6 +78,15 @@ When a user receives a profile:
 3. **Locked key** - Only the name and description of a virtual key can be edited, so the policy can't be worked around. To change what the key allows, edit the profile.
 
 When a user loses their last profile, their virtual keys are removed.
+
+To manage user keys yourself, two settings under **Settings > Security** take each half of that lifecycle away from access profiles, separately:
+
+- **Don't Create User Virtual Keys for Access Profiles** (`client.skip_access_profile_user_virtual_key_creation` in `config.json`): a user's first profile never issues a key.
+- **Don't Delete User Virtual Keys When Access Profiles Are Removed** (`client.skip_access_profile_user_virtual_key_deletion`): losing the last profile never removes the user's keys. They become ordinary keys with none of the profile's providers, MCP access or agent access.
+
+Keys the user already owns, or that you add for them, are still governed and locked by their profiles while they hold one. Deleting the user still deletes their keys.
+
+A user with a profile but no key is still governed by the profile: requests they make through sign-in (SSO, the desktop agent, user-mode MCP) are checked against it and count toward its budgets and rate limits. The virtual key lookup for credential helpers returns only the user's own keys, and none at all for such a user; a profile holder is never handed a team's key. Turning **Don't Create User Virtual Keys for Access Profiles** off later doesn't issue keys to users who already hold a profile, so add those keys yourself.
 
 ---
 
@@ -178,7 +187,7 @@ A key whose owner holds no profile (for example, a team key on a team that has n
 | **A user joins a team, business unit, or customer** | They are covered by its profile, and charged against it, from their next request. Their own keys and profiles are untouched. |
 | **A user leaves** | They stop being covered and charged immediately. |
 | **A user's role changes** | Profiles from the old role are removed and profiles from the new role are added. Manual and IdP-granted profiles stay. |
-| **A user loses their last profile** | Their virtual keys are removed. |
+| **A user loses their last profile** | Their virtual keys are removed, unless `skip_access_profile_user_virtual_key_deletion` is on: then they are kept as ordinary keys. |
 | **A profile is detached from a team, business unit, or customer** | You choose: **Delete virtual keys** removes the entity's keys, or **Preserve virtual keys** keeps them stripped of the profile's access, so they only reach what a customer above still allows. Either way, the entity's profile budgets and their usage are removed, and its old legacy limits are not restored. |
 | **The team, business unit, or customer is deleted** | Its profile copy is deleted with it. Its keys are kept but no longer owned by it. |
 | **A profile is edited and propagated** | Every user and every entity holding it is updated. Usage is preserved unless you choose to reset it, and budget overrides are always kept. |
@@ -299,6 +308,18 @@ Under **Automatic key rotation**, pick **Every 7 / 30 / 90 days** or **Custom** 
 	only carry a list of allowed tools per server; "everything except X" can't be represented. List the tools you want instead.
 </Warning>
 
+### Configure relay access
+
+<Frame>
+	<img src="/media/access-profiles/access-profile-relay-access.png" alt="Relays picker in the access profile form with two granted relays" />
+</Frame>
+
+Under **Relays**, pick each [relay](/relays/overview) that holders of the profile may call at `/relay/<name>/...`. A profile with no relays allows none. Each call's cost is charged to the profile's budgets, like model usage — unless the call is scoped to an Enterprise [project](/enterprise/projects) with `accounting_mode: project_only`, in which case the project's budget answers for the call and the profile's budgets are not touched.
+
+A virtual key governed by the profile takes its relays from here, so the key's own relay grants are not used. A call the profile does not allow is refused with `403`, naming the profile: `Relay 'web-search' is not allowed for access profile 'contractors'`.
+
+Through the API, `relay_grants` on [Update access profile](/api-reference/access-profiles/update-access-profile) replaces the list; leave it out to keep the current grants, or send `[]` to remove them all. See [relay_grants in config.json and Helm](#declaring-profiles-in-config-json-and-helm).
+
 ### Assign the profile to users
 
 Click **Create**, then assign the profile in any of these ways. A user can hold profiles from all of them at once.
@@ -394,7 +415,8 @@ Profiles are declared under `access_profiles`, and a team, business unit, or cus
 		{
 			"name": "Engineering",
 			"provider_configs": [{ "provider_name": "openai", "all_models_allowed": true }],
-			"budgets": [{ "id": "budget-engineering", "max_limit": 5000, "reset_duration": "1M" }]
+			"budgets": [{ "id": "budget-engineering", "max_limit": 5000, "reset_duration": "1M" }],
+			"relay_grants": [{ "relay_name": "web-search" }, { "relay_name": "translate" }]
 		}
 	],
 	"governance": {
@@ -405,7 +427,30 @@ Profiles are declared under `access_profiles`, and a team, business unit, or cus
 }
 ```
 
-In Helm, set the same fields under `bifrost.accessProfiles` and `bifrost.governance.teams[].access_profile`, `.businessUnits[].access_profile`, and `.customers[].access_profile`.
+In Helm, set the same fields under `bifrost.accessProfiles` and `bifrost.governance.teams[].access_profile`, `.businessUnits[].access_profile`, and `.customers[].access_profile`:
+
+```yaml
+bifrost:
+  accessProfiles:
+    - name: Engineering
+      provider_configs:
+        - provider_name: openai
+          all_models_allowed: true
+      budgets:
+        - id: budget-engineering
+          max_limit: 5000
+          reset_duration: 1M
+      relay_grants:
+        - relay_name: web-search
+        - relay_name: translate
+  governance:
+    teams:
+      - id: team-platform
+        name: Platform
+        access_profile: Engineering
+```
+
+`relay_grants` lists the [relays](#configure-relay-access) the profile allows. A profile that names a relay that does not exist is skipped as a whole, with a warning in the server log.
 
 How the file is applied depends on your [source of truth](/deployment-guides/config-json/source-of-truth):
 

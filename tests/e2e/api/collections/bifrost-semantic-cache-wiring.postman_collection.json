@@ -10775,7 +10775,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
@@ -10835,7 +10835,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
@@ -22765,6 +22765,765 @@
         },
         {
           "id": "scw-440",
+          "name": "S30 chat turn 1 write",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat turn 1 write\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s30chata\",",
+                  "  \"embedding\": true,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-441",
+          "name": "S30 chat turn 1 hits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat turn 1 hits\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30chata\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-442",
+          "name": "S30 chat follow-up does not replay turn 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat follow-up does not replay turn 1\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s30chata\"",
+                  "  ]",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-443",
+          "name": "S30 chat follow-up write",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat follow-up write\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s30chatb\",",
+                  "  \"distinct\": [",
+                  "    \"s30chata\"",
+                  "  ],",
+                  "  \"embedding\": true,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-444",
+          "name": "S30 chat the same follow-up hits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat the same follow-up hits\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30chatb\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-445",
+          "name": "S30 chat reworded follow-up after the same history is a semantic hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat reworded follow-up after the same history is a semantic hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"semantic\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30chatb\",",
+                  "  \"threshold\": 0.85,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-446",
+          "name": "S30 chat the same follow-up after a different reply misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 chat the same follow-up after a different reply misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s30chata\",",
+                  "    \"s30chatb\"",
+                  "  ]",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30chat-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Use lemon juice and olive oil.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_tokens\":8,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-447",
+          "name": "S30 responses turn 1 write",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses turn 1 write\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s30responsesa\",",
+                  "  \"embedding\": true,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"How do I make a basic vinaigrette salad dressing at home?\",\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-448",
+          "name": "S30 responses turn 1 hits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses turn 1 hits\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30responsesa\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":\"How do I make a basic vinaigrette salad dressing at home?\",\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-449",
+          "name": "S30 responses follow-up does not replay turn 1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses follow-up does not replay turn 1\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s30responsesa\"",
+                  "  ]",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-450",
+          "name": "S30 responses follow-up write",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses follow-up write\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"save\": \"s30responsesb\",",
+                  "  \"distinct\": [",
+                  "    \"s30responsesa\"",
+                  "  ],",
+                  "  \"embedding\": true,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-451",
+          "name": "S30 responses the same follow-up hits",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses the same follow-up hits\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"direct\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30responsesb\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-452",
+          "name": "S30 responses reworded follow-up after the same history is a semantic hit",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses reworded follow-up after the same history is a semantic hit\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"semantic\",",
+                  "  \"poll\": true,",
+                  "  \"same\": \"s30responsesb\",",
+                  "  \"threshold\": 0.85,",
+                  "  \"providerUsed\": \"scw-embed-{{run_id}}\",",
+                  "  \"modelUsed\": \"text-embedding-3-small\"",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Whisk three parts oil into one part vinegar.\"},{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-453",
+          "name": "S30 responses the same follow-up after a different reply misses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "eval(pm.collectionVariables.get('scw_lib'));",
+                  "scw.run({",
+                  "  \"name\": \"S30 responses the same follow-up after a different reply misses\",",
+                  "  \"status\": 200,",
+                  "  \"outcome\": \"miss\",",
+                  "  \"distinct\": [",
+                  "    \"s30responsesa\",",
+                  "    \"s30responsesb\"",
+                  "  ]",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-cache-key",
+                "value": "s30responses-{{run_id}}"
+              },
+              {
+                "key": "x-bf-cache-no-store",
+                "value": "true"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"input\":[{\"role\":\"user\",\"content\":\"How do I make a basic vinaigrette salad dressing at home?\"},{\"role\":\"assistant\",\"content\":\"Use lemon juice and olive oil.\"},{\"role\":\"user\",\"content\":\"What are the steps to make a basic vinaigrette salad dressing at home?\"}],\"max_output_tokens\":16,\"temperature\":0}"
+            }
+          }
+        },
+        {
+          "id": "scw-454",
           "name": "S29 plugin default threshold",
           "event": [
             {
@@ -22813,7 +23572,7 @@
           }
         },
         {
-          "id": "scw-441",
+          "id": "scw-455",
           "name": "S29 write",
           "event": [
             {
@@ -22865,7 +23624,7 @@
           }
         },
         {
-          "id": "scw-442",
+          "id": "scw-456",
           "name": "S29 hits",
           "event": [
             {
@@ -22919,7 +23678,7 @@
           }
         },
         {
-          "id": "scw-443",
+          "id": "scw-457",
           "name": "S29 the same question about another country misses",
           "event": [
             {
@@ -22977,7 +23736,7 @@
           }
         },
         {
-          "id": "scw-444",
+          "id": "scw-458",
           "name": "S29 restore baseline",
           "event": [
             {
@@ -23026,7 +23785,7 @@
           }
         },
         {
-          "id": "scw-445",
+          "id": "scw-459",
           "name": "S24 switch to a new namespace",
           "event": [
             {
@@ -23075,7 +23834,7 @@
           }
         },
         {
-          "id": "scw-446",
+          "id": "scw-460",
           "name": "S24 the paraphrase misses in the new namespace",
           "event": [
             {
@@ -23130,7 +23889,7 @@
           }
         },
         {
-          "id": "scw-447",
+          "id": "scw-461",
           "name": "S24 switch back",
           "event": [
             {
@@ -23179,7 +23938,7 @@
           }
         },
         {
-          "id": "scw-448",
+          "id": "scw-462",
           "name": "S24 the paraphrase hits in the old namespace",
           "event": [
             {
@@ -23236,7 +23995,7 @@
           }
         },
         {
-          "id": "scw-449",
+          "id": "scw-463",
           "name": "S25 image generation write",
           "event": [
             {
@@ -23289,12 +24048,12 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
         {
-          "id": "scw-450",
+          "id": "scw-464",
           "name": "S25 image generation hits",
           "event": [
             {
@@ -23343,12 +24102,12 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A bright red apple sitting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
         {
-          "id": "scw-451",
+          "id": "scw-465",
           "name": "S25 image paraphrase is a semantic hit with the same image",
           "event": [
             {
@@ -23406,12 +24165,12 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-image-1\",\"prompt\":\"A vivid red apple resting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
+              "raw": "{\"model\":\"openai/gpt-image-1.5\",\"prompt\":\"A vivid red apple resting on a wooden kitchen table in daylight.\",\"size\":\"1024x1024\",\"quality\":\"low\",\"n\":1}"
             }
           }
         },
         {
-          "id": "scw-452",
+          "id": "scw-466",
           "name": "S26 embedding provider with an invalid key",
           "event": [
             {
@@ -23460,7 +24219,7 @@
           }
         },
         {
-          "id": "scw-453",
+          "id": "scw-467",
           "name": "S26 the request still succeeds and writes",
           "event": [
             {
@@ -23511,7 +24270,7 @@
           }
         },
         {
-          "id": "scw-454",
+          "id": "scw-468",
           "name": "S26 the exact repeat hits direct",
           "event": [
             {
@@ -23566,7 +24325,7 @@
           }
         },
         {
-          "id": "scw-455",
+          "id": "scw-469",
           "name": "S26 the write's log row has the plugin warning",
           "event": [
             {
@@ -23609,7 +24368,7 @@
           }
         },
         {
-          "id": "scw-456",
+          "id": "scw-470",
           "name": "S26 the hit's log row has no warning",
           "event": [
             {
@@ -23652,7 +24411,7 @@
           }
         },
         {
-          "id": "scw-457",
+          "id": "scw-471",
           "name": "S27 semantic baseline",
           "event": [
             {
@@ -23701,7 +24460,7 @@
           }
         },
         {
-          "id": "scw-458",
+          "id": "scw-472",
           "name": "S27 delete the embedding provider",
           "event": [
             {
@@ -23738,7 +24497,7 @@
           }
         },
         {
-          "id": "scw-459",
+          "id": "scw-473",
           "name": "S27 the request still succeeds and writes",
           "event": [
             {
@@ -23789,7 +24548,7 @@
           }
         },
         {
-          "id": "scw-460",
+          "id": "scw-474",
           "name": "S27 the exact repeat hits direct",
           "event": [
             {
@@ -23843,7 +24602,7 @@
           }
         },
         {
-          "id": "scw-461",
+          "id": "scw-475",
           "name": "S27 the write's log row has the plugin warning",
           "event": [
             {
@@ -23886,7 +24645,7 @@
           }
         },
         {
-          "id": "scw-462",
+          "id": "scw-476",
           "name": "S27 recreate the embedding provider",
           "event": [
             {
@@ -23931,7 +24690,7 @@
           }
         },
         {
-          "id": "scw-463",
+          "id": "scw-477",
           "name": "S27 recreate the embedding key",
           "event": [
             {
@@ -23978,7 +24737,7 @@
           }
         },
         {
-          "id": "scw-464",
+          "id": "scw-478",
           "name": "S27 write after the provider is back",
           "event": [
             {
@@ -24030,7 +24789,7 @@
           }
         },
         {
-          "id": "scw-465",
+          "id": "scw-479",
           "name": "S27 hits after the provider is back",
           "event": [
             {
@@ -24084,7 +24843,7 @@
           }
         },
         {
-          "id": "scw-466",
+          "id": "scw-480",
           "name": "S27 paraphrase is a semantic hit again",
           "event": [
             {
@@ -24142,7 +24901,7 @@
           }
         },
         {
-          "id": "scw-467",
+          "id": "scw-481",
           "name": "S27 the semantic hit's log row has no warning",
           "event": [
             {
@@ -24185,7 +24944,7 @@
           }
         },
         {
-          "id": "scw-468",
+          "id": "scw-482",
           "name": "S28 the semantic miss's log row",
           "event": [
             {
@@ -24226,7 +24985,7 @@
           }
         },
         {
-          "id": "scw-469",
+          "id": "scw-483",
           "name": "S28 the semantic hit's log row",
           "event": [
             {
@@ -24267,7 +25026,7 @@
           }
         },
         {
-          "id": "scw-470",
+          "id": "scw-484",
           "name": "K7 Anthropic messages write in semantic mode",
           "event": [
             {
@@ -24325,7 +25084,7 @@
           }
         },
         {
-          "id": "scw-471",
+          "id": "scw-485",
           "name": "K7 Anthropic messages exact repeat",
           "event": [
             {
@@ -24384,7 +25143,7 @@
           }
         },
         {
-          "id": "scw-472",
+          "id": "scw-486",
           "name": "K7 Anthropic messages paraphrase carries every semantic header",
           "event": [
             {
@@ -24447,7 +25206,7 @@
           }
         },
         {
-          "id": "scw-473",
+          "id": "scw-487",
           "name": "S cleanup: semantic baseline",
           "event": [
             {
@@ -24501,7 +25260,7 @@
       "name": "O: logs",
       "item": [
         {
-          "id": "scw-474",
+          "id": "scw-488",
           "name": "O1 a direct miss's log row equals the response",
           "event": [
             {
@@ -24539,7 +25298,7 @@
           }
         },
         {
-          "id": "scw-475",
+          "id": "scw-489",
           "name": "O1 a direct hit's log row equals the response",
           "event": [
             {
@@ -24577,7 +25336,7 @@
           }
         },
         {
-          "id": "scw-476",
+          "id": "scw-490",
           "name": "O1 a semantic miss's log row equals the response",
           "event": [
             {
@@ -24615,7 +25374,7 @@
           }
         },
         {
-          "id": "scw-477",
+          "id": "scw-491",
           "name": "O1 a semantic hit's log row equals the response",
           "event": [
             {
@@ -24653,7 +25412,7 @@
           }
         },
         {
-          "id": "scw-478",
+          "id": "scw-492",
           "name": "O2 the direct filter lists the hit and not the miss",
           "event": [
             {
@@ -24705,7 +25464,7 @@
           }
         },
         {
-          "id": "scw-479",
+          "id": "scw-493",
           "name": "O2 the semantic filter lists the hit and not the miss",
           "event": [
             {
@@ -24757,7 +25516,7 @@
           }
         },
         {
-          "id": "scw-480",
+          "id": "scw-494",
           "name": "O3 stats before",
           "event": [
             {
@@ -24801,7 +25560,7 @@
           }
         },
         {
-          "id": "scw-481",
+          "id": "scw-495",
           "name": "O3 semantic baseline",
           "event": [
             {
@@ -24850,7 +25609,7 @@
           }
         },
         {
-          "id": "scw-482",
+          "id": "scw-496",
           "name": "O3 write",
           "event": [
             {
@@ -24900,7 +25659,7 @@
           }
         },
         {
-          "id": "scw-483",
+          "id": "scw-497",
           "name": "O3 a direct hit",
           "event": [
             {
@@ -24954,7 +25713,7 @@
           }
         },
         {
-          "id": "scw-484",
+          "id": "scw-498",
           "name": "O3 a semantic hit",
           "event": [
             {
@@ -25008,7 +25767,7 @@
           }
         },
         {
-          "id": "scw-485",
+          "id": "scw-499",
           "name": "O3 stats count both hits",
           "event": [
             {
@@ -25059,7 +25818,7 @@
           }
         },
         {
-          "id": "scw-486",
+          "id": "scw-500",
           "name": "O4 the speech hit's log row",
           "event": [
             {
@@ -25102,7 +25861,7 @@
       "name": "Teardown",
       "item": [
         {
-          "id": "scw-487",
+          "id": "scw-501",
           "name": "Teardown: delete the plugin",
           "event": [
             {
@@ -25140,7 +25899,7 @@
           }
         },
         {
-          "id": "scw-488",
+          "id": "scw-502",
           "name": "Teardown: delete virtual key A",
           "event": [
             {
@@ -25179,7 +25938,7 @@
           }
         },
         {
-          "id": "scw-489",
+          "id": "scw-503",
           "name": "Teardown: delete virtual key B",
           "event": [
             {
@@ -25218,7 +25977,7 @@
           }
         },
         {
-          "id": "scw-490",
+          "id": "scw-504",
           "name": "Teardown: delete provider openai",
           "event": [
             {
@@ -25256,7 +26015,7 @@
           }
         },
         {
-          "id": "scw-491",
+          "id": "scw-505",
           "name": "Teardown: delete provider anthropic",
           "event": [
             {
@@ -25294,7 +26053,7 @@
           }
         },
         {
-          "id": "scw-492",
+          "id": "scw-506",
           "name": "Teardown: delete provider gemini",
           "event": [
             {
@@ -25332,7 +26091,7 @@
           }
         },
         {
-          "id": "scw-493",
+          "id": "scw-507",
           "name": "Teardown: delete provider cohere",
           "event": [
             {
@@ -25370,7 +26129,7 @@
           }
         },
         {
-          "id": "scw-494",
+          "id": "scw-508",
           "name": "Teardown: delete provider openrouter",
           "event": [
             {
@@ -25408,7 +26167,7 @@
           }
         },
         {
-          "id": "scw-495",
+          "id": "scw-509",
           "name": "Teardown: delete provider bedrock",
           "event": [
             {
@@ -25446,7 +26205,7 @@
           }
         },
         {
-          "id": "scw-496",
+          "id": "scw-510",
           "name": "Teardown: delete provider scw-embed-{{run_id}}",
           "event": [
             {
@@ -25484,7 +26243,7 @@
           }
         },
         {
-          "id": "scw-497",
+          "id": "scw-511",
           "name": "Teardown: delete provider scw-alt-{{run_id}}",
           "event": [
             {
@@ -25522,7 +26281,7 @@
           }
         },
         {
-          "id": "scw-498",
+          "id": "scw-512",
           "name": "Teardown: delete provider scw-badembed-{{run_id}}",
           "event": [
             {

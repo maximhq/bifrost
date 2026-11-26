@@ -35,6 +35,8 @@ func ClassifyPassthroughPath(method, path string) schemas.RequestType {
 		return schemas.TextCompletionRequest
 	case strings.HasSuffix(path, "/responses"):
 		return schemas.ResponsesRequest
+	case strings.HasSuffix(path, "/responses/compact"):
+		return schemas.CompactionRequest
 	case strings.HasSuffix(path, "/embeddings"):
 		return schemas.EmbeddingRequest
 	case strings.HasSuffix(path, "/audio/speech"):
@@ -66,7 +68,12 @@ func ExtractOpenAIPassthroughUsage(method, path string, reqBody, body []byte) *s
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest:
 		return ExtractOAIChatUsage(body)
 	case schemas.ResponsesRequest:
-		return extractOAIResponsesUsage(body)
+		u := extractOAIResponsesUsage(body)
+		recordPassthroughContainerSessions(u, reqBody, body)
+		if u != nil && u.LLMUsage != nil {
+			recordImageGenToolModel(u.LLMUsage.ToolUsage, reqBody)
+		}
+		return u
 	case schemas.EmbeddingRequest:
 		return extractOAIEmbeddingUsage(body)
 	case schemas.SpeechRequest:
@@ -87,6 +94,16 @@ func ExtractOpenAIPassthroughUsage(method, path string, reqBody, body []byte) *s
 func HasOpenAIPassthroughUsage(event []byte) bool {
 	return providerUtils.GetJSONField(event, "usage").Exists() ||
 		providerUtils.GetJSONField(event, "response.usage").Exists()
+}
+
+// EndsOpenAIPassthroughStream reports whether a passthrough SSE event ends a Responses API stream.
+// Chat Completions chunks carry no top-level type, so they never match.
+func EndsOpenAIPassthroughStream(event []byte) bool {
+	switch providerUtils.GetJSONField(event, "type").Str {
+	case "response.completed", "response.failed", "response.incomplete", "error":
+		return true
+	}
+	return false
 }
 
 // ---- video generation ----

@@ -3551,6 +3551,8 @@ def get_realtime_test_model(provider: str) -> str:
     env_var = f"{provider.upper()}_REALTIME_MODEL"
     if provider == "openai":
         return os.getenv(env_var, "gpt-realtime")
+    if provider == "gemini":
+        return os.getenv(env_var, "gemini-3.8-live")
     return os.getenv(env_var, "")
 
 

@@ -64,7 +64,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Get available tools per client
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find matching client
 	var matchedClientName string
@@ -77,7 +77,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
-		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
+		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
 			continue
 		}
 
@@ -103,7 +103,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 		var availableServers []string
 		for name := range availableToolsPerClient {
 			client := s.clientManager.GetClientByName(name)
-			if client != nil && client.ExecutionConfig.IsCodeModeClient {
+			if client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
 				availableServers = append(availableServers, name)
 			}
 		}
@@ -131,7 +131,7 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	}
 
 	// Generate detailed documentation using generateTypeDefinitions
-	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
+	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
 }
@@ -161,10 +161,6 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	sb.WriteString(fmt.Sprintf("# Call tools using: result = %s.tool_name(param=value)\n", clientName))
 	sb.WriteString("# No async/await needed - calls are synchronous.\n")
 	sb.WriteString("#\n")
-	sb.WriteString("# STARLARK DIFFERENCE FROM PYTHON:\n")
-	sb.WriteString("# for/if/while at top level MUST be inside a function.\n")
-	sb.WriteString("# Wrap loops: def main(): for x in items: ... then result = main()\n")
-	sb.WriteString("#\n")
 	sb.WriteString("# CRITICAL - HANDLING RESPONSES:\n")
 	sb.WriteString("# A tool returns the decoded JSON when the server sends JSON: a dict or list,\n")
 	sb.WriteString("# or a number, bool or None. Any other text arrives as a str.\n")
@@ -179,7 +175,7 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 	sb.WriteString("# A call that fails returns an error value, not a result: hasattr(r, \"error\") is True and\n")
 	sb.WriteString("# r.error holds the message. Call fail(r.error) to stop the run, or skip it and carry on.\n")
 	sb.WriteString("#\n")
-	sb.WriteString("# Common errors: \"key not found\", \"has no attribute\", \"string index\"\n")
+	sb.WriteString("# Common errors: key \"x\" not in dict, dict has no .x field or method, string index\n")
 	sb.WriteString("# Fix: check type(r) first, then index the shape you actually got\n")
 	if instructions != "" {
 		sb.WriteString("#\n")

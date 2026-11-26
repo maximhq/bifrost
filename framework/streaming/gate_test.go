@@ -1727,6 +1727,46 @@ func TestGate_GetAccumulatedResponse_ChatSnapshot(t *testing.T) {
 	}
 }
 
+// TestGate_GetAccumulatedResponse_ChatSnapshotKeepsChoicesSeparate verifies that a paused n>1 stream's snapshot,
+// which guardrails evaluate, returns each choice on its own instead of one message mixing their tokens.
+func TestGate_GetAccumulatedResponse_ChatSnapshotKeepsChoicesSeparate(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-snapshot-choices"
+
+	deltas := []struct {
+		choice int
+		text   string
+	}{{0, "Hello "}, {1, "SECRET "}, {0, "world"}, {1, "PASSWORD"}}
+	for i, d := range deltas {
+		chunk := &ChatStreamChunk{
+			ChunkIndex:  i,
+			ChoiceIndex: d.choice,
+			Timestamp:   time.Now(),
+			Delta:       &schemas.ChatStreamResponseChoiceDelta{Content: bifrost.Ptr(d.text)},
+		}
+		if err := a.addChatStreamChunk(traceID, StreamTypeChat, chunk, false); err != nil {
+			t.Fatalf("add chunk %d: %v", i, err)
+		}
+	}
+
+	resp := a.GetAccumulatedResponse(traceID)
+	if resp == nil || resp.ChatResponse == nil {
+		t.Fatalf("expected a chat snapshot, got %+v", resp)
+	}
+	want := []string{"Hello world", "SECRET PASSWORD"}
+	if len(resp.ChatResponse.Choices) != len(want) {
+		t.Fatalf("got %d choices, want %d", len(resp.ChatResponse.Choices), len(want))
+	}
+	for i, choice := range resp.ChatResponse.Choices {
+		if choice.Index != i {
+			t.Fatalf("choice %d has index %d", i, choice.Index)
+		}
+		if got := *choice.ChatNonStreamResponseChoice.Message.Content.ContentStr; got != want[i] {
+			t.Fatalf("choice %d content = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
 // TestGate_GetAccumulatedResponse_TextSnapshot verifies that text streams use
 // the text-completion response envelope even though they share ChatStreamChunks.
 func TestGate_GetAccumulatedResponse_TextSnapshot(t *testing.T) {
@@ -2341,4 +2381,126 @@ func TestGate_ApprovedFullDrainWhilePausedThenResumeEnds(t *testing.T) {
 	if state != StreamStateEnded {
 		t.Fatalf("gate state = %v after flusher exit, want Ended", state)
 	}
+}
+
+// A paused gate holding the first valid chunk of an attempt whose first-chunk check is
+// waiting sends exactly one commit marker, and the held chunks themselves stay buffered.
+func TestGate_PausedFirstChunkSendsOneCommitMarker(t *testing.T) {
+	a := newTestAccumulator(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.ReadyStreamCommitWatch()
+	ch := make(chan *schemas.BifrostStreamChunk, 8)
+	const traceID = "trace-commit-marker"
+	chunks := makeChunks(3)
+
+	a.PauseStream(traceID)
+	for _, c := range chunks {
+		if !a.GateSend(traceID, c, false, false, ch, ctx) {
+			t.Fatal("GateSend returned false while paused")
+		}
+	}
+
+	if len(ch) != 1 {
+		t.Fatalf("expected exactly one chunk on the channel, got %d", len(ch))
+	}
+	if got := <-ch; !schemas.IsStreamCommitMarker(got) {
+		t.Fatalf("expected the commit marker, got %+v", got)
+	}
+	if ctx.ConsumeStreamCommitWatch() {
+		t.Fatal("the gate must consume the commit watch")
+	}
+
+	a.ResumeStream(traceID)
+	for i, want := range chunks {
+		select {
+		case got := <-ch:
+			if got != want {
+				t.Fatalf("chunk %d: replayed %p, want %p", i, got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("chunk %d was never replayed after resume", i)
+		}
+	}
+}
+
+// Without a ready watch (no attempt reported output, e.g. a later injected-tool turn or a
+// short-circuit stream) and for an error chunk, the gate sends no marker.
+func TestGate_PausedSendsNoCommitMarkerWhenNotReadyOrError(t *testing.T) {
+	cases := []struct {
+		name  string
+		ready bool
+		chunk *schemas.BifrostStreamChunk
+	}{
+		{name: "not ready", ready: false, chunk: makeChunks(1)[0]},
+		{name: "error chunk", ready: true, chunk: &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "blocked"}}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestAccumulator(t)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			if tc.ready {
+				ctx.ReadyStreamCommitWatch()
+			}
+			ch := make(chan *schemas.BifrostStreamChunk, 8)
+			traceID := "trace-no-marker-" + tc.name
+			a.PauseStream(traceID)
+			a.GateSend(traceID, tc.chunk, false, false, ch, ctx)
+			if len(ch) != 0 {
+				t.Fatalf("expected no chunk on the channel, got %d", len(ch))
+			}
+			if ctx.ConsumeStreamCommitWatch() {
+				t.Fatal("the gate must consume the watch on every chunk it sees")
+			}
+		})
+	}
+}
+
+// A held startup event (no output yet) leaves the watch unready, so the gate sends no marker
+// for it; the first held chunk the attempt reports as output then sends exactly one.
+func TestGate_PausedStartupEventSendsNoCommitMarker(t *testing.T) {
+	a := newTestAccumulator(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ch := make(chan *schemas.BifrostStreamChunk, 8)
+	const traceID = "trace-startup-no-marker"
+	chunks := makeChunks(2)
+
+	a.PauseStream(traceID)
+	a.GateSend(traceID, chunks[0], false, false, ch, ctx)
+	if len(ch) != 0 {
+		t.Fatalf("a startup event sent %d chunks, want no commit marker", len(ch))
+	}
+
+	ctx.ReadyStreamCommitWatch()
+	a.GateSend(traceID, chunks[1], false, false, ch, ctx)
+	if len(ch) != 1 {
+		t.Fatalf("expected exactly one chunk on the channel after output, got %d", len(ch))
+	}
+	if got := <-ch; !schemas.IsStreamCommitMarker(got) {
+		t.Fatalf("expected the commit marker, got %+v", got)
+	}
+	a.ResumeStream(traceID)
+}
+
+// A gate that is not holding forwards the committing chunk itself, so it sends no marker, and it
+// still consumes the watch so the signal cannot fire for a later hold.
+func TestGate_ActiveConsumesCommitWatchWithoutMarker(t *testing.T) {
+	a := newTestAccumulator(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ch := make(chan *schemas.BifrostStreamChunk, 8)
+	const traceID = "trace-active-consumes-watch"
+	chunks := makeChunks(2)
+
+	a.ResumeStream(traceID)
+	ctx.ReadyStreamCommitWatch()
+	a.GateSend(traceID, chunks[0], false, false, ch, ctx)
+	if got := <-ch; got != chunks[0] {
+		t.Fatalf("an active gate forwarded %+v, want the chunk itself", got)
+	}
+
+	a.PauseStream(traceID)
+	a.GateSend(traceID, chunks[1], false, false, ch, ctx)
+	if len(ch) != 0 {
+		t.Fatalf("a stale watch sent %d chunks for a later hold, want none", len(ch))
+	}
+	a.ResumeStream(traceID)
 }

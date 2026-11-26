@@ -108,6 +108,7 @@ type BedrockConverseRequest struct {
 	PromptVariables                   map[string]BedrockPromptVariable `json:"promptVariables,omitempty"`                   // Prompt variables for prompt management
 	RequestMetadata                   map[string]string                `json:"requestMetadata,omitempty"`                   // Request metadata
 	ServiceTier                       *BedrockServiceTier              `json:"serviceTier,omitempty"`                       // Service tier configuration (note: camelCase in both request and response)
+	OutputConfig                      json.RawMessage                  `json:"outputConfig,omitempty"`                      // Native Converse structured-output configuration
 	Stream                            bool                             `json:"-"`                                           // Whether streaming is requested (internal, not in JSON)
 
 	// Extra params for advanced use cases
@@ -252,6 +253,7 @@ type BedrockContentBlock struct {
 	// ingress on these json:"-" carriers (#7155).
 	AnthropicToolSearchUse    *BedrockAnthropicToolSearchUse    `json:"-"`
 	AnthropicToolSearchResult *BedrockAnthropicToolSearchResult `json:"-"`
+	AnthropicToolReference    *string                           `json:"-"` // tool_name of a tool_reference inside a tool_result (#8976)
 }
 
 // BedrockAnthropicToolSearchUse is a replayed server_tool_use naming a tool-search
@@ -298,18 +300,26 @@ type BedrockImageSourceData struct {
 
 // BedrockDocumentSource represents document content
 type BedrockDocumentSource struct {
-	Format string                     `json:"format"` // Required: Document format (pdf, csv, doc, docx, xls, xlsx, html, txt, md)
-	Name   string                     `json:"name"`   // Required: Document name
-	Source *BedrockDocumentSourceData `json:"source"` // Required: Document source data
+	Format    string                     `json:"format,omitempty"` // Omitted for custom-content documents
+	Name      string                     `json:"name"`             // Required: Document name
+	Source    *BedrockDocumentSourceData `json:"source"`           // Required: Document source data
+	Citations *BedrockCitationsConfig    `json:"citations,omitempty"`
+}
+
+// BedrockDocumentContentBlock is the text union used for custom document content
+// and the generated/source text fragments in citation blocks.
+type BedrockDocumentContentBlock struct {
+	Text *string `json:"text,omitempty"`
 }
 
 // BedrockDocumentSourceData represents the source of document data.
-// This is a tagged union — exactly one of Bytes, Text or S3Location should be set.
+// This is a tagged union — exactly one of Bytes, Text, Content or S3Location should be set.
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
 type BedrockDocumentSourceData struct {
-	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded document bytes
-	Text       *string            `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
-	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
+	Bytes      *string                       `json:"bytes,omitempty"`      // Base64-encoded document bytes
+	Text       *string                       `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
+	S3Location *BedrockS3Location            `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
+	Content    []BedrockDocumentContentBlock `json:"content,omitempty"`
 }
 
 // BedrockVideoBlock represents a video content block.
@@ -365,7 +375,7 @@ type BedrockSearchResultContent struct {
 	Text string `json:"text"` // Required: actual text content
 }
 
-// BedrockCitationsConfig represents citations configuration for a search result.
+// BedrockCitationsConfig represents citations configuration for documents and search results.
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CitationsConfig.html
 type BedrockCitationsConfig struct {
 	Enabled bool `json:"enabled"` // Required: whether citations are enabled
@@ -472,11 +482,35 @@ type BedrockSystemTool struct {
 	Name BedrockSystemToolType `json:"name"` // "nova_grounding" | "nova_code_interpreter"
 }
 
+// BedrockOutputConfig is Converse's outputConfig, which carries native structured output.
+type BedrockOutputConfig struct {
+	TextFormat *BedrockOutputTextFormat `json:"textFormat,omitempty"`
+}
+
+// BedrockOutputTextFormat is outputConfig.textFormat; Type is always "json_schema".
+type BedrockOutputTextFormat struct {
+	Type      string                     `json:"type"`
+	Structure BedrockOutputTextStructure `json:"structure"`
+}
+
+// BedrockOutputTextStructure wraps the JSON schema of a textFormat.
+type BedrockOutputTextStructure struct {
+	JSONSchema BedrockOutputJSONSchema `json:"jsonSchema"`
+}
+
+// BedrockOutputJSONSchema carries the schema as a JSON string, as Converse requires.
+type BedrockOutputJSONSchema struct {
+	Schema      string  `json:"schema"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+}
+
 // BedrockToolSpec represents the specification of a tool
 type BedrockToolSpec struct {
 	Name        string                 `json:"name"`                  // Required: Tool name
 	Description *string                `json:"description,omitempty"` // Optional: Tool description
 	InputSchema BedrockToolInputSchema `json:"inputSchema"`           // Required: JSON schema for tool input
+	Strict      *bool                  `json:"strict,omitempty"`      // Optional: enforce the input schema (structured outputs)
 
 	// DeferLoading carries Anthropic's per-tool defer_loading across the invoke
 	// ingress. Converse has no such field, so json:"-" keeps it off that wire.
@@ -852,7 +886,14 @@ type BedrockInvokeMessagesUsage struct {
 	OutputTokens             int                                       `json:"output_tokens"`
 	CacheCreationInputTokens int                                       `json:"cache_creation_input_tokens,omitempty"`
 	CacheReadInputTokens     int                                       `json:"cache_read_input_tokens,omitempty"`
+	CacheCreation            *BedrockInvokeMessagesCacheCreation       `json:"cache_creation,omitempty"`
 	OutputTokensDetails      *BedrockInvokeMessagesOutputTokensDetails `json:"output_tokens_details,omitempty"` // Extended-thinking breakdown; absent on non-thinking responses
+}
+
+// BedrockInvokeMessagesCacheCreation breaks down cache writes by their TTL.
+type BedrockInvokeMessagesCacheCreation struct {
+	Ephemeral5mInputTokens int `json:"ephemeral_5m_input_tokens"`
+	Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 }
 
 // BedrockInvokeMessagesOutputTokensDetails breaks down output_tokens for extended-thinking responses.
@@ -925,7 +966,7 @@ type BedrockStreamEvent struct {
 	Trace   *BedrockConverseTrace   `json:"trace,omitempty"`   // Trace information
 
 	// Additional fields
-	AdditionalModelResponseFields interface{} `json:"additionalModelResponseFields,omitempty"`
+	AdditionalModelResponseFields json.RawMessage `json:"additionalModelResponseFields,omitempty"` // Native model-specific fields, kept verbatim
 
 	// For InvokeModelWithResponseStream (Legacy API)
 	// InvokeModelRawChunks holds one or more raw byte payloads for legacy invoke stream.
@@ -969,17 +1010,32 @@ type BedrockWebCitationLocation struct {
 
 // BedrockCitationLocation represents the location of a citation (union type)
 type BedrockCitationLocation struct {
-	Web *BedrockWebCitationLocation `json:"web,omitempty"`
+	Web           *BedrockWebCitationLocation      `json:"web,omitempty"`
+	DocumentChunk *BedrockDocumentCitationLocation `json:"documentChunk,omitempty"`
+	DocumentChar  *BedrockDocumentCitationLocation `json:"documentChar,omitempty"`
+	DocumentPage  *BedrockDocumentCitationLocation `json:"documentPage,omitempty"`
 }
 
-// BedrockCitation represents a single citation returned by nova_grounding
+// BedrockDocumentCitationLocation carries the identical index/range fields of
+// the documentChunk, documentChar and documentPage location unions.
+type BedrockDocumentCitationLocation struct {
+	DocumentIndex *int `json:"documentIndex,omitempty"`
+	Start         *int `json:"start,omitempty"`
+	End           *int `json:"end,omitempty"`
+}
+
+// BedrockCitation represents a document or web citation.
 type BedrockCitation struct {
-	Location BedrockCitationLocation `json:"location"`
+	Location      BedrockCitationLocation       `json:"location"`
+	Title         *string                       `json:"title,omitempty"`
+	Source        *string                       `json:"source,omitempty"`
+	SourceContent []BedrockDocumentContentBlock `json:"sourceContent,omitempty"`
 }
 
 // BedrockCitationsContent represents the citations block embedded in a text content block
 type BedrockCitationsContent struct {
-	Citations []BedrockCitation `json:"citations"`
+	Citations []BedrockCitation             `json:"citations"`
+	Content   []BedrockDocumentContentBlock `json:"content,omitempty"`
 }
 
 // BedrockToolUseDelta represents incremental tool use content
@@ -989,8 +1045,8 @@ type BedrockToolUseDelta struct {
 
 // BedrockMessageStopEvent indicates the end of a message
 type BedrockMessageStopEvent struct {
-	StopReason                    string      `json:"stopReason"`
-	AdditionalModelResponseFields interface{} `json:"additionalModelResponseFields,omitempty"`
+	StopReason                    string          `json:"stopReason"`
+	AdditionalModelResponseFields json.RawMessage `json:"additionalModelResponseFields,omitempty"` // Native model-specific fields, kept verbatim
 }
 
 // BedrockMetadataEvent provides metadata about the response
@@ -1643,4 +1699,184 @@ type BedrockInvokeCohereEmbeddingResp struct {
 type BedrockInvokeCohereTypedEmbeddingResp struct {
 	Embeddings   BedrockCohereEmbeddingsByType `json:"embeddings"`
 	ResponseType string                        `json:"response_type"`
+}
+
+// ==================== NOVA SONIC BIDIRECTIONAL STREAM TYPES ====================
+
+// BedrockSonicInputEvent is one client event on a Nova Sonic bidirectional stream.
+type BedrockSonicInputEvent struct {
+	Event BedrockSonicInputEventBody `json:"event"`
+}
+
+// BedrockSonicInputEventBody holds exactly one Nova Sonic input event.
+type BedrockSonicInputEventBody struct {
+	SessionStart *BedrockSonicSessionStart `json:"sessionStart,omitempty"`
+	PromptStart  *BedrockSonicPromptStart  `json:"promptStart,omitempty"`
+	ContentStart *BedrockSonicContentStart `json:"contentStart,omitempty"`
+	TextInput    *BedrockSonicContentInput `json:"textInput,omitempty"`
+	AudioInput   *BedrockSonicContentInput `json:"audioInput,omitempty"`
+	ToolResult   *BedrockSonicContentInput `json:"toolResult,omitempty"`
+	ContentEnd   *BedrockSonicContentRef   `json:"contentEnd,omitempty"`
+	PromptEnd    *BedrockSonicPromptRef    `json:"promptEnd,omitempty"`
+	SessionEnd   *struct{}                 `json:"sessionEnd,omitempty"`
+}
+
+// BedrockSonicSessionStart opens a Nova Sonic session.
+type BedrockSonicSessionStart struct {
+	InferenceConfiguration     BedrockSonicInferenceConfig      `json:"inferenceConfiguration"`
+	TurnDetectionConfiguration *BedrockSonicTurnDetectionConfig `json:"turnDetectionConfiguration,omitempty"`
+}
+
+// BedrockSonicInferenceConfig carries sampling limits for a Nova Sonic session.
+type BedrockSonicInferenceConfig struct {
+	MaxTokens   int      `json:"maxTokens"`
+	TopP        *float64 `json:"topP,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty"`
+}
+
+// BedrockSonicTurnDetectionConfig tunes Nova 2 Sonic end-of-speech detection.
+type BedrockSonicTurnDetectionConfig struct {
+	EndpointingSensitivity string `json:"endpointingSensitivity"` // HIGH, MEDIUM or LOW
+}
+
+// BedrockSonicPromptStart configures the output formats, voice and tools of a prompt.
+type BedrockSonicPromptStart struct {
+	PromptName                 string                  `json:"promptName"`
+	TextOutputConfiguration    BedrockSonicMediaType   `json:"textOutputConfiguration"`
+	AudioOutputConfiguration   BedrockSonicAudioConfig `json:"audioOutputConfiguration"`
+	ToolUseOutputConfiguration *BedrockSonicMediaType  `json:"toolUseOutputConfiguration,omitempty"`
+	ToolConfiguration          *BedrockSonicToolConfig `json:"toolConfiguration,omitempty"`
+}
+
+// BedrockSonicMediaType names the media type of a text or tool content block.
+type BedrockSonicMediaType struct {
+	MediaType string `json:"mediaType"`
+}
+
+// BedrockSonicAudioConfig describes base64 LPCM audio in either direction.
+type BedrockSonicAudioConfig struct {
+	MediaType       string `json:"mediaType"`
+	SampleRateHertz int    `json:"sampleRateHertz"`
+	SampleSizeBits  int    `json:"sampleSizeBits"`
+	ChannelCount    int    `json:"channelCount"`
+	VoiceID         string `json:"voiceId,omitempty"` // output only
+	Encoding        string `json:"encoding"`
+	AudioType       string `json:"audioType"`
+}
+
+// BedrockSonicToolConfig lists the tools the model may call.
+type BedrockSonicToolConfig struct {
+	Tools []BedrockSonicTool `json:"tools"`
+}
+
+// BedrockSonicTool is one Nova Sonic tool definition.
+type BedrockSonicTool struct {
+	ToolSpec BedrockSonicToolSpec `json:"toolSpec"`
+}
+
+// BedrockSonicToolSpec carries a tool's name, description and stringified JSON schema.
+type BedrockSonicToolSpec struct {
+	Name        string                    `json:"name"`
+	Description string                    `json:"description,omitempty"`
+	InputSchema BedrockSonicToolInputJSON `json:"inputSchema"`
+}
+
+// BedrockSonicToolInputJSON wraps a JSON schema serialized as a string.
+type BedrockSonicToolInputJSON struct {
+	JSON string `json:"json"`
+}
+
+// BedrockSonicContentStart opens a text, audio or tool-result content block.
+type BedrockSonicContentStart struct {
+	PromptName                   string                        `json:"promptName"`
+	ContentName                  string                        `json:"contentName"`
+	Type                         string                        `json:"type"`
+	Interactive                  bool                          `json:"interactive"`
+	Role                         string                        `json:"role"`
+	TextInputConfiguration       *BedrockSonicMediaType        `json:"textInputConfiguration,omitempty"`
+	AudioInputConfiguration      *BedrockSonicAudioConfig      `json:"audioInputConfiguration,omitempty"`
+	ToolResultInputConfiguration *BedrockSonicToolResultConfig `json:"toolResultInputConfiguration,omitempty"`
+}
+
+// BedrockSonicToolResultConfig binds a tool-result block to the tool use it answers.
+type BedrockSonicToolResultConfig struct {
+	ToolUseID              string                `json:"toolUseId"`
+	Type                   string                `json:"type"`
+	TextInputConfiguration BedrockSonicMediaType `json:"textInputConfiguration"`
+}
+
+// BedrockSonicContentInput carries text, base64 audio or a tool result for an open block.
+type BedrockSonicContentInput struct {
+	PromptName  string `json:"promptName"`
+	ContentName string `json:"contentName"`
+	Content     string `json:"content"`
+}
+
+// BedrockSonicContentRef closes a content block.
+type BedrockSonicContentRef struct {
+	PromptName  string `json:"promptName"`
+	ContentName string `json:"contentName"`
+}
+
+// BedrockSonicPromptRef closes a prompt.
+type BedrockSonicPromptRef struct {
+	PromptName string `json:"promptName"`
+}
+
+// BedrockSonicOutputEvent is one model event on a Nova Sonic bidirectional stream.
+type BedrockSonicOutputEvent struct {
+	Event struct {
+		CompletionStart *BedrockSonicOutputContent `json:"completionStart,omitempty"`
+		ContentStart    *BedrockSonicOutputContent `json:"contentStart,omitempty"`
+		TextOutput      *BedrockSonicOutputContent `json:"textOutput,omitempty"`
+		AudioOutput     *BedrockSonicOutputContent `json:"audioOutput,omitempty"`
+		ToolUse         *BedrockSonicOutputContent `json:"toolUse,omitempty"`
+		ContentEnd      *BedrockSonicOutputContent `json:"contentEnd,omitempty"`
+		CompletionEnd   *BedrockSonicOutputContent `json:"completionEnd,omitempty"`
+		UsageEvent      *BedrockSonicUsageEvent    `json:"usageEvent,omitempty"`
+	} `json:"event"`
+}
+
+// BedrockSonicAudioDelta is the response.output_audio.delta sent for every audio frame.
+type BedrockSonicAudioDelta struct {
+	ContentIndex int    `json:"content_index"`
+	Delta        string `json:"delta"`
+	EventID      string `json:"event_id"`
+	ItemID       string `json:"item_id"`
+	OutputIndex  int    `json:"output_index"`
+	ResponseID   string `json:"response_id"`
+	Type         string `json:"type"`
+}
+
+// BedrockSonicOutputContent is the shared shape of Nova Sonic content output events.
+type BedrockSonicOutputContent struct {
+	SessionID             string `json:"sessionId,omitempty"`
+	CompletionID          string `json:"completionId,omitempty"`
+	ContentID             string `json:"contentId,omitempty"`
+	Type                  string `json:"type,omitempty"`
+	Role                  string `json:"role,omitempty"`
+	AdditionalModelFields string `json:"additionalModelFields,omitempty"` // JSON string carrying generationStage
+	Content               string `json:"content,omitempty"`
+	ToolName              string `json:"toolName,omitempty"`
+	ToolUseID             string `json:"toolUseId,omitempty"`
+	StopReason            string `json:"stopReason,omitempty"`
+}
+
+// BedrockSonicUsageEvent reports cumulative Nova Sonic token usage.
+type BedrockSonicUsageEvent struct {
+	Details struct {
+		Total BedrockSonicUsageDirection `json:"total"`
+	} `json:"details"`
+}
+
+// BedrockSonicUsageDirection splits usage into input and output token counts.
+type BedrockSonicUsageDirection struct {
+	Input  BedrockSonicUsageCounts `json:"input"`
+	Output BedrockSonicUsageCounts `json:"output"`
+}
+
+// BedrockSonicUsageCounts splits tokens into speech and text.
+type BedrockSonicUsageCounts struct {
+	SpeechTokens int `json:"speechTokens"`
+	TextTokens   int `json:"textTokens"`
 }

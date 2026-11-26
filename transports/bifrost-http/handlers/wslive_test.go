@@ -13,6 +13,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,7 +21,7 @@ import (
 )
 
 // dialLiveTestUpstream returns Bifrost's upstream connection and the fake OpenAI end of it.
-func dialLiveTestUpstream(t *testing.T) (*bfws.UpstreamConn, *ws.Conn) {
+func dialLiveTestUpstream(t testing.TB) (*bfws.UpstreamConn, *ws.Conn) {
 	t.Helper()
 	upgrader := ws.FastHTTPUpgrader{CheckOrigin: func(*fasthttp.RequestCtx) bool { return true }}
 	serverConns := make(chan *ws.Conn, 1)
@@ -324,6 +325,34 @@ func TestLiveRelayReportsUpstreamDrop(t *testing.T) {
 	assert.Equal(t, []float64{16}, f.voiceSeconds(t))
 }
 
+// TestLiveRelayStartupErrorFailsTheSession: an error before session.started means the provider
+// never created the session, so it ends failed with the provider's error and no second frame.
+func TestLiveRelayStartupErrorFailsTheSession(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "gpt-5.6-luna")
+
+	refused := `{"type":"error","error":{"type":"invalid_request_error","code":"unsupported_feature","message":"Stored Live sessions are not available yet.","param":"session.store"}}`
+	sendFrame(t, f.openai, refused)
+	assert.Equal(t, refused, readFrame(t, f.app), "the provider's error reaches the client unchanged")
+	require.NoError(t, f.openai.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""), time.Now().Add(time.Second)))
+	require.NoError(t, f.openai.UnderlyingConn().Close())
+	f.waitDone(t)
+
+	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(time.Second)))
+	_, extra, err := f.app.ReadMessage()
+	assert.Error(t, err, "no second error frame after the provider's own: got %s", extra)
+
+	_, posts, _ := f.runner.snapshot()
+	require.Len(t, posts, 2, "the voice and backend units both close")
+	for _, post := range posts {
+		require.NotNil(t, post.err, "%s closes with the startup error", post.model)
+		assert.Equal(t, "Stored Live sessions are not available yet.", post.err.Error.Message)
+		assert.Nil(t, post.resp, "nothing ran")
+	}
+	assert.Equal(t, "gpt-live-1", posts[1].model, "the voice unit closes last and carries the session end")
+	assert.True(t, posts[1].end)
+}
+
 func TestReadLiveSessionStart(t *testing.T) {
 	t.Parallel()
 
@@ -402,7 +431,7 @@ func TestLiveDialMapsProviderRefusals(t *testing.T) {
 
 	pool := bfws.NewPool(nil)
 	t.Cleanup(pool.Close)
-	h := &WSLiveHandler{config: &lib.Config{}, pool: pool}
+	h := &WSLiveHandler{config: libtest.FileOnly(t, &lib.Config{}, nil, nil), pool: pool}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	key := schemas.Key{ID: "key-1"}
 
@@ -551,7 +580,7 @@ func TestLiveAttachRefusesBeforeUpgrade(t *testing.T) {
 	t.Parallel()
 
 	attach := func(enforceAuth bool, id string) *fasthttp.RequestCtx {
-		config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}
+		config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuth}}, nil, nil)
 		h := &WSLiveHandler{gateway: &liveGateway{config: config}, config: config}
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.SetRequestURI("/v1/live/sessions/" + id + "/attach")

@@ -22,6 +22,7 @@ vLLM is a self-hosted inference provider with OpenAI- and Anthropic-compatible A
 | Text Completions | ✅ | ✅ | `/v1/completions` | Unchanged |
 | Embeddings | ✅ | - | `/v1/embeddings` | Unchanged |
 | Rerank | ✅ | - | `/v1/rerank` (fallback: `/rerank`) | Unchanged |
+| Decisions | ✅ | - | `/v1/systemone` | Unchanged |
 | Transcriptions (STT) | ✅ | ✅ | `/v1/audio/transcriptions` | Unchanged |
 | Count Tokens | ✅ | - | `/v1/messages/count_tokens` | Same endpoint |
 | List Models | ✅ | - | `/v1/models` | Unchanged |
@@ -235,6 +236,35 @@ vLLM supports non-streaming and streaming transcription requests through `/v1/au
 # 8. Count Tokens
 
 Count Tokens uses vLLM's Anthropic-compatible `/v1/messages/count_tokens` endpoint. This route is independent of `use_anthropic_endpoints`, so the upstream vLLM server must expose it even when Chat Completions and Responses use the default OpenAI-compatible endpoints.
+
+---
+
+## Decisions
+
+vLLM serves [decision models](/quickstart/gateway/decisions) on `POST /v1/systemone`, TypeSafe's System One API, from v0.32.0. Every model the server loads is sent there: dedicated checkpoints such as `Cloudflare/clef-flash`, `Cloudflare/clef-omni` and `vllm-sr/d3` need no extra flag, and a chat model (Qwen3, Qwen3.5, Gemma 4) answers through next-token reads when the server is started with `--logprobs-mode processed_logprobs`. Use a CUDA 13 build of the image; the `-cu129` builds crash on start.
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "vllm/clef-flash",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ]
+  }'
+```
+
+Questions and input are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). vLLM-specific behavior:
+
+- **Limits are vLLM's, and the option limit depends on the model.** A chat model answering through next-token reads labels a choice's options `A` to `Z`, so it takes at most 26; vLLM documents up to 255 options for Decision 3.0 models (`vllm-sr/d3`). A score takes 2 to 10 levels with distinct descriptions, and a request at most 64 questions. Each violation comes back as vLLM's own `400`, naming the question (`question 'many': at most 26 options for this model`). A level without a description is sent as its label so levels stay distinct.
+- **Images** in `input_image` parts are sent in vLLM's top-level `images` array, which every question shares. Whether the model reads them depends on the checkpoint and the vLLM version; a model that does not returns `400 this model does not take image inputs`. Images sent by reference (TypeSafe assets) are rejected by Bifrost with a `400`, because vLLM would ignore them and answer without the image.
+- **An empty input** is rejected by Bifrost with a `400`: vLLM answers a null state with a near coin flip.
+- **Confidence** depends on how the model is read. A next-token read reports vLLM's `p_top · label_mass`, not TypeSafe's formula, and label mass can be far below 1, so threshold on `probability` rather than `confidence` there. Clef-Omni, and Clef-Flash on vLLM builds after v0.32.0, answer in one pooling read that reports `label_mass` as `1` and `confidence` as the chosen option's probability; on v0.32.0 Clef-Flash is read token by token. The engine's `diagnostics` (label mass per question) and `id` are in the raw response.
+- **Usage** is vLLM's. A chat model answering through next-token reads counts one output token per question; a pooling read (Clef-Omni, and Clef-Flash after v0.32.0) reports `output_tokens` as `0`.
+- **A model vLLM does not serve** returns its `404`, which names the valid aliases. A key needs `vllm_key_config.url`; the key's `model_name` routes requests for that model to that server.
+
+Decisions are never emulated on vLLM: with `convert_decision_to_responses` on, requests still go to `/v1/systemone`. vLLM's own OpenAI-shaped `/v1/decisions` route is not used.
 
 ---
 

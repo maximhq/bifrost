@@ -3,6 +3,8 @@
  * Defines all TypeScript interfaces for routing rules feature
  */
 
+import i18n from "@/lib/i18n";
+import type { ParseKeys } from "i18next";
 import { RuleGroupType } from "react-querybuilder";
 
 /** A fallback that may pin a provider key. The API accepts and returns the legacy "provider/model" string for unpinned entries. */
@@ -120,11 +122,19 @@ export enum RoutingRuleScope {
 	User = "user",
 }
 
+// Labels resolve through i18n when read (getters) so the list follows the active locale.
+const scopeOption = (value: RoutingRuleScope, labelKey: ParseKeys<"models">) => ({
+	value,
+	get label(): string {
+		return i18n.t(labelKey, { ns: "models" });
+	},
+});
+
 export const ROUTING_RULE_SCOPES = [
-	{ value: RoutingRuleScope.Global, label: "Global" },
-	{ value: RoutingRuleScope.Team, label: "Team" },
-	{ value: RoutingRuleScope.Customer, label: "Customer" },
-	{ value: RoutingRuleScope.VirtualKey, label: "Virtual Key" },
+	scopeOption(RoutingRuleScope.Global, "routing.scopeGlobal"),
+	scopeOption(RoutingRuleScope.Team, "routing.scopeTeam"),
+	scopeOption(RoutingRuleScope.Customer, "routing.scopeCustomer"),
+	scopeOption(RoutingRuleScope.VirtualKey, "routing.scopeVirtualKey"),
 ];
 
 export const DEFAULT_ROUTING_FALLBACK: RoutingFallbackFormData = {

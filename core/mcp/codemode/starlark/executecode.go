@@ -70,7 +70,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"Do NOT guess callable tool names from natural language or stale assumptions; use the exact identifier returned by listToolFiles/readToolFile. " +
 
 					"STARLARK DIFFERENCES FROM PYTHON — READ BEFORE WRITING CODE: " +
-					"1. NO try/except/finally/raise — error handling is not supported, and tool failures cannot be caught inside Starlark. " +
+					"1. NO try/except/finally/raise. A failed tool call returns an error value instead of raising: check hasattr(r, \"error\"), read r.error, and call fail(r.error) to stop the run. A timeout or a lost connection still stops the script. " +
 					"2. NO classes — use dicts and functions. " +
 					"3. NO imports, direct network access, or direct filesystem access — use MCP tools instead. " +
 					"4. NO is operator — use == for comparison. " +
@@ -80,7 +80,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"SYNTAX NOTES: " +
 					"• Synchronous calls — NO async/await: result = server.tool(arg=\"value\") " +
 					"• Use keyword arguments: server.tool(param=\"value\") NOT server.tool({\"param\": \"value\"}) " +
-					"• Access dict values with brackets: result[\"key\"] NOT result.key " +
+					"• Access dict values with brackets: result[\"key\"] NOT result.key (a failed call's r.error is the exception) " +
 					"• Use print() for logging/debugging " +
 					"• List comprehensions: [x for x in items if x[\"active\"]] " +
 					"• String escapes work normally: \"line1\\nline2\" produces a newline " +
@@ -90,7 +90,8 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"• MCP tool calls are timeout-limited; avoid long or infinite loops " +
 
 					"AVAILABLE BUILTINS: print, len, range, enumerate, zip, sorted, reversed, min, max, " +
-					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr. " +
+					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr, fail. " +
+					"MODULES: json (json.decode(s), json.encode(v)), math (math.floor, math.sqrt and the like); a server named json or math takes that name. " +
 
 					"RETRY POLICY: Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations.",
 			),
@@ -140,7 +141,7 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 		s.logger.Debug("%s Formatting error response. Error kind: %s, Message length: %d, Hints count: %d", codemcp.CodeModeLogPrefix, result.Errors.Kind, len(result.Errors.Message), len(result.Errors.Hints))
 		logsText := ""
 		if len(result.Logs) > 0 {
-			logsText = fmt.Sprintf("\n\nPrint Output:\n%s\n", strings.Join(result.Logs, "\n"))
+			logsText = fmt.Sprintf("\n\nPrint output:\n%s\n", strings.Join(result.Logs, "\n"))
 		}
 
 		responseText = fmt.Sprintf(
@@ -213,9 +214,9 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 		return ExecutionResult{Logs: []string{}, Environment: ExecutionEnvironment{ServerKeys: []string{}}}
 	}
 	bindings := map[string][]string{}
-	for clientName, tools := range s.clientManager.GetToolPerClient(ctx) {
+	for clientName, tools := range s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx)) {
 		client := s.clientManager.GetClientByName(clientName)
-		if client == nil || !client.ExecutionConfig.IsCodeModeClient {
+		if client == nil || !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 		for _, tool := range tools {
@@ -252,7 +253,7 @@ func completionLine(failedCalls int) string {
 // answers with an error result that is handed to the script rather than raised.
 func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, toolName string, args map[string]interface{}, appendLog func(string), onToolError func()) (interface{}, error) {
 	// Get available tools per client
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find the client by name
 	tools, exists := availableToolsPerClient[clientName]
@@ -264,7 +265,7 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	var client *schemas.MCPClientState
 	for _, tool := range tools {
 		if tool.Function != nil && tool.Function.Name != "" {
-			client = s.clientManager.GetClientForTool(tool.Function.Name)
+			client, _ = s.clientManager.GetClientForTool(ctx, tool.Function.Name)
 			if client != nil {
 				break
 			}
@@ -311,6 +312,10 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 	nestedCtx := schemas.NewBifrostContext(ctx, deadline)
 	nestedCtx.SetValue(schemas.BifrostContextKeyRequestID, newRequestID)
+	// Each nested call is its own log entry. Agent mode puts a log id on the context of the
+	// executeToolCode call it runs; inherited here, every nested call would be logged under that
+	// one id and all but the first entry dropped as duplicates.
+	nestedCtx.SetValue(schemas.BifrostContextKeyMCPLogID, newRequestID)
 	if originalRequestID != "" {
 		nestedCtx.SetValue(schemas.BifrostContextKeyParentMCPRequestID, originalRequestID)
 	}
@@ -348,7 +353,12 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	}
 	defer release()
 
+	// The client's own tool_execution_timeout bounds the call, as it does a direct call, and the
+	// code mode global is only the fallback.
 	toolExecutionTimeout := s.getToolExecutionTimeout()
+	if client.ExecutionConfig != nil && client.ExecutionConfig.ToolExecutionTimeout > 0 {
+		toolExecutionTimeout = client.ExecutionConfig.ToolExecutionTimeout
+	}
 
 	// Delegate to the canonical plugin gate. RunWithPluginPipeline owns the
 	// tracing span, MCPRequestType/ClientName/ToolName stamping (via
@@ -409,7 +419,10 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			},
 		}
 
-		toolResponse, callErr := conn.CallTool(toolCtx, callRequest)
+		// The socket wait is upstream time, as for a direct tool call; overlapping calls count once.
+		toolWait := schemas.BeginUpstreamWait(nestedCtx)
+		toolResponse, callErr := codemcp.CallUpstreamTool(toolCtx, conn, callRequest, false)
+		toolWait.End()
 		if callErr != nil && toolCtx.Err() == context.DeadlineExceeded {
 			callErr = fmt.Errorf("MCP tool call timed out after %v: %s", toolExecutionTimeout, effectiveToolName)
 		}
@@ -420,6 +433,9 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 			// log, which is rendered into the tool message the model receives.
 			s.logger.Debug("%s Tool call failed: %s.%s - %v", codemcp.CodeModeLogPrefix, clientName, effectiveToolName, callErr)
 			appendLog(fmt.Sprintf("[TOOL] %s.%s call failed", clientName, effectiveToolName))
+			if explained, ok := codemcp.DescribeUnservableInput(callErr, clientName); ok {
+				return nil, fmt.Errorf("tool call failed for %s.%s: %s", clientName, effectiveToolName, explained)
+			}
 			return nil, fmt.Errorf("tool call failed for %s.%s: %v", clientName, effectiveToolName, callErr)
 		}
 

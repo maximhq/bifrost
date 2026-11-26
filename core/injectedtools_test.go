@@ -3,9 +3,15 @@ package bifrost
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/toolsearch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +21,7 @@ type fakeInjectedToolSource struct {
 	maxDepth int
 }
 
-func (f fakeInjectedToolSource) GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error) {
+func (f fakeInjectedToolSource) GetInjectedTool(_ context.Context, clientName, toolName string) (schemas.ChatTool, error) {
 	tool, ok := f.tools[clientName+"-"+toolName]
 	if !ok {
 		return schemas.ChatTool{}, errors.New("not found")
@@ -45,7 +51,7 @@ func webSearchConfig() *schemas.ProviderConfig {
 func testInjectedSet(t *testing.T) *injectedToolSet {
 	t.Helper()
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, webSearchConfig(), schemas.ChatCompletionRequest, nil)
+	set := resolveInjectedTools(context.Background(), src, webSearchConfig(), schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
 	return set
 }
@@ -54,24 +60,24 @@ func TestResolveInjectedTools(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
 
 	for _, rt := range []schemas.RequestType{schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest, schemas.ResponsesRequest, schemas.ResponsesStreamRequest} {
-		set := resolveInjectedTools(src, webSearchConfig(), rt, nil)
+		set := resolveInjectedTools(context.Background(), src, webSearchConfig(), rt, nil)
 		require.NotNil(t, set, "%s requests get the injected tool", rt)
 		assert.True(t, set.isInjected("web_search"), "calls are classified by the configured name")
 		assert.False(t, set.isInjected("tavily-search"), "the prefixed MCP name is never shown to the model")
 		assert.Equal(t, 4, set.maxDepth)
 	}
 
-	assert.Nil(t, resolveInjectedTools(src, webSearchConfig(), schemas.EmbeddingRequest, nil), "only chat and responses carry tools")
-	assert.Nil(t, resolveInjectedTools(src, &schemas.ProviderConfig{}, schemas.ChatCompletionRequest, nil))
-	assert.Nil(t, resolveInjectedTools(src, nil, schemas.ChatCompletionRequest, nil))
-	assert.Nil(t, resolveInjectedTools(nil, webSearchConfig(), schemas.ChatCompletionRequest, nil), "no MCP manager, nothing to inject")
+	assert.Nil(t, resolveInjectedTools(context.Background(), src, webSearchConfig(), schemas.EmbeddingRequest, nil), "only chat and responses carry tools")
+	assert.Nil(t, resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{}, schemas.ChatCompletionRequest, nil))
+	assert.Nil(t, resolveInjectedTools(context.Background(), src, nil, schemas.ChatCompletionRequest, nil))
+	assert.Nil(t, resolveInjectedTools(context.Background(), nil, webSearchConfig(), schemas.ChatCompletionRequest, nil), "no MCP manager, nothing to inject")
 
 	missing := webSearchConfig()
 	missing.InjectedTools[0].ToolName = "crawl"
-	assert.Nil(t, resolveInjectedTools(src, missing, schemas.ChatCompletionRequest, nil), "an unresolvable tool fails open")
+	assert.Nil(t, resolveInjectedTools(context.Background(), src, missing, schemas.ChatCompletionRequest, nil), "an unresolvable tool fails open")
 
 	noDepth := fakeInjectedToolSource{tools: src.tools}
-	assert.Equal(t, schemas.DefaultMaxAgentDepth, resolveInjectedTools(noDepth, webSearchConfig(), schemas.ChatCompletionRequest, nil).maxDepth)
+	assert.Equal(t, schemas.DefaultMaxAgentDepth, resolveInjectedTools(context.Background(), noDepth, webSearchConfig(), schemas.ChatCompletionRequest, nil).maxDepth)
 }
 
 func TestApplyInjectedToolsChat_ReplacesNativeWebSearch(t *testing.T) {
@@ -190,7 +196,7 @@ func TestApplyInjectedTools_ClientToolWithInjectedNameIsReplaced(t *testing.T) {
 // its server tools, and a request cannot declare two tools with one name.
 func TestApplyInjectedToolsChat_NativeToolWithInjectedNameIsReplaced(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "code_execution", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -205,7 +211,7 @@ func TestApplyInjectedToolsChat_NativeToolWithInjectedNameIsReplaced(t *testing.
 // is added next to whatever the caller sent, native web search and its choice included.
 func TestApplyInjectedTools_OtherNamesLeaveNativeWebSearch(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -239,7 +245,7 @@ func TestApplyInjectedTools_OtherNamesLeaveNativeWebSearch(t *testing.T) {
 // naming it must follow to the alias, or the provider gets a choice for an undeclared tool.
 func TestApplyInjectedTools_ChoicePinningPrefixedMCPNameFollowsAlias(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -270,7 +276,7 @@ func TestApplyInjectedTools_ChoicePinningPrefixedMCPNameFollowsAlias(t *testing.
 func TestApplyInjectedTools_ChoiceNamingAnAliasIsKept(t *testing.T) {
 	fetch := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "fetcher-fetch"}}
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool(), "fetcher-fetch": fetch}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 		{Name: "tavily-search", MCPClientName: "fetcher", ToolName: "fetch"},
 	}}, schemas.ChatCompletionRequest, nil)
@@ -295,13 +301,13 @@ func TestApplyInjectedTools_ChoiceNamingAnAliasIsKept(t *testing.T) {
 // for that name must become a function choice for the injected tool.
 func TestApplyInjectedTools_CustomChoiceForReplacedToolPinsInjectedFunction(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "apply_patch", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
 
 	chat := applyInjectedToolsChat(&schemas.BifrostChatRequest{Params: &schemas.ChatParameters{
-		Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeCustom, Name: "apply_patch", Custom: &schemas.ChatToolCustom{}}},
+		Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeCustom, Custom: &schemas.ChatToolCustom{Name: "apply_patch"}}},
 		ToolChoice: &schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{
 			Type: schemas.ChatToolChoiceTypeCustom, Custom: &schemas.ChatToolChoiceCustom{Name: "apply_patch"},
 		}},
@@ -331,7 +337,7 @@ func TestApplyInjectedTools_CustomChoiceForReplacedToolPinsInjectedFunction(t *t
 // that was never declared. The caller's choice is never written.
 func TestApplyInjectedToolsChat_AllowedToolsEntriesFollowInjectedTools(t *testing.T) {
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool()}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
 	require.NotNil(t, set)
@@ -363,7 +369,7 @@ func TestApplyInjectedToolsChat_AllowedToolsEntriesFollowInjectedTools(t *testin
 func TestApplyInjectedToolsResponses_AllowedToolsEntriesFollowInjectedTools(t *testing.T) {
 	fetch := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "fetcher-fetch"}}
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool(), "fetcher-fetch": fetch}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 		{Name: "web_search", MCPClientName: "fetcher", ToolName: "fetch"},
 	}}, schemas.ResponsesRequest, nil)
@@ -410,7 +416,7 @@ func TestApplyInjectedToolsResponses_AllowedToolsEntriesFollowInjectedTools(t *t
 func TestResolveInjectedTools_MultipleRows(t *testing.T) {
 	fetch := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "fetcher-fetch"}}
 	src := fakeInjectedToolSource{tools: map[string]schemas.ChatTool{"tavily-search": tavilySearchTool(), "fetcher-fetch": fetch}, maxDepth: 4}
-	set := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	set := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
 		{Name: "gone", MCPClientName: "tavily", ToolName: "crawl"},
 		{Name: "fetch_page", MCPClientName: "fetcher", ToolName: "fetch"},
@@ -425,14 +431,14 @@ func TestResolveInjectedTools_MultipleRows(t *testing.T) {
 	assert.False(t, set.isInjected("gone"))
 	assert.Equal(t, "fetcher-fetch", fetch.Function.Name, "renaming never reaches the source schema")
 
-	onlyBroken := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	onlyBroken := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "web_search", MCPClientName: "tavily", ToolName: "crawl"},
 	}}, schemas.ChatCompletionRequest, nil)
 	assert.Nil(t, onlyBroken, "with nothing resolved the request goes out as sent")
 
 	// The first row with a name wins even when it cannot be resolved: a later row with the
 	// same name must not swap in another backend, and native web search stays as sent.
-	brokenFirst := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	brokenFirst := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "web_search", MCPClientName: "tavily", ToolName: "crawl"},
 		{Name: "web_search", MCPClientName: "fetcher", ToolName: "fetch"},
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
@@ -444,7 +450,7 @@ func TestResolveInjectedTools_MultipleRows(t *testing.T) {
 
 	// Two rows for the same MCP tool: the first row owns it, and the later row is not
 	// injected at all, as the management API would have rejected it.
-	sameTool := resolveInjectedTools(src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
+	sameTool := resolveInjectedTools(context.Background(), src, &schemas.ProviderConfig{InjectedTools: []schemas.InjectedTool{
 		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
 		{Name: "lookup", MCPClientName: "tavily", ToolName: "search"},
 	}}, schemas.ChatCompletionRequest, nil)
@@ -627,10 +633,14 @@ func TestRunInjectedResponsesLoop_ExecutesInjectedCalls(t *testing.T) {
 	set := testInjectedSet(t)
 	var sent []*schemas.BifrostResponsesRequest
 	scripted := []*schemas.BifrostResponsesResponse{
-		{Output: []schemas.ResponsesMessage{responsesText("Searching."), responsesFunctionCall("c1", "web_search"), responsesFunctionCall("c2", "get_weather")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11}},
-		{Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
-			Usage: &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22}},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Searching."), responsesFunctionCall("c1", "web_search"), responsesFunctionCall("c2", "get_weather")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11},
+		},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22},
+		},
 	}
 	dispatch := func(req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		sent = append(sent, req)
@@ -655,6 +665,36 @@ func TestRunInjectedResponsesLoop_ExecutesInjectedCalls(t *testing.T) {
 	assert.Equal(t, "Sunny.", *resp.Output[1].Content.ContentStr)
 	assert.Equal(t, 30, resp.Usage.InputTokens)
 	assert.Equal(t, 33, resp.Usage.TotalTokens)
+}
+
+// Each turn's advisor passes are billed from the merged usage, so the loop keeps every turn's iterations.
+func TestRunInjectedResponsesLoop_KeepsAdvisorIterations(t *testing.T) {
+	set := testInjectedSet(t)
+	advisorPass := func(input int) []schemas.ResponsesResponseUsage {
+		return []schemas.ResponsesResponseUsage{{Type: schemas.Ptr("advisor_message"), Model: schemas.Ptr("claude-opus-4-8"), InputTokens: input, OutputTokens: 1}}
+	}
+	scripted := []*schemas.BifrostResponsesResponse{
+		{
+			Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11, Iterations: advisorPass(100)},
+		},
+		{
+			Output: []schemas.ResponsesMessage{responsesText("Sunny.")},
+			Usage:  &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22, Iterations: advisorPass(200)},
+		},
+	}
+	dispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		resp := scripted[0]
+		scripted = scripted[1:]
+		return resp, nil
+	}
+
+	resp, err := runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, dispatch, searchResult)
+
+	require.Nil(t, err)
+	require.Len(t, resp.Usage.Iterations, 2, "both turns' advisor passes must reach pricing")
+	assert.Equal(t, 100, resp.Usage.Iterations[0].InputTokens)
+	assert.Equal(t, 200, resp.Usage.Iterations[1].InputTokens)
 }
 
 // A client that forces web search gets the choice remapped to the injected tool. Kept on
@@ -804,6 +844,60 @@ func TestRunInjectedLoops_ErrorBillsEarlierTurns(t *testing.T) {
 	assert.Equal(t, 7, err.ExtraFields.BilledUsage.PromptTokens)
 }
 
+// A turn cancelled mid-stream carries estimated usage. Adding the earlier turns must keep
+// its estimation marker, or logging takes the sum for provider-reported usage and keeps
+// the partial tokens and cost it captured before the cancel.
+func TestRunInjectedLoops_CancelledTurnKeepsEstimationWhenBillingEarlierTurns(t *testing.T) {
+	set := testInjectedSet(t)
+	cancelled := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: "request cancelled"},
+			ExtraFields: schemas.BifrostErrorExtraFields{BilledUsage: &schemas.BifrostLLMUsage{
+				PromptTokens: 20, CompletionTokens: 4, TotalTokens: 24,
+				Estimation: &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"},
+			}},
+		}
+	}
+	assertEstimated := func(t *testing.T, err *schemas.BifrostError, wantPrompt int) {
+		t.Helper()
+		require.NotNil(t, err)
+		billed := err.ExtraFields.BilledUsage
+		require.NotNil(t, billed)
+		assert.Equal(t, wantPrompt, billed.PromptTokens, "the earlier turn is added to the estimate")
+		assert.Equal(t, &schemas.TokenUsageEstimation{Prompt: true, Completion: true, Tokenizer: "o200k_base"}, billed.Estimation)
+	}
+
+	calls := 0
+	chatDispatch := func(*schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+		calls++
+		if calls == 1 {
+			return chatTurnResponse("", "tool_calls", 10, chatToolCall("c1", "web_search")), nil
+		}
+		return nil, cancelled()
+	}
+	_, err := runInjectedChatLoop(&schemas.BifrostChatRequest{Model: "m"}, set, chatDispatch, searchResult)
+	assertEstimated(t, err, 30)
+
+	rcalls := 0
+	responsesDispatch := func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		rcalls++
+		if rcalls == 1 {
+			return &schemas.BifrostResponsesResponse{
+				Output: []schemas.ResponsesMessage{responsesFunctionCall("c1", "web_search")},
+				Usage:  &schemas.ResponsesResponseUsage{InputTokens: 7, OutputTokens: 1, TotalTokens: 8},
+			}, nil
+		}
+		return nil, cancelled()
+	}
+	_, err = runInjectedResponsesLoop(&schemas.BifrostResponsesRequest{Model: "m"}, set, responsesDispatch, searchResult)
+	assertEstimated(t, err, 27)
+
+	// A first-turn cancel has no earlier turn to add: the estimate passes through untouched.
+	lone := cancelled()
+	billEarlierTurns(lone, nil)
+	assertEstimated(t, lone, 20)
+}
+
 // The last upstream reply's raw bytes stay on the assembled response: logging
 // (store_raw_request_response) and send_back_raw_response clients read them there. The
 // Anthropic converter, not the loop, decides not to return them as the whole answer.
@@ -879,12 +973,10 @@ func TestClearAnthropicPassthroughForInjectedTools_RawOnlyRequestKeepsPassthroug
 // When an attempt with injected tools fails over to one without them, the later
 // attempt gets back the raw-body passthrough the injected attempt switched off.
 func TestRestoreAnthropicPassthroughAfterInjectedTools(t *testing.T) {
-	codec := &struct{ name string }{"codec"}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
 	ctx.SetValue(schemas.BifrostContextKeySendBackRawResponse, true)
 	ctx.SetValue(schemas.BifrostContextKeyURLPath, "/v1/messages")
-	ctx.SetValue(schemas.BifrostContextKeyRawStreamTextCodec, codec)
 	typed := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}}}}
 
 	require.NotNil(t, clearAnthropicPassthroughForInjectedTools(ctx, testInjectedSet(t), typed))
@@ -894,7 +986,6 @@ func TestRestoreAnthropicPassthroughAfterInjectedTools(t *testing.T) {
 	assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeyUseRawRequestBody))
 	assert.Equal(t, true, ctx.Value(schemas.BifrostContextKeySendBackRawResponse))
 	assert.Equal(t, "/v1/messages", ctx.Value(schemas.BifrostContextKeyURLPath))
-	assert.Same(t, codec, ctx.Value(schemas.BifrostContextKeyRawStreamTextCodec))
 
 	again := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	again.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
@@ -999,6 +1090,218 @@ func TestRunInjectedResponsesLoop_GatewayToolSearchLoadsTools(t *testing.T) {
 	assert.True(t, *req.ResponsesRequest.Params.Tools[1].DeferLoading, "the caller's request is untouched")
 }
 
+// The last turn the loop allows goes out without the search. A model that searched on
+// every earlier turn would otherwise spend the last one searching too, and the loop
+// would strip that call and hand the caller a completed response with no output. With
+// no search to call, it calls a tool it already loaded or answers in text.
+func TestRunInjectedResponsesLoop_GatewayToolSearchLastTurnCannotSearch(t *testing.T) {
+	req := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	set := withGatewayToolSearch(nil, req, schemas.Gemini, "gemini-3.8-flash")
+	require.NotNil(t, set)
+	require.Equal(t, 3, set.maxDepth)
+
+	call := func(callID, name, args string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr(callID), Name: schemas.Ptr(name), Arguments: schemas.Ptr(args)},
+		}
+	}
+	toolNames := func(r *schemas.BifrostResponsesRequest) []string {
+		var names []string
+		for _, tool := range r.Params.Tools {
+			names = append(names, *tool.Name)
+		}
+		return names
+	}
+	var turns []*schemas.BifrostResponsesRequest
+	resp, bifrostErr := runInjectedResponsesLoop(req.ResponsesRequest, set, func(turn *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		turns = append(turns, turn)
+		if slices.Contains(toolNames(turn), toolsearch.ToolName) {
+			return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{call(fmt.Sprintf("call_s%d", len(turns)), toolsearch.ToolName, `{"query":"weather"}`)}}, nil
+		}
+		return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{call("call_w1", "get_weather", `{"city":"Tokyo"}`)}}, nil
+	}, func(c schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		return set.search.Execute(c)
+	})
+	require.Nil(t, bifrostErr)
+	require.Len(t, turns, 3)
+	assert.Equal(t, []string{"lookup_city", "get_weather", toolsearch.ToolName}, toolNames(turns[1]), "a turn before the last can still search")
+	assert.Equal(t, []string{"lookup_city", "get_weather"}, toolNames(turns[2]), "the last turn has only the tools already loaded")
+	// A model shown its own search calls repeats them even with the search undeclared, so
+	// the last turn carries the earlier searches as one user message instead.
+	var notes []string
+	for _, item := range turns[2].Input {
+		assert.False(t, isSearchCall(item), "a search call in the last turn's input")
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCallOutput {
+			t.Errorf("a search result in the last turn's input: %+v", item)
+		}
+		if item.Role != nil && *item.Role == schemas.ResponsesInputMessageRoleUser && item.Content != nil && item.Content.ContentStr != nil &&
+			strings.HasPrefix(*item.Content.ContentStr, "Tool searches already run") {
+			notes = append(notes, *item.Content.ContentStr)
+		}
+	}
+	require.Len(t, notes, 1)
+	assert.Equal(t, 2, strings.Count(notes[0], "Loaded 1 tool(s): get_weather"), "both searches are reported")
+	assert.True(t, isSearchCall(turns[1].Input[len(turns[1].Input)-2]), "a turn before the last keeps the search calls")
+	require.Len(t, resp.Output, 1, "the caller gets the model's last call, not an empty completed response")
+	assert.Equal(t, "get_weather", *resp.Output[0].Name)
+}
+
+// A turn that ran the search alongside another injected tool keeps that tool's call and
+// result together: the search summary goes after the turn's results, never between a
+// remaining call and its result (Gemini needs each function call answered next).
+func TestSearchesAsText_ParallelInjectedCallKeepsItsResult(t *testing.T) {
+	call := func(callID, name string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr(callID), Name: schemas.Ptr(name), Arguments: schemas.Ptr(`{}`)},
+		}
+	}
+	result := func(callID, output string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr(callID),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr(output)}},
+		}
+	}
+	user := schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather in Tokyo?")}}
+	input := []schemas.ResponsesMessage{
+		user,
+		call("call_s1", toolsearch.ToolName), call("call_w1", "web_search"),
+		result("call_s1", "Loaded 1 tool(s): get_weather"), result("call_w1", "sunny"),
+	}
+
+	out := searchesAsText(input)
+	kinds := make([]string, 0, len(out))
+	for _, item := range out {
+		switch {
+		case isFunctionCall(item):
+			kinds = append(kinds, "call:"+*item.CallID)
+		case item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCallOutput:
+			kinds = append(kinds, "result:"+*item.CallID)
+		case item.Content != nil && item.Content.ContentStr != nil && strings.HasPrefix(*item.Content.ContentStr, "Tool searches already run"):
+			kinds = append(kinds, "summary")
+		default:
+			kinds = append(kinds, "user")
+		}
+	}
+	assert.Equal(t, []string{"user", "call:call_w1", "result:call_w1", "summary"}, kinds)
+	assert.Len(t, input, 5, "the caller's input is untouched")
+}
+
+// A caller's own tool that happens to be named bifrost_tool_search inside one of its
+// namespaces is not the gateway search: the gateway neither runs it nor folds its call
+// and result into the last turn's summary. The gateway's tools are never namespaced.
+func TestSearchesAsText_KeepsCallerNamespacedCall(t *testing.T) {
+	call := func(callID string, namespace *string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr(callID), Name: schemas.Ptr(toolsearch.ToolName),
+				Namespace: namespace, Arguments: schemas.Ptr(`{"query":"weather"}`)},
+		}
+	}
+	result := func(callID, output string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr(callID),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr(output)}},
+		}
+	}
+	callers := call("call_c1", schemas.Ptr("mcp__demo"))
+	set := &injectedToolSet{search: toolsearch.NewSession(deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash").ResponsesRequest)}
+	_, injected := injectedResponsesCall(callers, set)
+	assert.False(t, injected, "the gateway does not run the caller's namespaced call")
+	_, injected = injectedResponsesCall(call("call_s1", nil), set)
+	assert.True(t, injected, "the gateway runs its own search call")
+
+	out := searchesAsText([]schemas.ResponsesMessage{
+		callers, result("call_c1", "caller result"),
+		call("call_s1", nil), result("call_s1", "Loaded 1 tool(s): get_weather"),
+	})
+	require.Len(t, out, 3)
+	assert.Equal(t, "call_c1", *out[0].CallID)
+	assert.Equal(t, "caller result", *out[1].Output.ResponsesToolCallOutputStr)
+	assert.Contains(t, *out[2].Content.ContentStr, "Loaded 1 tool(s): get_weather")
+	assert.NotContains(t, *out[2].Content.ContentStr, "caller result")
+}
+
+// With max_agent_depth 1 the first turn is also the last, so it goes out without the
+// search: a search called there could never be followed by a turn that uses it, and
+// the caller would get an empty completed response.
+func TestRunInjectedResponsesLoop_GatewayToolSearchSingleTurnCannotSearch(t *testing.T) {
+	req := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	set := withGatewayToolSearch(&injectedToolSet{maxDepth: 1}, req, schemas.Gemini, "gemini-3.8-flash")
+	require.NotNil(t, set)
+	require.NotNil(t, set.search)
+
+	var turns []*schemas.BifrostResponsesRequest
+	resp, bifrostErr := runInjectedResponsesLoop(req.ResponsesRequest, set, func(turn *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		turns = append(turns, turn)
+		name, args := "lookup_city", `{"city":"Tokyo"}`
+		for _, tool := range turn.Params.Tools {
+			if tool.Name != nil && *tool.Name == toolsearch.ToolName {
+				name, args = toolsearch.ToolName, `{"query":"weather"}`
+			}
+		}
+		return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+			Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr(name), Arguments: schemas.Ptr(args)},
+		}}}, nil
+	}, func(c schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		return set.search.Execute(c)
+	})
+	require.Nil(t, bifrostErr)
+	require.Len(t, turns, 1)
+	require.Len(t, resp.Output, 1, "the caller gets the model's call, not an empty completed response")
+	assert.Equal(t, "lookup_city", *resp.Output[0].Name)
+}
+
+// The same check on a long conversation: without a tool_search tool the input is never
+// scanned for additional_tools items.
+func BenchmarkWithGatewayToolSearch_LongInputNoDeferredTools(b *testing.B) {
+	req := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	req.ResponsesRequest.Params.Tools[1].DeferLoading = nil
+	input := make([]schemas.ResponsesMessage, 0, 400)
+	for i := 0; i < 200; i++ {
+		input = append(input,
+			schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+			schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("c"), Name: schemas.Ptr("exec_command")}},
+		)
+	}
+	req.ResponsesRequest.Input = input
+	b.ReportAllocs()
+	for b.Loop() {
+		if withGatewayToolSearch(nil, req, schemas.Gemini, "gemini-3.8-flash") != nil {
+			b.Fatal("unexpected tool search")
+		}
+	}
+}
+
+// A Codex request (client tool_search declared) with a long conversation and nothing
+// deferred: the one shape that pays for the additional_tools scan.
+func BenchmarkWithGatewayToolSearch_CodexLongInputNoDeferredTools(b *testing.B) {
+	req := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	req.ResponsesRequest.Params.Tools[1].DeferLoading = nil
+	req.ResponsesRequest.Params.Tools = append(req.ResponsesRequest.Params.Tools, schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr(schemas.ToolSearchExecutionClient)},
+	})
+	input := make([]schemas.ResponsesMessage, 0, 400)
+	for i := 0; i < 200; i++ {
+		input = append(input,
+			schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+			schemas.ResponsesMessage{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("c"), Name: schemas.Ptr("exec_command")}},
+		)
+	}
+	req.ResponsesRequest.Input = input
+	b.ReportAllocs()
+	for b.Loop() {
+		if withGatewayToolSearch(nil, req, schemas.Gemini, "gemini-3.8-flash") != nil {
+			b.Fatal("unexpected tool search")
+		}
+	}
+}
+
 // The per-attempt check every Responses request pays when no tool is deferred.
 func BenchmarkWithGatewayToolSearch_NoDeferredTools(b *testing.B) {
 	req := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
@@ -1009,4 +1312,211 @@ func BenchmarkWithGatewayToolSearch_NoDeferredTools(b *testing.B) {
 			b.Fatal("unexpected tool search")
 		}
 	}
+}
+
+// vertexDeclarations prepares turn for Vertex as an attempt does and returns the names of
+// the function declarations the Gemini request carries.
+func vertexDeclarations(t *testing.T, turn *schemas.BifrostResponsesRequest) []string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Vertex}, schemas.Key{}, turn)
+	require.Nil(t, bifrostErr)
+	geminiReq, err := gemini.ToGeminiResponsesRequest(ctx, prepared)
+	require.NoError(t, err)
+	var names []string
+	for _, tool := range geminiReq.Tools {
+		for _, decl := range tool.FunctionDeclarations {
+			names = append(names, decl.Name)
+		}
+	}
+	return names
+}
+
+// Codex can declare an MCP server's tools in an additional_tools input item rather than
+// in the request's tools. The gateway search catalogs and holds back the deferred tools
+// declared there too: every turn sends the item's tools from the merged tool list, and
+// the item itself never reaches the upstream, where flattening would otherwise hoist all
+// 513 members into Vertex's function declarations.
+func TestGatewayToolSearch_AdditionalToolsDeferredNamespaceOnVertex(t *testing.T) {
+	members := make([]map[string]any, 0, 513)
+	for i := 0; i < 513; i++ {
+		members = append(members, map[string]any{
+			"type": "function", "name": fmt.Sprintf("tool_%d", i), "description": "Demo tool " + strconv.Itoa(i),
+			"parameters": map[string]any{"type": "object"},
+		})
+	}
+	raw, err := schemas.Marshal([]map[string]any{{"type": "namespace", "name": "mcp__demo", "description": "Demo MCP server.", "defer_loading": true, "tools": members}})
+	require.NoError(t, err)
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex, Model: "gemini-4-carbon",
+			Input: []schemas.ResponsesMessage{
+				{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+				{Type: schemas.Ptr(schemas.ResponsesMessageTypeAdditionalTools), AdditionalTools: raw},
+			},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr(schemas.ToolSearchExecutionClient)}},
+				{Type: schemas.ResponsesToolTypeNamespace, Name: schemas.Ptr("functions"), ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{
+					{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("exec_command"), Description: schemas.Ptr("Run a command"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+				}}},
+			}},
+		},
+	}
+	assert.Nil(t, withGatewayToolSearch(nil, req, schemas.OpenAI, "gpt-6-sol"), "a model with its own tool search gets the item as sent")
+	set := withGatewayToolSearch(nil, req, schemas.Vertex, "gemini-4-carbon")
+	require.NotNil(t, set, "the deferred namespace in additional_tools needs the gateway search")
+	assert.Contains(t, *set.search.Tool().Function.Description, "- mcp__demo__tool_7: Demo tool 7", "additional_tools members are in the search catalog")
+
+	var declared [][]string
+	var turns []*schemas.BifrostResponsesRequest
+	_, bifrostErr := runInjectedResponsesLoop(req.ResponsesRequest, set, func(turn *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		turns = append(turns, turn)
+		declared = append(declared, vertexDeclarations(t, turn))
+		if len(turns) == 1 {
+			return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_s1"), Name: schemas.Ptr(toolsearch.ToolName), Arguments: schemas.Ptr(`{"query":"select:mcp__demo__tool_7"}`)},
+			}}}, nil
+		}
+		return &schemas.BifrostResponsesResponse{Output: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("done")},
+		}}}, nil
+	}, func(c schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
+		return set.search.Execute(c)
+	})
+	require.Nil(t, bifrostErr)
+	require.Len(t, declared, 2)
+	assert.Equal(t, []string{"exec_command", toolsearch.ToolName}, declared[0], "the additional_tools members are held back")
+	assert.Equal(t, []string{"exec_command", "mcp__demo__tool_7", toolsearch.ToolName}, declared[1], "the searched member is loaded")
+	for _, turn := range turns {
+		for _, item := range turn.Input {
+			assert.False(t, item.Type != nil && *item.Type == schemas.ResponsesMessageTypeAdditionalTools, "the additional_tools item reached the upstream")
+		}
+	}
+	assert.Equal(t, schemas.ResponsesMessageTypeAdditionalTools, *req.ResponsesRequest.Input[1].Type, "the caller's request is untouched")
+}
+
+// Codex keeps its deferred tools on its side when it runs the search itself: they reach
+// the gateway only inside the client tool_search_output items of the history (a session
+// that started on a model with tool search). Gemini drops those items, so the tools
+// they loaded were neither callable nor searchable. The gateway search catalogs them,
+// starts the most recently loaded ones out loaded, at most toolsearch.MaxHistoryLoaded,
+// and leaves the rest to the search.
+func TestGatewayToolSearch_ClientSearchOutputsOnVertex(t *testing.T) {
+	member := func(name string) string {
+		return `{"type":"function","name":"` + name + `","description":"Demo ` + name + `","parameters":{"type":"object","properties":{}}}`
+	}
+	older := make([]string, 0, 25)
+	for i := 0; i < 25; i++ {
+		older = append(older, member(fmt.Sprintf("t%d", i)))
+	}
+	output := func(callID string, members []string) string {
+		return `{"type":"tool_search_call","execution":"client","call_id":"` + callID + `","status":"completed","arguments":{"query":"demo"}},` +
+			`{"type":"tool_search_output","execution":"client","call_id":"` + callID + `","status":"completed","tools":[{"type":"namespace","name":"mcp__demo","description":"Demo MCP server.","tools":[` + strings.Join(members, ",") + `]}]}`
+	}
+	raw := `{"provider":"vertex","model":"gemini-4-carbon","input":[` +
+		`{"type":"message","role":"user","content":"hi"},` + output("call_1", older) + `,` + output("call_2", []string{member("get_weather")}) +
+		`],"params":{"tools":[{"type":"tool_search","execution":"client"},` +
+		`{"type":"namespace","name":"functions","tools":[` + member("exec_command") + `]}]}}`
+	var responses schemas.BifrostResponsesRequest
+	require.NoError(t, schemas.Unmarshal([]byte(raw), &responses))
+	req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &responses}
+
+	set := withGatewayToolSearch(nil, req, schemas.Vertex, "gemini-4-carbon")
+	require.NotNil(t, set, "tools loaded by the client's earlier searches need the gateway search")
+	assert.Contains(t, *set.search.Tool().Function.Description, "- mcp__demo__t24: Demo t24", "a tool past the cap stays searchable")
+
+	want := []string{"exec_command"}
+	for i := 0; i < 19; i++ {
+		want = append(want, fmt.Sprintf("mcp__demo__t%d", i))
+	}
+	want = append(want, "mcp__demo__get_weather", toolsearch.ToolName)
+	first := applyInjectedToolsResponses(set.responsesRequest(req.ResponsesRequest), set)
+	assert.Equal(t, want, vertexDeclarations(t, first), "the newest search's tool, then the older search's first 19, up to the cap of 20")
+	assert.Len(t, req.ResponsesRequest.Params.Tools, 2, "the caller's request is untouched")
+}
+
+// Codex on a Vertex Gemini model: a client tool_search and an MCP namespace of 513
+// tools deferred as a whole. Gemini has no tool search, so every member used to reach
+// tools[0].function_declarations and Vertex rejected the request ("At most 512 function
+// declarations can be specified"). The gateway search now holds the namespace back.
+func TestGatewayToolSearch_CodexDeferredNamespaceOnVertex(t *testing.T) {
+	members := make([]schemas.ResponsesTool, 0, 513)
+	for i := 0; i < 513; i++ {
+		members = append(members, schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr(fmt.Sprintf("tool_%d", i)),
+			Description: schemas.Ptr("dummy"), ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		})
+	}
+	req := &schemas.BifrostRequest{
+		RequestType: schemas.ResponsesStreamRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Vertex, Model: "gemini-4-carbon",
+			Input: []schemas.ResponsesMessage{{
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+			}},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+				{Type: schemas.ResponsesToolTypeToolSearch, ResponsesToolToolSearch: &schemas.ResponsesToolToolSearch{Execution: schemas.Ptr(schemas.ToolSearchExecutionClient)}},
+				{Type: schemas.ResponsesToolTypeNamespace, Name: schemas.Ptr("mcp__demo"), DeferLoading: schemas.Ptr(true),
+					ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: members}},
+			}},
+		},
+	}
+	set := withGatewayToolSearch(nil, req, schemas.Vertex, "gemini-4-carbon")
+	require.NotNil(t, set, "Vertex Gemini has no tool search, so the gateway runs one")
+
+	toGemini := func(turn *schemas.BifrostResponsesRequest) *gemini.GeminiGenerationRequest {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Vertex}, schemas.Key{}, turn)
+		require.Nil(t, bifrostErr)
+		geminiReq, err := gemini.ToGeminiResponsesRequest(ctx, prepared)
+		require.NoError(t, err)
+		return geminiReq
+	}
+	declarations := func(turn *schemas.BifrostResponsesRequest) []string {
+		var names []string
+		for _, tool := range toGemini(turn).Tools {
+			for _, decl := range tool.FunctionDeclarations {
+				names = append(names, decl.Name)
+			}
+		}
+		return names
+	}
+	assert.Equal(t, []string{toolsearch.ToolName}, declarations(applyInjectedToolsResponses(req.ResponsesRequest, set)),
+		"only the gateway search goes out before anything is loaded")
+
+	set.search.Execute(schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("call_s1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr(toolsearch.ToolName), Arguments: `{"query":"select:mcp__demo__tool_7"}`},
+	})
+	assert.Equal(t, []string{"mcp__demo__tool_7", toolsearch.ToolName}, declarations(applyInjectedToolsResponses(req.ResponsesRequest, set)),
+		"the loaded member goes out under its flat name")
+	assert.Len(t, req.ResponsesRequest.Params.Tools[1].ResponsesToolNamespace.Tools, 513, "the caller's request is untouched")
+
+	// A tool_choice naming a deferred member by its bare name declares that member,
+	// and the forced choice reaches Vertex under the member's flat name.
+	pinned := *req.ResponsesRequest
+	params := *pinned.Params
+	params.ToolChoice = &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+		Type: schemas.ResponsesToolChoiceTypeFunction, Name: schemas.Ptr("tool_42"),
+	}}
+	pinned.Params = &params
+	pinnedReq := &schemas.BifrostRequest{RequestType: schemas.ResponsesStreamRequest, ResponsesRequest: &pinned}
+	pinnedSet := withGatewayToolSearch(nil, pinnedReq, schemas.Vertex, "gemini-4-carbon")
+	require.NotNil(t, pinnedSet)
+	geminiReq := toGemini(applyInjectedToolsResponses(&pinned, pinnedSet))
+	require.NotEmpty(t, geminiReq.Tools)
+	var pinnedNames []string
+	for _, tool := range geminiReq.Tools {
+		for _, decl := range tool.FunctionDeclarations {
+			pinnedNames = append(pinnedNames, decl.Name)
+		}
+	}
+	assert.Equal(t, []string{"mcp__demo__tool_42", toolsearch.ToolName}, pinnedNames, "the pinned member is declared from the first turn")
+	require.NotNil(t, geminiReq.ToolConfig)
+	require.NotNil(t, geminiReq.ToolConfig.FunctionCallingConfig)
+	assert.Equal(t, []string{"mcp__demo__tool_42"}, geminiReq.ToolConfig.FunctionCallingConfig.AllowedFunctionNames, "the choice is realiased to the declared member")
 }

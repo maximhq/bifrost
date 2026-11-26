@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { applyAuthMethod, stripDatabricksAuthDiscriminator, stripOAuthAuthDiscriminator } from "./providerKeyForm.utils";
+import {
+	applyAuthMethod,
+	stripAnthropicAuthDiscriminator,
+	stripDatabricksAuthDiscriminator,
+	stripOAuthAuthDiscriminator,
+} from "./providerKeyForm.utils";
 
 const pair = { client_id: { value: "sp-id" }, client_secret: { value: "sp-secret" } };
 const workspace_url = { value: "https://dbc-1234abcd-5678.cloud.databricks.com" };
@@ -156,6 +161,8 @@ describe("applyAuthMethod clears the static key for the other providers' tabs", 
 		["bedrock iam role", "bedrock_key_config", { _auth_type: "iam_role", region: { value: "us-east-1" } }],
 		["bedrock explicit", "bedrock_key_config", { _auth_type: "explicit", access_key: { value: "a" }, secret_key: { value: "s" } }],
 		["bedrock mantle iam role", "bedrock_mantle_key_config", { _auth_type: "iam_role", region: { value: "us-east-1" } }],
+		["sagemaker iam role", "sagemaker_key_config", { _auth_type: "iam_role", region: { value: "us-east-1" } }],
+		["sagemaker explicit", "sagemaker_key_config", { _auth_type: "explicit", access_key: { value: "a" }, secret_key: { value: "s" } }],
 		["vertex service account", "vertex_key_config", { _auth_type: "service_account", project_id: { value: "p" } }],
 	];
 
@@ -177,10 +184,127 @@ describe("applyAuthMethod clears the static key for the other providers' tabs", 
 		expect(databricks.databricks_key_config).toEqual({ workspace_url });
 	});
 
+	it("keeps a pre-minted SageMaker bearer token on its tab", () => {
+		const region = { value: "us-east-1" };
+		const out = applyAuthMethod(
+			{ name: "k", value: { value: "sagemaker-api-key-abc" }, sagemaker_key_config: { _auth_type: "api_key", region } },
+			true,
+		);
+		expect(out.value).toEqual({ value: "sagemaker-api-key-abc" });
+		expect(out.sagemaker_key_config).toEqual({ region });
+	});
+
 	// The discriminator is only seeded on mount and after the key resolves; with none, the form
 	// has said nothing about the method and must not clear a key it did not touch.
 	it("leaves the value alone when no method was chosen", () => {
 		const out = applyAuthMethod({ name: "k", value: undefined, azure_key_config: { endpoint } }, true);
 		expect(out.value).toBeUndefined();
+	});
+});
+
+// Workload identity and the static key are alternatives on anthropic keys: the payload carries
+// exactly one of them, and of the identity source only the field its type needs.
+describe("applyAuthMethod with anthropic_key_config", () => {
+	const ids = {
+		federation_rule_id: { value: "fdrl_01" },
+		organization_id: { value: "00000000-0000-4000-8000-000000000000" },
+		service_account_id: { value: "svac_01" },
+	};
+	const tokenFile = { value: "/var/run/secrets/anthropic/token" };
+	const token = { value: "", ref: "env.ANTHROPIC_IDENTITY_TOKEN", type: "env" as const };
+	const wif = (extra: Record<string, unknown>) => ({ _auth_type: "workload_identity" as const, workload_identity: { ...ids, ...extra } });
+
+	it("drops workload_identity on the API key method", () => {
+		const block = {
+			_auth_type: "api_key" as const,
+			workload_identity: { ...ids, identity_source: { type: "file" as const, path: tokenFile } },
+		};
+		const edited = applyAuthMethod({ name: "k", value: { value: "sk-ant" }, anthropic_key_config: block }, true);
+		expect(edited.value).toEqual({ value: "sk-ant" });
+		expect(edited.anthropic_key_config).toBeNull();
+		const created = applyAuthMethod({ name: "k", value: { value: "sk-ant" }, anthropic_key_config: block }, false);
+		expect(created).not.toHaveProperty("anthropic_key_config");
+	});
+
+	// Switching to workload identity clears the form's value, and the update API keeps an omitted
+	// one, so the cleared value goes out as an explicit empty one.
+	it("sends an explicit empty value on the workload identity method", () => {
+		const out = applyAuthMethod(
+			{ name: "k", value: undefined, anthropic_key_config: wif({ identity_source: { type: "file", path: tokenFile } }) },
+			true,
+		);
+		expect(out.value).toEqual({ value: "" });
+		expect(out.anthropic_key_config).toEqual({ workload_identity: { ...ids, identity_source: { type: "file", path: tokenFile } } });
+	});
+
+	// A stored key can carry both a value and the block (through the API or config.json), and the
+	// server keeps using the value. Saving it without switching tabs, a rename say, must not delete
+	// the credential in use; the same rule the OAuth tab follows.
+	it("keeps a value the form still holds on the workload identity method", () => {
+		const out = applyAuthMethod(
+			{
+				name: "renamed",
+				value: { value: "sk-a************************tic1" },
+				anthropic_key_config: wif({ identity_source: { type: "file", path: tokenFile } }),
+			},
+			true,
+		);
+		expect(out.value).toEqual({ value: "sk-a************************tic1" });
+		expect(out.anthropic_key_config).toEqual({ workload_identity: { ...ids, identity_source: { type: "file", path: tokenFile } } });
+		const oauth = applyAuthMethod(
+			{
+				name: "renamed",
+				value: { value: "sk-o" },
+				oauth_key_config: { _auth_type: "oauth", grant_type: "client_credentials", token_url: { value: "https://idp" } },
+			},
+			true,
+		);
+		expect(oauth.value).toEqual({ value: "sk-o" });
+	});
+
+	it("sends only the field the source type needs", () => {
+		const both = { path: tokenFile, token };
+		const file = applyAuthMethod({ name: "k", anthropic_key_config: wif({ identity_source: { type: "file", ...both } }) }, false);
+		expect(file.anthropic_key_config).toEqual({ workload_identity: { ...ids, identity_source: { type: "file", path: tokenFile } } });
+		const tok = applyAuthMethod({ name: "k", anthropic_key_config: wif({ identity_source: { type: "inline", ...both } }) }, false);
+		expect(tok.anthropic_key_config).toEqual({ workload_identity: { ...ids, identity_source: { type: "inline", token } } });
+	});
+
+	it("drops a blank workspace ID and keeps a set one", () => {
+		const blank = stripAnthropicAuthDiscriminator(
+			wif({ workspace_id: { value: "", ref: "" }, identity_source: { type: "file", path: tokenFile } }),
+		);
+		expect(blank?.workload_identity).not.toHaveProperty("workspace_id");
+		const workspace = { value: "", ref: "env.ANTHROPIC_WORKSPACE_ID", type: "env" as const };
+		const set = stripAnthropicAuthDiscriminator(wif({ workspace_id: workspace, identity_source: { type: "file", path: tokenFile } }));
+		expect(set?.workload_identity?.workspace_id).toEqual(workspace);
+	});
+
+	it("never persists the UI-only discriminator", () => {
+		const out = stripAnthropicAuthDiscriminator(wif({ identity_source: { type: "inline", token } }));
+		expect(out).not.toHaveProperty("_auth_type");
+		expect(out?.workload_identity?.identity_source).toEqual({ type: "inline", token });
+	});
+
+	// The discriminators are only seeded on mount and after the key resolves; an edit whose
+	// discriminator went missing must not silently drop a stored federation key.
+	it("keeps a complete block when the discriminator is absent", () => {
+		const out = applyAuthMethod(
+			{
+				name: "k",
+				value: { value: "" },
+				anthropic_key_config: { workload_identity: { ...ids, identity_source: { type: "inline", token } } },
+			},
+			true,
+		);
+		expect(out.anthropic_key_config).toEqual({ workload_identity: { ...ids, identity_source: { type: "inline", token } } });
+		expect(out.value).toEqual({ value: "" });
+	});
+
+	it("drops an incomplete block when the discriminator is absent", () => {
+		expect(stripAnthropicAuthDiscriminator({ workload_identity: { ...ids } })).toBeUndefined();
+		expect(
+			stripAnthropicAuthDiscriminator({ workload_identity: { ...ids, identity_source: { type: "inline", path: tokenFile } } }),
+		).toBeUndefined();
 	});
 });

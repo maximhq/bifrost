@@ -67,6 +67,23 @@ func isOverheadSpanKind(kind schemas.SpanKind) bool {
 	}
 }
 
+// isStreamPostHook reports whether s is a plugin's streaming post-hook span, which
+// stands for the plugin's per-chunk hook time summed over the stream.
+func isStreamPostHook(s *schemas.Span) bool {
+	if s.Kind != schemas.SpanKindPlugin {
+		return false
+	}
+	_, ok := s.GetAttribute(schemas.AttrPluginInvocations)
+	return ok
+}
+
+// isBackground reports whether s is work the request did not wait for.
+func isBackground(s *schemas.Span) bool {
+	v, _ := s.GetAttribute(schemas.AttrBifrostBackground)
+	background, _ := v.(bool)
+	return background
+}
+
 // overheadBucketName maps an overhead-side span to its breakdown bucket.
 func overheadBucketName(s *schemas.Span) string {
 	if s.Kind == schemas.SpanKindPlugin {
@@ -117,13 +134,21 @@ func Compute(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstream
 			spanByID[s.SpanID] = s
 		}
 	}
+	// Background spans are skipped throughout: they are neither overhead nor time taken
+	// from the span that started them.
 	childDur := make(map[string]time.Duration, len(trace.Spans))
 	for _, s := range trace.Spans {
-		if s == nil || s.ParentID == "" {
+		if s == nil || s.ParentID == "" || isBackground(s) {
 			continue
 		}
 		parent := spanByID[s.ParentID]
 		if parent == nil {
+			continue
+		}
+		if isStreamPostHook(parent) {
+			// Placed by its summed hook time, not by when its children ran; they ran
+			// inside the hook, so each comes out of it in full.
+			childDur[s.ParentID] += spanWall(s)
 			continue
 		}
 		childDur[s.ParentID] += spanOverlap(parent, s)
@@ -136,7 +161,7 @@ func Compute(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstream
 	}
 	buckets := make(map[string]*agg)
 	for _, s := range trace.Spans {
-		if s == nil || !isOverheadSpanKind(s.Kind) {
+		if s == nil || !isOverheadSpanKind(s.Kind) || isBackground(s) {
 			continue
 		}
 		self := spanWall(s) - childDur[s.SpanID]
@@ -235,11 +260,26 @@ func Compute(trace *schemas.Trace, overheadMs float64, overheadOK bool, upstream
 			}
 		}
 	}
+	// A relay call says it was streamed on its own span: a fast, empty or non-SSE stream may carry
+	// no stream-overhead figure, and must not be read as a unary call (its whole stream would then
+	// land in the scheduling residual).
+	if !isStreaming {
+		for _, sp := range trace.Spans {
+			if sp != nil && sp.Kind == schemas.SpanKindRelay {
+				if streamed, _ := sp.Attributes[schemas.AttrBifrostRelayStreamed].(bool); streamed {
+					isStreaming = true
+					break
+				}
+			}
+		}
+	}
 	if upstreamOK && !isStreaming {
 		var llmSelfNs int64
 		var firstLLM time.Time
 		for _, s := range trace.Spans {
-			if s == nil || s.Kind != schemas.SpanKindLLMCall {
+			// A relay span plays the llm.call role for a relayed call: it envelops the upstream call
+			// and the relay's own glue (request building, reply copy, usage reading, pricing).
+			if s == nil || (s.Kind != schemas.SpanKindLLMCall && s.Kind != schemas.SpanKindRelay) || isBackground(s) {
 				continue
 			}
 			if self := spanWall(s) - childDur[s.SpanID]; self > 0 {

@@ -71,6 +71,9 @@ type Options struct {
 	Transient       Backoff                          // Backoff after a transient failure (default DefaultTransientBackoff)
 	IsPermanent     func(*schemas.BifrostError) bool // Classifies a mint error (default IsPermanentError)
 	Now             func() time.Time                 // Clock, for tests (default time.Now)
+	// KeepOnPermanentFailure keeps serving a still-usable token after a permanent refresh failure,
+	// as after a transient one, for endpoints that answer temporary faults with a 4xx.
+	KeepOnPermanentFailure bool
 }
 
 // Cache maps a credential's cache key to its token slot.
@@ -186,10 +189,11 @@ func (c *Cache[T]) Get(ctx context.Context, cacheKey string, mint Minter[T]) (*E
 		// A transient failure (5xx, 429, unreachable endpoint) during the refresh margin must not
 		// fail requests the previous token can still serve; it is kept until it expires and the
 		// retry happens after the backoff. A permanent failure means the credential itself is
-		// bad, so the old token goes at once rather than hiding that for up to a margin. The
-		// exchange may have taken longer than the token had left, so expiry is judged now, not
-		// against the time read before the mint started.
-		if !permanent && s.gen.Load() == gen && usable(prev, c.opts.Now()) {
+		// bad, so the old token goes at once rather than hiding that for up to a margin, unless
+		// KeepOnPermanentFailure says the endpoint uses 4xx for temporary faults too. The exchange
+		// may have taken longer than the token had left, so expiry is judged now, not against the
+		// time read before the mint started. A token cleared while the refresh ran is not served.
+		if (!permanent || c.opts.KeepOnPermanentFailure) && s.gen.Load() == gen && s.entry.Load() == prev && usable(prev, c.opts.Now()) {
 			return prev, nil
 		}
 		s.entry.Store(nil)
@@ -211,6 +215,22 @@ func (c *Cache[T]) Invalidate(cacheKey string) {
 		s.(*slot[T]).gen.Add(1)
 		s.(*slot[T]).entry.Store(nil)
 	}
+}
+
+// InvalidateEntry discards the cached token for cacheKey only while the slot still holds e, in one
+// atomic step, so a caller reacting to a rejection of e never clears a newer token that a
+// concurrent refresh stored meanwhile. Unlike Invalidate it leaves an in-flight refresh alone
+// rather than making it discard its result and mint again: for a credential that is accepted only
+// once, that second mint would present it twice. Reports whether e was discarded.
+func (c *Cache[T]) InvalidateEntry(cacheKey string, e *Entry[T]) bool {
+	if e == nil {
+		return false
+	}
+	s, ok := c.slots.Load(cacheKey)
+	if !ok {
+		return false
+	}
+	return s.(*slot[T]).entry.CompareAndSwap(e, nil)
 }
 
 // Expire marks the cached token for cacheKey as due for refresh but keeps its value, so the

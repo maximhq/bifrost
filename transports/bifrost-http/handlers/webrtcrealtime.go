@@ -11,6 +11,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
@@ -290,7 +291,7 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 	// and the resolution check below can refuse a mapped token whose virtual key has since been
 	// revoked before any key selection or relay work.
 	inboundToken := extractRealtimeBearerToken(ctx)
-	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetKVStore(), inboundToken)
+	mapping, mapped := lookupRealtimeEphemeralKeyMapping(h.handlerStore.GetSharedTables().RealtimeKeys, inboundToken)
 	if mapped {
 		applyRealtimeEphemeralKeyMapping(bifrostCtx, mapping)
 	}
@@ -325,11 +326,15 @@ func (h *WebRTCRealtimeHandler) runWebRTCRelay(
 		return
 	}
 
-	// Resolve model alias so the provider receives the actual model identifier.
+	// Resolve model alias so the provider receives the actual model identifier, and keep the
+	// alias on the context for its per-alias overrides.
+	aliases := authKey.Aliases
 	if selectedKey != nil {
-		model = selectedKey.Aliases.Resolve(model)
-	} else {
-		model = authKey.Aliases.Resolve(model)
+		aliases = selectedKey.Aliases
+	}
+	if aliasConfig := aliases.ResolveConfig(model); aliasConfig != nil {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{Key: model, Config: aliasConfig})
+		model = aliasConfig.ModelID
 	}
 
 	if transcriptionSession {
@@ -373,7 +378,7 @@ func (h *WebRTCRealtimeHandler) resolveRealtimeWebRTCKeys(
 	providerKey schemas.ModelProvider,
 	model string,
 	inboundToken string,
-	mapping realtimeEphemeralKeyMapping,
+	mapping lib.RealtimeKeyMapping,
 	mapped bool,
 ) (schemas.Key, *schemas.Key, error) {
 	if isRealtimeEphemeralToken(inboundToken) && !mapped {
@@ -403,60 +408,22 @@ func (h *WebRTCRealtimeHandler) resolveRealtimeWebRTCKeys(
 	return authKey, &selectedKey, nil
 }
 
-func lookupRealtimeEphemeralKeyMapping(kv schemas.KVStore, token string) (realtimeEphemeralKeyMapping, bool) {
-	if kv == nil || strings.TrimSpace(token) == "" {
-		return realtimeEphemeralKeyMapping{}, false
+// lookupRealtimeEphemeralKeyMapping returns what the realtime client secret token stands for, when
+// Bifrost minted it and it has not expired. A mapping with no field set is no mapping.
+func lookupRealtimeEphemeralKeyMapping(keys *livestore.Table[string, lib.RealtimeKeyMapping], token string) (lib.RealtimeKeyMapping, bool) {
+	if keys == nil || strings.TrimSpace(token) == "" {
+		return lib.RealtimeKeyMapping{}, false
 	}
-
-	raw, err := kv.Get(buildRealtimeEphemeralKeyMappingKey(token))
-	if err != nil {
-		return realtimeEphemeralKeyMapping{}, false
+	mapping, ok := keys.Get(buildRealtimeEphemeralKeyMappingKey(token))
+	if !ok || (mapping.KeyID == "" && mapping.VirtualKey == "" && mapping.ProviderToken == "") {
+		return lib.RealtimeKeyMapping{}, false
 	}
-
-	switch value := raw.(type) {
-	case realtimeEphemeralKeyMapping:
-		return value, true
-	case string:
-		return parseRealtimeEphemeralKeyMappingValue([]byte(value))
-	case []byte:
-		return parseRealtimeEphemeralKeyMappingValue(value)
-	default:
-		return realtimeEphemeralKeyMapping{}, false
-	}
+	return mapping, true
 }
 
-func parseRealtimeEphemeralKeyMappingValue(raw []byte) (realtimeEphemeralKeyMapping, bool) {
-	raw = []byte(strings.TrimSpace(string(raw)))
-	if len(raw) == 0 {
-		return realtimeEphemeralKeyMapping{}, false
-	}
-
-	var mapping realtimeEphemeralKeyMapping
-	if err := json.Unmarshal(raw, &mapping); err == nil {
-		mapping.KeyID = strings.TrimSpace(mapping.KeyID)
-		mapping.VirtualKey = strings.TrimSpace(mapping.VirtualKey)
-		mapping.ProviderToken = strings.TrimSpace(mapping.ProviderToken)
-		if mapping.KeyID != "" || mapping.VirtualKey != "" || mapping.ProviderToken != "" {
-			return mapping, true
-		}
-	}
-
-	var keyID string
-	if err := json.Unmarshal(raw, &keyID); err == nil {
-		keyID = strings.TrimSpace(keyID)
-		if keyID != "" {
-			return realtimeEphemeralKeyMapping{KeyID: keyID}, true
-		}
-	}
-
-	keyID = strings.TrimSpace(string(raw))
-	if keyID == "" {
-		return realtimeEphemeralKeyMapping{}, false
-	}
-	return realtimeEphemeralKeyMapping{KeyID: keyID}, true
-}
-
-func applyRealtimeEphemeralKeyMapping(bifrostCtx *schemas.BifrostContext, mapping realtimeEphemeralKeyMapping) {
+// applyRealtimeEphemeralKeyMapping puts the key and virtual key an ephemeral token maps to on the
+// request's context, so the session runs as the client that minted the token.
+func applyRealtimeEphemeralKeyMapping(bifrostCtx *schemas.BifrostContext, mapping lib.RealtimeKeyMapping) {
 	if bifrostCtx == nil {
 		return
 	}
@@ -526,6 +493,7 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 	return establishWebRTCRelay(webrtcRelaySetup{
 		requestType: schemas.RealtimeRequest,
 		handler: &realtimeWebRTCMessages{
+			config:               h.config,
 			client:               h.client,
 			session:              session,
 			bifrostCtx:           relayCtx,
@@ -550,6 +518,7 @@ func (h *WebRTCRealtimeHandler) establishRelay(
 // realtimeWebRTCMessages translates Realtime events across a WebRTC relay and runs a plugin
 // pass per turn.
 type realtimeWebRTCMessages struct {
+	config               *lib.Config
 	client               *bifrost.Bifrost
 	session              *bfws.Session
 	bifrostCtx           *schemas.BifrostContext
@@ -645,15 +614,21 @@ func (m *realtimeWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataCha
 		}
 		// Track session tool definitions from session.created/session.updated (server→client).
 		updateRealtimeSessionFromEvent(m.session, event)
-		inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
-		if inputSummary != "" {
-			m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+		if m.transcriptionSession {
+			inputItemID, inputSummary := pendingRealtimeInputUpdate(event)
+			if inputSummary != "" {
+				m.session.RecordRealtimeInput(inputItemID, inputSummary, string(msg.Data))
+			}
+		} else {
+			recordRealtimeProviderInput(m.config, m.session, event, string(msg.Data))
 		}
 		if event.Delta != nil && m.provider.ShouldAccumulateRealtimeOutput(event.Type) {
 			m.session.AppendRealtimeOutputText(event.Delta.Text)
 			m.session.AppendRealtimeOutputText(event.Delta.Transcript)
 		}
-		if m.provider.ShouldStartRealtimeTurn(event) && m.session.PeekRealtimeTurnHooks() == nil {
+		// Transcription has no response.created event; its unit starts at committed input.
+		startsTurn := m.provider.ShouldStartRealtimeTurn(event) || (m.transcriptionSession && event.Type == schemas.RTEventInputAudioBufferCommitted)
+		if startsTurn && m.session.PeekRealtimeTurnHooks() == nil {
 			if bifrostErr := startRealtimeTurnHooks(m.client, m.bifrostCtx, m.session, m.provider, m.providerKey, m.model, m.key, event); bifrostErr != nil {
 				r.closeWithErrorEvent(newRealtimeTurnErrorEventPayload(bifrostErr))
 				return
@@ -690,7 +665,9 @@ func (m *realtimeWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataCha
 				return
 			}
 		}
-		msg.Data, err = m.provider.ToProviderRealtimeEvent(event)
+		if len(event.RawData) == 0 {
+			msg.Data, err = m.provider.ToProviderRealtimeEvent(event)
+		}
 		if err != nil {
 			logger.Warn("failed to encode translated realtime event: %v", err)
 			// Lifecycle events (response.done / error) must reach the client so it
@@ -730,6 +707,8 @@ func (m *realtimeWebRTCMessages) closed() {
 	m.session.ClearRealtimeTurnHooks()
 }
 
+// newRealtimeRelayContext snapshots session-safe setup values without retaining
+// the HTTP request's cancellation or request-only plugin metadata.
 func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.BifrostContext, context.CancelFunc) {
 	relayCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
 	if requestCtx == nil {
@@ -747,6 +726,7 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 		schemas.BifrostContextKeyExtraHeaders,
 		schemas.BifrostContextKeyRequestHeaders,
 		schemas.BifrostContextKeyUserAgent,
+		schemas.BifrostContextKeyClientIP,
 		schemas.BifrostContextKeyGovernanceVirtualKeyID,
 		schemas.BifrostContextKeyGovernanceVirtualKeyName,
 		schemas.BifrostContextKeyGovernanceDisableContentLogging,
@@ -761,10 +741,12 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 		schemas.BifrostContextKeyGovernanceProjectName,
 		schemas.BifrostContextKeyUserID,
 		schemas.BifrostContextKeyUserName,
+		schemas.BifrostContextKeyUserEmail,
 		schemas.BifrostContextKeyGovernanceIncludeOnlyKeys,
 		schemas.BifrostContextKeyGovernancePluginName,
 		schemas.BifrostContextKeySelectedKeyID,
 		schemas.BifrostContextKeySelectedKeyName,
+		schemas.BifrostContextKeyResolvedAlias,
 		schemas.BifrostContextKeyIsEnterprise,
 		schemas.BifrostContextKeyRoutingEnginesUsed,
 		schemas.BifrostContextKeyRoutingEngineLogs,
@@ -782,6 +764,14 @@ func newRealtimeRelayContext(requestCtx *schemas.BifrostContext) (*schemas.Bifro
 			relayCtx.SetValue(key, value)
 		}
 	}
+	// Turns are logged on the relay, so it resolves content from the same layers the request did.
+	for _, key := range schemas.ContentLoggingContextKeys() {
+		if value := requestCtx.Value(key); value != nil {
+			relayCtx.SetValue(key, value)
+		}
+	}
+
+	applyRealtimeMiddlewareValues(relayCtx, mergeRealtimeTurnValues(nil, requestCtx))
 
 	// The relay is the request that opened it, kept alive past the request: it carries that
 	// request's grant, not a copy, the same way a realtime turn carries its session's (see

@@ -51,12 +51,14 @@ func TestNewConnectionFailure_PreservesSince(t *testing.T) {
 // it along with the flip to Healthy.
 func TestSetState_RecordsFailureAndClearsOnHealthy(t *testing.T) {
 	manager := &MCPManager{
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(nil, nil),
+		logger:         &MockLogger{},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
-	state, config := newSyncTestClientState("client-rec", "rec-client", schemas.MCPAuthTypeHeaders, nil)
+	state, config := newSyncTestClientState("client-rec", "rec-client", schemas.MCPAuthTypeHeaders)
 	state.State = schemas.MCPConnectionStateHealthy
-	manager.clientMap[config.ID] = state
+	putClient(manager, state)
 	checker := NewClientConnectionChecker(manager, config.ID, time.Minute, false, &MockLogger{})
 
 	checker.recordFailure(config.Name, schemas.MCPConnectionFailureStagePing, errors.New("ping: i/o timeout"), 0)
@@ -88,12 +90,9 @@ func TestSetState_RecordsFailureAndClearsOnHealthy(t *testing.T) {
 // Unstable, and the not-a-failure exits (nil error) leave the existing record
 // exactly as it was.
 func TestFailConnectAttempt_RecordsFailureByClassification(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-fail-record")
-	entry := &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
-	m.mu.Lock()
-	m.clientMap[config.ID] = entry
-	m.mu.Unlock()
+	entry := putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy})
 
 	m.failConnectAttempt(entry, config, nil, nil, nil, nil, false, errors.New("dial tcp: connection refused"))
 	require.NotNil(t, entry.LastFailure)
@@ -117,12 +116,9 @@ func TestFailConnectAttempt_RecordsFailureByClassification(t *testing.T) {
 // dropping. The record names the stage so the UI can distinguish "the
 // connection went away" from "a check found it unresponsive".
 func TestHandleSSEConnectionLost_RecordsTransportFailure(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-sse-lost")
-	entry := &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy, ConnGeneration: 3}
-	m.mu.Lock()
-	m.clientMap[config.ID] = entry
-	m.mu.Unlock()
+	entry := putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy, ConnGeneration: 3})
 
 	m.handleSSEConnectionLost(config.ID, config.Name, 3, errors.New("unexpected EOF"))
 	require.NotNil(t, entry.LastFailure)
@@ -143,12 +139,11 @@ func TestHandleSSEConnectionLost_RecordsTransportFailure(t *testing.T) {
 // manager's snapshot copy, since that copy is what the client-list API and a
 // distributed deployment's node-state heartbeat both read.
 func TestGetClients_SnapshotCarriesFailure(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-snapshot")
-	entry := &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateUnstable}
-	recordClientFailure(entry, schemas.MCPConnectionFailureStageListTools, errors.New("boom"))
+	entry := putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateUnstable})
 	m.mu.Lock()
-	m.clientMap[config.ID] = entry
+	recordClientFailure(entry, schemas.MCPConnectionFailureStageListTools, errors.New("boom"))
 	m.mu.Unlock()
 
 	clients := m.GetClients()

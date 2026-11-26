@@ -32,6 +32,10 @@ spec:
         - name: postgresql
           image: "{{ .Values.postgresql.image.repository }}:{{ .Values.postgresql.image.tag }}"
           imagePullPolicy: {{ .Values.postgresql.image.pullPolicy }}
+          {{- with .Values.postgresql.primary.extraArgs }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.postgresql.primary.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
