@@ -1491,6 +1491,11 @@ func TestUniqueIndexRefusesASecondRecord(t *testing.T) {
 	if conflict.Index != "name" || conflict.Key != "n1" || !slices.Equal(conflict.IDs, []string{"g1", "g4"}) {
 		t.Fatalf("conflict = %+v", conflict)
 	}
+	// A unique key can be a credential (a virtual key's value), and callers log this error, so its
+	// message names the kind, the index and the records but never the key.
+	if msg := err.Error(); strings.Contains(msg, conflict.Key) || !strings.Contains(msg, "g4") || !strings.Contains(msg, "name") {
+		t.Fatalf("error message %q must name the records and the index but not the key", msg)
+	}
 	if _, ok := f.groups.Get("g4"); ok {
 		t.Fatal("a refused refresh must publish nothing")
 	}
