@@ -955,7 +955,8 @@ func (m *ToolsManager) executeToolInternal(
 	// with zero retries and reach the isAuthFailure check below unchanged.
 	retryConfig := ToolCallRetryConfig
 	if utils.HasCallToken(toolCtx) {
-		// A call made under a caller's identity is sent once: a resend could repeat its side effects.
+		// Bifrost never resends a call made under a caller's identity on its own, as that could repeat its
+		// side effects; an upstream's input_required "retry later" still gets the call again, as it asked.
 		retryConfig.MaxRetries = 0
 	}
 	toolWait := schemas.BeginUpstreamWait(ctx)

@@ -400,8 +400,9 @@ type MCPDiscoveryStore interface {
 // falls back to a token a hook set on BifrostMCPRequest.OutboundToken, then to the extra
 // headers and the configured credential; return "" for servers that take no bearer. An error
 // fails that tool call before anything is sent upstream; the caller sees a fixed message and
-// the error is logged. A tool call that carries a token is sent once and never triggers a
-// reconnect; a per-call client's dial handshake before it is retried as any dial's is.
+// the error is logged. Bifrost never resends a tool call that carries a token on its own and it
+// never triggers a reconnect; an upstream answering input_required to retry later still gets the
+// call again, and a per-call client's dial handshake before it is retried as any dial's is.
 // Per-user auth types still resolve the user's own credential first and fail without it; the
 // token then replaces its Authorization. The token goes over whatever scheme the client's URL
 // uses, like every other credential. Implementations must be safe for concurrent use.
