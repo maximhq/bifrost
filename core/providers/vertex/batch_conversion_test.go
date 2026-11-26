@@ -338,6 +338,8 @@ func TestToVertexBatchCreateRequestPublisher(t *testing.T) {
 		{"AnthropicBareName", "claude-3-5-haiku", "publishers/anthropic/models/claude-3-5-haiku"},
 		{"GeminiBareName", "gemini-1.5-flash", "publishers/google/models/gemini-1.5-flash"},
 		{"AlreadyQualifiedPassesThrough", "publishers/anthropic/models/claude-3-5-haiku", "publishers/anthropic/models/claude-3-5-haiku"},
+		{"PublisherPrefixedName", "meta/llama-3.3-70b-instruct-maas", "publishers/meta/models/llama-3.3-70b-instruct-maas"},
+		{"ResourcePathPassesThrough", "projects/p/locations/us-central1/models/123", "projects/p/locations/us-central1/models/123"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
