@@ -286,11 +286,11 @@ func TestSetPassthroughHeaders_ContentTypeSurvivesEitherOrdering(t *testing.T) {
 // invariant. HandleAnthropicChatCompletionStreaming / HandleAnthropicResponsesStream /
 // completeRequest are shared by every Anthropic-wire-format provider, so without a gate the
 // caller's OAuth credential and client metadata would be forwarded to Azure, Vertex, Bedrock
-// Mantle, vLLM, SGL, DeepSeek and Fireworks too.
+// Mantle, vLLM, SGL, DeepSeek, Fireworks and Dagon too.
 func TestSetPassthroughHeaders_OnlyAnthropicReceivesThem(t *testing.T) {
 	sharers := []schemas.ModelProvider{
 		schemas.Azure, schemas.Vertex, schemas.BedrockMantle, schemas.Bedrock,
-		schemas.VLLM, schemas.SGL, schemas.DeepSeek, schemas.Fireworks,
+		schemas.VLLM, schemas.SGL, schemas.DeepSeek, schemas.Fireworks, schemas.Dagon,
 	}
 
 	for _, provider := range sharers {

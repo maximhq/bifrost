@@ -36,6 +36,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Baseten,
 	schemas.BytePlus,
 	schemas.Cerebras,
+	schemas.Dagon,
 	schemas.Cohere,
 	schemas.Databricks,
 	schemas.DeepSeek,

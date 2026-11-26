@@ -171,6 +171,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isSGL = effectiveProvider === "sgl";
 	const isDeepseek = effectiveProvider === "deepseek";
 	const isFireworks = effectiveProvider === "fireworks";
+	const isDagon = effectiveProvider === "dagon";
 	const isDatabricks = effectiveProvider === "databricks";
 	const isGithubCopilot = effectiveProvider === "github-copilot";
 	const isCloudflare = effectiveProvider === "cloudflare";
@@ -1927,7 +1928,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					</div>
 				</div>
 			)}
-			{(isSGL || isDeepseek || isFireworks || isVLLM) && (
+			{(isSGL || isDeepseek || isFireworks || isVLLM || isDagon) && (
 				<div className="space-y-4">
 					<FormField
 						control={control}
