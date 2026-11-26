@@ -20427,7 +20427,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\n  \"tool_choice\": {\"type\":\"function\",\"name\":\"nonexistent_tool\"}\n}"
+                  "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"messages\": [{\"role\":\"user\",\"content\":\"What's the weather?\"}],\n  \"tools\": [{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"description\":\"Get weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}}],\n  \"tool_choice\": {\"type\":\"function\",\"function\":{\"name\":\"nonexistent_tool\"}}\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/v1/chat/completions",
