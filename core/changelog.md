@@ -1,3 +1,4 @@
+- fix: a zero provider usage.cost returns as total_cost 0 instead of an empty cost object (#9000) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 - fix: bedrock - the InvokeModel streaming message_start now carries stop_reason and stop_sequence as null, as Anthropic and Bedrock send them
 [fix]: preserve cache-write TTL usage on Bedrock Invoke responses [@gauravch-code](https://github.com/gauravch-code)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
