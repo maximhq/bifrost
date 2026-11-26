@@ -1321,6 +1321,36 @@ func streamProviderCostChunks(t *testing.T, tracer *Tracer, ctx *schemas.Bifrost
 	return result
 }
 
+// A chat stream with n>1 must come out of the tracer with every choice kept apart, so the plugins that rebuild a
+// response from the accumulated result (Maxim) see each one instead of a single merged message.
+func TestProcessStreamingChunk_CarriesEveryChoiceOfAnNStream(t *testing.T) {
+	tracer := NewTracer(NewTraceStore(time.Hour, nil), nil, bifrost.NewNoOpLogger())
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	traceID := "trace-stream-n-choices"
+	tracer.GetAccumulator().CreateStreamAccumulator(traceID, time.Now())
+	t.Cleanup(func() { tracer.ForceCleanupStreamAccumulator(traceID) })
+
+	chunk := func(index, choice int, content string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				Index:                    choice,
+				ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &content}},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionStreamRequest, ChunkIndex: index},
+		}}
+	}
+	tracer.ProcessStreamingChunk(ctx, traceID, false, chunk(0, 0, "Hello "), nil)
+	tracer.ProcessStreamingChunk(ctx, traceID, false, chunk(1, 1, "SECRET "), nil)
+	tracer.ProcessStreamingChunk(ctx, traceID, false, chunk(2, 0, "world"), nil)
+	result := tracer.ProcessStreamingChunk(ctx, traceID, true, chunk(3, 1, "PASSWORD"), nil)
+
+	require.NotNil(t, result)
+	require.Len(t, result.OutputChoices, 2)
+	require.Equal(t, "Hello world", *result.OutputChoices[0].Message.Content.ContentStr)
+	require.Equal(t, "SECRET PASSWORD", *result.OutputChoices[1].Message.Content.ContentStr)
+	require.Equal(t, "Hello world", *result.OutputMessage.Content.ContentStr, "the top-level output stays choice 0")
+}
+
 // When the catalog cannot price a streamed model, the accumulated result falls back
 // to the provider's reported cost, unless the provider is configured with
 // ignore_provider_cost.

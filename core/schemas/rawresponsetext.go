@@ -36,6 +36,11 @@ const (
 	RawResponseFormatGeminiStreamChunk RawResponseFormat = "gemini.generate_content.chunk"
 	// RawResponseFormatReplicateStreamEvent is one Replicate prediction stream event encoded as {"Data","Event","ID"}.
 	RawResponseFormatReplicateStreamEvent RawResponseFormat = "replicate.stream_event"
+	// RawResponseFormatSageMakerStreamEvent is one stream event of a SageMaker container: a TGI or LMI token event, or an
+	// OpenAI chat or completion chunk when the container serves that API.
+	RawResponseFormatSageMakerStreamEvent RawResponseFormat = "sagemaker.invocations.stream_event"
+	// RawResponseFormatGeminiInteractionsStreamEvent is one Gemini Interactions API stream event.
+	RawResponseFormatGeminiInteractionsStreamEvent RawResponseFormat = "gemini.interactions.stream_event"
 )
 
 // ErrRawResponseTextUnsupported reports a raw payload whose declared format, Go type, or field shape is
@@ -771,14 +776,16 @@ type rawTextMatch struct {
 // tool-call arguments, whether streamed in pieces or repeated whole on a closing event. Reasoning and signature deltas
 // are not collected, since redaction leaves reasoning text alone.
 var rawStreamedTextFields = map[RawResponseFormat]func(frame gjson.Result, pieces rawStreamedPieces){
-	RawResponseFormatOpenAIChatCompletionChunk:    openAIChatStreamedText,
-	RawResponseFormatOpenAITextCompletionChunk:    openAITextStreamedText,
-	RawResponseFormatOpenAIResponsesStreamEvent:   openAIResponsesStreamedText,
-	RawResponseFormatAnthropicMessagesStreamEvent: anthropicStreamedText,
-	RawResponseFormatBedrockConverseStreamEvent:   bedrockStreamedText,
-	RawResponseFormatCohereChatStreamEvent:        cohereStreamedText,
-	RawResponseFormatGeminiStreamChunk:            geminiStreamedText,
-	RawResponseFormatReplicateStreamEvent:         replicateStreamedText,
+	RawResponseFormatOpenAIChatCompletionChunk:     openAIChatStreamedText,
+	RawResponseFormatOpenAITextCompletionChunk:     openAITextStreamedText,
+	RawResponseFormatOpenAIResponsesStreamEvent:    openAIResponsesStreamedText,
+	RawResponseFormatAnthropicMessagesStreamEvent:  anthropicStreamedText,
+	RawResponseFormatBedrockConverseStreamEvent:    bedrockStreamedText,
+	RawResponseFormatCohereChatStreamEvent:         cohereStreamedText,
+	RawResponseFormatGeminiStreamChunk:             geminiStreamedText,
+	RawResponseFormatReplicateStreamEvent:          replicateStreamedText,
+	RawResponseFormatSageMakerStreamEvent:          sageMakerStreamedText,
+	RawResponseFormatGeminiInteractionsStreamEvent: geminiInteractionsStreamedText,
 }
 
 // RedactRawResponseText applies literal replacements to the text a declared format streams in pieces, so a value
@@ -975,6 +982,100 @@ func openAIChatStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
 		})
 		return true
 	})
+}
+
+// sageMakerStreamedText collects the token text of TGI and LMI stream events, special tokens skipped, the whole text
+// their closing event repeats, and each prompt's pieces of LMI's dynamic-batch {"outputs": [...]} events. OpenAI
+// chunks, which a container serving that API streams, are read as such, and so is a whole OpenAI reply the container
+// sent unstreamed.
+func sageMakerStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	if frame.Get("choices.0.message").Exists() {
+		// A whole reply on the stream route, sent when the body did not ask the container to stream.
+		frame.Get("choices").ForEach(func(_, choice gjson.Result) bool {
+			index := rawStreamIndex(choice, "index")
+			pieces.add(rawStreamedValue{kind: "content", index: index}, choice.Get("message.content"))
+			pieces.add(rawStreamedValue{kind: "refusal", index: index}, choice.Get("message.refusal"))
+			call := 0
+			choice.Get("message.tool_calls").ForEach(func(_, toolCall gjson.Result) bool {
+				pieces.add(rawStreamedValue{kind: "arguments", index: index, inner: strconv.Itoa(call)}, toolCall.Get("function.arguments"))
+				call++
+				return true
+			})
+			return true
+		})
+		return
+	}
+	if frame.Get("choices").Exists() {
+		if IsTextCompletionChoice(frame, "delta") {
+			openAITextStreamedText(frame, pieces)
+			return
+		}
+		openAIChatStreamedText(frame, pieces)
+		return
+	}
+	// TGI and LMI's TGI-compatible formatter mark a special token special; LMI's own formatter marks it special_token.
+	if token := frame.Get("token"); !token.Get("special").Bool() && !token.Get("special_token").Bool() {
+		pieces.add(rawStreamedValue{kind: "text"}, token.Get("text"))
+	}
+	pieces.add(rawStreamedValue{kind: "generated_text"}, frame.Get("generated_text"))
+	// Only a list of outputs is LMI's; ForEach would read any other value as one item of it.
+	if outputs := frame.Get("outputs"); outputs.IsArray() {
+		prompt := 0
+		outputs.ForEach(func(_, item gjson.Result) bool {
+			pieces.add(rawStreamedValue{kind: "outputs", index: strconv.Itoa(prompt)}, item)
+			prompt++
+			return true
+		})
+	}
+}
+
+// IsTextCompletionChoice reports whether an OpenAI-style reply or chunk is a text completion rather than a chat one, by
+// what its first choice carries: text, or else chatField (message in a reply, delta in a chunk). The object label
+// decides only when the choice carries neither, because TGI 1.4 to 2.0 label chat replies and chunks text_completion.
+func IsTextCompletionChoice(frame gjson.Result, chatField string) bool {
+	choice := frame.Get("choices.0")
+	if choice.Get("text").Exists() {
+		return true
+	}
+	return !choice.Get(chatField).Exists() && frame.Get("object").String() == "text_completion"
+}
+
+// geminiInteractionsStreamedText collects each step's text, from the text parts a model output step's start event
+// carries and its text deltas, and each function call step's arguments, from its start event and its argument deltas
+// (see interactionsArgumentsDelta). Thought summaries are not collected.
+func geminiInteractionsStreamedText(frame gjson.Result, pieces rawStreamedPieces) {
+	index := rawStreamIndex(frame, "index")
+	switch frame.Get("event_type").String() {
+	case "step.start":
+		switch frame.Get("step.type").String() {
+		case "model_output":
+			frame.Get("step.content").ForEach(func(_, part gjson.Result) bool {
+				if part.Get("type").String() == "text" {
+					pieces.add(rawStreamedValue{kind: "text", index: index}, part.Get("text"))
+				}
+				return true
+			})
+		case "function_call":
+			// A function call can start with its arguments whole; each of their strings is a value of its own.
+			addWholeStrings(frame.Get("step.arguments"), pieces)
+		}
+	case "step.delta":
+		switch delta := frame.Get("delta"); delta.Get("type").String() {
+		case "text":
+			pieces.add(rawStreamedValue{kind: "text", index: index}, delta.Get("text"))
+		case "arguments_delta":
+			pieces.add(rawStreamedValue{kind: "arguments", index: index}, interactionsArgumentsDelta(delta))
+		}
+	}
+}
+
+// interactionsArgumentsDelta returns the argument fragment an Interactions arguments_delta carries: arguments on the
+// Gemini API, partial_arguments on Vertex.
+func interactionsArgumentsDelta(delta gjson.Result) gjson.Result {
+	if arguments := delta.Get("arguments"); arguments.Exists() {
+		return arguments
+	}
+	return delta.Get("partial_arguments")
 }
 
 // openAITextStreamedText collects each choice's text.

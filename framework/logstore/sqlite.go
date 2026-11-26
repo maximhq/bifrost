@@ -21,10 +21,14 @@ type SQLiteConfig struct {
 // sqliteBusyTimeoutMs is how long a connection waits for a lock before failing.
 const sqliteBusyTimeoutMs = 60000
 
+// sqliteJournalSizeLimit is the size logs.db-wal is cut back to after a checkpoint resets it.
+const sqliteJournalSizeLimit = 64 << 20
+
 // sqliteDSN is the connection string every pooled connection opens with.
 // Anything set here runs on each new connection, so it must be cheap and must
 // not need a write lock; one-time database settings belong in
-// initSQLiteAutoVacuum instead.
+// initSQLiteAutoVacuum instead. go-sqlite3 ignores DSN keys it does not know,
+// so a pragma it has no key for goes in sqliteConnectHook.
 func sqliteDSN(path string, busyTimeoutMs int) string {
 	return fmt.Sprintf("%s?_journal_mode=WAL&_synchronous=NORMAL&_cache_size=10000&_busy_timeout=%d&_wal_autocheckpoint=1000&_foreign_keys=1", path, busyTimeoutMs)
 }
@@ -98,7 +102,7 @@ func newSqliteLogStore(ctx context.Context, config *SQLiteConfig, logger schemas
 	}
 	dsn := sqliteDSN(config.Path, sqliteBusyTimeoutMs)
 	logger.Debug("opening DB with dsn: %s", dsn)
-	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+	db, err := gorm.Open(openSQLitePool(dsn), &gorm.Config{
 		Logger: newGormLogger(logger),
 	})
 
