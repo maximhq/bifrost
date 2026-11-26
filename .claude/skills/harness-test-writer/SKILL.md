@@ -14,6 +14,12 @@ This is NOT the Go test harness in `core/internal/llmtests/` (that one is run vi
 `make test-core PROVIDER=...`). If the user seems to want Go-level scenario tests,
 confirm before proceeding.
 
+It is not the MCP harness either. MCP behaviour (MCP clients and their auth, `/mcp`, tool
+execution, MCP tools in inference, filtering, Virtual MCPs, per-user discovery, MCP logs)
+is tested in `tests/e2e/api/runners/build-mcp-harness.mjs`: use
+`.claude/skills/mcp-harness/SKILL.md` for those cases. Only a change to how a provider
+converts tool definitions or tool calls belongs here.
+
 ## Step 1 - Resolve the reference
 
 The argument may be a PR number, an issue number, or a GitHub URL.
