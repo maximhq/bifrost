@@ -1142,6 +1142,60 @@ func TestResponsesParamsHashIncludesOutputShapingParams(t *testing.T) {
 	}
 }
 
+func TestCacheIdentityIgnoresDerivedKeysInExtraParams(t *testing.T) {
+	plugin := &Plugin{config: getDefaultTestConfig(), logger: bifrost.NewDefaultLogger(schemas.LogLevelError)}
+	derivedValue := func(req *schemas.BifrostRequest, key string) any {
+		t.Helper()
+		metadata, err := plugin.buildRequestMetadataForCaching(plugin.createCacheState("req"), req)
+		if err != nil {
+			t.Fatalf("buildRequestMetadataForCaching failed: %v", err)
+		}
+		value, ok := metadata[key]
+		if !ok {
+			t.Fatalf("%s missing from metadata", key)
+		}
+		return value
+	}
+	schemaFormat := &schemas.ResponsesParameters{Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+		Type:       "json_schema",
+		Name:       schemas.Ptr("invoice"),
+		JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{Type: schemas.Ptr("object"), Required: []string{"vendor", "total"}},
+	}}}
+	withTools := &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "lookup_invoice"}}}}
+	withMCP := &schemas.ChatParameters{MCPServers: []schemas.ChatMCPServer{{Type: "url", Name: "docs", URL: "https://docs.example.com/mcp"}}}
+
+	tests := []struct {
+		name    string
+		key     string
+		genuine *schemas.BifrostRequest
+		spoof   func(value any) *schemas.BifrostRequest
+	}{
+		{"text_format_hash", "text_format_hash", responsesIdentityRequest(schemaFormat), func(value any) *schemas.BifrostRequest {
+			return responsesIdentityRequest(&schemas.ResponsesParameters{ExtraParams: map[string]any{"text_format_hash": value}})
+		}},
+		{"tools_hash", "tools_hash", chatIdentityRequest(withTools), func(value any) *schemas.BifrostRequest {
+			return chatIdentityRequest(&schemas.ChatParameters{ExtraParams: map[string]any{"tools_hash": value}})
+		}},
+		{"mcp_servers_hash", "mcp_servers_hash", chatIdentityRequest(withMCP), func(value any) *schemas.BifrostRequest {
+			return chatIdentityRequest(&schemas.ChatParameters{ExtraParams: map[string]any{"mcp_servers_hash": value}})
+		}},
+	}
+	for _, tt := range tests {
+		genuine := cacheIdentityForTest(t, plugin, tt.genuine)
+		spoofed := cacheIdentityForTest(t, plugin, tt.spoof(derivedValue(tt.genuine, tt.key)))
+		if genuine.params == spoofed.params || genuine.request == spoofed.request {
+			t.Errorf("a request field named %s must not stand in for the hash the plugin derives", tt.key)
+		}
+	}
+
+	// Other extra params still reach the cache identity.
+	plain := cacheIdentityForTest(t, plugin, chatIdentityRequest(&schemas.ChatParameters{}))
+	withExtra := cacheIdentityForTest(t, plugin, chatIdentityRequest(&schemas.ChatParameters{ExtraParams: map[string]any{"min_p": 0.1}}))
+	if plain.params == withExtra.params {
+		t.Error("an ordinary extra param must still change the params hash")
+	}
+}
+
 // BenchmarkCacheIdentity measures the params hash and request hash a cached request pays for,
 // including Responses requests that carry a large text.format JSON schema.
 func BenchmarkCacheIdentity(b *testing.B) {

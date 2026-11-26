@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"math"
 	"sort"
 	"strings"
@@ -145,6 +144,26 @@ func sortedStringSet(values []string) []string {
 func putIfSet[T any](m map[string]any, key string, v *T) {
 	if v != nil {
 		m[key] = *v
+	}
+}
+
+// derivedMetadataKeys are the metadata keys the plugin computes from typed
+// params. A request field with the same name would otherwise land in
+// ExtraParams and stand in for the real hash, letting two different requests
+// share an entry.
+var derivedMetadataKeys = map[string]struct{}{
+	"tools_hash":       {},
+	"text_format_hash": {},
+	"mcp_servers_hash": {},
+}
+
+// copyExtraParams merges provider-specific params into the metadata for every
+// request type, skipping the keys in derivedMetadataKeys.
+func copyExtraParams(metadata map[string]any, extraParams map[string]any) {
+	for key, value := range extraParams {
+		if _, derived := derivedMetadataKeys[key]; !derived {
+			metadata[key] = value
+		}
 	}
 }
 
@@ -1067,9 +1086,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	putIfSet(metadata, "store", params.Store)
 	putIfSet(metadata, "top_logprobs", params.TopLogProbs)
 	putIfSet(metadata, "verbosity", params.Verbosity)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 	if len(params.Tools) > 0 {
 		// Tools are an order-insensitive set; producer-side ordering (notably
 		// MCP's randomized map iteration) must not perturb the request hash.
@@ -1139,9 +1156,7 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	}
 	putIfSet(metadata, "top_logprobs", params.TopLogProbs)
 	putIfSet(metadata, "truncation", params.Truncation)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 	if len(params.Tools) > 0 {
 		// Tools are an order-insensitive set; producer-side ordering (notably
 		// MCP's randomized map iteration) must not perturb the request hash.
@@ -1174,9 +1189,7 @@ func (plugin *Plugin) extractTextCompletionParametersToMetadata(params *schemas.
 	putIfSet(metadata, "n", params.N)
 	putIfSet(metadata, "seed", params.Seed)
 	putIfSet(metadata, "suffix", params.Suffix)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // extractSpeechParametersToMetadata extracts Speech parameters into metadata map.
@@ -1208,9 +1221,7 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 			metadata["pronunciation_dictionary_locators_hash"] = hash
 		}
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // extractEmbeddingParametersToMetadata extracts Embedding parameters into metadata map.
@@ -1220,9 +1231,7 @@ func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.Embed
 	putIfSet(metadata, "task_type", params.TaskType)
 	putIfSet(metadata, "title", params.Title)
 	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // extractTranscriptionParametersToMetadata extracts Transcription parameters into metadata map.
@@ -1242,9 +1251,7 @@ func (plugin *Plugin) extractTranscriptionParametersToMetadata(params *schemas.T
 			metadata["additional_formats_hash"] = hash
 		}
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // extractImageGenerationParametersToMetadata extracts Image Generation parameters into metadata map.
@@ -1269,9 +1276,7 @@ func (plugin *Plugin) extractImageGenerationParametersToMetadata(params *schemas
 	if len(params.InputImages) > 0 {
 		metadata["input_images"] = params.InputImages
 	}
-	if len(params.ExtraParams) > 0 {
-		maps.Copy(metadata, params.ExtraParams)
-	}
+	copyExtraParams(metadata, params.ExtraParams)
 }
 
 // isConversationHistoryThresholdExceeded returns true when the request's
