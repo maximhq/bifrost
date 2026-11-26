@@ -400,16 +400,15 @@ func (a BedrockAPI) IsValid() bool {
 }
 
 // BedrockReasoningShape names the reasoning content variant a model uses on
-// Bedrock Converse. The two are mutually exclusive and not interchangeable:
-// replaying the wrong one is rejected (400 on Anthropic, an opaque 500 on
-// OpenAI and xAI).
+// Bedrock Converse. Anthropic rejects the redacted variant with a 400; xAI
+// models may also answer with signed reasoningText, which replays verbatim.
 type BedrockReasoningShape string
 
 const (
 	// reasoningContent.reasoningText{text,signature} — Anthropic, DeepSeek.
 	BedrockReasoningShapeText BedrockReasoningShape = "reasoning_text"
 
-	// reasoningContent.redactedContent, one opaque blob — OpenAI, xAI.
+	// reasoningContent.redactedContent, one opaque blob — OpenAI, xAI (plus xAI's signed reasoningText).
 	BedrockReasoningShapeRedacted BedrockReasoningShape = "redacted_content"
 )
 
