@@ -82,6 +82,10 @@ func handleXAITranscriptionResponse(responseBody []byte, response *schemas.Bifro
 // than stop checking and let a later field through.
 const maxPartHeaderBytes = 8 << 10
 
+// maxStagedFormatBytes bounds the response_format value fileLastGuard keeps. Every
+// transcription format name is far shorter; a longer value is left for xAI to refuse.
+const maxStagedFormatBytes = 64
+
 const (
 	guardSeekDelimiter = iota
 	guardReadHeaders
@@ -89,12 +93,15 @@ const (
 )
 
 // fileLastGuard passes a staged multipart body through unchanged and fails the read
-// once a part follows the "file" part, since /v1/stt ignores every field after the file.
-// It keeps only a delimiter-sized tail or the current part's headers, never the body.
+// once a part follows the "file" part, since /v1/stt ignores every field after the file,
+// or once a response_format part names a format /v1/stt cannot answer in.
+// It keeps only a delimiter-sized tail, the current part's headers or a short
+// response_format value, never the file body.
 type fileLastGuard struct {
 	r        io.Reader
 	delim    []byte // "\r\n--" + boundary
 	buf      []byte // seek: unmatched tail of the last read; headers: the part's header bytes so far
+	format   []byte // non-nil while reading a response_format value: its bytes so far, capped
 	state    int
 	seenFile bool
 	err      error
@@ -142,13 +149,19 @@ func (g *fileLastGuard) Read(p []byte) (int, error) {
 func (g *fileLastGuard) scan(data []byte) {
 	for len(data) > 0 && g.state != guardDone {
 		if g.state == guardSeekDelimiter {
+			if g.format != nil {
+				g.format = append(g.format, data[:min(len(data), cap(g.format)-len(g.format))]...)
+			}
 			if len(g.buf) > 0 {
 				// A delimiter may straddle the previous read and this one.
 				head := data[:min(len(data), len(g.delim)-1)]
 				joined := append(g.buf, head...)
 				if i := bytes.Index(joined, g.delim); i >= 0 {
 					data = data[i+len(g.delim)-len(g.buf):]
-					g.buf, g.state = g.buf[:0], guardReadHeaders
+					g.buf = g.buf[:0]
+					if g.enterHeaders(); g.err != nil {
+						return
+					}
 					continue
 				}
 				if len(head) == len(data) {
@@ -160,7 +173,9 @@ func (g *fileLastGuard) scan(data []byte) {
 			}
 			if i := bytes.Index(data, g.delim); i >= 0 {
 				data = data[i+len(g.delim):]
-				g.state = guardReadHeaders
+				if g.enterHeaders(); g.err != nil {
+					return
+				}
 				continue
 			}
 			keep := min(len(data), len(g.delim)-1)
@@ -213,7 +228,29 @@ func (g *fileLastGuard) scan(data []byte) {
 	}
 }
 
-// checkPart records the file part and fails on any part that follows it.
+// enterHeaders moves past a delimiter into the next part's headers. When the part that
+// just ended was response_format, its value is complete: a plain-text or diarized
+// format fails the body, since /v1/stt answers with JSON only and a staged form is
+// never parsed, so Transcription's request-level format check cannot see it.
+func (g *fileLastGuard) enterHeaders() {
+	g.state = guardReadHeaders
+	if g.format == nil {
+		return
+	}
+	value := g.format
+	g.format = nil
+	end := bytes.Index(value, g.delim)
+	if end < 0 {
+		return // longer than any format name; xAI refuses it
+	}
+	format := strings.TrimSpace(string(value[:end]))
+	if schemas.IsPlainTextTranscriptionFormat(&format) || schemas.IsDiarizedTranscriptionFormat(&format) {
+		g.err = fmt.Errorf("xAI transcription returns JSON only; response_format %s is not supported, use json", format)
+	}
+}
+
+// checkPart records the file part, starts keeping a response_format value, and fails
+// on any part that follows the file.
 func (g *fileLastGuard) checkPart(headers []byte) {
 	name := ""
 	for _, line := range strings.Split(string(headers), "\r\n") {
@@ -230,7 +267,10 @@ func (g *fileLastGuard) checkPart(headers []byte) {
 		g.err = fmt.Errorf("xAI transcription ignores multipart fields after the file: field %q follows it, send the file as the last part", name)
 		return
 	}
-	if name == "file" {
+	switch name {
+	case "file":
 		g.seenFile = true
+	case "response_format":
+		g.format = make([]byte, 0, maxStagedFormatBytes+len(g.delim))
 	}
 }

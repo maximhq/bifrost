@@ -349,6 +349,58 @@ func TestXAITranscriptionLargePayloadBoundaryLikeAudio(t *testing.T) {
 	}
 }
 
+// A staged body is never parsed, so the request-level response_format check cannot see
+// the format. The guard reads the staged response_format part and refuses the formats
+// /v1/stt cannot answer in, also when the value arrives one byte at a time.
+func TestXAITranscriptionLargePayloadRejectsStagedPlainTextFormats(t *testing.T) {
+	t.Parallel()
+
+	body := func(format string) string {
+		return "--b\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\ngrok-voice-transcribe-2.0\r\n" +
+			"--b\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\n" + format + "\r\n" +
+			"--b\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.wav\"\r\nContent-Type: audio/wav\r\n\r\nRIFF\x00\x00\x00\x00WAVEfake\r\n--b--\r\n"
+	}
+	readers := map[string]func(string) io.Reader{
+		"whole":    func(s string) io.Reader { return strings.NewReader(s) },
+		"one byte": func(s string) io.Reader { return iotest.OneByteReader(strings.NewReader(s)) },
+	}
+	for name, newReader := range readers {
+		for _, format := range []string{"text", "srt", "vtt", "diarized_json"} {
+			t.Run(name+"/"+format, func(t *testing.T) {
+				t.Parallel()
+				provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+					_, _ = io.ReadAll(r.Body)
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(xaiSTTResponse))
+				})
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				stageLargePayload(ctx, body(format), "multipart/form-data; boundary=b")
+				ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, newReader(body(format)))
+				resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
+				require.Nil(t, resp)
+				require.NotNil(t, bifrostErr)
+				require.NotNil(t, bifrostErr.StatusCode)
+				assert.Equal(t, http.StatusBadRequest, *bifrostErr.StatusCode)
+				assert.Contains(t, bifrostErr.Error.Message, "response_format "+format+" is not supported")
+			})
+		}
+		t.Run(name+"/json", func(t *testing.T) {
+			t.Parallel()
+			provider := newXAITestProvider(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.ReadAll(r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(xaiSTTResponse))
+			})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			stageLargePayload(ctx, body("json"), "multipart/form-data; boundary=b")
+			ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, newReader(body("json")))
+			resp, bifrostErr := provider.Transcription(ctx, schemas.Key{Value: *schemas.NewSecretVar("xai-test")}, &schemas.BifrostTranscriptionRequest{Model: "grok-voice-transcribe-2.0"})
+			require.Nil(t, bifrostErr)
+			assert.Equal(t, "The quick brown fox jumps over the lazy dog.", resp.Text)
+		})
+	}
+}
+
 // A part whose headers reach the guard's 8 KiB limit cannot be classified. The guard
 // refuses the body instead of giving up, so a field after such a file part is not
 // silently dropped by xAI.
