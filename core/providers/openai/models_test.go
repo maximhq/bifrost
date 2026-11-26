@@ -36,6 +36,13 @@ func TestListModelsByKeyResponseShapes(t *testing.T) {
 			wantOwnedBy: "Z.ai",
 			wantContext: 131072,
 		},
+		{
+			name:        "array with max_model_len and context_length",
+			body:        `[{"id":"served-model","organization":"vllm","context_length":4096,"max_model_len":32768}]`,
+			wantID:      "test/served-model",
+			wantOwnedBy: "vllm",
+			wantContext: 32768,
+		},
 	}
 
 	for _, test := range tests {

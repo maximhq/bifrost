@@ -1730,7 +1730,7 @@ func (response *OpenAIListModelsResponse) UnmarshalJSON(data []byte) error {
 		if response.Data[i].OwnedBy == "" {
 			response.Data[i].OwnedBy = model.Organization
 		}
-		if response.Data[i].ContextWindow == nil {
+		if response.Data[i].ContextWindow == nil && response.Data[i].MaxModelLen == nil {
 			response.Data[i].ContextWindow = model.ContextLength
 		}
 	}
