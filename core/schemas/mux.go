@@ -1992,6 +1992,8 @@ type ChatToResponsesStreamState struct {
 	ReasoningBuffer       strings.Builder     // Accumulated reasoning deltas for reasoning output_item.done
 	CurrentOutputIndex    int                 // Current output index counter
 	ToolCallOutputIndices map[string]int      // Maps tool call ID to output index
+	OpenToolCallID        string              // Tool call whose output item is open (closed before the next one is added)
+	ToolCallsDone         map[string]struct{} // Tool call IDs whose done events have been emitted
 	SequenceNumber        int                 // Monotonic sequence number across all chunks
 	ServiceTier           *BifrostServiceTier // Served tier from the latest chunk that carried one
 	Speed                 *string             // Served speed from the latest chunk that carried one
@@ -2009,6 +2011,7 @@ var chatToResponsesStreamStatePool = sync.Pool{
 			CreatedAt:             int(time.Now().Unix()),
 			CurrentOutputIndex:    0,
 			ToolCallOutputIndices: make(map[string]int),
+			ToolCallsDone:         make(map[string]struct{}),
 			SequenceNumber:        0,
 			HasEmittedCreated:     false,
 			HasEmittedInProgress:  false,
@@ -2050,6 +2053,11 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	} else {
 		clear(state.ToolCallOutputIndices)
 	}
+	if state.ToolCallsDone == nil {
+		state.ToolCallsDone = make(map[string]struct{})
+	} else {
+		clear(state.ToolCallsDone)
+	}
 	// Reset other fields
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
@@ -2066,6 +2074,7 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.ReasoningItemClosed = false
 	state.ReasoningOutputIndex = 0
 	state.ReasoningBuffer = strings.Builder{}
+	state.OpenToolCallID = ""
 	state.SequenceNumber = 0
 	state.ServiceTier = nil
 	state.Speed = nil
@@ -2092,6 +2101,9 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		if state.ToolCallOutputIndices != nil {
 			clear(state.ToolCallOutputIndices)
 		}
+		if state.ToolCallsDone != nil {
+			clear(state.ToolCallsDone)
+		}
 		// Reset other fields
 		state.CurrentOutputIndex = 0
 		state.MessageID = nil
@@ -2108,6 +2120,7 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.ReasoningItemClosed = false
 		state.ReasoningOutputIndex = 0
 		state.ReasoningBuffer = strings.Builder{}
+		state.OpenToolCallID = ""
 		state.SequenceNumber = 0
 		state.ServiceTier = nil
 		state.Speed = nil
@@ -2238,6 +2251,77 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 		})
 		state.SequenceNumber++
 		state.ReasoningItemClosed = true
+	}
+
+	// closeToolCall emits function_call_arguments.done and output_item.done for a tool
+	// call, once. A call with no arguments (a no-arg tool) is closed too, with "".
+	closeToolCall := func(toolCallID string, status string) {
+		if _, done := state.ToolCallsDone[toolCallID]; done {
+			return
+		}
+		state.ToolCallsDone[toolCallID] = struct{}{}
+		if state.OpenToolCallID == toolCallID {
+			state.OpenToolCallID = ""
+		}
+		args := state.ToolArgumentBuffers[toolCallID]
+		outputIndex := state.ToolCallOutputIndices[toolCallID]
+		itemID := state.ItemIDs[toolCallID]
+		contentIndex := 1 // Tool calls use content_index:1
+		argsCopy := args
+		// Emit function_call_arguments.done with full arguments (no item field, just item_id and arguments)
+		response := &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(outputIndex),
+			ContentIndex:   Ptr(contentIndex),
+			Arguments:      &argsCopy,
+			ExtraFields:    cr.ExtraFields,
+		}
+		if itemID != "" {
+			response.ItemID = &itemID
+		}
+		responses = append(responses, response)
+		state.SequenceNumber++
+
+		// Emit output_item.done for function call
+		statusFinal := status
+		messageType := ResponsesMessageTypeFunctionCall
+		callName, hasName := state.ToolCallNames[toolCallID]
+		var callNamePtr *string
+		if hasName && callName != "" {
+			callNamePtr = &callName
+		}
+		argsValue := args
+		outputItemDone := &ResponsesMessage{
+			Type:   &messageType,
+			Status: &statusFinal,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID:    &toolCallID,
+				Name:      callNamePtr,
+				Arguments: &argsValue,
+			},
+		}
+		if itemID != "" {
+			outputItemDone.ID = &itemID
+		}
+		responses = append(responses, &BifrostResponsesStreamResponse{
+			Type:           ResponsesStreamResponseTypeOutputItemDone,
+			SequenceNumber: state.SequenceNumber,
+			OutputIndex:    Ptr(outputIndex),
+			ContentIndex:   Ptr(contentIndex),
+			Item:           outputItemDone,
+			ExtraFields:    cr.ExtraFields,
+		})
+		state.SequenceNumber++
+	}
+
+	// closeOpenToolCall closes the open tool call. Called when the next tool call is
+	// added, so each tool_use block gets its content_block_stop before the next
+	// content_block_start.
+	closeOpenToolCall := func(status string) {
+		if state.OpenToolCallID != "" {
+			closeToolCall(state.OpenToolCallID, status)
+		}
 	}
 
 	// Reasoning streams before any text. Open a dedicated reasoning item so a proper
@@ -2404,6 +2488,8 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			if _, exists := state.ToolCallOutputIndices[toolCallID]; !exists {
 				// Close reasoning item so its thinking block is bracketed before the tool block.
 				closeReasoningItem()
+				// Close the previous tool call so tool blocks are sequential, not nested.
+				closeOpenToolCall("completed")
 				// Close text item if still open and has content
 				if state.TextItemAdded && !state.TextItemClosed && state.TextItemHasContent {
 					outputIndex := state.TextOutputIndex
@@ -2496,6 +2582,7 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 
 				// Initialize argument buffer
 				state.ToolArgumentBuffers[toolCallID] = ""
+				state.OpenToolCallID = toolCallID
 
 				// Emit output_item.added for function call
 				statusInProgress := "in_progress"
@@ -2641,59 +2728,23 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			state.TextItemClosed = true
 		}
 
-		// Close any open tool call items and emit function_call_arguments.done
-		for toolCallID, args := range state.ToolArgumentBuffers {
-			if args != "" {
-				outputIndex := state.ToolCallOutputIndices[toolCallID]
-				itemID := state.ItemIDs[toolCallID]
-				contentIndex := 1 // Tool calls use content_index:1
-				argsCopy := args
-				// Emit function_call_arguments.done with full arguments (no item field, just item_id and arguments)
-				response := &BifrostResponsesStreamResponse{
-					Type:           ResponsesStreamResponseTypeFunctionCallArgumentsDone,
-					SequenceNumber: state.SequenceNumber,
-					OutputIndex:    Ptr(outputIndex),
-					ContentIndex:   Ptr(contentIndex),
-					Arguments:      &argsCopy,
-					ExtraFields:    cr.ExtraFields,
-				}
-				if itemID != "" {
-					response.ItemID = &itemID
-				}
-				responses = append(responses, response)
-				state.SequenceNumber++
+		// Collect tool call IDs sorted by outputIndex for deterministic order
+		type toolCallEntry struct {
+			toolCallID  string
+			outputIndex int
+		}
+		var toolCallEntries []toolCallEntry
+		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
+			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
+		}
+		sort.Slice(toolCallEntries, func(i, j int) bool {
+			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
+		})
 
-				// Emit output_item.done for function call
-				statusFinal := terminalStatus
-				messageType := ResponsesMessageTypeFunctionCall
-				callName, hasName := state.ToolCallNames[toolCallID]
-				var callNamePtr *string
-				if hasName && callName != "" {
-					callNamePtr = &callName
-				}
-				argsValue := args
-				outputItemDone := &ResponsesMessage{
-					Type:   &messageType,
-					Status: &statusFinal,
-					ResponsesToolMessage: &ResponsesToolMessage{
-						CallID:    &toolCallID,
-						Name:      callNamePtr,
-						Arguments: &argsValue,
-					},
-				}
-				if itemID != "" {
-					outputItemDone.ID = &itemID
-				}
-				responses = append(responses, &BifrostResponsesStreamResponse{
-					Type:           ResponsesStreamResponseTypeOutputItemDone,
-					SequenceNumber: state.SequenceNumber,
-					OutputIndex:    Ptr(outputIndex),
-					ContentIndex:   Ptr(contentIndex),
-					Item:           outputItemDone,
-					ExtraFields:    cr.ExtraFields,
-				})
-				state.SequenceNumber++
-			}
+		// Close every tool call that has not had its done events yet, in output index
+		// order: the open one, and any an upstream left behind.
+		for _, entry := range toolCallEntries {
+			closeToolCall(entry.toolCallID, terminalStatus)
 		}
 
 		// Emit terminal response event.
@@ -2772,19 +2823,6 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			}
 			allOutput = append(allOutput, msg)
 		}
-
-		// Collect tool call IDs sorted by outputIndex for deterministic order
-		type toolCallEntry struct {
-			toolCallID  string
-			outputIndex int
-		}
-		var toolCallEntries []toolCallEntry
-		for toolCallID, outputIndex := range state.ToolCallOutputIndices {
-			toolCallEntries = append(toolCallEntries, toolCallEntry{toolCallID: toolCallID, outputIndex: outputIndex})
-		}
-		sort.Slice(toolCallEntries, func(i, j int) bool {
-			return toolCallEntries[i].outputIndex < toolCallEntries[j].outputIndex
-		})
 
 		for _, entry := range toolCallEntries {
 			toolCallID := entry.toolCallID

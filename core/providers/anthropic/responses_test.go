@@ -4659,3 +4659,125 @@ func TestToAnthropicResponsesRequest_AllowedTools(t *testing.T) {
 		})
 	}
 }
+
+// parallelToolChunk builds one chat stream chunk carrying a single tool call; an
+// empty id or name is left unset.
+func parallelToolChunk(index uint16, id, name, args string) *schemas.BifrostChatResponse {
+	call := schemas.ChatAssistantMessageToolCall{Index: index, Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: args}}
+	if id != "" {
+		call.ID = &id
+	}
+	if name != "" {
+		call.Function.Name = &name
+	}
+	return reasoningStreamChunk("c1", &schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{call}}, nil)
+}
+
+// TestParallelToolCallStream_BlocksAreSequential drives parallel tool calls from a
+// chat-only upstream through Chat -> Responses -> Anthropic SSE and asserts each
+// tool_use block's content_block_stop lands before the next content_block_start,
+// every block is stopped exactly once, and no tool call is dropped.
+func TestParallelToolCallStream_BlocksAreSequential(t *testing.T) {
+	toolCalls := string(schemas.BifrostFinishReasonToolCalls)
+	finish := reasoningStreamChunk("c1", &schemas.ChatStreamResponseChoiceDelta{}, &toolCalls)
+
+	cases := []struct {
+		name      string
+		chunks    []*schemas.BifrostChatResponse
+		wantTools []string
+	}{
+		{
+			name: "sequential",
+			chunks: []*schemas.BifrostChatResponse{
+				parallelToolChunk(0, "call_0", "bash", `{"command":`),
+				parallelToolChunk(0, "", "", `"ls"}`),
+				parallelToolChunk(1, "call_1", "bash", `{"command":`),
+				parallelToolChunk(1, "", "", `"pwd"}`),
+				parallelToolChunk(2, "call_2", "bash", `{"command":"cat a.txt"}`),
+				finish,
+			},
+			wantTools: []string{"call_0", "call_1", "call_2"},
+		},
+		{
+			name: "interleaved deltas",
+			chunks: []*schemas.BifrostChatResponse{
+				parallelToolChunk(0, "call_0", "bash", ""),
+				parallelToolChunk(1, "call_1", "bash", ""),
+				parallelToolChunk(0, "", "", `{"command":"ls"}`),
+				parallelToolChunk(1, "", "", `{"command":"pwd"}`),
+				finish,
+			},
+			wantTools: []string{"call_0", "call_1"},
+		},
+		{
+			name: "no-arg tool",
+			chunks: []*schemas.BifrostChatResponse{
+				parallelToolChunk(0, "call_0", "get_time", ""),
+				parallelToolChunk(1, "call_1", "bash", `{"command":"ls"}`),
+				finish,
+			},
+			wantTools: []string{"call_0", "call_1"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			state := schemas.AcquireChatToResponsesStreamState()
+			defer schemas.ReleaseChatToResponsesStreamState(state)
+
+			open := -1
+			stopped := map[int]bool{}
+			var toolIDs []string
+			var sawMessageStop bool
+			for _, c := range tc.chunks {
+				for _, r := range c.ToBifrostResponsesStreamResponse(state) {
+					for _, e := range ToAnthropicResponsesStreamResponse(ctx, r) {
+						switch e.Type {
+						case AnthropicStreamEventTypeContentBlockStart:
+							if e.Index == nil {
+								t.Fatal("content_block_start with nil index")
+							}
+							if open != -1 {
+								t.Fatalf("content_block_start[%d] while block %d has no content_block_stop", *e.Index, open)
+							}
+							open = *e.Index
+							if e.ContentBlock != nil && e.ContentBlock.Type == AnthropicContentBlockTypeToolUse && e.ContentBlock.ID != nil {
+								toolIDs = append(toolIDs, *e.ContentBlock.ID)
+							}
+						case AnthropicStreamEventTypeContentBlockStop:
+							if e.Index == nil {
+								t.Fatal("content_block_stop with nil index")
+							}
+							if stopped[*e.Index] {
+								t.Fatalf("content_block_stop[%d] sent twice", *e.Index)
+							}
+							if *e.Index != open {
+								t.Fatalf("content_block_stop[%d] while block %d is open", *e.Index, open)
+							}
+							stopped[*e.Index] = true
+							open = -1
+						case AnthropicStreamEventTypeMessageStop:
+							sawMessageStop = true
+						}
+					}
+				}
+			}
+			if open != -1 {
+				t.Fatalf("block %d never got content_block_stop", open)
+			}
+			if !sawMessageStop {
+				t.Fatal("no message_stop")
+			}
+			if len(toolIDs) != len(tc.wantTools) {
+				t.Fatalf("tool_use blocks = %v, want %v", toolIDs, tc.wantTools)
+			}
+			for i, id := range tc.wantTools {
+				if toolIDs[i] != id {
+					t.Fatalf("tool_use blocks = %v, want %v", toolIDs, tc.wantTools)
+				}
+			}
+		})
+	}
+}

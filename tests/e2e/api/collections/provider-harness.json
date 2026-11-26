@@ -352075,6 +352075,191 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "390. Parallel tool calls stream as sequential tool_use blocks on a chat-only provider (sequential tool blocks) (#9736 / PR #9750)",
+      "description": "A streamed /anthropic/v1/messages request routed to a chat-only provider goes through the Chat-to-Responses stream converter (ToBifrostResponsesStreamResponse in core/schemas/mux.go) and then the Anthropic egress. When the model made several tool calls in one turn, the converter opened an output item per call but closed them all together at finish_reason, so the client saw every content_block_start before any content_block_stop. Clients that keep one open tool block (goai in #9736) merged or dropped all calls but the last. A no-arg tool (empty arguments) never got a content_block_stop at all. Groq serves the Responses stream through its chat stream, so these cases reach that converter. The cases assert each content_block_stop lands before the next content_block_start, input_json_delta only goes to the open block, every block is closed, and each tool_use input parses. Red before the fix whenever the model makes two or more calls in the turn.",
+      "item": [
+        {
+          "name": "groq/openai/gpt-oss-120b /anthropic/v1/messages stream parallel tool calls arrive as sequential tool_use blocks (sequential tool blocks) - #9736",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('each content_block_stop lands before the next content_block_start', function () {",
+                  "  var state = {}, open = null, tools = [], inputs = {}, stopReason = null, sawStop = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(open, 'content_block_start[' + ev.index + '] while block ' + open + ' has no content_block_stop: ' + body).to.equal(null);",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      open = ev.index;",
+                  "      if (ev.content_block.type === 'tool_use') { tools.push({ index: ev.index, name: ev.content_block.name }); inputs[ev.index] = ''; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'input_json_delta') {",
+                  "      pm.expect(ev.index, 'input_json_delta for block ' + ev.index + ' while block ' + open + ' is open: ' + body).to.equal(open);",
+                  "      inputs[ev.index] += ev.delta.partial_json;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'stop for block ' + ev.index + ' while block ' + open + ' is open: ' + body).to.equal(open);",
+                  "      state[ev.index] = 'closed';",
+                  "      open = null;",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "    if (ev.type === 'message_stop') { sawStop = true; }",
+                  "  });",
+                  "  pm.expect(open, 'block ' + open + ' never closed: ' + body).to.equal(null);",
+                  "  pm.expect(sawStop, 'no message_stop: ' + body).to.equal(true);",
+                  "  pm.expect(stopReason, body).to.equal('tool_use');",
+                  "  pm.expect(tools.length, 'tool_use blocks: ' + body).to.be.at.least(2);",
+                  "  tools.forEach(function (t) {",
+                  "    var raw = inputs[t.index] || '{}';",
+                  "    var input;",
+                  "    try { input = JSON.parse(raw); } catch (e) { pm.expect.fail('tool_use ' + t.index + ' input is not JSON: ' + raw); }",
+                  "    pm.expect(input, 'tool_use ' + t.index + ' input').to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"groq/openai/gpt-oss-120b\",\"max_tokens\":400,\"stream\":true,\"tool_choice\":{\"type\":\"any\"},\"tools\":[{\"name\":\"get_weather\",\"description\":\"Get the current weather for one city.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"Get the weather for Paris and for Tokyo. Call get_weather once per city, both in this turn, before answering.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "groq/openai/gpt-oss-120b /anthropic/v1/messages stream a no-arg tool call is closed before the next tool_use block (sequential tool blocks) - #9736",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('request succeeds', function () { pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200); });",
+                  "function events() {",
+                  "  var out = [];",
+                  "  body.split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    var data = line.slice(5).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    out.push(JSON.parse(data));",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('each content_block_stop lands before the next content_block_start', function () {",
+                  "  var state = {}, open = null, tools = [], inputs = {}, stopReason = null, sawStop = false;",
+                  "  events().forEach(function (ev) {",
+                  "    pm.expect(ev.type, 'error event: ' + body).to.not.equal('error');",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(open, 'content_block_start[' + ev.index + '] while block ' + open + ' has no content_block_stop: ' + body).to.equal(null);",
+                  "      pm.expect(state[ev.index], 'block ' + ev.index + ' started twice: ' + body).to.be.undefined;",
+                  "      state[ev.index] = 'open';",
+                  "      open = ev.index;",
+                  "      if (ev.content_block.type === 'tool_use') { tools.push({ index: ev.index, name: ev.content_block.name }); inputs[ev.index] = ''; }",
+                  "    }",
+                  "    if (ev.type === 'content_block_delta' && ev.delta.type === 'input_json_delta') {",
+                  "      pm.expect(ev.index, 'input_json_delta for block ' + ev.index + ' while block ' + open + ' is open: ' + body).to.equal(open);",
+                  "      inputs[ev.index] += ev.delta.partial_json;",
+                  "    }",
+                  "    if (ev.type === 'content_block_stop') {",
+                  "      pm.expect(state[ev.index], 'stop for a block that is not open ' + ev.index + ': ' + body).to.equal('open');",
+                  "      pm.expect(ev.index, 'stop for block ' + ev.index + ' while block ' + open + ' is open: ' + body).to.equal(open);",
+                  "      state[ev.index] = 'closed';",
+                  "      open = null;",
+                  "    }",
+                  "    if (ev.type === 'message_delta') { stopReason = ev.delta.stop_reason; }",
+                  "    if (ev.type === 'message_stop') { sawStop = true; }",
+                  "  });",
+                  "  pm.expect(open, 'block ' + open + ' never closed: ' + body).to.equal(null);",
+                  "  pm.expect(sawStop, 'no message_stop: ' + body).to.equal(true);",
+                  "  pm.expect(stopReason, body).to.equal('tool_use');",
+                  "  pm.expect(tools.length, 'tool_use blocks: ' + body).to.be.at.least(2);",
+                  "  tools.forEach(function (t) {",
+                  "    var raw = inputs[t.index] || '{}';",
+                  "    var input;",
+                  "    try { input = JSON.parse(raw); } catch (e) { pm.expect.fail('tool_use ' + t.index + ' input is not JSON: ' + raw); }",
+                  "    pm.expect(input, 'tool_use ' + t.index + ' input').to.be.an('object');",
+                  "  });",
+                  "  pm.expect(tools.some(function (t) { return t.name === 'get_time'; }), 'no-arg tool was not called: ' + body).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"groq/openai/gpt-oss-120b\",\"max_tokens\":400,\"stream\":true,\"tool_choice\":{\"type\":\"any\"},\"tools\":[{\"name\":\"get_time\",\"description\":\"Get the current UTC time. Takes no arguments.\",\"input_schema\":{\"type\":\"object\",\"properties\":{}}},{\"name\":\"get_weather\",\"description\":\"Get the current weather for one city.\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"Call get_time and call get_weather for Paris, both in this turn, before answering.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

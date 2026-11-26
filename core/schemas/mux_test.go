@@ -3134,3 +3134,245 @@ func TestToolChoiceAllowedTools_CustomEntryNameSurvivesResponses(t *testing.T) {
 		t.Fatalf("chat entry = %+v", back)
 	}
 }
+
+func TestToBifrostResponsesStreamResponse_ClosesEachToolCallBeforeTheNext(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	funcName := "bash"
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	chunk := func(delta *ChatStreamResponseChoiceDelta, finish *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{
+				{
+					FinishReason:             finish,
+					ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+				},
+			},
+		}
+	}
+
+	var all []*BifrostResponsesStreamResponse
+	ids := []string{"call_0", "call_1", "call_2"}
+	commands := []string{"ls", "pwd", "cat a.txt"}
+	for i, id := range ids {
+		callID := id
+		all = append(all, chunk(&ChatStreamResponseChoiceDelta{
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{Index: uint16(i), ID: &callID, Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"command":`}},
+			},
+		}, nil).ToBifrostResponsesStreamResponse(state)...)
+		all = append(all, chunk(&ChatStreamResponseChoiceDelta{
+			ToolCalls: []ChatAssistantMessageToolCall{
+				{Index: uint16(i), Function: ChatAssistantMessageToolCallFunction{Arguments: `"` + commands[i] + `"}`}},
+			},
+		}, nil).ToBifrostResponsesStreamResponse(state)...)
+	}
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{}, &toolCallsFinish).ToBifrostResponsesStreamResponse(state)...)
+
+	// Each function call item must be done before the next one is added, and no
+	// argument delta may arrive for an item that is not the open one.
+	open := -1
+	var doneOrder []int
+	for _, evt := range all {
+		if evt == nil || evt.OutputIndex == nil {
+			continue
+		}
+		switch evt.Type {
+		case ResponsesStreamResponseTypeOutputItemAdded:
+			if open != -1 {
+				t.Fatalf("output_item.added for index %d while index %d is still open", *evt.OutputIndex, open)
+			}
+			open = *evt.OutputIndex
+		case ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
+			if *evt.OutputIndex != open {
+				t.Fatalf("arguments delta for index %d while index %d is open", *evt.OutputIndex, open)
+			}
+		case ResponsesStreamResponseTypeOutputItemDone:
+			if *evt.OutputIndex != open {
+				t.Fatalf("output_item.done for index %d while index %d is open", *evt.OutputIndex, open)
+			}
+			doneOrder = append(doneOrder, open)
+			if evt.Item == nil || evt.Item.Arguments == nil {
+				t.Fatalf("output_item.done for index %d has no arguments", open)
+			}
+			want := `{"command":"` + commands[len(doneOrder)-1] + `"}`
+			if *evt.Item.Arguments != want {
+				t.Fatalf("output_item.done for index %d: expected arguments %q, got %q", open, want, *evt.Item.Arguments)
+			}
+			open = -1
+		}
+	}
+	if open != -1 {
+		t.Fatalf("index %d was never closed", open)
+	}
+	if len(doneOrder) != len(ids) {
+		t.Fatalf("expected %d output_item.done events, got %d", len(ids), len(doneOrder))
+	}
+}
+
+// toolStreamChunk builds one chat stream chunk for the tool call ordering tests.
+func toolStreamChunk(delta *ChatStreamResponseChoiceDelta, finish *string) *BifrostChatResponse {
+	return &BifrostChatResponse{
+		ID:    "chatcmpl-test",
+		Model: "test-model",
+		Choices: []BifrostResponseChoice{
+			{
+				FinishReason:             finish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+			},
+		},
+	}
+}
+
+// toolCallDelta builds a delta carrying one tool call; an empty id or name is left unset.
+func toolCallDelta(index uint16, id, name, args string) *ChatStreamResponseChoiceDelta {
+	call := ChatAssistantMessageToolCall{Index: index, Function: ChatAssistantMessageToolCallFunction{Arguments: args}}
+	if id != "" {
+		call.ID = &id
+	}
+	if name != "" {
+		call.Function.Name = &name
+	}
+	return &ChatStreamResponseChoiceDelta{ToolCalls: []ChatAssistantMessageToolCall{call}}
+}
+
+// checkToolCallItemsClosed asserts every added function call item gets exactly one
+// output_item.done, that each is done before the next one is added, and that the
+// done events come in output index order. It returns the done items by output index.
+func checkToolCallItemsClosed(t *testing.T, events []*BifrostResponsesStreamResponse) map[int]*ResponsesMessage {
+	t.Helper()
+	open := -1
+	lastDone := -1
+	added := map[int]bool{}
+	done := map[int]*ResponsesMessage{}
+	for _, evt := range events {
+		if evt == nil || evt.OutputIndex == nil {
+			continue
+		}
+		idx := *evt.OutputIndex
+		switch evt.Type {
+		case ResponsesStreamResponseTypeOutputItemAdded:
+			if open != -1 {
+				t.Fatalf("output_item.added for index %d while index %d is still open", idx, open)
+			}
+			open = idx
+			added[idx] = true
+		case ResponsesStreamResponseTypeOutputItemDone:
+			if !added[idx] {
+				t.Fatalf("output_item.done for index %d that was never added", idx)
+			}
+			if _, dup := done[idx]; dup {
+				t.Fatalf("output_item.done for index %d sent twice", idx)
+			}
+			if idx < lastDone {
+				t.Fatalf("output_item.done for index %d after index %d", idx, lastDone)
+			}
+			lastDone = idx
+			done[idx] = evt.Item
+			if idx == open {
+				open = -1
+			}
+		}
+	}
+	for idx := range added {
+		if _, ok := done[idx]; !ok {
+			t.Fatalf("index %d was never closed", idx)
+		}
+	}
+	return done
+}
+
+// completedFunctionCallArgs returns the function call arguments on the terminal
+// response, keyed by call ID.
+func completedFunctionCallArgs(t *testing.T, events []*BifrostResponsesStreamResponse) map[string]string {
+	t.Helper()
+	for _, evt := range events {
+		if evt == nil || evt.Type != ResponsesStreamResponseTypeCompleted || evt.Response == nil {
+			continue
+		}
+		args := map[string]string{}
+		for _, item := range evt.Response.Output {
+			if item.ResponsesToolMessage != nil && item.CallID != nil && item.Arguments != nil {
+				args[*item.CallID] = *item.Arguments
+			}
+		}
+		return args
+	}
+	t.Fatal("no response.completed event")
+	return nil
+}
+
+// An upstream may send the second call's ID before the first call's argument deltas.
+// Every call must still get its done events, and no call or delta may be dropped.
+func TestToBifrostResponsesStreamResponse_InterleavedToolCallDeltas(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	chunks := []*BifrostChatResponse{
+		toolStreamChunk(toolCallDelta(0, "call_0", "bash", ""), nil),
+		toolStreamChunk(toolCallDelta(1, "call_1", "bash", ""), nil),
+		toolStreamChunk(toolCallDelta(0, "", "", `{"command":`), nil),
+		toolStreamChunk(toolCallDelta(0, "", "", `"ls"}`), nil),
+		toolStreamChunk(toolCallDelta(1, "", "", `{"command":`), nil),
+		toolStreamChunk(toolCallDelta(1, "", "", `"pwd"}`), nil),
+		toolStreamChunk(&ChatStreamResponseChoiceDelta{}, &toolCallsFinish),
+	}
+	var all []*BifrostResponsesStreamResponse
+	for _, c := range chunks {
+		all = append(all, c.ToBifrostResponsesStreamResponse(state)...)
+	}
+
+	done := checkToolCallItemsClosed(t, all)
+	if len(done) != 2 {
+		t.Fatalf("expected 2 output_item.done events, got %d", len(done))
+	}
+	deltas := map[int]string{}
+	for _, evt := range all {
+		if evt != nil && evt.Type == ResponsesStreamResponseTypeFunctionCallArgumentsDelta && evt.OutputIndex != nil && evt.Delta != nil {
+			deltas[*evt.OutputIndex] += *evt.Delta
+		}
+	}
+	if deltas[1] != `{"command":"ls"}` || deltas[2] != `{"command":"pwd"}` {
+		t.Fatalf("argument deltas = %v", deltas)
+	}
+	args := completedFunctionCallArgs(t, all)
+	if args["call_0"] != `{"command":"ls"}` || args["call_1"] != `{"command":"pwd"}` {
+		t.Fatalf("response.completed function call arguments = %v", args)
+	}
+}
+
+// A no-arg tool streams "" arguments. Its item must still be done before the next
+// call is added, and at finish.
+func TestToBifrostResponsesStreamResponse_NoArgToolCallIsClosed(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	chunks := []*BifrostChatResponse{
+		toolStreamChunk(toolCallDelta(0, "call_0", "get_time", ""), nil),
+		toolStreamChunk(toolCallDelta(1, "call_1", "bash", `{"command":`), nil),
+		toolStreamChunk(toolCallDelta(1, "", "", `"ls"}`), nil),
+		toolStreamChunk(toolCallDelta(2, "call_2", "get_time", ""), nil),
+		toolStreamChunk(&ChatStreamResponseChoiceDelta{}, &toolCallsFinish),
+	}
+	var all []*BifrostResponsesStreamResponse
+	for _, c := range chunks {
+		all = append(all, c.ToBifrostResponsesStreamResponse(state)...)
+	}
+
+	done := checkToolCallItemsClosed(t, all)
+	if len(done) != 3 {
+		t.Fatalf("expected 3 output_item.done events, got %d", len(done))
+	}
+	want := map[int]string{1: "", 2: `{"command":"ls"}`, 3: ""}
+	for idx, args := range want {
+		item := done[idx]
+		if item == nil || item.ResponsesToolMessage == nil || item.Arguments == nil || *item.Arguments != args {
+			t.Fatalf("output_item.done for index %d: want arguments %q, got %+v", idx, args, item)
+		}
+	}
+}
