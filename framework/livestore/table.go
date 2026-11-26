@@ -12,8 +12,15 @@ import (
 // tableShards is how many locks a table's entries are spread over.
 const tableShards = 64
 
-// TableOption configures a table at creation.
-type TableOption func(*tableOptions)
+// TableOption configures a table at creation: WithTTL, WithGeneration, HoldsHandles,
+// WithWriteTimes and Interns make one.
+type TableOption interface{ applyTable(*tableOptions) }
+
+// tableOptionFunc is a TableOption that sets fields of a table's options.
+type tableOptionFunc func(*tableOptions)
+
+// applyTable sets the option on o.
+func (f tableOptionFunc) applyTable(o *tableOptions) { f(o) }
 
 // tableOptions collects a table's options.
 type tableOptions struct {
@@ -21,32 +28,33 @@ type tableOptions struct {
 	gen        func() uint64
 	writeTimes bool
 	handles    bool
+	interns    []tableBinder // the Interns declarations, bound to the value type at creation
 }
 
 // WithTTL gives every entry Put stores an expiry of ttl. Expired entries read as missing and
 // are swept in the background.
 func WithTTL(ttl time.Duration) TableOption {
-	return func(o *tableOptions) { o.ttl = ttl }
+	return tableOptionFunc(func(o *tableOptions) { o.ttl = ttl })
 }
 
 // WithGeneration makes the table a memo: an entry stored under an older generation than gen
 // returns now reads as missing.
 func WithGeneration(gen func() uint64) TableOption {
-	return func(o *tableOptions) { o.gen = gen }
+	return tableOptionFunc(func(o *tableOptions) { o.gen = gen })
 }
 
 // HoldsHandles marks a table whose values hold live handles, such as compiled programs or
 // clients, rather than plain data. It changes nothing in memory; a backing that stores tables
 // outside the heap keeps these in memory, since a handle cannot be encoded.
 func HoldsHandles() TableOption {
-	return func(o *tableOptions) { o.handles = true }
+	return tableOptionFunc(func(o *tableOptions) { o.handles = true })
 }
 
 // WithWriteTimes makes every entry keep the Unix nanosecond time it was written, which
 // PutIfNewer and DeleteIfNewer compare against and the set observer receives. A table that keeps
 // write times cannot also be a memo.
 func WithWriteTimes() TableOption {
-	return func(o *tableOptions) { o.writeTimes = true }
+	return tableOptionFunc(func(o *tableOptions) { o.writeTimes = true })
 }
 
 // Table is a map a component owns and writes itself: state tied to an entity, derived views,
@@ -63,6 +71,7 @@ type Table[K comparable, V any] struct {
 	shards   [tableShards]tableShard[K, V]
 	onSet    atomic.Pointer[func(k K, v V, writtenAt, expiresAt int64)] // the observer OnSet installs
 	onDelete atomic.Pointer[func(k K, deletedAt int64)]                 // the observer OnDelete installs
+	interns  []tableIntern[V]                                           // the Interns declarations, fixed before the table is shared
 }
 
 // tableShard is one lock and its part of the table. An entry that neither expires nor carries a
@@ -134,7 +143,12 @@ func (s *Store) NewTable[K comparable, V any](ctx context.Context, name string, 
 	if o.writeTimes && o.gen != nil {
 		return nil, fmt.Errorf("livestore: table %q cannot keep write times and be a memo", name)
 	}
+	interns, err := bindInterns[V](name, o.interns)
+	if err != nil {
+		return nil, err
+	}
 	t := newTable[K, V](name, o)
+	t.interns = interns
 	if err := s.addTable(name, t, ""); err != nil {
 		return nil, err
 	}
@@ -155,7 +169,13 @@ func (s *Store) RegisterState[V any](ctx context.Context, name string, of Kind, 
 	if of == "" {
 		return nil, fmt.Errorf("livestore: state %q needs a kind", name)
 	}
-	t := newTable[string, *V](name, collectTableOptions(opts))
+	o := collectTableOptions(opts)
+	interns, err := bindInterns[*V](name, o.interns)
+	if err != nil {
+		return nil, err
+	}
+	t := newTable[string, *V](name, o)
+	t.interns = interns
 	if err := s.addTable(name, t, of); err != nil {
 		return nil, err
 	}
@@ -165,8 +185,8 @@ func (s *Store) RegisterState[V any](ctx context.Context, name string, of Kind, 
 // collectTableOptions applies opts.
 func collectTableOptions(opts []TableOption) tableOptions {
 	var o tableOptions
-	for _, fn := range opts {
-		fn(&o)
+	for _, opt := range opts {
+		opt.applyTable(&o)
 	}
 	return o
 }
@@ -308,13 +328,60 @@ func (t *Table[K, V]) PutWithTTL(k K, v V, ttl time.Duration) {
 	t.putEntry(k, t.entry(v, ttl))
 }
 
-// putEntry stores e under k.
-func (t *Table[K, V]) putEntry(k K, e tableEntry[V]) {
+// putEntry stores e under k and returns the entry stored, its interned parts shared.
+func (t *Table[K, V]) putEntry(k K, e tableEntry[V]) tableEntry[V] {
 	sh := t.shard(k)
 	sh.mu.Lock()
+	e = t.sharedLocked(sh, k, e)
 	sh.set(k, e)
 	sh.mu.Unlock()
 	t.notifySet(k, e)
+	return e
+}
+
+// sharedLocked returns e with the shared copies of its interned parts, counting their uses, and
+// gives back the uses of the entry under k it replaces, live or expired; a table without Interns
+// gets e back as it is. Every write calls it right before sh.set, so no write skips the count, and
+// it inlines, so a table without Interns pays one branch. The caller holds sh.mu.
+func (t *Table[K, V]) sharedLocked(sh *tableShard[K, V], k K, e tableEntry[V]) tableEntry[V] {
+	if len(t.interns) == 0 {
+		return e
+	}
+	return t.shareLocked(sh, k, e)
+}
+
+// shareLocked puts the shared copies of e's interned parts in e, counting their uses, and gives
+// back the uses of the entry under k it replaces. The caller holds sh.mu.
+func (t *Table[K, V]) shareLocked(sh *tableShard[K, V], k K, e tableEntry[V]) tableEntry[V] {
+	for _, l := range t.interns {
+		e.v = l.share(e.v)
+	}
+	if old, had := sh.get(k); had {
+		t.release(old.v)
+	}
+	return e
+}
+
+// releaseLocked gives back the uses of the entry under k, live or expired. Every delete calls it
+// right before sh.del, and it inlines as sharedLocked does. The caller holds sh.mu.
+func (t *Table[K, V]) releaseLocked(sh *tableShard[K, V], k K) {
+	if len(t.interns) > 0 {
+		t.releaseKey(sh, k)
+	}
+}
+
+// releaseKey gives back the uses of the entry under k, if any. The caller holds sh.mu.
+func (t *Table[K, V]) releaseKey(sh *tableShard[K, V], k K) {
+	if old, had := sh.get(k); had {
+		t.release(old.v)
+	}
+}
+
+// release gives back the uses v's interned parts hold, for an entry leaving the table.
+func (t *Table[K, V]) release(v V) {
+	for _, l := range t.interns {
+		l.release(v)
+	}
 }
 
 // GetOrCompute returns k's value, or runs compute and returns what it gives, storing it when
@@ -336,7 +403,7 @@ func (t *Table[K, V]) GetOrCompute(k K, compute func() (v V, ttl time.Duration, 
 		if t.opts.gen != nil {
 			e.stamp = gen // the generation read before compute, not the one entry just read
 		}
-		t.putEntry(k, e)
+		v = t.putEntry(k, e).v
 	}
 	return v
 }
@@ -353,6 +420,7 @@ func (t *Table[K, V]) PutIfAbsent(k K, v V, ttl time.Duration) bool {
 		sh.mu.Unlock()
 		return false
 	}
+	e = t.sharedLocked(sh, k, e)
 	sh.set(k, e)
 	sh.mu.Unlock()
 	t.notifySet(k, e)
@@ -376,6 +444,7 @@ func CompareAndSwap[K, V comparable](t *Table[K, V], k K, old, next V) bool {
 		sh.mu.Unlock()
 		return false
 	}
+	e = t.sharedLocked(sh, k, e)
 	sh.set(k, e)
 	sh.mu.Unlock()
 	t.notifySet(k, e)
@@ -392,6 +461,7 @@ func (t *Table[K, V]) Delete(k K) {
 	}
 	sh := t.shard(k)
 	sh.mu.Lock()
+	t.releaseLocked(sh, k)
 	ok := sh.del(k)
 	sh.mu.Unlock()
 	if ok && fn != nil {
@@ -407,6 +477,7 @@ func (t *Table[K, V]) GetAndDelete(k K) (V, bool) {
 	sh := t.shard(k)
 	sh.mu.Lock()
 	e, ok := sh.get(k)
+	t.releaseLocked(sh, k)
 	sh.del(k)
 	sh.mu.Unlock()
 	if !ok || !t.live(e, at) {
@@ -431,7 +502,7 @@ func (t *Table[K, V]) PutIfNewer(k K, v V, writtenAt, expiresAt int64) bool {
 	if cur, ok := sh.get(k); ok && int64(cur.stamp) > writtenAt {
 		return false
 	}
-	sh.set(k, tableEntry[V]{v: v, expires: expiresAt, stamp: uint64(writtenAt)})
+	sh.set(k, t.sharedLocked(sh, k, tableEntry[V]{v: v, expires: expiresAt, stamp: uint64(writtenAt)}))
 	return true
 }
 
@@ -448,6 +519,7 @@ func (t *Table[K, V]) DeleteIfNewer(k K, deletedAt int64) bool {
 	if cur, ok := sh.get(k); ok && int64(cur.stamp) > deletedAt {
 		return false
 	}
+	t.releaseLocked(sh, k)
 	return sh.del(k)
 }
 
@@ -510,7 +582,8 @@ func (t *Table[K, V]) Range(fn func(k K, v V) bool) {
 	}
 }
 
-// sweep removes entries that are expired at the given time or from an older generation.
+// sweep removes entries that are expired at the given time or from an older generation, giving
+// back their uses.
 func (t *Table[K, V]) sweep(at int64) {
 	for i := range t.shards {
 		sh := &t.shards[i]
@@ -519,12 +592,14 @@ func (t *Table[K, V]) sweep(at int64) {
 			// A memo's entries stored under generation zero are in plain, and age with the rest.
 			for k, v := range sh.plain {
 				if !t.live(tableEntry[V]{v: v}, at) {
+					t.release(v)
 					delete(sh.plain, k)
 				}
 			}
 		}
 		for k, e := range sh.m {
 			if !t.live(e, at) {
+				t.release(e.v)
 				delete(sh.m, k)
 			}
 		}
@@ -532,11 +607,19 @@ func (t *Table[K, V]) sweep(at int64) {
 	}
 }
 
-// clear removes every entry.
+// clear removes every entry, giving back their uses. A table without Interns drops its maps whole.
 func (t *Table[K, V]) clear() {
 	for i := range t.shards {
 		sh := &t.shards[i]
 		sh.mu.Lock()
+		if len(t.interns) > 0 {
+			for _, v := range sh.plain {
+				t.release(v)
+			}
+			for _, e := range sh.m {
+				t.release(e.v)
+			}
+		}
 		sh.plain, sh.m = nil, nil
 		sh.mu.Unlock()
 	}
