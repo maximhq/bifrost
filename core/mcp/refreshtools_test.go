@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/client"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -544,18 +545,15 @@ func TestToolSync_WarnsOncePerSkippedTool(t *testing.T) {
 }
 
 func TestToolSync_SkippedToolWarningsAreBoundedAndFollowRename(t *testing.T) {
-	var warned sync.Map
-	for _, key := range []string{"a\x00stale", "a\x00current", "b\x00other"} {
-		warned.Store(key, struct{}{})
-	}
+	var warned skippedToolWarnings
+	warned.firstTime("a", "stale")
+	warned.firstTime("a", "current")
+	warned.firstTime("b", "other")
 
-	pruneSkippedToolWarnings(&warned, "a", map[string]struct{}{"current": {}})
-	_, staleKept := warned.Load("a\x00stale")
-	_, currentKept := warned.Load("a\x00current")
-	_, otherKept := warned.Load("b\x00other")
-	require.False(t, staleKept, "a tool the server no longer lists loses its record")
-	require.True(t, currentKept, "a tool still listed keeps its record")
-	require.True(t, otherKept, "another client's records are untouched")
+	warned.prune("a", map[string]struct{}{"current": {}})
+	require.True(t, warned.firstTime("a", "stale"), "a tool the server no longer lists loses its record")
+	require.False(t, warned.firstTime("a", "current"), "a tool still listed keeps its record")
+	require.False(t, warned.firstTime("b", "other"), "another client's records are untouched")
 
 	ts := buildInvalidToolMCPServer(t)
 	logger := &skipWarnLogger{}
@@ -569,8 +567,48 @@ func TestToolSync_SkippedToolWarningsAreBoundedAndFollowRename(t *testing.T) {
 	require.NoError(t, editClient(m, config.ID, func(edit *schemas.MCPClientConfig) {
 		edit.Name = "skiprenamed"
 	}))
-	_, oldKept := m.skippedToolWarned.Load("skiprename\x00PUT_/v1/cloud/project/{serviceName}/storage/{containerId}")
+	_, oldKept := m.skippedToolWarned.clients.Load("skiprename")
 	require.False(t, oldKept, "a rename drops the warning record kept under the old name")
+}
+
+// A caller's discovery sees only that caller's tools, and a pre-save verification may never
+// be saved: neither may prune the record, and the verification must not add to it.
+func TestToolSync_SkippedToolWarningsPerCallerAndUnsaved(t *testing.T) {
+	logger := &skipWarnLogger{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, logger, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+
+	list := func(mode skipWarnMode, names ...string) {
+		t.Helper()
+		s := server.NewMCPServer("caller", "1.0.0", server.WithToolCapabilities(true))
+		for _, name := range names {
+			s.AddTool(mcpgo.NewTool(name), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+				return mcpgo.NewToolResultText("ok"), nil
+			})
+		}
+		conn, err := client.NewInProcessClient(s)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = conn.Close() })
+		require.NoError(t, conn.Start(context.Background()))
+		_, err = conn.Initialize(context.Background(), mcpgo.InitializeRequest{})
+		require.NoError(t, err)
+		_, err = m.runListToolsWithHooks(context.Background(), conn, "shared", mode)
+		require.NoError(t, err)
+	}
+
+	for i := 0; i < 3; i++ {
+		list(skipWarnPartial, "a/0", "a/1")
+		list(skipWarnPartial, "a/0")
+	}
+	require.Equal(t, 2, logger.skipWarnCount(), "callers with different tool lists must not undo each other's records")
+
+	list(skipWarnUnsaved, "a/2")
+	_, kept := m.skippedToolWarned.clients.Load("shared")
+	require.True(t, kept)
+	list(skipWarnPartial, "a/0", "a/1")
+	require.Equal(t, 3, logger.skipWarnCount(), "an unsaved verification warns and prunes nothing")
+	list(skipWarnPartial, "a/2")
+	require.Equal(t, 4, logger.skipWarnCount(), "an unsaved verification records nothing")
 }
 
 // TestRefreshClientTools_AVerificationThatLandedBeforeItsRecordRefreshes: once a verification's

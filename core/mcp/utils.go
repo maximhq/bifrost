@@ -1363,13 +1363,16 @@ type listToolsResult struct {
 // retrieveExternalToolsDetailed retrieves and filters tools from an external MCP server
 // without holding locks. Uses exponential backoff retry logic (5 retries, 1-30 seconds)
 // for tool retrieval. Returns the full result so the plugin gate can surface RawToolCount
-// and SkippedTools. warned records the invalid tools already warned about (per client).
+// and SkippedTools. warned records the invalid tools already warned about (per client);
+// mode says whether this listing may add to or prune that record.
 // All callers should go through MCPManager.runListToolsWithHooks rather
 // than calling this directly — the gate wraps this with PreMCPHook/PostMCPHook.
-func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger, warned *sync.Map) (*listToolsResult, error) {
+func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, clientName string, logger schemas.Logger, warned *skippedToolWarnings, mode skipWarnMode) (*listToolsResult, error) {
 	// A server offering only prompts or resources has no tools/list to call.
 	if caps := client.GetServerCapabilities(); caps.Tools == nil && (caps.Prompts != nil || caps.Resources != nil) {
-		pruneSkippedToolWarnings(warned, clientName, nil)
+		if mode == skipWarnSync {
+			warned.forget(clientName)
+		}
 		return &listToolsResult{tools: map[string]schemas.ChatTool{}}, nil
 	}
 	// Get available tools from external server with retry logic
@@ -1398,7 +1401,9 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 	}
 
 	if toolsResponse == nil {
-		pruneSkippedToolWarnings(warned, clientName, nil)
+		if mode == skipWarnSync {
+			warned.forget(clientName)
+		}
 		return &listToolsResult{
 			tools: make(map[string]schemas.ChatTool),
 		}, nil
@@ -1415,7 +1420,7 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		if err := validateNormalizedToolName(validationName); err != nil {
 			// The same invalid tools come back on every sync: warn the first time only.
 			invalid[mcpTool.Name] = struct{}{}
-			if _, seen := warned.LoadOrStore(clientName+"\x00"+mcpTool.Name, struct{}{}); seen {
+			if mode != skipWarnUnsaved && !warned.firstTime(clientName, mcpTool.Name) {
 				logger.Debug("%s Skipping MCP tool %q from server %q: %v", MCPLogPrefix, mcpTool.Name, clientName, err)
 			} else {
 				logger.Warn("%s Skipping MCP tool %q from server %q: %v", MCPLogPrefix, mcpTool.Name, clientName, err)
@@ -1440,9 +1445,11 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 		tools[prefixedToolName] = bifrostTool
 	}
 
-	// Keep only the invalid tools this sync returned, so names that come and go cannot
-	// grow the record without limit.
-	pruneSkippedToolWarnings(warned, clientName, invalid)
+	// Keep only the invalid tools the shared sync returned, so names that come and go
+	// cannot grow the record without limit.
+	if mode == skipWarnSync {
+		warned.prune(clientName, invalid)
+	}
 
 	return &listToolsResult{
 		tools:    tools,
@@ -1451,20 +1458,58 @@ func retrieveExternalToolsDetailed(ctx context.Context, client *client.Client, c
 	}, nil
 }
 
-// pruneSkippedToolWarnings deletes the invalid-tool warning records of clientName whose tool
-// name is not in keep. A nil keep deletes all of them.
-func pruneSkippedToolWarnings(warned *sync.Map, clientName string, keep map[string]struct{}) {
-	prefix := clientName + "\x00"
-	warned.Range(func(key, _ any) bool {
-		k, ok := key.(string)
-		if !ok || !strings.HasPrefix(k, prefix) {
-			return true
-		}
-		if _, kept := keep[strings.TrimPrefix(k, prefix)]; !kept {
-			warned.Delete(key)
+// skipWarnMode says how a tool listing uses the record of skipped-tool warnings.
+type skipWarnMode uint8
+
+const (
+	// skipWarnSync is the client's own sync (connect, refresh, checker): it records
+	// warnings and prunes the record to the tools it lists.
+	skipWarnSync skipWarnMode = iota
+	// skipWarnPartial lists with a credential whose view may differ from the sync's
+	// (a caller's discovery): it records warnings but never prunes.
+	skipWarnPartial
+	// skipWarnUnsaved verifies a config that may never be saved: it always warns and
+	// leaves the record alone.
+	skipWarnUnsaved
+)
+
+// skippedToolWarnings records, per client name, the invalid tools already warned about.
+type skippedToolWarnings struct {
+	clients sync.Map // client name -> *sync.Map of tool name -> struct{}
+}
+
+// firstTime records toolName under clientName and reports whether it was not there yet.
+func (w *skippedToolWarnings) firstTime(clientName, toolName string) bool {
+	tools, ok := w.clients.Load(clientName)
+	if !ok {
+		tools, _ = w.clients.LoadOrStore(clientName, &sync.Map{})
+	}
+	_, seen := tools.(*sync.Map).LoadOrStore(toolName, struct{}{})
+	return !seen
+}
+
+// prune deletes clientName's records whose tool name is not in keep.
+func (w *skippedToolWarnings) prune(clientName string, keep map[string]struct{}) {
+	if len(keep) == 0 {
+		w.forget(clientName)
+		return
+	}
+	tools, ok := w.clients.Load(clientName)
+	if !ok {
+		return
+	}
+	record := tools.(*sync.Map)
+	record.Range(func(key, _ any) bool {
+		if _, kept := keep[key.(string)]; !kept {
+			record.Delete(key)
 		}
 		return true
 	})
+}
+
+// forget drops all of clientName's records.
+func (w *skippedToolWarnings) forget(clientName string) {
+	w.clients.Delete(clientName)
 }
 
 // shouldIncludeClient determines if a client should be included based on filtering rules.

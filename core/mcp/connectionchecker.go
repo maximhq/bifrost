@@ -446,7 +446,7 @@ func (c *ClientConnectionChecker) checkLiveConnection(conn *client.Client, clien
 		attemptCtx, cancel := context.WithTimeout(context.Background(), c.timeout)
 		defer cancel()
 		var err error
-		newTools, err = c.manager.runListToolsWithHooks(c.markAsCheck(attemptCtx), conn, clientName)
+		newTools, err = c.manager.runListToolsWithHooks(c.markAsCheck(attemptCtx), conn, clientName, skipWarnSync)
 		return err
 	}, ProbeRetryConfig, c.logger)
 	if listErr != nil {
