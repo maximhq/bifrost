@@ -44,7 +44,10 @@ func ToGeminiChatCompletionRequestWithImageURLSchemes(ctx *schemas.BifrostContex
 		}
 		// Handle tool-related parameters
 		if len(bifrostReq.Params.Tools) > 0 {
-			geminiReq.Tools, err = convertBifrostToolsToGemini(bifrostReq.Params.Tools)
+			// Gemini 2.x sees no parameters in a root oneOf/anyOf/allOf, and Gemini 3 reads one
+			// only in AUTO mode (ANY and VALIDATED answer 400), so it is flattened by default.
+			flattenRoot := !schemas.ResolveModelCaps(bifrostReq.Provider, capModel).SupportsRootSchemaComposition(false)
+			geminiReq.Tools, err = convertBifrostToolsToGemini(bifrostReq.Params.Tools, flattenRoot)
 			if err != nil {
 				return nil, err
 			}

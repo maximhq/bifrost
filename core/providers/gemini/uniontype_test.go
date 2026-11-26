@@ -148,7 +148,7 @@ func TestConvertBifrostToolsToGemini_UnionTypeProperty(t *testing.T) {
 	var chatTool schemas.ChatTool
 	require.NoError(t, json.Unmarshal([]byte(toolJSON), &chatTool))
 
-	geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool})
+	geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool}, false)
 	require.NoError(t, err)
 	require.Len(t, geminiTools, 1)
 	require.Len(t, geminiTools[0].FunctionDeclarations, 1)
@@ -329,7 +329,7 @@ func TestConvertBifrostToolsToGemini_WirePayload(t *testing.T) {
 			var chatTool schemas.ChatTool
 			require.NoError(t, json.Unmarshal([]byte(toolJSON), &chatTool))
 
-			geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool})
+			geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{chatTool}, false)
 			require.NoError(t, err)
 			require.Len(t, geminiTools, 1)
 
@@ -355,7 +355,7 @@ func TestConvertBifrostToolsToGemini_WirePayloadPreservesDefs(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(toolJSON), &chatTool))
 
 	copied := schemas.DeepCopyChatTool(chatTool)
-	geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{copied})
+	geminiTools, err := convertBifrostToolsToGemini([]schemas.ChatTool{copied}, false)
 	require.NoError(t, err)
 	require.Len(t, geminiTools, 1)
 

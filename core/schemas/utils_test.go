@@ -334,3 +334,18 @@ func TestDeepCopy_PromptCacheBreakpointTTL(t *testing.T) {
 	assert.Equal(t, "12h", *gotResp.TTL)
 	assert.NotSame(t, resp.Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, gotResp.TTL)
 }
+
+// TestModelSupportsRootSchemaComposition pins the name-based cutoff probed on OpenAI,
+// Azure and OpenRouter 2026-11-27: gpt-5 and later take a root oneOf in function
+// parameters, gpt-4.x, gpt-4o and o3 answer 400, and every other model falls back to
+// flattening.
+func TestModelSupportsRootSchemaComposition(t *testing.T) {
+	for _, model := range []string{"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-5.2", "gpt-5.3-codex", "gpt-5.4-mini",
+		"gpt-5.6-luna", "openai.gpt-5.6-luna", "us.openai.gpt-5.6-luna", "azure/gpt-5.4", "openai/gpt-5", "databricks-gpt-5", "gpt-6-luna"} {
+		assert.True(t, ModelSupportsRootSchemaComposition(model), model)
+	}
+	for _, model := range []string{"gpt-4o-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-35-turbo", "chatgpt-4o-latest", "o3", "o4-mini",
+		"gpt-oss-20b", "openai/gpt-oss-120b", "claude-sonnet-4-6", "gemini-2.5-flash", ""} {
+		assert.False(t, ModelSupportsRootSchemaComposition(model), model)
+	}
+}

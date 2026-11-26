@@ -5912,3 +5912,38 @@ func TestOpenAIResponsesRequest_AccessProgramsNativeRoute(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"access_programs":{"cyber":"daybreak_red"}`)
 }
+
+// The Responses path applies the same root-union gate as chat (rootUnionParams in chat_test.go).
+func TestToOpenAIResponsesRequest_RootSchemaComposition(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		kept     bool
+	}{
+		{schemas.OpenAI, "gpt-4o-mini", false},
+		{schemas.Azure, "gpt-4.1", false},
+		{schemas.OpenAI, "o3", false},
+		{schemas.OpenAI, "gpt-5-mini", true},
+		{schemas.Azure, "gpt-5.2", true},
+		{schemas.OpenAI, "gpt-5.4-mini", true},
+		{schemas.OpenAI, "gpt-5.6-luna", true},
+	} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			params := rootUnionParams(t)
+			result := ToOpenAIResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+				Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  new("fetch_report"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+				}}},
+			})
+			require.NotNil(t, result)
+			require.Len(t, result.Tools, 1)
+			requireRootUnion(t, result.Tools[0].ResponsesToolFunction.Parameters, tc.kept)
+			require.Len(t, params.OneOf, 2, "the caller's schema must not be mutated")
+		})
+	}
+}

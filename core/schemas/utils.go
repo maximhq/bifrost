@@ -2392,6 +2392,29 @@ func ModelSupportsPromptCacheBreakpoint(model string) bool {
 	return IsGPT56Model(model) || strings.Contains(strings.ToLower(model), "gpt-6")
 }
 
+// ModelSupportsRootSchemaComposition is the name-based fallback for
+// ModelCaps.SupportsRootSchemaComposition: OpenAI gpt-5 and later accept a root
+// oneOf/anyOf/allOf in function parameters; gpt-4.x, gpt-4o, gpt-3.5 and the o-series
+// reject it with a 400. Any other model reports false, so its root composition is
+// flattened. The major version is one digit, so Azure's "gpt-35-turbo" (gpt-3.5) is not
+// read as 35.
+func ModelSupportsRootSchemaComposition(model string) bool {
+	lower := strings.ToLower(model)
+	for start := 0; start < len(lower); {
+		idx := strings.Index(lower[start:], "gpt-")
+		if idx < 0 {
+			return false
+		}
+		i := start + idx + len("gpt-")
+		start = i
+		if i < len(lower) && lower[i] >= '5' && lower[i] <= '9' &&
+			(i+1 == len(lower) || lower[i+1] < '0' || lower[i+1] > '9') {
+			return true
+		}
+	}
+	return false
+}
+
 // IsAnthropicModel checks if the model is an Anthropic model.
 func IsAnthropicModel(model string) bool {
 	return strings.Contains(model, "anthropic.") || strings.Contains(model, "claude")

@@ -111,12 +111,17 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
 		if len(openaiReq.ChatParameters.Tools) > 0 {
+			// OpenAI and Azure Chat Completions reject a root composition on every model; only
+			// their Responses API takes one, so the model's capability does not apply here.
+			baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+			flattenRoot := baseProvider == schemas.OpenAI || baseProvider == schemas.Azure ||
+				!caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(capModel))
 			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
 			for i, tool := range openaiReq.ChatParameters.Tools {
 				normalizedTools[i] = tool
 				if tool.Function != nil && tool.Function.Parameters != nil {
 					funcCopy := *tool.Function
-					funcCopy.Parameters = tool.Function.Parameters.Normalized()
+					funcCopy.Parameters = schemas.FlattenRootCompositionIf(tool.Function.Parameters, flattenRoot).Normalized()
 					normalizedTools[i].Function = &funcCopy
 					// The by-value copy carried over any precomputed serialized cache
 					// (shared MCP tools cache it at the source). Drop it so MarshalJSON

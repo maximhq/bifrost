@@ -177,7 +177,9 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 		includeServerSideToolInvocations := bifrostReq.Params.IncludeServerSideToolInvocations != nil && *bifrostReq.Params.IncludeServerSideToolInvocations
 		// Handle tool-related parameters
 		if len(requestTools) > 0 {
-			geminiReq.Tools, err = convertResponsesToolsToGemini(requestTools, includeServerSideToolInvocations, bifrostReq.Provider, bifrostReq.Model)
+			// Flattened by default: see ToGeminiChatCompletionRequest.
+			flattenRoot := !schemas.ResolveModelCaps(bifrostReq.Provider, capModel).SupportsRootSchemaComposition(false)
+			geminiReq.Tools, err = convertResponsesToolsToGemini(requestTools, includeServerSideToolInvocations, bifrostReq.Provider, bifrostReq.Model, flattenRoot)
 			if err != nil {
 				return nil, err
 			}
@@ -4832,7 +4834,7 @@ func modelSupportsToolCombination(model string) bool {
 // combination at all — Gemini 3 and newer. Sending both kinds to an older Vertex model is
 // rejected outright with "Multiple tools are supported only when they are all search tools",
 // so the drop still applies there: a degraded answer beats a 400.
-func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool, provider schemas.ModelProvider, model string) ([]Tool, error) {
+func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerSideToolInvocations bool, provider schemas.ModelProvider, model string, flattenRoot bool) ([]Tool, error) {
 	var functionDeclarations []*FunctionDeclaration
 	var googleSearch *GoogleSearch
 	var codeExecution *ToolCodeExecution
@@ -4869,7 +4871,7 @@ func convertResponsesToolsToGemini(tools []schemas.ResponsesTool, includeServerS
 					}(),
 				}
 				if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
-					raw, err := providerUtils.MarshalSorted(tool.ResponsesToolFunction.Parameters)
+					raw, err := providerUtils.MarshalSorted(schemas.FlattenRootCompositionIf(tool.ResponsesToolFunction.Parameters, flattenRoot && tool.ResponsesToolFunction.Parameters.Properties.Len() == 0))
 					if err != nil {
 						return []Tool{}, fmt.Errorf("marshal tool %q parameters: %w", *tool.Name, err)
 					}

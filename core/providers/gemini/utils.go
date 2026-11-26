@@ -1749,8 +1749,10 @@ func mapBifrostServiceTierToGemini(tier schemas.BifrostServiceTier) ServiceTier 
 	}
 }
 
-// convertBifrostToolsToGemini converts Bifrost tools to Gemini format
-func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) ([]Tool, error) {
+// convertBifrostToolsToGemini converts Bifrost tools to Gemini format. flattenRoot merges a
+// root oneOf/anyOf/allOf that carries every parameter for models that cannot read one in
+// every function-calling mode; a schema with root properties is sent as declared.
+func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool, flattenRoot bool) ([]Tool, error) {
 	geminiTool := Tool{}
 
 	for _, tool := range bifrostTools {
@@ -1762,7 +1764,7 @@ func convertBifrostToolsToGemini(bifrostTools []schemas.ChatTool) ([]Tool, error
 				Name: tool.Function.Name,
 			}
 			if tool.Function.Parameters != nil {
-				raw, err := providerUtils.MarshalSorted(tool.Function.Parameters)
+				raw, err := providerUtils.MarshalSorted(schemas.FlattenRootCompositionIf(tool.Function.Parameters, flattenRoot && tool.Function.Parameters.Properties.Len() == 0))
 				if err != nil {
 					return nil, fmt.Errorf("marshal tool %q parameters: %w", tool.Function.Name, err)
 				}

@@ -317,6 +317,16 @@ func (c ModelCaps) SupportsCustomTools(fallback bool) bool {
 	return fallback
 }
 
+// SupportsRootSchemaComposition reports whether the model accepts a root-level
+// oneOf/anyOf/allOf in function parameters in every tool-choice mode. Models that do
+// not get it flattened.
+func (c ModelCaps) SupportsRootSchemaComposition(fallback bool) bool {
+	if c.record != nil && c.record.SupportsRootSchemaComposition != nil {
+		return *c.record.SupportsRootSchemaComposition
+	}
+	return fallback
+}
+
 // SupportsPromptCaching reports whether the model supports explicit prompt caching
 // at all. It is the base feature that SupportsPromptCachingScope and
 // SupportsExtendedCacheTTL refine, and it is what gates breakpoint injection: a

@@ -384,5 +384,5 @@ func liveTools(tools []liveTool) ([]Tool, error) {
 	if len(functions) == 0 {
 		return nil, nil
 	}
-	return convertBifrostToolsToGemini(functions)
+	return convertBifrostToolsToGemini(functions, false)
 }

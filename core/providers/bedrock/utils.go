@@ -3983,6 +3983,11 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 					if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
 						return nil, nil, err
 					}
+				} else {
+					// Nova answers 424 and Kimi K2.5 invents arguments for a root union that carries
+					// every parameter; a schema with root properties is sent as declared.
+					parameters = schemas.FlattenRootCompositionIf(parameters, parameters.Properties.Len() == 0 &&
+						!caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(model)))
 				}
 				// ToolFunctionParameters.MarshalJSON handles all fields including
 				// properties, required, enum, additionalProperties, $defs, etc.

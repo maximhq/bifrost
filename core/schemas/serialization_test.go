@@ -1024,6 +1024,46 @@ func TestToolFunctionParameters_ExplicitObjectSchemaPreserved(t *testing.T) {
 	assert.JSONEq(t, `{"type":"object","properties":{}}`, string(normalized))
 }
 
+// An empty properties beside a root oneOf/anyOf/allOf constrains nothing, and Gemini 3
+// reads it as "no parameters" and calls the tool with {}, so it is left out. A union
+// that also declares root properties keeps them.
+func TestToolFunctionParameters_RootCompositionOmitsEmptyProperties(t *testing.T) {
+	const branches = `[{"type":"object","properties":{"kind":{"const":"sales"}}},{"type":"object","properties":{"kind":{"const":"inventory"}}}]`
+	for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+		for name, input := range map[string]string{
+			"absent": `{"type":"object","` + keyword + `":` + branches + `}`,
+			"empty":  `{"type":"object","properties":{},"` + keyword + `":` + branches + `}`,
+		} {
+			t.Run(keyword+"/"+name, func(t *testing.T) {
+				var params ToolFunctionParameters
+				require.NoError(t, Unmarshal([]byte(input), &params))
+				for _, p := range []*ToolFunctionParameters{&params, params.Normalized()} {
+					out, err := Marshal(p)
+					require.NoError(t, err)
+					assert.JSONEq(t, `{"type":"object","`+keyword+`":`+branches+`}`, string(out))
+				}
+			})
+		}
+	}
+
+	t.Run("MCP discovery shape with an empty map", func(t *testing.T) {
+		var branch OrderedMap
+		require.NoError(t, Unmarshal([]byte(`{"type":"object","properties":{"kind":{"const":"sales"}}}`), &branch))
+		out, err := Marshal(ToolFunctionParameters{Type: "object", Properties: NewOrderedMap(), OneOf: []OrderedMap{branch}})
+		require.NoError(t, err)
+		assert.NotContains(t, string(out), `"properties":{}`)
+	})
+
+	t.Run("root properties beside a union are kept", func(t *testing.T) {
+		input := `{"type":"object","properties":{"kind":{"type":"string"}},"oneOf":` + branches + `}`
+		var params ToolFunctionParameters
+		require.NoError(t, Unmarshal([]byte(input), &params))
+		out, err := Marshal(params)
+		require.NoError(t, err)
+		assert.JSONEq(t, input, string(out))
+	})
+}
+
 // TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic verifies deterministic
 // serialization for file search filters.
 func TestResponsesToolFileSearchFilter_MarshalJSON_Deterministic(t *testing.T) {

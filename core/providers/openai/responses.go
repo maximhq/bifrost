@@ -1279,13 +1279,14 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// strict-pydantic upstreams (e.g. sglang) reject the explicit null outright.
 	// We must copy the Tools slice since it shares the backing array with bifrostReq.Params.Tools.
 	if len(req.Tools) > 0 {
+		flattenRoot := !caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(capModel))
 		normalizedTools := normalizeAsyncTools(req.Tools, asyncToolsSupported)
 		for i, tool := range normalizedTools {
 			if tool.Type == schemas.ResponsesToolTypeFunction &&
 				tool.ResponsesToolFunction != nil {
 				funcCopy := *tool.ResponsesToolFunction
 				if funcCopy.Parameters != nil {
-					funcCopy.Parameters = funcCopy.Parameters.Normalized()
+					funcCopy.Parameters = schemas.FlattenRootCompositionIf(funcCopy.Parameters, flattenRoot).Normalized()
 				}
 				if funcCopy.Strict == nil {
 					funcCopy.Strict = new(false)
