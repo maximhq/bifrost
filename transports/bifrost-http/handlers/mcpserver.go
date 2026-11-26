@@ -195,7 +195,8 @@ func NewMCPServerHandler(ctx context.Context, config *lib.Config, toolManager MC
 func (h *MCPServerHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	// Streamable HTTP: POST carries messages, GET opens the legacy notification stream, DELETE ends
 	// a legacy session. Slug endpoints are the same handler, narrowed to the slug in admit.
-	handler := lib.ChainMiddlewares(h.handleMCPServer, middlewares...)
+	// SBS fork: endpoint names resolve to their Virtual MCP before any middleware runs.
+	handler := SBSWrapMCPRoute(lib.ChainMiddlewares(h.handleMCPServer, middlewares...))
 	for _, path := range []string{"/mcp", "/mcp/{slug}"} {
 		r.POST(path, handler)
 		r.GET(path, handler)
@@ -212,6 +213,7 @@ func (h *MCPServerHandler) handleMCPServer(ctx *fasthttp.RequestCtx) {
 	}
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	bifrostCtx.SetValue(schemas.BifrostContextKeyIsMCPGateway, true)
+	SBSStampMCPContext(ctx, bifrostCtx) // SBS fork: tool overrides of the served Virtual MCP
 
 	if refusal := h.admit(ctx, bifrostCtx); refusal != nil {
 		cancel()
@@ -434,6 +436,8 @@ func (h *MCPServerHandler) setInstructions(ctx context.Context, field *string) {
 func (h *MCPServerHandler) buildServer() *server.MCPServer {
 	hooks := &server.Hooks{}
 	hooks.AddAfterListTools(h.narrowListedTools)
+	hooks.AddAfterListTools(SBSApplyToolOverrides)  // SBS fork: after narrowing, so names are still upstream's
+	hooks.AddBeforeCallTool(SBSResolveToolOverride) // SBS fork: before alias resolution
 	hooks.AddBeforeCallTool(h.resolveCallToolName)
 	hooks.AddAfterInitialize(h.forwardServerInstructions)
 	hooks.AddAfterInitialize(h.capInitializeVersion)

@@ -14,6 +14,19 @@ type MCPToolSpec struct {
 	// ToolNames follows WhiteList semantics: ["*"] = all tools from the client (incl. future),
 	// [] = no tools (deny-by-default), a named list = only those tools.
 	ToolNames []string `json:"tool_names"`
+	// Overrides (SBS fork) changes how this Virtual MCP presents a tool, keyed by the tool's
+	// own (unprefixed) name: a new name, title or description, and annotations merged over
+	// the upstream ones. Applied on tools/list; tools/call maps an overridden name back.
+	Overrides map[string]MCPToolOverride `json:"overrides,omitempty"`
+}
+
+// MCPToolOverride is one tool's presentation inside a Virtual MCP (SBS fork). Nil or
+// empty fields keep the upstream value.
+type MCPToolOverride struct {
+	Name        *string        `json:"name,omitempty"`
+	Title       *string        `json:"title,omitempty"`
+	Description *string        `json:"description,omitempty"`
+	Annotations map[string]any `json:"annotations,omitempty"`
 }
 
 // TableVirtualMCP is a Virtual MCP server: a named bundle of tool specs from one

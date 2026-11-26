@@ -6,6 +6,8 @@
 export interface VirtualMCPToolSpec {
 	mcp_client_id: string;
 	tool_names: string[];
+	// SBS fork: per-namespace tool presentation, keyed by the tool's own name.
+	overrides?: Record<string, import("./sbsMcp").SBSToolOverride>;
 }
 
 export interface VirtualMCP {

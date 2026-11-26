@@ -2592,3 +2592,14 @@ func BenchmarkExecuteChatTool_PerCallHTTPUpstream(b *testing.B) {
 		})
 	}
 }
+
+func TestExpandStdioEnvRefs(t *testing.T) {
+	t.Setenv("SBS_TEST_TOKEN", "s3cret")
+	got, err := ExpandStdioEnvRefs("Bearer ${SBS_TEST_TOKEN}; keep $HOME and $")
+	if err != nil || got != "Bearer s3cret; keep $HOME and $" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+	if _, err := ExpandStdioEnvRefs("${SBS_TEST_UNSET_VAR}"); err == nil || !strings.Contains(err.Error(), "SBS_TEST_UNSET_VAR") {
+		t.Fatalf("expected an error naming the unset variable, got %v", err)
+	}
+}

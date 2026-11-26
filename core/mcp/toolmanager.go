@@ -898,8 +898,6 @@ func (m *ToolsManager) executeToolInternal(
 	// Create timeout context for tool execution.
 	// Per-server timeout (executionConfig.ToolExecutionTimeout) takes precedence over the global.
 	toolExecutionTimeout := m.executionTimeout(executionConfig)
-	toolCtx, cancel := context.WithTimeout(ctx, toolExecutionTimeout)
-	defer cancel()
 	// What a timeout reports: the client's timeout, or less when the caller's own deadline comes
 	// first, so the message never names a limit that did not stop the call. A deadline that has
 	// already passed leaves a budget of zero, not a negative one.
@@ -916,7 +914,7 @@ func (m *ToolsManager) executeToolInternal(
 	// transport headerFunc (see createHTTPConnection/createSSEConnection), so no
 	// per-call Header is set here — that keeps ping/list_tools and tools/call on a
 	// single header path.
-	callRequest := mcp.CallToolRequest{
+	baseCallRequest := mcp.CallToolRequest{
 		Request: mcp.Request{
 			Method: string(mcp.MethodToolsCall),
 		},
@@ -925,6 +923,10 @@ func (m *ToolsManager) executeToolInternal(
 			Arguments: arguments,
 		},
 	}
+	// SBS fork: a plain timeout, or an idle one that progress notifications restart
+	// (SBS_MCP_RESET_TIMEOUT_ON_PROGRESS, see progresstimeout.go).
+	toolCtx, callRequest, cancel := withToolTimeout(ctx, toolExecutionTimeout, baseCallRequest)
+	defer cancel()
 
 	// ToolCallRetryConfig, not ConnectRetryConfig/PerCallConnectRetryConfig:
 	// unlike a bare connect, this call may not be idempotent, so it only gets

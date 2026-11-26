@@ -56,6 +56,7 @@ import (
 	"embed"
 	"flag"
 	"fmt"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/sbsimport"
 	"os"
 	"strings"
 	"time"
@@ -115,6 +116,10 @@ func init() {
 
 // main is the entry point of the application.
 func main() {
+	// SBS fork: one-time operator commands, e.g. `/app/main sbs-import-metamcp -dsn ...`.
+	if len(os.Args) > 1 && os.Args[1] == "sbs-import-metamcp" {
+		os.Exit(sbsimport.RunCLI(os.Args[2:]))
+	}
 	// Parse command line flags
 	flag.Parse()
 

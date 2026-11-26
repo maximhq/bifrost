@@ -257,7 +257,7 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, msg)
 			return
 		}
-		def.ParsedTools = req.Tools
+		def.ParsedTools = SBSPreserveOverrides(def.ParsedTools, req.Tools) // SBS fork
 	}
 	if req.Name != "" {
 		def.Name = req.Name

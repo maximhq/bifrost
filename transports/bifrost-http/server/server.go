@@ -3015,6 +3015,8 @@ func (s *BifrostHTTPServer) RegisterInferenceRoutes(ctx context.Context, middlew
 	asyncHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpInferenceHandler.RegisterRoutes(s.Router, middlewares...)
 	s.MCPServerHandler.RegisterRoutes(s.Router, middlewares...)
+	// SBS fork: REST face of each MCP endpoint; auth happens on the /mcp loopback it makes.
+	handlers.RegisterSBSMCPOpenAPIRoutes(s.Router)
 	if s.relays != nil {
 		handlers.NewRelayGatewayHandler(s.relays, s.Config, logger).RegisterRoutes(s.Router, middlewares...)
 	}
@@ -3302,6 +3304,12 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	if virtualMCPHandler != nil {
 		virtualMCPHandler.RegisterRoutes(s.Router, middlewares...)
+		// SBS fork: MetaMCP-style endpoints, tool overrides and OpenAPI export.
+		if err := handlers.InitSBSMCP(ctx, s.Config); err != nil {
+			logger.Warn("sbs: MCP endpoints disabled: %v", err)
+		} else {
+			handlers.NewSBSMCPHandler(s.Config, callbacks).RegisterRoutes(s.Router, middlewares...)
+		}
 	}
 	mcpPerUserHeadersHandler.RegisterRoutes(s.Router, middlewares...)
 	mcpSessionsHandler.RegisterRoutes(s.Router, middlewares...)

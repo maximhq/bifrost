@@ -1,0 +1,45 @@
+# SBS fork of Bifrost: runtime image.
+#
+# Same layout as transports/Dockerfile.local's final stage, plus the runtimes STDIO MCP servers
+# need (uv/uvx for Python servers such as mcp-grafana, node/npx for npm servers) and git.
+# The binary is built by sbs/build.sh (UI embedded), so this image only packages it.
+FROM alpine:3.23
+
+WORKDIR /app
+RUN apk upgrade --no-cache && \
+    apk add --no-cache musl libgcc ca-certificates zlib \
+        nodejs npm python3 uv git
+
+COPY dist/bifrost /app/main
+COPY dist/docker-entrypoint.sh /app/docker-entrypoint.sh
+
+ARG ARG_APP_PORT=8080
+ARG ARG_APP_HOST=0.0.0.0
+ARG ARG_LOG_LEVEL=info
+ARG ARG_LOG_STYLE=json
+ARG ARG_APP_DIR=/app/data
+ENV APP_PORT=$ARG_APP_PORT \
+    APP_HOST=$ARG_APP_HOST \
+    LOG_LEVEL=$ARG_LOG_LEVEL \
+    LOG_STYLE=$ARG_LOG_STYLE \
+    APP_DIR=$ARG_APP_DIR \
+    HOME=/home/appuser \
+    UV_CACHE_DIR=/home/appuser/.cache/uv \
+    npm_config_cache=/home/appuser/.npm
+
+RUN mkdir -p "$APP_DIR/logs" /home/appuser/.cache /home/appuser/.npm && \
+    adduser -D -h /home/appuser -s /bin/sh appuser && \
+    chown -R appuser:appuser /app /home/appuser && \
+    chown -R appuser:0 "$APP_DIR" && \
+    chmod -R g=rwX "$APP_DIR" /home/appuser && \
+    chmod +x /app/docker-entrypoint.sh /app/main
+
+USER 1000:0
+VOLUME ["/app/data"]
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:${APP_PORT}/health || exit 1
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/main"]

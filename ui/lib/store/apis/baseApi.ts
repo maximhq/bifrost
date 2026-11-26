@@ -192,6 +192,7 @@ export const baseApi = createApi({
 		"PricingOverrides",
 		"MCPToolGroups",
 		"VirtualMCPs",
+		"SBSEndpoints",
 		"AuditLogs",
 		"UserGovernance",
 		"LargePayloadConfig",

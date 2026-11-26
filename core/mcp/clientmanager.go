@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -4059,21 +4060,30 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 
 	// Check referenced environment variables are set. Inline KEY=value
 	// assignments are passed directly to the stdio transport.
+	// SBS fork: an inline value may reference Bifrost's own environment with
+	// ${NAME} (MetaMCP's syntax), so secrets stay out of the stored config.
+	envs := make([]string, 0, len(config.StdioConfig.Envs))
 	for _, env := range config.StdioConfig.Envs {
-		envName, _, hasInlineValue := strings.Cut(env, "=")
+		envName, value, hasInlineValue := strings.Cut(env, "=")
 		if envName == "" {
 			return nil, nil, misconfiguredError{fmt.Errorf("environment variable name is empty for MCP client %s", config.Name)}
 		}
 		if hasInlineValue {
+			expanded, err := ExpandStdioEnvRefs(value)
+			if err != nil {
+				return nil, nil, misconfiguredError{fmt.Errorf("environment variable %s for MCP client %s %w", envName, config.Name, err)}
+			}
+			envs = append(envs, envName+"="+expanded)
 			continue
 		}
 		if os.Getenv(envName) == "" {
 			return nil, nil, misconfiguredError{fmt.Errorf("environment variable %s is not set for MCP client %s", envName, config.Name)}
 		}
+		envs = append(envs, env)
 	}
 
 	// Create STDIO transport
-	stdioTransport := transport.NewStdio(cmd, config.StdioConfig.Envs, args...)
+	stdioTransport := transport.NewStdio(cmd, envs, args...)
 
 	// Prepare connection info
 	connectionInfo := &schemas.MCPClientConnectionInfo{
@@ -4411,4 +4421,26 @@ func unmatchedToolSelections(selected schemas.WhiteList, toolMap map[string]sche
 		}
 	}
 	return unmatched
+}
+
+// stdioEnvRef matches a ${NAME} reference inside a STDIO env value (SBS fork).
+var stdioEnvRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// ExpandStdioEnvRefs replaces each ${NAME} in value with Bifrost's own environment variable NAME
+// (SBS fork). A reference to an unset variable is an error, so a server never starts with a
+// silently empty secret. A lone "$" or "$NAME" is left as it is.
+func ExpandStdioEnvRefs(value string) (string, error) {
+	var missing []string
+	out := stdioEnvRef.ReplaceAllStringFunc(value, func(ref string) string {
+		name := ref[2 : len(ref)-1]
+		v, ok := os.LookupEnv(name)
+		if !ok {
+			missing = append(missing, name)
+		}
+		return v
+	})
+	if len(missing) > 0 {
+		return "", fmt.Errorf("references unset environment variable(s) %s", strings.Join(missing, ", "))
+	}
+	return out, nil
 }

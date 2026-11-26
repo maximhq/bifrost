@@ -99,7 +99,11 @@ const NavItemView = ({
 		if (url === "/workspace/custom-pricing" || url === "/workspace/adaptive-routing" || url === "/workspace/agent-gateway")
 			return pathname === url;
 		// Avoid double-highlighting with "/workspace/mcp-registry/library"
-		if (url === "/workspace/mcp-registry") return !pathname.startsWith("/workspace/mcp-registry/library") && pathname.startsWith(url);
+		if (url === "/workspace/mcp-registry")
+			return (
+				(!pathname.startsWith("/workspace/mcp-registry/library") && pathname.startsWith(url)) ||
+				pathname.startsWith("/workspace/mcp-servers/")
+			); // SBS fork: server detail pages
 		return pathname.startsWith(url);
 	};
 	const isAnySubItemActive =
@@ -363,8 +367,9 @@ const NavItemView = ({
 // Helper function to compare semantic versions
 const compareVersions = (v1: string, v2: string): number => {
 	// Remove 'v' prefix if present
-	const cleanV1 = v1.startsWith("v") ? v1.slice(1) : v1;
-	const cleanV2 = v2.startsWith("v") ? v2.slice(1) : v2;
+	// SBS fork: drop semver build metadata ("+sbs.3") so a fork build equals its upstream release.
+	const cleanV1 = (v1.startsWith("v") ? v1.slice(1) : v1).split("+")[0];
+	const cleanV2 = (v2.startsWith("v") ? v2.slice(1) : v2).split("+")[0];
 
 	// Split into main version and prerelease
 	const [mainV1, prereleaseV1] = cleanV1.split("-");

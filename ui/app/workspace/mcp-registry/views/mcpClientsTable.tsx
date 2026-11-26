@@ -1,4 +1,5 @@
 import PageTitle from "@/components/pageTitle";
+import { MCPImportExportButtons } from "@/components/sbs/mcpImportExport";
 import ClientForm from "@/app/workspace/mcp-registry/views/mcpClientForm";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
@@ -40,7 +41,7 @@ import { MCPClient } from "@/lib/types/mcp";
 import { supportsClientReregistration } from "@/lib/utils/mcpCredential";
 import { perUserDiscoveryOn } from "@/lib/utils/mcpPerUserDiscovery";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
 	Box,
 	Check,
@@ -638,9 +639,10 @@ export default function MCPClientsTable({
 		}
 	};
 
+	// SBS fork: a row opens the MetaMCP-style server page instead of the details sheet.
+	const navigate = useNavigate();
 	const handleRowClick = (mcpClient: MCPClient) => {
-		setSelectedMCPClient(mcpClient);
-		setOpenSheet("view");
+		navigate({ to: "/workspace/mcp-servers/$id", params: { id: mcpClient.config.client_id } });
 	};
 
 	const handleEdit = (mcpClient: MCPClient) => {
@@ -1126,6 +1128,8 @@ export default function MCPClientsTable({
 
 				<div className="flex gap-2 sm:ml-auto">
 					<MCPUsageGuideSheet />
+					{/* SBS fork: mcpServers JSON import / export, as in MetaMCP. */}
+					<MCPImportExportButtons canCreate={hasCreateMCPClientAccess} />
 					<Button asChild variant="outline" data-testid="mcp-library-link-btn" className="h-8">
 						{/* The label is hidden below sm, leaving a bare icon. */}
 						<Link to="/workspace/mcp-registry/library" aria-label={t("registry.libraryAria")}>

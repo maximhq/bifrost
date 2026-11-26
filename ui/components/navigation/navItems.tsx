@@ -351,12 +351,44 @@ export function useNavItems(): NavItem[] {
 				description: t("navDesc.mcpGateway"),
 				url: "/workspace/mcp-gateway",
 				hasAccess: hasMCPGatewayAccess || hasVirtualMCPsAccess,
+				// SBS fork: MetaMCP-style structure (servers -> namespaces -> endpoints, inspector, live logs).
 				subItems: [
 					{
 						id: "mcp.catalog",
-						title: t("nav.mcpCatalog"),
+						title: "MCP Servers",
 						url: "/workspace/mcp-registry",
-						icon: LayoutGrid,
+						icon: Server,
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
+						id: "mcp.namespaces",
+						title: "Namespaces",
+						url: "/workspace/mcp-namespaces",
+						icon: ToolCase,
+						description: "Group servers, pick and override tools",
+						hasAccess: hasVirtualMCPsAccess,
+						testId: "tool-groups", // keep the pre-rename E2E selector stable
+					},
+					{
+						id: "mcp.endpoints",
+						title: "Endpoints",
+						url: "/workspace/mcp-endpoints",
+						icon: Globe,
+						description: "Public URLs serving a namespace",
+						hasAccess: hasVirtualMCPsAccess,
+					},
+					{
+						id: "mcp.inspector",
+						title: "Inspector",
+						url: "/workspace/mcp-inspector",
+						icon: SearchCheck,
+						hasAccess: hasMCPGatewayAccess,
+					},
+					{
+						id: "mcp.live-logs",
+						title: "Live logs",
+						url: "/workspace/mcp-logs",
+						icon: ScrollText,
 						hasAccess: hasMCPGatewayAccess,
 					},
 					{
@@ -365,15 +397,6 @@ export function useNavItems(): NavItem[] {
 						url: "/workspace/mcp-registry/library",
 						icon: Boxes,
 						hasAccess: hasMCPGatewayAccess,
-					},
-					{
-						id: "mcp.virtual-mcps",
-						title: t("nav.virtualMcps"),
-						url: "/workspace/virtual-mcps",
-						icon: ToolCase,
-						description: t("navDesc.virtualMcps"),
-						hasAccess: hasVirtualMCPsAccess,
-						testId: "tool-groups", // keep the pre-rename E2E selector stable
 					},
 					{
 						id: "mcp.auth-sessions",
