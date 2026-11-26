@@ -499,7 +499,6 @@
 				"allowed": "Autorisé",
 				"blocked": "Bloqué",
 				"redacted": "Masqué",
-				"transformed": "Transformé",
 				"monitored": "Surveillé",
 				"detected": "Détecté"
 			},
@@ -553,11 +552,9 @@
 			"toolTypeCount_other": "{{type}} · {{count}} outils",
 			"guardrailHints": {
 				"blocked": "La règle a arrêté la requête.",
-				"redacted": "La règle a supprimé le contenu correspondant et la requête a continué.",
-				"transformed": "La règle a réécrit le contenu correspondant et la requête a continué.",
+				"redacted": "La règle a masqué ou réécrit le contenu correspondant et la requête a continué.",
 				"monitoredWouldBlock": "La règle est en mode surveillance uniquement : elle aurait bloqué ceci, mais la requête a continué sans modification.",
 				"monitoredWouldRedact": "La règle est en mode surveillance uniquement : elle aurait masqué ceci, mais la requête a continué sans modification.",
-				"monitoredWouldTransform": "La règle est en mode surveillance uniquement : elle aurait transformé ceci, mais la requête a continué sans modification.",
 				"monitored": "La règle est en mode surveillance uniquement : la requête a continué sans modification.",
 				"detected": "La règle a signalé la requête et l’a laissée continuer sans modification."
 			},

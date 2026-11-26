@@ -25,4 +25,6 @@ type AuditChange struct {
 	Before json.RawMessage
 	// After is the entity's state after the change. Nil on delete.
 	After json.RawMessage
+	// Discarded marks a change the handler rolled back; audit layers skip it.
+	Discarded bool
 }

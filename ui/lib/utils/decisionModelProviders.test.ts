@@ -65,6 +65,7 @@ describe("decision model provider helpers", () => {
 	const ollama = provider({ name: "ollama" } as Partial<ModelProvider>);
 	const azure = provider({ name: "azure" } as Partial<ModelProvider>);
 	const databricks = provider({ name: "databricks" } as Partial<ModelProvider>);
+	const baseten = provider({ name: "baseten" } as Partial<ModelProvider>);
 	const vllm = provider({ name: "vllm" } as Partial<ModelProvider>);
 	const sgl = provider({ name: "sgl" } as Partial<ModelProvider>);
 	const gemini = provider({ name: "gemini" } as Partial<ModelProvider>);
@@ -83,18 +84,36 @@ describe("decision model provider helpers", () => {
 			ollama,
 			azure,
 			databricks,
+			baseten,
 			vllm,
 			sgl,
 			laya,
 			clef,
 		])
 			expect(isDecisionProvider(candidate)).toBe(true);
+		// Baseten mixes decision deployments with chat models, so its picker lists only the decision ones.
+		expect(listsDecisionModels(baseten, "baseten")).toBe(true);
+		expect(defaultDecisionModel(baseten)).toBe("");
 		expect(isDecisionProvider(provider({ name: "anthropic" } as Partial<ModelProvider>))).toBe(false);
 		expect(
 			isDecisionProvider(
 				provider({ name: "my-anthropic", custom_provider_config: { base_provider_type: "anthropic" } } as Partial<ModelProvider>),
 			),
 		).toBe(false);
+	});
+
+	test("follows a custom provider's allowed_requests for decisions", () => {
+		const withAllowed = (base: string, allowed?: Record<string, boolean>) =>
+			provider({
+				name: `my-${base}`,
+				custom_provider_config: { base_provider_type: base, ...(allowed && { allowed_requests: allowed }) },
+			} as Partial<ModelProvider>);
+		for (const base of ["typesafe", "openai", "gemini"]) {
+			// No block at all allows every request, as the gateway reads it.
+			expect(isDecisionProvider(withAllowed(base))).toBe(true);
+			expect(isDecisionProvider(withAllowed(base, { decisions: true }))).toBe(true);
+			expect(isDecisionProvider(withAllowed(base, { chat_completion: true }))).toBe(false);
+		}
 	});
 
 	test("treats a custom OpenAI-based provider like OpenAI", () => {

@@ -13,6 +13,16 @@ logs:
     summary: Get logs
     description: |
       Retrieves logs with filtering, search, and pagination via query parameters.
+
+      Each entry is a summary row, not the full log:
+
+      - `input_history` and `responses_input_history` hold only the last input message. Realtime turn rows (`object` is `realtime.turn`) keep their full history.
+      - Response payloads are left out. Realtime turn rows keep `output_message`.
+      - Of the other request payloads, only `speech_input`, `transcription_input` and `image_generation_input` are returned.
+      - Provider error payloads are left out, except for guardrail blocks.
+      - These fields are left out: `alias_model_family`, `server_side_fallback_model`, `served_model`, `routing_engines_used`, `complexity_mechanism`, `model_router_id`, `model_router_name`, `video_generation_input` and `cache_debug`.
+
+      Fetch a single entry with `GET /api/logs/{id}` for the full log.
     tags:
       - Logging
     parameters:
@@ -145,6 +155,10 @@ logs:
       - $ref: "#/_histogram-parameters/agent_correlation_id"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - name: content_search
         in: query
@@ -394,6 +408,10 @@ logs-stats:
       - $ref: "#/_histogram-parameters/agent_correlation_id"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - name: content_search
         in: query
@@ -793,6 +811,10 @@ logs-histogram:
       - $ref: "#/_histogram-parameters/complexity_tiers"
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -868,6 +890,10 @@ logs-histogram-tokens:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -943,6 +969,10 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1024,6 +1054,10 @@ logs-histogram-models:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1099,6 +1133,10 @@ logs-histogram-latency:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1174,6 +1212,10 @@ logs-histogram-cost-by-provider:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1249,6 +1291,10 @@ logs-histogram-tokens-by-provider:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1324,6 +1370,10 @@ logs-histogram-latency-by-provider:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1400,6 +1450,10 @@ logs-histogram-throughput:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1474,6 +1528,10 @@ logs-histogram-throughput-by-provider:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -1906,6 +1964,34 @@ _histogram-parameters:
       Comma-separated list of guardrail outcomes to filter by. `blocked` matches requests a
       guardrail intervened on; `detected` matches detect-only guardrail matches. Several values
       are OR-ed together.
+    schema:
+      type: string
+  guardrail_actions:
+    name: guardrail_actions
+    in: query
+    description: >-
+      Comma-separated list of guardrail match actions to filter by: `blocked`, `redacted` (content
+      masked or rewritten), `detected` (flagged, request continued) or `monitored` (matched but not
+      enforced). Several values are OR-ed together. guardrail_rule_ids, guardrail_profile_ids and
+      guardrail_phases must hold on the same recorded match.
+    schema:
+      type: string
+  guardrail_rule_ids:
+    name: guardrail_rule_ids
+    in: query
+    description: Comma-separated list of guardrail rule IDs a recorded guardrail match must name
+    schema:
+      type: string
+  guardrail_profile_ids:
+    name: guardrail_profile_ids
+    in: query
+    description: Comma-separated list of guardrail profile IDs a recorded guardrail match must name
+    schema:
+      type: string
+  guardrail_phases:
+    name: guardrail_phases
+    in: query
+    description: Comma-separated list of phases (input, output) a recorded guardrail match must be in
     schema:
       type: string
   metadata_key:
@@ -2699,6 +2785,10 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/complexity_tiers"
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -2789,6 +2879,10 @@ logs-rankings-by-dimension:
       - $ref: "#/_histogram-parameters/complexity_tiers"
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -2938,6 +3032,10 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/complexity_tiers"
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_mcp-filter-parameters/llm_request_ids"
       - $ref: "#/_mcp-filter-parameters/device_ids"
       - $ref: "#/_histogram-parameters/metadata_key"
@@ -3036,6 +3134,10 @@ logs-histogram-cost-by-dimension:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -3118,6 +3220,10 @@ logs-histogram-tokens-by-dimension:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
@@ -3200,6 +3306,10 @@ logs-histogram-latency-by-dimension:
       - $ref: "#/_histogram-parameters/complexity_mechanisms"
       - $ref: "#/_histogram-parameters/cache_hit_types"
       - $ref: "#/_histogram-parameters/guardrail_outcomes"
+      - $ref: "#/_histogram-parameters/guardrail_actions"
+      - $ref: "#/_histogram-parameters/guardrail_rule_ids"
+      - $ref: "#/_histogram-parameters/guardrail_profile_ids"
+      - $ref: "#/_histogram-parameters/guardrail_phases"
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"

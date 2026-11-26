@@ -1329,6 +1329,8 @@
 		"rotateGraceNote": "Vorherige Schlüssel bleiben bis {{date}} gültig.",
 		"rotatedBulkPartial": "{{count}} virtuelle Schlüssel rotiert. {{failed}} fehlgeschlagen.{{graceNote}}",
 		"rotatedBulk": "{{count}} virtuelle Schlüssel rotiert.{{graceNote}}",
+		"rotatedBulkNotLoaded": "Gespeicherte, aber möglicherweise nicht geladene Schlüssel: {{notLoaded}}. Die alten Werte funktionieren möglicherweise weiter, bis Sie jeden Schlüssel erneut speichern oder Bifrost neu starten.",
+		"rotatedNotLoaded": "Virtueller Schlüssel rotiert, aber der neue Wert ist möglicherweise nicht geladen. Der alte Wert funktioniert möglicherweise weiter, bis Sie den Schlüssel erneut speichern oder Bifrost neu starten.",
 		"filtersApplied": "Angewendete Filter:",
 		"filterSearch": "Suche „{{query}}“",
 		"filterCustomer": "Kundenfilter",

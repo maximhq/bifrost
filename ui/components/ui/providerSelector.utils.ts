@@ -5,6 +5,7 @@
 
 import { resolveProviderIconKey, type ProviderIconType } from "@/lib/constants/icons";
 import { getProviderLabel } from "@/lib/constants/logs";
+import { cn } from "@/lib/utils";
 import type React from "react";
 
 /** One row in the dropdown, after the consumer has had a say in it. */
@@ -31,4 +32,14 @@ export type ProviderSelectorValue = string | ProviderSelectorOption;
 export function normalizeValueOption(value: ProviderSelectorValue): ProviderSelectorOption {
 	if (typeof value !== "string") return value;
 	return { value, label: getProviderLabel(value), iconKey: resolveProviderIconKey(value) };
+}
+
+/** Heading over the `isCustom` rows: the caller's label, else the translated "Custom providers". */
+export function customGroupHeading(customGroupLabel: string | undefined, defaultLabel: string): string {
+	return customGroupLabel ?? defaultLabel;
+}
+
+/** The list's classes. A caller's max-h replaces the 300px default rather than stacking with it. */
+export function providerListClassName(listClassName?: string): string {
+	return cn("max-h-[300px]", listClassName);
 }

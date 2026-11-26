@@ -282,13 +282,14 @@ func (h *VirtualMCPHandler) updateVirtualMCP(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.refreshDefinition(ctx, def.ID)
+	rec := lib.RecordAuditChange(ctx, "virtual_mcp.updated", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, before, h.toResponse(def, nil))
 	resp, err := h.withVKs(ctx, def)
 	if err != nil {
 		h.logger.Error("failed to load VK assignments for virtual MCP %d: %v", def.ID, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-	lib.RecordAuditChange(ctx, "virtual_mcp.updated", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, before, h.toResponse(def, nil))
+	rec.SetAfter(h.toResponse(def, nil))
 	SendJSON(ctx, map[string]any{"virtual_mcp": resp})
 }
 
@@ -302,16 +303,32 @@ func (h *VirtualMCPHandler) deleteVirtualMCP(ctx *fasthttp.RequestCtx) {
 		h.sendLookupError(ctx, err)
 		return
 	}
+	// The delete cascades over the keys' assignments of this Virtual MCP. The keys holding one are
+	// listed first and reloaded once the rows are gone, so no key record keeps the deleted ID. Keys
+	// that cannot be listed cannot be reloaded, so nothing is deleted then.
+	assigned, err := h.store.ConfigStore.GetVirtualKeyIDsForVirtualMCP(ctx, id)
+	if err != nil {
+		h.logger.Error("failed to list the virtual keys assigned virtual MCP %d before deleting it: %v", id, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to read the virtual keys assigned this Virtual MCP, so nothing was deleted")
+		return
+	}
 	if err := h.store.ConfigStore.DeleteVirtualMCP(ctx, id); err != nil {
 		h.logger.Error("failed to delete virtual MCP: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-	h.removeDefinition(ctx, id)
 	lib.RecordAuditChange(ctx, "virtual_mcp.deleted", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, h.toResponse(def, nil), nil)
+	h.removeDefinition(ctx, id)
+	if err := reloadGrantingVirtualKeys(ctx, h.governanceManager, assigned); err != nil {
+		h.logger.Error("failed to reload the virtual keys assigned virtual MCP %d after delete: %v", id, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Virtual MCP deleted in database but failed to reload in-memory state")
+		return
+	}
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
+// attachVirtualKey assigns a Virtual MCP to a virtual key. When the key fails to reload after the
+// write, the assignment stands and the request answers 500.
 func (h *VirtualMCPHandler) attachVirtualKey(ctx *fasthttp.RequestCtx) {
 	id, ok := h.parseID(ctx)
 	if !ok {
@@ -346,11 +363,17 @@ func (h *VirtualMCPHandler) attachVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-	h.refreshAttachment(ctx, vkID, id, true)
 	lib.RecordAuditChange(ctx, "virtual_mcp.virtual_key_attached", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, nil, map[string]any{"virtual_key_id": vkID, "virtual_key_name": vk.Name})
+	if err := h.refreshAttachment(ctx, vkID, id, true); err != nil {
+		h.logger.Error("failed to reload VK %s after attaching virtual MCP %d: %v", vkID, id, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Virtual MCP assignment attached in database but failed to reload in-memory state")
+		return
+	}
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
+// detachVirtualKey removes a Virtual MCP from a virtual key. When the key fails to reload after the
+// write, the removal stands and the request answers 500.
 func (h *VirtualMCPHandler) detachVirtualKey(ctx *fasthttp.RequestCtx) {
 	id, ok := h.parseID(ctx)
 	if !ok {
@@ -376,13 +399,17 @@ func (h *VirtualMCPHandler) detachVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, err.Error())
 		return
 	}
-	h.refreshAttachment(ctx, vkID, id, false)
 	lib.RecordAuditChange(ctx, "virtual_mcp.virtual_key_detached", "virtual_mcp", strconv.FormatUint(uint64(def.ID), 10), def.Name, map[string]any{"virtual_key_id": vkID, "virtual_key_name": vkName}, nil)
+	if err := h.refreshAttachment(ctx, vkID, id, false); err != nil {
+		h.logger.Error("failed to reload VK %s after detaching virtual MCP %d: %v", vkID, id, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Virtual MCP assignment detached in database but failed to reload in-memory state")
+		return
+	}
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
-// The refresh helpers update the governance cache after a write. A failure is logged, not returned:
-// the write already persisted, and the cache still rebuilds at startup.
+// refreshDefinition updates the governance cache after a definition write. A failure is logged, not
+// returned: the write already persisted, and the cache still rebuilds at startup.
 func (h *VirtualMCPHandler) refreshDefinition(ctx context.Context, id uint) {
 	if h.governanceManager == nil {
 		return
@@ -392,6 +419,8 @@ func (h *VirtualMCPHandler) refreshDefinition(ctx context.Context, id uint) {
 	}
 }
 
+// removeDefinition drops a deleted definition from the governance cache. A failure is logged, as
+// for refreshDefinition.
 func (h *VirtualMCPHandler) removeDefinition(ctx context.Context, id uint) {
 	if h.governanceManager == nil {
 		return
@@ -401,19 +430,14 @@ func (h *VirtualMCPHandler) removeDefinition(ctx context.Context, id uint) {
 	}
 }
 
-func (h *VirtualMCPHandler) refreshAttachment(ctx context.Context, vkID string, id uint, attached bool) {
+// refreshAttachment brings a key's Virtual MCP assignment, attached or detached in the database, into
+// memory. A failure is returned so the caller answers it: until the key is reloaded, it keeps the
+// assignment it had before the write.
+func (h *VirtualMCPHandler) refreshAttachment(ctx context.Context, vkID string, id uint, attached bool) error {
 	if h.governanceManager == nil {
-		return
+		return nil
 	}
-	var err error
-	if attached {
-		err = h.governanceManager.AttachVirtualMCPToVirtualKeyInMemory(ctx, vkID, id)
-	} else {
-		err = h.governanceManager.DetachVirtualMCPFromVirtualKeyInMemory(ctx, vkID, id)
-	}
-	if err != nil {
-		h.logger.Error("failed to refresh virtual MCP %d / VK %s assignment in cache: %v", id, vkID, err)
-	}
+	return h.governanceManager.ReloadVirtualMCPAssignment(ctx, vkID, id, attached)
 }
 
 func (h *VirtualMCPHandler) parseID(ctx *fasthttp.RequestCtx) (uint, bool) {

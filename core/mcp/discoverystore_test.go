@@ -114,13 +114,11 @@ func perUserClient() *schemas.MCPClientConfig {
 // per-user client "notes", both open to every tool.
 func newPerUserTestManager(t *testing.T, perUser schemas.MCPDiscoveryStore) (*MCPManager, *schemas.MCPClientConfig, *schemas.MCPClientConfig) {
 	t.Helper()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{PerUserDiscoveryStore: perUser}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{PerUserDiscoveryStore: perUser}, newTestAccount(), nil, &MockLogger{}, nil)
 	shared, perUserConfig := sharedClient(), perUserClient()
-	m.mu.Lock()
 	for _, config := range []*schemas.MCPClientConfig{shared, perUserConfig} {
-		m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
+		putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy})
 	}
-	m.mu.Unlock()
 	require.NoError(t, m.discoveryStore.SetDiscovery(context.Background(), shared, discoveryOf("wiki", "read")))
 	return m, shared, perUserConfig
 }
@@ -193,7 +191,7 @@ func (s *recordingSharedDiscoveryStore) DeleteDiscovery(_ context.Context, clien
 func TestDiscoveryStore_HandsSharedClientsToTheSharedStore(t *testing.T) {
 	shared := &recordingSharedDiscoveryStore{discoveries: map[string]*schemas.MCPDiscovery{}}
 	perUser := newFakePerUserDiscoveryStore()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: perUser}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared, PerUserDiscoveryStore: perUser}, newTestAccount(), nil, &MockLogger{}, nil)
 
 	require.NoError(t, m.discoveryStore.SetDiscovery(context.Background(), sharedClient(), discoveryOf("wiki", "read")))
 	require.NoError(t, m.discoveryStore.SetDiscovery(userContext("alice"), perUserClient(), discoveryOf("notes", "search")))
@@ -210,7 +208,7 @@ func TestDiscoveryStore_HandsSharedClientsToTheSharedStore(t *testing.T) {
 // memory and the store passed in is never written.
 func TestDiscoveryStore_TakesTheStoresAsAPair(t *testing.T) {
 	shared := &recordingSharedDiscoveryStore{discoveries: map[string]*schemas.MCPDiscovery{}}
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{SharedDiscoveryStore: shared}, newTestAccount(), nil, &MockLogger{}, nil)
 
 	require.NoError(t, m.discoveryStore.SetDiscovery(context.Background(), sharedClient(), discoveryOf("wiki", "read")))
 	assert.Contains(t, m.discoveryStore.GetDiscovery(context.Background(), sharedClient()).GetTools(), "wiki-read", "kept in memory")
@@ -310,12 +308,12 @@ func (s *staticPerUserDiscoveryStore) DeleteDiscovery(context.Context, *schemas.
 func benchmarkPerUserManager(clients, tools int) (*MCPManager, *schemas.BifrostContext) {
 	shared, ctx := benchmarkSharedManager(clients, tools)
 	perUser := &staticPerUserDiscoveryStore{byClient: map[string]*schemas.MCPDiscovery{}}
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{PerUserDiscoveryStore: perUser}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{PerUserDiscoveryStore: perUser}, newTestAccount(), nil, &MockLogger{}, nil)
 	for id, client := range shared.clientMap {
-		perUser.byClient[id] = shared.discoveryStore.GetDiscovery(context.Background(), client.ExecutionConfig)
-		config := *client.ExecutionConfig
+		perUser.byClient[id] = shared.discoveryStore.GetDiscovery(context.Background(), shared.config(id))
+		config := *shared.config(id)
 		config.PerUserDiscovery = schemas.Ptr(true)
-		m.clientMap[id] = &schemas.MCPClientState{Name: client.Name, ExecutionConfig: &config, State: client.State}
+		putClient(m, &schemas.MCPClientState{Name: client.Name, ExecutionConfig: &config, State: client.State})
 	}
 	return m, ctx
 }

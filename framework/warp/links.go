@@ -295,10 +295,11 @@ func failuresLink(filters *logstore.SearchFilters, totalRequests int64, successR
 // so a query narrowed by one cannot be reproduced there: the link would open
 // every failure beside a count of seventeen. Such a result gets no link - each
 // row still carries its own - rather than one that is silently wider. The same
-// holds for guardrail_outcomes, which only the Guardrail Incidents view reads.
+// holds for the guardrail filters, which only the Guardrail Incidents view reads.
 func linkableInLogsView(filters *logstore.SearchFilters) bool {
 	return len(filters.ErrorTypes) == 0 && len(filters.ErrorCodes) == 0 && len(filters.StatusCodes) == 0 &&
-		len(filters.GuardrailOutcomes) == 0
+		len(filters.GuardrailOutcomes) == 0 && len(filters.GuardrailActions) == 0 && len(filters.GuardrailRuleIDs) == 0 &&
+		len(filters.GuardrailProfileIDs) == 0 && len(filters.GuardrailPhases) == 0
 }
 
 // setLogsLink puts logs_link on a result when there is one to give.
