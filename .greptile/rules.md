@@ -134,6 +134,10 @@ For `plugins/semanticcache/**` and `framework/vectorstore/**`:
 - Every vector store gives the same answer for the same rows: similarity is cosine on every store, and a store-specific change ships with the cosine check in that store's test file.
 - Ask for semantic cache wiring rows for observable behaviour changes (see Semantic Cache Wiring above).
 
+For audit events in `transports/bifrost-http/handlers/**`:
+
+- Audit commit point: a handler that saves config must record its typed audit event with `lib.RecordAuditChange` right after the write commits, before any step that can still fail (reload, read-back, rebuild, broadcast, key or cache reload). Flag an error return between a successful write and the record call, including a step a PR inserts above an existing, unchanged record call, so review the whole handler and not just the diff. Also flag a record placed before the write, a handler that saves config with no typed event, and a snapshot that carries a secret.
+
 For `plugins/governance/**`:
 
 - Review budget, rate-limit, virtual key, and RBAC paths for fail-closed behavior where security is involved.
