@@ -6339,3 +6339,109 @@ func TestDeleteTeamAndCustomerDeleteTheRowBeforeRemovingTheRecord(t *testing.T) 
 	require.True(t, removed, "the customer is removed from memory")
 	require.ErrorIs(t, readErr, configstore.ErrNotFound, "the customer's row is deleted before its record is removed")
 }
+
+// createReloadFailureGovernanceManager fails the in-memory reload of every created virtual key,
+// team, customer and model config, recording each id it was asked to reload.
+type createReloadFailureGovernanceManager struct {
+	GovernanceManager
+	reloadIDs []string
+}
+
+// errCreateReload is what every reload of createReloadFailureGovernanceManager answers.
+var errCreateReload = errors.New("in-memory reload failed")
+
+// ReloadVirtualKey records id and fails.
+func (m *createReloadFailureGovernanceManager) ReloadVirtualKey(_ context.Context, id string) (*configstoreTables.TableVirtualKey, error) {
+	m.reloadIDs = append(m.reloadIDs, id)
+	return nil, errCreateReload
+}
+
+// ReloadTeam records id and fails.
+func (m *createReloadFailureGovernanceManager) ReloadTeam(_ context.Context, id string) (*configstoreTables.TableTeam, error) {
+	m.reloadIDs = append(m.reloadIDs, id)
+	return nil, errCreateReload
+}
+
+// ReloadCustomer records id and fails.
+func (m *createReloadFailureGovernanceManager) ReloadCustomer(_ context.Context, id string) (*configstoreTables.TableCustomer, error) {
+	m.reloadIDs = append(m.reloadIDs, id)
+	return nil, errCreateReload
+}
+
+// ReloadModelConfig records id and fails.
+func (m *createReloadFailureGovernanceManager) ReloadModelConfig(_ context.Context, id string) (*configstoreTables.TableModelConfig, error) {
+	m.reloadIDs = append(m.reloadIDs, id)
+	return nil, errCreateReload
+}
+
+// ModelConfigIndexKey keys a model config by its canonical name, as the governance store does.
+func (m *createReloadFailureGovernanceManager) ModelConfigIndexKey(model string, provider *string) string {
+	return governance.CanonicalModelConfigName(model, provider)
+}
+
+// TestCreate_ReloadFailureAnswers500AfterTheWrite pins that a virtual key, team, customer or
+// model config create whose in-memory reload fails answers 500 naming the saved write, and
+// leaves the row in the database: the create is not rolled back, and the caller is not told
+// the gateway serves an entity it has not loaded.
+func TestCreate_ReloadFailureAnswers500AfterTheWrite(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, tc := range []struct {
+		entity string
+		body   string
+		create func(*GovernanceHandler, *fasthttp.RequestCtx)
+		rowIDs func(context.Context, configstore.ConfigStore) ([]string, error)
+	}{
+		{"Virtual key", `{"name":"reload-fails"}`, (*GovernanceHandler).createVirtualKey,
+			func(ctx context.Context, store configstore.ConfigStore) ([]string, error) {
+				rows, err := store.GetVirtualKeys(ctx)
+				ids := make([]string, 0, len(rows))
+				for _, row := range rows {
+					ids = append(ids, row.ID)
+				}
+				return ids, err
+			}},
+		{"Team", `{"name":"reload-fails"}`, (*GovernanceHandler).createTeam,
+			func(ctx context.Context, store configstore.ConfigStore) ([]string, error) {
+				rows, err := store.GetTeams(ctx, "")
+				ids := make([]string, 0, len(rows))
+				for _, row := range rows {
+					ids = append(ids, row.ID)
+				}
+				return ids, err
+			}},
+		{"Customer", `{"name":"reload-fails"}`, (*GovernanceHandler).createCustomer,
+			func(ctx context.Context, store configstore.ConfigStore) ([]string, error) {
+				rows, err := store.GetCustomers(ctx)
+				ids := make([]string, 0, len(rows))
+				for _, row := range rows {
+					ids = append(ids, row.ID)
+				}
+				return ids, err
+			}},
+		{"Model config", `{"model_name":"gpt-4o","provider":"openai"}`, (*GovernanceHandler).createModelConfig,
+			func(ctx context.Context, store configstore.ConfigStore) ([]string, error) {
+				rows, err := store.GetModelConfigs(ctx)
+				ids := make([]string, 0, len(rows))
+				for _, row := range rows {
+					ids = append(ids, row.ID)
+				}
+				return ids, err
+			}},
+	} {
+		t.Run(tc.entity, func(t *testing.T) {
+			store := setupPricingOverrideHandlerStore(t)
+			manager := &createReloadFailureGovernanceManager{}
+			handler := &GovernanceHandler{configStore: store, governanceManager: manager}
+
+			ctx := newTestRequestCtx(tc.body)
+			tc.create(handler, ctx)
+
+			require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), tc.entity+" created in database but failed to reload in-memory state")
+			ids, err := tc.rowIDs(context.Background(), store)
+			require.NoError(t, err)
+			require.Len(t, ids, 1, "the created row stays in the database")
+			assert.Equal(t, ids, manager.reloadIDs, "the create reloads the row it wrote")
+		})
+	}
+}
