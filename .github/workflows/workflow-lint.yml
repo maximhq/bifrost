@@ -63,6 +63,9 @@ jobs:
       - name: Check test-ref resolver
         run: ./.github/workflows/scripts/resolve-test-ref.test.sh
 
+      - name: Check vLLM RunPod setup and teardown
+        run: ./.github/workflows/scripts/setup-vllm-runpod.test.sh
+
       - name: Check Docker Compose installer
         run: bash ./.github/workflows/scripts/install-docker-compose.test.sh
 

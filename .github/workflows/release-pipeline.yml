@@ -1546,7 +1546,6 @@ jobs:
             github.com:443
             release-assets.githubusercontent.com:443
             api.runpod.io:443
-            rest.runpod.io:443
             *.proxy.runpod.net:443
             proxy.golang.org:443
             storage.googleapis.com:443
