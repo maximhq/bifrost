@@ -162,6 +162,14 @@ func appendRawRequestStringPath(paths *[]string, field gjson.Result, path string
 	return nil
 }
 
+// appendRawRequestTextPath adds field's path when it holds a string and skips any other value, for formats whose
+// parser reads text only from string fields, so a field of another type has none to rewrite.
+func appendRawRequestTextPath(paths *[]string, field gjson.Result, path string) {
+	if field.Type == gjson.String {
+		*paths = append(*paths, path)
+	}
+}
+
 // appendRawRequestJSONLeafPaths adds string values below an integration-owned JSON content subtree.
 func appendRawRequestJSONLeafPaths(paths *[]string, value gjson.Result, path string, replacements map[string]string) error {
 	switch {
