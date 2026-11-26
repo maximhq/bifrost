@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -102,12 +103,13 @@ func TestOpenAIChatStreamUsageSSEFraming(t *testing.T) {
 						}, nil, schemas.Key{Value: *schemas.NewSecretVar("test-key")},
 						&schemas.BifrostChatRequest{
 							Provider: schemas.OpenAI, Model: "gpt-4o-mini",
-							Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
+							Params: &schemas.ChatParameters{StreamOptions: &schemas.ChatStreamOptions{IncludeUsage: schemas.Ptr(true)}},
+							Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")}}},
 						})
 					require.Nil(t, err)
 					router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, logger)
 					httpCtx := &fasthttp.RequestCtx{}
-					router.handleStreaming(httpCtx, ctx, route, "", stream, cancel)
+					router.handleStreaming(httpCtx, ctx, route, "", true, stream, cancel)
 					body, readErr := io.ReadAll(httpCtx.Response.BodyStream())
 					require.NoError(t, readErr)
 					// SSE dispatches only data fields; bare JSON is an unknown field and
@@ -194,7 +196,7 @@ func TestStreamErrorEventFramingPerRoute(t *testing.T) {
 			ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
 			router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
 			httpCtx := &fasthttp.RequestCtx{}
-			router.handleStreaming(httpCtx, ctx, tc.route, tc.streamType, stream, cancel)
+			router.handleStreaming(httpCtx, ctx, tc.route, tc.streamType, false, stream, cancel)
 			body, err := io.ReadAll(httpCtx.Response.BodyStream())
 			require.NoError(t, err)
 			wire := string(body)
@@ -232,6 +234,56 @@ data: {"type":"message_stop"}
 `)
 	}))
 	defer upstream.Close()
+	t.Run("client stream_options", func(t *testing.T) {
+		logger := bifrost.NewNoOpLogger()
+		client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+			Account: passthroughTestAccount{baseURL: upstream.URL}, Logger: logger,
+		})
+		require.NoError(t, err)
+		t.Cleanup(client.Shutdown)
+		r := router.New()
+		NewOpenAIRouter(client, &mockHandlerStore{}, nil, logger).RegisterRoutes(r)
+		for _, tc := range []struct {
+			name, options string
+			split         bool
+		}{
+			{"omitted", "", false},
+			{"empty", `,"stream_options":{}`, false},
+			{"false", `,"stream_options":{"include_usage":false}`, false},
+			{"true", `,"stream_options":{"include_usage":true}`, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(`{"model":"anthropic/claude-test","messages":[{"role":"user","content":"hi"}],"max_tokens":16,"stream":true` + tc.options + "}")
+				r.Handler(&ctx)
+				require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+				body := string(ctx.Response.Body())
+				var frames []string
+				for frame := range strings.SplitSeq(body, "\n\n") {
+					if data, ok := strings.CutPrefix(frame, "data: "); ok {
+						frames = append(frames, data)
+					}
+				}
+				require.GreaterOrEqual(t, len(frames), 3, "%s", body)
+				require.Equal(t, "[DONE]", frames[len(frames)-1])
+				terminal := frames[len(frames)-2]
+				require.Equal(t, int64(15), gjson.Get(terminal, "usage.total_tokens").Int(), "%s", body)
+				if tc.split {
+					require.Equal(t, "[]", gjson.Get(terminal, "choices").Raw)
+					require.Equal(t, "stop", gjson.Get(frames[len(frames)-3], "choices.0.finish_reason").String())
+				} else {
+					require.Equal(t, "stop", gjson.Get(terminal, "choices.0.finish_reason").String(), "%s", body)
+					for _, data := range frames[:len(frames)-1] {
+						require.True(t, gjson.Get(data, "choices.0").Exists(), "%s", data)
+					}
+				}
+			})
+		}
+	})
+
 	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
 		for _, route := range CreateOpenAIRouteConfigs(prefix, &mockHandlerStore{}) {
 			if route.Path != prefix+"/v1/chat/completions" {
@@ -260,7 +312,7 @@ data: {"type":"message_stop"}
 					if strip {
 						httpCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
 					}
-					router.handleStreaming(httpCtx, ctx, route, "", stream, cancel)
+					router.handleStreaming(httpCtx, ctx, route, "", true, stream, cancel)
 					body, err := io.ReadAll(httpCtx.Response.BodyStream())
 					require.NoError(t, err)
 					var events []string
@@ -281,6 +333,10 @@ data: {"type":"message_stop"}
 					if strip {
 						require.False(t, gjson.Get(usage, "extra_fields").Exists())
 						require.False(t, gjson.Get(finish, "extra_fields").Exists())
+					} else {
+						index := gjson.Get(finish, "extra_fields.chunk_index")
+						require.True(t, index.Exists())
+						require.Equal(t, index.Int()+1, gjson.Get(usage, "extra_fields.chunk_index").Int())
 					}
 				})
 			}

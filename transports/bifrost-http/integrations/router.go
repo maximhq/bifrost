@@ -2780,6 +2780,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 	var stream chan *schemas.BifrostStreamChunk
 	var bifrostErr *schemas.BifrostError
 	var requestType schemas.RequestType
+	var includeUsage bool
 
 	// Handle different request types
 	if bifrostReq.TextCompletionRequest != nil {
@@ -2787,6 +2788,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 		stream, bifrostErr = g.client.TextCompletionStreamRequest(bifrostCtx, bifrostReq.TextCompletionRequest)
 	} else if bifrostReq.ChatRequest != nil {
 		requestType = schemas.ChatCompletionStreamRequest
+		includeUsage = lib.ChatStreamIncludesUsage(bifrostReq.ChatRequest)
 		stream, bifrostErr = g.client.ChatCompletionStreamRequest(bifrostCtx, bifrostReq.ChatRequest)
 	} else if bifrostReq.ResponsesRequest != nil {
 		requestType = schemas.ResponsesStreamRequest
@@ -2878,7 +2880,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Handle streaming using the centralized approach
 	// Pass cancel function so it can be called when the writer exits (errors, completion, etc.)
-	g.handleStreaming(ctx, bifrostCtx, config, requestType, stream, cancel)
+	g.handleStreaming(ctx, bifrostCtx, config, requestType, includeUsage, stream, cancel)
 }
 
 // streamErrorEventType names the SSE event line for a mid-stream error object.
@@ -2964,7 +2966,7 @@ func streamErrorEventType(config RouteConfig, bifrostErr *schemas.BifrostError, 
 // only stops when this context is cancelled or the client socket dies. Returning without
 // cancelling leaks the watcher and the entire request-scoped BifrostContext for as long as the
 // client keeps its connection open.
-func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamRequestType schemas.RequestType, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
+func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamRequestType schemas.RequestType, includeUsage bool, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
@@ -3352,7 +3354,7 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					if stripExtraFields {
 						responseJSON = lib.StripExtraFields(responseJSON)
 					}
-					if config.Type == RouteConfigTypeOpenAI && chunk.BifrostChatResponse != nil {
+					if includeUsage && config.Type == RouteConfigTypeOpenAI && chunk.BifrostChatResponse != nil {
 						sent, err = reader.SendChatCompletionEvent(chunk.BifrostChatResponse, responseJSON)
 						if err != nil {
 							g.logger.Warn("Failed to frame chat streaming response: %v", err)

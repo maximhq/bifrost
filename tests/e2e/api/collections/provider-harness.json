@@ -352296,6 +352296,151 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 /v1/chat/completions chat stream usage isolation without stream_options - #10139",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A client that omits stream_options can read choices[0] through the finish event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var events = [];",
+                  "  body.split(/\\r?\\n\\r?\\n/).slice(0, -1).forEach(function (frame) {",
+                  "    var data = [];",
+                  "    frame.split(/\\r?\\n/).forEach(function (line) {",
+                  "      if (line.indexOf('data:') === 0) { data.push(line.slice(5).replace(/^ /, '')); }",
+                  "    });",
+                  "    if (data.length) { events.push(data.join('\\n')); }",
+                  "  });",
+                  "  pm.expect(events.length, 'missing SSE events: ' + body).to.be.above(2);",
+                  "  pm.expect(events[events.length - 1], 'stream did not finish: ' + body).to.equal('[DONE]');",
+                  "  var text = '', finish = -1;",
+                  "  events.slice(0, -1).forEach(function (data, index) {",
+                  "    var chunk = JSON.parse(data);",
+                  "    pm.expect(chunk.error, 'stream error: ' + data).to.equal(undefined);",
+                  "    pm.expect(chunk.choices, 'missing choices: ' + data).to.be.an('array');",
+                  "    pm.expect(chunk.choices.length, 'empty choices without opt-in: ' + data).to.be.above(0);",
+                  "    var choice = chunk.choices[0];",
+                  "    if (choice.delta && choice.delta.content) { text += choice.delta.content; }",
+                  "    if (choice.finish_reason) {",
+                  "      finish = index;",
+                  "      pm.expect(chunk.usage.total_tokens, 'missing usage on finish: ' + data).to.be.above(0);",
+                  "    }",
+                  "  });",
+                  "  pm.expect(text.length, 'missing assistant content: ' + body).to.be.above(0);",
+                  "  pm.expect(finish, 'expected finish with usage immediately before DONE: ' + body).to.equal(events.length - 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "Anthropic claude-haiku-4-5 /openai/v1/chat/completions chat stream usage isolation without stream_options - #10139",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('A client that omits stream_options can read choices[0] through the finish event', function () {",
+                  "  var body = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "  var events = [];",
+                  "  body.split(/\\r?\\n\\r?\\n/).slice(0, -1).forEach(function (frame) {",
+                  "    var data = [];",
+                  "    frame.split(/\\r?\\n/).forEach(function (line) {",
+                  "      if (line.indexOf('data:') === 0) { data.push(line.slice(5).replace(/^ /, '')); }",
+                  "    });",
+                  "    if (data.length) { events.push(data.join('\\n')); }",
+                  "  });",
+                  "  pm.expect(events.length, 'missing SSE events: ' + body).to.be.above(2);",
+                  "  pm.expect(events[events.length - 1], 'stream did not finish: ' + body).to.equal('[DONE]');",
+                  "  var text = '', finish = -1;",
+                  "  events.slice(0, -1).forEach(function (data, index) {",
+                  "    var chunk = JSON.parse(data);",
+                  "    pm.expect(chunk.error, 'stream error: ' + data).to.equal(undefined);",
+                  "    pm.expect(chunk.choices, 'missing choices: ' + data).to.be.an('array');",
+                  "    pm.expect(chunk.choices.length, 'empty choices without opt-in: ' + data).to.be.above(0);",
+                  "    var choice = chunk.choices[0];",
+                  "    if (choice.delta && choice.delta.content) { text += choice.delta.content; }",
+                  "    if (choice.finish_reason) {",
+                  "      finish = index;",
+                  "      pm.expect(chunk.usage.total_tokens, 'missing usage on finish: ' + data).to.be.above(0);",
+                  "    }",
+                  "  });",
+                  "  pm.expect(text.length, 'missing assistant content: ' + body).to.be.above(0);",
+                  "  pm.expect(finish, 'expected finish with usage immediately before DONE: ' + body).to.equal(events.length - 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     }

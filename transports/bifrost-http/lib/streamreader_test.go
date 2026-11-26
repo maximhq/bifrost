@@ -1508,6 +1508,33 @@ func BenchmarkSSEStreamReaderChatCompletion(b *testing.B) {
 	}
 }
 
+func BenchmarkChatUsageTerminalSize(b *testing.B) {
+	for _, size := range []int{1 << 10, 64 << 10, 1 << 20, 10 << 20, 50 << 20} {
+		data := []byte(fmt.Sprintf(`{"choices":[{"index":0,"delta":{"content":"%s"},"finish_reason":"stop"}],"usage":{"total_tokens":15},"extra_fields":{"chunk_index":3}}`, strings.Repeat("x", size)))
+		response := &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{}}, Usage: &schemas.BifrostLLMUsage{}}
+		for _, includeUsage := range []bool{false, true} {
+			b.Run(fmt.Sprintf("%dKiB/include_usage=%t", size>>10, includeUsage), func(b *testing.B) {
+				r := NewSSEStreamReader()
+				r.eventCh = make(chan []byte, 2)
+				b.ReportAllocs()
+				for b.Loop() {
+					// Each iteration represents the terminal chunk of a fresh stream.
+					r.chatIndexOffset = 0
+					if includeUsage {
+						if sent, err := r.SendChatCompletionEvent(response, data); !sent || err != nil {
+							b.Fatalf("send failed: %v", err)
+						}
+						<-r.eventCh
+					} else {
+						r.SendEvent("", data)
+					}
+					<-r.eventCh
+				}
+			})
+		}
+	}
+}
+
 func TestSSEStreamReaderChatCompletionUsage(t *testing.T) {
 	for _, tc := range []struct {
 		name, data string
@@ -1553,7 +1580,8 @@ func TestSSEStreamReaderChatCompletionUsage(t *testing.T) {
 			require.Equal(t, "[]", gjson.Get(last, "choices").Raw)
 			require.Equal(t, gjson.Get(tc.data, "usage").Raw, gjson.Get(last, "usage").Raw)
 			for _, event := range events {
-				for _, field := range []string{"id", "created", "model", "service_tier", "extra_fields"} {
+				require.Equal(t, gjson.Get(tc.data, "extra_fields").Exists(), gjson.Get(event, "extra_fields").Exists())
+				for _, field := range []string{"id", "created", "model", "service_tier"} {
 					require.Equal(t, gjson.Get(tc.data, field).Raw, gjson.Get(event, field).Raw)
 				}
 			}
@@ -1596,4 +1624,39 @@ func TestSSEStreamReaderChatCompletionUsageDisconnectAfterChoice(t *testing.T) {
 		r.Close()
 		require.False(t, <-result, "disconnect between events must stop the stream")
 	})
+}
+
+func TestSSEStreamReaderChatCannotSplit(t *testing.T) {
+	response := &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{}}, Usage: &schemas.BifrostLLMUsage{}}
+	for _, data := range []string{`[]`, `{"choices":[{"delta":{}}],"other":"usage was removed"}`} {
+		r := NewSSEStreamReader()
+		r.eventCh = make(chan []byte, 3)
+		sent, err := r.SendChatCompletionEvent(response, []byte(data))
+		require.Error(t, err)
+		require.True(t, sent, "a framing error must not cancel the stream")
+		require.True(t, r.SendDone())
+		r.Done()
+		wire, err := io.ReadAll(r)
+		require.NoError(t, err)
+		require.Equal(t, "data: "+data+"\n\ndata: [DONE]\n\n", string(wire))
+	}
+}
+
+func TestSSEStreamReaderChatWireIndexes(t *testing.T) {
+	r := NewSSEStreamReader()
+	r.eventCh = make(chan []byte, 5)
+	for i, usage := range []string{`{"total_tokens":1}`, `{"total_tokens":2}`, "null"} {
+		raw := fmt.Sprintf(`{"choices":[{"delta":{}}],"usage":%s,"extra_fields":{"chunk_index":%d,"other":"keep"}}`, usage, i+3)
+		var response schemas.BifrostChatResponse
+		require.NoError(t, json.Unmarshal([]byte(raw), &response))
+		sent, err := r.SendChatCompletionEvent(&response, []byte(raw))
+		require.NoError(t, err)
+		require.True(t, sent)
+		require.Equal(t, i+3, response.ExtraFields.ChunkIndex)
+	}
+	for i := 3; i < 8; i++ {
+		wire := strings.TrimPrefix(string(<-r.eventCh), "data: ")
+		require.Equal(t, int64(i), gjson.Get(wire, "extra_fields.chunk_index").Int(), "%s", wire)
+		require.Equal(t, "keep", gjson.Get(wire, "extra_fields.other").String())
+	}
 }

@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"slices"
+	"strconv"
 	"sync"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // SSEStreamReader is an io.ReadCloser that delivers one event per Read call,
@@ -39,6 +42,9 @@ type SSEStreamReader struct {
 	// whether the next byte written starts a fresh SSE line. True initially: the start of a
 	// stream is a line boundary.
 	atLineBoundary bool
+	// chatIndexOffset counts extra wire events emitted by splitting indexed chat chunks.
+	// It is protected by mu and lasts only for this HTTP stream.
+	chatIndexOffset int64
 }
 
 // NewSSEStreamReader creates a new SSEStreamReader with a buffered event channel.
@@ -121,6 +127,10 @@ func (r *SSEStreamReader) sendLocked(event []byte) bool {
 // If eventType is non-empty, it sends "event: <eventType>\ndata: <data>\n\n".
 // Returns false if the reader has been closed (client disconnected).
 func (r *SSEStreamReader) SendEvent(eventType string, data []byte) bool {
+	return r.Send(frameSSEEvent(eventType, data))
+}
+
+func frameSSEEvent(eventType string, data []byte) []byte {
 	var buf []byte
 	if eventType != "" {
 		buf = make([]byte, 0, 7+len(eventType)+7+len(data)+2)
@@ -133,32 +143,63 @@ func (r *SSEStreamReader) SendEvent(eventType string, data []byte) bool {
 	}
 	buf = append(buf, data...)
 	buf = append(buf, '\n', '\n')
-	return r.Send(buf)
+	return buf
 }
 
-// SendChatCompletionEvent writes a normalized Chat Completions chunk. Usage must
-// be a separate event with choices: [], after any content/finish choices. Split
-// the already-serialized payload so route-specific usage fields and extra-field
-// filtering are preserved, without mutating data shared with plugins/logging.
-// Ordinary chunks take only the nil-usage check and the existing SendEvent path.
+// ChatStreamIncludesUsage reports whether the client explicitly requested a separate usage event.
+func ChatStreamIncludesUsage(request *schemas.BifrostChatRequest) bool {
+	return request != nil && request.Params != nil && request.Params.StreamOptions != nil &&
+		request.Params.StreamOptions.IncludeUsage != nil && *request.Params.StreamOptions.IncludeUsage
+}
+
+// SendChatCompletionEvent frames a normalized chat chunk for a client that opted in to usage.
+// Operate on the serialized wire representation to preserve route-specific fields and pricing.
+// The boolean reports only whether the client is still connected, even if splitting fails.
 func (r *SSEStreamReader) SendChatCompletionEvent(response *schemas.BifrostChatResponse, data []byte) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.chatIndexOffset != 0 {
+		data, _ = offsetChatChunkIndex(data, r.chatIndexOffset)
+	}
 	if response.Usage == nil || (response.Choices != nil && len(response.Choices) == 0) {
-		return r.SendEvent("", data), nil
+		return r.sendLocked(frameSSEEvent("", data)), nil
 	}
 	usageData, err := providerUtils.SetRawJSONField(data, "choices", []byte("[]"))
 	if err != nil {
-		return false, fmt.Errorf("marshal chat usage event: %w", err)
+		return r.sendLocked(frameSSEEvent("", data)), fmt.Errorf("frame chat usage: %w", err)
 	}
-	if len(response.Choices) > 0 {
-		choiceData, err := providerUtils.SetRawJSONField(data, "usage", []byte("null"))
-		if err != nil {
-			return false, fmt.Errorf("marshal chat choice event: %w", err)
-		}
-		if !r.SendEvent("", choiceData) {
-			return false, nil
-		}
+	if len(response.Choices) == 0 {
+		return r.sendLocked(frameSSEEvent("", usageData)), nil
 	}
-	return r.SendEvent("", usageData), nil
+
+	// Locate usage on the original wire payload and replace it while framing the choice
+	// event. Large content/tool deltas then pass through just one full-size buffer.
+	usage := providerUtils.GetJSONField(data, "usage")
+	if !usage.IsObject() {
+		return r.sendLocked(frameSSEEvent("", data)), fmt.Errorf("expected a usage object on the serialized chat chunk")
+	}
+	usageData, indexed := offsetChatChunkIndex(usageData, 1)
+	choiceEvent := slices.Concat([]byte("data: "), data[:usage.Index], []byte("null"),
+		data[usage.Index+len(usage.Raw):], []byte("\n\n"))
+	if !r.sendLocked(choiceEvent) || !r.sendLocked(frameSSEEvent("", usageData)) {
+		return false, nil
+	}
+	if indexed {
+		r.chatIndexOffset++
+	}
+	return true, nil
+}
+
+// Keep subsequent wire indexes ordered after a split. A client can move extra_fields
+// into headers, so only adjust an index that survived wire serialization.
+func offsetChatChunkIndex(data []byte, offset int64) ([]byte, bool) {
+	index := providerUtils.GetJSONField(data, "extra_fields.chunk_index")
+	if index.Type != gjson.Number {
+		return data, false
+	}
+	next := strconv.FormatInt(index.Int()+offset, 10)
+	return slices.Concat(data[:index.Index], []byte(next), data[index.Index+len(index.Raw):]), true
 }
 
 // SendError sends an SSE error event: "event: error\ndata: <data>\n\n".
