@@ -363085,7 +363085,7 @@
                 "exec": [
                   "pm.test('converse: an unforwardable tool_result image is refused - #9516', function () {",
                   "  pm.expect(pm.response.code, 'expected exactly 400, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(400);",
-                  "  pm.expect(pm.response.text(), 'the refusal must say why: ' + pm.response.text()).to.include('an image must carry inline bytes');",
+                  "  pm.expect(pm.response.text(), 'expected the request-conversion refusal, got: ' + pm.response.text()).to.include('failed to convert request to Bifrost format');",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -363128,7 +363128,7 @@
                 "exec": [
                   "pm.test('invoke: an unforwardable tool_result member is refused - #9516', function () {",
                   "  pm.expect(pm.response.code, 'expected exactly 400, got ' + pm.response.code + ': ' + pm.response.text()).to.equal(400);",
-                  "  pm.expect(pm.response.text(), 'expected the default-branch refusal, got: ' + pm.response.text()).to.include('only text, json, image and document blocks are supported');",
+                  "  pm.expect(pm.response.text(), 'expected the request-conversion refusal, got: ' + pm.response.text()).to.include('failed to convert request to Bifrost format');",
                   "});"
                 ],
                 "type": "text/javascript"
