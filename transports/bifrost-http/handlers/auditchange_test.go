@@ -1,14 +1,18 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/scanner"
+	"go/token"
 	"net/url"
 	"os"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -2080,16 +2084,106 @@ func TestCommitPoint_AuthConfigUnchangedSaveRecordsNothing(t *testing.T) {
 	}
 }
 
-// savedThenFailedMessage matches the 500 messages handlers send when a write is saved but a later step fails.
+// savedThenFailedMessage matches the messages handlers send when a write is saved but a later step fails.
 var savedThenFailedMessage = regexp.MustCompile(`(in database but|in the database but|saved but|committed but|stored but)`)
 
+// funcDeclName captures a function or method name from its declaration line.
+var funcDeclName = regexp.MustCompile(`^func (?:\([^)]*\) )?([A-Za-z0-9_]+)\(`)
+
+// commitPointFunc is one top-level function of the handlers package.
+type commitPointFunc struct {
+	file, name string
+	start      int
+	body       []string
+}
+
+// handlerSignature marks a route handler, which is never treated as a helper.
+const handlerSignature = "(ctx *fasthttp.RequestCtx) {"
+
+// sendsSavedThenFailed reports whether body[i] starts a call that answers a saved-then-failed 500
+// inline. The call is read through to its closing parenthesis, so a message on a later line counts.
+func sendsSavedThenFailed(body []string, i int) bool {
+	line := body[i]
+	if isCommentLine(line) {
+		return false
+	}
+	if !strings.Contains(line, "SendError(") && !strings.Contains(line, "sendAgentGatewayError(") {
+		return false
+	}
+	call := line
+	for depth, j := strings.Count(line, "(")-strings.Count(line, ")"), i+1; depth > 0 && j < len(body); j++ {
+		call += " " + strings.TrimSpace(body[j])
+		depth += strings.Count(body[j], "(") - strings.Count(body[j], ")")
+	}
+	compact := strings.Join(strings.Fields(call), "")
+	is500 := strings.Contains(compact, "StatusInternalServerError") || strings.Contains(compact, "(ctx,500,")
+	return is500 && savedThenFailedMessage.MatchString(call)
+}
+
+// stripGoComments blanks every // and /* */ comment in src, keeping newlines so line numbers
+// hold, so text inside a comment never reads as a call. String literals are left as they are.
+func stripGoComments(src string) string {
+	out := []byte(src)
+	fset := token.NewFileSet()
+	var sc scanner.Scanner
+	sc.Init(fset.AddFile("", fset.Base(), len(out)), out, nil, scanner.ScanComments)
+	for {
+		pos, tok, lit := sc.Scan()
+		if tok == token.EOF {
+			return string(out)
+		}
+		if tok != token.COMMENT {
+			continue
+		}
+		// The scanner drops \r from a comment's text, so the span is measured in the source.
+		start := fset.Position(pos).Offset
+		end := len(out)
+		if strings.HasPrefix(lit, "//") {
+			if nl := bytes.IndexByte(out[start:], '\n'); nl >= 0 {
+				end = start + nl
+			}
+		} else if close := bytes.Index(out[start+2:], []byte("*/")); close >= 0 {
+			end = start + 2 + close + 2
+		}
+		for i := start; i < end; i++ {
+			if out[i] != '\n' && out[i] != '\r' {
+				out[i] = ' '
+			}
+		}
+	}
+}
+
+// isCommentLine reports whether line is a // comment, which calls nothing.
+func isCommentLine(line string) bool { return strings.HasPrefix(strings.TrimSpace(line), "//") }
+
+// recordsAudit reports whether line records an audit change, directly or through a wrapper in recorders.
+func recordsAudit(line string, recorders map[string]bool) bool {
+	return !isCommentLine(line) && (strings.Contains(line, "RecordAuditChange(") || callsAny(line, recorders) != "")
+}
+
+// callsAny returns the first helper in names that line calls, or "".
+func callsAny(line string, names map[string]bool) string {
+	if isCommentLine(line) {
+		return ""
+	}
+	for name := range names {
+		if strings.Contains(line, "."+name+"(") || strings.Contains(line, " "+name+"(") || strings.Contains(line, "\t"+name+"(") || strings.Contains(line, "!"+name+"(") || strings.Contains(line, "("+name+"(") {
+			return name
+		}
+	}
+	return ""
+}
+
 // TestCommitPointRule fails when a handler answers a saved-then-failed 500 before its first audit
-// record, which means the change it saved reaches the audit log only as a failed request.
+// record, which means the change it saved reaches the audit log only as a failed request. A 500
+// sent through a helper (refreshPrompts, sendMCPClientReloadError) counts, and so does a record
+// made through a wrapper (recordMCPClientAction).
 func TestCommitPointRule(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read handlers dir: %v", err)
 	}
+	files := map[string]string{}
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
@@ -2099,36 +2193,284 @@ func TestCommitPointRule(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		lines := strings.Split(string(data), "\n")
+		files[name] = string(data)
+	}
+	for _, v := range commitPointViolations(files) {
+		t.Error(v)
+	}
+}
+
+// TestCommitPointRuleFixtures runs the rule over small sources, so a guard that stops finding
+// helpers, wrappers, or calls split across lines fails here even while every real handler is right.
+func TestCommitPointRuleFixtures(t *testing.T) {
+	const helpers = `func refreshThing(ctx *fasthttp.RequestCtx) bool {
+	SendError(ctx, fasthttp.StatusInternalServerError, "Thing saved but reload failed")
+	return false
+}
+
+func recordThing(ctx *fasthttp.RequestCtx, id string) {
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`
+	for _, tc := range []struct {
+		name, src string
+		flagged   bool
+	}{
+		{"error helper before a record wrapper", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if !refreshThing(ctx) {
+		return
+	}
+	recordThing(ctx, "id")
+}
+`, true},
+		{"record wrapper before an error helper", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	recordThing(ctx, "id")
+	if !refreshThing(ctx) {
+		return
+	}
+}
+`, false},
+		{"helper that sends before it records is checked itself", `func saveAndRecord(ctx *fasthttp.RequestCtx, err error) {
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Thing saved but reload failed")
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, true},
+		{"multiline saved-then-failed error before the record", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError,
+			"Thing saved but reload failed")
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, true},
+		{"multiline saved-then-failed error after the record", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError,
+			"Thing saved but reload failed")
+		return
+	}
+}
+`, false},
+		{"multiline numeric 500 before the record", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		SendError(
+			ctx,
+			500,
+			"Thing saved but reload failed",
+		)
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, true},
+		{"multiline numeric 503 before the record", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		SendError(
+			ctx,
+			503,
+			"Thing saved but reload failed",
+		)
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, false},
+		{"free sender with a ctx-only signature before the record", `func sendReloadError(ctx *fasthttp.RequestCtx) {
+	SendError(ctx, fasthttp.StatusInternalServerError, "Thing saved but reload failed")
+}
+
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		sendReloadError(ctx)
+		return
+	}
+	lib.RecordAuditChange(ctx, "thing.updated", "thing", "id", "name", nil, nil)
+}
+`, true},
+		{"handler that answers a saved-then-failed error and never records", `func (h *H) save(ctx *fasthttp.RequestCtx) {
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Thing saved but reload failed")
+		return
+	}
+	SendJSON(ctx, nil)
+}
+`, true},
+		{"commented-out error helper before the record", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	// refreshThing(ctx)
+	recordThing(ctx, "id")
+}
+`, false},
+		{"commented-out record before an error helper", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	// recordThing(ctx, "id")
+	if !refreshThing(ctx) {
+		return
+	}
+	recordThing(ctx, "id")
+}
+`, true},
+		{"error helper inside the record's own arguments", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	recordThing(ctx, fmt.Sprint(refreshThing(ctx)))
+}
+`, true},
+		{"record in a trailing comment before an error helper", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	doWork() // recordThing(ctx, "id")
+	if !refreshThing(ctx) {
+		return
+	}
+	recordThing(ctx, "id")
+}
+`, true},
+		{"error helper in a block comment before the record", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	/* refreshThing(ctx)
+	   refreshThing(ctx) */
+	recordThing(ctx, "id")
+}
+`, false},
+		{"error helper in a long CRLF block comment before the record", strings.ReplaceAll(helpers+`
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	/* A long comment: the scanner drops each \r from its text, so blanking by
+	   that text's length would stop one byte short per line and leave the
+	   call on the last line visible.`+strings.Repeat("\n\t   filler", 30)+`
+	   refreshThing(ctx) */
+	recordThing(ctx, "id")
+}
+`, "\n", "\r\n"), false},
+		{"error helper in a later argument line of the record", helpers + `
+func (h *H) save(ctx *fasthttp.RequestCtx) {
+	recordThing(
+		ctx,
+		fmt.Sprint(refreshThing(ctx)),
+	)
+}
+`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := commitPointViolations(map[string]string{"fixture.go": tc.src})
+			if tc.flagged && len(got) == 0 {
+				t.Fatalf("want a violation, got none")
+			}
+			if !tc.flagged && len(got) != 0 {
+				t.Fatalf("want none, got %v", got)
+			}
+		})
+	}
+}
+
+// commitPointViolations runs the commit-point rule over Go sources keyed by file name and
+// returns one message per saved-then-failed 500 answered before the function's first record.
+func commitPointViolations(files map[string]string) []string {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var funcs []commitPointFunc
+	for _, name := range names {
+		lines := strings.Split(stripGoComments(files[name]), "\n")
 		start := -1
 		for i := 0; i <= len(lines); i++ {
 			if i < len(lines) && !strings.HasPrefix(lines[i], "func ") {
 				continue
 			}
 			if start >= 0 {
-				checkCommitPointFunc(t, name, start, lines[start:i])
+				if m := funcDeclName.FindStringSubmatch(lines[start]); m != nil {
+					funcs = append(funcs, commitPointFunc{file: name, name: m[1], start: start, body: lines[start:i]})
+				}
 			}
 			start = i
 		}
 	}
-}
+	// Helpers are non-handler functions. Recorders are settled first, so a helper that both
+	// records and sends (completePerUserOAuthAdminRepair) is a recorder and is checked itself.
+	// A route handler is a method; a free function with the same ctx-only signature is a helper.
+	isHandler := func(f commitPointFunc) bool {
+		return strings.HasPrefix(f.body[0], "func (") && strings.HasSuffix(strings.TrimSpace(f.body[0]), handlerSignature)
+	}
+	recorders, senders := map[string]bool{}, map[string]bool{}
+	grow := func(set map[string]bool, joins func(f commitPointFunc) bool) {
+		for changed := true; changed; {
+			changed = false
+			for _, f := range funcs {
+				if !isHandler(f) && !set[f.name] && joins(f) {
+					set[f.name], changed = true, true
+				}
+			}
+		}
+	}
+	grow(recorders, func(f commitPointFunc) bool {
+		for _, line := range f.body[1:] {
+			if recordsAudit(line, recorders) {
+				return true
+			}
+		}
+		return false
+	})
+	grow(senders, func(f commitPointFunc) bool {
+		if recorders[f.name] {
+			return false
+		}
+		for i, line := range f.body[1:] {
+			if sendsSavedThenFailed(f.body, i+1) || callsAny(line, senders) != "" {
+				return true
+			}
+		}
+		return false
+	})
 
-func checkCommitPointFunc(t *testing.T, file string, start int, body []string) {
-	t.Helper()
-	firstRecord := -1
-	for i, line := range body {
-		if strings.Contains(line, "RecordAuditChange(") {
-			firstRecord = i
-			break
+	var violations []string
+	for _, f := range funcs {
+		if senders[f.name] {
+			continue
+		}
+		firstRecord := -1
+		for i, line := range f.body[1:] {
+			i++
+			if recordsAudit(line, recorders) {
+				firstRecord = i
+				break
+			}
+		}
+		if firstRecord < 0 {
+			if !isHandler(f) {
+				continue
+			}
+			// A handler that answers a saved-then-failed error and never records loses the change.
+			for i, line := range f.body[1:] {
+				if via := callsAny(line, senders); sendsSavedThenFailed(f.body, i+1) || via != "" {
+					violations = append(violations, fmt.Sprintf("%s:%d: %s answers a saved-then-failed error but never records the change; record right after the write commits (AGENTS.md)", f.file, f.start+i+2, strings.TrimSpace(f.body[0])))
+					break
+				}
+			}
+			continue
+		}
+		// The record call is scanned through its closing parenthesis: a sender in its arguments
+		// runs before the record does.
+		recordEnd := firstRecord
+		for depth := strings.Count(f.body[firstRecord], "(") - strings.Count(f.body[firstRecord], ")"); depth > 0 && recordEnd+1 < len(f.body); {
+			recordEnd++
+			depth += strings.Count(f.body[recordEnd], "(") - strings.Count(f.body[recordEnd], ")")
+		}
+		for i, line := range f.body[:recordEnd+1] {
+			via := callsAny(line, senders)
+			if sendsSavedThenFailed(f.body, i) || via != "" {
+				if via != "" {
+					via = " (through " + via + ")"
+				}
+				violations = append(violations, fmt.Sprintf("%s:%d: %s answers a saved-then-failed error%s before recording the change; record right after the write commits (AGENTS.md)", f.file, f.start+i+1, strings.TrimSpace(f.body[0]), via))
+			}
 		}
 	}
-	if firstRecord < 0 {
-		return
-	}
-	for i, line := range body[:firstRecord] {
-		sends := strings.Contains(line, "SendError(") || strings.Contains(line, "sendAgentGatewayError(")
-		if sends && savedThenFailedMessage.MatchString(line) {
-			t.Errorf("%s:%d: %s answers a saved-then-failed error before recording the change; record right after the write commits (AGENTS.md)", file, start+i+1, strings.TrimSpace(body[0]))
-		}
-	}
+	return violations
 }
