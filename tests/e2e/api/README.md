@@ -881,6 +881,8 @@ And once, on one base type:
 - **Keyless provider**: the provider is listed but contributes no catalog rows.
 - **Unreachable list-models upstream**: discovery failing keeps the keys' allow-listed models.
 - **Disallowed list-models**: with `list_models` not allowed, discovery never runs and only explicit allow-lists surface.
+- **Bedrock alias limits by `model_name`**: on the global standard `bedrock` provider, an alias whose `model_id` is an
+  application inference profile is listed on `/v1/models` and `/anthropic/v1/models` with its `model_name`'s context limits.
 
 Run locally (from this directory):
 
@@ -896,8 +898,8 @@ Requirements:
 - With `--binary`, a built `bifrost-http`. Without it, Bifrost running at
   `$BIFROST_BASE_URL`, else `{{base_url}}` (default `http://localhost:8080`), ideally
   against a clean config store so no pre-existing `catwiring-*` providers linger.
-- The server's environment needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and
-  `GEMINI_API_KEY`: the collection's keys use `env.<NAME>` values, which Bifrost
+- The server's environment needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`,
+  `GEMINI_API_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`: the collection's keys use `env.<NAME>` values, which Bifrost
   resolves from its own process environment, so the runner forwards no credentials.
 
 Notes:
