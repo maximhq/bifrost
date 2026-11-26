@@ -3,6 +3,8 @@ package mcpdiscovery
 import (
 	"context"
 	"errors"
+	"sort"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +16,98 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fakeConfigStore records the shared discovery writes, so tests can see what reached the
+// database, and can fail, hold or panic the next one.
+type fakeConfigStore struct {
+	configstore.ConfigStore
+	mu          sync.Mutex
+	toolWrites  []toolWrite
+	toolsErr    error
+	toolsFails  int // the next this many discovery writes fail, as toolsErr does
+	toolsHold   *hold
+	toolsPanic  bool // the next tools write panics
+	lastWritten *schemas.MCPDiscovery
+}
+
+// toolWrite is one UpdateMCPClientDiscovery call that succeeded.
+type toolWrite struct {
+	clientID     string
+	tools        []string // sorted
+	instructions string
+}
+
+// hold pauses the next fake write until released, so a test can act while it is in flight.
+type hold struct {
+	reached chan struct{}
+	release chan struct{}
+}
+
+// newHold returns a hold not reached yet.
+func newHold() *hold {
+	return &hold{reached: make(chan struct{}), release: make(chan struct{})}
+}
+
+// wait signals that the hold was reached and blocks until it is released; a nil hold does nothing.
+func (h *hold) wait() {
+	if h == nil {
+		return
+	}
+	close(h.reached)
+	<-h.release
+}
+
+// newFakeConfigStore returns a fake with nothing written.
+func newFakeConfigStore() *fakeConfigStore {
+	return &fakeConfigStore{}
+}
+
+// UpdateMCPClientDiscovery records a shared discovery write, failing, holding or panicking it when
+// the test asked for that.
+func (f *fakeConfigStore) UpdateMCPClientDiscovery(_ context.Context, clientID string, discovery *schemas.MCPDiscovery) error {
+	f.mu.Lock()
+	err := f.toolsErr
+	if f.toolsFails > 0 {
+		f.toolsFails--
+		err = errors.New("database unavailable")
+	}
+	h := f.toolsHold
+	f.toolsHold = nil
+	panics := f.toolsPanic
+	f.toolsPanic = false
+	f.mu.Unlock()
+	h.wait()
+	if panics {
+		panic("tools write panicked")
+	}
+	if err != nil {
+		return err
+	}
+	names := make([]string, 0, len(discovery.Tools))
+	for name := range discovery.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.toolWrites = append(f.toolWrites, toolWrite{clientID: clientID, tools: names, instructions: discovery.Instructions})
+	f.lastWritten = discovery
+	return nil
+}
+
+// writtenTools returns the writes recorded so far.
+func (f *fakeConfigStore) writtenTools() []toolWrite {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]toolWrite(nil), f.toolWrites...)
+}
+
+// set changes the fake under its lock.
+func (f *fakeConfigStore) set(apply func(f *fakeConfigStore)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	apply(f)
+}
 
 func wikiClient() *schemas.MCPClientConfig {
 	return &schemas.MCPClientConfig{ID: "client-wiki", Name: "wiki"}

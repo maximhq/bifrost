@@ -72,7 +72,6 @@ syncmap	framework/logstore	ClickHouseLogStore.retentionCutoffs	backend: the log 
 lockedmap	framework/logstore	LogsCleaner.batchSizes	decided: kept as a map; per-table batch size after a statement timeout shrank it, a handful of entries; logstore cannot hold a live-store table, since framework/livestore imports framework/logstore
 pkgsyncmap	framework/logstore	chSchemaCache	handle: GORM schema parses of the log tables, built from code
 pkgsyncmap	framework/logstore	pgTextFieldCache	handle: text columns of GORM schemas, built from code
-lockedmap	framework/mcpdiscovery	PerUserStore.clients	handle: per-user discovery membership handles held by the MCP manager's discovery store
 lockedmap	framework/mcpdiscovery	SharedStore.writes	inflight: shared discovery writes in flight, by client
 pkgsyncmap	framework/modelcatalog	aliasNameIndexes	decided: kept as a map; one alias-name set per provider, rebuilt when the provider's keys slice changes; MayBeKeyAlias is a package function its callers reach with an optional catalog, so no live store is in reach
 pkgsyncmap	framework/modelcatalog/datasheet	peakHoursLocations	handle: parsed time zones
