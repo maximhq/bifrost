@@ -2214,3 +2214,88 @@ func TestStreamPanicOnProviderGoroutineEndsWithErrorChunk(t *testing.T) {
 		})
 	}
 }
+
+// streamFinishReasonsByChoice collects every finish_reason the client receives, keyed by
+// choice index, in arrival order.
+func streamFinishReasonsByChoice(t *testing.T, chunks []*schemas.BifrostStreamChunk) map[int][]string {
+	t.Helper()
+	reasons := map[int][]string{}
+	for i, chunk := range chunks {
+		if chunk.BifrostError != nil {
+			t.Fatalf("chunk %d unexpectedly carried an error: %+v", i, chunk.BifrostError)
+		}
+		var choices []schemas.BifrostResponseChoice
+		switch {
+		case chunk.BifrostChatResponse != nil:
+			choices = chunk.BifrostChatResponse.Choices
+		case chunk.BifrostTextCompletionResponse != nil:
+			choices = chunk.BifrostTextCompletionResponse.Choices
+		}
+		for _, choice := range choices {
+			if choice.FinishReason != nil && *choice.FinishReason != "" {
+				reasons[choice.Index] = append(reasons[choice.Index], *choice.FinishReason)
+			}
+		}
+	}
+	return reasons
+}
+
+// With n>1 OpenAI ends each choice in its own finish-only frame. Each choice must keep
+// its own finish_reason on its own index: choice 0 ending on stop and choice 1 later
+// ending on length must not collapse into one "length" on choice 0.
+func TestChatStreamMultipleChoicesKeepTheirOwnFinishReasons(t *testing.T) {
+	frame := func(index int, delta, finish string) string {
+		return `data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model",` +
+			fmt.Sprintf(`"choices":[{"index":%d,"delta":%s,"finish_reason":%s}]}`, index, delta, finish) + "\n\n"
+	}
+	server := completeSSEServer(t, frame(0, `{"role":"assistant","content":"a"}`, "null")+
+		frame(1, `{"role":"assistant","content":"b"}`, "null")+
+		frame(0, `{}`, `"stop"`)+
+		frame(1, `{}`, `"length"`)+
+		`data: {"id":"chatcmpl-repro","object":"chat.completion.chunk","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}`+"\n\n"+
+		"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	stream, bifrostErr := provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	got := streamFinishReasonsByChoice(t, collectChunks(t, stream))
+	want := map[int][]string{0: {"stop"}, 1: {"length"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("finish reasons by choice = %v, want %v", got, want)
+	}
+}
+
+// The text completion mirror of the chat case above.
+func TestTextCompletionStreamMultipleChoicesKeepTheirOwnFinishReasons(t *testing.T) {
+	frame := func(index int, text, finish string) string {
+		return `data: {"id":"cmpl-repro","object":"text_completion","created":1,"model":"repro-model",` +
+			fmt.Sprintf(`"choices":[{"index":%d,"text":%q,"finish_reason":%s}]}`, index, text, finish) + "\n\n"
+	}
+	server := completeSSEServer(t, frame(0, "a", "null")+
+		frame(1, "b", "null")+
+		frame(0, "", `"stop"`)+
+		frame(1, "", `"length"`)+
+		"data: [DONE]\n\n")
+	defer server.Close()
+
+	provider := newStreamTestProvider(server.URL)
+	request := &schemas.BifrostTextCompletionRequest{
+		Provider: schemas.OpenAI,
+		Model:    "repro-model",
+		Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+	}
+	stream, bifrostErr := provider.TextCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+	if bifrostErr != nil {
+		t.Fatalf("stream setup failed: %v", bifrostErr)
+	}
+
+	got := streamFinishReasonsByChoice(t, collectChunks(t, stream))
+	want := map[int][]string{0: {"stop"}, 1: {"length"}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("finish reasons by choice = %v, want %v", got, want)
+	}
+}

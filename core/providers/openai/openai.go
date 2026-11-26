@@ -745,6 +745,7 @@ func HandleOpenAITextCompletionStreaming(
 		trailingUsageSeen := false
 
 		var finishReason *string
+		var choiceZeroFinishReason *string // the synthetic final chunk is choice 0, so it carries only choice 0's reason
 		var messageID string
 		var created int
 		modelName := request.Model
@@ -920,12 +921,18 @@ func HandleOpenAITextCompletionStreaming(
 				continue
 			}
 
-			// Handle finish reason, usually in the final chunk
+			// Handle finish reason, usually in the final chunk. With n>1 every choice ends in
+			// its own frame; choice 0's reason moves to the synthetic final chunk, and any other
+			// choice keeps its reason on its own frame, forwarded below.
 			choice := response.Choices[0]
-			if choice.FinishReason != nil && *choice.FinishReason != "" {
+			choiceFinished := choice.FinishReason != nil && *choice.FinishReason != ""
+			if choiceFinished {
 				// Collect finish reason and send at the end of the stream
 				finishReason = choice.FinishReason
-				response.Choices[0].FinishReason = nil
+				if choice.Index == 0 {
+					choiceZeroFinishReason = choice.FinishReason
+					response.Choices[0].FinishReason = nil
+				}
 				// An upstream that parks instead of sending [DONE] can only heartbeat now.
 				providerUtils.SSEEndOnCommentAfterFinish(sseReader)
 			}
@@ -938,7 +945,8 @@ func HandleOpenAITextCompletionStreaming(
 			}
 
 			// Handle regular content chunks
-			if choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil {
+			if (choice.TextCompletionResponseChoice != nil && choice.TextCompletionResponseChoice.Text != nil) ||
+				(choiceFinished && choice.Index != 0) {
 				chunkIndex++
 
 				response.ExtraFields.ChunkIndex = chunkIndex
@@ -973,7 +981,7 @@ func HandleOpenAITextCompletionStreaming(
 			return
 		}
 
-		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, finishReason, chunkIndex, schemas.TextCompletionStreamRequest, modelName, created)
+		response := providerUtils.CreateBifrostTextCompletionChunkResponse(messageID, usage, choiceZeroFinishReason, chunkIndex, schemas.TextCompletionStreamRequest, modelName, created)
 		if postResponseConverter != nil {
 			response = postResponseConverter(response)
 			if response == nil {
@@ -1490,6 +1498,7 @@ func HandleOpenAIChatCompletionStreaming(
 		lastChunkTime := startTime
 
 		var finishReason *string
+		var choiceZeroFinishReason *string // the synthetic final chunk is choice 0, so it carries only choice 0's reason
 		var messageID string
 		var modelName string
 		var created int
@@ -1850,11 +1859,17 @@ func HandleOpenAIChatCompletionStreaming(
 					continue
 				}
 
-				// Handle finish reason, usually in the final chunk
+				// Handle finish reason, usually in the final chunk. With n>1 every choice ends
+				// in its own frame; choice 0's reason rides the synthetic final chunk, and any
+				// other choice's finish frame is forwarded below so its reason stays on its index.
 				choice := response.Choices[0]
-				if choice.FinishReason != nil && *choice.FinishReason != "" {
+				choiceFinished := choice.FinishReason != nil && *choice.FinishReason != ""
+				if choiceFinished {
 					// Collect finish reason and send at the end of the stream
 					finishReason = choice.FinishReason
+					if choice.Index == 0 {
+						choiceZeroFinishReason = choice.FinishReason
+					}
 					// An upstream that parks instead of sending [DONE] can only heartbeat now.
 					providerUtils.SSEEndOnCommentAfterFinish(sseReader)
 				}
@@ -1887,8 +1902,9 @@ func HandleOpenAIChatCompletionStreaming(
 						choice.ChatStreamResponseChoice.Delta.Audio != nil ||
 						len(choice.ChatStreamResponseChoice.Delta.Images) > 0 ||
 						len(choice.ChatStreamResponseChoice.Delta.ToolCalls) > 0 ||
-						len(choice.ChatStreamResponseChoice.Delta.ExtraContent) > 0) {
-					if choice.FinishReason != nil && *choice.FinishReason != "" {
+						len(choice.ChatStreamResponseChoice.Delta.ExtraContent) > 0) ||
+					(choiceFinished && choice.Index != 0) {
+					if choiceFinished && choice.Index == 0 {
 						forwardedTerminalFinishReason = true
 					}
 					chunkIndex++
@@ -1963,7 +1979,7 @@ func HandleOpenAIChatCompletionStreaming(
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, pendingFinalEvent, nil, nil, nil), responseChan, postHookSpanFinalizer)
 			}
 		} else {
-			finalFinishReason := finishReason
+			finalFinishReason := choiceZeroFinishReason
 			if forwardedTerminalFinishReason {
 				finalFinishReason = nil
 			}
