@@ -535,6 +535,7 @@
 			"pathRequired": "La ruta es obligatoria",
 			"pathMustStartWithSlash": "La ruta debe empezar por /",
 			"doubleStarOnce": "** solo se permite una vez en una ruta",
+			"malformedPattern": "Esta ruta tiene un patrón mal formado: cierra cada [ ], pon un carácter o rango dentro y escapa una \\ final",
 			"headerNameRequired": "Se requiere el nombre del encabezado para la autenticación por encabezado",
 			"queryParamRequired": "Se requiere el parámetro de consulta para la autenticación por consulta",
 			"awsServiceRequired": "Se requiere el servicio de AWS para la autenticación SigV4",

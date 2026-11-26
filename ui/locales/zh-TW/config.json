@@ -1554,6 +1554,8 @@
 			"charged": "已收費",
 			"routeDisabled": "{{method}} {{path}} · 已停用",
 			"noRouteRelayPricing": "無路由 · 轉送計價",
+			"statusCheck": "狀態檢查（免費）",
+			"statusCheckHelp": "這與呼叫方對該中繼某個作業的狀態檢查相符。如果該作業由 Bifrost 啟動，此呼叫將免費轉發，作業在完成時只計費一次。",
 			"noRouteRefused": "無路由 · 已拒絕",
 			"billable": "計費",
 			"notCharged": "不收費",

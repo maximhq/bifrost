@@ -330,6 +330,7 @@
 			"pathRequired": "Path is required",
 			"pathMustStartWithSlash": "Path must start with /",
 			"doubleStarOnce": "** is only allowed once in a path",
+			"malformedPattern": "This path has a malformed pattern: close every [ ], put a character or range inside, and escape a trailing \\",
 			"headerNameRequired": "Header name is required for header auth",
 			"queryParamRequired": "Query parameter is required for query auth",
 			"awsServiceRequired": "AWS service is required for SigV4 auth",

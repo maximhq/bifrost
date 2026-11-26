@@ -1527,6 +1527,8 @@
 			"charged": "Charged",
 			"routeDisabled": "{{method}} {{path}} · disabled",
 			"noRouteRelayPricing": "No route · relay pricing",
+			"statusCheck": "Status check (free)",
+			"statusCheckHelp": "This matches a caller's status check for one of the relay's jobs. If Bifrost started that job, the call is relayed free, and the job is charged once, when it finishes.",
 			"noRouteRefused": "No route · refused",
 			"billable": "Billable",
 			"notCharged": "Not charged",

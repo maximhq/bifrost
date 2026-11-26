@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	hasUnsafeInteger,
+	isValidRelayGlobSegment,
 	relayAsyncJobFormSchema,
 	relayBodyOverridesSchema,
 	exactJSONNumbers,
@@ -260,4 +261,12 @@ describe("relayAsyncJobFormSchema poll headers", () => {
 		expect(result.error?.issues.some((i) => i.path.join(".") === "job.poll.headers")).toBe(true);
 		expect(relayAsyncJobFormSchema.safeParse(job({ "X-Op": "Get" })).success).toBe(true);
 	});
+});
+// The same cases as TestRelayRouteGlobSegmentsMatchTheUI in core/schemas, so the form refuses on the
+// field exactly what the gateway refuses on save.
+describe("isValidRelayGlobSegment", () => {
+	const valid = ["search", "*", "v?", "[a-z]*", "[^x]", "a\\*b", "[\\]]", "jobs-*", ""];
+	const invalid = ["[b", "[]", "[]a]", "[a-]", "[-a]", "[a", "a\\", "[^]", "[a-\\", "x[\\"];
+	it.each(valid)("accepts %s", (segment) => expect(isValidRelayGlobSegment(segment)).toBe(true));
+	it.each(invalid)("refuses %s", (segment) => expect(isValidRelayGlobSegment(segment)).toBe(false));
 });

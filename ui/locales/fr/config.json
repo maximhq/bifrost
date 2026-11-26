@@ -1548,6 +1548,8 @@
 			"charged": "Facturé",
 			"routeDisabled": "{{method}} {{path}} · désactivée",
 			"noRouteRelayPricing": "Aucune route · tarification du relais",
+			"statusCheck": "Vérification d'état (gratuite)",
+			"statusCheckHelp": "Cela correspond à la vérification d'état d'un appelant pour l'une des tâches du relais. Si Bifrost a lancé cette tâche, l'appel est relayé gratuitement et la tâche est facturée une fois, à la fin.",
 			"noRouteRefused": "Aucune route · refusée",
 			"billable": "Facturable",
 			"notCharged": "Non facturé",

@@ -315,3 +315,123 @@ func previewUsage(cfg *schemas.RelayConfig, extra map[string]schemas.SecretVar, 
 	cfg.IgnoreUpstreamCost = ignoreUpstreamCost
 	return PreviewUsage(cfg, in)
 }
+
+// The preview matches the path the transport hands a live call: . and .. segments resolved.
+func TestPreviewResolvesDotSegmentsAsTheTransportDoes(t *testing.T) {
+	cfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{{Method: "GET", Path: "/w/x", Billable: schemas.Ptr(true), Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.1)}}}}
+	for _, path := range []string{"/w/a/../x", "/w/./x", "/w/x"} {
+		out, err := previewUsage(cfg, nil, UsagePreviewInput{Method: "GET", Path: path, ResponseContentType: "application/json"}, false)
+		require.NoError(t, err, path)
+		require.NotNil(t, out.RouteIndex, "%s is /w/x on the relay", path)
+		assert.True(t, out.RouteAllowed, path)
+		assert.InDelta(t, 0.1, out.Cost, 1e-12, path)
+	}
+}
+
+// A sample matching a job's status check is shown as relayed free, as a live call is once the job
+// lookup confirms Bifrost started it, instead of the 404 an unrouted call gets.
+func TestPreviewShowsAStatusCheckAsFree(t *testing.T) {
+	cfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{{
+		Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.StartDocumentAnalysis"},
+		Usage: &schemas.RelayUsageConfig{CostPerRequest: schemas.Ptr(0.01)},
+		Job: &schemas.RelayJobConfig{IDPath: "JobId", StatusPath: "JobStatus", Succeeded: []string{"SUCCEEDED"},
+			Poll: schemas.RelayJobPoll{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}, Body: `{"JobId":"{{job.id}}"}`, ContentType: "application/x-amz-json-1.1"}},
+	}}}
+	check := UsagePreviewInput{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"},
+		RequestContentType: "application/x-amz-json-1.1", RequestBody: `{"JobId":"j-1"}`, ResponseContentType: "application/json", ResponseBody: `{"JobStatus":"IN_PROGRESS"}`}
+	out, err := previewUsage(cfg, nil, check, false)
+	require.NoError(t, err)
+	assert.True(t, out.StatusCheck)
+	assert.True(t, out.RouteAllowed, "relayed, not refused with 404")
+	assert.False(t, out.Counted)
+	assert.Zero(t, out.Cost)
+	assert.Contains(t, strings.Join(out.Notes, " "), "status check")
+
+	start := check
+	start.Headers = map[string]string{"X-Amz-Target": "Textract.StartDocumentAnalysis"}
+	start.RequestBody = `{"Document":{}}`
+	start.ResponseBody = `{"JobId":"j-1"}`
+	out, err = previewUsage(cfg, nil, start, false)
+	require.NoError(t, err)
+	assert.False(t, out.StatusCheck, "the start call is priced as itself")
+	assert.InDelta(t, 0.01, out.Cost, 1e-12)
+}
+
+// A sample that climbs out of the relay with .. never reaches it on a live call, since the transport
+// resolves the whole /relay/<name><path>; it is not matched against this relay's routes.
+func TestPreviewRefusesAPathThatClimbsOutOfTheRelay(t *testing.T) {
+	cfg := &schemas.RelayConfig{Name: "demo", SkipRouteCheck: true, Routes: []schemas.RelayRouteConfig{{Method: "GET", Path: "/x", Billable: schemas.Ptr(true)}}}
+	for _, path := range []string{"/../x", "/../../w/x", "/a/../../x"} {
+		out, err := previewUsage(cfg, nil, UsagePreviewInput{Method: "GET", Path: path}, false)
+		require.NoError(t, err, path)
+		assert.False(t, out.RouteAllowed, path)
+		assert.Nil(t, out.RouteIndex, path)
+		assert.Contains(t, strings.Join(out.Notes, " "), "climbs out of the relay", path)
+	}
+	out, err := previewUsage(cfg, nil, UsagePreviewInput{Method: "GET", Path: "/a/../x"}, false)
+	require.NoError(t, err)
+	require.NotNil(t, out.RouteIndex, "a .. that stays inside the relay still matches")
+}
+
+// The preview refuses a status check the gateway would refuse: Serve still reads the model after the
+// status check matches, so a model sent twice in the query is a 400, not a free status check.
+func TestPreviewStatusCheckStillReadsTheModel(t *testing.T) {
+	cfg := &schemas.RelayConfig{
+		Usage: &schemas.RelayUsageConfig{ModelPath: "model", ModelSource: schemas.RelayModelFromQuery},
+		Routes: []schemas.RelayRouteConfig{{Method: "POST", Path: "/jobs", Job: &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+			Poll: schemas.RelayJobPoll{Method: "GET", Path: "/jobs/{{job.id}}"}}}},
+	}
+	out, err := previewUsage(cfg, nil, UsagePreviewInput{Method: "GET", Path: "/jobs/j-1?model=a&model=b"}, false)
+	require.NoError(t, err)
+	assert.False(t, out.StatusCheck, "the gateway refuses it, so it is no free status check")
+	assert.True(t, out.RouteAllowed, "admitted, then refused, so the UI shows the 400 rather than no route")
+	assert.Contains(t, strings.Join(out.Notes, " "), "refuses this request with 400")
+	out, err = previewUsage(cfg, nil, UsagePreviewInput{Method: "GET", Path: "/jobs/j-1?model=a"}, false)
+	require.NoError(t, err)
+	assert.True(t, out.StatusCheck)
+	assert.Equal(t, "a", out.Model, "the model a live status check logs is shown")
+}
+
+// As in Serve, a JSON body created for forced fields under the relay's non-JSON Content-Type is refused.
+func TestPreviewRefusesACreatedBodyUnderARelayNonJSONContentType(t *testing.T) {
+	cfg := &schemas.RelayConfig{SkipRouteCheck: true, BodyOverrides: map[string]json.RawMessage{"include_usage": json.RawMessage("true")}}
+	out, err := previewUsage(cfg, map[string]schemas.SecretVar{"Content-Type": *schemas.NewSecretVar("text/plain")}, UsagePreviewInput{Method: "POST", Path: "/search"}, false)
+	require.NoError(t, err)
+	assert.Contains(t, strings.Join(out.Notes, " "), `Content-Type to "text/plain"`)
+}
+
+// A status-check sample whose created body falls under the relay's non-JSON Content-Type is refused,
+// as Serve refuses it before its status check, not shown as a free status check.
+func TestPreviewRefusesAStatusCheckUnderARelayNonJSONContentType(t *testing.T) {
+	cfg := &schemas.RelayConfig{
+		BodyOverrides: map[string]json.RawMessage{"tenant": json.RawMessage(`"acme"`)},
+		Routes: []schemas.RelayRouteConfig{
+			{Method: "POST", Path: "/start", Job: &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+				Poll: schemas.RelayJobPoll{Method: "POST", Path: "/jobs/{{job.id}}"}}},
+			{Method: "POST", Path: "/jobs/*"},
+		},
+	}
+	extra := map[string]schemas.SecretVar{"Content-Type": *schemas.NewSecretVar("text/plain")}
+	out, err := previewUsage(cfg, extra, UsagePreviewInput{Method: "POST", Path: "/jobs/j-1"}, false)
+	require.NoError(t, err)
+	assert.False(t, out.StatusCheck)
+	assert.Contains(t, strings.Join(out.Notes, " "), "refuses this request with 400")
+}
+
+// A status check whose created JSON Content-Type selects a disabled route is refused with 404, as
+// Serve's recheck of the call as sent refuses it, not shown as free.
+func TestPreviewStatusCheckOnADisabledRouteIsRefused(t *testing.T) {
+	cfg := &schemas.RelayConfig{
+		BodyOverrides: map[string]json.RawMessage{"tenant": json.RawMessage(`"acme"`)},
+		Routes: []schemas.RelayRouteConfig{
+			{Method: "POST", Path: "/start", Job: &schemas.RelayJobConfig{IDPath: "id", StatusPath: "status", Succeeded: []string{"done"},
+				Poll: schemas.RelayJobPoll{Method: "POST", Path: "/jobs/{{job.id}}"}}},
+			{Method: "POST", Path: "/jobs/*", Headers: map[string]string{"Content-Type": "application/json"}, Enabled: schemas.Ptr(false)},
+		},
+	}
+	out, err := previewUsage(cfg, nil, UsagePreviewInput{Method: "POST", Path: "/jobs/j-1"}, false)
+	require.NoError(t, err)
+	assert.False(t, out.StatusCheck)
+	assert.False(t, out.RouteAllowed)
+	assert.Contains(t, strings.Join(out.Notes, " "), "disabled")
+}

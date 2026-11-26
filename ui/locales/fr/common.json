@@ -535,6 +535,7 @@
 			"pathRequired": "Le chemin est requis",
 			"pathMustStartWithSlash": "Le chemin doit commencer par /",
 			"doubleStarOnce": "** n'est autorisé qu'une seule fois dans un chemin",
+			"malformedPattern": "Ce chemin contient un motif mal formé : fermez chaque [ ], mettez-y un caractère ou une plage, et échappez un \\ final",
 			"headerNameRequired": "Le nom d'en-tête est requis pour l'authentification par en-tête",
 			"queryParamRequired": "Le paramètre de requête est requis pour l'authentification par requête",
 			"awsServiceRequired": "Le service AWS est requis pour l'authentification SigV4",

@@ -535,6 +535,7 @@
 			"pathRequired": "O caminho é obrigatório",
 			"pathMustStartWithSlash": "O caminho deve começar com /",
 			"doubleStarOnce": "** só é permitido uma vez em um caminho",
+			"malformedPattern": "Este caminho tem um padrão malformado: feche todo [ ], coloque um caractere ou intervalo dentro e escape uma \\ final",
 			"headerNameRequired": "O nome do cabeçalho é obrigatório para autenticação por cabeçalho",
 			"queryParamRequired": "O parâmetro de consulta é obrigatório para autenticação por consulta",
 			"awsServiceRequired": "O serviço da AWS é obrigatório para autenticação SigV4",
