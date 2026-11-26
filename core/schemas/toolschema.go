@@ -29,6 +29,20 @@ type compositionBranch struct {
 	additionalPropertiesFalse bool
 }
 
+// FlattenRootCompositionIf returns params with its root oneOf/anyOf/allOf flattened when
+// flatten is set, for providers or models that reject or ignore a root composition. A
+// schema too complex to flatten is returned as declared, so the provider answers for it.
+func FlattenRootCompositionIf(params *ToolFunctionParameters, flatten bool) *ToolFunctionParameters {
+	if !flatten {
+		return params
+	}
+	flat, err := FlattenRootComposition(params)
+	if err != nil {
+		return params
+	}
+	return flat
+}
+
 // FlattenRootComposition merges a root-level oneOf, anyOf or allOf into one
 // object schema: properties are unioned, conflicting definitions become a
 // property-level anyOf, and only fields every alternative requires stay

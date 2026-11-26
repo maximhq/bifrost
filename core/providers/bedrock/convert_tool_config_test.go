@@ -1125,7 +1125,9 @@ func convertBedrockToolSchema(t *testing.T, path string, ctx *schemas.BifrostCon
 // Bedrock forwards toolSpec.inputSchema to Claude, which rejects oneOf/anyOf/allOf
 // at the root ("input_schema does not support oneOf, allOf, or anyOf at the top
 // level"), so the Chat and Responses builders flatten it the way the Anthropic
-// provider does. Non-Claude Converse models accept root compositions and keep them.
+// provider does. Other Converse models keep a root composition only when they accept one
+// (supports_root_schema_composition, falling back to gpt-5 and later); Nova answers 424 to
+// one and Kimi K2.5 invents arguments, so the rest get it flattened.
 func TestConverseToolSchemaRootCompositionClaude(t *testing.T) {
 	for _, path := range []string{"chat", "responses"} {
 		t.Run(path+"/claude_root_oneOf_flattened", func(t *testing.T) {
@@ -1185,18 +1187,74 @@ func TestConverseToolSchemaRootCompositionClaude(t *testing.T) {
 			}
 		})
 
-		for _, model := range []string{"us.amazon.nova-pro-v1:0", "us.meta.llama4-maverick-17b-instruct-v1:0", "qwen.qwen3-32b-v1:0"} {
-			t.Run(path+"/non_claude_keeps_root_oneOf/"+model, func(t *testing.T) {
+		for _, model := range []string{"us.openai.gpt-5.6-luna", "us.openai.gpt-6-luna"} {
+			t.Run(path+"/accepting_model_keeps_root_oneOf/"+model, func(t *testing.T) {
 				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 				schema, err := convertBedrockToolSchema(t, path, ctx, model, mustToolSchema(t, codexRootOneOfSchema))
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
 				if branches, _ := schema["oneOf"].([]any); len(branches) != 2 {
-					t.Fatalf("non-Claude model must receive the root oneOf unchanged, got %v", schema)
+					t.Fatalf("a model that accepts a root union must receive it unchanged, got %v", schema)
+				}
+				if _, ok := schema["properties"]; ok {
+					t.Fatalf("no empty properties may sit beside the root union, got %v", schema)
 				}
 			})
 		}
+
+		for _, model := range []string{"us.amazon.nova-pro-v1:0", "us.amazon.nova-lite-v1:0", "moonshotai.kimi-k2.5", "us.meta.llama4-maverick-17b-instruct-v1:0", "qwen.qwen3-32b-v1:0"} {
+			t.Run(path+"/non_claude_root_oneOf_flattened/"+model, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				params := mustToolSchema(t, codexRootOneOfSchema)
+				schema, err := convertBedrockToolSchema(t, path, ctx, model, params)
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if _, ok := schema["oneOf"]; ok {
+					t.Fatalf("root oneOf must be flattened for %s, got %v", model, schema)
+				}
+				properties, _ := schema["properties"].(map[string]any)
+				for _, name := range []string{"mode", "name", "id"} {
+					if _, ok := properties[name]; !ok {
+						t.Fatalf("expected merged property %q, got %v", name, properties)
+					}
+				}
+				if len(params.OneOf) != 2 {
+					t.Fatalf("caller-owned schema was mutated: oneOf has %d branches", len(params.OneOf))
+				}
+			})
+		}
+
+		t.Run(path+"/union_beside_root_properties_is_sent_as_declared", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schema, err := convertBedrockToolSchema(t, path, ctx, "us.amazon.nova-pro-v1:0",
+				mustToolSchema(t, `{"type":"object","properties":{"query":{"type":"string"}},"anyOf":[{"type":"object","minProperties":1}],"required":["query"]}`))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if branches, _ := schema["anyOf"].([]any); len(branches) != 1 {
+				t.Fatalf("a union beside root properties must be kept, got %v", schema)
+			}
+		})
+
+		t.Run(path+"/datasheet_row_keeps_root_oneOf", func(t *testing.T) {
+			schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+				if model == "us.amazon.nova-pro-v1:0" {
+					return &schemas.ModelCapabilities{SupportsRootSchemaComposition: new(true)}
+				}
+				return nil
+			})
+			t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schema, err := convertBedrockToolSchema(t, path, ctx, "us.amazon.nova-pro-v1:0", mustToolSchema(t, codexRootOneOfSchema))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if branches, _ := schema["oneOf"].([]any); len(branches) != 2 {
+				t.Fatalf("a true datasheet row must keep the root union, got %v", schema)
+			}
+		})
 
 		t.Run(path+"/claude_too_complex_is_bad_request", func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

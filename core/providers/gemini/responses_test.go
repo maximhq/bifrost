@@ -679,7 +679,7 @@ func TestConvertResponsesToolsToGemini_FunctionWithoutSchema(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tools, err := convertResponsesToolsToGemini([]schemas.ResponsesTool{tt.tool}, false, schemas.Gemini, "gemini-2.5-pro")
+			tools, err := convertResponsesToolsToGemini([]schemas.ResponsesTool{tt.tool}, false, schemas.Gemini, "gemini-2.5-pro", false)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -798,7 +798,7 @@ func TestConvertResponsesToolsToGeminiCodeExecution(t *testing.T) {
 				Type:                         schemas.ResponsesToolTypeCodeInterpreter,
 				ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{},
 			},
-		}, false, schemas.Gemini, "gemini-2.5-flash")
+		}, false, schemas.Gemini, "gemini-2.5-flash", false)
 		if err != nil {
 			t.Fatalf("convertResponsesToolsToGemini error: %v", err)
 		}
@@ -820,7 +820,7 @@ func TestConvertResponsesToolsToGeminiCodeExecution(t *testing.T) {
 				Name:                  schemas.Ptr("get_weather"),
 				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
 			},
-		}, false, schemas.Gemini, "gemini-2.5-flash")
+		}, false, schemas.Gemini, "gemini-2.5-flash", false)
 		if err != nil {
 			t.Fatalf("convertResponsesToolsToGemini error: %v", err)
 		}

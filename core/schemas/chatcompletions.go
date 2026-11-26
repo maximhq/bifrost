@@ -701,12 +701,24 @@ func (t ToolFunctionParameters) MarshalJSON() ([]byte, error) {
 	if t.explicitEmptyObject && !t.hasDefinedSchemaFields() {
 		return []byte("{}"), nil
 	}
+	type Alias ToolFunctionParameters
+	// An empty properties beside a root oneOf/anyOf/allOf constrains nothing and reads
+	// as "no parameters" to some models (Gemini 3 calls the tool with {}), so omit it.
+	if (len(t.OneOf) > 0 || len(t.AnyOf) > 0 || len(t.AllOf) > 0) && (t.Properties == nil || t.Properties.Len() == 0) {
+		data, err := MarshalSorted(struct {
+			Alias
+			Properties *OrderedMap `json:"properties,omitempty"`
+		}{Alias: Alias(t)})
+		if err != nil {
+			return nil, err
+		}
+		return t.keyOrder.Apply(data)
+	}
 	if t.Properties == nil {
 		// Initialize with an empty map (not nil values) so it marshals to {} instead of null
 		// Required by OpenAI and JSON Schema spec
 		t.Properties = &OrderedMap{values: make(map[string]interface{})}
 	}
-	type Alias ToolFunctionParameters
 	data, err := MarshalSorted(Alias(t))
 	if err != nil {
 		return nil, err

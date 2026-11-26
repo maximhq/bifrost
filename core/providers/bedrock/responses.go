@@ -2915,6 +2915,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
 							return nil, err
 						}
+					} else {
+						// Nova answers 424 and Kimi K2.5 invents arguments for a root union that carries
+						// every parameter; a schema with root properties is sent as declared.
+						parameters = schemas.FlattenRootCompositionIf(parameters, parameters.Properties.Len() == 0 &&
+							!caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(capModel)))
 					}
 					schemaObject = parameters
 				} else {
@@ -4457,9 +4462,13 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 			lastMsg := &bedrockMessages[len(bedrockMessages)-1]
 			lastMsg.Content = append(pendingReasoningContentBlocks, lastMsg.Content...)
 			pendingReasoningContentBlocks = nil
+		} else if isConverseResponseRendering(ctx) {
+			// A response cut off mid-reasoning holds only reasoning; render it as returned.
+			bedrockMessages = append(bedrockMessages, BedrockMessage{Role: BedrockMessageRoleAssistant, Content: pendingReasoningContentBlocks})
+			pendingReasoningContentBlocks = nil
 		}
-		// If no assistant message to merge into, discard the reasoning blocks
-		// (they cannot exist alone in Bedrock without violating the constraint)
+		// A request has no assistant message to merge into, so the reasoning is discarded
+		// (it cannot exist alone in Bedrock without violating the constraint)
 	}
 
 	// Merge consecutive messages with the same role

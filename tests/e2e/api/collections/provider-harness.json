@@ -143282,7 +143282,7 @@
     },
     {
       "name": "67. Bedrock Converse redacted reasoning round-trip (converse-redacted-reasoning)",
-      "description": "OpenAI (gpt-5.6-*) and xAI (grok-4.6) on bedrock-runtime Converse return reasoning as\nreasoningContent.redactedContent - one opaque blob - while Anthropic and DeepSeek return\nreasoningContent.reasoningText{text,signature}. The two are mutually exclusive and replaying the\nwrong one is rejected either way: 400 on Anthropic, and on OpenAI/xAI an opaque\n\n  500 \"The system encountered an unexpected error during processing. Try your request again.\"\n\nBifrost modelled only reasoningText, so it dropped the blob on ingress, left the client holding an\nempty unsigned thinking block, and re-emitted that as reasoningContent.reasoningText.text=\"\" on the\nnext turn - earning the 500. Only reachable on turn 2, so every row here is a capture/replay pair.\n\nProduction path: POST /v1/chat/completions (and /v1/responses) -> bedrock provider ->\nconverseReasoningShape() picks the wire shape from the bedrock_reasoning_shape datasheet key,\nfalling back to family detection -> reasoningContent.redactedContent.\n\nThe \"us.\" prefix on each model id is load-bearing: a bare id routes to bedrock-mantle, and only a\ncross-region identifier reaches bedrock-runtime, where Converse lives. The blob is minted and\nvalidated by the model, so it cannot be fixtured - hence capture-then-replay through a collection\nvariable, which runners/lib/chained-vars.mjs detects so sharding keeps each pair together.\n\nThe reasoningText half of the same invariant is already covered for Anthropic-on-Bedrock by\nfolder 46 and is not duplicated here.\n\nSince November 2026 Bedrock xAI (grok-4.6, grok-4.7) answers with reasoningText whose signature carries the encrypted reasoning: a tampered one is a 400 \"invalid encrypted reasoning\", and either shape is accepted on replay. bedrock_requires_signed_reasoning falls back to true for Grok, so its signed text replays verbatim beside any blob, while OpenAI models stay blob-only. The grok rows check that the signature reaches Bedrock unchanged on /v1/responses and /v1/chat/completions (streamed and not) and on the native /bedrock converse route, and a switch row checks that grok's signed text never reaches an OpenAI model, which rejects a foreign signature with a 400.",
+      "description": "OpenAI (gpt-5.6-*) and xAI (grok-4.6) on bedrock-runtime Converse return reasoning as\nreasoningContent.redactedContent - one opaque blob - while Anthropic and DeepSeek return\nreasoningContent.reasoningText{text,signature}. The two are mutually exclusive and replaying the\nwrong one is rejected either way: 400 on Anthropic, and on OpenAI/xAI an opaque\n\n  500 \"The system encountered an unexpected error during processing. Try your request again.\"\n\nBifrost modelled only reasoningText, so it dropped the blob on ingress, left the client holding an\nempty unsigned thinking block, and re-emitted that as reasoningContent.reasoningText.text=\"\" on the\nnext turn - earning the 500. Only reachable on turn 2, so every row here is a capture/replay pair.\n\nProduction path: POST /v1/chat/completions (and /v1/responses) -> bedrock provider ->\nconverseReasoningShape() picks the wire shape from the bedrock_reasoning_shape datasheet key,\nfalling back to family detection -> reasoningContent.redactedContent.\n\nThe \"us.\" prefix on each model id is load-bearing: a bare id routes to bedrock-mantle, and only a\ncross-region identifier reaches bedrock-runtime, where Converse lives. The blob is minted and\nvalidated by the model, so it cannot be fixtured - hence capture-then-replay through a collection\nvariable, which runners/lib/chained-vars.mjs detects so sharding keeps each pair together.\n\nThe reasoningText half of the same invariant is already covered for Anthropic-on-Bedrock by\nfolder 46 and is not duplicated here.\n\nSince November 2026 Bedrock xAI (grok-4.6, grok-4.7) answers with reasoningText whose signature carries the encrypted reasoning: a tampered one is a 400 \"invalid encrypted reasoning\", and either shape is accepted on replay. bedrock_requires_signed_reasoning falls back to true for Grok, so its signed text replays verbatim beside any blob, while OpenAI models stay blob-only. The grok rows check that the signature reaches Bedrock unchanged on /v1/responses and /v1/chat/completions (streamed and not) and on the native /bedrock converse route, and a switch row checks that grok's signed text never reaches an OpenAI model, which rejects a foreign signature with a 400. A converse answer cut off at maxTokens while grok is still reasoning holds only the reasoning block; the Converse client must receive it rather than an empty content array.",
       "item": [
         {
           "name": "bedrock/us.openai.gpt-5.6-luna /v1/chat/completions turn 1: Converse redacted reasoning captured - converse-redacted-reasoning",
@@ -143453,7 +143453,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":2048}",
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":8192}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -143532,7 +143532,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":{{bedrockConverseRedactedResponsesInput}},\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":512}",
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"input\":{{bedrockConverseRedactedResponsesInput}},\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":8192}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -143609,7 +143609,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"max_tokens\":2048,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}"
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"max_tokens\":8192,\"reasoning\":{\"effort\":\"high\"},\"messages\":[{\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -143673,7 +143673,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"max_tokens\":1024,\"reasoning\":{\"effort\":\"high\"},\"messages\":{{bedrockConverseGrokChatMessages}}}"
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.6\",\"max_tokens\":8192,\"reasoning\":{\"effort\":\"high\"},\"messages\":{{bedrockConverseGrokChatMessages}}}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -143759,7 +143759,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.xai.grok-4.7\",\"input\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\",\"reasoning\":{\"effort\":\"high\"},\"include\":[\"reasoning.encrypted_content\"],\"max_output_tokens\":4096,\"stream\":true}"
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.7\",\"input\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\",\"reasoning\":{\"effort\":\"high\"},\"include\":[\"reasoning.encrypted_content\"],\"max_output_tokens\":8192,\"stream\":true}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -143835,7 +143835,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.xai.grok-4.7\",\"input\":{{grokStreamResponsesInput}},\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":1024}"
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.7\",\"input\":{{grokStreamResponsesInput}},\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":8192}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -143920,7 +143920,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.xai.grok-4.7\",\"max_tokens\":2048,\"reasoning\":{\"effort\":\"high\"},\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}"
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.7\",\"max_tokens\":8192,\"reasoning\":{\"effort\":\"high\"},\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -144006,7 +144006,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.xai.grok-4.7\",\"max_tokens\":1024,\"reasoning\":{\"effort\":\"high\"},\"messages\":{{grokStreamChatMessages}}}"
+              "raw": "{\"model\":\"bedrock/us.xai.grok-4.7\",\"max_tokens\":8192,\"reasoning\":{\"effort\":\"high\"},\"messages\":{{grokStreamChatMessages}}}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -144088,7 +144088,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":512,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"},{\"type\":\"reasoning\",\"id\":\"rs_harness_grok_signed\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"Relative speed is 133 mph after the second train leaves.\",\"signature\":\"rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.eyJoYXJuZXNzIjoiZ3Jvay1zaWduZWQtcmVhc29uaW5nIn0.c2ln\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"They meet at about 5:01pm.\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":\"Now restate the meeting time in one sentence.\"}]}"
+              "raw": "{\"model\":\"bedrock/us.openai.gpt-5.6-luna\",\"reasoning\":{\"effort\":\"high\"},\"max_output_tokens\":8192,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"},{\"type\":\"reasoning\",\"id\":\"rs_harness_grok_signed\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"Relative speed is 133 mph after the second train leaves.\",\"signature\":\"rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.eyJoYXJuZXNzIjoiZ3Jvay1zaWduZWQtcmVhc29uaW5nIn0.c2ln\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"They meet at about 5:01pm.\"}]},{\"type\":\"message\",\"role\":\"user\",\"content\":\"Now restate the meeting time in one sentence.\"}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -144170,7 +144170,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}],\"inferenceConfig\":{\"maxTokens\":2048},\"additionalModelRequestFields\":{\"reasoning\":{\"effort\":\"high\"}}}"
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}],\"inferenceConfig\":{\"maxTokens\":8192},\"additionalModelRequestFields\":{\"reasoning\":{\"effort\":\"high\"}}}"
             },
             "url": {
               "raw": "{{baseUrl}}/bedrock/model/us.xai.grok-4.7/converse",
@@ -144229,7 +144229,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"messages\":{{grokConverseMessages}},\"inferenceConfig\":{\"maxTokens\":1024},\"additionalModelRequestFields\":{\"reasoning\":{\"effort\":\"high\"}}}"
+              "raw": "{\"messages\":{{grokConverseMessages}},\"inferenceConfig\":{\"maxTokens\":8192},\"additionalModelRequestFields\":{\"reasoning\":{\"effort\":\"high\"}}}"
             },
             "url": {
               "raw": "{{baseUrl}}/bedrock/model/us.xai.grok-4.7/converse",
@@ -144317,6 +144317,60 @@
               }
             }
           ]
+        },
+        {
+          "name": "bedrock/us.xai.grok-4.7 /bedrock converse cut off mid-reasoning: the reasoning block still reaches the Converse client - converse-redacted-reasoning",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var content = ((body.output || {}).message || {}).content || [];",
+                  "pm.test('the answer stopped at maxTokens before any text', function () {",
+                  "  pm.expect(body.stopReason, 'grok finished inside 256 tokens, so this case cannot pin a reasoning-only answer: ' + text.slice(0, 600)).to.equal('max_tokens');",
+                  "});",
+                  "pm.test('the reasoning Bedrock returned is not dropped from a reasoning-only answer', function () {",
+                  "  var reasoning = content.filter(function (b) { return b && b.reasoningContent; });",
+                  "  pm.expect(reasoning, 'content: ' + JSON.stringify(content).slice(0, 600)).to.have.lengthOf.at.least(1);",
+                  "  var rc = reasoning[0].reasoningContent;",
+                  "  var signed = rc.reasoningText && typeof rc.reasoningText.signature === 'string' && rc.reasoningText.signature.length > 0;",
+                  "  var redacted = typeof rc.redactedContent === 'string' && rc.redactedContent.length > 0;",
+                  "  pm.expect(signed || redacted, 'reasoning block carries neither a signature nor redactedContent: ' + JSON.stringify(rc).slice(0, 400)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"messages\":[{\"role\":\"user\",\"content\":[{\"text\":\"Two trains 140 miles apart head toward each other; one leaves at 3:47pm at 62mph, the other at 4:19pm at 71mph. Work out when they meet, step by step.\"}]}],\"inferenceConfig\":{\"maxTokens\":256},\"additionalModelRequestFields\":{\"reasoning\":{\"effort\":\"high\"}}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/us.xai.grok-4.7/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "us.xai.grok-4.7",
+                "converse"
+              ]
+            }
+          }
         },
         {
           "name": "azure/gpt-5.6-luna /bedrock converse turn 1: foreign redactedContent is standard base64 beside a toolUse (#7514) - converse-redacted-reasoning",
@@ -184805,7 +184859,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]}"
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_tokens\":8192,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -184849,7 +184903,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}],\"stream\":true}"
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_tokens\":8192,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}],\"stream\":true}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -184892,7 +184946,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}]}"
+              "raw": "{\"model\":\"gemini/gemini-3.7-flash\",\"max_output_tokens\":8192,\"input\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"},{\"type\":\"function_call_output\",\"call_id\":\"c1\",\"output\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -184935,7 +184989,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"vertex/gemini-3.7-flash\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]}"
+              "raw": "{\"model\":\"vertex/gemini-3.7-flash\",\"max_tokens\":8192,\"messages\":[{\"role\":\"user\",\"content\":\"Fetch the spec, then reply ok.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"command\\\":\\\"cat spec.json\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"c1\",\"content\":\"{\\\"schema\\\":{\\\"$ref\\\":\\\"#/components/schemas/SOM_computer_post_response\\\"}}\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"bash\",\"description\":\"run\",\"parameters\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -279279,7 +279333,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-chat\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 8192,\n  \"prompt_cache_key\": \"harness-session-chat\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -279350,7 +279404,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"prompt_cache_key\": \"harness-session-chat-stream\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 8192,\n  \"stream\": true,\n  \"prompt_cache_key\": \"harness-session-chat-stream\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -279421,7 +279475,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_output_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-responses\",\n  \"input\": \"Say ok.\"\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_output_tokens\": 8192,\n  \"prompt_cache_key\": \"harness-session-responses\",\n  \"input\": \"Say ok.\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -279491,7 +279545,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_output_tokens\": 64,\n  \"stream\": true,\n  \"prompt_cache_key\": \"harness-session-responses-stream\",\n  \"input\": \"Say ok.\"\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_output_tokens\": 8192,\n  \"stream\": true,\n  \"prompt_cache_key\": \"harness-session-responses-stream\",\n  \"input\": \"Say ok.\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -279561,7 +279615,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"metadata\": {\n    \"user_id\": \"harness-session-user\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 8192,\n  \"metadata\": {\n    \"user_id\": \"harness-session-user\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -279632,7 +279686,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  },\n  \"session_id\": \"harness-session-genai\"\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 8192\n  },\n  \"session_id\": \"harness-session-genai\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.7-flash:generateContent",
@@ -279705,7 +279759,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  },\n  \"session_id\": 12345\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 8192\n  },\n  \"session_id\": 12345\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.7-flash:generateContent",
@@ -279778,7 +279832,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-plain-key\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 8192,\n  \"prompt_cache_key\": \"harness-session-plain-key\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -279845,7 +279899,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-gemini-api\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"max_tokens\": 8192,\n  \"prompt_cache_key\": \"harness-session-gemini-api\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -329259,7 +329313,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the ApplyPatch tool to add the line hello to README.md.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"custom\": {\n        \"name\": \"ApplyPatch\",\n        \"description\": \"Apply a patch to a file in the workspace\",\n        \"format\": {\n          \"type\": \"grammar\",\n          \"grammar\": {\n            \"syntax\": \"lark\",\n            \"definition\": \"start: PATCH\\nPATCH: /[\\\\s\\\\S]+/\"\n          }\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"custom\": {\n      \"name\": \"ApplyPatch\"\n    }\n  },\n  \"max_tokens\": 1024\n}"
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use the ApplyPatch tool to add the line hello to README.md.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"custom\": {\n        \"name\": \"ApplyPatch\",\n        \"description\": \"Apply a patch to a file in the workspace\",\n        \"format\": {\n          \"type\": \"grammar\",\n          \"grammar\": {\n            \"syntax\": \"lark\",\n            \"definition\": \"start: PATCH\\nPATCH: /[\\\\s\\\\S]+/\"\n          }\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"custom\": {\n      \"name\": \"ApplyPatch\"\n    }\n  },\n  \"max_tokens\": 8192\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -354001,10 +354055,10 @@
     },
     {
       "name": "382. Root-level union tool schemas reach OpenAI and Gemini as declared (tool-schema-union)",
-      "description": "MCP tools whose inputSchema is a root-level oneOf (a tagged union, allowed by the 2026-07-28 MCP spec) used to lose every parameter at discovery. Bifrost now keeps the union, so these providers receive it as declared instead of an empty object. Anthropic and Bedrock Claude flatten it (folders 99 and 222); these cases pin the providers that receive it unflattened: OpenAI on /v1/chat/completions and /v1/responses, and Gemini on gemini/ and vertex/. A 400 here means that provider rejects a root union and needs schemas.FlattenRootComposition in its converter.",
+      "description": "MCP tools whose inputSchema is a root-level oneOf (a tagged union, allowed by the 2026-07-28 MCP spec) used to lose every parameter at discovery. Bifrost now keeps the union and never writes an empty properties beside it. Anthropic and Bedrock Claude flatten it (folders 99 and 222). Elsewhere a union is kept only where the model accepts it in every tool-choice mode (supports_root_schema_composition): OpenAI and Azure Chat Completions reject it on every model and Responses on gpt-4.x, gpt-4o and the o-series, Gemini 2.x sees no parameters in it, Gemini 3 answers 400 to it under a forced call (ANY or VALIDATED), Nova answers 424 and Kimi K2.5 invents arguments, so those get one merged object. gpt-5+ on Responses, on Bedrock and on other chat hosts such as OpenRouter get the union as declared. The cases force the call so a clarifying question cannot stand in for one.",
       "item": [
         {
-          "name": "openai/gpt-4o-mini /v1/chat/completions root oneOf tool - tool-schema-union",
+          "name": "openai/gpt-4o-mini /v1/chat/completions root oneOf tool is flattened for a model that rejects it - tool-schema-union",
           "event": [
             {
               "listen": "test",
@@ -354012,18 +354066,17 @@
                 "type": "text/javascript",
                 "exec": [
                   "var text = pm.response.text() || '';",
-                  "pm.test('the provider accepts the root oneOf tool schema', function () {",
+                  "pm.test('a model that rejects a root union accepts the tool', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
-                  "pm.test('the tool reaches the provider with both alternatives', function () {",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
                   "  var raw = pm.response.json().extra_fields.raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
-                  "  var branches = (raw.tools[0].function.parameters || {}).oneOf;",
-                  "  pm.expect(branches, 'raw_request: ' + JSON.stringify(raw)).to.be.an('array').with.lengthOf(2);",
-                  "  pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
-                  "  pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
-                  "  pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
-                  "  branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+                  "  var params = raw.tools[0].function.parameters || {};",
+                  "  pm.expect(params.oneOf, 'raw_request: ' + JSON.stringify(raw)).to.equal(undefined);",
+                  "  pm.expect(params.type).to.equal('object');",
+                  "  pm.expect(Object.keys(params.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(params.required).to.eql(['kind']);",
                   "});"
                 ]
               }
@@ -354043,7 +354096,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -354059,7 +354112,118 @@
           }
         },
         {
-          "name": "openai/gpt-4o-mini /v1/responses root oneOf tool - tool-schema-union",
+          "name": "openai/gpt-4o-mini /v1/responses root oneOf tool is flattened for a model that rejects it - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('a model that rejects a root union accepts the tool', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var params = raw.tools[0].parameters || {};",
+                  "  pm.expect(params.oneOf, 'raw_request: ' + JSON.stringify(raw)).to.equal(undefined);",
+                  "  pm.expect(params.type).to.equal('object');",
+                  "  pm.expect(Object.keys(params.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(params.required).to.eql(['kind']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 8192,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_report\",\n      \"description\": \"Fetch a report.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"sales\"\n              },\n              \"region\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"inventory\"\n              },\n              \"warehouse\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4-mini /v1/chat/completions root oneOf tool is kept on the Responses API and flattened on Chat Completions - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var raw = pm.response.json().extra_fields.raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "// compat may send this chat request to the Responses API; Chat Completions rejects a root union on every model.",
+                  "var onResponses = Array.isArray(raw.input) || typeof raw.input === 'string';",
+                  "pm.test('the union is kept on the Responses API and flattened on Chat Completions', function () {",
+                  "  var tool = (raw.tools || [])[0] || {};",
+                  "  var params = (onResponses ? tool.parameters : (tool.function || {}).parameters) || {};",
+                  "  if (onResponses) {",
+                  "    pm.expect(params.oneOf, 'Responses takes the union on gpt-5+: ' + JSON.stringify(raw).slice(0, 800)).to.be.an('array').with.lengthOf(2);",
+                  "  } else {",
+                  "    pm.expect(params.oneOf, 'Chat Completions rejects a root union: ' + JSON.stringify(raw).slice(0, 800)).to.equal(undefined);",
+                  "    pm.expect(Object.keys(params.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4-mini /v1/responses root oneOf tool reaches a model that accepts it as declared - tool-schema-union",
           "event": [
             {
               "listen": "test",
@@ -354098,7 +354262,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_report\",\n      \"description\": \"Fetch a report.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"sales\"\n              },\n              \"region\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"inventory\"\n              },\n              \"warehouse\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_output_tokens\": 8192,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_report\",\n      \"description\": \"Fetch a report.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"sales\"\n              },\n              \"region\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"inventory\"\n              },\n              \"warehouse\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -354113,7 +354277,7 @@
           }
         },
         {
-          "name": "gemini/gemini-2.5-flash /v1/chat/completions root oneOf tool - tool-schema-union",
+          "name": "openai/gpt-5-mini /v1/responses root oneOf tool reaches a gpt-5 model as declared - tool-schema-union",
           "event": [
             {
               "listen": "test",
@@ -354127,10 +354291,8 @@
                   "pm.test('the tool reaches the provider with both alternatives', function () {",
                   "  var raw = pm.response.json().extra_fields.raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
-                  "  var decl = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; })[0];",
-                  "  pm.expect(decl, 'raw_request: ' + JSON.stringify(raw)).to.be.an('object');",
-                  "  var branches = (decl.parametersJsonSchema || {}).oneOf;",
-                  "  pm.expect(branches, 'the root oneOf: ' + JSON.stringify(decl)).to.be.an('array').with.lengthOf(2);",
+                  "  var branches = (raw.tools[0].parameters || {}).oneOf;",
+                  "  pm.expect(branches, 'raw_request: ' + JSON.stringify(raw)).to.be.an('array').with.lengthOf(2);",
                   "  pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
                   "  pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
                   "  pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
@@ -354154,7 +354316,66 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"max_output_tokens\": 8192,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_report\",\n      \"description\": \"Fetch a report.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"sales\"\n              },\n              \"region\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"inventory\"\n              },\n              \"warehouse\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /v1/chat/completions root oneOf tool is flattened for a Gemini 2 model that cannot read it - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = body.extra_fields && body.extra_fields.raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
+                  "  var schema = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; }).map(function (d) { return d.parametersJsonSchema; })[0];",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(schema.oneOf, 'the root union must be flattened: ' + JSON.stringify(schema)).to.equal(undefined);",
+                  "  pm.expect(Object.keys(schema.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(schema.required).to.eql(['kind']);",
+                  "});",
+                  "pm.test('the model fills the tool arguments from the schema', function () {",
+                  "  var args = (((body.choices || [])[0] || {}).message || {}).tool_calls && body.choices[0].message.tool_calls[0] && body.choices[0].message.tool_calls[0].function.arguments;",
+                  "  pm.expect(args, 'no tool call: ' + text.slice(0, 600)).to.be.a('string');",
+                  "  var parsed = JSON.parse(args);",
+                  "  pm.expect(parsed.kind, 'arguments: ' + args).to.equal('sales');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Fetch the sales report for the EMEA region using the fetch_report tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"fetch_report\"\n    }\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -354170,7 +354391,7 @@
           }
         },
         {
-          "name": "vertex/gemini-2.5-flash /v1/chat/completions root oneOf tool - tool-schema-union",
+          "name": "vertex/gemini-2.5-flash /v1/chat/completions root oneOf tool is flattened for a Gemini 2 model that cannot read it - tool-schema-union",
           "event": [
             {
               "listen": "test",
@@ -354178,20 +354399,23 @@
                 "type": "text/javascript",
                 "exec": [
                   "var text = pm.response.text() || '';",
-                  "pm.test('the provider accepts the root oneOf tool schema', function () {",
-                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = body.extra_fields && body.extra_fields.raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
+                  "  var schema = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; }).map(function (d) { return d.parametersJsonSchema; })[0];",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(schema.oneOf, 'the root union must be flattened: ' + JSON.stringify(schema)).to.equal(undefined);",
+                  "  pm.expect(Object.keys(schema.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(schema.required).to.eql(['kind']);",
                   "});",
-                  "pm.test('the tool reaches the provider with both alternatives', function () {",
-                  "  var raw = pm.response.json().extra_fields.raw_request;",
-                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
-                  "  var decl = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; })[0];",
-                  "  pm.expect(decl, 'raw_request: ' + JSON.stringify(raw)).to.be.an('object');",
-                  "  var branches = (decl.parametersJsonSchema || {}).oneOf;",
-                  "  pm.expect(branches, 'the root oneOf: ' + JSON.stringify(decl)).to.be.an('array').with.lengthOf(2);",
-                  "  pm.expect(branches.map(function (b) { return b.properties.kind.const; })).to.eql(['sales', 'inventory']);",
-                  "  pm.expect(Object.keys(branches[0].properties).sort()).to.eql(['kind', 'region']);",
-                  "  pm.expect(Object.keys(branches[1].properties).sort()).to.eql(['kind', 'warehouse']);",
-                  "  branches.forEach(function (b) { pm.expect(b.required).to.eql(['kind']); });",
+                  "pm.test('the model fills the tool arguments from the schema', function () {",
+                  "  var args = (((body.choices || [])[0] || {}).message || {}).tool_calls && body.choices[0].message.tool_calls[0] && body.choices[0].message.tool_calls[0].function.arguments;",
+                  "  pm.expect(args, 'no tool call: ' + text.slice(0, 600)).to.be.a('string');",
+                  "  var parsed = JSON.parse(args);",
+                  "  pm.expect(parsed.kind, 'arguments: ' + args).to.equal('sales');",
                   "});"
                 ]
               }
@@ -354211,7 +354435,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Fetch the sales report for the EMEA region using the fetch_report tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"fetch_report\"\n    }\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -354222,6 +354446,304 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.8-flash /v1/chat/completions root oneOf tool is flattened for Gemini 3, which rejects it under a forced call - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = body.extra_fields && body.extra_fields.raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
+                  "  var schema = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; }).map(function (d) { return d.parametersJsonSchema; })[0];",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(schema.oneOf, 'the root union must be flattened: ' + JSON.stringify(schema)).to.equal(undefined);",
+                  "  pm.expect(Object.keys(schema.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(schema.required).to.eql(['kind']);",
+                  "});",
+                  "pm.test('the model fills the tool arguments from the schema', function () {",
+                  "  var args = (((body.choices || [])[0] || {}).message || {}).tool_calls && body.choices[0].message.tool_calls[0] && body.choices[0].message.tool_calls[0].function.arguments;",
+                  "  pm.expect(args, 'no tool call: ' + text.slice(0, 600)).to.be.a('string');",
+                  "  var parsed = JSON.parse(args);",
+                  "  pm.expect(parsed.kind, 'arguments: ' + args).to.equal('sales');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Fetch the sales report for the EMEA region using the fetch_report tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"fetch_report\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.8-flash /v1/responses root oneOf tool is flattened for Gemini 3, which rejects it under a forced call - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = body.extra_fields && body.extra_fields.raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
+                  "  var schema = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; }).map(function (d) { return d.parametersJsonSchema; })[0];",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(schema.oneOf, 'the root union must be flattened: ' + JSON.stringify(schema)).to.equal(undefined);",
+                  "  pm.expect(Object.keys(schema.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(schema.required).to.eql(['kind']);",
+                  "});",
+                  "pm.test('the model fills the tool arguments from the schema', function () {",
+                  "  var args = ((body.output || []).filter(function (o) { return o.type === 'function_call'; })[0] || {}).arguments;",
+                  "  pm.expect(args, 'no tool call: ' + text.slice(0, 600)).to.be.a('string');",
+                  "  var parsed = JSON.parse(args);",
+                  "  pm.expect(parsed.kind, 'arguments: ' + args).to.equal('sales');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"max_output_tokens\": 8192,\n  \"input\": \"Fetch the sales report for the EMEA region using the fetch_report tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_report\",\n      \"description\": \"Fetch a report.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"sales\"\n              },\n              \"region\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"inventory\"\n              },\n              \"warehouse\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          }\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"fetch_report\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/gemini-3.7-flash /v1/chat/completions root oneOf tool is flattened for Gemini 3, which rejects it under a forced call - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = body.extra_fields && body.extra_fields.raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
+                  "  var schema = (((raw.tools || [])[0] || {}).functionDeclarations || []).filter(function (d) { return d.name === 'fetch_report'; }).map(function (d) { return d.parametersJsonSchema; })[0];",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(schema.oneOf, 'the root union must be flattened: ' + JSON.stringify(schema)).to.equal(undefined);",
+                  "  pm.expect(Object.keys(schema.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(schema.required).to.eql(['kind']);",
+                  "});",
+                  "pm.test('the model fills the tool arguments from the schema', function () {",
+                  "  var args = (((body.choices || [])[0] || {}).message || {}).tool_calls && body.choices[0].message.tool_calls[0] && body.choices[0].message.tool_calls[0].function.arguments;",
+                  "  pm.expect(args, 'no tool call: ' + text.slice(0, 600)).to.be.a('string');",
+                  "  var parsed = JSON.parse(args);",
+                  "  pm.expect(parsed.kind, 'arguments: ' + args).to.equal('sales');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Fetch the sales report for the EMEA region using the fetch_report tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"fetch_report\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.amazon.nova-lite-v1:0 /v1/chat/completions root oneOf tool is flattened for Nova, which answers 424 to it - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = body.extra_fields && body.extra_fields.raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
+                  "  var schema = ((((raw.toolConfig || {}).tools || [])[0] || {}).toolSpec || {}).inputSchema && raw.toolConfig.tools[0].toolSpec.inputSchema.json;",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(schema.oneOf, 'the root union must be flattened: ' + JSON.stringify(schema)).to.equal(undefined);",
+                  "  pm.expect(Object.keys(schema.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(schema.required).to.eql(['kind']);",
+                  "});",
+                  "pm.test('the model fills the tool arguments from the schema', function () {",
+                  "  var args = (((body.choices || [])[0] || {}).message || {}).tool_calls && body.choices[0].message.tool_calls[0] && body.choices[0].message.tool_calls[0].function.arguments;",
+                  "  pm.expect(args, 'no tool call: ' + text.slice(0, 600)).to.be.a('string');",
+                  "  var parsed = JSON.parse(args);",
+                  "  pm.expect(parsed.kind, 'arguments: ' + args).to.equal('sales');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"max_tokens\": 8192,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Fetch the sales report for the EMEA region using the fetch_report tool.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"fetch_report\",\n        \"description\": \"Fetch a report.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"sales\"\n                },\n                \"region\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"kind\": {\n                  \"type\": \"string\",\n                  \"const\": \"inventory\"\n                },\n                \"warehouse\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"kind\"\n              ]\n            }\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"fetch_report\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.amazon.nova-lite-v1:0 /v1/responses root oneOf tool is flattened for Nova, which answers 424 to it - tool-schema-union",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Status code is 200', function () { pm.expect(pm.response.code, 'failed: ' + text.slice(0, 600)).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = pm.response.json();",
+                  "var raw = body.extra_fields && body.extra_fields.raw_request;",
+                  "if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "pm.test('the root union reaches the model flattened into one object', function () {",
+                  "  var schema = ((((raw.toolConfig || {}).tools || [])[0] || {}).toolSpec || {}).inputSchema && raw.toolConfig.tools[0].toolSpec.inputSchema.json;",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw).slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(schema.oneOf, 'the root union must be flattened: ' + JSON.stringify(schema)).to.equal(undefined);",
+                  "  pm.expect(Object.keys(schema.properties || {}).sort()).to.eql(['kind', 'region', 'warehouse']);",
+                  "  pm.expect(schema.required).to.eql(['kind']);",
+                  "});",
+                  "pm.test('the model fills the tool arguments from the schema', function () {",
+                  "  var args = ((body.output || []).filter(function (o) { return o.type === 'function_call'; })[0] || {}).arguments;",
+                  "  pm.expect(args, 'no tool call: ' + text.slice(0, 600)).to.be.a('string');",
+                  "  var parsed = JSON.parse(args);",
+                  "  pm.expect(parsed.kind, 'arguments: ' + args).to.equal('sales');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-lite-v1:0\",\n  \"max_output_tokens\": 8192,\n  \"input\": \"Fetch the sales report for the EMEA region using the fetch_report tool.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"fetch_report\",\n      \"description\": \"Fetch a report.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"sales\"\n              },\n              \"region\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"kind\": {\n                \"type\": \"string\",\n                \"const\": \"inventory\"\n              },\n              \"warehouse\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"kind\"\n            ]\n          }\n        ]\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"fetch_report\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }

@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"encoding/json"
 	"math"
 	"strings"
 	"testing"
@@ -623,4 +624,97 @@ func TestToGeminiChatCompletionRequest_ToolResultNamesMedia(t *testing.T) {
 	assert.Contains(t, response, "chart below")
 	assert.Contains(t, response, "[image/png")
 	assert.Contains(t, response, "[audio/mp3")
+}
+
+// Gemini 2.x sees no parameters in a root oneOf, and Gemini 3 reads one only in AUTO mode
+// (ANY and VALIDATED answer 400), so a union carrying every parameter is flattened unless a
+// datasheet row says the model accepts it; then it goes as declared, with no empty
+// properties beside it. Probed against the Gemini API 2026-11-27.
+func TestToGeminiRequests_RootSchemaComposition(t *testing.T) {
+	const union = `{"type":"object","oneOf":[
+		{"type":"object","properties":{"kind":{"type":"string","const":"sales"},"region":{"type":"string"}},"required":["kind"]},
+		{"type":"object","properties":{"kind":{"type":"string","const":"inventory"},"warehouse":{"type":"string"}},"required":["kind"]}]}`
+	params := func(t *testing.T) *schemas.ToolFunctionParameters {
+		var p schemas.ToolFunctionParameters
+		require.NoError(t, schemas.Unmarshal([]byte(union), &p))
+		return &p
+	}
+	requireSchema := func(t *testing.T, raw []byte, kept bool) {
+		t.Helper()
+		if kept {
+			require.Equal(t, int64(2), gjson.GetBytes(raw, "oneOf.#").Int(), "the union must reach Gemini as declared: %s", raw)
+			require.False(t, gjson.GetBytes(raw, "properties").Exists(), "an empty properties beside the union hides it from Gemini: %s", raw)
+			return
+		}
+		require.False(t, gjson.GetBytes(raw, "oneOf").Exists(), "the union must be flattened: %s", raw)
+		require.Equal(t, `["kind","region","warehouse"]`, gjson.GetBytes(raw, "@this.properties|@keys").Raw)
+	}
+	chat := func(t *testing.T, provider schemas.ModelProvider, model string) []byte {
+		req, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+			Provider: provider, Model: model,
+			Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "fetch_report", Parameters: params(t)}}}},
+		})
+		require.NoError(t, err)
+		raw, ok := req.Tools[0].FunctionDeclarations[0].ParametersJSONSchema.(json.RawMessage)
+		require.True(t, ok, "parametersJsonSchema is not raw JSON")
+		return raw
+	}
+	responses := func(t *testing.T, provider schemas.ModelProvider, model string) []byte {
+		req, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+			Provider: provider, Model: model,
+			Input: []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type: schemas.ResponsesToolTypeFunction, Name: new("fetch_report"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params(t)},
+			}}},
+		})
+		require.NoError(t, err)
+		raw, ok := req.Tools[0].FunctionDeclarations[0].ParametersJSONSchema.(json.RawMessage)
+		require.True(t, ok, "parametersJsonSchema is not raw JSON")
+		return raw
+	}
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		kept     bool
+	}{
+		{schemas.Gemini, "gemini-2.5-flash", false},
+		{schemas.Vertex, "gemini-2.5-pro", false},
+		{schemas.Gemini, "gemini-3.8-flash", false},
+		{schemas.Vertex, "gemini-3.7-flash", false},
+	} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			requireSchema(t, chat(t, tc.provider, tc.model), tc.kept)
+			requireSchema(t, responses(t, tc.provider, tc.model), tc.kept)
+		})
+	}
+
+	t.Run("a union beside root properties is sent as declared", func(t *testing.T) {
+		var p schemas.ToolFunctionParameters
+		require.NoError(t, schemas.Unmarshal([]byte(`{"type":"object","properties":{"query":{"type":"string"}},"anyOf":[{"type":"object","minProperties":1}],"required":["query"]}`), &p))
+		req, err := gemini.ToGeminiChatCompletionRequest(nil, &schemas.BifrostChatRequest{
+			Provider: schemas.Gemini, Model: "gemini-2.5-flash",
+			Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "search", Parameters: &p}}}},
+		})
+		require.NoError(t, err)
+		raw, _ := req.Tools[0].FunctionDeclarations[0].ParametersJSONSchema.(json.RawMessage)
+		require.Equal(t, int64(1), gjson.GetBytes(raw, "anyOf.#").Int(), "%s", raw)
+		require.True(t, gjson.GetBytes(raw, "properties.query").Exists(), "%s", raw)
+	})
+
+	t.Run("datasheet row overrides the fallback", func(t *testing.T) {
+		rows := map[string]bool{"gemini-2.5-flash": true, "gemini-3.8-flash": true}
+		schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+			if supported, ok := rows[model]; ok {
+				return &schemas.ModelCapabilities{SupportsRootSchemaComposition: new(supported)}
+			}
+			return nil
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+		requireSchema(t, chat(t, schemas.Gemini, "gemini-2.5-flash"), true)
+		requireSchema(t, responses(t, schemas.Vertex, "gemini-3.8-flash"), true)
+		requireSchema(t, chat(t, schemas.Gemini, "gemini-3.7-flash"), false)
+	})
 }
