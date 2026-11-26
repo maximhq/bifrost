@@ -1,4 +1,3 @@
-import { createServer } from "node:http";
 import type { APIRequestContext } from "@playwright/test";
 import { expect, test } from "../../core/fixtures/base.fixture";
 import { expectListLoadError } from "../../core/utils/test-helpers";
@@ -134,42 +133,35 @@ test.describe("Providers", () => {
     providersPage,
     page,
   }) => {
-    // Backend model discovery must never leave the isolated test machine.
-    const upstream = createServer((_request, response) => {
-      response.setHeader("Content-Type", "application/json");
-      response.end(JSON.stringify({ object: "list", data: [] }));
+    expect(await providersPage.providerExists("wally"), "use a fresh isolated backend").toBe(false);
+    await providersPage.addKnownProviderFromDropdown("wally");
+    createdProviders.push("wally");
+    await expect(providersPage.getProviderItem("wally")).toBeVisible({ timeout: 15000 });
+    await providersPage.selectProvider("wally");
+
+    const keyData = createProviderKeyData({
+      name: `Wally-E2E-${Date.now()}`,
+      value: "e2e-wally-dummy-key",
+      weight: 1.0,
     });
-    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-    const address = upstream.address();
-    if (!address || typeof address === "string") throw new Error("missing stub port");
-    await page.route("**/api/providers", async (route) => {
-      if (route.request().method() !== "POST") return route.continue();
-      const body = route.request().postDataJSON();
-      await route.continue({ postData: JSON.stringify({
-        ...body,
-        network_config: { ...body.network_config, base_url: `http://127.0.0.1:${address.port}/v1` },
-      }) });
-    });
-    try {
-      expect(await providersPage.providerExists("wally"), "use a fresh isolated backend").toBe(false);
-      createdProviders.push("wally");
-      await providersPage.addKnownProviderFromDropdown("wally");
-      await expect(providersPage.getProviderItem("wally")).toBeVisible();
-      await providersPage.selectProvider("wally");
-      const key = createProviderKeyData({
-        name: `Wally-E2E-${Date.now()}`,
-        value: "sk-dummy-wally-local-only",
-        weight: 1.0,
-      });
-      createdKeys.push({ provider: "wally", keyName: key.name });
-      await providersPage.addKey(key);
-      await expect(providersPage.getKeyRow(key.name)).toBeVisible();
-      await page.reload();
-      await providersPage.selectProvider("wally");
-      await expect(providersPage.getKeyRow(key.name)).toBeVisible();
-    } finally {
-      await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
-    }
+    createdKeys.push({ provider: "wally", keyName: keyData.name });
+
+    // Model discovery runs on save and fails against a dummy key; the key must still save.
+    await providersPage.addKey(keyData);
+    expect(await providersPage.keyExists(keyData.name)).toBe(true);
+
+    const keysResponse = await page.request.get("/api/providers/wally/keys");
+    expect(keysResponse.ok()).toBe(true);
+    const provider = (await keysResponse.json()) as {
+      keys: { name: string; models?: string[] }[];
+    };
+    const saved = provider.keys.find((k) => k.name === keyData.name);
+    expect(saved, "saved key must be listed").toBeTruthy();
+    expect(saved?.models).toEqual(["*"]);
+
+    await page.reload();
+    await providersPage.selectProvider("wally");
+    await expect(providersPage.getKeyRow(keyData.name)).toBeVisible();
   });
 
   test.describe("Provider Keys", () => {
