@@ -248,7 +248,7 @@ make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BA
 
 ## Provider-reported zero cost
 
-Folder 390 pins that a provider's zero `usage.cost` reaches the client as
+Folder 391 pins that a provider's zero `usage.cost` reaches the client as
 `"cost": {"total_cost": 0}` and not as `"cost": {}`. The fixture model `upstream-zero-cost`
 answers like `upstream-ok` and reports `usage.cost: 0`. The native `/v1/chat/completions` cases
 check the non-streaming response and the streamed usage chunk; the OpenAI SDK route case checks

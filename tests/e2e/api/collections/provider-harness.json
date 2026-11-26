@@ -352077,11 +352077,11 @@
       ]
     },
     {
-      "name": "390. Provider-reported zero cost keeps total_cost (zero provider cost) (#9000 / PR #9006)",
-      "description": "Local fixture regression for #9000, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture model upstream-zero-cost answers like upstream-ok and reports usage.cost as a bare 0, as OpenCode Zen does for a request inside a plan. BifrostCost decodes that into TotalCost 0, and before the fix every BifrostCost field was omitempty, so the native routes returned \"cost\": {} and a client could not tell a free request from one with no reported cost. 390.1 and 390.2 pin cost {\"total_cost\": 0} on the native /v1/chat/completions route, non-streaming and on the streamed usage chunk. 390.3 pins that the OpenAI SDK route, which flattens cost to the bare total, still answers cost 0 (green before and after). Setup and scoped run commands are in tests/e2e/api/README.md under Provider-reported zero cost.",
+      "name": "391. Provider-reported zero cost keeps total_cost (zero provider cost) (#9000 / PR #9006)",
+      "description": "Local fixture regression for #9000, no live provider calls. Start provider-error-fixture.mjs and an isolated gateway using provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture model upstream-zero-cost answers like upstream-ok and reports usage.cost as a bare 0, as OpenCode Zen does for a request inside a plan. BifrostCost decodes that into TotalCost 0, and before the fix every BifrostCost field was omitempty, so the native routes returned \"cost\": {} and a client could not tell a free request from one with no reported cost. 391.1 and 391.2 pin cost {\"total_cost\": 0} on the native /v1/chat/completions route, non-streaming and on the streamed usage chunk. 391.3 pins that the OpenAI SDK route, which flattens cost to the bare total, still answers cost 0 (green before and after). Setup and scoped run commands are in tests/e2e/api/README.md under Provider-reported zero cost.",
       "item": [
         {
-          "name": "390.1 openai openai/upstream-zero-cost keeps a zero usage.cost as total_cost 0 (zero provider cost) - #9000",
+          "name": "391.1 openai openai/upstream-zero-cost keeps a zero usage.cost as total_cost 0 (zero provider cost) - #9000",
           "event": [
             {
               "listen": "prerequest",
@@ -352137,7 +352137,7 @@
           }
         },
         {
-          "name": "390.2 openai openai/upstream-zero-cost stream usage chunk keeps a zero cost as total_cost 0 (zero provider cost) - #9000",
+          "name": "391.2 openai openai/upstream-zero-cost stream usage chunk keeps a zero cost as total_cost 0 (zero provider cost) - #9000",
           "event": [
             {
               "listen": "prerequest",
@@ -352200,7 +352200,7 @@
           }
         },
         {
-          "name": "390.3 openai upstream-zero-cost keeps a zero cost on the OpenAI SDK route (zero provider cost) - #9000",
+          "name": "391.3 openai upstream-zero-cost keeps a zero cost on the OpenAI SDK route (zero provider cost) - #9000",
           "event": [
             {
               "listen": "prerequest",
