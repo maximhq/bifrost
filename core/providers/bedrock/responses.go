@@ -2688,7 +2688,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 				} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
 					effort := bifrostReq.Params.Reasoning.Effort
 					if config.field == schemas.FieldReasoningEffort && effort != nil && *effort == schemas.ReasoningEffortNone {
-						// An explicit disable takes precedence over a co-present budget on flat-effort models.
+						// An explicit "none" must not be replaced by a budget-derived effort.
 						config.set(bedrockReq.AdditionalModelRequestFields, caps, effort)
 					} else {
 						// Converse exposes no token budget for these models, so express the

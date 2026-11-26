@@ -840,7 +840,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			} else if config := resolveConverseReasoningEffort(ctx, caps); config.field != "" {
 				effort := bifrostReq.Params.Reasoning.Effort
 				if config.field == schemas.FieldReasoningEffort && effort != nil && *effort == schemas.ReasoningEffortNone {
-					// An explicit disable takes precedence over a co-present budget on flat-effort models.
+					// An explicit "none" must not be replaced by a budget-derived effort.
 					config.set(bedrockReq.AdditionalModelRequestFields, caps, effort)
 				} else {
 					// Converse exposes no token budget for these models, so express the
@@ -3565,8 +3565,7 @@ var (
 	bedrockConverseKimiEffortLevels = &schemas.EffortControl{
 		Levels: []string{"none", "low", "medium", "high", "xhigh", "max"},
 	}
-	// Preserve explicit "none". Model selection or fallback can rarely route it
-	// to a GLM model that rejects it; that validation error is left to the provider.
+	// Omit "none" for GLM; always-on models such as GLM 5.3 reject it.
 	bedrockConverseGLMEffortLevels = &schemas.EffortControl{
 		Levels: []string{"low", "medium", "high", "xhigh", "max"},
 	}
@@ -3593,6 +3592,10 @@ func resolveConverseReasoningEffort(ctx *schemas.BifrostContext, caps schemas.Mo
 	case schemas.IsGrokModel(caps.Model()):
 		return converseEffortConfig{field: "reasoning", levels: bedrockConverseGrokEffortLevels}
 	case schemas.IsKimiModel(caps.Model()):
+		// K2 Thinking effort support is unverified; keep its Converse request unchanged.
+		if strings.Contains(caps.Model(), "kimi-k2-thinking") {
+			return converseEffortConfig{}
+		}
 		return converseEffortConfig{field: schemas.FieldReasoningEffort, levels: bedrockConverseKimiEffortLevels}
 	case schemas.IsGLMModel(caps.Model()):
 		return converseEffortConfig{field: schemas.FieldReasoningEffort, levels: bedrockConverseGLMEffortLevels}
@@ -3656,11 +3659,14 @@ func converseAcceptsStopSequences(model string) bool {
 
 // set writes the requested effort in the field shape the model reads. A reasoning
 // object alone (for example, with only summary) does not request disabling reasoning.
-// Omit effort when absent so the model applies its own default; an explicit "none"
-// remains a request to disable reasoning. Callers convert an explicit token budget
-// to an effort before calling set.
+// Omit effort when absent so the model applies its own default. GLM also omits
+// "none"; other families preserve it as a request to disable reasoning. Callers
+// convert an explicit token budget to an effort before calling set.
 func (config converseEffortConfig) set(fields *schemas.OrderedMap, caps schemas.ModelCaps, requested *string) {
 	if requested == nil {
+		return
+	}
+	if *requested == schemas.ReasoningEffortNone && schemas.IsGLMModel(caps.Model()) {
 		return
 	}
 	effort := caps.NormalizeReasoningEffort(*requested, config.levels)

@@ -444,7 +444,7 @@ func TestConverseReasoningShape(t *testing.T) {
 		{"kimi effort omitted", "global.moonshotai.kimi-k3.1", summaryOnly, "", nil},
 		{"glm effort omitted", "global.zai.glm-5.3", summaryOnly, "", nil},
 		{"glm effort high", "zai.glm-5", effort("high"), "reasoning_effort", "high"},
-		{"glm effort none", "zai.glm-5", effort("none"), "reasoning_effort", "none"},
+		{"glm effort none omitted", "zai.glm-5", effort("none"), "", nil},
 		// Families whose reasoning Converse cannot express get nothing at all.
 		{"deepseek gets nothing", "us.deepseek.r1-v1:0", effort("high"), "", nil},
 		{"qwen gets nothing", "qwen.qwen3-32b-v1:0", effort("high"), "", nil},

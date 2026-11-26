@@ -4747,9 +4747,13 @@ func TestConverseFlatReasoningEffort(t *testing.T) {
 		{"global.moonshotai.kimi-k3.1", "max", "max"},
 		{"global.zai.glm-5.3", "xhigh", "xhigh"},
 		{"global.zai.glm-5.3", "minimal", "low"},
-		{"global.zai.glm-5.3", "none", "none"},
+		{"global.zai.glm-5.3", "none", ""},
 		{"global.zai.glm-5.3", "", ""},
 		{"kimi-next", "none", "none"},
+		// Leave K2 Thinking effort out until its Bedrock support is verified.
+		{"moonshot.kimi-k2-thinking", "high", ""},
+		{"moonshot.kimi-k2-thinking", "none", ""},
+		{"moonshot.kimi-k2-thinking", "", ""},
 		{"glm-next", "high", "high"},
 	} {
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4786,11 +4790,12 @@ func TestConverseFlatReasoningEffort(t *testing.T) {
 	})
 
 	for _, tc := range []struct {
-		alias, model, wire string
+		alias, model, wire, want string
 	}{
-		{"coding-model", "global.moonshotai.kimi-k3.1", "opaque-profile-id"},
-		{"gpt-4o", "global.moonshotai.kimi-k3.1", "global.moonshotai.kimi-k3.1"},
-		{"gpt-4o", "global.zai.glm-5.3", "global.zai.glm-5.3"},
+		{"coding-model", "global.moonshotai.kimi-k3.1", "opaque-profile-id", "low"},
+		{"gpt-4o", "global.moonshotai.kimi-k3.1", "global.moonshotai.kimi-k3.1", "low"},
+		{"gpt-4o", "global.zai.glm-5.3", "global.zai.glm-5.3", "low"},
+		{"gpt-4o", "moonshot.kimi-k2-thinking", "opaque-profile-id", ""},
 	} {
 		t.Run("alias/"+tc.alias+"/"+tc.model, func(t *testing.T) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -4802,33 +4807,42 @@ func TestConverseFlatReasoningEffort(t *testing.T) {
 			})
 			chat, err := bedrock.ToBedrockChatCompletionRequest(ctx, converseEffortChatRequest(t, ctx, tc.alias, "minimal"))
 			require.NoError(t, err)
-			assertConverseFlatReasoningEffort(t, chat, "low")
+			assertConverseFlatReasoningEffort(t, chat, tc.want)
 			responses, err := bedrock.ToBedrockResponsesRequest(ctx, converseEffortResponsesRequest(t, ctx, tc.alias, "minimal"))
 			require.NoError(t, err)
-			assertConverseFlatReasoningEffort(t, responses, "low")
+			assertConverseFlatReasoningEffort(t, responses, tc.want)
 		})
 	}
 
-	for _, model := range []string{"global.moonshotai.kimi-k3.1", "global.zai.glm-5.3"} {
+	for _, model := range []struct {
+		name, budgetWant, noneWant string
+	}{
+		{"global.moonshotai.kimi-k3.1", "medium", "none"},
+		{"global.zai.glm-5.3", "medium", ""},
+		{"moonshot.kimi-k2-thinking", "", ""},
+	} {
 		for _, tc := range []struct {
 			name   string
 			effort *string
 			budget int
 			want   string
 		}{
-			{"budget only", nil, 2048, "medium"},
-			{"none overrides budget", schemas.Ptr("none"), 2048, "none"},
-			{"none overrides dynamic budget", schemas.Ptr("none"), -1, "none"},
+			{"budget only", nil, 2048, model.budgetWant},
+			{"none with budget", schemas.Ptr("none"), 2048, model.noneWant},
+			{"none with dynamic budget", schemas.Ptr("none"), -1, model.noneWant},
+			{"zero budget", nil, 0, model.noneWant},
+			{"none with zero budget", schemas.Ptr("none"), 0, model.noneWant},
+			{"high with zero budget", schemas.Ptr("high"), 0, model.noneWant},
 		} {
-			t.Run(model+"/"+tc.name, func(t *testing.T) {
+			t.Run(model.name+"/"+tc.name, func(t *testing.T) {
 				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-				chatReq := converseEffortChatRequest(t, ctx, model, "")
+				chatReq := converseEffortChatRequest(t, ctx, model.name, "")
 				chatReq.Params.MaxCompletionTokens = new(4096)
 				chatReq.Params.Reasoning = &schemas.ChatReasoning{Effort: tc.effort, MaxTokens: &tc.budget}
 				chat, err := bedrock.ToBedrockChatCompletionRequest(ctx, chatReq)
 				require.NoError(t, err)
 				assertConverseFlatReasoningEffort(t, chat, tc.want)
-				responsesReq := converseEffortResponsesRequest(t, ctx, model, "")
+				responsesReq := converseEffortResponsesRequest(t, ctx, model.name, "")
 				responsesReq.Params.MaxOutputTokens = new(4096)
 				responsesReq.Params.Reasoning = &schemas.ResponsesParametersReasoning{Effort: tc.effort, MaxTokens: &tc.budget}
 				responses, err := bedrock.ToBedrockResponsesRequest(ctx, responsesReq)
@@ -4911,10 +4925,15 @@ func BenchmarkConverseReasoningEffort(b *testing.B) {
 		{"omitted", "global.zai.glm-5.3", "", false, nil},
 		{"existing", "openai.gpt-oss-120b-1:0", "high", false, nil},
 		{"flat", "global.zai.glm-5.3", "high", false, nil},
+		{"flat-none", "global.zai.glm-5.3", "none", false, nil},
 		{"openai-default", "global.openai.gpt-5.6-luna", "", true, nil},
 		{"grok-default", "us.xai.grok-4.6", "", true, nil},
 		{"flat-budget", "global.zai.glm-5.3", "", false, new(2048)},
 		{"flat-none-budget", "global.zai.glm-5.3", "none", false, new(2048)},
+		{"flat-zero-budget", "global.zai.glm-5.3", "", false, new(0)},
+		{"kimi", "global.moonshotai.kimi-k3.1", "high", false, nil},
+		{"kimi-thinking", "moonshot.kimi-k2-thinking", "high", false, nil},
+		{"kimi-thinking-budget", "moonshot.kimi-k2-thinking", "", false, new(2048)},
 	} {
 		b.Run("chat/"+tc.name, func(b *testing.B) {
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)

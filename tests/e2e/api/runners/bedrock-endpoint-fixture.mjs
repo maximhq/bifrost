@@ -58,7 +58,7 @@ function converseEvent(type, payload) {
 // the whole run offline, so the HTTPS_PROXY tripwire can stay armed.
 const endpoints = createTlsEndpoints({
 	staticJson: { "/pricing.json": {}, "/model-parameters.json": {} },
-	respond: (req) => {
+	respond: (req, body) => {
 		const url = req.url || "";
 		if (/\/agents\/AGENTMISSING1\//.test(url)) {
 			return { status: 404, headers: { "X-Amzn-Errortype": "ResourceNotFoundException:http://internal.amazon.com/coral/", "X-Amzn-Requestid": "req-missing" }, body: JSON.stringify({ message: "agent not found" }) };
@@ -85,6 +85,13 @@ const endpoints = createTlsEndpoints({
 		}
 		// Converse on native models and application inference profiles: a minimal valid answer, so a case can
 		// read the request body the gateway built, including for an opaque profile ID, from /__connects.
+		// GLM 5.3 always reasons and rejects these values; a success-only mock would hide invalid conversions.
+		if (/^\/model\/(?:global|us)\.zai\.glm-5\.3\/converse(?:-stream)?$/.test(url)) {
+			const effort = JSON.parse(body).additionalModelRequestFields?.reasoning_effort;
+			if (effort === "none" || effort === "minimal") {
+				return { status: 400, headers: { "Content-Type": "application/json", "X-Amzn-Errortype": "ValidationException" }, body: JSON.stringify({ message: `reasoning_effort '${effort}' is not supported for GLM 5.3` }) };
+			}
+		}
 		if (/^\/model\/.+\/converse-stream$/.test(url)) {
 			return { status: 200, headers: { "Content-Type": "application/vnd.amazon.eventstream" }, body: Buffer.concat([
 				converseEvent("messageStart", { role: "assistant" }),
