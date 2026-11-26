@@ -5665,6 +5665,17 @@ func TestClearCtxForFallback_ClearsPreviousFallbackPin(t *testing.T) {
 	}
 }
 
+// BenchmarkClearCtxForFallback is the per-attempt reset a fallback pays before it runs.
+// It does not run on a request served by its first attempt.
+func BenchmarkClearCtxForFallback(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	b.ReportAllocs()
+	for b.Loop() {
+		clearCtxForFallback(ctx)
+	}
+}
+
 // TestStreamFallbackUsesPinnedKey proves the pin, not the weighted selector, picks which credential goes upstream (the unpinned key carries all the weight).
 func TestStreamFallbackUsesPinnedKey(t *testing.T) {
 	primary := httptest.NewServer(sseHandler(`{"error":{"message":"rate limited","type":"rate_limit_error"}}`))

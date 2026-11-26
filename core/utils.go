@@ -16,6 +16,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -459,10 +460,8 @@ func clearCtxForFallback(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyChangeRequestType)
 	ctx.ClearValue(schemas.BifrostContextKeyAttemptTrail)
 	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
-	ctx.ClearValue(schemas.BifrostContextKeyStreamEndIndicator)
+	providerUtils.ResetStreamAttemptState(ctx)
 	ctx.ClearValue(schemas.BifrostContextKeyConnectionClosed)
-	ctx.ClearValue(schemas.BifrostContextKeyStreamBodyExhausted)
-	ctx.ClearValue(schemas.BifrostContextKeyStreamParkedAfterFinish)
 	ctx.ClearValue(schemas.BifrostContextKeyStreamAttemptAbort)
 	ctx.ClearValue(schemas.BifrostContextKeySupportsAssistantPrefill)
 	ctx.ClearValue(schemas.BifrostContextKeyDisableStore)
