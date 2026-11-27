@@ -111,6 +111,7 @@ type Service struct {
 	logger schemas.Logger
 	hooks  []SpanHook
 	pricer Pricer
+	evals  *evaluations
 
 	requests chan *commitRequest
 	done     chan struct{}
@@ -786,12 +787,14 @@ func (s *Service) FlushRollups(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			if _, err := s.store.RecomputeTraceRollup(ctx, trace.ProjectID, trace.TraceID); err != nil {
+			rolled, err := s.store.RecomputeTraceRollup(ctx, trace.ProjectID, trace.TraceID)
+			if err != nil {
 				return err
 			}
 			if err := s.store.ClearTraceDirty(ctx, trace); err != nil {
 				return err
 			}
+			s.evaluateTrace(ctx, rolled)
 			s.scheduleRetry(trace.TraceKey, retry)
 		}
 		if len(dirty) < 200 {
