@@ -37,7 +37,7 @@ import { ArrowUpDown, ChevronRight, Loader2, MoreHorizontal, Trash2 } from "luci
 import { type ReactNode, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import i18n from "@/lib/i18n";
+import i18n, { getLocale } from "@/lib/i18n";
 
 // Passed to useReactTable({ meta }) by the logs page so the expander column can
 // read/toggle chain expansion without threading props through column factories.
@@ -61,15 +61,44 @@ function batchAccountingDisplay(log: LogEntry): { model: string; usage: LLMUsage
 	}
 	const model = entries.length === 1 ? entries[0].model : i18n.t("logs.batchMixedModel", { ns: "observability" });
 	const usage: LLMUsage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+	let cachedRead = 0;
 	for (const entry of entries) {
 		usage.prompt_tokens = (usage.prompt_tokens ?? 0) + (entry.usage?.prompt_tokens ?? 0);
 		usage.completion_tokens = (usage.completion_tokens ?? 0) + (entry.usage?.completion_tokens ?? 0);
 		usage.total_tokens = (usage.total_tokens ?? 0) + (entry.usage?.total_tokens ?? 0);
+		cachedRead += entry.usage?.prompt_tokens_details?.cached_read_tokens ?? 0;
+	}
+	if (cachedRead > 0) {
+		usage.prompt_tokens_details = { cached_read_tokens: cachedRead };
 	}
 	if ((usage.total_tokens ?? 0) === 0) {
 		return null;
 	}
 	return { model, usage };
+}
+
+// cachedReadTokens is the share of a row's input the provider read from its prefix cache, clamped to
+// the input it is part of so a malformed payload cannot draw a bar wider than the input.
+function cachedReadTokens(usage: LLMUsage): number {
+	const prompt = Math.max(usage.prompt_tokens ?? 0, 0);
+	return Math.min(Math.max(usage.prompt_tokens_details?.cached_read_tokens ?? 0, 0), prompt);
+}
+
+// Input tokens include cache reads and writes, so the tooltip breaks the input down as the log detail does.
+export function cachedInputTooltip(usage: LLMUsage, cachedRead: number, t: TFunction<"observability">): string {
+	const exact = (value: number) => value.toLocaleString(getLocale());
+	const prompt = usage.prompt_tokens ?? 0;
+	const cachedWrite = Math.max(usage.prompt_tokens_details?.cached_write_tokens ?? 0, 0);
+	const lines = [
+		t("logs.detail.inputTokensIncludeCached"),
+		t("logs.detail.uncachedInput", { value: exact(Math.max(prompt - cachedRead - cachedWrite, 0)) }),
+		t("logs.detail.cacheRead", { value: exact(cachedRead) }),
+	];
+	if (cachedWrite > 0) {
+		lines.push(t("logs.detail.cacheWrite", { value: exact(cachedWrite) }));
+	}
+	lines.push(t("logs.detail.inputTokensTotal", { value: exact(prompt) }));
+	return lines.join("\n");
 }
 
 function LogActionsMenu({ log, onDelete }: { log: LogEntry; onDelete: (log: LogEntry) => void }) {
@@ -828,14 +857,18 @@ export const createColumns = (
 				const total = tokenUsage.total_tokens ?? 0;
 				const hasSplit = tokenUsage.completion_tokens != null && tokenUsage.prompt_tokens != null;
 				const splitBase = prompt + completion || 1;
-				const inPct = (prompt / splitBase) * 100;
-				return (
+				// Cache reads are part of the input: the bar splits the input share into uncached and cached.
+				const cachedRead = hasSplit ? cachedReadTokens(tokenUsage) : 0;
+				const inPct = ((prompt - cachedRead) / splitBase) * 100;
+				const cachedPct = (cachedRead / splitBase) * 100;
+				const cell = (
 					<div className="flex flex-col items-start gap-0.5 pl-4 leading-tight">
 						<div className="flex items-center gap-2">
 							<span className="font-mono text-[12px] tabular-nums">{formatCompactNumber(total)}</span>
 							{hasSplit && (
 								<div className="flex h-1.5 w-[64px] overflow-hidden rounded-sm">
 									<div className="bg-blue-400" style={{ width: `${inPct}%` }} />
+									{cachedRead > 0 && <div className="bg-emerald-400" style={{ width: `${cachedPct}%` }} />}
 									<div className="flex-1 bg-violet-400" />
 								</div>
 							)}
@@ -845,9 +878,26 @@ export const createColumns = (
 								<span className="text-blue-500">{formatCompactNumber(prompt)}</span>
 								<span> / </span>
 								<span className="text-violet-500">{formatCompactNumber(completion)}</span>
+								{cachedRead > 0 && (
+									<>
+										<span> · </span>
+										<span className="text-emerald-500" data-testid="logs-tokens-cache-read">
+											{formatCompactNumber(cachedRead)}
+										</span>
+									</>
+								)}
 							</div>
 						)}
 					</div>
+				);
+				if (cachedRead === 0) {
+					return cell;
+				}
+				return (
+					<Tooltip>
+						<TooltipTrigger asChild>{cell}</TooltipTrigger>
+						<TooltipContent className="whitespace-pre-line">{cachedInputTooltip(tokenUsage, cachedRead, t)}</TooltipContent>
+					</Tooltip>
 				);
 			},
 		},
