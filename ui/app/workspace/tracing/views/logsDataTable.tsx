@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import type { ColumnOrderState, ColumnPinningState, VisibilityState } from "@tanstack/react-table";
 import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } from "@tanstack/react-table";
 import { ChevronLeft, ChevronRight, Loader2, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
 
@@ -86,7 +86,11 @@ export function LogsDataTable<TData>({
 	onReorderColumns,
 }: DataTableProps<TData>) {
 	const { t } = useTranslation("observability");
-	const [sorting, setSorting] = useState<SortingState>([{ id: pagination.sort_by, desc: pagination.order === "desc" }]);
+	// Derived from the URL-backed pagination, so browser navigation that restores a sort shows it.
+	const sorting = useMemo<SortingState>(
+		() => [{ id: pagination.sort_by, desc: pagination.order === "desc" }],
+		[pagination.sort_by, pagination.order],
+	);
 	const [pageSizePref, setPageSizePref, pageSizeHydrated] = useTablePageSizePreference(pageSizeStorageKey);
 
 	const fixedColumnIds = useMemo(() => new Set<string>(["actions", "status"]), []);
@@ -146,7 +150,6 @@ export function LogsDataTable<TData>({
 
 	const handleSortingChange = (updaterOrValue: SortingState | ((old: SortingState) => SortingState)) => {
 		const newSorting = typeof updaterOrValue === "function" ? updaterOrValue(sorting) : updaterOrValue;
-		setSorting(newSorting);
 		if (newSorting.length > 0) {
 			const { id, desc } = newSorting[0];
 			onPaginationChange({
@@ -191,7 +194,7 @@ export function LogsDataTable<TData>({
 
 	return (
 		<div className="flex min-h-0 flex-1 flex-col gap-2 px-4 pb-2">
-			<div className="min-h-0 flex-1 overflow-hidden rounded-sm border">
+			<div className="min-h-0 flex-1 overflow-hidden rounded-md border">
 				<Table containerClassName="@container/logs-data-table h-full overflow-auto">
 					<thead className={cn("[&_tr]:border-b px-2 sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]")}>
 						{table.getHeaderGroups().map((headerGroup) => (

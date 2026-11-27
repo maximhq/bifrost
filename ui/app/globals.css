@@ -502,6 +502,21 @@ div.content-container:has(.no-border-parent) {
 	}
 }
 
+/* Surfaces marked data-radius="md" use the md corner radius throughout, the shared components
+   inside them included (Button, Input, Select, Badge and Tabs default to sm, and the tab list to
+   lg). Scoped by an attribute so a page opts in without restyling the rest of the app; putting it
+   on <body> would make it app-wide. Inside @layer utilities, so specificity decides against the
+   utilities it overrides. Portaled content (sheets, dialogs, select menus) carries the attribute
+   itself, since it renders outside the page. */
+@layer utilities {
+	[data-radius="md"] .rounded-sm,
+	[data-radius="md"] .rounded-lg,
+	[data-radius="md"].rounded-sm,
+	[data-radius="md"].rounded-lg {
+		border-radius: var(--radius-md);
+	}
+}
+
 /* // trial-notification-banner style*/
 
 #trial-notification-banner {

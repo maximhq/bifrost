@@ -228,6 +228,7 @@ export default function TracingPage() {
 			<div
 				className="bg-card h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] rounded-md border"
 				data-testid="tracing-page"
+				data-radius="md"
 			>
 				<TracingEmptyState />
 			</div>
@@ -237,7 +238,7 @@ export default function TracingPage() {
 	const totalOf = (result?: { pagination: TracePagination }) => result?.pagination.total_count ?? 0;
 
 	return (
-		<div className="dark:bg-card bg-white" data-testid="tracing-page">
+		<div className="dark:bg-card bg-white" data-testid="tracing-page" data-radius="md">
 			<div className="no-padding-parent no-border-parent bg-background flex h-[calc(var(--app-content-viewport)_-_var(--app-bottom-padding))] w-full gap-3">
 				<TracingFilterSidebar filters={sidebarFilters} onFiltersChange={(next) => setUrl({ ...next, offset: 0 })} projects={projects} />
 				<div className="bg-card flex min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-md border">
@@ -299,7 +300,7 @@ export default function TracingPage() {
 							<SelectTrigger className="!h-7.5 w-36" data-testid="tracing-range-select">
 								<SelectValue />
 							</SelectTrigger>
-							<SelectContent>
+							<SelectContent data-radius="md">
 								{RANGE_KEYS.map((range) => (
 									<SelectItem key={range} value={range}>
 										{t(`tracing.range.${range}`)}

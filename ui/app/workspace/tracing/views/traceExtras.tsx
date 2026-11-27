@@ -18,6 +18,7 @@ import i18n from "i18next";
 import { Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
+import { clearIfUnchanged } from "../traceTree";
 import { toast } from "sonner";
 
 /** A section heading in the span detail pane, styled like the Input and Output headings. */
@@ -59,7 +60,7 @@ function AddToDataset({ span }: { span: TraceSpan }) {
 							<SelectTrigger className="h-9 w-full max-w-sm" data-testid="trace-add-to-dataset-select">
 								<SelectValue placeholder={t("tracing.evals.chooseDataset")} />
 							</SelectTrigger>
-							<SelectContent>
+							<SelectContent data-radius="md">
 								{datasets.map((dataset) => (
 									<SelectItem key={dataset.id} value={dataset.id}>
 										{dataset.name}
@@ -106,6 +107,7 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 		if (!canSubmit) return;
 		const trimmed = value.trim();
 		const numeric = !Number.isNaN(Number(trimmed));
+		const sent = { name, value, note };
 		try {
 			await saveScore({
 				projectId: span.project_id,
@@ -117,9 +119,10 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 					...(numeric ? { value: Number(trimmed) } : { string_value: trimmed }),
 				},
 			}).unwrap();
-			setName("");
-			setValue("");
-			setNote("");
+			// A field the reviewer edited while the save ran keeps the new text.
+			setName((current) => clearIfUnchanged(current, sent.name));
+			setValue((current) => clearIfUnchanged(current, sent.value));
+			setNote((current) => clearIfUnchanged(current, sent.note));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -132,7 +135,7 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 				{scores.length === 0 ? (
 					<p className="text-muted-foreground text-sm">{t("tracing.review.noScores")}</p>
 				) : (
-					<div className="divide-y rounded-sm border">
+					<div className="divide-y rounded-md border">
 						{scores.map((score) => (
 							<div
 								key={score.id}
@@ -171,7 +174,7 @@ function ReviewTab({ detail, span }: { detail: TraceDetail; span: TraceSpan }) {
 
 			<section className="space-y-2">
 				<SectionHeading>{t("tracing.review.addScoreHeading")}</SectionHeading>
-				<form className="space-y-3 rounded-sm border p-4" onSubmit={submit} data-testid="trace-review-score-form">
+				<form className="space-y-3 rounded-md border p-4" onSubmit={submit} data-testid="trace-review-score-form">
 					<div className="grid gap-3 sm:grid-cols-2">
 						<div className="space-y-1.5">
 							<Label htmlFor={fieldId("name")}>{t("tracing.review.scoreName")}</Label>
@@ -228,9 +231,10 @@ function ActivityTab({ detail, span }: { detail: TraceDetail; span: TraceSpan })
 	const comments = (detail.comments ?? []).filter((comment) => comment.span_id === span.span_id || (isRoot && !comment.span_id));
 
 	const submit = async () => {
+		const sent = text;
 		try {
-			await addComment({ projectId: span.project_id, traceId: span.trace_id, data: { span_id: span.span_id, text: text.trim() } }).unwrap();
-			setText("");
+			await addComment({ projectId: span.project_id, traceId: span.trace_id, data: { span_id: span.span_id, text: sent.trim() } }).unwrap();
+			setText((current) => clearIfUnchanged(current, sent));
 		} catch (error) {
 			toast.error(getErrorMessage(error));
 		}
@@ -284,13 +288,19 @@ export function renderTraceSpanExtras(
 	detail: TraceDetail,
 	span: TraceSpan,
 ): { tabs: { id: string; label: string; content: React.ReactNode }[] } {
+	// Keyed by span: a draft typed for one span is dropped when another span opens, never sent to it.
+	const spanKey = `${span.project_id}/${span.trace_id}/${span.span_id}`;
 	return {
 		tabs: [
-			{ id: "review", label: i18n.t("tracing.review.tab", { ns: "observability" }), content: <ReviewTab detail={detail} span={span} /> },
+			{
+				id: "review",
+				label: i18n.t("tracing.review.tab", { ns: "observability" }),
+				content: <ReviewTab key={spanKey} detail={detail} span={span} />,
+			},
 			{
 				id: "activity",
 				label: i18n.t("tracing.review.activityTab", { ns: "observability" }),
-				content: <ActivityTab detail={detail} span={span} />,
+				content: <ActivityTab key={spanKey} detail={detail} span={span} />,
 			},
 		],
 	};
