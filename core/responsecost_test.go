@@ -291,6 +291,80 @@ func TestSendBackCostDoesNotRepriceAPricedResult(t *testing.T) {
 	}
 }
 
+// routingCostCatalog prices a response at a base cost plus one unit per budget-counted
+// routing call on the response itself, the way the datasheet prices RoutingMetadata.
+type routingCostCatalog struct{ costCatalog }
+
+func (c *routingCostCatalog) CalculateRequestCostBreakdown(_ *schemas.BifrostContext, resp *schemas.BifrostResponse) *schemas.BifrostCost {
+	total := 0.5
+	if metadata := resp.GetExtraFields().RoutingMetadata; metadata != nil {
+		for _, call := range metadata.Calls {
+			if call.CountTowardBudgets {
+				total++
+			}
+		}
+	}
+	return testCost(total)
+}
+
+// The routing classifier runs once per request, so its cost is returned once: on a
+// request that succeeds on a retry or a fallback, whose response the routing plugin
+// does not stamp, and on an MCP agent loop's first turn only, since the loop sums its
+// turns and every later turn shares the first turn's context. The routing metadata
+// never leaks onto the returned or the original response.
+func TestSendBackCostChargesTheRoutingCallOncePerRequest(t *testing.T) {
+	catalog := &routingCostCatalog{}
+	client := newSendBackCostClient(t, catalog, &costHookPlugin{}, true)
+	provider, model, tokens := "openai", "text-embedding-3-small", 10
+	call := schemas.BifrostRoutingCall{ProviderUsed: &provider, ModelUsed: &model, InputTokens: &tokens, CountTowardBudgets: true}
+	newResp := func() *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Model: "gpt-4o"}}
+	}
+
+	for _, tc := range []struct {
+		name         string
+		routedOnCtx  bool
+		stampedOnRes bool
+		agentTurn    bool
+		want         float64
+	}{
+		{name: "retry or fallback succeeded", routedOnCtx: true, want: 1.5},
+		{name: "first attempt succeeded", routedOnCtx: true, stampedOnRes: true, want: 1.5},
+		{name: "no routing", want: 0.5},
+		{name: "agent continuation turn", routedOnCtx: true, stampedOnRes: true, agentTurn: true, want: 0.5},
+		{name: "agent continuation turn after a fallback", routedOnCtx: true, agentTurn: true, want: 0.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := newCostTestContext()
+			ctx.SetValue(schemas.BifrostContextKeyModelCatalog, catalog)
+			if tc.agentTurn {
+				ctx.SetValue(schemas.BifrostContextKeyMCPAgentServedRoute, &schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"})
+			}
+			if tc.routedOnCtx && !schemas.AppendRoutingCallOnContext(ctx, call) {
+				t.Fatal("routing call was not recorded on the context")
+			}
+			resp := newResp()
+			if tc.stampedOnRes {
+				resp.ChatResponse.ExtraFields.RoutingMetadata = &schemas.BifrostRoutingMetadata{Calls: []schemas.BifrostRoutingCall{call}}
+			}
+
+			priced := client.withResponseCost(ctx, resp)
+			if priced.ChatResponse.ExtraFields.Cost == nil || priced.ChatResponse.ExtraFields.Cost.TotalCost != tc.want {
+				t.Fatalf("cost = %+v, want total %v", priced.ChatResponse.ExtraFields.Cost, tc.want)
+			}
+			if !tc.stampedOnRes && (priced.ChatResponse.ExtraFields.RoutingMetadata != nil || resp.ChatResponse.ExtraFields.RoutingMetadata != nil) {
+				t.Fatal("routing metadata leaked onto a response")
+			}
+			if tc.stampedOnRes && (priced.ChatResponse.ExtraFields.RoutingMetadata == nil || resp.ChatResponse.ExtraFields.RoutingMetadata == nil) {
+				t.Fatal("the routing metadata the plugin stamped was removed from a response")
+			}
+			if resp.ChatResponse.ExtraFields.Cost != nil {
+				t.Fatal("the cost was written onto the original response")
+			}
+		})
+	}
+}
+
 // Agent turns 2+ return early through continueOnServedRoute; they are priced
 // like any other request, which the agent loop's turn sum relies on.
 func TestSendBackCostPricesAgentContinuationTurns(t *testing.T) {

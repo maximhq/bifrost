@@ -209,6 +209,8 @@ var _ schemas.ErrorCostProvider = (*ModelCatalog)(nil)
 // Routing is read ungated, unlike the logging row, which charges it only to
 // the first attempt: the error this prices is the request's final outcome,
 // returned after any fallbacks have run, so the routing call belongs to it.
+// A later turn of an MCP agent loop is the exception: it shares the first
+// turn's context, and the loop sums its turns, so the first turn carries it.
 //
 // Returns nil when nothing is billable. Must be called while ctx is live.
 func (mc *ModelCatalog) CalculateErrorCostBreakdown(ctx *schemas.BifrostContext, err *schemas.BifrostError) *schemas.BifrostCost {
@@ -239,7 +241,8 @@ func (mc *ModelCatalog) CalculateErrorCostBreakdown(ctx *schemas.BifrostContext,
 	if guardrailMetadata, ok := schemas.GuardrailMetadataFromContext(ctx); ok {
 		guardrailCost = mc.CalculateGuardrailCost(guardrailMetadata, scopes)
 	}
-	if routingMetadata, ok := schemas.RoutingMetadataFromContext(ctx); ok {
+	_, agentTurn := ctx.Value(schemas.BifrostContextKeyMCPAgentServedRoute).(*schemas.RoutingInfo)
+	if routingMetadata, ok := schemas.RoutingMetadataFromContext(ctx); ok && !agentTurn {
 		for _, call := range routingMetadata.Calls {
 			if call.CountTowardBudgets {
 				routingCost += mc.CalculateRoutingCallCost(call, scopes)

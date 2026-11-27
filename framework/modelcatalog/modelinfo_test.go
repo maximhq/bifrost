@@ -624,6 +624,29 @@ func TestCalculateErrorCostBreakdownChargesRoutingAfterFallbacks(t *testing.T) {
 	}
 }
 
+// A later turn of an MCP agent loop shares the first turn's context, and the loop
+// sums its turns' costs, so the routing call the first turn carried is not charged
+// to a later turn's error again.
+func TestCalculateErrorCostBreakdownSkipsRoutingOnAgentContinuationTurns(t *testing.T) {
+	mc := errorPricingCatalog(t)
+	provider, model, inputTokens := "openai", "text-embedding-3-small", 1000
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyMCPAgentServedRoute, &schemas.RoutingInfo{Provider: schemas.OpenAI, Model: "gpt-4o"})
+	schemas.AppendRoutingCallOnContext(ctx, schemas.BifrostRoutingCall{
+		ProviderUsed:       &provider,
+		ModelUsed:          &model,
+		InputTokens:        &inputTokens,
+		CountTowardBudgets: true,
+	})
+
+	err := &schemas.BifrostError{}
+	err.PopulateExtraFields(schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", "")
+	if cost := mc.CalculateErrorCostBreakdown(ctx, err); cost != nil {
+		t.Fatalf("cost = %+v, want nil: the routing call belongs to the first turn", cost)
+	}
+}
+
 func TestCalculateErrorCostBreakdownNothingBillable(t *testing.T) {
 	mc := errorPricingCatalog(t)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
