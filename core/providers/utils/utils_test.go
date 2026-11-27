@@ -3429,6 +3429,21 @@ func TestHandleProviderAPIErrorRootMessage(t *testing.T) {
 			body:            `{"message":"   "}`,
 			expectedMessage: "",
 		},
+		{
+			name:            "FastAPI flat string detail",
+			body:            `{"detail":"Error: 400 - Bad Request - context length exceeded"}`,
+			expectedMessage: "Error: 400 - Bad Request - context length exceeded",
+		},
+		{
+			name:            "blank root message falls back to detail",
+			body:            `{"message":"   ","detail":"  downstream timeout  "}`,
+			expectedMessage: "downstream timeout",
+		},
+		{
+			name:            "non-string detail is ignored",
+			body:            `{"detail":[{"loc":["body"],"msg":"field required"}]}`,
+			expectedMessage: "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -4774,5 +4789,26 @@ func BenchmarkProcessAndSendResponseFinalChunk(b *testing.B) {
 		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 		ProcessAndSendResponse(ctx, runner, resp, ch, nil)
 		<-ch
+	}
+}
+
+// BenchmarkRootErrorMessage measures root-level "message" / "detail" extraction from
+// parsed error bodies along the provider error handling path.
+func BenchmarkRootErrorMessage(b *testing.B) {
+	cases := []struct {
+		name string
+		raw  interface{}
+	}{
+		{"Message", map[string]interface{}{"message": "rate limit exceeded"}},
+		{"Detail", map[string]interface{}{"detail": "Error: 400 - Bad Request - context length exceeded"}},
+		{"NestedError", map[string]interface{}{"error": map[string]interface{}{"message": "bad request"}}},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = rootErrorMessage(tc.raw)
+			}
+		})
 	}
 }

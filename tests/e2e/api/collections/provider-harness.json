@@ -352427,6 +352427,180 @@
           ]
         }
       ]
+    },
+    {
+      "name": "407. FastAPI detail error message propagation (fastapi-detail-error) (#10182)",
+      "description": "Local fixture regression, no live provider calls. Start tests/e2e/api/runners/provider-error-fixture.mjs, start an isolated gateway on tests/e2e/api/provider_config/provider-error-fixture.config.json, and run make run-provider-harness-test with PROVIDER_ERROR_FIXTURE=1 (or providerErrorFixture=1, or ENV_FILE=/path/to/env.json containing {\"values\":[{\"key\":\"providerErrorFixture\",\"value\":\"1\",\"enabled\":true}]}); every case is skipped otherwise. Sends chat completions and responses requests targeting openai/upstream-400-detail, which answers HTTP 400 {\"detail\": \"...\"}, and asserts error.message preserves the complete FastAPI detail string.",
+      "item": [
+        {
+          "name": "[EXPECT-400] 407.1 openai/upstream-400-detail POST /v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "var expectedDetail = 'Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"The input exceeds context length.\",\"type\":\"BadRequestError\",\"code\":400}';",
+                  "pm.test('FastAPI detail error propagates completely into error.message', function () {",
+                  "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.error.message, pm.response.text()).to.be.a('string');",
+                  "  pm.expect(j.error.message.trim(), pm.response.text()).to.eql(expectedDetail);",
+                  "  pm.expect(j.error.message, pm.response.text()).to.not.include('provider API error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-400-detail\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 407.2 openai/upstream-400-detail POST /openai/v1/chat/completions propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "var expectedDetail = 'Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"The input exceeds context length.\",\"type\":\"BadRequestError\",\"code\":400}';",
+                  "pm.test('FastAPI detail error propagates completely into error.message', function () {",
+                  "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.error.message, pm.response.text()).to.be.a('string');",
+                  "  pm.expect(j.error.message.trim(), pm.response.text()).to.eql(expectedDetail);",
+                  "  pm.expect(j.error.message, pm.response.text()).to.not.include('provider API error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-400-detail\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] 407.3 openai/upstream-400-detail POST /v1/responses propagates FastAPI detail in error.message (fastapi-detail-error) - #10182",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "var expectedDetail = 'Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"The input exceeds context length.\",\"type\":\"BadRequestError\",\"code\":400}';",
+                  "pm.test('FastAPI detail error propagates completely into error.message', function () {",
+                  "  pm.expect(j.error, pm.response.text()).to.be.an('object');",
+                  "  pm.expect(j.error.message, pm.response.text()).to.be.a('string');",
+                  "  pm.expect(j.error.message.trim(), pm.response.text()).to.eql(expectedDetail);",
+                  "  pm.expect(j.error.message, pm.response.text()).to.not.include('provider API error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-400-detail\",\n  \"input\": \"hi\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

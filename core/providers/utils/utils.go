@@ -2937,18 +2937,25 @@ func SetExtraHeadersHTTP(ctx context.Context, req *http.Request, extraHeaders ma
 	}
 }
 
-// rootErrorMessage returns a root-level "message" string from a parsed provider error
-// body, or "" when the body carries none. AWS uses this shape for every Bedrock error
-// (the exception name travels separately, in "__type" or the X-Amzn-Errortype header),
-// while providers whose errors nest the message under "error" simply have no root-level
-// "message" for this to find.
+// rootErrorMessage returns a root-level "message" or "detail" string from a parsed
+// provider error body, or "" when the body carries neither. AWS uses a flat "message"
+// for every Bedrock error (the exception name travels separately, in "__type" or the
+// X-Amzn-Errortype header) and FastAPI-based gateways use a flat string "detail", while
+// providers whose errors nest the message under "error" simply have neither root key.
 func rootErrorMessage(raw interface{}) string {
 	body, ok := raw.(map[string]interface{})
 	if !ok {
 		return ""
 	}
-	message, _ := body["message"].(string)
-	return strings.TrimSpace(message)
+	if message, ok := body["message"].(string); ok {
+		if trimmed := strings.TrimSpace(message); trimmed != "" {
+			return trimmed
+		}
+	}
+	if detail, ok := body["detail"].(string); ok {
+		return strings.TrimSpace(detail)
+	}
+	return ""
 }
 
 // HandleProviderAPIError processes error responses from provider APIs.
