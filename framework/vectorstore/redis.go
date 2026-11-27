@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -1525,8 +1526,8 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 		// Once MULTI is accepted, Redis checks every queued command before EXEC
 		// runs any of them, so a denied or unavailable EXPIREAT discards the
 		// whole write instead of leaving a hash that never expires. If MULTI
-		// itself is refused, Redis runs HSET and EXPIREAT as plain commands, so
-		// MULTI and EXEC are required permissions. A deadline already in the
+		// itself is refused, Redis runs HSET (and EXPIREAT, if allowed) as plain
+		// commands, so Add deletes the key afterwards. A deadline already in the
 		// past deletes the key immediately.
 		// Transactions do not roll back: if a non-hash key already occupies
 		// this key, HSET fails with WRONGTYPE but EXPIREAT still applies to it.
@@ -1536,7 +1537,15 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 			return nil
 		})
 		if err != nil {
-			return fmt.Errorf("failed to store semantic cache entry with expiry: %w", redisTransactionError(err, cmds))
+			err = redisTransactionError(err, cmds)
+			if redisMultiRefused(cmds) {
+				// The entry may have been written without its deadline. Removing
+				// it only costs a cache miss.
+				if delErr := s.client.Del(ctx, key).Err(); delErr != nil {
+					err = errors.Join(err, fmt.Errorf("failed to delete entry written outside a transaction: %w", delErr))
+				}
+			}
+			return fmt.Errorf("failed to store semantic cache entry with expiry: %w", err)
 		}
 		return nil
 	}
@@ -1560,6 +1569,29 @@ func redisTransactionError(err error, cmds []redis.Cmder) error {
 		}
 	}
 	return err
+}
+
+// redisMultiRefused reports whether Redis refused MULTI itself, in which case
+// it ran the queued commands outside a transaction. go-redis then reports
+// MULTI's error on every command. Other transaction failures leave different
+// errors (a refused command next to EXECABORT, or WRONGTYPE next to a
+// successful EXPIREAT) or EXECABORT on all of them (a refused EXEC). A
+// connection failure also sets one error on every command; treating it as a
+// refused MULTI costs at most a cache miss.
+func redisMultiRefused(cmds []redis.Cmder) bool {
+	if len(cmds) == 0 || cmds[0].Err() == nil {
+		return false
+	}
+	first := cmds[0].Err().Error()
+	if strings.HasPrefix(first, "EXECABORT") {
+		return false
+	}
+	for _, cmd := range cmds[1:] {
+		if cmd.Err() == nil || cmd.Err().Error() != first {
+			return false
+		}
+	}
+	return true
 }
 
 // redisExpirySeconds parses expires_at as Unix seconds and rejects values
