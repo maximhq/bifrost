@@ -4025,10 +4025,17 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		s.wireRoutingSuggestions(routingPlugin)
 	}
 
+	// The Agent Gateway's push relay uses tracing as soon as it starts.
+	traceStore := tracing.NewTraceStore(60*time.Minute, logger)
+	tracer := tracing.NewTracer(traceStore, s.Config.ModelCatalog, logger)
+	tracer.SetObservabilityPlugins(s.CollectObservabilityPlugins(), s.CollectObservabilityLimits())
+	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
+
 	// Initialize the Agent Gateway once before either management or protocol
 	// routes are registered.
 	s.InitializeRelays(s.Ctx, s)
 	if err = s.InitializeAgentGateway(s.Ctx, s); err != nil {
+		tracer.Stop()
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
@@ -4050,6 +4057,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	err = s.RegisterAPIRoutes(s.Ctx, s, apiMiddlewares...)
 	if err != nil {
 		s.CloseAgentGateway()
+		tracer.Stop()
 		if s.WSTicketStore != nil {
 			s.WSTicketStore.Stop()
 			s.WSTicketStore = nil
@@ -4061,6 +4069,10 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		s.stopOAuth2Background()
 		return fmt.Errorf("failed to initialize routes: %v", err)
 	}
+	// The client takes ownership of the tracer and stops it on shutdown.
+	s.Client.SetTracer(tracer)
+	s.setSettlementTracer()
+
 	// Registering inference routes
 	// The pre-auth plugin phase runs immediately before the auth middlewares so a plugin can
 	// supply or translate the credentials they read (see schemas.HTTPTransportPreAuthHook).
@@ -4070,20 +4082,6 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if ctx.Value(schemas.BifrostContextKeyIsEnterprise) == nil && s.AuthMiddleware != nil {
 		inferenceMiddlewares = append(inferenceMiddlewares, s.AuthMiddleware.InferenceMiddleware())
 	}
-	// Once auth is done we will first add the Tracing middleware
-	// Always add tracing middleware when tracer is enabled - it creates traces and sets traceID in context
-	// The observability plugins are optional (can be empty if only logging is enabled)
-	// Curating observability plugins
-	observabilityPlugins := s.CollectObservabilityPlugins()
-	// This enables the central streaming accumulator for both use cases
-	// Initializing tracer with embedded streaming accumulator
-	traceStore := tracing.NewTraceStore(60*time.Minute, logger)
-	tracer := tracing.NewTracer(traceStore, s.Config.ModelCatalog, logger)
-	tracer.SetObservabilityPlugins(observabilityPlugins, s.CollectObservabilityLimits())
-	s.Client.SetTracer(tracer)
-	s.TracingMiddleware = handlers.NewTracingMiddleware(tracer)
-	// Wire the settlement tracer now that it exists (WireBatchAccountingSweeper ran earlier, before it did).
-	s.setSettlementTracer()
 	// TransportInterceptor runs AFTER the auth middlewares so HTTPTransportPreHook observes an
 	// authenticated request, and inside TracingMiddleware so the tracing defer runs AFTER
 	// transport post-hooks (capturing HTTPTransportPostHook plugin logs).

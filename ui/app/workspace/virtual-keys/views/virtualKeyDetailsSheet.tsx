@@ -97,7 +97,7 @@ export default function VirtualKeyDetailSheet({
 }: VirtualKeyDetailSheetProps) {
 	const { t, i18n } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
-	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit } =
+	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit, isExhausted } =
 		useVirtualKeyUsage(virtualKey);
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -151,17 +151,6 @@ export default function VirtualKeyDetailSheet({
 	};
 
 	const entityInfo = getEntityInfo();
-
-	const isExhausted =
-		// Budget exhausted (AP-mirrored when managed, VK-own otherwise)
-		displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ||
-		// Rate limits exhausted
-		(displayRateLimit?.token_current_usage &&
-			displayRateLimit?.token_max_limit &&
-			displayRateLimit.token_current_usage >= displayRateLimit.token_max_limit) ||
-		(displayRateLimit?.request_current_usage &&
-			displayRateLimit?.request_max_limit &&
-			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
 
 	return (
 		<Sheet open onOpenChange={onClose}>
