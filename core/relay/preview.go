@@ -30,15 +30,16 @@ type UsagePreviewInput struct {
 // UsagePreview is what the relay would record for that call: the route it matched, whether it
 // counts, what it read from each body, and the cost those numbers add up to.
 type UsagePreview struct {
-	RouteIndex     *int                      `json:"route_index"`   // index into routes[], null when none matched
-	RouteAllowed   bool                      `json:"route_allowed"` // false when no route matches and skip_route_check is off
-	StatusCheck    bool                      `json:"status_check"`  // a caller's status check for one of the relay's jobs: relayed free
-	Billable       bool                      `json:"billable"`      // the route's or the method default
-	Streams        bool                      `json:"streams"`       // served by the streaming relay
-	Counted        bool                      `json:"counted"`       // reports usage: billable and a 2xx status
-	ModelPath      string                    `json:"model_path"`    // where the model is read from, "" for none
-	ModelSource    schemas.RelayModelSource  `json:"model_source"`  // body or query
-	Model          string                    `json:"model"`         // what that path yielded from the request body
+	RouteIndex     *int                      `json:"route_index"`        // index into routes[], null when none matched
+	RouteID        string                    `json:"route_id,omitempty"` // the matched route's stable ID
+	RouteAllowed   bool                      `json:"route_allowed"`      // false when no route matches and skip_route_check is off
+	StatusCheck    bool                      `json:"status_check"`       // a caller's status check for one of the relay's jobs: relayed free
+	Billable       bool                      `json:"billable"`           // the route's or the method default
+	Streams        bool                      `json:"streams"`            // served by the streaming relay
+	Counted        bool                      `json:"counted"`            // reports usage: billable and a 2xx status
+	ModelPath      string                    `json:"model_path"`         // where the model is read from, "" for none
+	ModelSource    schemas.RelayModelSource  `json:"model_source"`       // body or query
+	Model          string                    `json:"model"`              // what that path yielded from the request body
 	UnitsSource    schemas.RelayUnitsSource  `json:"units_source"`
 	UnitsMeasure   schemas.RelayUnitsMeasure `json:"units_measure"`
 	UnitsPath      string                    `json:"units_path"`
@@ -165,6 +166,7 @@ func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview
 	if route != nil {
 		usage, billable, forced = route.usage, route.billable, route.bodyOverrides
 		out.RouteIndex = schemas.Ptr(route.configIndex)
+		out.RouteID = route.id
 	}
 	reqBody, respBody := []byte(in.RequestBody), []byte(in.ResponseBody)
 	out.Billable = billable

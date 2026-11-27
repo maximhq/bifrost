@@ -210,7 +210,7 @@ func TestVaultCallbacks_RelaySecrets(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
 	RegisterVaultCallbacks(db)
-	require.NoError(t, db.AutoMigrate(&tables.TableRelay{}, &tables.TableVirtualKeyRelayGrant{}))
+	require.NoError(t, db.AutoMigrate(&tables.TableRelay{}, &tables.TableRelayRoute{}, &tables.TableVirtualKeyRelayGrant{}))
 	store := &RDBConfigStore{}
 	store.db.Store(db)
 

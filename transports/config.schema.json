@@ -6175,6 +6175,11 @@
       "type": "object",
       "description": "Overrides for one upstream operation",
       "properties": {
+        "id": {
+          "type": "string",
+          "description": "Stable route ID (a lowercase UUID) that relay grants name. Optional: Bifrost assigns one on save and keeps it for a route with the same method, path and headers, so pin it only when a config-file grant must reference the route.",
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
         "method": {
           "type": "string",
           "enum": [

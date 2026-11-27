@@ -32,7 +32,8 @@ type resolvedUsage struct {
 
 // compiledRoute is one routes[] entry with its glob split once at construction.
 type compiledRoute struct {
-	configIndex int // its position in the saved routes[], which matching does not follow
+	configIndex int    // its position in the saved routes[], which matching does not follow
+	id          string // the route's stable ID, which grants name
 	method      string
 	glob        routeGlob
 	headers     []headerMatch // every one must match; nil for a route on method and path alone
@@ -346,6 +347,7 @@ func compileRoutesWithCostPolicy(cfg *schemas.RelayConfig, ignoreUpstreamCost bo
 	for i, route := range cfg.Routes {
 		compiled := compiledRoute{
 			configIndex: i,
+			id:          route.ID,
 			method:      strings.ToUpper(route.Method),
 			glob:        compileGlob(route.Path),
 			headers:     compileHeaders(route.Headers),

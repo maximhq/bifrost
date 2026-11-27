@@ -139,6 +139,29 @@ func TestRelaysHandlerCRUD(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusNotFound, missing.Response.StatusCode())
 }
 
+// TestRelaysHandlerKeepsRouteIDs checks the API returns route IDs and a PUT that resends routes
+// without them (an older client, a hand-written body) keeps each surviving route's ID.
+func TestRelaysHandlerKeepsRouteIDs(t *testing.T) {
+	h, store, _ := newRelaysTestHandler(t)
+	create := pteRequest(fasthttp.MethodPost, `{"name":"ids","base_url":"https://api.example.com","auth":{"type":"none"},"routes":[{"method":"POST","path":"/search"},{"method":"POST","path":"/extract"}]}`, "")
+	h.create(create)
+	require.Equal(t, fasthttp.StatusCreated, create.Response.StatusCode(), string(create.Response.Body()))
+	var created schemas.RelayConfig
+	require.NoError(t, json.Unmarshal(create.Response.Body(), &created))
+	require.Len(t, created.Routes, 2)
+	require.NotEmpty(t, created.Routes[0].ID, "the response carries each route's ID")
+
+	update := pteRequest(fasthttp.MethodPut, `{"base_url":"https://api.example.com","auth":{"type":"none"},"routes":[{"method":"POST","path":"/extract"},{"method":"POST","path":"/search"}]}`, "ids")
+	h.update(update)
+	require.Equal(t, fasthttp.StatusOK, update.Response.StatusCode(), string(update.Response.Body()))
+	stored, err := store.GetRelay(context.Background(), "ids")
+	require.NoError(t, err)
+	require.Len(t, stored.Routes, 2)
+	assert.Equal(t, created.Routes[0].ID, stored.Routes[0].ID)
+	assert.Equal(t, created.Routes[1].ID, stored.Routes[1].ID)
+	assert.Equal(t, "/search", stored.Routes[0].Path, "kept routes stay in their stored order")
+}
+
 // relayChangeRecorder stands in for the virtual-key reloader and records what it was asked to
 // reload; a failed reload is logged, never surfaced, as for agent grants.
 type relayChangeRecorder struct {

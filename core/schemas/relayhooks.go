@@ -13,6 +13,7 @@ type BifrostRelayRequest struct {
 	Model      string            // read where the usage mapping says, "" for none
 	RoutePath  string            // the matched route's path glob, "" when none matched
 	RouteIndex int               // index into routes[], -1 when none matched
+	RouteID    string            // the matched route's stable ID, "" when none matched
 	// RouteHeaders holds, by lower-cased name, the value of each header the matched route matches
 	// on: the one that selected the route (the relay's own extra header when it sets one, else the
 	// caller's). A value the relay reads from a secret is already redacted. The logging plugin keeps

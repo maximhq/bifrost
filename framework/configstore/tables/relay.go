@@ -3,6 +3,8 @@ package tables
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -11,8 +13,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// TableRelay stores one relay. Routing and pricing settings live in
-// ConfigJSON. Every secret is its own top-level SecretVar column (or the ExtraHeaders map), so the
+// TableRelay stores one relay. Routes are rows of TableRelayRoute; the remaining routing and
+// pricing settings live in ConfigJSON. Every secret is its own top-level SecretVar column (or the ExtraHeaders map), so the
 // global vault callbacks store and remove them like any other owned secret, and BeforeSave encrypts
 // the literal values that remain (env and vault references are left as references). The name is the
 // primary key and is immutable: it is the URL segment callers use and the key grants reference.
@@ -43,18 +45,80 @@ type TableRelay struct {
 	ConfigHash       string    `gorm:"type:varchar(255);null" json:"-"` // detects changes synced from config.json
 	CreatedAt        time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
+
+	// Routes is loaded and written by the store alongside the row, ordered by (created_at, id).
+	Routes []TableRelayRoute `gorm:"-" json:"-"`
 }
 
 // TableName pins the physical table name.
 func (TableRelay) TableName() string { return "config_relays" }
 
+// TableRelayRoute stores one route of a relay under a stable ID, so grants can name it. There is
+// no position column: the gateway ranks routes by specificity in memory, and routes of equal rank
+// keep (created_at, id) order, which an edit never changes because a save keeps created_at.
+type TableRelayRoute struct {
+	RelayName            string                     `gorm:"primaryKey;type:varchar(64);not null" json:"relay_name"`
+	ID                   string                     `gorm:"primaryKey;type:varchar(64);not null" json:"id"`
+	Method               string                     `gorm:"type:varchar(16);not null" json:"method"`
+	Path                 string                     `gorm:"type:text;not null" json:"path"`
+	Headers              map[string]string          `gorm:"type:text;serializer:json" json:"headers,omitempty"`
+	Enabled              *bool                      `json:"enabled,omitempty"`
+	Billable             *bool                      `json:"billable,omitempty"`
+	Stream               *bool                      `json:"stream,omitempty"`
+	Usage                *schemas.RelayUsageConfig  `gorm:"type:text;serializer:json" json:"usage,omitempty"`
+	Job                  *schemas.RelayJobConfig    `gorm:"type:text;serializer:json" json:"job,omitempty"`
+	BodyOverrides        map[string]json.RawMessage `gorm:"type:text;serializer:json" json:"body_overrides,omitempty"`
+	InheritBodyOverrides *bool                      `json:"inherit_body_overrides,omitempty"`
+	CreatedAt            time.Time                  `gorm:"not null" json:"created_at"`
+	UpdatedAt            time.Time                  `gorm:"not null" json:"updated_at"`
+
+	// Relay exists to declare the cascade constraint and is never serialized.
+	Relay *TableRelay `gorm:"foreignKey:RelayName;references:Name;constraint:OnDelete:CASCADE" json:"-"`
+}
+
+// TableName pins the physical table name.
+func (TableRelayRoute) TableName() string { return "config_relay_routes" }
+
+// NewTableRelayRoute converts one route config into its row; the caller sets the timestamps.
+func NewTableRelayRoute(relayName string, route schemas.RelayRouteConfig) TableRelayRoute {
+	return TableRelayRoute{
+		RelayName: relayName, ID: route.ID, Method: route.Method, Path: route.Path, Headers: route.Headers,
+		Enabled: route.Enabled, Billable: route.Billable, Stream: route.Stream, Usage: route.Usage, Job: route.Job,
+		BodyOverrides: route.BodyOverrides, InheritBodyOverrides: route.InheritBodyOverrides,
+	}
+}
+
+// ToConfig converts the row back into a route config.
+func (r *TableRelayRoute) ToConfig() schemas.RelayRouteConfig {
+	return schemas.RelayRouteConfig{
+		ID: r.ID, Method: r.Method, Path: r.Path, Headers: r.Headers, Enabled: r.Enabled, Billable: r.Billable,
+		Stream: r.Stream, Usage: r.Usage, Job: r.Job, BodyOverrides: r.BodyOverrides, InheritBodyOverrides: r.InheritBodyOverrides,
+	}
+}
+
+// SortRelayRoutes puts routes in their stored order, (created_at, id), the order equal-rank
+// routes keep when the gateway ranks them.
+func SortRelayRoutes(routes []TableRelayRoute) {
+	slices.SortStableFunc(routes, func(a, b TableRelayRoute) int {
+		if c := a.CreatedAt.Compare(b.CreatedAt); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+}
+
 // VaultPathKey scopes this row's secrets in an external vault by endpoint name, its stable identity.
 func (t *TableRelay) VaultPathKey() string { return t.Name }
 
-// NewTableRelay splits cfg into its row form.
+// NewTableRelay splits cfg into its row form. Routes become TableRelayRoute rows in cfg order,
+// without timestamps: the store sets those, keeping each existing route's created_at.
 func NewTableRelay(cfg *schemas.RelayConfig) (*TableRelay, error) {
 	plain := cfg.Clone()
 	row := &TableRelay{Name: cfg.Name, Description: cfg.Description, ExtraHeaders: plain.ExtraHeaders}
+	for _, route := range plain.Routes {
+		row.Routes = append(row.Routes, NewTableRelayRoute(cfg.Name, route))
+	}
+	plain.Routes = nil
 	if c := plain.Credential; c != nil {
 		row.CredentialValue = c.Value.Clone()
 		if a := c.AWS; a != nil {
@@ -83,6 +147,15 @@ func (t *TableRelay) ToConfig() (*schemas.RelayConfig, error) {
 		return nil, fmt.Errorf("relay %s: decode config: %w", t.Name, err)
 	}
 	cfg.Name, cfg.Description = t.Name, t.Description
+	cfg.Routes = nil
+	if len(t.Routes) > 0 {
+		routes := slices.Clone(t.Routes)
+		SortRelayRoutes(routes)
+		cfg.Routes = make([]schemas.RelayRouteConfig, len(routes))
+		for i := range routes {
+			cfg.Routes[i] = routes[i].ToConfig()
+		}
+	}
 	if t.CredentialValue != nil || t.HasAWSCredential {
 		cfg.Credential = &schemas.RelayCredential{Value: t.CredentialValue.Clone()}
 		if t.HasAWSCredential {

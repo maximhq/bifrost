@@ -28079,6 +28079,35 @@ func relayNamesInStore(t *testing.T, store configstore.ConfigStore) map[string]*
 	return out
 }
 
+// TestLoadRelaysConfigKeepsRouteIDs checks a changed config.json relay keeps the IDs of routes it
+// still declares, since grants name routes by ID, and that a pinned ID is stored as written.
+func TestLoadRelaysConfigKeepsRouteIDs(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	config := &Config{ConfigStore: store}
+	const pinned = "bbbbbbbb-0000-4000-8000-000000000001"
+	declare := func(fee string) *ConfigData {
+		return parseConfigData(t, `{"relays": [{"name": "tavily", "base_url": "https://search.example.com", "auth": {"type": "none"},
+			"usage": {"cost_per_request": `+fee+`},
+			"routes": [{"method": "POST", "path": "/search"}, {"id": "`+pinned+`", "method": "POST", "path": "/extract"}]}]}`)
+	}
+	loadRelaysConfig(context.Background(), config, declare("0.001"))
+	first := relayNamesInStore(t, store)["tavily"]
+	require.NotNil(t, first)
+	require.Len(t, first.Routes, 2)
+	searchID := first.Routes[0].ID
+	require.NotEmpty(t, searchID)
+	assert.Equal(t, pinned, first.Routes[1].ID, "a pinned ID is kept as written")
+
+	loadRelaysConfig(context.Background(), config, declare("0.002"))
+	second := relayNamesInStore(t, store)["tavily"]
+	require.NotNil(t, second)
+	require.Len(t, second.Routes, 2)
+	assert.Equal(t, searchID, second.Routes[0].ID, "an unpinned route keeps its assigned ID when the file changes")
+	assert.Equal(t, pinned, second.Routes[1].ID)
+	assert.InDelta(t, 0.002, *second.Usage.CostPerRequest, 1e-12, "the change was applied")
+}
+
 func TestLoadRelaysConfig(t *testing.T) {
 	initTestLogger()
 	t.Setenv("TAVILY_KEY", "tvly-from-env")

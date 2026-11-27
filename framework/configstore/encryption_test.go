@@ -53,6 +53,7 @@ func setupEncryptionTestStore(t testing.TB) (*RDBConfigStore, *gorm.DB) {
 		&tables.TableModel{},
 		&tables.TempToken{},
 		&tables.TableRelay{},
+		&tables.TableRelayRoute{},
 	)
 	require.NoError(t, err)
 
