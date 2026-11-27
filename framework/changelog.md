@@ -19,6 +19,7 @@
 - fix: modelcatalog - ElevenLabs Scribe works with wildcard virtual keys
 - fix: configstore - config hashes are deterministic for map fields (thanks [@rojinebrahimi](https://github.com/rojinebrahimi)!)
 - fix: configstore - customer and team saves no longer rewrite their associations
+- fix: configstore - config.json MCP clients sync tool_sync_interval and tool_execution_timeout edits on restart (thanks [@ykakade](https://github.com/ykakade)!)
 - fix: jobaccounting - Seedance video settlements record output tokens
 - fix: openapimcp - every tool argument gets a name clients accept
 - chore: upgraded Go to 1.27.4 and core to v1.16.0

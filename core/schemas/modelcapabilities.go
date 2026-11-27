@@ -62,6 +62,7 @@ type ModelCapabilities struct {
 	SupportsPromptCacheBreakpoint   *bool `json:"supports_prompt_cache_breakpoint,omitempty"` // accepts OpenAI prompt_cache_breakpoint + prompt_cache_options
 	SupportsReasoningContentBlocks  *bool `json:"supports_reasoning_content_blocks,omitempty"`
 	SupportsMultimodalToolOutput    *bool `json:"supports_multimodal_tool_output,omitempty"`
+	SupportsVision                  *bool `json:"supports_vision,omitempty"` // accepts image inputs in user content
 	SupportsResponseSchemaWithTools *bool `json:"supports_response_schema_with_tools,omitempty"`
 	SupportsNativeStructuredOutput  *bool `json:"supports_native_structured_output,omitempty"` // Bedrock Converse accepts outputConfig.textFormat; false ⇒ synthetic bf_so_* tool
 	SupportsForcedToolChoice        *bool `json:"supports_forced_tool_choice,omitempty"`       // false ⇒ tool_choice any/tool rejected (Fable 5.1+)

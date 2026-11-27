@@ -20,7 +20,13 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/livestore"
 )
+
+// overridesTable is the live-store table a process's flag overrides live in. A process has one
+// flag store.
+const overridesTable = "feature_flags"
 
 // Source records which configuration layer produced the effective value.
 // Surfaced in the API/UI so operators can see why a flag is on or off
@@ -95,6 +101,8 @@ type Config struct {
 	IsEnterprise bool
 }
 
+// entry is one flag's override: its value, the layer it came from, when it
+// was written and whether config.json pins it.
 type entry struct {
 	enabled   bool
 	source    Source
@@ -102,20 +110,30 @@ type entry struct {
 	fromFile  bool
 }
 
-// Store holds the per-process effective state for every flag.
+// Store holds the per-process effective state for every flag. The overrides
+// live in a live-store table; mu still serializes each check-then-write (a
+// pin refusing a toggle, an older write losing to a newer one) and keeps
+// List's view of the overrides whole.
 type Store struct {
 	mu           sync.RWMutex
-	entries      map[string]entry
+	entries      *livestore.Table[string, entry]
 	delegate     SyncDelegate
 	delegateM    sync.RWMutex
 	isEnterprise bool
 }
 
-// New creates a Store. Call Hydrate and ApplyFile during bootstrap to load
-// DB and file overrides respectively.
-func New(cfg Config) (*Store, error) {
+// New creates a Store keeping its overrides in live. Call Hydrate and
+// ApplyFile during bootstrap to load DB and file overrides respectively.
+func New(live *livestore.Store, cfg Config) (*Store, error) {
+	if live == nil {
+		return nil, fmt.Errorf("feature flags: %w", livestore.ErrNoLiveStore)
+	}
+	entries, err := live.NewTable[string, entry](context.Background(), overridesTable)
+	if err != nil {
+		return nil, err
+	}
 	return &Store{
-		entries:      make(map[string]entry),
+		entries:      entries,
 		isEnterprise: cfg.IsEnterprise,
 	}, nil
 }
@@ -138,7 +156,7 @@ func (s *Store) IsEnabled(id string) bool {
 		return false
 	}
 	s.mu.RLock()
-	if e, ok := s.entries[id]; ok {
+	if e, ok := s.entries.Get(id); ok {
 		s.mu.RUnlock()
 		return e.enabled
 	}
@@ -164,15 +182,15 @@ func (s *Store) Set(_ context.Context, id string, enabled bool) (FlagStatus, err
 	now := time.Now().UnixNano()
 
 	s.mu.Lock()
-	if cur, ok := s.entries[id]; ok && cur.fromFile {
+	if cur, ok := s.entries.Get(id); ok && cur.fromFile {
 		s.mu.Unlock()
 		return FlagStatus{}, fmt.Errorf("%w: %q", ErrFlagLocked, id)
 	}
-	s.entries[id] = entry{
+	s.entries.Put(id, entry{
 		enabled:   enabled,
 		source:    SourceDB,
 		writtenAt: now,
-	}
+	})
 	s.mu.Unlock()
 
 	s.delegateM.RLock()
@@ -190,7 +208,7 @@ func (s *Store) Set(_ context.Context, id string, enabled bool) (FlagStatus, err
 // The delegate is NOT invoked, preventing echo loops.
 func (s *Store) ApplyRemote(id string, enabled bool, writtenAt int64) {
 	s.mu.Lock()
-	cur, exists := s.entries[id]
+	cur, exists := s.entries.Get(id)
 	if exists && cur.fromFile {
 		s.mu.Unlock()
 		return
@@ -199,11 +217,11 @@ func (s *Store) ApplyRemote(id string, enabled bool, writtenAt int64) {
 		s.mu.Unlock()
 		return
 	}
-	s.entries[id] = entry{
+	s.entries.Put(id, entry{
 		enabled:   enabled,
 		source:    SourceRemote,
 		writtenAt: writtenAt,
-	}
+	})
 	s.mu.Unlock()
 }
 
@@ -214,12 +232,12 @@ func (s *Store) ApplyRemote(id string, enabled bool, writtenAt int64) {
 func (s *Store) ApplyFile(id string, enabled bool) {
 	now := time.Now().UnixNano()
 	s.mu.Lock()
-	s.entries[id] = entry{
+	s.entries.Put(id, entry{
 		enabled:   enabled,
 		source:    SourceFile,
 		writtenAt: now,
 		fromFile:  true,
-	}
+	})
 	s.mu.Unlock()
 }
 
@@ -239,7 +257,7 @@ type EntrySnapshot struct {
 func (s *Store) Snapshot(id string) (EntrySnapshot, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e, ok := s.entries[id]
+	e, ok := s.entries.Get(id)
 	return EntrySnapshot{e: e}, ok
 }
 
@@ -252,9 +270,9 @@ func (s *Store) Snapshot(id string) (EntrySnapshot, bool) {
 func (s *Store) Restore(id string, snap EntrySnapshot, hadEntry bool) {
 	s.mu.Lock()
 	if hadEntry {
-		s.entries[id] = snap.e
+		s.entries.Put(id, snap.e)
 	} else {
-		delete(s.entries, id)
+		s.entries.Delete(id)
 	}
 	s.mu.Unlock()
 }
@@ -265,11 +283,11 @@ func (s *Store) Restore(id string, snap EntrySnapshot, hadEntry bool) {
 func (s *Store) Hydrate(rows []HydrationRow) {
 	s.mu.Lock()
 	for _, row := range rows {
-		s.entries[row.ID] = entry{
+		s.entries.Put(row.ID, entry{
 			enabled:   row.Enabled,
 			source:    SourceDB,
 			writtenAt: row.UpdatedAt,
-		}
+		})
 	}
 	s.mu.Unlock()
 }
@@ -286,13 +304,14 @@ func (s *Store) List() []FlagStatus {
 	}
 
 	s.mu.RLock()
-	ids := make(map[string]struct{}, len(defs)+len(s.entries))
+	ids := make(map[string]struct{}, len(defs))
 	for _, d := range defs {
 		ids[d.ID] = struct{}{}
 	}
-	for id := range s.entries {
+	s.entries.Range(func(id string, _ entry) bool {
 		ids[id] = struct{}{}
-	}
+		return true
+	})
 	out := make([]FlagStatus, 0, len(ids))
 	for id := range ids {
 		def, registered := defByID[id]
@@ -312,7 +331,7 @@ func (s *Store) List() []FlagStatus {
 func (s *Store) Status(id string) (FlagStatus, error) {
 	def, registered := LookupDef(id)
 	s.mu.RLock()
-	_, hasOverride := s.entries[id]
+	_, hasOverride := s.entries.Get(id)
 	s.mu.RUnlock()
 	if !registered && !hasOverride {
 		return FlagStatus{}, fmt.Errorf("%w: %q", ErrFlagNotFound, id)
@@ -346,7 +365,7 @@ func (s *Store) statusForLocked(def FlagDef, registered bool) FlagStatus {
 		Registered:     registered,
 		EnterpriseOnly: def.EnterpriseOnly,
 	}
-	if e, ok := s.entries[def.ID]; ok {
+	if e, ok := s.entries.Get(def.ID); ok {
 		status.Enabled = e.enabled
 		status.Source = e.source
 		status.Locked = e.fromFile

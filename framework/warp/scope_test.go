@@ -447,7 +447,7 @@ func TestWarpScopeCallerRestrictionResolver(t *testing.T) {
 // snapshot is the only identity the agent's goroutine holds.
 func TestWarpRunTurnAsksTheCallerRestrictionResolver(t *testing.T) {
 	model := &scriptedModel{}
-	service := chatService(model, &fakeLogReader{})
+	service := chatService(t, model, &fakeLogReader{})
 	var asked []string
 	WithCallerRestrictionResolver(func(ctx context.Context) CallerRestriction {
 		userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)

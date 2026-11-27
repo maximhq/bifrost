@@ -4314,7 +4314,8 @@ func openAIRawRequestBodyRewriter(requestType schemas.RequestType) schemas.RawRe
 	switch requestType {
 	case schemas.ChatCompletionRequest:
 		collect = collectOpenAIChatRawRequestTextPaths
-	case schemas.ResponsesRequest:
+	case schemas.ResponsesRequest, schemas.CompactionRequest:
+		// A compaction body carries the same input and instructions as a Responses body.
 		collect = collectOpenAIResponsesRawRequestTextPaths
 	case schemas.TextCompletionRequest:
 		collect = collectOpenAITextCompletionRawRequestTextPaths

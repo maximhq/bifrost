@@ -378,7 +378,7 @@ func TestTopicWindowIsReadInSlices(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	vectors, _ := topicWindowTestStore(t, start, 600)
 	vectors.filtersOnServer = true
-	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
 	defer service.Shutdown()
 
 	// Minutes 100 to 399 of the 600, read with slices far smaller than it.
@@ -447,7 +447,7 @@ func TestTopicWindowReadsABurstInOneSecondToTheEnd(t *testing.T) {
 		id := fmt.Sprintf("burst-%03d", index)
 		require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, id, []float32{1, 0, 0}, map[string]interface{}{"log_id": id, "timestamp": at.Unix(), "warp_log": true}))
 	}
-	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
 	defer service.Shutdown()
 
 	limits := topicLimits{batch: 1000, clustered: 1000, slice: 20, sliceCeiling: 30, page: 10}
@@ -465,7 +465,7 @@ func TestTopicWindowReadsABurstInOneSecondToTheEnd(t *testing.T) {
 func TestTopicWindowIsReadOnceFromAStoreThatCannotFilter(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	vectors, _ := topicWindowTestStore(t, start, 600)
-	service := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
+	service := serviceForTest(t, nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
 	defer service.Shutdown()
 
 	limits := topicLimits{batch: 1000, clustered: 1000, slice: 20, sliceCeiling: 30, page: 50}
@@ -488,7 +488,7 @@ func TestWarpTopicsJobReportsClusteredAndAssigned(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			vectors, logs := topicWindowTestStore(t, start, 400)
 			vectors.filtersOnServer = filtersOnServer
-			service := NewService(nil,
+			service := serviceForTest(t, nil,
 				WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(topicTestReader(t, logs)),
 				WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
 			)
@@ -544,7 +544,7 @@ func TestWarpTopicsJobStopsAtItsReadLimit(t *testing.T) {
 	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	t.Run("with no read limit, the whole window is read and the rest assigned", func(t *testing.T) {
 		vectors, logs := topicWindowTestStore(t, start, 400)
-		service := NewService(nil,
+		service := serviceForTest(t, nil,
 			WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(topicTestReader(t, logs)),
 			WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
 		)
@@ -571,7 +571,7 @@ func TestWarpTopicsJobStopsAtItsReadLimit(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			vectors, logs := topicWindowTestStore(t, start, 400)
 			vectors.filtersOnServer = filtersOnServer
-			service := NewService(nil,
+			service := serviceForTest(t, nil,
 				WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(topicTestReader(t, logs)),
 				WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
 			)
@@ -595,7 +595,7 @@ func TestWarpTopicsJobStopsAtItsReadLimit(t *testing.T) {
 
 	t.Run("a window within the bound is read whole and says nothing of it", func(t *testing.T) {
 		vectors, logs := topicWindowTestStore(t, start, 100)
-		service := NewService(nil,
+		service := serviceForTest(t, nil,
 			WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithLogReader(topicTestReader(t, logs)),
 			WithVectorStore(vectors), WithEmbeddingExecutor(backfillEmbeddingExecutor), WithChatFunc(topicTestNaming),
 		)

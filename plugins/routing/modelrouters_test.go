@@ -3,7 +3,6 @@ package routing
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +11,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/kvstore"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/routing/rules"
 )
@@ -67,9 +66,7 @@ func TestRoutingPluginServesStoredModelRouters(t *testing.T) {
 		{Tier: complexity.TierSimple, Model: bifrost.Ptr("gpt-4o-mini"), Weight: 1},
 	}))
 
-	ruleStore, err := rules.NewLocalStore(ctx, logger, store)
-	require.NoError(t, err)
-	plugin, err := InitFromStore(ctx, nil, logger, store, ruleStore, NewMockGovernance())
+	plugin, err := Init(ctx, nil, logger, store, liveFrom(t, store), NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 
@@ -84,12 +81,12 @@ func TestRoutingPluginServesStoredModelRouters(t *testing.T) {
 	assert.True(t, plugin.routerMatcher.HasRoutes(), "the enabled router's routing is recorded")
 	assert.NotEqual(t, complexity.ClassifierDecision, plugin.complexityConfig.Load().Classifier, "routers never configure the complexity config")
 
-	// Replacing a router's targets leaves its classifiers alone.
+	// Replacing a router's targets, read from its record, leaves its classifiers alone.
 	config := rt.config.Load()
-	require.NoError(t, plugin.SetModelRouterTargets("support", nil))
+	require.NoError(t, store.SetModelRouterTargets(ctx, "support", nil))
+	refreshRouter(t, plugin, "support")
 	assert.Empty(t, rt.loadTargets())
 	assert.Same(t, config, rt.config.Load())
-	assert.ErrorIs(t, plugin.SetModelRouterTargets("missing", nil), configstore.ErrNotFound)
 
 	// Turning the router off forgets its routing and keeps it served.
 	require.NoError(t, plugin.SetModelRouterRouting("support", configstore.ModelRouterRouting{Scope: "global", Priority: 5}))
@@ -107,10 +104,7 @@ func TestRoutingPluginServesStoredModelRouters(t *testing.T) {
 // it saves both tiers, so a tool continuation resumes each on the tier it
 // gave, not on the last one's.
 func TestPersistComplexityTurnTierKeepsEveryRouter(t *testing.T) {
-	store, err := kvstore.New(kvstore.Config{CleanupInterval: time.Hour})
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, store.Close()) })
-	plugin := &RoutingPlugin{turnTierStore: &complexityTurnTierStore{store: store}, logger: rules.NewMockLogger()}
+	plugin := &RoutingPlugin{sessions: stringTableForTest(t), logger: rules.NewMockLogger()}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeySessionID, "session-1")
@@ -121,12 +115,12 @@ func TestPersistComplexityTurnTierKeepsEveryRouter(t *testing.T) {
 	plugin.persistComplexityTurnTier(ctx)
 
 	for routerID, want := range map[string]string{"": complexity.TierComplex, "support": complexity.TierSimple} {
-		tier, found, err := plugin.turnTierStore.load(complexityTurnTierKeyFor(ctx, routerID))
+		tier, found, err := plugin.loadTurnTier(complexityTurnTierKeyFor(ctx, routerID))
 		require.NoError(t, err)
 		require.True(t, found, routerID)
 		assert.Equal(t, want, tier, routerID)
 	}
-	_, found, err := plugin.turnTierStore.load(complexityTurnTierKeyFor(ctx, "billing"))
+	_, found, err := plugin.loadTurnTier(complexityTurnTierKeyFor(ctx, "billing"))
 	require.NoError(t, err)
 	assert.False(t, found, "a router that produced no tier saves nothing")
 }
@@ -151,9 +145,7 @@ func bootRoutingPlugin(t *testing.T, store configstore.ConfigStore) *RoutingPlug
 	t.Helper()
 	ctx := context.Background()
 	logger := rules.NewMockLogger()
-	ruleStore, err := rules.NewLocalStore(ctx, logger, store)
-	require.NoError(t, err)
-	plugin, err := InitFromStore(ctx, nil, logger, store, ruleStore, NewMockGovernance())
+	plugin, err := Init(ctx, nil, logger, store, liveFrom(t, store), NewMockGovernance())
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
 	plugin.SetDecisionRequestExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
@@ -214,10 +206,15 @@ func TestModelRouterStoreWritesReachLiveRouting(t *testing.T) {
 		require.NoError(t, err)
 		return router
 	}
-	applyRouter := func(id string) { t.Helper(); require.NoError(t, plugin.ReloadModelRouter(saved(id))) }
-	applyTargets := func(id string) { t.Helper(); require.NoError(t, plugin.SetModelRouterTargets(id, saved(id).Targets)) }
+	applyRouter := func(id string) {
+		t.Helper()
+		refreshRouter(t, plugin, id)
+		require.NoError(t, plugin.ReloadModelRouter(saved(id)))
+	}
+	applyTargets := func(id string) { t.Helper(); refreshRouter(t, plugin, id) }
 	applyRouting := func(id string) {
 		t.Helper()
+		refreshRouter(t, plugin, id)
 		require.NoError(t, plugin.SetModelRouterRouting(id, *saved(id).Routing))
 	}
 	expect := func(askedFor, wantModel, wantRouter, why string) {
@@ -321,7 +318,7 @@ func TestModelRouterStoreWritesReachLiveRouting(t *testing.T) {
 // TestRoutingPluginBootSkipsOnlyTheRouterItCannotServe pins that one bad
 // stored router cannot keep the others from routing after a restart. A router
 // whose stored condition no longer compiles is served for its status but
-// takes no requests; a router that needs a KV store the gateway does not have
+// takes no requests; a router that needs a session store the gateway does not have
 // is left out; and the healthy router behind both still routes.
 func TestRoutingPluginBootSkipsOnlyTheRouterItCannotServe(t *testing.T) {
 	ctx := context.Background()
@@ -354,11 +351,39 @@ func TestRoutingPluginBootSkipsOnlyTheRouterItCannotServe(t *testing.T) {
 	_, served := plugin.modelRouter("stale")
 	assert.True(t, served, "a router whose condition does not compile is still served, so its status and tests work")
 	_, served = plugin.modelRouter("sessions")
-	assert.False(t, served, "a router that needs a KV store is not served without one")
+	assert.False(t, served, "a router that needs a session store is not served without one")
 	_, served = plugin.modelRouter("healthy")
 	assert.True(t, served)
 
 	model, router := routeChatRequest(t, plugin, "gpt-4o")
 	assert.Equal(t, "healthy-model", model)
 	assert.Equal(t, "healthy", router, "the routers that cannot take requests are passed over")
+}
+
+// liveFrom returns a live store loaded from store's database, closed when the test ends.
+func liveFrom(t *testing.T, store configstore.ConfigStore) *livestore.Store {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	require.NoError(t, live.LoadAll(context.Background(), store.DB()))
+	return live
+}
+
+// refreshRouter brings router id's saved row into the plugin's live store, as the HTTP server does
+// after a write.
+func refreshRouter(t *testing.T, plugin *RoutingPlugin, id string) {
+	t.Helper()
+	require.NoError(t, plugin.rules.LiveStore().Refresh(context.Background(), []livestore.Ref{{Kind: livestore.KindModelRouter, ID: id}}))
+}
+
+// newTestRouterMatcher builds an empty model router matcher over a live store of its own.
+func newTestRouterMatcher(t *testing.T) *rules.ModelRouterMatcher {
+	t.Helper()
+	live, err := livestore.New()
+	require.NoError(t, err)
+	t.Cleanup(live.Close)
+	matcher, err := rules.NewModelRouterMatcher(live)
+	require.NoError(t, err)
+	return matcher
 }

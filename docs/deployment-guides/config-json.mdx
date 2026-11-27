@@ -20,7 +20,7 @@ Bifrost stores runtime configuration in a config database by default, so setting
 |------|------|-----------|
 | **Web UI / database** | No `config.json` | Bifrost creates a default SQLite config store and runtime changes are saved through the UI or API |
 | **DB-backed `config.json`** | `config.json` exists and `config_store` is omitted or enabled | File-backed sections seed or reconcile the config store at startup; UI/API edits remain available |
-| **File-only `config.json`** | `config_store.enabled` is `false` | Config is loaded from file into memory at startup; config-backed UI/API changes are unavailable and file changes require restart |
+| **File-only `config.json`** | `config_store.enabled` is `false` | Config is loaded from file into memory at startup; configuration UI/API routes answer 503, reads included, and file changes require restart |
 
 <Note>
 By default, DB-backed `config.json` uses `source_of_truth: "split"`: unchanged file-backed rows preserve UI/API edits, while changed file-backed rows are applied on the next startup. Use `source_of_truth: "config.json"` only when explicitly present file sections should replace matching DB state. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for the full rules, including missing-vs-empty section behavior.

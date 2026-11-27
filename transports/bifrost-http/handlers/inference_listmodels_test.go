@@ -25,26 +25,14 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet/datasheettest"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
-
-type scribeInMemoryStore struct{ *lib.Config }
-
-func (s scribeInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	return s.Providers // The test fixture never changes provider configuration.
-}
-
-func (s scribeInMemoryStore) GetConfiguredProviderNames() []string {
-	names := make([]string, 0, len(s.Providers))
-	for provider := range s.Providers {
-		names = append(names, string(provider))
-	}
-	return names
-}
 
 // Real catalog, governance and provider code; only ElevenLabs' HTTP responses
 // are mocked. The live model response deliberately omits all Scribe models.
@@ -58,9 +46,9 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 		"elevenlabs/eleven_turbo_v2_5": {"provider":"elevenlabs","mode":"audio_speech","base_model":"eleven_turbo_v2_5"},
 		"openai/gpt-4o-mini": {"provider":"openai","mode":"chat","base_model":"gpt-4o-mini"}
 	}`), 0o600))
-	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(tb, nil, nil, datasheet.Config{URL: "file://" + path})
 	require.NoError(tb, ds.LoadFromURLIntoMemory(tb.Context()))
-	catalog := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	catalog := catalogWithDatasheetForTest(tb, ds)
 	catalog.SetKeyConfigForProvider(schemas.Elevenlabs, keys)
 	// Seed the same per-key filtered responses that a pre-fix refresh cached.
 	models := elevenlabs.ElevenlabsListModelsResponse{{ModelID: "eleven_turbo_v2_5", Name: "Upstream Turbo"}}
@@ -114,24 +102,23 @@ func newElevenlabsScribeHandler(tb testing.TB, keys []schemas.Key, virtualKeys [
 	tb.Cleanup(upstream.Close)
 	log := bifrost.NewNoOpLogger()
 	SetLogger(log)
-	config := &lib.Config{
+	config := libtest.FileOnlyGovernance(tb, &lib.Config{
 		ClientConfig: &configstore.ClientConfig{}, ModelCatalog: catalog,
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Elevenlabs: {
-				Keys:                     keys,
-				NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
-				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
-			},
-			schemas.OpenAI: {
-				Keys:                     []schemas.Key{{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("openai-provider-key"), Weight: 1}},
-				NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
-				ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
-			},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Elevenlabs: {
+			NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
 		},
-	}
-	catalog.SetKeyConfigForProvider(schemas.OpenAI, config.Providers[schemas.OpenAI].Keys)
-	plugin, err := governance.Init(tb.Context(), nil, log, nil,
-		&configstore.GovernanceConfig{VirtualKeys: virtualKeys}, catalog, nil, scribeInMemoryStore{config})
+		schemas.OpenAI: {
+			NetworkConfig:            &schemas.NetworkConfig{BaseURL: upstream.URL, AllowPrivateNetwork: true},
+			ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{Concurrency: 1, BufferSize: 10},
+		},
+	}, map[schemas.ModelProvider][]schemas.Key{
+		schemas.Elevenlabs: keys,
+		schemas.OpenAI:     {{ID: "openai-key", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("openai-provider-key"), Weight: 1}},
+	}, &configstore.GovernanceConfig{VirtualKeys: virtualKeys})
+	catalog.SetKeyConfigForProvider(schemas.OpenAI, config.GetProviderKeys(schemas.OpenAI))
+	plugin, err := governance.Init(tb.Context(), nil, log, nil, config.LiveStore, catalog, nil)
 	require.NoError(tb, err)
 	client, err := bifrost.Init(tb.Context(), schemas.BifrostConfig{
 		Account: lib.NewBaseAccount(config), Logger: log, ModelCatalog: catalog,
@@ -282,7 +269,7 @@ func scribeCatalogAccess(catalog *modelcatalog.ModelCatalog, vk configtables.Tab
 		BlacklistedModels: config.BlacklistedModels, KeyIDs: config.KeyIDs(),
 	}}, nil)
 	return grant.NewAccess([]schemas.Permit{permit}, "", nil, "", func(provider, model string, allowed []string) bool {
-		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, nil, schemas.WhiteList(allowed))
+		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, nil, nil, schemas.WhiteList(allowed))
 	})
 }
 
@@ -301,13 +288,13 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 		filtered:   map[schemas.ModelProvider][]string{schemas.Elevenlabs: catalog.GetModelsForProvider(schemas.Elevenlabs)},
 		unfiltered: map[schemas.ModelProvider][]string{schemas.Elevenlabs: catalog.GetUnfilteredModelsForProvider(schemas.Elevenlabs)},
 	}
-	management := &ProviderHandler{modelsManager: manager, inMemoryStore: handler.config}
+	management := &ProviderHandler{modelsManager: manager, config: handler.config}
 	providerModels := [][]string{
 		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/dictation"},
-		{},
+		{"elevenlabs/dictation"},
 		{"elevenlabs/eleven_turbo_v2_5"},
 		{},
-		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/dictation"},
+		{"elevenlabs/eleven_turbo_v2_5"},
 	}
 	for i, want := range [][]string{
 		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/scribe_v1", "elevenlabs/scribe_v1_experimental", "elevenlabs/scribe_v2", "elevenlabs/dictation"},
@@ -335,9 +322,10 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 				}
 			}
 			require.ElementsMatch(t, providerModels[i], ids, "provider listing must preserve upstream inventory and configured alias backfill")
-			rows := management.listManagementModelsForProvider(schemas.Elevenlabs, modelListQuery{
+			rows, err := management.listManagementModelsForProvider(context.Background(), schemas.Elevenlabs, modelListQuery{
 				HasVKFilter: true, Access: scribeCatalogAccess(catalog, vks[i]),
 			})
+			require.NoError(t, err)
 			ids = ids[:0]
 			for _, row := range rows {
 				ids = append(ids, string(row.Provider)+"/"+row.Name)
@@ -568,3 +556,30 @@ func TestModelRetrieveTarget(t *testing.T) {
 		})
 	}
 }
+
+// catalogForTest returns a test model catalog that is cleaned up when the test
+// ends, failing the test if it cannot be built.
+func catalogForTest(t testing.TB, baseModelIndex map[string]string) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalog(baseModelIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// catalogWithDatasheetForTest returns a test model catalog over ds that is
+// cleaned up when the test ends, failing the test if it cannot be built.
+func catalogWithDatasheetForTest(t testing.TB, ds *datasheet.Store) *modelcatalog.ModelCatalog {
+	t.Helper()
+	catalog, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = catalog.Cleanup() })
+	return catalog
+}
+
+// datasheetForTest returns a datasheet over a new live store closed when the test ends.
+var datasheetForTest = datasheettest.New
