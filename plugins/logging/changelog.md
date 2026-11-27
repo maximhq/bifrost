@@ -1,3 +1,4 @@
+- fix: batch jobs created through a key alias are retrieved and priced under the requested model
 - feat: speech sessions are logged with their full input text
 - feat: streamed multipart passthrough uploads are summarized with each part's content type
 - fix: log previews for agent-loop requests use the latest tool call or result

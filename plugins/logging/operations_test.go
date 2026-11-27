@@ -4769,6 +4769,38 @@ func TestRecordBatchJobLifecycle_CreatePersistsModel(t *testing.T) {
 	}
 }
 
+func TestRecordBatchJobLifecycle_AliasedCreatePersistsRequestedModel(t *testing.T) {
+	bs := newFakeBatchStore()
+	plugin := &LoggerPlugin{
+		ctx:        context.Background(),
+		store:      newTestStore(t),
+		batchStore: bs,
+		logger:     testLogger{},
+	}
+
+	requested := "my-model"
+	entry := &logstore.Log{
+		ID:       "req-create-aliased-batch",
+		Provider: string(schemas.Bedrock),
+		Model:    "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc123",
+		Alias:    &requested,
+	}
+	plugin.recordBatchJobLifecycle(entry, &schemas.BifrostResponse{
+		BatchCreateResponse: &schemas.BifrostBatchCreateResponse{
+			ID:     "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/job123",
+			Status: schemas.BatchStatusValidating,
+		},
+	})
+
+	job, err := bs.GetProviderJob(context.Background(), cstables.ProviderJobID(cstables.ProviderJobKindBatch, "bedrock", "arn:aws:bedrock:us-east-1:123456789012:model-invocation-job/job123"))
+	if err != nil {
+		t.Fatalf("GetProviderJob() error = %v", err)
+	}
+	if job.Model != requested {
+		t.Fatalf("expected model %s, got %s", requested, job.Model)
+	}
+}
+
 func TestAccountBatchResults_NonResultsResponseIsNoop(t *testing.T) {
 	store := newTestStore(t)
 	bs := newFakeBatchStore()

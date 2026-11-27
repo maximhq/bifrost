@@ -669,8 +669,8 @@ func (p *LoggerPlugin) accountBatchResults(entry *logstore.Log, result *schemas.
 	summary, err := jobaccounting.AccountBatchResults(ctx, p.batchStore, p.store, p.pricingManager, jobaccounting.JobRequest{
 		Provider:      schemas.ModelProvider(entry.Provider),
 		ProviderJobID: batchResp.BatchID,
-		FallbackModel: entry.Model,
-		Job:           batchJobFromEntry(entry, batchResp.BatchID, entry.Model, string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
+		FallbackModel: batchJobModel(entry),
+		Job:           batchJobFromEntry(entry, batchResp.BatchID, batchJobModel(entry), string(batchResp.Endpoint), string(schemas.BatchStatusCompleted)),
 		BaseLog:       entry,
 		Emitter:       p,
 		UsageReporter: usageReporter,
@@ -876,7 +876,7 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 	switch {
 	case result.BatchCreateResponse != nil:
 		resp := result.BatchCreateResponse
-		job = batchJobFromEntry(entry, resp.ID, entry.Model, resp.Endpoint, string(resp.Status))
+		job = batchJobFromEntry(entry, resp.ID, batchJobModel(entry), resp.Endpoint, string(resp.Status))
 		job.InputFileID = resp.InputFileID
 		job.OutputFileID = resp.OutputFileID
 		job.ErrorFileID = resp.ErrorFileID
@@ -884,7 +884,7 @@ func (p *LoggerPlugin) recordBatchJobLifecycle(entry *logstore.Log, result *sche
 		addBatchDetailToLog(entry, resp.ID, string(resp.Status), resp.RequestCounts)
 	case result.BatchRetrieveResponse != nil:
 		resp := result.BatchRetrieveResponse
-		job = batchJobFromEntry(entry, resp.ID, entry.Model, resp.Endpoint, string(resp.Status))
+		job = batchJobFromEntry(entry, resp.ID, batchJobModel(entry), resp.Endpoint, string(resp.Status))
 		job.InputFileID = resp.InputFileID
 		job.OutputFileID = resp.OutputFileID
 		job.ErrorFileID = resp.ErrorFileID
@@ -1097,6 +1097,16 @@ func addBatchDetailToLog(entry *logstore.Log, batchID string, status string, cou
 		return
 	}
 	entry.BatchDebugParsed = debug
+}
+
+// batchJobModel is the model a batch job is recorded under: the one the caller
+// named, not an alias's provider target. Batch key selection filters on the names
+// a key's models list allows, which are the requested names.
+func batchJobModel(entry *logstore.Log) string {
+	if entry.Alias != nil && *entry.Alias != "" {
+		return *entry.Alias
+	}
+	return entry.Model
 }
 
 func batchJobFromEntry(entry *logstore.Log, batchID string, model string, endpoint string, status string) *tables.TableProviderJob {
