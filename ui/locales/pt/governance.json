@@ -483,9 +483,8 @@
 		"budgetMaxLimit": "O limite máximo do orçamento tem de ser superior a $0.01",
 		"budgetNMaxLimit": "O limite máximo do orçamento #{{n}} tem de ser superior a $0.01",
 		"budgetNResetRequired": "A duração de reposição do orçamento #{{n}} é obrigatória",
-		"distinctResetDuration": "Cada orçamento tem de ter uma duração de reposição distinta",
-		"uniqueResetPeriod": "Cada orçamento tem de ter um período de reposição único",
-		"budgetNLabel": "Orçamento #{{n}}: despesa máxima (USD)",
+		"distinctResetDuration": "Cada orçamento tem de ter uma duração de reposição distinta no seu âmbito",
+		"uniqueResetPeriod": "Cada orçamento tem de ter um período de reposição único no seu âmbito",
 		"noBudgets": "Sem orçamentos. Clique em \"Adicionar orçamento\" para impor um limite de despesa.",
 		"budgetDuration": "Orçamento ({{duration}})",
 		"noLimit": "Sem limite",
@@ -499,7 +498,8 @@
 		"contentLoggingInherit": "Herdar",
 		"contentLoggingOff": "Desligado para esta equipa",
 		"contentLoggingOn": "Ligado para esta equipa",
-		"contentLoggingHelp": "Se o conteúdo do pedido e da resposta é guardado nos registos do tráfego desta equipa. A equipa tem prioridade sobre as suas chaves virtuais e chaves de fornecedor, por isso uma chave não pode voltar a ligar o conteúdo que a equipa desligou. «Desligado» também retira o conteúdo das exportações dos conectores. O cabeçalho por pedido continua a aplicar-se quando as substituições por pedido são permitidas."
+		"contentLoggingHelp": "Se o conteúdo do pedido e da resposta é guardado nos registos do tráfego desta equipa. A equipa tem prioridade sobre as suas chaves virtuais e chaves de fornecedor, por isso uma chave não pode voltar a ligar o conteúdo que a equipa desligou. «Desligado» também retira o conteúdo das exportações dos conectores. O cabeçalho por pedido continua a aplicar-se quando as substituições por pedido são permitidas.",
+		"duplicateResetPeriodScope": "Período de reposição duplicado para este âmbito; as linhas de orçamento com o mesmo âmbito têm de usar intervalos diferentes."
 	},
 	"filters": {
 		"filters": "Filtros",

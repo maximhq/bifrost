@@ -1,5 +1,5 @@
 import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
-import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
+import { BUDGET_SCOPE_VALUES, calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -40,6 +40,8 @@ const budgetLineSchema = z.object({
 		.optional(),
 	reset_duration: z.string().min(1, { error: () => i18n.t("providers.governanceForm.resetDurationRequired", { ns: "models" }) }),
 	reset_config: z.object({ quarter_start_month: z.number().optional() }).optional(),
+	// Not edited here, but kept so a stored scope is sent back as it is.
+	scope: z.enum(BUDGET_SCOPE_VALUES).optional(),
 });
 
 const formSchema = z.object({
@@ -70,6 +72,7 @@ function governanceToFormValues(provGov: ProviderGovernance | undefined): FormDa
 			max_limit: b.max_limit,
 			reset_duration: b.reset_duration,
 			reset_config: b.reset_config,
+			scope: b.scope,
 		})),
 		calendarAligned: provGov.calendar_aligned ?? false,
 		tokenMaxLimit: provGov.rate_limit?.token_max_limit ?? undefined,
@@ -162,6 +165,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					max_limit: b.max_limit!,
 					reset_duration: b.reset_duration,
 					reset_config: b.reset_config,
+					...(b.scope ? { scope: b.scope } : {}),
 				}));
 			} else if (hadBudgets) {
 				budgetsPayload = [];

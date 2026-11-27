@@ -4,6 +4,7 @@ import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtua
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { ContentLoggingSelect } from "@/components/contentLoggingSelect";
 import { contentLoggingChoice, contentLoggingValue } from "@/components/contentLoggingSelect.utils";
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import { MCPClientConfigsEditor } from "@/components/mcp/mcpClientConfigsEditor";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import { TeamSelector } from "@/components/entitySelectors/teamSelector";
@@ -37,7 +38,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import Toggle from "@/components/ui/toggle";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
+import { BUDGET_SCOPE_VALUES, DEFAULT_BUDGET_SCOPE, resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants/governance";
+import { budgetPeriodKey } from "@/lib/budgetOutline";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getBusinessUnitPicker } from "@/lib/registries/businessUnitPicker";
 import { getUserPicker } from "@/lib/registries/userPicker";
@@ -67,7 +69,7 @@ import {
 	updateDeleteAfterExpire,
 	vmcpAssignmentsDirty,
 } from "./virtualKeySheet.utils";
-import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
+import { BudgetOverrideRequest, LimitScope, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
 import {
 	type BudgetComparisonEntry,
 	budgetSignature,
@@ -127,9 +129,11 @@ const providerConfigSchema = z.object({
 				id: z.string().optional(),
 				max_limit: z.number().nonnegative().optional(),
 				reset_duration: z.string().optional(),
-				// Zod strips unknown keys, so the fiscal quarter has to be declared
-				// here or it is erased from form state on every parse.
+				// Zod strips unknown keys, so the fiscal quarter and the scope have to be
+				// declared here or they are erased from form state on every parse.
 				reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
+				// Not edited here, but kept so a stored scope is sent back as it is.
+				scope: z.enum(BUDGET_SCOPE_VALUES).optional(),
 			}),
 		)
 		.optional(),
@@ -157,6 +161,7 @@ const providerConfigSchema = z.object({
 							max_limit: z.number().nonnegative().optional(),
 							reset_duration: z.string().optional(),
 							reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
+							scope: z.enum(BUDGET_SCOPE_VALUES).optional(),
 						}),
 					)
 					.optional(),
@@ -217,6 +222,7 @@ const formSchema = z
 					max_limit: z.number().nonnegative().optional(),
 					reset_duration: z.string(),
 					reset_config: z.object({ quarter_start_month: z.number().int().min(1).max(12).optional() }).optional(),
+					scope: z.enum(BUDGET_SCOPE_VALUES).optional(),
 				}),
 			)
 			.optional(),
@@ -542,14 +548,17 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 		}
 	};
 	const persistedOverrideBudgets = [
+		// Key-level lines can share a period across scopes, so they carry their scope badge.
 		...(virtualKey?.budgets ?? []).map((budget) => ({
 			budget,
 			label: t("virtualKeys.sentenceVirtualKey"),
+			showScope: true,
 		})),
 		...(virtualKey?.provider_configs ?? []).flatMap((config) =>
 			(config.budgets ?? []).map((budget) => ({
 				budget,
 				label: ProviderLabels[config.provider as ProviderName] ?? config.provider,
+				showScope: false,
 			})),
 		),
 	];
@@ -581,6 +590,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 						max_limit: b.max_limit,
 						reset_duration: b.reset_duration,
 						reset_config: b.reset_config,
+						scope: b.scope,
 					})),
 					rate_limit: config.rate_limit
 						? {
@@ -597,6 +607,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 							max_limit: b.max_limit,
 							reset_duration: b.reset_duration,
 							reset_config: b.reset_config,
+							scope: b.scope,
 						})),
 						rate_limit: mb.rate_limit
 							? {
@@ -646,6 +657,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 							max_limit: b.max_limit,
 							reset_duration: b.reset_duration ?? "1M",
 							reset_config: b.reset_config,
+							scope: b.scope,
 						}))
 					: [],
 			budgetCalendarAligned: virtualKey?.calendar_aligned ?? false,
@@ -1000,13 +1012,18 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			)
 			.sort((left, right) => (parseResetDurationMs(left.reset_duration) ?? 0) - (parseResetDurationMs(right.reset_duration) ?? 0));
 		const existingByID = new Map((existingBudgets || []).filter((budget) => budget.id).map((budget) => [budget.id, budget]));
-		const existingByDuration = new Map((existingBudgets || []).map((budget) => [budget.reset_duration, budget]));
+		const existingByPeriod = new Map(
+			(existingBudgets || []).map((budget) => [budgetPeriodKey(budget.reset_duration, budget.scope), budget]),
+		);
 		const reconciled: BudgetComparisonEntry[] = [];
 
 		for (const budget of current) {
-			const existing = budget.id ? existingByID.get(budget.id) : existingByDuration.get(budget.reset_duration);
+			const existing = budget.id ? existingByID.get(budget.id) : existingByPeriod.get(budgetPeriodKey(budget.reset_duration, budget.scope));
 			if (existing) {
-				const configChanged = existing.max_limit !== budget.max_limit || existing.reset_duration !== budget.reset_duration;
+				const configChanged =
+					existing.max_limit !== budget.max_limit ||
+					existing.reset_duration !== budget.reset_duration ||
+					(existing.scope || DEFAULT_BUDGET_SCOPE) !== (budget.scope || DEFAULT_BUDGET_SCOPE);
 				const usage = existing.current_usage ?? 0;
 				if (configChanged && usage >= budget.max_limit) {
 					return {
@@ -1038,6 +1055,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 
 			const targetDuration = parseResetDurationMs(budget.reset_duration);
 			const closestShorter = reconciled.reduce<BudgetComparisonEntry | null>((closest, candidate) => {
+				// Usage only carries over within a scope, matching the backend.
+				if ((candidate.scope || DEFAULT_BUDGET_SCOPE) !== (budget.scope || DEFAULT_BUDGET_SCOPE)) {
+					return closest;
+				}
 				const candidateDuration = parseResetDurationMs(candidate.reset_duration);
 				const closestDuration = parseResetDurationMs(closest?.reset_duration);
 				if (targetDuration === null || candidateDuration === null || candidateDuration >= targetDuration) {
@@ -1266,8 +1287,15 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { id?: string; max_limit: number; reset_duration: string; reset_config?: { quarter_start_month?: number } } =>
-						b.max_limit !== undefined,
+					(
+						b,
+					): b is {
+						id?: string;
+						max_limit: number;
+						reset_duration: string;
+						reset_config?: { quarter_start_month?: number };
+						scope?: LimitScope;
+					} => b.max_limit !== undefined,
 				);
 				const hadBudget = virtualKey.budgets && virtualKey.budgets.length > 0;
 				if (validBudgets.length > 0) {
@@ -1368,8 +1396,15 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 
 				// Add budgets if enabled
 				const validBudgets = (data.budgets || []).filter(
-					(b): b is { id?: string; max_limit: number; reset_duration: string; reset_config?: { quarter_start_month?: number } } =>
-						b.max_limit !== undefined,
+					(
+						b,
+					): b is {
+						id?: string;
+						max_limit: number;
+						reset_duration: string;
+						reset_config?: { quarter_start_month?: number };
+						scope?: LimitScope;
+					} => b.max_limit !== undefined,
 				);
 				if (validBudgets.length > 0) {
 					createData.budgets = validBudgets;
@@ -1668,6 +1703,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 																max_limit: l.max_limit,
 																reset_duration: l.reset_duration,
 																reset_config: l.reset_config,
+																scope: l.scope,
 															})),
 															rate_limit: entry.rateLimit ?? undefined,
 															model_budgets: entry.modelBudgets,
@@ -1715,6 +1751,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 													}}
 													onReset={clearVirtualKeyBudget}
 													showReset={isEditing && !!(virtualKey?.budgets?.length || (watchedBudgets && watchedBudgets.length > 0))}
+													showScope
 												/>
 
 												{isEditing && !isManagedByProfile && persistedOverrideBudgets.length > 0 ? (
@@ -1724,11 +1761,14 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 															<p className="text-muted-foreground text-xs">{t("virtualKeys.budgetOverridesHelp")}</p>
 														</div>
 														<div className="divide-y">
-															{persistedOverrideBudgets.map(({ budget, label }) => (
+															{persistedOverrideBudgets.map(({ budget, label, showScope }) => (
 																<div key={budget.id} className="flex items-center justify-between gap-4 py-3 first:pt-0 last:pb-0">
 																	<div className="min-w-0">
-																		<p className="truncate text-sm font-medium">
-																			{label} · {t("virtualKeys.resetsEvery", { period: parseResetPeriod(budget.reset_duration) })}
+																		<p className="flex items-center gap-2 text-sm font-medium">
+																			<span className="truncate">
+																				{label} · {t("virtualKeys.resetsEvery", { period: parseResetPeriod(budget.reset_duration) })}
+																			</span>
+																			{showScope ? <BudgetScopeBadge scope={budget.scope} /> : null}
 																		</p>
 																		<p className="text-muted-foreground text-xs">
 																			{t("virtualKeys.baseAmount", { amount: formatCurrency(budget.max_limit) })}

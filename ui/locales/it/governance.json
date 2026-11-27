@@ -483,9 +483,8 @@
 		"budgetMaxLimit": "Il limite massimo del budget deve essere maggiore di $0,01",
 		"budgetNMaxLimit": "Il limite massimo del budget #{{n}} deve essere maggiore di $0,01",
 		"budgetNResetRequired": "La durata di ripristino del budget #{{n}} è obbligatoria",
-		"distinctResetDuration": "Ogni budget deve avere una durata di ripristino distinta",
-		"uniqueResetPeriod": "Ogni budget deve avere un periodo di ripristino univoco",
-		"budgetNLabel": "Budget #{{n}}: Spesa massima (USD)",
+		"distinctResetDuration": "Ogni budget deve avere una durata di ripristino distinta per il proprio ambito",
+		"uniqueResetPeriod": "Ogni budget deve avere un periodo di ripristino univoco per il proprio ambito",
 		"noBudgets": "Nessun budget. Clicca su \"Aggiungi budget\" per applicare un limite di spesa.",
 		"budgetDuration": "Budget ({{duration}})",
 		"noLimit": "Nessun limite",
@@ -499,7 +498,8 @@
 		"contentLoggingInherit": "Eredita",
 		"contentLoggingOff": "Disattivato per questo team",
 		"contentLoggingOn": "Attivato per questo team",
-		"contentLoggingHelp": "Se il contenuto di richiesta e risposta viene salvato nei log del traffico di questo team. Il team prevale sulle sue chiavi virtuali e chiavi provider, quindi una chiave non può riattivare il contenuto che il team ha disattivato. «Disattivato» toglie il contenuto anche dagli export dei connettori. L'header per richiesta resta valido quando le sostituzioni per richiesta sono consentite."
+		"contentLoggingHelp": "Se il contenuto di richiesta e risposta viene salvato nei log del traffico di questo team. Il team prevale sulle sue chiavi virtuali e chiavi provider, quindi una chiave non può riattivare il contenuto che il team ha disattivato. «Disattivato» toglie il contenuto anche dagli export dei connettori. L'header per richiesta resta valido quando le sostituzioni per richiesta sono consentite.",
+		"duplicateResetPeriodScope": "Periodo di ripristino duplicato per questo ambito; le righe di budget con lo stesso ambito devono usare intervalli diversi."
 	},
 	"filters": {
 		"filters": "Filtri",

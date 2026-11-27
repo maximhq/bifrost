@@ -20,6 +20,7 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { useEntityGovernanceProbe } from "@/lib/registries/entityGovernance";
 import "@enterprise/lib/registrations/entityGovernance";
 import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets";
+import { budgetPeriodKey } from "@/lib/budgetOutline";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -60,6 +61,7 @@ const createInitialState = (customer?: Customer | null): Omit<CustomerFormData, 
 			max_limit: b.max_limit,
 			reset_duration: b.reset_duration,
 			reset_config: b.reset_config,
+			scope: b.scope,
 		})),
 		tokenMaxLimit: customer?.rate_limit?.token_max_limit ?? undefined,
 		tokenResetDuration: customer?.rate_limit?.token_reset_duration || "1h",
@@ -182,8 +184,9 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 		return formData.budgets
 			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
 			.some((b) => {
-				if (seen.has(b.reset_duration)) return true;
-				seen.add(b.reset_duration);
+				const key = budgetPeriodKey(b.reset_duration, b.scope);
+				if (seen.has(key)) return true;
+				seen.add(key);
 				return false;
 			});
 	}, [formData.budgets]);
@@ -231,9 +234,11 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	// spend becomes a meaningful choice; creating one has no usage to reset.
 	const budgetsChanged = () => {
 		if (!isEditing || !customer) return false;
-		const signature = (rows: { max_limit?: number | null; reset_duration?: string; reset_config?: { quarter_start_month?: number } }[]) =>
+		const signature = (
+			rows: { max_limit?: number | null; reset_duration?: string; reset_config?: { quarter_start_month?: number }; scope?: string }[],
+		) =>
 			[...rows]
-				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}:${r.reset_config?.quarter_start_month ?? ""}`)
+				.map((r) => `${r.max_limit ?? ""}:${budgetPeriodKey(r.reset_duration, r.scope)}:${r.reset_config?.quarter_start_month ?? ""}`)
 				.sort()
 				.join("|");
 		const next = formData.budgets.filter((b) => b.max_limit !== undefined && b.max_limit !== null);
@@ -258,7 +263,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 	const saveCustomer = async (resetBudgetUsage: boolean) => {
 		const budgetRequests: CreateBudgetRequest[] = formData.budgets
 			.filter((b) => b.max_limit !== undefined && b.max_limit !== null)
-			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration, reset_config: b.reset_config }));
+			.map((b) => ({ id: b.id, max_limit: b.max_limit!, reset_duration: b.reset_duration, reset_config: b.reset_config, scope: b.scope }));
 
 		try {
 			if (isEditing && customer && !editsLimits) {
@@ -377,6 +382,7 @@ export default function CustomerSheet({ open, onOpenChange, customer, onSuccess 
 										label={t("customers.sheet.budgetLimits")}
 										lines={formData.budgets}
 										onChange={(lines) => updateField("budgets", lines)}
+										showScope
 									/>
 
 									<NumberAndSelect

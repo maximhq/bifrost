@@ -483,9 +483,8 @@
 		"budgetMaxLimit": "El límite máximo de presupuesto debe ser mayor a $0.01",
 		"budgetNMaxLimit": "Presupuesto #{{n}}límite máximo debe ser mayor que $0.01",
 		"budgetNResetRequired": "Presupuesto #{{n}}duración de reseteo es necesaria",
-		"distinctResetDuration": "Cada presupuesto debe tener una duración de reajuste distinta",
-		"uniqueResetPeriod": "Cada presupuesto debe tener un período de reajuste único",
-		"budgetNLabel": "Presupuesto #{{n}}: Máximo Gasto (USD)",
+		"distinctResetDuration": "Cada presupuesto debe tener una duración de reajuste distinta dentro de su ámbito",
+		"uniqueResetPeriod": "Cada presupuesto debe tener un período de reajuste único dentro de su ámbito",
 		"noBudgets": "No hay presupuestos. Haz clic en \"Añadir presupuesto\" para hacer cumplir un límite de gasto.",
 		"budgetDuration": "Presupuesto ({{duration}})",
 		"noLimit": "No hay límite",
@@ -499,7 +498,8 @@
 		"contentLoggingInherit": "Heredar",
 		"contentLoggingOff": "Desactivado para este equipo",
 		"contentLoggingOn": "Activado para este equipo",
-		"contentLoggingHelp": "Si el contenido de la petición y la respuesta se guarda en los registros del tráfico de este equipo. El equipo tiene prioridad sobre sus claves virtuales y claves de proveedor, así que una clave no puede volver a activar el contenido que el equipo desactivó. «Desactivado» también quita el contenido de las exportaciones de los conectores. La cabecera por petición sigue aplicándose cuando se permiten anulaciones por petición."
+		"contentLoggingHelp": "Si el contenido de la petición y la respuesta se guarda en los registros del tráfico de este equipo. El equipo tiene prioridad sobre sus claves virtuales y claves de proveedor, así que una clave no puede volver a activar el contenido que el equipo desactivó. «Desactivado» también quita el contenido de las exportaciones de los conectores. La cabecera por petición sigue aplicándose cuando se permiten anulaciones por petición.",
+		"duplicateResetPeriodScope": "Período de reinicio duplicado para este ámbito; las líneas de presupuesto con el mismo ámbito deben usar intervalos distintos."
 	},
 	"filters": {
 		"filters": "Filtros",

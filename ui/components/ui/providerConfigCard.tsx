@@ -6,6 +6,7 @@ import MultiBudgetLines, { BudgetLineEntry } from "@/components/ui/multibudgets"
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { budgetLinesLabel, money, shortPeriod, swatchClass } from "@/lib/budgetOutline";
 import { resetDurationOptions } from "@/lib/constants/governance";
+import type { LimitScope } from "@/lib/types/governance";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { cn } from "@/lib/utils";
 import { cleanNumericInput } from "@/lib/utils/strings";
@@ -22,6 +23,8 @@ export interface ProviderConfigBudgetLine {
 	reset_duration?: string;
 	/** Fiscal quarter definition; only meaningful when reset_duration is "1Q". */
 	reset_config?: { quarter_start_month?: number };
+	/** Carried through unedited, so a scope set through the API survives a save. */
+	scope?: LimitScope;
 }
 
 export interface ProviderConfigRateLimit {
@@ -287,6 +290,7 @@ export function ProviderConfigCard({
 									max_limit: b.max_limit,
 									reset_duration: b.reset_duration || "1M",
 									reset_config: b.reset_config,
+									scope: b.scope,
 								}))}
 								onChange={(lines: BudgetLineEntry[]) => {
 									update({
@@ -295,6 +299,7 @@ export function ProviderConfigCard({
 											max_limit: l.max_limit,
 											reset_duration: l.reset_duration,
 											reset_config: l.reset_config,
+											scope: l.scope,
 										})),
 									});
 								}}
@@ -389,6 +394,7 @@ export function ProviderConfigCard({
 															max_limit: b.max_limit,
 															reset_duration: b.reset_duration || "1d",
 															reset_config: b.reset_config,
+															scope: b.scope,
 														}))}
 														onChange={(lines: BudgetLineEntry[]) => {
 															update({
@@ -401,6 +407,7 @@ export function ProviderConfigCard({
 																					max_limit: l.max_limit,
 																					reset_duration: l.reset_duration,
 																					reset_config: l.reset_config,
+																					scope: l.scope,
 																				})),
 																			}
 																		: m,

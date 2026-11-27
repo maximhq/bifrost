@@ -483,9 +483,8 @@
 		"budgetMaxLimit": "Das maximale Budget-Limit muss größer als 0,01 $ sein",
 		"budgetNMaxLimit": "Das maximale Limit für Budget #{{n}} muss größer als 0,01 $ sein",
 		"budgetNResetRequired": "Die Reset-Dauer für Budget #{{n}} ist erforderlich",
-		"distinctResetDuration": "Jedes Budget muss eine unterschiedliche Reset-Dauer haben",
-		"uniqueResetPeriod": "Jedes Budget muss einen eindeutigen Reset-Zeitraum haben",
-		"budgetNLabel": "Budget #{{n}}: Maximale Ausgaben (USD)",
+		"distinctResetDuration": "Jedes Budget muss innerhalb seines Geltungsbereichs eine unterschiedliche Reset-Dauer haben",
+		"uniqueResetPeriod": "Jedes Budget muss innerhalb seines Geltungsbereichs einen eindeutigen Reset-Zeitraum haben",
 		"noBudgets": "Keine Budgets. Klicke auf „Budget hinzufügen“, um ein Ausgabenlimit festzulegen.",
 		"budgetDuration": "Budget ({{duration}})",
 		"noLimit": "Kein Limit",
@@ -499,7 +498,8 @@
 		"contentLoggingInherit": "Übernehmen",
 		"contentLoggingOff": "Für dieses Team aus",
 		"contentLoggingOn": "Für dieses Team an",
-		"contentLoggingHelp": "Ob Anfrage- und Antwortinhalt für den Verkehr dieses Teams in Protokollen gespeichert wird. Das Team hat Vorrang vor seinen virtuellen Schlüsseln und Provider-Schlüsseln, daher kann ein Schlüssel Inhalt, den das Team ausgeschaltet hat, nicht wieder einschalten. „Aus“ entfernt den Inhalt auch aus den Connector-Exporten. Der Header pro Anfrage gilt weiter, wenn Überschreibungen pro Anfrage erlaubt sind."
+		"contentLoggingHelp": "Ob Anfrage- und Antwortinhalt für den Verkehr dieses Teams in Protokollen gespeichert wird. Das Team hat Vorrang vor seinen virtuellen Schlüsseln und Provider-Schlüsseln, daher kann ein Schlüssel Inhalt, den das Team ausgeschaltet hat, nicht wieder einschalten. „Aus“ entfernt den Inhalt auch aus den Connector-Exporten. Der Header pro Anfrage gilt weiter, wenn Überschreibungen pro Anfrage erlaubt sind.",
+		"duplicateResetPeriodScope": "Doppelter Reset-Zeitraum für diesen Geltungsbereich; Budgetzeilen mit demselben Geltungsbereich müssen unterschiedliche Intervalle verwenden."
 	},
 	"filters": {
 		"filters": "Filter",

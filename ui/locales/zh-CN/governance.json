@@ -482,9 +482,8 @@
 		"budgetMaxLimit": "预算上限必须大于 $0.01",
 		"budgetNMaxLimit": "预算 #{{n}} 上限必须大于 $0.01",
 		"budgetNResetRequired": "预算 #{{n}} 重置周期为必填项",
-		"distinctResetDuration": "每项预算必须使用不同的重置周期",
-		"uniqueResetPeriod": "每项预算必须使用唯一的重置周期",
-		"budgetNLabel": "预算 #{{n}}：最高支出（USD）",
+		"distinctResetDuration": "同一范围内的每项预算必须使用不同的重置周期",
+		"uniqueResetPeriod": "同一范围内的每项预算必须使用唯一的重置周期",
 		"noBudgets": "暂无预算。点击「添加预算」以设置支出上限。",
 		"budgetDuration": "预算（{{duration}}）",
 		"noLimit": "无限制",
@@ -498,7 +497,8 @@
 		"contentLoggingInherit": "继承",
 		"contentLoggingOff": "此团队关闭",
 		"contentLoggingOn": "此团队开启",
-		"contentLoggingHelp": "是否把此团队流量的请求和响应内容写入日志。团队优先于其虚拟密钥和提供商密钥，因此密钥无法重新开启团队已关闭的内容。「关闭」也会从连接器导出中去掉内容。在允许按请求覆盖时，单次请求的请求头仍然生效。"
+		"contentLoggingHelp": "是否把此团队流量的请求和响应内容写入日志。团队优先于其虚拟密钥和提供商密钥，因此密钥无法重新开启团队已关闭的内容。「关闭」也会从连接器导出中去掉内容。在允许按请求覆盖时，单次请求的请求头仍然生效。",
+		"duplicateResetPeriodScope": "该范围内重置周期重复；同一范围的预算必须使用不同的周期。"
 	},
 	"filters": {
 		"filters": "筛选",
