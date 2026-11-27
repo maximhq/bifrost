@@ -48,6 +48,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/providers/opencode"
 	"github.com/maximhq/bifrost/core/providers/openrouter"
+	"github.com/maximhq/bifrost/core/providers/oruk"
 	"github.com/maximhq/bifrost/core/providers/parasail"
 	"github.com/maximhq/bifrost/core/providers/perplexity"
 	"github.com/maximhq/bifrost/core/providers/replicate"
@@ -5275,6 +5276,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return elevenlabs.NewElevenlabsProvider(config, bifrost.logger), nil
 	case schemas.Soniox:
 		return soniox.NewSonioxProvider(config, bifrost.logger)
+	case schemas.Oruk:
+		return oruk.NewOrukProvider(config, bifrost.logger)
 	case schemas.Nebius:
 		return nebius.NewNebiusProvider(config, bifrost.logger)
 	case schemas.HuggingFace:

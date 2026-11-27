@@ -44,6 +44,7 @@ export const KnownProvidersNames = [
 	"github-copilot",
 	"typesafe",
 	"soniox",
+	"oruk",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -214,6 +215,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
 	soniox: "Soniox",
+	oruk: "Oruk",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
