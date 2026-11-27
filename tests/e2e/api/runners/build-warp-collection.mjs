@@ -360,13 +360,16 @@ const FOLDERS = [
         },
       },
       {
+        // The prompt says to count before listing, so Warp may count the
+        // topic's requests and link the filtered list rather than print rows.
+        // Either way the topic filter has to reach the logs.
         id: "topics-drill-down",
         name: "Lists the requests in a topic through the topic filter",
         ask: "List the requests in the largest topic.",
         expect: {
-          toolsAll: ["list_topics", "query_logs"],
-          maxToolCalls: 4,
-          argsMatch: [{ tool: "query_logs", pattern: "\"topic_ids\"" }],
+          toolsAll: ["list_topics"],
+          maxToolCalls: 5,
+          argsMatch: [{ tool: ["query_logs", "count_logs"], pattern: "\"topic_ids\"" }],
           answerNone: [FEATURE_LINK],
         },
       },

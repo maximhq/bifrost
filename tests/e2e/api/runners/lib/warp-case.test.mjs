@@ -181,6 +181,36 @@ test("topics-people answers the user count from a user ranking over topic_ids", 
   assert.notDeepStrictEqual(lib.evaluate(answered(answer, []), expect), [], "no list_topics call");
 });
 
+// The requests behind a topic are reached through topic_ids on query_logs or
+// count_logs. Under the count-before-listing rule Warp may count them and link
+// the filtered list instead of printing rows (release run 45968299816), which
+// is a correct answer. What must hold is that the topic filter reached a data
+// tool, not which one carried it.
+test("topics-drill-down accepts topic_ids on query_logs or count_logs", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  const { expect } = caseFromCollection("topics-drill-down");
+  const topic = '{"filters":{"start_time":"-7d","topic_ids":["t-1"]}}';
+  const answer = "The largest topic was [Product Marketing Copy](/workspace/logs?topic_ids=t-1), with **34 requests** in the last 7 days.";
+  const counted = { name: "count_logs", arguments: topic };
+  const listed = { name: "query_logs", arguments: topic };
+  assert.deepStrictEqual(lib.evaluate(answered(answer, ["describe_filter_space", "list_topics", counted]), expect), [], "counted and linked (the CI transcript)");
+  assert.deepStrictEqual(lib.evaluate(answered(answer, ["list_topics", listed]), expect), [], "listed through query_logs");
+  assert.deepStrictEqual(lib.evaluate(answered(answer, ["describe_filter_space", "list_topics", counted, listed]), expect), [], "counted, then listed");
+  const unscoped = { name: "query_logs", arguments: '{"filters":{"start_time":"-7d"}}' };
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, ["list_topics", unscoped]), expect), [], "logs read without the topic filter");
+  assert.notDeepStrictEqual(lib.evaluate(answered(answer, [listed]), expect), [], "a topic id with no list_topics call");
+});
+
+test("argsMatch with a tool list accepts any of the named tools", () => {
+  const { pm } = fakePm();
+  const lib = createWarpLib(pm);
+  const body = answered("x", [{ name: "count_logs", arguments: '{"filters":{"topic_ids":["t-1"]}}' }]);
+  assert.deepStrictEqual(lib.evaluate(body, { argsMatch: [{ tool: ["query_logs", "count_logs"], pattern: "topic_ids" }] }), []);
+  const failures = lib.evaluate(body, { argsMatch: [{ tool: ["query_logs", "query_metrics"], pattern: "topic_ids" }] });
+  assert.deepStrictEqual(failures, ["no query_logs or query_metrics call with arguments matching /topic_ids/"]);
+});
+
 // A survey scoped to a window or a person is answered from one query_logs
 // sample, never from list_topics, and says it is a sample.
 test("scoped survey cases are a list_topics call with the scope, never a rebuilt sample", () => {
