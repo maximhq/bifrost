@@ -1029,6 +1029,7 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 		teams[t.ID] = &configstoreTables.TableTeam{
 			ID: t.ID, Name: t.Name, CustomerID: optionalID(t.CustomerID), RateLimitID: optionalID(t.RateLimitID),
 			CalendarAligned: t.CalendarAligned, Budgets: gs.liveBudgets(ctx, t.BudgetIDs), RateLimit: gs.LoadRateLimit(ctx, t.RateLimitID),
+			RequestLimits: gs.liveRateLimits(ctx, t.RequestLimitIDs),
 		}
 		return true
 	})
@@ -1037,7 +1038,8 @@ func (gs *LocalGovernanceStore) GetGovernanceData(ctx context.Context) *Governan
 		customers[c.ID] = &configstoreTables.TableCustomer{
 			ID: c.ID, Name: c.Name, RateLimitID: optionalID(c.RateLimitID), CalendarAligned: c.CalendarAligned,
 			Budgets: gs.liveBudgets(ctx, c.BudgetIDs), RateLimit: gs.LoadRateLimit(ctx, c.RateLimitID),
-			Teams: make([]configstoreTables.TableTeam, 0), VirtualKeys: make([]configstoreTables.TableVirtualKey, 0),
+			RequestLimits: gs.liveRateLimits(ctx, c.RequestLimitIDs),
+			Teams:         make([]configstoreTables.TableTeam, 0), VirtualKeys: make([]configstoreTables.TableVirtualKey, 0),
 		}
 		return true
 	})
@@ -1161,10 +1163,29 @@ func GovernanceDataFromRows(ctx context.Context, configStore configstore.ConfigS
 		}
 	}
 
+	// A holder's request limits are rows of their own; each takes its live copy, which carries the
+	// usage counted since the row was written, and a row memory does not hold keeps its stored values.
+	liveRequestLimits := func(rows []configstoreTables.TableRateLimit) []configstoreTables.TableRateLimit {
+		if len(rows) == 0 {
+			return rows
+		}
+		out := make([]configstoreTables.TableRateLimit, len(rows))
+		for i, row := range rows {
+			out[i] = row
+			if live, exists := src.rateLimits.Load(row.ID); exists && live != nil {
+				if rl, ok := live.(*configstoreTables.TableRateLimit); ok {
+					out[i] = *rl
+				}
+			}
+		}
+		return out
+	}
+
 	refreshTeamAssociations := func(team *configstoreTables.TableTeam) {
 		if team == nil {
 			return
 		}
+		team.RequestLimits = liveRequestLimits(team.RequestLimits)
 		// Allocate a fresh slice: shallow-copying `team` (via `clone := *team` at the caller)
 		// reuses the backing array, so in-place writes would change the source row. Mirrors the
 		// VK pattern above. Budgets missing from the live budgets are dropped rather than kept
@@ -1233,6 +1254,7 @@ func GovernanceDataFromRows(ctx context.Context, configStore configstore.ConfigS
 			refreshedBudgets = append(refreshedBudgets, b)
 		}
 		clone.Budgets = refreshedBudgets
+		clone.RequestLimits = liveRequestLimits(clone.RequestLimits)
 		if clone.RateLimitID != nil {
 			if liveRL, exists := src.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
 				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
@@ -1334,6 +1356,7 @@ func GovernanceDataFromRows(ctx context.Context, configStore configstore.ConfigS
 			}
 			clone.Budgets = liveBudgets
 		}
+		clone.RequestLimits = liveRequestLimits(clone.RequestLimits)
 		if clone.RateLimitID != nil {
 			if liveRL, exists := src.rateLimits.Load(*clone.RateLimitID); exists && liveRL != nil {
 				if rl, ok := liveRL.(*configstoreTables.TableRateLimit); ok {
@@ -1574,6 +1597,7 @@ func (gs *LocalGovernanceStore) modelConfigView(ctx context.Context, m *registry
 		ID: m.ID, ModelName: m.ModelName, Provider: m.Provider, Scope: m.Scope, ScopeID: optionalID(m.ScopeID),
 		RateLimitID: optionalID(m.RateLimitID), CalendarAligned: m.CalendarAligned, BudgetID: optionalID(m.BudgetID),
 		Budgets: gs.liveBudgets(ctx, m.BudgetIDs), RateLimit: gs.LoadRateLimit(ctx, m.RateLimitID),
+		RequestLimits: gs.liveRateLimits(ctx, m.RequestLimitIDs),
 	}
 }
 
@@ -1583,6 +1607,16 @@ func (gs *LocalGovernanceStore) liveBudgets(ctx context.Context, ids []string) [
 	out := make([]configstoreTables.TableBudget, 0, len(held))
 	for _, b := range held {
 		out = append(out, *b)
+	}
+	return out
+}
+
+// liveRateLimits copies the live rate limits with these IDs, leaving out any this store does not hold.
+func (gs *LocalGovernanceStore) liveRateLimits(ctx context.Context, ids []string) []configstoreTables.TableRateLimit {
+	held := gs.loadRateLimits(ctx, ids...)
+	out := make([]configstoreTables.TableRateLimit, 0, len(held))
+	for _, rl := range held {
+		out = append(out, *rl)
 	}
 	return out
 }

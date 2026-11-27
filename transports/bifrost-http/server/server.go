@@ -113,6 +113,8 @@ type ServerCallbacks interface {
 	UpdateDropExcessRequests(ctx context.Context, value bool)
 	// Governance related callbacks
 	GetGovernanceData(ctx context.Context) *governance.GovernanceData
+	LoadRateLimit(ctx context.Context, id string) *tables.TableRateLimit
+	ReloadRateLimit(ctx context.Context, id string) error
 	ReloadTeam(ctx context.Context, id string) (*tables.TableTeam, error)
 	RemoveTeam(ctx context.Context, id string) error
 	ReloadCustomer(ctx context.Context, id string) (*tables.TableCustomer, error)
@@ -741,6 +743,13 @@ func overlayBudgetUsage(ctx context.Context, store governance.GovernanceStore, b
 	budget.RefreshOverrideCyclesRemaining()
 }
 
+// overlayRequestLimitsUsage is overlayRateLimitUsage for each of a holder's request limits.
+func overlayRequestLimitsUsage(ctx context.Context, store governance.GovernanceStore, requestLimits []tables.TableRateLimit) {
+	for i := range requestLimits {
+		overlayRateLimitUsage(ctx, store, &requestLimits[i])
+	}
+}
+
 // overlayRateLimitUsage gives rateLimit, a row just read from the database, the token and request
 // usage, last resets and reset evidence memory counts it from. It writes nothing.
 func overlayRateLimitUsage(ctx context.Context, store governance.GovernanceStore, rateLimit *tables.TableRateLimit) {
@@ -1084,6 +1093,7 @@ func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.
 			overlayBudgetUsage(ctx, store, &preloadedTeam.Budgets[i])
 		}
 		overlayRateLimitUsage(ctx, store, preloadedTeam.RateLimit)
+		overlayRequestLimitsUsage(ctx, store, preloadedTeam.RequestLimits)
 	}
 	return preloadedTeam, nil
 }
@@ -1130,6 +1140,7 @@ func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tab
 			overlayBudgetUsage(ctx, store, &preloadedCustomer.Budgets[i])
 		}
 		overlayRateLimitUsage(ctx, store, preloadedCustomer.RateLimit)
+		overlayRequestLimitsUsage(ctx, store, preloadedCustomer.RequestLimits)
 	}
 	return preloadedCustomer, nil
 }
@@ -1196,6 +1207,7 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 			overlayBudgetUsage(ctx, store, &preloadedMC.Budgets[i])
 		}
 		overlayRateLimitUsage(ctx, store, preloadedMC.RateLimit)
+		overlayRequestLimitsUsage(ctx, store, preloadedMC.RequestLimits)
 	}
 	return preloadedMC, nil
 }
@@ -1517,6 +1529,23 @@ func (s *BifrostHTTPServer) GetVirtualKey(ctx context.Context, value string) (*t
 		return nil, false
 	}
 	return &tables.TableVirtualKey{ID: vk.ID, Name: vk.Name}, true
+}
+
+// ReloadRateLimit re-reads one rate limit into the live store, with retries. A rate limit is held
+// under one holder there and drops out when that holder stops naming it, though others may still
+// name it; reading it again by id puts it back under one of them.
+func (s *BifrostHTTPServer) ReloadRateLimit(ctx context.Context, id string) error {
+	return s.refreshRow(ctx, livestore.KindRateLimit, id)
+}
+
+// LoadRateLimit returns the governance store's live copy of one rate limit, or nil when the
+// governance plugin is not loaded or does not hold it.
+func (s *BifrostHTTPServer) LoadRateLimit(ctx context.Context, id string) *tables.TableRateLimit {
+	governancePlugin, err := lib.FindPluginAs[governance.BaseGovernancePlugin](s.Config, s.getGovernancePluginName())
+	if err != nil {
+		return nil
+	}
+	return governancePlugin.GetGovernanceStore().LoadRateLimit(ctx, id)
 }
 
 // getRoutingPlugin safely retrieves the routing plugin, or an error.
