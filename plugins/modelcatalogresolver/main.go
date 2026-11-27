@@ -28,6 +28,7 @@ var integrationTypeToDefaultProvider = map[string]schemas.ModelProvider{
 	"genai":     schemas.Gemini,
 	"bedrock":   schemas.Bedrock,
 	"cohere":    schemas.Cohere,
+	"azure":     schemas.Azure,
 }
 
 // Plugin resolves the default provider for unprefixed model strings using the model catalog.
@@ -61,6 +62,9 @@ func (p *Plugin) Cleanup() error { return nil }
 //
 // If the catalog returns zero providers, the resolver leaves req.Provider empty — the
 // empty-provider validation in handleRequest/handleStreamRequest then returns a clear error.
+// Exception: a key-selection-bypass request (BifrostContextKeySkipKeySelection) that the catalog
+// cannot resolve is pinned to the integration's canonical provider instead — see
+// ResolveProviderFromCatalog for why a zero-key OAuth-passthrough provider needs this.
 func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
 	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
 		return nil
@@ -70,7 +74,7 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 		return nil
 	}
 
-	selected, candidates := ResolveProviderFromCatalog(ctx, p.catalog, model)
+	selected, candidates, pinned := resolveProvider(ctx, p.catalog, model)
 	if selected == "" {
 		// ResolveProviderFromCatalog already logged *why* it could not pick
 		// (empty catalog vs allowlist pruned everything). This records the
@@ -84,6 +88,17 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	}
 	req.SetProvider(selected)
 
+	// The catalog had no usable provider and key selection is bypassed: the selection is the
+	// integration's own provider, not a catalog option, and it gets no catalog fallbacks.
+	if pinned {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineModelCatalog, schemas.LogLevelInfo, fmt.Sprintf(
+			"No provider specified for model %s and the model catalog could not resolve one; key selection is bypassed, so pinned to the integration's provider %s",
+			model, selected,
+		))
+		schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineModelCatalog)
+		return nil
+	}
+
 	candidateStrs := make([]string, len(candidates))
 	for i, prov := range candidates {
 		candidateStrs[i] = string(prov)
@@ -96,17 +111,17 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	// Populate fallbacks from the remaining catalog candidates so the request gets
 	// cross-provider resilience automatically — matches the governance and load
 	// balancing plugins, which both promote unselected candidates to fallbacks
-	// when the caller didn't configure any. Only fires when the caller passed
-	// none; an explicit fallback list (even an empty one set deliberately) is
-	// always respected. Model refinement is not needed here: GetProvidersForModel
-	// only returns providers that already serve this exact model string.
+	// when the caller didn't configure any. Model refinement is not needed here:
+	// GetProvidersForModel only returns providers that already serve this exact
+	// model string. They are marked Inferred, so core does not let a provider the
+	// caller never named answer a request the primary refused as malformed.
 	if len(existingFallbacks) == 0 && len(candidates) > 1 {
 		fallbacks := make([]schemas.Fallback, 0, len(candidates)-1)
 		for _, prov := range candidates {
 			if prov == selected {
 				continue
 			}
-			fallbacks = append(fallbacks, schemas.Fallback{Provider: prov, Model: model})
+			fallbacks = append(fallbacks, schemas.Fallback{Provider: prov, Model: model, Inferred: true})
 		}
 		if len(fallbacks) > 0 {
 			req.SetFallbacks(fallbacks)
@@ -145,7 +160,58 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 // selection — emitting routing-engine logs visible to callers when the allowlist prunes
 // candidates. Side effect: routing-engine logs are written to ctx when allowlist filtering
 // is applied (nil ctx skips logging).
+//
+// A key-selection-bypass request (BifrostContextKeySkipKeySelection) that the catalog leaves
+// unresolved is pinned to the integration's canonical provider, with no candidates. A zero-key
+// OAuth-passthrough provider (`anthropic` with `"keys": []` for Claude Code Max mode) contributes
+// nothing to the catalog, so without this its bare-model requests fail provider validation.
+// Whenever the catalog does resolve, its pick, candidates and fallbacks stand unchanged:
+// isKeySkippingAllowed gates the flag per attempt, so a non-Anthropic fallback uses its own
+// stored keys. The pin also respects the routing allowlist; governance would refuse a provider
+// the allowlist excludes. On the HTTP routes only checkAnthropicPassthrough sets the flag for a
+// request that reaches this resolver: applyPassthroughCallerAuth sets it for generic passthrough,
+// which PreRequestHook skips, and the realtime callers pass a nil ctx.
 func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider) {
+	selected, candidates, _ := resolveProvider(ctx, catalog, model)
+	return selected, candidates
+}
+
+// resolveProvider is ResolveProviderFromCatalog plus whether the selection was pinned by the
+// key-selection bypass rather than picked from the catalog.
+func resolveProvider(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider, bool) {
+	selected, candidates := resolveFromCatalog(ctx, catalog, model)
+	if selected != "" {
+		return selected, candidates, false
+	}
+	if provider := keySelectionBypassProvider(ctx); provider != "" {
+		return provider, nil, true
+	}
+	return "", candidates, false
+}
+
+// keySelectionBypassProvider returns the integration's canonical provider for a request that skips
+// key selection, or "" when the flag is unset, the route has no canonical provider, or a routing
+// allowlist excludes that provider.
+func keySelectionBypassProvider(ctx *schemas.BifrostContext) schemas.ModelProvider {
+	if ctx == nil {
+		return ""
+	}
+	if skip, _ := ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool); !skip {
+		return ""
+	}
+	integrationType, _ := ctx.Value(schemas.BifrostContextKeyIntegrationType).(string)
+	provider := integrationTypeToDefaultProvider[integrationType]
+	if provider == "" {
+		return ""
+	}
+	if allowed, ok := ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders).([]schemas.ModelProvider); ok && !slices.Contains(allowed, provider) {
+		return ""
+	}
+	return provider
+}
+
+// resolveFromCatalog is the catalog-only pick behind ResolveProviderFromCatalog.
+func resolveFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatalog.ModelCatalog, model string) (schemas.ModelProvider, []schemas.ModelProvider) {
 	if catalog == nil || model == "" {
 		return "", nil
 	}
@@ -182,11 +248,12 @@ func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatal
 	}
 
 	// Respect the routing-allowlist set by an earlier plugin (e.g., governance VK config):
-	// intersect catalog candidates with the allowlist so the VK's provider restrictions hold
-	// even when no earlier routing plugin set req.Provider. Emit observability logs for both
-	// the partial-prune and all-pruned cases — the two-level enforcement (cooperative here +
-	// hard core enforcement) is only useful if the cooperative pruning is visible in routing
-	// engine logs when it fires.
+	// intersect catalog candidates with the allowlist so the resolver does not pick a provider
+	// the VK disallows when no earlier routing plugin set req.Provider. Core does not check the
+	// allowlist; governance's PreLLMHook refuses a disallowed provider on every routed LLM
+	// attempt, so pruning here is what keeps the pick valid. Emit observability logs for both the
+	// partial-prune and all-pruned cases, so the pruning is visible in routing engine logs when it
+	// fires.
 	if allowlistSet {
 		preFilterCount := len(providers)
 		preFilterStrs := make([]string, preFilterCount)

@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,7 +13,12 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/plugins/governance"
+	"gorm.io/gorm"
 )
+
+// ErrVirtualKeyRotatedReloadFailed means the rotation was saved but the in-memory
+// reload failed; RotateVirtualKey still returns the written key with its new value.
+var ErrVirtualKeyRotatedReloadFailed = errors.New("virtual key rotated in database but failed to reload in-memory state")
 
 // VirtualKeyRotator rotates a virtual key's value exactly the way
 // POST /api/governance/virtual-keys/{vk_id}/rotate does, so every producer
@@ -44,7 +50,9 @@ func (r *VirtualKeyRotator) VKRotationCooldown(ctx context.Context) time.Duratio
 // cooldown rules (the retired value stays valid until now+cooldown, or is
 // dropped immediately when no cooldown is configured), persists the change,
 // reloads in-memory governance and hydrates VK-scoped model-config governance
-// onto the returned row. Callers passing a background context run unscoped by
+// onto the returned row. When the reload fails after the commit it returns the
+// written key with an error wrapping ErrVirtualKeyRotatedReloadFailed, so the
+// caller can still hand out the new value. Callers passing a background context run unscoped by
 // DAC, which is intended for system-initiated rotation.
 func (r *VirtualKeyRotator) RotateVirtualKey(ctx context.Context, vkID string) (*configstoreTables.TableVirtualKey, error) {
 	vk, err := r.configStore.GetVirtualKey(ctx, vkID)
@@ -53,6 +61,7 @@ func (r *VirtualKeyRotator) RotateVirtualKey(ctx context.Context, vkID string) (
 	}
 	oldValue := vk.Value.GetValue()
 	vk.Value = *schemas.NewSecretVar(governance.GenerateVirtualKey())
+	newValue := vk.Value
 	if vk.Value.GetValue() == oldValue {
 		return nil, fmt.Errorf("generated virtual key matched existing value")
 	}
@@ -70,12 +79,33 @@ func (r *VirtualKeyRotator) RotateVirtualKey(ctx context.Context, vkID string) (
 	} else {
 		vk.ClearPreviousValue()
 	}
-	if err := r.configStore.UpdateVirtualKey(ctx, vk); err != nil {
+	// MCP OAuth grants minted in vk mode are bound to this key's row id, not to
+	// its value, so they would keep refreshing under the new value forever, and a
+	// consented code not yet exchanged would mint a fresh grant after the fact.
+	// Rotation is the response to a value that may have leaked, and everything
+	// obtained with that value has to go with it; the cooldown applies to the
+	// retired value itself, not to what was minted from it. Revoking the grants
+	// and storing the new value commit in one transaction: if either fails,
+	// neither happens, and in-memory governance is reloaded only after commit.
+	var revokedGrants int64
+	if err := r.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+		var err error
+		if revokedGrants, err = r.configStore.RevokeOAuth2GrantsBySubject(ctx, string(schemas.MCPAuthModeVK), vk.ID, tx); err != nil {
+			return fmt.Errorf("failed to revoke the virtual key's MCP OAuth grants, rotation aborted: %w", err)
+		}
+		return r.configStore.UpdateVirtualKey(ctx, vk, tx)
+	}); err != nil {
 		return nil, err
+	}
+	if revokedGrants > 0 {
+		logger.Debug(oauth2TokenLogPrefix+" event=family.revoked at=%s reason=virtual_key_rotated virtual_key_id=%s revoked_rows=%d",
+			time.Now().UTC().Format(time.RFC3339Nano), vk.ID, revokedGrants)
 	}
 	preloadedVk, err := r.governanceManager.ReloadVirtualKey(ctx, vk.ID)
 	if err != nil {
-		return nil, fmt.Errorf("virtual key rotated in database but failed to reload in-memory state: %w", err)
+		vk.Value = newValue // saving encrypted the value in place
+		hydrateVKGovernanceFromStore(ctx, r.configStore, vk)
+		return vk, fmt.Errorf("%w: %w", ErrVirtualKeyRotatedReloadFailed, err)
 	}
 	hydrateVKGovernanceFromStore(ctx, r.configStore, preloadedVk)
 	return preloadedVk, nil

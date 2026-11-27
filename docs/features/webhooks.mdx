@@ -225,8 +225,12 @@ Declare endpoints under the top-level `webhooks` array. They are synced into the
 | `secret` | string | No | Signing secret in `whsec_` format. Best supplied as an env reference (`env.MY_VAR`); generated when omitted. |
 | `headers` | object | No | Custom headers sent with every delivery. Values support `env.VAR` syntax and are encrypted at rest when `encryption_key` is configured. Reserved delivery headers cannot be overridden. |
 | `include_response` | boolean | No | Inline the job response into payloads (default `false`). |
-| `allow_private_network` | boolean | No | Permit private-network receivers and plain `http` (default `false`). Test deliveries to such an endpoint require an authenticated caller: with dashboard auth unconfigured, `POST /api/webhooks/{id}/test` answers `403`. |
+| `allow_private_network` | boolean | No | Permit private-network receivers (loopback, RFC 1918, CGNAT) and plain `http` (default `false`). Link-local and cloud metadata addresses stay blocked even when this is set. Registering, re-pointing, test-firing, and redelivering to such an endpoint require an authenticated admin: with dashboard auth disabled or unconfigured, `POST /api/webhooks`, `PUT /api/webhooks/{id}` (unless the stored private URL is kept), `POST /api/webhooks/{id}/test`, and redelivery answer `403`. Scheduled deliveries are unaffected. |
 | `disabled` | boolean | No | Register the endpoint without delivering to it (default `false`). |
+
+<Note>
+While dashboard auth is disabled or unconfigured, the API refuses to create an endpoint that allows private-network delivery, or to update an endpoint so that it allows it, unless the endpoint already allows it and keeps its stored URL; edits to other fields of such an endpoint are accepted. To register or re-point one, enable dashboard authentication (see [Security best practices](/deployment-guides/how-to/security-best-practices)) or define the endpoint in `config.json`.
+</Note>
 
 <Note>
 `config.json` is the only place you can supply your own signing secret, and an `env.` reference is the recommended form. Prefer creating endpoints through the UI or API so the secret is generated for you.

@@ -9,7 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/sidekiq"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -20,13 +20,14 @@ const (
 
 // SidekiqJobsStore is the read surface the generic jobs endpoint needs from the job store.
 type SidekiqJobsStore interface {
-	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error)
+	ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error)
 }
 
 // SidekiqJobsRunner is the slice of *sidekiq.Runner the generic jobs endpoint uses.
 type SidekiqJobsRunner interface {
 	Cancel(ctx context.Context, id string) (bool, error)
 	Summarize(kind, metadata string) (sidekiq.JobSummary, bool)
+	QuietOnSuccessKinds() []string
 }
 
 // SidekiqHandler exposes every sidekiq job, whatever its kind, so one UI surface can show
@@ -37,7 +38,8 @@ type SidekiqHandler struct {
 	runner SidekiqJobsRunner
 }
 
-// NewSidekiqHandler returns a handler; a nil store or runner makes its routes answer 503.
+// NewSidekiqHandler returns a handler; a nil runner makes its routes answer 503. A nil store
+// (config store disabled) is refused earlier, by RequireConfigStoreMiddleware.
 func NewSidekiqHandler(store SidekiqJobsStore, runner SidekiqJobsRunner) *SidekiqHandler {
 	return &SidekiqHandler{store: store, runner: runner}
 }
@@ -80,7 +82,7 @@ func sidekiqAdmin(ctx *fasthttp.RequestCtx) bool {
 // listJobs handles GET /api/sidekiq/jobs: every active job plus those finished within
 // the window (?since=<RFC3339>, default the last 24h), newest first.
 func (h *SidekiqHandler) listJobs(ctx *fasthttp.RequestCtx) {
-	if h.store == nil || h.runner == nil {
+	if h.runner == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
 		return
 	}
@@ -97,7 +99,8 @@ func (h *SidekiqHandler) listJobs(ctx *fasthttp.RequestCtx) {
 		}
 		since = parsed
 	}
-	rows, err := h.store.ListSidekiqJobs(ctx, since, sidekiqJobsLimit)
+	// Routine kinds' completed runs are left out; their failures still show.
+	rows, err := h.store.ListSidekiqJobs(ctx, since, sidekiqJobsLimit, h.runner.QuietOnSuccessKinds())
 	if err != nil {
 		logger.Error("failed to list sidekiq jobs: %v", err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to list background jobs")
@@ -133,7 +136,7 @@ func (h *SidekiqHandler) jobView(job *tables.TableSidekiqJob) sidekiqJobView {
 // stands; cancelling stops further work. An unknown or already-finished job is a no-op
 // ({"cancelled": false}) rather than an error, so a click racing the last batch is harmless.
 func (h *SidekiqHandler) cancelJob(ctx *fasthttp.RequestCtx) {
-	if h.store == nil || h.runner == nil {
+	if h.runner == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, "Background job runner is not available")
 		return
 	}
@@ -152,6 +155,9 @@ func (h *SidekiqHandler) cancelJob(ctx *fasthttp.RequestCtx) {
 		logger.Error("failed to cancel sidekiq job %s: %v", id, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to cancel the job")
 		return
+	}
+	if cancelled {
+		lib.RecordAuditChange(ctx, "sidekiq_job.cancelled", "sidekiq_job", id, id, nil, map[string]any{"job_id": id})
 	}
 	SendJSON(ctx, map[string]bool{"cancelled": cancelled})
 }

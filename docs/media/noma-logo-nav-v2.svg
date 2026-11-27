@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Noma Security">
+  <style>.bg { fill: #ffffff; } @media (prefers-color-scheme: dark) { .bg { fill: #090d0d; } }</style>
+  <rect class="bg" width="200" height="200"/>
+  <g fill="#9CA3AF">
+    <path d="M26 114.6 27.3 109.4 31.8 102.3 83.1 51 84.4 51 96.8 64 98.7 67.2 100 71.8 100 100.3 51.3 149 49.4 149 30.5 129.5 26.6 122.4Z"/>
+    <path d="M100 100.3 148.7 51 150 51 166.9 67.9 171.4 73.7 173.4 78.3 174 82.1 173.4 89.3 171.4 93.8 169.5 96.4 117.5 149 115.6 149 103.9 137.3 101.3 132.8 100 128.9Z"/>
+  </g>
+</svg>

@@ -2,79 +2,76 @@ package server
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
+	"github.com/maximhq/bifrost/framework/queryscope"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
-type fakePromptsPlugin struct {
-	name    string
-	reloads int
-	err     error
-}
-
-func (p *fakePromptsPlugin) GetName() string { return p.name }
-func (p *fakePromptsPlugin) Cleanup() error  { return nil }
-func (p *fakePromptsPlugin) Reload(context.Context) error {
-	p.reloads++
-	return p.err
-}
-
-// nonReloadingPlugin is registered under the prompts plugin name but cannot reload.
-type nonReloadingPlugin struct{ name string }
-
-func (p *nonReloadingPlugin) GetName() string { return p.name }
-func (p *nonReloadingPlugin) Cleanup() error  { return nil }
-
-func promptCacheServer(plugins ...schemas.BasePlugin) *BifrostHTTPServer {
+// TestRefreshPromptsFollowsEachWrite checks that a prompt write refreshes only the prompt it names:
+// a refresh brings the prompt and its versions into memory, a version write re-read through its
+// prompt replaces the versions, a removal drops the prompt with its versions, and no IDs is a no-op.
+func TestRefreshPromptsFollowsEachWrite(t *testing.T) {
 	SetLogger(bifrost.NewNoOpLogger())
-	config := &lib.Config{}
-	config.BasePlugins.Store(&plugins)
-	return &BifrostHTTPServer{
-		Config: config,
-		Ctx:    schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
-	}
+	ctx := context.Background()
+	config := libtest.Config(t, nil, nil)
+	server := &BifrostHTTPServer{Config: config, Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline)}
+	prompts, versions := config.LiveStore.Collections.Prompts, config.LiveStore.Collections.PromptVersions
+
+	require.NoError(t, config.ConfigStore.CreatePrompt(ctx, &configstoreTables.TablePrompt{ID: "p1", Name: "Support"}))
+	require.NoError(t, config.ConfigStore.CreatePrompt(ctx, &configstoreTables.TablePrompt{ID: "p2", Name: "Other"}))
+	require.NoError(t, server.RefreshPrompts(ctx, nil, false))
+	_, held := prompts.Get("p1")
+	require.False(t, held, "no IDs refreshes nothing")
+
+	require.NoError(t, server.RefreshPrompts(ctx, []string{"p1"}, false))
+	_, held = prompts.Get("p1")
+	require.True(t, held)
+	_, held = prompts.Get("p2")
+	require.False(t, held, "only the named prompt is refreshed")
+
+	version := &configstoreTables.TablePromptVersion{PromptID: "p1", Messages: []configstoreTables.TablePromptVersionMessage{{Message: []byte(`{"role":"system","content":"hi"}`)}}}
+	require.NoError(t, config.ConfigStore.CreatePromptVersion(ctx, version))
+	require.NoError(t, server.RefreshPrompts(ctx, []string{"p1"}, false))
+	latest, held := versions.GetBy(registry.PromptVersionLatest, "p1")
+	require.True(t, held, "a version write is read through its prompt")
+	require.Len(t, latest.Messages, 1)
+
+	require.NoError(t, config.ConfigStore.DeletePrompt(ctx, "p1"))
+	require.NoError(t, server.RefreshPrompts(ctx, []string{"p1"}, true))
+	_, held = prompts.Get("p1")
+	require.False(t, held, "a removed prompt is dropped")
+	_, held = versions.GetBy(registry.PromptVersionLatest, "p1")
+	require.False(t, held, "its versions go with it")
 }
 
-func TestReloadPromptCacheReloadsThePlugin(t *testing.T) {
-	plugin := &fakePromptsPlugin{name: "prompts"}
-	server := promptCacheServer(plugin)
+// TestRefreshPromptsServesWhatIsStoredWhateverTheCallerSees checks that a refresh run on an
+// editor's request serves the saved prompt, not only what the editor's data access lets them see:
+// the refresh is the gateway's, so a scoped editor's save must not hide the prompt from it.
+func TestRefreshPromptsServesWhatIsStoredWhateverTheCallerSees(t *testing.T) {
+	SetLogger(bifrost.NewNoOpLogger())
+	ctx := context.Background()
+	config := libtest.Config(t, nil, nil)
+	server := &BifrostHTTPServer{Config: config, Ctx: schemas.NewBifrostContext(ctx, schemas.NoDeadline)}
 
-	require.NoError(t, server.ReloadPromptCache(context.Background()))
-	require.Equal(t, 1, plugin.reloads)
-}
+	require.NoError(t, config.ConfigStore.CreatePrompt(ctx, &configstoreTables.TablePrompt{ID: "p1", Name: "Support"}))
+	version := &configstoreTables.TablePromptVersion{PromptID: "p1", Messages: []configstoreTables.TablePromptVersionMessage{{Message: []byte(`{"role":"system","content":"hi"}`)}}}
+	require.NoError(t, config.ConfigStore.CreatePromptVersion(ctx, version))
+	callerCtx := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB { return db.Where("1 = 0") })
+	visible, err := config.ConfigStore.GetPrompts(callerCtx, nil)
+	require.NoError(t, err)
+	require.Empty(t, visible, "the caller sees no prompt")
 
-// A prompt write must not fail just because the prompts plugin is disabled.
-func TestReloadPromptCacheWithoutPluginIsNoOp(t *testing.T) {
-	server := promptCacheServer()
-
-	require.NoError(t, server.ReloadPromptCache(context.Background()))
-}
-
-func TestReloadPromptCacheUsesPluginNameFromContext(t *testing.T) {
-	plugin := &fakePromptsPlugin{name: "enterprise-prompts"}
-	server := promptCacheServer(plugin)
-	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyPromptsPluginName, "enterprise-prompts")
-	server.Ctx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
-
-	require.NoError(t, server.ReloadPromptCache(context.Background()))
-	require.Equal(t, 1, plugin.reloads, "enterprise registers the plugin under its own name")
-}
-
-func TestReloadPromptCacheReturnsPluginError(t *testing.T) {
-	plugin := &fakePromptsPlugin{name: "prompts", err: errors.New("database unavailable")}
-	server := promptCacheServer(plugin)
-
-	require.ErrorContains(t, server.ReloadPromptCache(context.Background()), "database unavailable")
-}
-
-// A plugin that cannot reload must not fail the write, but it does warn rather than pass silently.
-func TestReloadPromptCacheWithIncompatiblePluginIsNoOp(t *testing.T) {
-	server := promptCacheServer(&nonReloadingPlugin{name: "prompts"})
-
-	require.NoError(t, server.ReloadPromptCache(context.Background()))
+	require.NoError(t, server.RefreshPrompts(callerCtx, []string{"p1"}, false))
+	_, ok := config.LiveStore.Collections.Prompts.Get("p1")
+	require.True(t, ok, "the refresh serves the prompt the caller cannot see")
+	latest, ok := config.LiveStore.Collections.PromptVersions.GetBy(registry.PromptVersionLatest, "p1")
+	require.True(t, ok)
+	require.Len(t, latest.Messages, 1)
 }

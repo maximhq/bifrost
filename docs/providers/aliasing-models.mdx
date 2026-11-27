@@ -99,7 +99,7 @@ Each alias maps the name your application sends to either a plain target string 
 | `model_name` | string | Canonical model name used by pricing and logs. Set this when `model_id` is opaque (e.g. an Azure deployment ID) so cost attribution still hits the catalog. |
 | `model_family` | enum | Forces the family used for provider routing decisions (request shape, response parsing, etc.). One of: `anthropic`, `openai`, `mistral`, `cohere`, `gemini`, `gemma`, `llama`, `imagen`, `veo`, `nova`, `titan`. When unset, the family is auto-detected by substring matching against `model_name`, `model_id`, and the alias name. |
 | `description` | string | Free-form note. Surfaced in the UI; not used for routing. |
-| `region` | string / EnvVar | Per-alias region override (Bedrock + Vertex). Falls back to the key-level region when unset. |
+| `region` | string / EnvVar | Per-alias region override (Bedrock, SageMaker, Vertex). Falls back to the key-level region when unset. |
 
 **Provider-specific overrides** (only set on aliases whose owning key matches the provider; validation rejects mismatches):
 
@@ -108,6 +108,8 @@ Each alias maps the name your application sends to either a plain target string 
 | Azure | `api_version` | Overrides the `api-version` query parameter |
 | Azure | `anthropic_version` | Overrides the `anthropic-version` header for Claude-on-Azure deployments |
 | Azure | `endpoint` | Overrides the key-level Azure endpoint — useful when one credential spans deployments on multiple Azure resources |
+| Azure | `use_speech_endpoints` | Sends the alias's speech and transcription requests to Azure AI Speech instead of Azure OpenAI; overrides the key-level value |
+| Azure | `use_voice_live_endpoints` | Sends the alias's realtime WebSocket sessions to Azure Voice Live instead of Azure OpenAI; overrides the key-level value |
 | Vertex | `project_id` | Per-alias GCP project ID |
 | Vertex | `project_number` | Per-alias GCP project number (required for fine-tuned models) |
 | Bedrock | `inference_profile_arn` | Cross-region inference profile ARN invoked instead of the model ID |
@@ -120,11 +122,77 @@ Bifrost rejects an aliases map that violates any of these:
 - **No empty strings** - both the alias name and `model_id` must be non-empty
 - **No leading or trailing whitespace** on either side
 - **No duplicate alias names** (checked case-insensitively) - `"GPT-4o"` and `"gpt-4o"` cannot both be keys in the same map
+- **Valid patterns** - a `regex:` alias name must compile as RE2, and its `model_id` and `model_name` may only reference capture groups the pattern defines (see [Pattern aliases](#pattern-aliases))
 - **No provider mismatch on sub-configs** - an Azure-specific override (`api_version`, `endpoint`, …) can only appear on an alias whose owning key is an Azure key, and likewise for Vertex / Bedrock / Replicate
 
 ### Case-insensitive matching
 
 Alias lookup is case-insensitive. If your map has `"GPT-4O": "gpt-4o-2024-11-20"` and a request comes in with `model: "gpt-4o"`, it resolves correctly. Aliases are stored as-is but matched without regard to case.
+
+### Pattern aliases
+
+An alias name that starts with `regex:` is a pattern. One row then covers every model name that matches, so you do not add a row for each model. The common case is a Bedrock key where every Claude model goes through a `global.` inference profile:
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "keys": [
+        {
+          "name": "bedrock-claude",
+          "weight": 1,
+          "models": ["regex:claude-.*"],
+          "aliases": {
+            "regex:(claude-.*)": { "model_id": "global.anthropic.$1" }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+A request for `claude-opus-5` goes to Bedrock as `global.anthropic.claude-opus-5`. The log row records `global.anthropic.claude-opus-5` as the model and `claude-opus-5` as the alias. Cost comes from the `global.anthropic.claude-opus-5` pricing row.
+
+The pattern is RE2, case-insensitive, and has to match the whole requested model name. That is the same rule `regex:` entries follow in `models` and `blacklisted_models`. In `model_id` and `model_name`, `$1` or `${1}` inserts the first capture group and `${name}` inserts a named group `(?P<name>...)`. Write `$$` for a literal dollar sign.
+
+| Behaviour | Rule |
+|-----------|------|
+| Which alias wins | An exact name always beats a pattern. Among patterns, Bifrost tries the longest pattern text first, then alphabetical order. |
+| `model_name` | Empty unless you set it, the same as on an exact alias. Cost lookup then tries the expanded `model_id` first and falls back to the requested name, so a `us.anthropic.$1` template is priced from the `us.` row. Set a template such as `$1` when the upstream ID has no pricing row, for example an opaque deployment name. |
+| Other fields | `model_family`, `region` and the provider overrides apply to every model the pattern matches. |
+| Allow list | A pattern alias does not allow a model by itself. The key's `models` list must also admit the requested name, with `*` or a matching `regex:` entry. |
+| Block list | `blacklisted_models` is checked against the requested name, never the upstream ID. Block `claude-opus-5`, not `global.anthropic.claude-opus-5`. |
+| Model listing | `/v1/models` does not list the names a pattern could match. See [Pattern aliases and model listing](#pattern-aliases-and-model-listing). |
+
+To pin one model to a different target, add an exact row next to the pattern. With `"claude-opus-4-8": "us.anthropic.claude-opus-4-8"` in the same map, that one name uses the `us.` profile and every other Claude model still follows the pattern.
+
+Bifrost rejects a pattern that does not compile, an empty pattern, `regex:*`, and a template that references a capture group the pattern does not define. Watch for `$1x`. Go reads it as a group named `1x`, so write `${1}x`.
+
+#### Pattern aliases and model listing
+
+`/v1/models` lists what the provider returns, filtered by the key's `models` list. Bifrost cannot enumerate the names a pattern could match, so a pattern alias adds nothing to the list and does not rename the entries the provider returns.
+
+For the Bedrock key above, that has a side effect. Bedrock returns `anthropic.claude-opus-5`, and `regex:claude-.*` has to match the whole name, so the key lists no Claude models even though a request for `claude-opus-5` works. What you see depends on the `models` list:
+
+| `models` on the key | Claude entries in `/v1/models` | A request for `anthropic.claude-opus-5` |
+|---------------------|--------------------------------|------------------------------------------|
+| `["regex:claude-.*"]` | None | Refused, the key does not allow that name |
+| `["*"]` | `anthropic.claude-opus-5` | Sent upstream unchanged, because `(claude-.*)` does not match it |
+| `["claude-opus-5"]` | `claude-opus-5` | Refused, the key does not allow that name |
+
+If clients pick model names from `/v1/models`, make the vendor prefix optional in both the allow list and the pattern:
+
+```json
+{
+  "models": ["regex:(?:anthropic\\.)?claude-.*"],
+  "aliases": {
+    "regex:(?:anthropic\\.)?(claude-.*)": { "model_id": "global.anthropic.$1" }
+  }
+}
+```
+
+The key then lists `anthropic.claude-opus-5`. Both `claude-opus-5` and `anthropic.claude-opus-5` go to Bedrock as `global.anthropic.claude-opus-5`.
 
 ### Tracking in responses
 
@@ -158,7 +226,7 @@ Every response includes a `routing_info` block in `extra_fields` describing the 
 | `routing_info.primary_provider` / `routing_info.primary_model` | Populated on fallback attempts with the primary attempt's provider/model |
 | `routing_info.requested_provider` / `routing_info.requested_model` | What the caller sent, before routing rules, load balancing or session routing rewrote it. `requested_provider` is omitted when the caller sent a bare model. |
 
-Each field is also sent as a response header, so SDK routes whose body has no `extra_fields` can read it: `x-bifrost-routing-info-provider`, `x-bifrost-routing-info-model`, `x-bifrost-routing-info-requested-model`, and so on.
+Each field is also sent as a response header, so SDK routes whose body has no `extra_fields` can read it: `x-bifrost-routing-info-provider`, `x-bifrost-routing-info-model`, `x-bifrost-routing-info-requested-model`, and so on; see [Response Headers](/providers/response-headers).
 
 When no alias matches, `resolved_key_alias` is omitted and `model` carries the wire identifier directly.
 

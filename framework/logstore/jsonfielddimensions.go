@@ -180,6 +180,109 @@ func jsonObjectFieldExpr(dialect, column, nestedUnder, field string) (string, bo
 	return "", false
 }
 
+// jsonArrayNotEmptyExpr returns a SQL predicate that is true when column is a
+// JSON object whose arrayKey holds a non-empty array, or ("", false) for an
+// unsupported dialect. Like jsonObjectFieldExpr it is false, never an error,
+// for a NULL, malformed or key-less column, and the length is only taken once
+// the value is known to be an array, since Postgres raises on a non-array.
+// Postgres does not order AND operands, so the ::jsonb cast sits in an inner
+// CASE that runs only once the column is known to be a JSON object.
+func jsonArrayNotEmptyExpr(dialect, column, arrayKey string) (string, bool) {
+	switch dialect {
+	case "postgres":
+		return fmt.Sprintf(
+			`(CASE WHEN %[1]s IS NOT NULL AND %[1]s IS JSON OBJECT THEN CASE WHEN jsonb_typeof(%[1]s::jsonb -> '%[2]s') = 'array' THEN jsonb_array_length(%[1]s::jsonb -> '%[2]s') > 0 ELSE FALSE END ELSE FALSE END)`,
+			column, arrayKey,
+		), true
+	case "sqlite":
+		return fmt.Sprintf(
+			`(CASE WHEN %[1]s IS NOT NULL AND json_valid(%[1]s) AND json_type(%[1]s, '$.%[2]s') = 'array' THEN json_array_length(%[1]s, '$.%[2]s') > 0 ELSE 0 END)`,
+			column, arrayKey,
+		), true
+	case "clickhouse":
+		return fmt.Sprintf(
+			`(isValidJSON(ifNull(%[1]s, '')) AND JSONType(ifNull(%[1]s, ''), '%[2]s') = 'Array' AND JSONLength(ifNull(%[1]s, ''), '%[2]s') > 0)`,
+			column, arrayKey,
+		), true
+	}
+	return "", false
+}
+
+// jsonArrayElementSQL builds predicates over the elements of a JSON array held
+// under one key of a JSON object column. exists wraps a condition written with
+// str, num and boolean, which read fields of the element being tested. Like
+// jsonArrayNotEmptyExpr, a NULL, malformed or key-less column has no elements
+// rather than raising an error.
+type jsonArrayElementSQL struct{ dialect string }
+
+// newJSONArrayElementSQL returns the element SQL builder for dialect, or false
+// for a dialect it does not support.
+func newJSONArrayElementSQL(dialect string) (jsonArrayElementSQL, bool) {
+	switch dialect {
+	case "postgres", "sqlite", "clickhouse":
+		return jsonArrayElementSQL{dialect: dialect}, true
+	}
+	return jsonArrayElementSQL{}, false
+}
+
+// exists returns a predicate that is true when column's arrayKey array holds an
+// element meeting cond. On Postgres the ::jsonb cast sits in an inner CASE, as
+// in jsonArrayNotEmptyExpr, so malformed text never reaches it.
+func (j jsonArrayElementSQL) exists(column, arrayKey, cond string) string {
+	switch j.dialect {
+	case "postgres":
+		return fmt.Sprintf(
+			`EXISTS (SELECT 1 FROM jsonb_array_elements(CASE WHEN %[1]s IS NOT NULL AND %[1]s IS JSON OBJECT THEN CASE WHEN jsonb_typeof(%[1]s::jsonb -> '%[2]s') = 'array' THEN %[1]s::jsonb -> '%[2]s' ELSE '[]'::jsonb END ELSE '[]'::jsonb END) AS elem WHERE %[3]s)`,
+			column, arrayKey, cond,
+		)
+	case "sqlite":
+		return fmt.Sprintf(
+			`EXISTS (SELECT 1 FROM json_each(CASE WHEN %[1]s IS NOT NULL AND json_valid(%[1]s) AND json_type(%[1]s, '$.%[2]s') = 'array' THEN json_extract(%[1]s, '$.%[2]s') ELSE '[]' END) AS elem WHERE %[3]s)`,
+			column, arrayKey, cond,
+		)
+	default: // clickhouse
+		return fmt.Sprintf(`arrayExists(elem -> %[3]s, JSONExtractArrayRaw(ifNull(%[1]s, ''), '%[2]s'))`, column, arrayKey, cond)
+	}
+}
+
+// str returns the element's string field, or NULL or an empty string when absent.
+func (j jsonArrayElementSQL) str(field string) string {
+	switch j.dialect {
+	case "postgres":
+		return fmt.Sprintf(`(elem ->> '%s')`, field)
+	case "sqlite":
+		return fmt.Sprintf(`json_extract(elem.value, '$.%s')`, field)
+	default: // clickhouse
+		return fmt.Sprintf(`JSONExtractString(elem, '%s')`, field)
+	}
+}
+
+// num returns the element's numeric field as text ("42"), so an IN list of ids
+// matches it on every dialect, or NULL or an empty string when absent.
+func (j jsonArrayElementSQL) num(field string) string {
+	switch j.dialect {
+	case "postgres":
+		return fmt.Sprintf(`(elem ->> '%s')`, field)
+	case "sqlite":
+		return fmt.Sprintf(`CAST(json_extract(elem.value, '$.%s') AS TEXT)`, field)
+	default: // clickhouse
+		return fmt.Sprintf(`JSONExtractRaw(elem, '%s')`, field)
+	}
+}
+
+// boolean returns the element's boolean field as 'true' or 'false', and an
+// empty string when absent, never NULL, so a comparison on it is never NULL either.
+func (j jsonArrayElementSQL) boolean(field string) string {
+	switch j.dialect {
+	case "postgres":
+		return fmt.Sprintf(`COALESCE(elem ->> '%s', '')`, field)
+	case "sqlite":
+		return fmt.Sprintf(`COALESCE(json_type(elem.value, '$.%s'), '')`, field)
+	default: // clickhouse
+		return fmt.Sprintf(`JSONExtractRaw(elem, '%s')`, field)
+	}
+}
+
 // jsonTopLevelNumberExpr returns a SQL expression yielding a numeric field at
 // the top level of a JSON object column as text ("429"), or ("", false) for an
 // unsupported dialect. Like jsonObjectFieldExpr it evaluates to NULL (”, on

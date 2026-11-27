@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,9 +16,10 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/webhooks"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -25,21 +27,24 @@ import (
 
 // configWebhookManager adapts a *lib.Config to WebhookEndpointManager,
 // mirroring the base server's per-endpoint reload/remove so handler tests
-// observe the same in-memory refresh the real wiring produces.
+// observe the same live-store refresh the real wiring produces.
 type configWebhookManager struct{ config *lib.Config }
 
+// ReloadWebhookEndpoint re-reads the endpoint into the live store; a row that is gone answers
+// configstore.ErrNotFound, as the server does.
 func (m configWebhookManager) ReloadWebhookEndpoint(ctx context.Context, id string) error {
-	endpoint, err := m.config.ConfigStore.GetWebhookEndpointByID(ctx, id)
-	if err != nil {
+	if err := m.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id}}); err != nil {
 		return err
 	}
-	m.config.SetWebhookEndpoint(endpoint)
+	if _, ok := m.config.LiveStore.Collections.WebhookEndpoints.Get(id); !ok {
+		return configstore.ErrNotFound
+	}
 	return nil
 }
 
+// RemoveWebhookEndpoint drops the endpoint from the live store.
 func (m configWebhookManager) RemoveWebhookEndpoint(ctx context.Context, id string) error {
-	m.config.RemoveWebhookEndpoint(id)
-	return nil
+	return m.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindWebhookEndpoint, ID: id, Remove: true}})
 }
 
 func newWebhookTestHandler(t *testing.T) (*WebhookHandler, *lib.Config) {
@@ -63,6 +68,9 @@ func newWebhookTestHandler(t *testing.T) (*WebhookHandler, *lib.Config) {
 	t.Cleanup(func() { logsStore.Close(context.Background()) })
 
 	config := &lib.Config{ConfigStore: store, LogsStore: logsStore}
+	live := liveStoreForTest(t)
+	require.NoError(t, config.AttachLiveStore(live))
+	require.NoError(t, live.LoadAll(ctx, store.DB()))
 	dispatcher := webhooks.NewDispatcher(ctx, "", 30*24*time.Hour, store, logsStore, config, testLogger{})
 	t.Cleanup(dispatcher.Stop)
 	return NewWebhookHandler(configWebhookManager{config}, config, dispatcher), config
@@ -395,14 +403,6 @@ func TestWebhookHandlerTestDelivery(t *testing.T) {
 	_ = config
 }
 
-func TestWebhookHandlerStoreUnavailable(t *testing.T) {
-	cfg := &lib.Config{}
-	handler := NewWebhookHandler(configWebhookManager{cfg}, cfg, nil)
-	ctx := newWebhookRequestCtx("", nil)
-	handler.listWebhookEndpoints(ctx)
-	assert.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
-}
-
 func TestWebhookHandlerPerEndpointTuning(t *testing.T) {
 	handler, config := newWebhookTestHandler(t)
 
@@ -505,4 +505,99 @@ func TestWebhookHandlerTestDeliveryRequiresAuthForPrivateEndpoints(t *testing.T)
 	publicCtx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 	handler.testWebhookEndpoint(publicCtx)
 	assert.Equal(t, fasthttp.StatusOK, publicCtx.Response.StatusCode(), "body: %s", publicCtx.Response.Body())
+}
+
+// TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth: the same bypassed
+// caller cannot register or re-point an endpoint that allows private-network
+// delivery (create, update, redeliver), while public endpoints and edits that
+// keep a stored private URL stay open to it. An authenticated caller is
+// unaffected.
+func TestWebhookHandlerPrivateEndpointRegistrationRequiresAuth(t *testing.T) {
+	handler, config := newWebhookTestHandler(t)
+	bypassed := func(body string, params map[string]string) *fasthttp.RequestCtx {
+		ctx := newWebhookRequestCtx(body, params)
+		ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		return ctx
+	}
+	private := `{"name":"private","url":"http://127.0.0.1:9/hook","events":["async_job.completed"],"allow_private_network":true}`
+
+	// Create: refused for the bypassed caller, nothing persisted.
+	createCtx := bypassed(private, nil)
+	handler.createWebhookEndpoint(createCtx)
+	require.Equal(t, fasthttp.StatusForbidden, createCtx.Response.StatusCode(), "body: %s", createCtx.Response.Body())
+	_, exists := config.WebhookEndpointByName("private")
+	assert.False(t, exists)
+
+	// A public endpoint is still creatable without auth...
+	publicCtx := bypassed(`{"name":"public","url":"https://93.184.216.34/hook","events":["async_job.completed"]}`, nil)
+	handler.createWebhookEndpoint(publicCtx)
+	require.Equal(t, fasthttp.StatusCreated, publicCtx.Response.StatusCode(), "body: %s", publicCtx.Response.Body())
+	publicID := decodeJSONResponse(t, publicCtx)["endpoint"].(map[string]any)["id"].(string)
+
+	// ...but cannot be flipped to a private receiver on update.
+	flipCtx := bypassed(`{"name":"public","url":"http://10.0.0.5/hook","events":["async_job.completed"],"allow_private_network":true}`, map[string]string{"id": publicID})
+	handler.updateWebhookEndpoint(flipCtx)
+	require.Equal(t, fasthttp.StatusForbidden, flipCtx.Response.StatusCode(), "body: %s", flipCtx.Response.Body())
+	stored, ok := config.WebhookEndpointByID(publicID)
+	require.True(t, ok)
+	assert.False(t, stored.AllowPrivateNetwork)
+	assert.Equal(t, "https://93.184.216.34/hook", stored.URL)
+
+	// An authenticated admin registers the private endpoint as before.
+	adminCtx := newWebhookRequestCtx(private, nil)
+	handler.createWebhookEndpoint(adminCtx)
+	require.Equal(t, fasthttp.StatusCreated, adminCtx.Response.StatusCode(), "body: %s", adminCtx.Response.Body())
+	privateID := decodeJSONResponse(t, adminCtx)["endpoint"].(map[string]any)["id"].(string)
+
+	// The bypassed caller may still edit non-destination fields of that
+	// endpoint while it keeps the stored private URL...
+	keepCtx := bypassed(`{"name":"private","url":"http://127.0.0.1:9/hook","events":["async_job.failed"],"allow_private_network":true}`, map[string]string{"id": privateID})
+	handler.updateWebhookEndpoint(keepCtx)
+	require.Equal(t, fasthttp.StatusOK, keepCtx.Response.StatusCode(), "body: %s", keepCtx.Response.Body())
+
+	// ...but cannot re-point it at a different internal address.
+	moveCtx := bypassed(`{"name":"private","url":"http://127.0.0.1:9/other","events":["async_job.failed"],"allow_private_network":true}`, map[string]string{"id": privateID})
+	handler.updateWebhookEndpoint(moveCtx)
+	require.Equal(t, fasthttp.StatusForbidden, moveCtx.Response.StatusCode(), "body: %s", moveCtx.Response.Body())
+	stored, ok = config.WebhookEndpointByID(privateID)
+	require.True(t, ok)
+	assert.Equal(t, "http://127.0.0.1:9/hook", stored.URL)
+
+	// Redelivery to the private endpoint is refused for the bypassed caller
+	// and nothing is queued.
+	seedWebhookDelivery(t, config, "d-private", "wh-private", privateID, time.Now().UTC())
+	redeliverCtx := bypassed("", map[string]string{"id": "d-private"})
+	handler.redeliverWebhook(redeliverCtx)
+	require.Equal(t, fasthttp.StatusForbidden, redeliverCtx.Response.StatusCode(), "body: %s", redeliverCtx.Response.Body())
+	due, err := config.ConfigStore.ListDueWebhookJobs(context.Background(), 0)
+	require.NoError(t, err)
+	assert.Empty(t, due)
+}
+
+// failingReloadWebhookManager reports a reload failure after the database write has committed.
+type failingReloadWebhookManager struct{ configWebhookManager }
+
+func (failingReloadWebhookManager) ReloadWebhookEndpoint(context.Context, string) error {
+	return errors.New("reload failed")
+}
+
+func TestWebhookHandlerAuditsCommittedChangesWhenReloadFails(t *testing.T) {
+	handler, config := newWebhookTestHandler(t)
+	id, _ := createTestWebhookEndpoint(t, handler, "reload-fail")
+	failing := NewWebhookHandler(failingReloadWebhookManager{configWebhookManager{config}}, config, nil)
+
+	createCtx := newWebhookRequestCtx(`{"name":"reload-fail-new","url":"https://93.184.216.34/hook","events":["async_job.completed"]}`, nil)
+	failing.createWebhookEndpoint(createCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, createCtx.Response.StatusCode())
+	requireSingleAuditChange(t, createCtx, "webhook.created")
+
+	updateCtx := newWebhookRequestCtx(`{"name":"reload-fail","url":"https://93.184.216.34/other","events":["async_job.completed"]}`, map[string]string{"id": id})
+	failing.updateWebhookEndpoint(updateCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, updateCtx.Response.StatusCode())
+	requireSingleAuditChange(t, updateCtx, "webhook.updated")
+
+	rotateCtx := newWebhookRequestCtx("", map[string]string{"id": id})
+	failing.rotateWebhookEndpointSecret(rotateCtx)
+	require.Equal(t, fasthttp.StatusInternalServerError, rotateCtx.Response.StatusCode())
+	requireSingleAuditChange(t, rotateCtx, "webhook.secret_rotated")
 }

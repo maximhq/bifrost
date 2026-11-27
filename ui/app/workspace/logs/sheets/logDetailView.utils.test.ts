@@ -1,9 +1,18 @@
 import { registerReservedMetadataPrefix } from "@/lib/registries/logs";
 import { describe, expect, it } from "vitest";
 import {
+	decisionQuestions,
 	extractProviderErrorMessage,
+	findLastPendingClientCallIndex,
+	formatGuardrailUsageUnits,
+	getExternalGuardrailCost,
 	hasNoToolArguments,
 	isClientToolCallItem,
+	isExternalGuardrailCall,
+	isParsedPassthroughLog,
+	isPassthroughLog,
+	passthroughLogParams,
+	showsPassthroughTag,
 	nextSessionLookupStart,
 	isResponsesToolCallItem,
 	isShownMetadataKey,
@@ -160,10 +169,51 @@ describe("isClientToolCallItem", () => {
 		// back as computer_call_output / local_shell_call_output next request.
 		expect(isClientToolCallItem("computer_call")).toBe(true);
 		expect(isClientToolCallItem("local_shell_call")).toBe(true);
+		expect(isClientToolCallItem("shell_call")).toBe(true);
+		expect(isClientToolCallItem("apply_patch_call")).toBe(true);
+		expect(isClientToolCallItem("shell_call_output")).toBe(false);
 		expect(isClientToolCallItem("computer_call_output")).toBe(false);
 		expect(isClientToolCallItem("web_search_call")).toBe(false);
 		expect(isClientToolCallItem("function_call_output")).toBe(false);
 		expect(isClientToolCallItem(undefined)).toBe(false);
+	});
+});
+
+describe("findLastPendingClientCallIndex", () => {
+	const input = { msg: { type: "message" as const, role: "user" as const }, fromOutput: false };
+
+	it("links under a local shell_call, whose result comes in the next request", () => {
+		const entries = [input, { msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(1);
+	});
+
+	it("links under an apply_patch_call", () => {
+		const entries = [input, { msg: { type: "apply_patch_call" as const, call_id: "call_ap" }, fromOutput: true }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(1);
+	});
+
+	it("picks the last pending call when the response made several", () => {
+		const entries = [
+			input,
+			{ msg: { type: "function_call" as const, call_id: "call_fn" }, fromOutput: true },
+			{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true },
+			{ msg: { type: "message" as const, role: "assistant" as const }, fromOutput: true },
+		];
+		expect(findLastPendingClientCallIndex(entries)).toBe(2);
+	});
+
+	it("skips a hosted shell_call whose output is already in the response", () => {
+		const entries = [
+			input,
+			{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: true },
+			{ msg: { type: "shell_call_output" as const, call_id: "call_sh" }, fromOutput: true },
+		];
+		expect(findLastPendingClientCallIndex(entries)).toBe(-1);
+	});
+
+	it("ignores calls replayed in the input", () => {
+		const entries = [{ msg: { type: "shell_call" as const, call_id: "call_sh" }, fromOutput: false }];
+		expect(findLastPendingClientCallIndex(entries)).toBe(-1);
 	});
 });
 
@@ -281,5 +331,147 @@ describe("isShownMetadataKey", () => {
 			expect(isShownMetadataKey(key, false)).toBe(false);
 		}
 		expect(isShownMetadataKey("extra", false)).toBe(true);
+	});
+});
+describe("decisionQuestions", () => {
+	const named = { urgency: { kind: "score", instructions: "How urgent?", criteria: ["low", "high"] } };
+	const ordered = [{ type: "predicate", name: "frustrated", instructions: "Is the customer frustrated?" }];
+
+	it("returns the questions of an older log keyed by name", () => {
+		expect(decisionQuestions("decisions", named)).toEqual({ value: named, count: 1 });
+	});
+
+	it("returns the questions in request order", () => {
+		expect(decisionQuestions("decisions", ordered)).toEqual({ value: ordered, count: 1 });
+	});
+
+	it("returns null for other request types and for empty or missing params", () => {
+		expect(decisionQuestions("chat.completion", named)).toBeNull();
+		expect(decisionQuestions("decisions", {})).toBeNull();
+		expect(decisionQuestions("decisions", [])).toBeNull();
+		expect(decisionQuestions("decisions", undefined)).toBeNull();
+		expect(decisionQuestions("decisions", "x")).toBeNull();
+	});
+});
+
+describe("isParsedPassthroughLog", () => {
+	const passthrough = { object: "passthrough", params: { method: "POST", path: "/v1/chat/completions", status_code: 200 } };
+
+	it("is false for a raw-only passthrough row", () => {
+		expect(isParsedPassthroughLog(passthrough)).toBe(false);
+	});
+
+	it("is false when parsed_type is set but nothing decoded into conversation fields", () => {
+		expect(isParsedPassthroughLog({ ...passthrough, params: { ...passthrough.params, parsed_type: "chat_completion" } })).toBe(false);
+	});
+
+	it("is true for a parsed chat or Responses passthrough row, streamed or not", () => {
+		const params = { ...passthrough.params, parsed_type: "chat_completion" };
+		expect(isParsedPassthroughLog({ ...passthrough, params, input_history: [{ role: "user", content: "hi" }] as any })).toBe(true);
+		expect(
+			isParsedPassthroughLog({
+				object: "passthrough_stream",
+				params: { ...params, parsed_type: "responses" },
+				responses_output: [{ type: "message" }] as any,
+			}),
+		).toBe(true);
+	});
+
+	it("is false for typed rows whatever their params say", () => {
+		expect(isParsedPassthroughLog({ object: "chat_completion", params: { parsed_type: "x" } as any, input_history: [{}] as any })).toBe(
+			false,
+		);
+	});
+});
+
+describe("passthroughLogParams", () => {
+	it("returns the params of a passthrough row and null otherwise", () => {
+		expect(passthroughLogParams({ object: "passthrough_stream", params: { path: "/v1/messages" } as any })?.path).toBe("/v1/messages");
+		expect(passthroughLogParams({ object: "passthrough" })).toEqual({});
+		expect(passthroughLogParams({ object: "responses", params: {} })).toBeNull();
+	});
+});
+describe("passthrough tagging", () => {
+	it("treats a tagged row stored under its inferred type as passthrough, and tags its badge", () => {
+		const row = { object: "chat_completion", is_passthrough: true };
+		expect(isPassthroughLog(row)).toBe(true);
+		expect(showsPassthroughTag(row)).toBe(true);
+	});
+
+	it("does not tag a row whose badge already says passthrough", () => {
+		expect(isPassthroughLog({ object: "passthrough", is_passthrough: true })).toBe(true);
+		expect(showsPassthroughTag({ object: "passthrough", is_passthrough: true })).toBe(false);
+		// Rows written before the tag existed.
+		expect(isPassthroughLog({ object: "passthrough_stream" })).toBe(true);
+		expect(showsPassthroughTag({ object: "passthrough_stream" })).toBe(false);
+	});
+
+	it("leaves typed rows alone", () => {
+		expect(isPassthroughLog({ object: "chat_completion" })).toBe(false);
+		expect(showsPassthroughTag({ object: "chat_completion", is_passthrough: false })).toBe(false);
+	});
+
+	it("reads passthrough params from a tagged row stored under its inferred type", () => {
+		expect(passthroughLogParams({ object: "responses", is_passthrough: true, params: { path: "/v1/messages" } as any })?.path).toBe(
+			"/v1/messages",
+		);
+		expect(
+			isParsedPassthroughLog({
+				object: "responses",
+				is_passthrough: true,
+				params: { parsed_type: "responses" } as any,
+				responses_output: [{ type: "message" }] as any,
+			}),
+		).toBe(true);
+	});
+});
+describe("getExternalGuardrailCost", () => {
+	it("sums only the estimated cost of external guardrail calls", () => {
+		expect(
+			getExternalGuardrailCost([
+				{ judge_model: "gpt-4o-mini", total_tokens: 25 },
+				{ guardrail_provider: "vendor", usage_units: { content_policy_units: 1 }, estimated_cost: 0.00015 },
+				{ guardrail_provider: "vendor", usage_units: { topic_policy_units: 2 }, estimated_cost: 0.0003 },
+			]),
+		).toBeCloseTo(0.00045, 12);
+	});
+
+	it("is zero when there are no calls or only judge calls", () => {
+		expect(getExternalGuardrailCost(undefined)).toBe(0);
+		expect(getExternalGuardrailCost([])).toBe(0);
+		expect(getExternalGuardrailCost([{ judge_model: "gpt-4o-mini", total_tokens: 25 }])).toBe(0);
+	});
+
+	it("ignores an estimate on a judge call, whose cost is already in the stored guardrail cost", () => {
+		expect(
+			getExternalGuardrailCost([
+				{ judge_model: "gpt-4o-mini", total_tokens: 25, estimated_cost: 0.1 },
+				{ guardrail_provider: "vendor", usage_units: { content_policy_units: 1 }, estimated_cost: 0.00015 },
+			]),
+		).toBeCloseTo(0.00015, 12);
+	});
+
+	it("adds nothing for external usage without an estimate", () => {
+		expect(getExternalGuardrailCost([{ guardrail_provider: "vendor", usage_units: { word_policy_units: 2 } }])).toBe(0);
+	});
+});
+
+describe("isExternalGuardrailCall", () => {
+	it("is true only for calls that report usage units", () => {
+		expect(isExternalGuardrailCall({ guardrail_provider: "vendor", usage_units: { content_policy_units: 1 } })).toBe(true);
+		expect(isExternalGuardrailCall({ guardrail_provider: "vendor", usage_units: {} })).toBe(false);
+		expect(isExternalGuardrailCall({ judge_model: "gpt-4o-mini", total_tokens: 25, estimated_cost: 0.1 })).toBe(false);
+	});
+});
+
+describe("formatGuardrailUsageUnits", () => {
+	it("lists units sorted by name", () => {
+		expect(formatGuardrailUsageUnits({ topic_policy_units: 1, content_policy_units: 2 })).toBe(
+			"content_policy_units: 2 · topic_policy_units: 1",
+		);
+	});
+
+	it("is empty for no units", () => {
+		expect(formatGuardrailUsageUnits({})).toBe("");
 	});
 });

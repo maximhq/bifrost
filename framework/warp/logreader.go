@@ -101,6 +101,15 @@ type SemanticHydrator interface {
 	GetLogsByIDs(ctx context.Context, ids []string) ([]logstore.Log, error)
 }
 
+// TopicStoreProvider hands Warp the log store's topic tables: where the
+// topics live, and each request's place among them. Kept out of LogReader
+// for the reason SemanticHydrator is, and optional in the same way: a reader
+// that cannot offer them leaves topics unavailable and the rest of Warp as it
+// was.
+type TopicStoreProvider interface {
+	TopicStore() logstore.WarpTopicStore
+}
+
 // KeyPair is an id paired with the name it is known by.
 type KeyPair struct {
 	ID   string `json:"id"`

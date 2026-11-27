@@ -304,3 +304,110 @@ func TestConverseStreamIncompleteEmitsMessageStop(t *testing.T) {
 		})
 	}
 }
+
+// driveConverseStopStream replays a ConverseStream text answer that ends with the given
+// messageStop payload through the upstream converter, finalizes it, and returns the
+// /bedrock converse-stream egress events.
+func driveConverseStopStream(tb testing.TB, messageStop string) []BedrockEncodedEvent {
+	tb.Helper()
+	state := acquireBedrockResponsesStreamState()
+	defer releaseBedrockResponsesStreamState(state)
+	state.Model = schemas.Ptr("global.anthropic.claude-opus-4-7")
+
+	var stopEvent BedrockStreamEvent
+	if err := sonic.Unmarshal([]byte(messageStop), &stopEvent); err != nil {
+		tb.Fatalf("decode messageStop: %v", err)
+	}
+	upstream := []*BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("one, two, ")}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+		&stopEvent,
+	}
+	var chunks []*schemas.BifrostResponsesStreamResponse
+	seq := 0
+	for _, event := range upstream {
+		responses, bErr, _ := event.ToBifrostResponsesStream(seq, state)
+		if bErr != nil {
+			tb.Fatalf("upstream event produced an error: %+v", bErr)
+		}
+		chunks = append(chunks, responses...)
+		seq += len(responses)
+	}
+	usage := &schemas.ResponsesResponseUsage{InputTokens: 20, OutputTokens: 6, TotalTokens: 26}
+	chunks = append(chunks, FinalizeBedrockStream(state, seq, usage, nil)...)
+
+	var events []BedrockEncodedEvent
+	for _, chunk := range chunks {
+		bedrockEvent, err := ToBedrockConverseStreamResponse(chunk)
+		if err != nil {
+			tb.Fatalf("chunk %s: %v", chunk.Type, err)
+		}
+		if bedrockEvent != nil {
+			events = append(events, bedrockEvent.ToEncodedEvents()...)
+		}
+	}
+	return events
+}
+
+func messageStopPayload(t *testing.T, events []BedrockEncodedEvent) string {
+	t.Helper()
+	for _, event := range events {
+		if event.EventType == "messageStop" {
+			data, err := sonic.Marshal(event.Payload)
+			if err != nil {
+				t.Fatalf("marshal messageStop: %v", err)
+			}
+			return string(data)
+		}
+	}
+	t.Fatalf("no messageStop event in %v", encodedEventTypes(events))
+	return ""
+}
+
+// TestConverseStreamStopSequenceRoundTrip pins that converse-stream returns the native
+// stopReason and additionalModelResponseFields from Bedrock's messageStop event instead of
+// folding stop_sequence into end_turn and dropping the fields.
+func TestConverseStreamStopSequenceRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		messageStop string
+		want        string
+	}{
+		{"stop_sequence with fields", `{"stopReason":"stop_sequence","additionalModelResponseFields":{"stop_sequence":"three"}}`, `{"stopReason":"stop_sequence","additionalModelResponseFields":{"stop_sequence":"three"}}`},
+		{"stop_sequence without fields", `{"stopReason":"stop_sequence"}`, `{"stopReason":"stop_sequence"}`},
+		{"end_turn unchanged", `{"stopReason":"end_turn"}`, `{"stopReason":"end_turn"}`},
+		{"end_turn with fields", `{"stopReason":"end_turn","additionalModelResponseFields":{"stop_sequence":null}}`, `{"stopReason":"end_turn","additionalModelResponseFields":{"stop_sequence":null}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := messageStopPayload(t, driveConverseStopStream(t, tc.messageStop))
+			if got != tc.want {
+				t.Errorf("messageStop = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestConverseStreamAnthropicStopSequence pins that a stop-sequence finish from an
+// Anthropic upstream (StopReason "stop" plus StopSequence) reaches converse-stream as stop_sequence.
+func TestConverseStreamAnthropicStopSequence(t *testing.T) {
+	event, err := ToBedrockConverseStreamResponse(&schemas.BifrostResponsesStreamResponse{
+		Type:     schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr("stop"), StopSequence: schemas.Ptr("three")},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if event == nil || event.StopReason == nil || *event.StopReason != "stop_sequence" {
+		t.Fatalf("stopReason = %v, want stop_sequence", event)
+	}
+}
+
+// BenchmarkConverseStreamEndTurn measures a short end_turn ConverseStream from upstream
+// events to converse-stream egress events.
+func BenchmarkConverseStreamEndTurn(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		driveConverseStopStream(b, `{"stopReason":"end_turn"}`)
+	}
+}

@@ -2318,6 +2318,169 @@
         "hosted"
       ],
       "icon_url": "https://magichour.ai/logo.png"
+    },
+    {
+      "name": "Parlel",
+      "description": "Search people, companies, open roles, and published watch agents on Parlel, an open professional network.",
+      "category": "Human Resources",
+      "connection_type": "http",
+      "connection_url": "https://api.parlel.com/mcp",
+      "auth_type": "none",
+      "docs_url": "https://parlel.com/guides/parlel-mcp-guide",
+      "publisher": "Parlel",
+      "tags": [
+        "jobs",
+        "recruiting",
+        "people-search",
+        "companies",
+        "hosted"
+      ],
+      "icon_url": "https://parlel.com/favicon.ico"
+    },
+    {
+      "name": "FXMacroData",
+      "description": "Official-source macroeconomic, central-bank, and FX data for 22 currencies, including indicator releases, release calendars, policy rates, FX rates, COT positioning, and commodities. Hosted remotely by FXMacroData. Works without a key for USD announcement data from the most recent 90 days (each release readable 15 minutes after publication), the USD release calendar, USD press releases, USD COT positioning, and the data catalogue, plus forecast coverage and market sessions for every currency. Non-USD series, non-USD COT positioning, FX rates, commodities, real-time releases, and full announcement history need an API key sent as an Authorization: Bearer <key> header.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://mcp.fxmacrodata.com",
+      "auth_type": "none",
+      "docs_url": "https://fxmacrodata.com/documentation/mcp-server",
+      "publisher": "FXMacroData",
+      "tags": [
+        "macroeconomics",
+        "forex",
+        "central-banks",
+        "economic-calendar",
+        "market-data",
+        "finance"
+      ],
+      "icon_url": "https://fxmacrodata.com/static/logos/pwa-512.png"
+    },
+    {
+      "name": "Bowmark",
+      "description": "Search a library of typed, tested functions for live websites like LinkedIn, Amazon and YouTube, then run short scripts that call them and return structured results. Hosted remotely by Bowmark. Needs a Bowmark API key sent as an Authorization: Bearer <key> header; new accounts start with a free $10.",
+      "category": "Search",
+      "connection_type": "http",
+      "connection_url": "https://api.bowmark.ai/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://bowmark.ai/docs/quickstart",
+      "publisher": "Bowmark",
+      "tags": [
+        "bowmark",
+        "web-data",
+        "search",
+        "linkedin",
+        "amazon",
+        "youtube",
+        "structured-data"
+      ],
+      "icon_url": "https://avatars.githubusercontent.com/u/287127998?v=4"
+    },
+    {
+      "name": "Databuddy",
+      "description": "Connect AI tools to Databuddy to query web and product analytics: traffic, funnels, goals, errors, Web Vitals, session replays, and why a metric moved. Can also manage feature flags, short links, and annotations. Hosted remotely by Databuddy.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://api.databuddy.cc/v1/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.databuddy.cc/docs/api/mcp",
+      "publisher": "Databuddy",
+      "tags": [
+        "databuddy",
+        "analytics",
+        "product-analytics",
+        "web-analytics",
+        "feature-flags"
+      ],
+      "icon_url": "https://raw.githubusercontent.com/databuddy-analytics/skills/main/assets/logo.png"
+    },
+    {
+      "name": "Wiro AI",
+      "description": "Authorization header: Bearer <api-key>, or Bearer <key>:<secret> for signature auth. Search, price and run 1,000+ image, video, audio, 3D and LLM models on Wiro AI, upload input files and wait for results, build and run multi-step workflows, and deploy and message AI agents. Hosted remotely by Wiro AI.",
+      "category": "AI Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.wiro.ai/v1",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://wiro.ai/docs/wiro-mcp-server",
+      "publisher": "Wiro AI",
+      "tags": [
+        "wiro",
+        "image-generation",
+        "video-generation",
+        "audio",
+        "llm",
+        "workflows",
+        "agents",
+        "hosted"
+      ],
+      "icon_url": "https://wiro.ai/images/favicon/icon-512x512.png"
+    },
+    {
+      "name": "GetYouTubeTranscript",
+      "description": "Get the transcript of a YouTube video with optional timestamps, search YouTube, and list channel uploads and playlist videos. Hosted remotely by GetYouTubeTranscript. Needs an API key sent as an Authorization: Bearer <key> header (OAuth also supported); new accounts get 100 free credits.",
+      "category": "Research",
+      "connection_type": "http",
+      "connection_url": "https://getyoutubetranscript.com/api/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://github.com/tubeagentkit/youtube-mcp",
+      "publisher": "GetYouTubeTranscript",
+      "tags": [
+        "youtube",
+        "transcripts",
+        "captions",
+        "video",
+        "search",
+        "research"
+      ],
+      "icon_url": "https://avatars.githubusercontent.com/u/328486248?v=4"
+    },
+    {
+      "name": "Bargo Congress Trades",
+      "description": "Read normalized U.S. House and Senate STOCK Act trade disclosures, with filters for ticker, member, chamber, transaction type, and date.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://www.bargo.ai/free-apis/congress/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://www.bargo.ai/free-apis/congress",
+      "publisher": "Bargo",
+      "tags": [
+        "congress",
+        "congressional-trading",
+        "stock-act",
+        "market-data",
+        "finance"
+      ],
+      "icon_url": "https://www.bargo.ai/favicon.png"
+    },
+    {
+      "name": "Spala Public MCP",
+      "description": "Connect AI tools to Spala for public documentation, onboarding, backend template discovery, and addon discovery. Hosted remotely by Spala; project operations are currently unavailable on this public endpoint.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.spala.ai/mcp",
+      "auth_type": "none",
+      "docs_url": "https://github.com/spala-ai/spala-public-mcp",
+      "publisher": "Spala AI",
+      "tags": [
+        "spala",
+        "backend",
+        "documentation",
+        "templates",
+        "developer-tools"
+      ],
+      "icon_url": "https://spala.ai/brand/spala-logo-512.png"
     }
   ]
 }

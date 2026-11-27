@@ -41,6 +41,33 @@ func (p *RoutingPlugin) resolveGovernanceScope(ctx *schemas.BifrostContext) (rul
 	}, true
 }
 
+// warnFallbacksOutsideAccess notes in the routing trail each fallback the request's access does
+// not allow. Governance refuses such a fallback before it reaches its provider, and once the chain
+// runs out the caller is answered with the primary's error, so without this a misconfigured rule
+// reads as a fallback that never ran (#3261). The chain is left as it was written: the refusal is
+// governance's to make, per attempt. The warning is logged under engine and names who wrote the
+// chain, a routing rule ("Rule") or a model router ("Model router"), so an operator looks in the
+// right place. Only a matched rule or router target that names fallbacks pays for the check, and
+// the access it reads was already resolved for this request.
+func (p *RoutingPlugin) warnFallbacksOutsideAccess(ctx *schemas.BifrostContext, engine, writer, name string, fallbacks []schemas.Fallback) {
+	access, err := p.governance.ResolveAccess(ctx)
+	if err != nil || access == nil {
+		return
+	}
+	for _, fb := range fallbacks {
+		// A model check also fails for a provider the access does not allow, so an allowed fallback
+		// costs one check and the provider is asked only to word a refusal.
+		if access.IsModelAllowed(string(fb.Provider), fb.Model) {
+			continue
+		}
+		reason := fmt.Sprintf("model %s is not allowed on %s for this request", fb.Model, fb.Provider)
+		if !access.IsProviderAllowed(string(fb.Provider)) {
+			reason = fmt.Sprintf("provider %s is not allowed for this request", fb.Provider)
+		}
+		ctx.AppendRoutingEngineLog(engine, schemas.LogLevelWarn, fmt.Sprintf("%s '%s': fallback %s/%s will be refused by governance: %s", writer, name, fb.Provider, fb.Model, reason))
+	}
+}
+
 // resolveAnalyzerConfigFromStoreOrArg prefers an explicitly configured analyzer config over
 // the persisted one. Returns nil when neither is usable, which leaves the analyzer on its
 // built-in defaults.
@@ -51,7 +78,17 @@ func resolveAnalyzerConfigFromStoreOrArg(
 	override *complexity.AnalyzerConfig,
 ) *complexity.AnalyzerConfig {
 	if override != nil {
-		cfg, err := complexity.ValidateAndNormalize(override)
+		// The config makes no phrase suggestions (see
+		// storeComplexityAnalyzerConfig), so a suggestions block written before
+		// they moved to model routers is not validated: one without a model
+		// would otherwise reject the whole override. The caller's copy keeps it.
+		checked := override
+		if override.Suggestions != nil {
+			withoutSuggestions := *override
+			withoutSuggestions.Suggestions = nil
+			checked = &withoutSuggestions
+		}
+		cfg, err := complexity.ValidateAndNormalize(checked)
 		if err != nil {
 			if logger != nil {
 				logger.Warn("invalid complexity analyzer config from routing config: %v", err)

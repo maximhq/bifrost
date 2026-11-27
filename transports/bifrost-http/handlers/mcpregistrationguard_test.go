@@ -2,13 +2,14 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -157,8 +158,8 @@ func (failingMCPManager) AddMCPClient(context.Context, *schemas.MCPClientConfig)
 	return errors.New("manager must not be reached")
 }
 
-func (failingMCPManager) VerifyHeadersConnection(context.Context, *schemas.MCPClientConfig, map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
-	return nil, nil, "", errors.New("manager must not be reached")
+func (failingMCPManager) VerifyHeadersConnection(context.Context, *schemas.MCPClientConfig, map[string]string) (*schemas.MCPDiscovery, error) {
+	return nil, errors.New("manager must not be reached")
 }
 
 func (failingMCPManager) RequiresPerCallConnection(*schemas.MCPClientConfig) bool { return false }
@@ -202,5 +203,111 @@ func TestAddMCPClient_UnresolvableTargetRejected(t *testing.T) {
 	status, body := postMCPClient(t, `{"name":"probe","connection_type":"http","connection_string":"http://does-not-resolve.invalid/mcp","auth_type":"none"}`)
 	if status != fasthttp.StatusForbidden {
 		t.Fatalf("expected status %d for an unresolvable target, got %d: %s", fasthttp.StatusForbidden, status, body)
+	}
+}
+
+func secretVarFromJSON(t *testing.T, raw string) schemas.SecretVar {
+	t.Helper()
+	var v schemas.SecretVar
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		t.Fatalf("unmarshal %s: %v", raw, err)
+	}
+	return v
+}
+
+// TestMCPClientSecretReferences lists every env./vault. reference in the
+// credential-bearing fields, by wire name, and ignores literal values.
+func TestMCPClientSecretReferences(t *testing.T) {
+	envHeader := secretVarFromJSON(t, `"env.BIFROST_TEST_UNSET_SECRET"`)
+	vaultSecret := secretVarFromJSON(t, `"vault.mcp/client"`)
+	plain := secretVarFromJSON(t, `"literal-token"`)
+	refs := mcpClientSecretReferences(
+		map[string]schemas.SecretVar{"X-Api-Key": envHeader, "X-Plain": plain},
+		schemas.NewSecretVar("https://mcp.example.com/mcp"),
+		&OAuthConfigRequest{ClientID: &plain, ClientSecret: &vaultSecret},
+		&schemas.MCPTokenExchangeConfig{ClientSecret: &envHeader, ResourcePrivateKey: &vaultSecret},
+		&schemas.MCPTLSConfig{CACertPEM: &envHeader},
+		nil,
+	)
+	want := []string{"headers.X-Api-Key", "oauth_config.client_secret", "token_exchange.client_secret", "token_exchange.resource_private_key", "tls_config.ca_cert_pem"}
+	if strings.Join(refs, ",") != strings.Join(want, ",") {
+		t.Fatalf("expected %v, got %v", want, refs)
+	}
+	if got := mcpClientSecretReferences(map[string]schemas.SecretVar{"X-Plain": plain}, nil, nil, nil, nil, nil); len(got) != 0 {
+		t.Fatalf("expected no references for literal values, got %v", got)
+	}
+}
+
+// TestRejectSecretReferencesIfAuthBypassed: a caller let through with no
+// credential check cannot make the gateway resolve its own env/vault values
+// into a client's outbound fields; an authenticated admin and literal values
+// are unaffected.
+func TestRejectSecretReferencesIfAuthBypassed(t *testing.T) {
+	bypassed := &fasthttp.RequestCtx{}
+	bypassed.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	if !rejectSecretReferencesIfAuthBypassed(bypassed, []string{"headers.X-Api-Key"}) {
+		t.Fatal("expected an unauthenticated env reference to be rejected")
+	}
+	if bypassed.Response.StatusCode() != fasthttp.StatusForbidden {
+		t.Errorf("expected status %d, got %d", fasthttp.StatusForbidden, bypassed.Response.StatusCode())
+	}
+	if !strings.Contains(string(bypassed.Response.Body()), "headers.X-Api-Key") {
+		t.Errorf("expected the error to name the field, got %s", bypassed.Response.Body())
+	}
+
+	literal := &fasthttp.RequestCtx{}
+	literal.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	if rejectSecretReferencesIfAuthBypassed(literal, nil) {
+		t.Fatal("expected literal-only requests to pass")
+	}
+
+	authenticated := &fasthttp.RequestCtx{}
+	if rejectSecretReferencesIfAuthBypassed(authenticated, []string{"headers.X-Api-Key"}) {
+		t.Fatal("expected an authenticated admin's env reference to be allowed")
+	}
+}
+
+// TestAddMCPClient_SecretReferenceRejectedBeforeDial proves the gate is wired
+// into the create path ahead of any target lookup: the same unresolvable host
+// is refused for the reference, not for its address.
+func TestAddMCPClient_SecretReferenceRejectedBeforeDial(t *testing.T) {
+	status, body := postMCPClient(t, `{"name":"probe","connection_type":"http","connection_string":"http://does-not-resolve.invalid/mcp","auth_type":"headers","headers":{"X-Api-Key":"env.BIFROST_TEST_UNSET_SECRET"}}`)
+	if status != fasthttp.StatusForbidden {
+		t.Fatalf("expected status %d, got %d: %s", fasthttp.StatusForbidden, status, body)
+	}
+	if !strings.Contains(body, "headers.X-Api-Key") {
+		t.Fatalf("expected the refusal to name headers.X-Api-Key, got %s", body)
+	}
+}
+
+// TestResourceCredentialResendRequired checks a masked id_jag resource secret or
+// key cannot follow a change of the endpoint or assertion audience it is sent
+// to, while unchanged targets and resent credentials are accepted.
+func TestResourceCredentialResendRequired(t *testing.T) {
+	endpoint, moved := "https://as.example.com/token", "https://evil.example.com/token"
+	aud, movedAud := "https://as.example.com", "https://evil.example.com"
+	existing := &schemas.MCPTokenExchangeConfig{Profile: schemas.TokenExchangeProfileIDJAG, Audience: aud, ResourceTokenEndpoint: &endpoint,
+		ResourceClientSecret: schemas.NewSecretVar("s3cret")}
+	masked := existing.ResourceClientSecret.Redacted()
+	for name, tc := range map[string]struct {
+		req     *schemas.MCPTokenExchangeConfig
+		refused bool
+	}{
+		"masked secret, same endpoint":    {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceTokenEndpoint: &endpoint, ResourceClientSecret: masked}},
+		"masked secret, moved endpoint":   {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceTokenEndpoint: &moved, ResourceClientSecret: masked}, refused: true},
+		"resent secret, moved endpoint":   {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceTokenEndpoint: &moved, ResourceClientSecret: schemas.NewSecretVar("s3cret")}},
+		"masked key, new assertion aud":   {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceTokenEndpoint: &endpoint, ResourcePrivateKey: masked, ResourceAssertionAudience: "https://as.example.com"}, refused: true},
+		"masked secret, endpoint removed": {req: &schemas.MCPTokenExchangeConfig{Audience: aud, ResourceClientSecret: masked}, refused: true},
+		// Without an explicit endpoint the audience decides where the secret goes.
+		"masked secret, moved audience": {req: &schemas.MCPTokenExchangeConfig{Audience: movedAud, ResourceTokenEndpoint: &endpoint, ResourceClientSecret: masked}, refused: true},
+		"resent secret, moved audience": {req: &schemas.MCPTokenExchangeConfig{Audience: movedAud, ResourceTokenEndpoint: &endpoint, ResourceClientSecret: schemas.NewSecretVar("s3cret")}},
+	} {
+		err := resourceCredentialResendRequired(existing, tc.req)
+		if (err != nil) != tc.refused {
+			t.Errorf("%s: err = %v, refused want %v", name, err, tc.refused)
+		}
+	}
+	if resourceCredentialResendRequired(nil, &schemas.MCPTokenExchangeConfig{}) != nil {
+		t.Error("a first token_exchange block has nothing stored to carry over")
 	}
 }

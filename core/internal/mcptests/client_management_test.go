@@ -26,11 +26,11 @@ func TestAddClientDuplicate(t *testing.T) {
 
 	// Add client
 	clientConfig := GetSampleHTTPClientConfig(config.HTTPServerURL)
-	err := manager.AddClient(context.Background(), &clientConfig)
+	err := addClient(context.Background(), manager, &clientConfig)
 	require.NoError(t, err, "should add client first time")
 
 	// Try to add same client again
-	err = manager.AddClient(context.Background(), &clientConfig)
+	err = addClient(context.Background(), manager, &clientConfig)
 	// Should either return error or be idempotent
 	if err == nil {
 		clients := manager.GetClients()
@@ -186,7 +186,7 @@ func TestEditClient(t *testing.T) {
 	updatedConfig.Name = "UpdatedName"
 	updatedConfig.ToolsToExecute = []string{"calculator", "echo"}
 
-	err := manager.UpdateClient(clientID, &updatedConfig)
+	err := updateClient(manager, clientID, &updatedConfig)
 	require.NoError(t, err, "should edit client")
 
 	// Verify changes
@@ -202,7 +202,8 @@ func TestEditClientInvalidID(t *testing.T) {
 
 	// Try to edit non-existent client
 	clientConfig := GetSampleHTTPClientConfig("http://example.com")
-	err := manager.UpdateClient("non-existent-id", &clientConfig)
+	clientConfig.ID = "non-existent-id"
+	err := updateClient(manager, "non-existent-id", &clientConfig)
 	assert.Error(t, err, "should error when editing non-existent client")
 }
 
@@ -228,7 +229,7 @@ func TestEditClientInvalidConfig(t *testing.T) {
 		// Missing ConnectionString
 	}
 
-	err := manager.UpdateClient(clientID, &invalidConfig)
+	err := updateClient(manager, clientID, &invalidConfig)
 	// Should return error or leave client unchanged
 	if err == nil {
 		clients = manager.GetClients()
@@ -260,7 +261,7 @@ func TestEditClientChangeConnectionType(t *testing.T) {
 	updatedConfig := clientConfig
 	updatedConfig.ConnectionType = schemas.MCPConnectionTypeSSE
 
-	err := manager.UpdateClient(clientID, &updatedConfig)
+	err := updateClient(manager, clientID, &updatedConfig)
 	assert.Error(t, err, "should not allow connection type change")
 	clients = manager.GetClients()
 	if len(clients) > 0 {
@@ -432,7 +433,7 @@ func TestConcurrentClientOperations(t *testing.T) {
 			clientConfig.ID = string(rune('a'+id)) + "-concurrent-client"
 			clientConfig.Name = "TestHTTPServer" + string(rune('a'+id))
 
-			err := manager.AddClient(context.Background(), &clientConfig)
+			err := addClient(context.Background(), manager, &clientConfig)
 			if err != nil {
 				errors <- err
 			}
@@ -459,4 +460,39 @@ func TestConcurrentClientOperations(t *testing.T) {
 	// Verify clients were added
 	clients := manager.GetClients()
 	assert.GreaterOrEqual(t, len(clients), 3, "should have added multiple clients")
+}
+
+// TestDisableEnablePreservesPendingVerification pins that an admin round-trip through
+// disable/enable does not silently promote a client that has never been verified.
+// A per-user-headers client recorded as pending its admin step is "pending_verification":
+// verification has not run, and only an admin supplying sample headers can move it on.
+// Enabling it must restore that pending state rather than treating it as a healthy client
+// with no tools, which would make an unverified client look ready to serve.
+func TestDisableEnablePreservesPendingVerification(t *testing.T) {
+	t.Parallel()
+
+	config := GetTestConfig(t)
+	if config.HTTPServerURL == "" {
+		t.Skip("MCP_HTTP_URL not set")
+	}
+
+	pending := GetSampleHTTPClientConfig(config.HTTPServerURL)
+	pending.ID = "pending-verification-client"
+	pending.Name = "PendingVerificationClient"
+	pending.AuthType = schemas.MCPAuthTypePerUserHeaders
+	pending.PerUserHeaderKeys = []string{"X-Upstream-Token"}
+	pending.DiscoveredTools = nil
+	pending.PendingVerification = true
+
+	manager := setupMCPManager(t, pending)
+
+	clients := manager.GetClients()
+	require.Len(t, clients, 1, "should have one client")
+	AssertClientState(t, clients, pending.ID, schemas.MCPConnectionStatePendingVerification)
+
+	require.NoError(t, editClient(manager, pending.ID, func(c *schemas.MCPClientConfig) { c.Disabled = true }), "should disable client")
+	AssertClientState(t, manager.GetClients(), pending.ID, schemas.MCPConnectionStateDisabled)
+
+	require.NoError(t, editClient(manager, pending.ID, func(c *schemas.MCPClientConfig) { c.Disabled = false }), "should enable client")
+	AssertClientState(t, manager.GetClients(), pending.ID, schemas.MCPConnectionStatePendingVerification)
 }

@@ -12,9 +12,8 @@ import (
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -464,11 +463,8 @@ func TestRealtimeMappingVirtualKeyFallsBackToContextValue(t *testing.T) {
 func TestReplaceAndCacheRealtimeEphemeralToken(t *testing.T) {
 	t.Parallel()
 
-	store, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New() error = %v", err)
-	}
-	defer store.Close()
+	_, tables := realtimeKeysForTest(t)
+	store := tables.RealtimeKeys
 
 	resp := &schemas.BifrostPassthroughResponse{Body: []byte(`{
 		"value": "ek_provider_456",
@@ -491,13 +487,9 @@ func TestReplaceAndCacheRealtimeEphemeralToken(t *testing.T) {
 		t.Fatal("returned provider token unchanged")
 	}
 
-	raw, err := store.Get(buildRealtimeEphemeralKeyMappingKey(rewritten.Value))
-	if err != nil {
-		t.Fatalf("store.Get() error = %v", err)
-	}
-	mapping, ok := raw.(realtimeEphemeralKeyMapping)
+	mapping, ok := store.Get(buildRealtimeEphemeralKeyMappingKey(rewritten.Value))
 	if !ok {
-		t.Fatalf("cached value type = %T, want realtimeEphemeralKeyMapping", raw)
+		t.Fatal("expected the mapping to be stored")
 	}
 	if mapping.KeyID != "key_123" || mapping.VirtualKey != "sk-bf-test" || mapping.ProviderToken != "ek_provider_456" {
 		t.Fatalf("mapping = %#v, want key, virtual key, and provider token", mapping)
@@ -507,11 +499,8 @@ func TestReplaceAndCacheRealtimeEphemeralToken(t *testing.T) {
 func TestReplaceAndCacheRealtimeEphemeralTokenRejectsExpiredSecret(t *testing.T) {
 	t.Parallel()
 
-	store, err := kvstore.New(kvstore.Config{})
-	if err != nil {
-		t.Fatalf("kvstore.New() error = %v", err)
-	}
-	defer store.Close()
+	_, tables := realtimeKeysForTest(t)
+	store := tables.RealtimeKeys
 
 	expired := time.Now().Add(-time.Minute).Unix()
 	resp := &schemas.BifrostPassthroughResponse{Body: fmt.Appendf(nil, `{

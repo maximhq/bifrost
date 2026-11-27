@@ -2,6 +2,7 @@
 package browserauth
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -17,14 +18,19 @@ import (
 	"net/url"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/cli/internal/client"
 )
 
 const (
-	clientID               = "bifrost-agent"
+	// CallbackPortEnv names the environment variable that fixes the loopback
+	// callback port, so it can be forwarded into a container ahead of sign-in.
+	CallbackPortEnv        = "BIFROST_CALLBACK_PORT"
+	clientID               = "bifrost-cli"
 	callbackPath           = "/callback"
 	defaultLoginWait       = 5 * time.Minute
 	defaultExchangeTimeout = 30 * time.Second
@@ -93,10 +99,11 @@ type Client struct {
 	UserAgent       string
 	Version         string
 	DeviceName      string
-	HardwareID      string
 	CallbackWait    time.Duration
 	exchangeTimeout time.Duration
 	shutdownTimeout time.Duration
+	CallbackPort    int       // 0 lets the OS pick a free loopback port
+	PastedCallback  io.Reader // optional source of pasted callback URLs
 	OpenBrowser     func(string) error
 	Authorization   func(string)
 	Warning         func(error)
@@ -139,9 +146,9 @@ func (c *Client) SignIn(ctx context.Context, noBrowser bool) (TokenResponse, err
 	challengeBytes := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes[:])
 
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listener, err := c.listenForCallback(ctx)
 	if err != nil {
-		return response, fmt.Errorf("listen for browser callback: %w", err)
+		return response, err
 	}
 	defer listener.Close()
 	redirectURI := "http://" + listener.Addr().String() + callbackPath
@@ -150,11 +157,16 @@ func (c *Client) SignIn(ctx context.Context, noBrowser bool) (TokenResponse, err
 		deviceName = "Bifrost CLI"
 	}
 	resultChannel := make(chan callbackResult, 1)
-	server := callbackServer(state, resultChannel, func(code string) (TokenResponse, error) {
+	// The loopback listener and a pasted callback race for the same one-time
+	// code; only the first claimant exchanges it and reports the outcome.
+	var claimed atomic.Bool
+	exchange := func(code string) (TokenResponse, error) {
+		if !claimed.CompareAndSwap(false, true) {
+			return TokenResponse{}, errCallbackAlreadyClaimed
+		}
 		payload := map[string]string{
 			"code": code, "code_verifier": verifier, "redirect_uri": redirectURI,
 			"platform": runtime.GOOS, "agent_version": c.Version, "device_name": deviceName,
-			"hardware_id": strings.TrimSpace(c.HardwareID),
 		}
 		var exchanged TokenResponse
 		exchangeTimeout := c.exchangeTimeout
@@ -170,10 +182,16 @@ func (c *Client) SignIn(ctx context.Context, noBrowser bool) (TokenResponse, err
 			return TokenResponse{}, errors.New("gateway returned an incomplete CLI session")
 		}
 		return exchanged, nil
-	})
+	}
+	server := callbackServer(state, resultChannel, exchange)
 	go func() {
 		_ = server.Serve(listener)
 	}()
+	signInDone := make(chan struct{})
+	defer close(signInDone)
+	if c.PastedCallback != nil {
+		go c.readPastedCallbacks(signInDone, state, resultChannel, exchange)
+	}
 	defer func() {
 		shutdownTimeout := c.shutdownTimeout
 		if shutdownTimeout <= 0 {
@@ -266,24 +284,21 @@ func callbackServer(expectedState string, results chan<- callbackResult, exchang
 			http.Error(writer, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		actualState := request.URL.Query().Get("state")
-		if subtle.ConstantTimeCompare([]byte(actualState), []byte(expectedState)) != 1 {
-			http.Error(writer, "Invalid sign-in state. Return to the terminal and try again.", http.StatusBadRequest)
-			sendCallbackResult(results, callbackResult{err: errors.New("browser callback state did not match")})
-			return
-		}
-		if providerError := request.URL.Query().Get("error"); providerError != "" {
-			http.Error(writer, "Sign-in was not completed. Return to the terminal.", http.StatusBadRequest)
-			sendCallbackResult(results, callbackResult{err: fmt.Errorf("browser sign-in failed: %s", providerError)})
-			return
-		}
-		code := strings.TrimSpace(request.URL.Query().Get("code"))
-		if code == "" {
-			http.Error(writer, "Missing authorization code. Return to the terminal and try again.", http.StatusBadRequest)
-			sendCallbackResult(results, callbackResult{err: errors.New("browser callback did not contain an authorization code")})
+		code, err := callbackCode(request.URL.Query(), expectedState)
+		if err != nil {
+			http.Error(writer, callbackErrorPage(err), http.StatusBadRequest)
+			// A wrong-state request is not this sign-in's callback. With a fixed
+			// port any local process can send one, so it must not end sign-in.
+			if !errors.Is(err, errCallbackStateMismatch) {
+				sendCallbackResult(results, callbackResult{err: err})
+			}
 			return
 		}
 		response, err := exchange(code)
+		if errors.Is(err, errCallbackAlreadyClaimed) {
+			http.Error(writer, "Sign-in is already being completed. Return to the terminal.", http.StatusConflict)
+			return
+		}
 		if err != nil {
 			http.Error(writer, "Sign-in could not be completed. Return to the terminal and try again.", http.StatusBadGateway)
 			sendCallbackResult(results, callbackResult{err: err})
@@ -293,6 +308,151 @@ func callbackServer(expectedState string, results chan<- callbackResult, exchang
 		sendCallbackResult(results, callbackResult{response: response})
 	})
 	return &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+}
+
+var (
+	errCallbackAlreadyClaimed = errors.New("browser callback was already completed")
+	errCallbackStateMismatch  = errors.New("browser callback state did not match")
+	errCallbackMissingCode    = errors.New("browser callback did not contain an authorization code")
+)
+
+// callbackSignInError is an error the identity provider returned to the callback.
+type callbackSignInError struct {
+	reason string
+}
+
+func (e *callbackSignInError) Error() string {
+	return "browser sign-in failed: " + e.reason
+}
+
+// callbackCode checks the callback query against this sign-in's state and
+// returns its one-time authorization code.
+func callbackCode(query url.Values, expectedState string) (string, error) {
+	if subtle.ConstantTimeCompare([]byte(query.Get("state")), []byte(expectedState)) != 1 {
+		return "", errCallbackStateMismatch
+	}
+	if providerError := query.Get("error"); providerError != "" {
+		return "", &callbackSignInError{reason: providerError}
+	}
+	code := strings.TrimSpace(query.Get("code"))
+	if code == "" {
+		return "", errCallbackMissingCode
+	}
+	return code, nil
+}
+
+// callbackErrorPage is the browser-facing text for a rejected callback.
+func callbackErrorPage(err error) string {
+	var signInErr *callbackSignInError
+	switch {
+	case errors.Is(err, errCallbackStateMismatch):
+		return "Invalid sign-in state. Return to the terminal and try again."
+	case errors.As(err, &signInErr):
+		return "Sign-in was not completed. Return to the terminal."
+	default:
+		return "Missing authorization code. Return to the terminal and try again."
+	}
+}
+
+// listenForCallback binds the loopback callback listener, on CallbackPort when
+// one is configured and on an OS-assigned port otherwise. A busy fixed port is
+// an error rather than a silent fallback, since only that port is forwarded.
+func (c *Client) listenForCallback(ctx context.Context) (net.Listener, error) {
+	var listenConfig net.ListenConfig
+	if c.CallbackPort == 0 {
+		listener, err := listenConfig.Listen(ctx, "tcp4", "127.0.0.1:0")
+		if err != nil {
+			return nil, fmt.Errorf("listen for browser callback: %w", err)
+		}
+		return listener, nil
+	}
+	if c.CallbackPort < 1 || c.CallbackPort > 65535 {
+		return nil, fmt.Errorf("callback port %d is out of range 1-65535", c.CallbackPort)
+	}
+	listener, err := listenConfig.Listen(ctx, "tcp4", net.JoinHostPort("127.0.0.1", strconv.Itoa(c.CallbackPort)))
+	if err != nil {
+		return nil, fmt.Errorf("callback port %d is unavailable: %w", c.CallbackPort, err)
+	}
+	return listener, nil
+}
+
+// readPastedCallbacks completes sign-in from a callback URL the user pastes,
+// for browsers that cannot reach this machine's loopback listener (SSH
+// sessions, containers). Each line is checked against this sign-in's state:
+// lines that are not a callback for it are skipped with a warning, while an
+// identity-provider error or a failed exchange ends sign-in. The reader may
+// stay blocked after sign-in returns; signInDone stops any later line from
+// being acted on.
+func (c *Client) readPastedCallbacks(signInDone <-chan struct{}, expectedState string, results chan<- callbackResult, exchange func(string) (TokenResponse, error)) {
+	scanner := bufio.NewScanner(c.PastedCallback)
+	for scanner.Scan() {
+		select {
+		case <-signInDone:
+			return
+		default:
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		query, err := pastedCallbackQuery(line)
+		if err == nil {
+			var code string
+			code, err = callbackCode(query, expectedState)
+			if err == nil {
+				response, exchangeErr := exchange(code)
+				if errors.Is(exchangeErr, errCallbackAlreadyClaimed) {
+					return
+				}
+				sendCallbackResult(results, callbackResult{response: response, err: exchangeErr})
+				return
+			}
+			var signInErr *callbackSignInError
+			if errors.As(err, &signInErr) {
+				sendCallbackResult(results, callbackResult{err: err})
+				return
+			}
+		}
+		if c.Warning != nil {
+			c.Warning(fmt.Errorf("ignored pasted callback: %w", err))
+		}
+	}
+	// A read error or an over-long line stops the reader; say so rather than
+	// leaving the user waiting for the timeout. The listener keeps running.
+	if err := scanner.Err(); err != nil && c.Warning != nil {
+		select {
+		case <-signInDone:
+		default:
+			c.Warning(fmt.Errorf("stopped reading pasted callbacks: %w", err))
+		}
+	}
+}
+
+// pastedCallbackQuery extracts the callback query from a pasted line: the full
+// redirected URL, or just its query string.
+func pastedCallbackQuery(line string) (url.Values, error) {
+	if parsed, err := url.Parse(line); err == nil && parsed.RawQuery != "" {
+		return parsed.Query(), nil
+	}
+	query, err := url.ParseQuery(strings.TrimPrefix(line, "?"))
+	if err != nil || query.Get("state") == "" {
+		return nil, errors.New("paste the full address the browser was redirected to, starting with http://127.0.0.1")
+	}
+	return query, nil
+}
+
+// ParseCallbackPort reads a callback port setting. An empty value means no
+// fixed port (0); anything else must be a TCP port from 1 to 65535.
+func ParseCallbackPort(raw string) (int, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("invalid callback port %q: must be a number from 1 to 65535", raw)
+	}
+	return port, nil
 }
 
 // sendCallbackResult reports only the first terminal callback outcome.

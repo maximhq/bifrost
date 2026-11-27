@@ -6,7 +6,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 )
 
 type realtimeTurnSource string
