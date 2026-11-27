@@ -259,6 +259,11 @@ BifrostErrorExtraFields:
     billed_usage:
       $ref: './usage.yaml#/BifrostLLMUsage'
       description: Usage the provider reported and billed even though the request failed
+    cost:
+      $ref: './usage.yaml#/BifrostCost'
+      description: >-
+        Bifrost's computed cost of the failed request (billed usage plus side calls), sent when
+        send back cost is on and the request cost something.
 
 BifrostResponseExtraFields:
   type: object
@@ -324,6 +329,12 @@ BifrostResponseExtraFields:
                 type: boolean
     guardrail_debug:
       $ref: '#/BifrostGuardrailMetadata'
+    cost:
+      $ref: './usage.yaml#/BifrostCost'
+      description: >-
+        Bifrost's computed cost of the request, sent when send back cost is on (client.send_back_cost
+        or the x-bf-send-back-cost header) and the request cost something. On a stream, only the final
+        chunk carries it.
     parse_errors:
       type: array
       description: Errors hit while parsing JSONL batch results

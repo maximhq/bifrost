@@ -1,0 +1,107 @@
+---
+title: "Send Back Cost"
+description: "Return the cost Bifrost computed for each request to the caller, in extra_fields.cost and the x-bifrost-cost response header, for model requests, errors, streams and MCP tool calls."
+icon: "receipt"
+---
+
+Bifrost prices every request it serves, for its logs, budgets and metrics. With send back cost on, it also returns that price to the caller, so an application can show or enforce per-request spend without reading the logs.
+
+The cost is Bifrost's own figure: the request's usage priced from the [model catalog](/providers/custom-pricing), with your pricing overrides applied, the same figure the request's log entry records. It is an estimate made at request time, not the provider's invoice. A provider's own `usage.cost` (OpenRouter, Perplexity, xAI) is passed through unchanged and is separate from it.
+
+## Turning it on
+
+Send back cost is off by default. Turn it on for every request with the client setting, or for one request with a header.
+
+<Tabs>
+<Tab title="Web UI">
+Open **Settings > Client Settings** and turn on **Send Back Cost**, then save.
+</Tab>
+<Tab title="API">
+
+[`PUT /api/config`](/api-reference/configuration/update-configuration) saves the `client_config` you send, so read the current one, change the field, and send it back whole:
+
+```bash
+curl -sf -u admin:your-password http://localhost:8080/api/config \
+  | jq '{client_config: (.client_config + {send_back_cost: true})}' \
+  | curl -X PUT http://localhost:8080/api/config \
+      -u admin:your-password \
+      -H "Content-Type: application/json" -d @-
+```
+</Tab>
+<Tab title="config.json">
+```json
+{
+  "client": {
+    "send_back_cost": true
+  }
+}
+```
+</Tab>
+</Tabs>
+
+A request can turn it on or off for itself with `x-bf-send-back-cost: true` or `false`, which wins over the setting in either direction. The header needs no other permission: the cost carries no request or response content. See [Request Options](/providers/request-options#send-back-cost).
+
+In the Go SDK, set `SendBackCost` on `schemas.BifrostConfig`, call `client.UpdateSendBackCost(true)`, or set `schemas.BifrostContextKeySendBackCost` on a request's context. The cost is in `ExtraFields.Cost` of the returned response or error.
+
+## What each route returns
+
+| Route | Where the cost is |
+|---|---|
+| `/v1/*`, normal response | `extra_fields.cost` in the body, and the `x-bifrost-cost` header |
+| `/v1/*` stream | `extra_fields.cost` on the final chunk only |
+| SDK routes (`/anthropic`, `/bedrock`, `/genai`, ...), normal response | The `x-bifrost-cost` header |
+| OpenAI-compatible routes (`/openai`, and the OpenAI routes of `/azure`, `/litellm`, `/langchain`, `/pydanticai`) | The header on non-streaming responses. In `body` mode, also `extra_fields.cost` in the body and on a stream's final chunk, unless OpenAI served the request and its response is passed through as is |
+| Error that cost something, `/v1` | `extra_fields.cost` and the header; a mid-stream error carries it in its error chunk, including one a plugin raises to stop the stream |
+| Error that cost something, SDK routes | The header |
+| Async jobs (`x-bf-async`) | `extra_fields.cost` inside the stored result |
+| Go SDK | `ExtraFields.Cost` on the response or error |
+
+`x-bifrost-cost` is the total in USD, for example `x-bifrost-cost: 0.000625`. `extra_fields.cost` is the full breakdown:
+
+```json
+{
+  "extra_fields": {
+    "cost": {
+      "input_cost": 0.000125,
+      "input_cost_details": { "text_cost": 0.000125 },
+      "output_cost": 0.0005,
+      "output_cost_details": { "text_cost": 0.0005 },
+      "total_cost": 0.000625
+    }
+  }
+}
+```
+
+When nothing is billable, there is no field and no header. Bifrost never sends a cost of `0`. A model with no price in the catalog adds nothing of its own, but the request's side calls, such as guardrail judge calls, are still priced.
+
+With [`extra_fields_placement`](/providers/response-headers) set to `headers`, bodies carry no `extra_fields`; the `x-bifrost-cost` header is still sent.
+
+## What is included
+
+- **The request's own usage**, at the rates of the provider and model that served it, including cache reads and writes, reasoning, and any per-request surcharge.
+- **Side calls the request made**: the semantic cache's embedding lookup, guardrail judge calls, and routing classification calls that count toward budgets. These appear under `additional_cost_details`.
+- **Failed requests**: the usage the provider billed before failing (`billed_usage`), priced at the model that ran, plus the side calls. This matches the error's log entry.
+- **Agent mode**: when Bifrost runs MCP tools for the model, the final response carries the sum of every turn's cost plus the cost of every tool it executed. Routing classification runs once per request, so it is counted once, on the first turn. Guardrail calls are counted in each turn that made them.
+
+## MCP tool calls
+
+A successful call of a tool with a price in the client's `tool_pricing` carries that price as `additional_cost_details.mcp_cost`, the same amount governance charges against budgets.
+
+| Surface | Where the cost is |
+|---|---|
+| `POST /v1/mcp/tool/execute` | The `x-bifrost-cost` header; the body stays the tool message |
+| `/mcp` `tools/call` | `_meta["bifrost/cost"]` on the result (JSON and SSE answers alike) |
+| Agent mode | Added to the response's `extra_fields.cost` |
+| Code mode | `executeToolCode` carries the sum of the priced tools its code called; the other code-mode tools are never priced |
+| Go SDK `ExecuteChatMCPTool` / `ExecuteResponsesMCPTool` | Install a capture with `capture := ctx.CaptureMCPToolCost()` before the call and read `capture.Cost` after it |
+
+## Not covered
+
+- Earlier fallback attempts that failed: a response covers the attempt that served it.
+- Streams on the SDK routes other than the OpenAI-compatible ones, and mid-stream errors on any SDK route: the headers are sent before the cost exists.
+- An SDK-route request that succeeds upstream but then fails inside Bifrost while its response is converted: the error carries no cost.
+- Streams with `extra_fields_placement` set to `headers`.
+- Tools injected by a provider integration: their cost is not added to the response.
+- Realtime and WebSocket sessions, batch jobs, files and containers.
+- MCP calls other than tool execution, failed tool calls, tools without a price, and calls a plugin answers itself.
+- There is no setting to stop callers from using the `x-bf-send-back-cost` header.

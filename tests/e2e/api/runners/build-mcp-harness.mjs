@@ -13569,6 +13569,71 @@ const NET14 = folder("NET-14 A middlebox that cuts idle connections", `Setup: ${
   deleteClient("NET-14", "net14-c"), ...netTeardown("NET-14"),
 ]);
 
+// ================================================================ send back cost
+
+// With send back cost on (client.send_back_cost, or x-bf-send-back-cost on the request), Bifrost returns the
+// tool_pricing cost of each successful execution: the x-bifrost-cost header on /v1/mcp/tool/execute and on
+// inference routes, _meta["bifrost/cost"] on a /mcp tools/call result, summed across an agent's tool calls and
+// across the calls executeToolCode makes.
+const SEND_BACK_COST = { key: "x-bf-send-back-cost", value: "true" };
+const costHeaderIs = (v) => v === null
+  ? A.custom("there is no x-bifrost-cost header", ["pm.expect(pm.response.headers.has('x-bifrost-cost'), 'x-bifrost-cost: ' + pm.response.headers.get('x-bifrost-cost')).to.equal(false);"])
+  : A.custom(`x-bifrost-cost is ${v}`, [`pm.expect(Number(pm.response.headers.get('x-bifrost-cost')), 'x-bifrost-cost: ' + pm.response.headers.get('x-bifrost-cost')).to.be.closeTo(${v}, 1e-9);`]);
+
+const SBC01 = folder("SBC-01 Tool execute returns the cost header", `Setup: ${ALPHA_TOOLS_TEXT}; echo_tool priced 0.25 with PUT; calls with and without x-bf-send-back-cost: true, then a failing call (JSON-RPC error) with it.`, [
+  ...setClient("SBC-01", {}), priceEcho("SBC-01", "sbc-01-a"),
+  execR("SBC-01", "execute with x-bf-send-back-cost: true", "sbc01-on", "alpha-echo_tool", {}, [A.status(200), costHeaderIs(0.25), A.custom("the body is the bare tool message", ["pm.expect(pm.response.json(), 'body: ' + pm.response.text()).to.not.have.property('extra_fields');"])], { headers: [SEND_BACK_COST] }),
+  execR("SBC-01", "execute without the header", "sbc01-off", "alpha-echo_tool", {}, [A.status(200), costHeaderIs(null)]),
+  protocolFault("SBC-01"),
+  execR("SBC-01", "a failing call with the header has no cost", "sbc01-err", "alpha-echo_tool", {}, [A.status(400), costHeaderIs(null)], { headers: [SEND_BACK_COST] }),
+  clearFaults("SBC-01"), clearPrice("SBC-01", "sbc-01-a"), deleteClient("SBC-01", "sbc-01-a"),
+]);
+
+const SBC02 = folder("SBC-02 /mcp tool result carries the cost in _meta", `Setup: ${ALPHA_TOOLS_TEXT}; echo_tool priced 0.25 with PUT; client send_back_cost turned on; tools/call alpha-echo_tool on /mcp.`, [
+  ...setClient("SBC-02", {}), priceEcho("SBC-02", "sbc-02-a"),
+  readConfig("SBC-02"),
+  putConfig("SBC-02", "setup: turn send_back_cost on", ["cc.send_back_cost = true;"], [A.status(200)]),
+  rpcR("SBC-02", "tools/call alpha-echo_tool on /mcp", "/mcp", "sbc02-r", "sbc02", [A.status(200), A.custom("_meta[\"bifrost/cost\"] carries the price as mcp_cost", [
+    "var r = pm.response.json().result;",
+    "pm.expect(r, 'body: ' + pm.response.text()).to.be.an('object');",
+    "var c = (r._meta || {})['bifrost/cost'];",
+    "pm.expect(c, 'body: ' + pm.response.text()).to.be.an('object');",
+    "pm.expect(c.total_cost).to.be.closeTo(0.25, 1e-9);",
+    "pm.expect(c.additional_cost_details.mcp_cost).to.be.closeTo(0.25, 1e-9);",
+  ])]),
+  restoreConfig("SBC-02"), clearPrice("SBC-02", "sbc-02-a"), deleteClient("SBC-02", "sbc-02-a"),
+]);
+
+const SBC03 = folder("SBC-03 Agent mode sums its tool costs", `Setup: ${AGENT_TEXT(["echo"])}; echo priced 0.001; turn 1 calls alpha-echo twice (t1, t2), turn 2 answers "done"; the chat sends x-bf-send-back-cost: true.`, [
+  ...agentSetup("SBC-03", ["echo"]),
+  priceAlpha("SBC-03", "setup: price echo at 0.001", "sbc-03-alpha", { echo: 0.001 }),
+  llmScript("SBC-03", "sbc03", { turns: [{ tool_calls: [llmCall("t1", "alpha-echo"), llmCall("t2", "alpha-echo")] }, { text: "done" }] }),
+  infPost("SBC-03", "chat", "/v1/chat/completions", chatBody("sbc03"), [A.status(200), chatContent("done"), A.custom("extra_fields.cost carries both tool calls as mcp_cost", [
+    "var c = (pm.response.json().extra_fields || {}).cost;",
+    "pm.expect(c, 'body: ' + pm.response.text()).to.be.an('object');",
+    "pm.expect(c.additional_cost_details.mcp_cost, 'body: ' + pm.response.text()).to.be.closeTo(0.002, 1e-9);",
+    "pm.expect(c.total_cost).to.be.at.least(0.002 - 1e-9);",
+  ])], { headers: [SEND_BACK_COST] }),
+  mockGet("SBC-03", "alpha", "alpha ran echo twice", [callsIs("echo", 2)]),
+  agentTeardown("SBC-03"),
+]);
+
+const SBC04 = folder("SBC-04 executeToolCode carries its nested calls' cost", `Setup: ${CM_TEXT}, cm's echo priced 0.001; executeToolCode calls cm.echo twice with x-bf-send-back-cost: true; a meta tool is never priced.`, [
+  ...cmSetup("SBC-04"),
+  priceAlpha("SBC-04", "setup: price cm's echo at 0.001", "sbc-04-cm", { echo: 0.001 }),
+  metaWith("SBC-04", "executeToolCode calling cm.echo twice", "executeToolCode", { code: "a = cm.echo(text=\"sbc04-a\")\nb = cm.echo(text=\"sbc04-b\")\nresult = [a, b]" }, [A.status(200), costHeaderIs(0.002)], { headers: [SEND_BACK_COST] }),
+  metaWith("SBC-04", "listToolFiles is not priced", "listToolFiles", {}, [A.status(200), costHeaderIs(null)], { headers: [SEND_BACK_COST] }),
+  cmTeardown("SBC-04"),
+]);
+
+const SBC05 = folder("SBC-05 A price edit reaches the returned cost", `Setup: ${ALPHA_TOOLS_TEXT}; echo_tool priced 0.25 with PUT, called, re-priced 0.5 with PUT, called again; both calls send x-bf-send-back-cost: true.`, [
+  ...setClient("SBC-05", {}), priceEcho("SBC-05", "sbc-05-a"),
+  execR("SBC-05", "execute at the first price", "sbc05-a", "alpha-echo_tool", {}, [A.status(200), costHeaderIs(0.25)], { headers: [SEND_BACK_COST] }),
+  toolPrice("SBC-05", "sbc-05-a", "setup: re-price echo_tool at 0.5", { echo_tool: 0.5 }),
+  execR("SBC-05", "execute after the edit", "sbc05-b", "alpha-echo_tool", {}, [A.status(200), costHeaderIs(0.5)], { headers: [SEND_BACK_COST] }),
+  clearPrice("SBC-05", "sbc-05-a"), deleteClient("SBC-05", "sbc-05-a"),
+]);
+
 const collection = {
   info: {
     _postman_id: "bifrost-mcp-harness",
@@ -13597,6 +13662,7 @@ const collection = {
     section("SYNC Tool sync", "Upstream tool changes reaching every client type: the sync interval, a tools/list_changed push and refresh-tools.", SYNC),
     section("BMC Bifrost MCP on /v1/mcp", "Bifrost's own HTTP API as MCP tools on /v1/mcp: protocol, who may call it, what is served and how it is annotated, tool calls, what a call carries, settings, and the required bifrost_url.", [BMC01, BMC02, BMC03, BMC04, BMC05, BMC06, BMC07, BMC08]),
     section("WMG Warp on the Bifrost MCP", "Warp's management tools, reached in process through the Bifrost MCP: what the model can be offered, that by default it is reads only, that no offered read hands it a virtual key's value, and that the writes its settings allow run only on Confirm.", [WMG01, WMG02, WMG03, WMG04, WMG05, WMG06, WMG07, WMG08, WMG09, WMG10, WMG11]),
+    section("SBC Send back cost", "Bifrost's tool_pricing cost returned to callers: the x-bifrost-cost header, /mcp _meta, and the sums for agent mode and executeToolCode.", [SBC01, SBC02, SBC03, SBC04, SBC05]),
     section("NET Network paths", "Bifrost on a restricted network: MCP and OAuth traffic through an outbound proxy, no_proxy, a proxy that is down or asks for credentials, which proxy setting covers MCP, and what firewalls do: dropped traffic, a proxy's block policy, TLS inspection, an upstream that cannot reach Bifrost, a client document host that refuses or hangs, and idle cuts.", [NET01, NET02, NET03, NET04, NET05, NET06, NET07, NET08, NET09, NET10, NET11, NET12, NET13, NET14]),
   ],
 };
