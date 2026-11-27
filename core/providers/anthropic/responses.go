@@ -197,7 +197,9 @@ type anthropicToResponsesStreamState struct {
 	// Anthropic clients assemble incremental content_block_delta events, so the
 	// converter needs this state to recover only a verified missing suffix without
 	// retaining a second full copy of the streamed response.
-	emittedTextByBlock map[int]*emittedTextProgress
+	emittedTextByBlock       map[int]*emittedTextProgress
+	emittedInputJSONMask     uint64       // bit i set once block i emits a non-empty input_json_delta
+	emittedInputJSONOverflow map[int]bool // block indices >= 64 that emitted a non-empty input_json_delta
 
 	// blockIndexMisses records non-empty item keys for which blockIndexFor was
 	// asked for an index that allocBlockIndex never assigned — i.e. a
@@ -295,19 +297,73 @@ func (s *anthropicToResponsesStreamState) recordEmittedText(blockIndex int, text
 	progress.emittedBytes += len(text)
 }
 
-// recordEmittedTextEvents tracks only text deltas that survived protocol
-// validation and will reach the normalized client. Raw passthrough frames remain
-// authoritative, so the converter must neither track nor later supplement them.
+func (s *anthropicToResponsesStreamState) markInputJSONEmitted(blockIndex int) {
+	if blockIndex < 0 {
+		return
+	}
+	if blockIndex < 64 {
+		s.emittedInputJSONMask |= uint64(1) << blockIndex
+		return
+	}
+	if s.emittedInputJSONOverflow == nil {
+		s.emittedInputJSONOverflow = make(map[int]bool)
+	}
+	s.emittedInputJSONOverflow[blockIndex] = true
+}
+
+func (s *anthropicToResponsesStreamState) hasEmittedInputJSON(blockIndex int) bool {
+	if blockIndex < 0 {
+		return false
+	}
+	if blockIndex < 64 {
+		return (s.emittedInputJSONMask & (uint64(1) << blockIndex)) != 0
+	}
+	return s.emittedInputJSONOverflow[blockIndex]
+}
+
+func (s *anthropicToResponsesStreamState) clearBlockProgress(blockIndex int) {
+	delete(s.emittedTextByBlock, blockIndex)
+	if blockIndex < 0 {
+		return
+	}
+	if blockIndex < 64 {
+		s.emittedInputJSONMask &^= uint64(1) << blockIndex
+		return
+	}
+	delete(s.emittedInputJSONOverflow, blockIndex)
+}
+
+// recordEmittedTextEvents tracks text deltas and non-empty input_json_delta frames
+// that survived protocol validation on still-open blocks. Batches that also close
+// the block (such as synthetic deltas in output_item.done) already cleared
+// s.blockType(idx) in enforceStreamBlockTypes, so skipping empty block types avoids
+// recreating state after close. Raw passthrough frames remain untouched.
 func (s *anthropicToResponsesStreamState) recordEmittedTextEvents(events []*AnthropicStreamEvent) {
 	if s.passthrough {
 		return
 	}
 	for _, event := range events {
-		if event == nil || event.Type != AnthropicStreamEventTypeContentBlockDelta || event.Index == nil ||
-			event.Delta == nil || event.Delta.Type != AnthropicStreamDeltaTypeText || event.Delta.Text == nil {
+		if event == nil || event.Index == nil {
 			continue
 		}
-		s.recordEmittedText(*event.Index, *event.Delta.Text)
+		idx := *event.Index
+		if event.Type == AnthropicStreamEventTypeContentBlockStop {
+			s.clearBlockProgress(idx)
+			continue
+		}
+		if event.Type != AnthropicStreamEventTypeContentBlockDelta || event.Delta == nil || s.blockType(idx) == "" {
+			continue
+		}
+		switch event.Delta.Type {
+		case AnthropicStreamDeltaTypeText:
+			if event.Delta.Text != nil {
+				s.recordEmittedText(idx, *event.Delta.Text)
+			}
+		case AnthropicStreamDeltaTypeInputJSON:
+			if event.Delta.PartialJSON != nil && *event.Delta.PartialJSON != "" {
+				s.markInputJSONEmitted(idx)
+			}
+		}
 	}
 }
 
@@ -332,14 +388,12 @@ func (s *anthropicToResponsesStreamState) missingTerminalText(blockIndex int, ag
 	return missing, missing != ""
 }
 
-// clearEmittedTextProgress releases terminal-text bookkeeping once
-// output_item.done closes the corresponding Anthropic content block.
 func (s *anthropicToResponsesStreamState) clearEmittedTextProgress(key string) {
-	if key == "" || s.blockIndexByItem == nil || s.emittedTextByBlock == nil {
+	if key == "" || s.blockIndexByItem == nil {
 		return
 	}
 	if blockIndex, ok := s.blockIndexByItem[key]; ok {
-		delete(s.emittedTextByBlock, blockIndex)
+		s.clearBlockProgress(blockIndex)
 	}
 }
 
@@ -592,10 +646,10 @@ func blockAcceptsDeltaType(blockType AnthropicContentBlockType, deltaType Anthro
 // reverseStreamItemKey derives a stable per-item key for content-block index
 // allocation, consistent across output_item.added / delta / output_item.done.
 func reverseStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) string {
-	if resp.Item != nil && resp.Item.ID != nil {
+	if resp.Item != nil && resp.Item.ID != nil && *resp.Item.ID != "" {
 		return *resp.Item.ID
 	}
-	if resp.ItemID != nil {
+	if resp.ItemID != nil && *resp.ItemID != "" {
 		return *resp.ItemID
 	}
 	if resp.OutputIndex != nil {
@@ -3900,13 +3954,12 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 								// Track WebSearch tools so we can skip their argument deltas
 								// and regenerate them synthetically (with sanitization) at output_item.done
 								if bifrostResp.Item.ResponsesToolMessage.Name != nil &&
-									*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" &&
-									bifrostResp.Item.ID != nil {
+									*bifrostResp.Item.ResponsesToolMessage.Name == "WebSearch" {
 									streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
 									if streamState.webSearchItemIDs == nil {
 										streamState.webSearchItemIDs = make(map[string]bool)
 									}
-									streamState.webSearchItemIDs[*bifrostResp.Item.ID] = true
+									streamState.webSearchItemIDs[reverseStreamItemKey(bifrostResp)] = true
 								}
 							}
 						}
@@ -4010,11 +4063,8 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta:
 		// Skip WebSearch tool argument deltas - they will be sent synthetically in output_item.done
-		if bifrostResp.ItemID != nil {
-			streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
-			if streamState.webSearchItemIDs[*bifrostResp.ItemID] {
-				return nil
-			}
+		if getOrCreateAnthropicToResponsesStreamState(ctx).webSearchItemIDs[reverseStreamItemKey(bifrostResp)] {
+			return nil
 		}
 
 		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
@@ -4030,6 +4080,35 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 				Type:        AnthropicStreamDeltaTypeInputJSON,
 				PartialJSON: bifrostResp.Delta,
 			}
+		}
+
+	case schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
+		schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone:
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		arguments := bifrostResp.Arguments
+		if arguments == nil {
+			arguments = bifrostResp.Delta
+		}
+		key := reverseStreamItemKey(bifrostResp)
+		if state.passthrough || arguments == nil || *arguments == "" || state.webSearchItemIDs[key] {
+			return nil
+		}
+		blockIndex, ok := state.blockIndexByItem[key]
+		if !ok {
+			return nil
+		}
+		expectedBlockType := AnthropicContentBlockTypeToolUse
+		if bifrostResp.Type == schemas.ResponsesStreamResponseTypeMCPCallArgumentsDone {
+			expectedBlockType = AnthropicContentBlockTypeMCPToolUse
+		}
+		if state.blockType(blockIndex) != expectedBlockType || state.hasEmittedInputJSON(blockIndex) {
+			return nil
+		}
+		streamResp.Type = AnthropicStreamEventTypeContentBlockDelta
+		streamResp.Index = schemas.Ptr(blockIndex)
+		streamResp.Delta = &AnthropicStreamDelta{
+			Type:        AnthropicStreamDeltaTypeInputJSON,
+			PartialJSON: arguments,
 		}
 
 	case schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, schemas.ResponsesStreamResponseTypeReasoningTextDelta:
@@ -4118,10 +4197,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 			events = append(events, stopEvent)
 
 			// Clean up the tracking for this WebSearch item
-			if bifrostResp.Item.ID != nil {
-				streamState := getOrCreateAnthropicToResponsesStreamState(ctx)
-				delete(streamState.webSearchItemIDs, *bifrostResp.Item.ID)
-			}
+			delete(getOrCreateAnthropicToResponsesStreamState(ctx).webSearchItemIDs, reverseStreamItemKey(bifrostResp))
 
 			return events
 		}
@@ -4567,11 +4643,15 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 
 	case schemas.ResponsesStreamResponseTypeMCPCallCompleted:
 		// MCP call completed - emit content_block_stop
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		key := reverseStreamItemKey(bifrostResp)
+		state.clearEmittedTextProgress(key)
 		streamResp.Type = AnthropicStreamEventTypeContentBlockStop
-		streamResp.Index = getOrCreateAnthropicToResponsesStreamState(ctx).blockIndexFor(reverseStreamItemKey(bifrostResp))
+		streamResp.Index = state.blockIndexFor(key)
 
 	case schemas.ResponsesStreamResponseTypeMCPCallFailed:
 		// MCP call failed - emit error event
+		getOrCreateAnthropicToResponsesStreamState(ctx).clearEmittedTextProgress(reverseStreamItemKey(bifrostResp))
 		streamResp.Type = AnthropicStreamEventTypeError
 		errorMsg := "MCP call failed"
 		if bifrostResp.Message != nil {
