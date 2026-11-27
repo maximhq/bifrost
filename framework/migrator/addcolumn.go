@@ -6,6 +6,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/schema"
 )
 
 // AddColumnIfNotExists adds the column backing struct field `field` of `model`
@@ -54,10 +55,88 @@ func AddColumnIfNotExists(tx *gorm.DB, logger schemas.Logger, model interface{},
 	}
 
 	if tx.Dialector.Name() != "postgres" {
-		return mig.AddColumn(model, field)
+		if err := mig.AddColumn(model, field); err != nil {
+			return err
+		}
+		return createFieldIndexes(tx, logger, model, stmt, f)
 	}
 	return tx.Exec(
 		"ALTER TABLE ? ADD COLUMN IF NOT EXISTS ? ?",
 		clause.Table{Name: stmt.Table}, clause.Column{Name: f.DBName}, mig.FullDataTypeOf(f),
 	).Error
+}
+
+// CreateDeclaredIndexes creates every not-yet-existing index that model
+// declares by struct tag, skipping any whose columns the table does not have.
+//
+// It exists to backfill databases whose columns were added before the adder
+// created indexes: those migrations are recorded, so they never run again, and
+// the index would otherwise stay missing for the life of the installation.
+// Callers must keep it away from Postgres, which builds the same set
+// CONCURRENTLY outside any migration.
+func CreateDeclaredIndexes(tx *gorm.DB, logger schemas.Logger, model interface{}) error {
+	stmt := &gorm.Statement{DB: tx}
+	if err := stmt.Parse(model); err != nil {
+		return fmt.Errorf("failed to parse schema for %T: %w", model, err)
+	}
+	return createIndexes(tx, logger, model, stmt, nil)
+}
+
+// createFieldIndexes creates the not-yet-existing indexes that f declares by
+// struct tag. Postgres is excluded by the caller: it raises the same indexes
+// CONCURRENTLY from its own builder once the process is up.
+func createFieldIndexes(tx *gorm.DB, logger schemas.Logger, model interface{}, stmt *gorm.Statement, f *schema.Field) error {
+	return createIndexes(tx, logger, model, stmt, f)
+}
+
+// createIndexes creates the missing tag-declared indexes on model, restricted
+// to those covering `only` when it is non-nil. A composite index is skipped
+// until every column it names exists, so the migration adding the first of them
+// cannot abort; the one adding the last raises it.
+func createIndexes(
+	tx *gorm.DB,
+	logger schemas.Logger,
+	model interface{},
+	stmt *gorm.Statement,
+	only *schema.Field,
+) error {
+	mig := tx.Migrator()
+	for _, idx := range stmt.Schema.ParseIndexes() {
+		if only != nil && !indexCoversField(idx, only) {
+			continue
+		}
+		if mig.HasIndex(model, idx.Name) || !indexColumnsExist(mig, model, idx) {
+			continue
+		}
+		if logger != nil {
+			logger.Info("[migrator] creating index %s on table %s", idx.Name, stmt.Table)
+		}
+		if err := mig.CreateIndex(model, idx.Name); err != nil {
+			return fmt.Errorf("failed to create index %s on table %s: %w", idx.Name, stmt.Table, err)
+		}
+	}
+	return nil
+}
+
+// indexCoversField reports whether idx indexes the column backing f.
+func indexCoversField(idx *schema.Index, f *schema.Field) bool {
+	for _, opt := range idx.Fields {
+		if opt.Field != nil && opt.DBName == f.DBName {
+			return true
+		}
+	}
+	return false
+}
+
+// indexColumnsExist reports whether every column idx names is already on the table.
+func indexColumnsExist(mig gorm.Migrator, model interface{}, idx *schema.Index) bool {
+	for _, opt := range idx.Fields {
+		if opt.Field == nil {
+			continue
+		}
+		if !mig.HasColumn(model, opt.DBName) {
+			return false
+		}
+	}
+	return true
 }
