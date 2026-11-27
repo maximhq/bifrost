@@ -524,6 +524,10 @@ export interface UpdateModelConfigRequest {
 }
 
 export interface GetModelConfigsParams {
+	/** "mcp" lists the rows MCP tool executions are charged by: holder-level rows with a Shared or MCP budget. */
+	applies_to?: "mcp";
+	/** Only holder-level rows (all models, no provider): with scope and scope_id, the target's own row. */
+	holder_level?: boolean;
 	limit?: number;
 	offset?: number;
 	search?: string;

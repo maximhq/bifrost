@@ -166,7 +166,7 @@ function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 			/>
 		);
 	}
-	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} sharedNote={sharedNote} />;
+	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} sharedNote={sharedNote} showScope />;
 }
 
 // Entity selectors only ever set a value, so a filter built on one needs its own

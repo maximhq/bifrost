@@ -1,3 +1,4 @@
+import BudgetScopeBadge from "@/components/ui/budgetScopeBadge";
 import PageTitle from "@/components/pageTitle";
 import { DisabledReason, DisabledReasonMenuItem } from "@/components/ui/disabledReason";
 import { actionDisabledReason } from "@/lib/utils/governance";
@@ -368,7 +369,10 @@ export default function CustomersTable({
 																			<TooltipTrigger asChild>
 																				<div className="space-y-1">
 																					<div className="flex items-center justify-between gap-4">
-																						<span className="text-sm font-medium">{formatCurrency(budget.max_limit)}</span>
+																						<span className="flex items-center gap-1.5 text-sm font-medium">
+																							{formatCurrency(budget.max_limit)}
+																							<BudgetScopeBadge scope={budget.scope} />
+																						</span>
 																						<span className="text-muted-foreground text-xs">
 																							{formatResetDuration(budget.reset_duration)}
 																						</span>

@@ -1,5 +1,3 @@
-import { scopeNeedsAllModelsOwner } from "@/lib/utils/governance";
-
 // Whether switching providers should drop the model already typed into the sheet.
 
 /**
@@ -12,16 +10,10 @@ export function shouldClearModelOnProviderChange(currentModel: string, available
 	return !availableModelNames.includes(currentModel);
 }
 /**
- * Whether a limit would be saved with a budget it cannot keep: a scope that needs an all-models owner
- * (scopeNeedsAllModelsOwner, as MCP) is only charged on a limit for all models on all providers. Only
- * the rows that are submitted count, those with an amount, so an empty line left in the editor does not
- * block a narrower limit.
+ * Whether a save has nothing to send: no line on the form with an amount, no limit kept on the row
+ * for the other page (a holder-level row's lines of the scope this page hides are saved back
+ * unchanged), and, on the MCP page, no existing limit being emptied (that deletes it).
  */
-export function hasMCPBudgetOnNarrowLimit(
-	modelName: string | undefined,
-	provider: string | undefined,
-	budgets: { scope?: string; max_limit?: number | null }[] | undefined,
-): boolean {
-	if (modelName === "*" && !provider) return false;
-	return (budgets ?? []).some((b) => scopeNeedsAllModelsOwner(b.scope) && b.max_limit !== undefined && b.max_limit !== null);
+export function saveHasNoLimit(hasAnyLimit: boolean, keepsOtherPagesLines: boolean, deletesOnEmpty: boolean): boolean {
+	return !hasAnyLimit && !keepsOtherPagesLines && !deletesOnEmpty;
 }
