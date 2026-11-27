@@ -75,7 +75,8 @@ import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
-import { sharedBudgetNote } from "../hooks/useVirtualKeyUsage.utils";
+import { sharedBudgetNote, summarizeProfileBudgets } from "../hooks/useVirtualKeyUsage.utils";
+import { ProfileBudgetSummary } from "./profileBudgetSummary";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
@@ -154,8 +155,17 @@ function downloadCSV(content: string) {
 
 function VKBudgetCell({ vk }: { vk: VirtualKey }) {
 	const { t } = useTranslation("models");
-	const { displayBudgets, isManagedByProfile, isOwnerGoverned, assignedUsers } = useVirtualKeyUsage(vk);
+	const { displayBudgets, isManagedByProfile, isOwnerGoverned, assignedUsers, managingProfiles } = useVirtualKeyUsage(vk);
 	const sharedNote = sharedBudgetNote(t, { isManagedByProfile, isOwnerGoverned, assignee: assignedUsers[0] });
+	if (managingProfiles.length > 1) {
+		return (
+			<ProfileBudgetSummary
+				summary={summarizeProfileBudgets(managingProfiles)}
+				calendarAligned={vk.calendar_aligned}
+				sharedNote={sharedNote}
+			/>
+		);
+	}
 	return <BudgetDisplay budgets={displayBudgets} calendarAligned={vk.calendar_aligned} sharedNote={sharedNote} />;
 }
 
