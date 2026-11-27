@@ -4285,28 +4285,25 @@ func (s *BifrostHTTPServer) Start() error {
 		if s.webrtcLiveHandler != nil {
 			s.webrtcLiveHandler.Close()
 		}
-		// Create shutdown context with timeout
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		// Perform graceful shutdown
-		if err := s.Server.Shutdown(); err != nil {
-			logger.Error("error during graceful shutdown: %v", err)
-		} else {
-			logger.Info("server gracefully shutdown")
+		// Perform graceful shutdown: drain HTTP first, then clean up with a
+		// budget of its own (see drainThenCleanup).
+		drain := func() {
+			if err := s.Server.Shutdown(); err != nil {
+				logger.Error("error during graceful shutdown: %v", err)
+			} else {
+				logger.Info("server gracefully shutdown")
+			}
 		}
-		// After the server: an in-flight /v1/mcp call finishes its /api hop first.
-		// Bounded by the shutdown timeout, so a stuck /api handler cannot hold it.
-		if err := s.bifrostMCPExec.Shutdown(shutdownCtx); err != nil {
-			logger.Warn("error closing the Bifrost MCP executor: %v", err)
-		}
-		// Cancelling main context
-		if s.cancel != nil {
-			s.cancel()
-		}
-		// Wait for shutdown to complete or timeout
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
+		cleanup := func(shutdownCtx context.Context) {
+			// After the server: an in-flight /v1/mcp call finishes its /api hop first.
+			// Bounded by the shutdown timeout, so a stuck /api handler cannot hold it.
+			if err := s.bifrostMCPExec.Shutdown(shutdownCtx); err != nil {
+				logger.Warn("error closing the Bifrost MCP executor: %v", err)
+			}
+			// Cancelling main context
+			if s.cancel != nil {
+				s.cancel()
+			}
 			// Warp first. Its indexer workers call s.Client.EmbeddingRequest (and its
 			// chat turns s.Client.ResponsesRequest), and
 			// LogIndexer.Close waits for them - so shutting the client down first
@@ -4375,12 +4372,16 @@ func (s *BifrostHTTPServer) Start() error {
 				s.Config.Close(shutdownCtx)
 			}
 			logger.Info("storage engines cleanup completed")
-		}()
-		select {
-		case <-done:
+		}
+		if drainThenCleanup(drain, cleanup, shutdownCleanupTimeout) {
 			logger.Info("cleanup completed")
-		case <-shutdownCtx.Done():
-			logger.Warn("cleanup timed out after 30 seconds")
+		} else {
+			logger.Warn("cleanup timed out after %s", shutdownCleanupTimeout)
+			// cleanup cancels the main context after the executor; make sure it
+			// is cancelled even when the executor used up the budget.
+			if s.cancel != nil {
+				s.cancel()
+			}
 		}
 
 	case err := <-errChan:
@@ -4388,6 +4389,33 @@ func (s *BifrostHTTPServer) Start() error {
 		return err
 	}
 	return nil
+}
+
+// shutdownCleanupTimeout bounds the cleanup that runs after the HTTP server
+// has drained during a graceful shutdown.
+const shutdownCleanupTimeout = 30 * time.Second
+
+// drainThenCleanup runs drain, then cleanup under a timeout that starts only
+// once drain has returned, and reports whether cleanup finished in time.
+// Starting the timer after drain matters because Server.Shutdown waits for
+// every in-flight request, and a long SSE stream can outlast the whole budget:
+// cleanup would then start with an expired context and Start would return
+// before the client, workers and stores were shut down.
+func drainThenCleanup(drain func(), cleanup func(ctx context.Context), timeout time.Duration) bool {
+	drain()
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		cleanup(cleanupCtx)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-cleanupCtx.Done():
+		return false
+	}
 }
 
 // cleanupAfterServeError releases what Start had set up when Serve itself
