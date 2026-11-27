@@ -231,6 +231,23 @@ def test_bulk_rotate_ids_requires_min_items():
     ]
     assert not drifted, "bulk rotate ids schema permits []:\n    " + "\n    ".join(drifted)
 
+
+def test_dataset_curation_ids_carry_the_request_bounds():
+    """AddFromLogs refuses an empty log_ids list and more than MaxLogsPerRequest (500), and
+    AddFromSessions refuses an empty session_ids list and more than MaxSessionsPerRequest (100).
+    Both arrays carry those bounds in the source and in both bundles."""
+    cases = (
+        ("DatasetFromLogsRequest", "/api/evals/datasets/{id}/rows/from-logs", "log_ids", 500),
+        ("DatasetFromSessionsRequest", "/api/evals/datasets/{id}/rows/from-sessions", "session_ids", 100),
+    )
+    problems = []
+    for source_name, path, field, most in cases:
+        for where, schema in _request_schemas("evalsdatasets.yaml", source_name, path, "post").items():
+            ids = (schema.get("properties") or {}).get(field) or {}
+            if ids.get("minItems") != 1 or ids.get("maxItems") != most:
+                problems.append(f"{where}: {field} bounds are {ids.get('minItems')!r}..{ids.get('maxItems')!r}, want 1..{most}")
+    assert not problems, "dataset curation id bounds drift:\n    " + "\n    ".join(problems)
+
 def test_every_operation_declares_security():
     """Every mounted operation must declare its own `security`.
 
@@ -1102,6 +1119,15 @@ CLAMPED_LIST_HANDLERS = {
     "searchWebhookDeliveries": ("webhooks.yaml", "webhooks-deliveries-search"),
 }
 
+# List operations that clamp their page in the service instead of ClampPaginationParams, with
+# their own bounds: (fragment, key, default, maximum). A limit above the maximum is read as the
+# maximum, not refused, so the spec states both numbers in words and sets only `minimum: 0`.
+SERVICE_CLAMPED_LIST_OPERATIONS = {
+    "listEvalDatasetRows": ("evalsdatasets.yaml", "datasets-rows", 100, 200),
+    "listEvalDatasets": ("evalsdatasets.yaml", "datasets", 50, 200),
+    "diffEvalDatasetVersions": ("evalsdatasets.yaml", "datasets-version-diff", 100, 200),
+}
+
 # Clamped handlers whose route has no operation in the spec yet. Listed so the gap stays visible.
 UNDOCUMENTED_CLAMPED_HANDLERS = {
     "getMCPLibrary",  # GET /api/mcp/library
@@ -1148,6 +1174,23 @@ def test_clamped_list_endpoints_document_the_page_bounds():
             )
         if "offset" not in params:
             problems.append(f"{name} ({filename}#/{key}): no offset parameter")
+    for name, (filename, key, default, maximum) in sorted(SERVICE_CLAMPED_LIST_OPERATIONS.items()):
+        operation = ((load(PATHS_DIR / filename) or {}).get(key) or {}).get("get") or {}
+        params = {p.get("name"): p for p in operation.get("parameters") or [] if isinstance(p, dict)}
+        limit = params.get("limit") or {}
+        description = limit.get("description") or ""
+        if (limit.get("schema") or {}).get("minimum") != 0:
+            problems.append(f"{name} ({filename}#/{key}): limit lacks minimum: 0")
+        if f"0 or absent means {default}" not in description or f"above {maximum} is read as {maximum}" not in description:
+            problems.append(f"{name} ({filename}#/{key}): limit description {description!r} lacks the default {default} and cap {maximum}")
+        cursors = [cursor for cursor in ("offset", "after") if cursor in params]
+        if not cursors:
+            problems.append(f"{name} ({filename}#/{key}): no offset or after parameter")
+        for cursor in cursors:
+            if ((params.get(cursor) or {}).get("schema") or {}).get("minimum") != 0:
+                problems.append(f"{name} ({filename}#/{key}): {cursor} lacks minimum: 0")
+        if len(cursors) == 2 and "positive offset cannot be combined with a positive after" not in ((params.get("offset") or {}).get("description") or ""):
+            problems.append(f"{name} ({filename}#/{key}): offset does not say a positive offset cannot be combined with a positive after")
     assert not problems, "clamped list endpoints drift from ClampPaginationParams:\n    " + "\n    ".join(problems)
 
 
@@ -1372,6 +1415,7 @@ check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_ca
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
+check("dataset from-logs and from-sessions ids carry 1..500 and 1..100", test_dataset_curation_ids_carry_the_request_bounds)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
 check("virtual key metadata contract: nullable update, reserved keys, no templated filter param", test_virtual_key_metadata_contract)
 check("openapi-oss.json is openapi.json without its enterprise-only operations", test_oss_bundle_is_the_full_bundle_without_enterprise_operations)

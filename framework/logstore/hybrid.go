@@ -1078,29 +1078,55 @@ func (h *HybridLogStore) FindByID(ctx context.Context, id string) (*Log, error) 
 	return log, nil
 }
 
+// FindByIDStrict is FindByID for callers that need the log's content, such as
+// adding it to an evaluation dataset. An offloaded log always had a payload (empty
+// ones are never uploaded), so a failed fetch or merge is returned, wrapped in
+// ErrPayloadUnreadable, instead of a metadata-only row that reads as a log without
+// content. A hidden log is returned without its content and with no error, as
+// FindByID returns it.
+func (h *HybridLogStore) FindByIDStrict(ctx context.Context, id string) (*Log, error) {
+	log, err := h.inner.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := h.hydrateLogErr(ctx, log); err != nil {
+		return nil, fmt.Errorf("%w: log %s: %w", ErrPayloadUnreadable, id, err)
+	}
+	return log, nil
+}
+
 // hydrateLog fetches the offloaded payload from object storage and merges it
-// back into the Log struct. It is a no-op when HasObject is false.
+// back into the Log struct. It is a no-op when HasObject is false. A failure is
+// logged and the row is left as the database holds it (graceful degradation for
+// the serving paths).
 //
 // When requestedFields is non-empty, only the payload fields present in that
 // projection are kept after merge — unrequested payload fields are cleared to
 // honour projection semantics and avoid pulling large blobs unnecessarily.
 func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log, requestedFields ...string) {
+	if err := h.hydrateLogErr(ctx, log, requestedFields...); err != nil {
+		h.logger.Warn("objectstore: %v", err)
+	}
+}
+
+// hydrateLogErr is hydrateLog returning the fetch or merge error instead of
+// logging it. On error the log keeps its database fields.
+func (h *HybridLogStore) hydrateLogErr(ctx context.Context, log *Log, requestedFields ...string) error {
 	// ContentHidden is the read-side enforcement for hidden logs: the payload
 	// stays in object storage and is never fetched back into the serving path.
 	if log == nil || !log.HasObject || log.ContentHidden {
-		return
+		return nil
 	}
 	key := h.logKey(log.Timestamp, log.ID)
 	data, _, err := h.getPayload(ctx, key)
 	if err != nil {
-		h.logger.Warn("objectstore: failed to fetch payload for log %s: %v", log.ID, err)
-		return // Graceful degradation
+		return fmt.Errorf("failed to fetch payload for log %s: %w", log.ID, err)
 	}
 	if mergeErr := MergePayloadFromJSON(log, data); mergeErr != nil {
-		h.logger.Warn("objectstore: failed to merge payload for log %s: %v", log.ID, mergeErr)
-		return
+		return fmt.Errorf("failed to merge payload for log %s: %w", log.ID, mergeErr)
 	}
 	pruneUnrequestedPayloadFields(log, requestedFields)
+	return nil
 }
 
 // hydrateMCPToolLog fetches the offloaded payload from object storage and

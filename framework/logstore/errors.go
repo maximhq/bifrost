@@ -23,6 +23,9 @@ var (
 	ErrPartialLogDelete = fmt.Errorf("logs deleted but their warp topic rows were not")
 	// ErrRetentionBusy marks a retention batch skipped because another replica holds that table's retention lock.
 	ErrRetentionBusy = fmt.Errorf("another replica is draining this table")
+	// ErrPayloadUnreadable marks a strict read whose row was found but whose offloaded
+	// content could not be fetched or merged back.
+	ErrPayloadUnreadable = fmt.Errorf("the log's offloaded content could not be read")
 )
 
 // postgresSQLStateError is the subset of *pgconn.PgError (and any other

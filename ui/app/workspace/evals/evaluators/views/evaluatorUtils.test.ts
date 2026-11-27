@@ -12,6 +12,7 @@ import {
 	groupByCategory,
 	missingEvalKeyProviders,
 	scoreText,
+	testBatch,
 	withGradingStyle,
 	pageOffset,
 } from "./evaluatorUtils";
@@ -193,5 +194,22 @@ describe("pageOffset", () => {
 		expect(pageOffset(0)).toBe(0);
 		expect(pageOffset(50)).toBe(50);
 		expect(pageOffset(25.9)).toBe(25);
+	});
+});
+
+describe("testBatch", () => {
+	const batch = { datasetId: "d1", total: 3 };
+
+	it("keeps the chosen batch while the evaluator reads a variable", () => {
+		expect(testBatch(batch, ["output"], [])).toBe(batch);
+		expect(testBatch(batch, [], ["expected_output"])).toBe(batch);
+	});
+
+	it("drops the batch once the evaluator reads no variable, since the dataset control is gone", () => {
+		expect(testBatch(batch, [], [])).toBeNull();
+	});
+
+	it("stays null when nothing is chosen", () => {
+		expect(testBatch(null, ["output"], [])).toBeNull();
 	});
 });
