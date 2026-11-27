@@ -2419,3 +2419,445 @@ func TestCodeModeRuntimeErrorsNameTheFailingLine(t *testing.T) {
 		}
 	})
 }
+
+// newVFSPathCodeMode connects "codey", "acme", "acme.v2", "acme.py" and "acme.pyi". Client names
+// may contain dots: "acme" has a tool named "v2", so "acme.v2" reads as either a server or a
+// server.tool pair, "acme.py" as either a server or "acme" with a .py extension, and "acme.pyi"
+// as either a server or the canonical stub filename of "acme". Tool names may contain dots too:
+// codey has both "report" and "report.py".
+func newVFSPathCodeMode(level schemas.CodeModeBindingLevel) *StarlarkCodeMode {
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
+		BindingLevel:         level,
+		ToolExecutionTimeout: time.Second,
+	}, nil)
+	client := func(name string) *schemas.MCPClientState {
+		return &schemas.MCPClientState{Name: name, ExecutionConfig: &schemas.MCPClientConfig{ID: name + "-id", Name: name, IsCodeModeClient: true}}
+	}
+	tool := func(name string) schemas.ChatTool {
+		return schemas.ChatTool{Function: &schemas.ChatToolFunction{Name: name, Description: schemas.Ptr("Does " + name)}}
+	}
+	mode.clientManager = &testClientManager{
+		clients: map[string]*schemas.MCPClientState{
+			"codey":    client("codey"),
+			"acme":     client("acme"),
+			"acme.v2":  client("acme.v2"),
+			"acme.py":  client("acme.py"),
+			"acme.pyi": client("acme.pyi"),
+		},
+		tools: map[string][]schemas.ChatTool{
+			"codey":    {tool("codey-add"), tool("codey-multiply"), tool("report"), tool("report.py")},
+			"acme":     {tool("v2"), tool("status")},
+			"acme.v2":  {tool("ping")},
+			"acme.py":  {tool("beep")},
+			"acme.pyi": {tool("zap")},
+		},
+	}
+	return mode
+}
+
+func vfsToolResponse(t *testing.T, msg *schemas.ChatMessage, err error) (string, bool) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+		t.Fatal("expected tool response content")
+	}
+	isError := msg.ChatToolMessage != nil && msg.ChatToolMessage.IsError != nil && *msg.ChatToolMessage.IsError
+	return *msg.Content.ContentStr, isError
+}
+
+func vfsToolCall(t *testing.T, args map[string]string) schemas.ChatAssistantMessageToolCall {
+	t.Helper()
+	data, err := schemas.MarshalSorted(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: string(data)},
+	}
+}
+
+func TestReadToolFileAcceptsCommonPathSpellings(t *testing.T) {
+	const (
+		codeyServer = "# codey server tools"
+		codeyAdd    = "# codey.add tool"
+		acmeServer  = "# acme server tools"
+		acmeV2Tool  = "# acme.v2 tool"
+		v2Server    = "# acme.v2 server tools"
+		v2Ping      = "# acme.v2.ping tool"
+		pyServer    = "# acme.py server tools"
+	)
+	cases := []struct {
+		fileName string
+		header   string
+	}{
+		{"servers/codey.pyi", codeyServer},
+		{"servers/codey/add.pyi", codeyAdd},
+		{"codey/add.pyi", codeyAdd},
+		{"/servers/codey/add", codeyAdd},
+		{"./servers/codey/add.pyi", codeyAdd},
+		{"Servers/codey/add.py", codeyAdd},
+		{"SERVERS/codey.pyi", codeyServer},
+		{"codey.add", codeyAdd},
+		{"codey.add()", codeyAdd},
+		{"servers/codey.add.pyi", codeyAdd},
+		{" ./servers/codey/ ", codeyServer},
+		{"codey.py", codeyServer},
+		// "acme.v2" is a connected server, so it is never split into acme + v2.
+		{"acme.v2", v2Server},
+		{"servers/acme.v2.pyi", v2Server},
+		{"servers/acme.v2/ping.pyi", v2Ping},
+		{"acme.v2.ping", v2Ping},
+		{"acme.v2.ping()", v2Ping},
+		{"acme.status", "# acme.status tool"},
+		{"servers/acme/v2.pyi", acmeV2Tool},
+		{"servers/acme.pyi", acmeServer},
+		// "acme.py" is a connected server, so its suffix is not stripped as an extension.
+		{"acme.py", pyServer},
+		{"servers/acme.py.pyi", pyServer},
+		{"acme.py.beep", "# acme.py.beep tool"},
+		// "servers/acme.pyi" is the canonical stub of "acme", even with an "acme.pyi" server connected.
+		{"acme.pyi.pyi", "# acme.pyi server tools"},
+		{"servers/acme.pyi/zap.pyi", "# acme.pyi.zap tool"},
+	}
+	for _, level := range []schemas.CodeModeBindingLevel{schemas.CodeModeBindingLevelServer, schemas.CodeModeBindingLevelTool} {
+		mode := newVFSPathCodeMode(level)
+		for _, tc := range cases {
+			t.Run(string(level)+"/"+tc.fileName, func(t *testing.T) {
+				msg, err := mode.handleReadToolFile(context.Background(), vfsToolCall(t, map[string]string{"fileName": tc.fileName}))
+				content, isError := vfsToolResponse(t, msg, err)
+				if isError || !strings.Contains(content, tc.header+"\n") {
+					t.Fatalf("readToolFile(%q): want a stub headed %q, got (isError=%v):\n%s", tc.fileName, tc.header, isError, content)
+				}
+			})
+		}
+	}
+}
+
+func TestReadToolFileStillRejectsTraversalAndUnknownServers(t *testing.T) {
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelTool)
+	cases := []string{
+		"servers/../codey.pyi",
+		"servers/codey/../acme.pyi",
+		"../../../etc/passwd.pyi",
+		"/etc/passwd.pyi",
+		"servers/nope.pyi",
+		"nope.add",
+	}
+	for _, fileName := range cases {
+		t.Run(fileName, func(t *testing.T) {
+			msg, err := mode.handleReadToolFile(context.Background(), vfsToolCall(t, map[string]string{"fileName": fileName}))
+			content, isError := vfsToolResponse(t, msg, err)
+			if !isError || !strings.Contains(content, "No server found matching") {
+				t.Fatalf("readToolFile(%q): want a server-not-found error, got (isError=%v):\n%s", fileName, isError, content)
+			}
+		})
+	}
+}
+
+// A mistyped server must not dump every tool file of every server into the caller's context.
+func TestReadToolFileServerMissListsServerNamesOnly(t *testing.T) {
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelTool)
+	msg, err := mode.handleReadToolFile(context.Background(), vfsToolCall(t, map[string]string{"fileName": "servers/nope.pyi"}))
+	content, isError := vfsToolResponse(t, msg, err)
+	if !isError {
+		t.Fatalf("want an error, got:\n%s", content)
+	}
+	if !strings.Contains(content, "Available servers: acme, acme.py, acme.pyi, acme.v2, codey\n") {
+		t.Fatalf("want the sorted server names, got:\n%s", content)
+	}
+	if strings.Contains(content, "servers/codey/add.pyi") {
+		t.Fatalf("miss listed per-tool files, got:\n%s", content)
+	}
+	if lines := strings.Count(content, "\n"); lines > 2 {
+		t.Fatalf("want a compact miss message, got %d lines:\n%s", lines, content)
+	}
+}
+
+func TestGetToolDocsAcceptsCommonPathSpellings(t *testing.T) {
+	cases := []struct {
+		server, tool string
+		header       string
+	}{
+		{"codey", "add", "codey.add"},
+		{"servers/codey", "add.pyi", "codey.add"},
+		{"codey.pyi", "servers/codey/add.pyi", "codey.add"},
+		{"Servers/codey/", "codey.add", "codey.add"},
+		{"codey", "CODEY.add()", "codey.add"},
+		{"servers/codey/add.pyi", "add", "codey.add"},
+		{"acme.v2", "ping", "acme.v2.ping"},
+		{"servers/acme.v2.pyi", "acme.v2.ping", "acme.v2.ping"},
+		{"acme", "v2", "acme.v2"},
+		{"acme", "acme.v2", "acme.v2"},
+		{"acme.py", "beep", "acme.py.beep"},
+		{"servers/acme.py.pyi", "acme.py.beep", "acme.py.beep"},
+		{"acme.pyi", "status", "acme.status"},
+		{"servers/acme.pyi.pyi", "zap", "acme.pyi.zap"},
+	}
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
+	for _, tc := range cases {
+		t.Run(tc.server+"|"+tc.tool, func(t *testing.T) {
+			msg, err := mode.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": tc.server, "tool": tc.tool}))
+			content, isError := vfsToolResponse(t, msg, err)
+			want := "Documentation for " + tc.header + " tool"
+			if isError || !strings.Contains(content, want) {
+				t.Fatalf("getToolDocs(%q, %q): want %q, got (isError=%v):\n%s", tc.server, tc.tool, want, isError, content)
+			}
+		})
+	}
+}
+
+// A discovered tool may be named like a path, so getToolDocs tries the supplied name before
+// stripping an extension from it. pyiTool adds a tool named "report.pyi" next to "report".
+func TestGetToolDocsPrefersTheExactToolName(t *testing.T) {
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
+	pyiMode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := pyiMode.clientManager.(*testClientManager)
+	manager.tools["codey"] = append(manager.tools["codey"], schemas.ChatTool{
+		Function: &schemas.ChatToolFunction{Name: "report.pyi", Description: schemas.Ptr("Does report.pyi")},
+	})
+	cases := []struct {
+		tool, want, notWant string
+		pyiTool             bool
+	}{
+		{"report.py", "Does report.py\n", "Does report\n", false},
+		{"report", "Does report\n", "Does report.py\n", false},
+		{"report.pyi", "Does report\n", "Does report.py\n", false},
+		{"report.py()", "Does report.py\n", "Does report\n", false},
+		{"codey.report.py()", "Does report.py\n", "Does report\n", false},
+		{"servers/codey/report.py.pyi", "Does report.py\n", "Does report\n", false},
+		{"report()", "Does report\n", "Does report.py\n", false},
+		{"report.pyi", "Does report.pyi\n", "Does report\n", true},
+		{"report.pyi()", "Does report.pyi\n", "Does report\n", true},
+		{"codey.report.pyi", "Does report.pyi\n", "Does report\n", true},
+		{"report", "Does report\n", "Does report.pyi\n", true},
+		{"servers/codey/report.pyi", "Does report\n", "Does report.pyi\n", true},
+	}
+	for _, tc := range cases {
+		m, name := mode, tc.tool
+		if tc.pyiTool {
+			m, name = pyiMode, tc.tool+" with report.pyi"
+		}
+		t.Run(name, func(t *testing.T) {
+			msg, err := m.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": "codey", "tool": tc.tool}))
+			content, isError := vfsToolResponse(t, msg, err)
+			if isError || !strings.Contains(content, tc.want) || strings.Contains(content, tc.notWant) {
+				t.Fatalf("getToolDocs(codey, %q): want docs with %q and without %q, got (isError=%v):\n%s", tc.tool, tc.want, tc.notWant, isError, content)
+			}
+		})
+	}
+}
+
+// A tool may carry its server's name ("codey.add"), so getToolDocs tries the supplied name
+// before it strips the server prefix, and strips it only when no tool has the dotted name.
+func TestGetToolDocsPrefersTheQualifiedToolName(t *testing.T) {
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	manager.tools["codey"] = append(manager.tools["codey"], schemas.ChatTool{
+		Function: &schemas.ChatToolFunction{Name: "codey.add", Description: schemas.Ptr("Does codey.add")},
+	})
+	cases := []struct{ tool, want, notWant string }{
+		{"codey.add", "Does codey.add\n", "Does codey-add\n"},
+		{"CODEY.add()", "Does codey.add\n", "Does codey-add\n"},
+		{"servers/codey/codey.add.pyi", "Does codey.add\n", "Does codey-add\n"},
+		{"add", "Does codey-add\n", "Does codey.add\n"},
+		{"servers/codey/add.pyi", "Does codey-add\n", "Does codey.add\n"},
+		{"codey.multiply", "Does codey-multiply\n", "Does codey.add\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			msg, err := mode.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": "codey", "tool": tc.tool}))
+			content, isError := vfsToolResponse(t, msg, err)
+			if isError || !strings.Contains(content, tc.want) || strings.Contains(content, tc.notWant) {
+				t.Fatalf("getToolDocs(codey, %q): want docs with %q and without %q, got (isError=%v):\n%s", tc.tool, tc.want, tc.notWant, isError, content)
+			}
+		})
+	}
+}
+
+// readToolFile keeps a tool name's extension-like suffix when the server has a tool by that
+// name, and strips ".py" as an extension only otherwise.
+func TestReadToolFilePrefersTheExactToolName(t *testing.T) {
+	cases := []struct{ fileName, want, notWant string }{
+		{"codey.report.py()", "Does report.py\n", "Does report\n"},
+		{"codey.report.py", "Does report.py\n", "Does report\n"},
+		{"servers/codey/report.py.pyi", "Does report.py\n", "Does report\n"},
+		{"servers/codey/report.pyi", "Does report\n", "Does report.py\n"},
+		{"codey.report()", "Does report\n", "Does report.py\n"},
+		{"servers/codey/add.py", "Does codey-add\n", "Does report"},
+	}
+	for _, level := range []schemas.CodeModeBindingLevel{schemas.CodeModeBindingLevelServer, schemas.CodeModeBindingLevelTool} {
+		mode := newVFSPathCodeMode(level)
+		for _, tc := range cases {
+			t.Run(string(level)+"/"+tc.fileName, func(t *testing.T) {
+				msg, err := mode.handleReadToolFile(context.Background(), vfsToolCall(t, map[string]string{"fileName": tc.fileName}))
+				content, isError := vfsToolResponse(t, msg, err)
+				if isError || !strings.Contains(content, tc.want) || strings.Contains(content, tc.notWant) {
+					t.Fatalf("readToolFile(%q): want a stub with %q and without %q, got (isError=%v):\n%s", tc.fileName, tc.want, tc.notWant, isError, content)
+				}
+			})
+		}
+	}
+}
+
+// A tool path names its server, so getToolDocs must not answer a path into another server with
+// the docs of a same-named tool on the requested one.
+func TestGetToolDocsRejectsAToolPathIntoAnotherServer(t *testing.T) {
+	cases := []struct{ server, tool string }{
+		{"acme", "servers/codey/status.pyi"},
+		{"codey", "servers/acme/v2.pyi"},
+		{"acme", "codey/status"},
+	}
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
+	for _, tc := range cases {
+		t.Run(tc.server+"|"+tc.tool, func(t *testing.T) {
+			msg, err := mode.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": tc.server, "tool": tc.tool}))
+			content, isError := vfsToolResponse(t, msg, err)
+			if !isError || !strings.Contains(content, "not found in server '"+tc.server+"'") {
+				t.Fatalf("getToolDocs(%q, %q): want a tool-not-found error, got (isError=%v):\n%s", tc.server, tc.tool, isError, content)
+			}
+		})
+	}
+}
+
+// countingClientManager counts GetClientByName calls, which take MCPManager's lock and copy
+// the client state.
+type countingClientManager struct {
+	*testClientManager
+	lookups int
+}
+
+func (m *countingClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	m.lookups++
+	return m.testClientManager.GetClientByName(clientName)
+}
+
+// A hit looks up the client the path names, not every connected client.
+func TestVFSLookupsResolveOnlyTheNamedClient(t *testing.T) {
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelTool)
+	manager := &countingClientManager{testClientManager: mode.clientManager.(*testClientManager)}
+	mode.clientManager = manager
+	calls := []struct {
+		name string
+		call func() (*schemas.ChatMessage, error)
+	}{
+		{"readToolFile", func() (*schemas.ChatMessage, error) {
+			return mode.handleReadToolFile(context.Background(), vfsToolCall(t, map[string]string{"fileName": "servers/codey/add.pyi"}))
+		}},
+		{"getToolDocs", func() (*schemas.ChatMessage, error) {
+			return mode.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": "codey", "tool": "add"}))
+		}},
+	}
+	for _, c := range calls {
+		manager.lookups = 0
+		msg, err := c.call()
+		if content, isError := vfsToolResponse(t, msg, err); isError {
+			t.Fatalf("%s errored:\n%s", c.name, content)
+		}
+		// One to check the named client is in code mode, one for its instructions.
+		if manager.lookups > 2 {
+			t.Fatalf("%s looked up %d clients for one named server, want at most 2", c.name, manager.lookups)
+		}
+	}
+}
+
+// A dotted name that a server outside code mode claims still resolves on the code mode server.
+func TestVFSLookupsIgnoreServersOutsideCodeMode(t *testing.T) {
+	mode := newVFSPathCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["codey.report"] = &schemas.MCPClientState{Name: "codey.report", ExecutionConfig: &schemas.MCPClientConfig{ID: "codey.report-id", Name: "codey.report"}}
+	manager.tools["codey.report"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "hidden"}}}
+
+	msg, err := mode.handleReadToolFile(context.Background(), vfsToolCall(t, map[string]string{"fileName": "codey.report"}))
+	if content, isError := vfsToolResponse(t, msg, err); isError || !strings.Contains(content, "# codey.report tool") {
+		t.Fatalf("readToolFile(codey.report): want codey's report stub, got (isError=%v):\n%s", isError, content)
+	}
+	msg, err = mode.handleGetToolDocs(context.Background(), vfsToolCall(t, map[string]string{"server": "codey", "tool": "codey.report"}))
+	if content, isError := vfsToolResponse(t, msg, err); isError || !strings.Contains(content, "Documentation for codey.report tool") {
+		t.Fatalf("getToolDocs(codey, codey.report): want codey's report docs, got (isError=%v):\n%s", isError, content)
+	}
+	msg, err = mode.handleReadToolFile(context.Background(), vfsToolCall(t, map[string]string{"fileName": "servers/nope.pyi"}))
+	if content, isError := vfsToolResponse(t, msg, err); !isError || strings.Contains(content, "codey.report") {
+		t.Fatalf("a miss must list code mode servers only, got (isError=%v):\n%s", isError, content)
+	}
+}
+
+// scanningClientManager resolves names the way MCPManager does: a linear scan that copies the
+// match, so the benchmarks below show what a per-client lookup costs.
+type scanningClientManager struct {
+	*testClientManager
+	order []*schemas.MCPClientState
+}
+
+func (m *scanningClientManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	for _, client := range m.order {
+		if client.ExecutionConfig.Name == clientName {
+			clientCopy := *client
+			return &clientCopy
+		}
+	}
+	return nil
+}
+
+func newVFSBenchCodeMode(servers, toolsPerServer int) *StarlarkCodeMode {
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{BindingLevel: schemas.CodeModeBindingLevelTool, ToolExecutionTimeout: time.Second}, nil)
+	manager := &scanningClientManager{testClientManager: &testClientManager{
+		clients: map[string]*schemas.MCPClientState{},
+		tools:   map[string][]schemas.ChatTool{},
+	}}
+	for s := range servers {
+		name := "server" + strconv.Itoa(s)
+		client := &schemas.MCPClientState{Name: name, ExecutionConfig: &schemas.MCPClientConfig{ID: name + "-id", Name: name, IsCodeModeClient: true}}
+		manager.clients[name] = client
+		manager.order = append(manager.order, client)
+		tools := make([]schemas.ChatTool, 0, toolsPerServer)
+		for i := range toolsPerServer {
+			tools = append(tools, schemas.ChatTool{Function: &schemas.ChatToolFunction{Name: "tool" + strconv.Itoa(i), Description: schemas.Ptr("Does tool " + strconv.Itoa(i))}})
+		}
+		manager.tools[name] = tools
+	}
+	mode.clientManager = manager
+	return mode
+}
+
+func benchVFSCall(b *testing.B, args string) schemas.ChatAssistantMessageToolCall {
+	b.Helper()
+	return schemas.ChatAssistantMessageToolCall{ID: schemas.Ptr("bench"), Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: args}}
+}
+
+func BenchmarkVFSLookups(b *testing.B) {
+	cases := []struct {
+		name             string
+		servers, tools   int
+		readFile, server string
+		tool             string
+	}{
+		{name: "ReadToolPath/50x20", servers: 50, tools: 20, readFile: "servers/server49/tool19.pyi"},
+		{name: "ReadToolPath/5x200", servers: 5, tools: 200, readFile: "servers/server4/tool199.pyi"},
+		{name: "ReadToolPath/200x5", servers: 200, tools: 5, readFile: "servers/server199/tool4.pyi"},
+		{name: "ReadMiss/50x20", servers: 50, tools: 20, readFile: "servers/nope.pyi"},
+		{name: "GetDocs/50x20", servers: 50, tools: 20, server: "server49", tool: "tool19"},
+		{name: "GetDocs/200x5", servers: 200, tools: 5, server: "server199", tool: "tool4"},
+	}
+	for _, tc := range cases {
+		mode := newVFSBenchCodeMode(tc.servers, tc.tools)
+		var call schemas.ChatAssistantMessageToolCall
+		handle := mode.handleReadToolFile
+		if tc.readFile != "" {
+			call = benchVFSCall(b, `{"fileName":"`+tc.readFile+`"}`)
+		} else {
+			call = benchVFSCall(b, `{"server":"`+tc.server+`","tool":"`+tc.tool+`"}`)
+			handle = mode.handleGetToolDocs
+		}
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := handle(context.Background(), call); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

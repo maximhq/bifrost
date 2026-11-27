@@ -66,52 +66,47 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
-	// Find matching client
+	// Find matching client. A discovered tool may itself be named like a path ("report.py")
+	// or carry its server's name ("codey.add"), so the supplied name is tried before the
+	// server prefix and the ".py" suffix are stripped from it. The names are parsed against
+	// every server the caller sees, and code mode is checked only for the server they name.
 	var matchedClientName string
 	var matchedTool *schemas.ChatTool
-
-	serverNameLower := strings.ToLower(serverName)
-	for clientName, tools := range availableToolsPerClient {
-		client := s.clientManager.GetClientByName(clientName)
-		if client == nil {
-			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
-			continue
-		}
-		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
-			continue
-		}
-
-		clientNameLower := strings.ToLower(clientName)
-		if clientNameLower == serverNameLower {
+	requestedServer := serverName
+	match := func(servers []string) {
+		var toolCandidates []string
+		serverName, toolCandidates = normalizeDocsArgs(requestedServer, toolName, servers)
+		for clientName, tools := range availableToolsPerClient {
+			if len(tools) == 0 || !strings.EqualFold(clientName, serverName) || !s.isCodeModeServer(ctx, clientName) {
+				continue
+			}
 			matchedClientName = clientName
-
-			// Find the specific tool
-			for i, tool := range tools {
-				if tool.Function != nil {
-					if matchesToolReference(toolName, clientName, tool.Function.Name) {
-						matchedTool = &tools[i]
-						break
-					}
+			for _, candidate := range toolCandidates {
+				if matchedTool = findToolReference(tools, clientName, candidate); matchedTool != nil {
+					break
 				}
 			}
-			break
+			return
 		}
 	}
+	servers := serverNames(availableToolsPerClient)
+	match(servers)
 
 	// Handle server not found
 	if matchedClientName == "" {
-		var availableServers []string
-		for name := range availableToolsPerClient {
-			client := s.clientManager.GetClientByName(name)
-			if client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
-				availableServers = append(availableServers, name)
+		// A server outside code mode may have claimed part of a dotted name, so parse the
+		// names again against the code mode servers alone before reporting the miss.
+		codeModeServers := s.codeModeServers(ctx, availableToolsPerClient)
+		if len(codeModeServers) < len(servers) {
+			match(codeModeServers)
+		}
+		if matchedClientName == "" {
+			errorMsg := fmt.Sprintf("Server '%s' not found. Available servers are:\n", serverName)
+			for _, sn := range codeModeServers {
+				errorMsg += fmt.Sprintf("  - %s\n", sn)
 			}
+			return createToolResponseMessage(toolCall, errorMsg, true), nil
 		}
-		errorMsg := fmt.Sprintf("Server '%s' not found. Available servers are:\n", serverName)
-		for _, sn := range availableServers {
-			errorMsg += fmt.Sprintf("  - %s\n", sn)
-		}
-		return createToolResponseMessage(toolCall, errorMsg, true), nil
 	}
 
 	// Handle tool not found
@@ -134,6 +129,61 @@ func (s *StarlarkCodeMode) handleGetToolDocs(ctx context.Context, toolCall schem
 	docContent := generateTypeDefinitions(matchedClientName, []schemas.ChatTool{*matchedTool}, true, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 
 	return createToolResponseMessage(toolCall, docContent, false), nil
+}
+
+// findToolReference returns the tool in tools that toolName refers to, or nil.
+func findToolReference(tools []schemas.ChatTool, clientName, toolName string) *schemas.ChatTool {
+	for i, tool := range tools {
+		if tool.Function != nil && matchesToolReference(toolName, clientName, tool.Function.Name) {
+			return &tools[i]
+		}
+	}
+	return nil
+}
+
+// normalizeDocsArgs lets getToolDocs accept the spellings readToolFile does: server as
+// "servers/<server>", "<server>.pyi" or a full tool path, and tool as "<tool>.pyi",
+// "servers/<server>/<tool>.pyi" or "<server>.<tool>". servers lists the connected server names.
+// toolCandidates lists the tool names to try in order: a bare name as supplied, with only
+// "()" dropped, so a tool named "report.pyi" keeps its suffix, then the name with its
+// directory and ".pyi" extension dropped, then without a "<server>." prefix, then without
+// a ".py" suffix too. A name with a directory is a stub path, so its ".pyi" is an extension,
+// and its directory must name parsedServer: a path into another server yields no candidates.
+func normalizeDocsArgs(server, tool string, servers []string) (parsedServer string, toolCandidates []string) {
+	parsedServer, _, _ = parseVFSFilePath(server, servers)
+	if parsedServer == "" {
+		parsedServer = strings.TrimSpace(server)
+	}
+	exactTool, _ := trimVFSPath(tool, nil)
+	if i := strings.LastIndexByte(exactTool, '/'); i >= 0 && !strings.EqualFold(exactTool[:i], parsedServer) {
+		return parsedServer, nil
+	}
+	exactTool = dropVFSDir(exactTool)
+	toolCandidates = []string{
+		exactTool,
+		stripServerPrefix(exactTool, parsedServer),
+		stripServerPrefix(dropVFSDir(normalizeVFSPath(tool, nil)), parsedServer),
+	}
+	if literal := strings.TrimSuffix(strings.TrimSpace(tool), "()"); !strings.Contains(literal, "/") {
+		toolCandidates = append([]string{literal, stripServerPrefix(literal, parsedServer)}, toolCandidates...)
+	}
+	return parsedServer, toolCandidates
+}
+
+// dropVFSDir drops a directory from a normalized tool path.
+func dropVFSDir(tool string) string {
+	if i := strings.LastIndexByte(tool, '/'); i >= 0 {
+		return tool[i+1:]
+	}
+	return tool
+}
+
+// stripServerPrefix drops a "<server>." prefix from a tool name.
+func stripServerPrefix(tool, server string) string {
+	if len(tool) > len(server)+1 && tool[len(server)] == '.' && strings.EqualFold(tool[:len(server)], server) {
+		return tool[len(server)+1:]
+	}
+	return tool
 }
 
 // generateTypeDefinitions generates Python documentation with docstrings from ChatTool schemas.
