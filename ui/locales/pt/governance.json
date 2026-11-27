@@ -494,7 +494,12 @@
 		"maximumSpend": "Despesa máxima (USD)",
 		"noBudgetLimits": "Não há limites de orçamento configurados.",
 		"removeBudgetAria": "Remover orçamento {{number}}",
-		"duplicateResetPeriod": "Período de reposição duplicado; cada linha de orçamento tem de usar um intervalo diferente."
+		"duplicateResetPeriod": "Período de reposição duplicado; cada linha de orçamento tem de usar um intervalo diferente.",
+		"contentLogging": "Registo de conteúdo",
+		"contentLoggingInherit": "Herdar",
+		"contentLoggingOff": "Desligado para esta equipa",
+		"contentLoggingOn": "Ligado para esta equipa",
+		"contentLoggingHelp": "Se o conteúdo do pedido e da resposta é guardado nos registos do tráfego desta equipa. A equipa tem prioridade sobre as suas chaves virtuais e chaves de fornecedor, por isso uma chave não pode voltar a ligar o conteúdo que a equipa desligou. «Desligado» também retira o conteúdo das exportações dos conectores. O cabeçalho por pedido continua a aplicar-se quando as substituições por pedido são permitidas."
 	},
 	"filters": {
 		"filters": "Filtros",

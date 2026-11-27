@@ -494,7 +494,12 @@
 		"maximumSpend": "Höchstausgaben (USD)",
 		"noBudgetLimits": "Keine Budgetgrenzen konfiguriert.",
 		"removeBudgetAria": "Budget {{number}} entfernen",
-		"duplicateResetPeriod": "Doppelter Reset-Zeitraum; jede Budgetzeile muss ein anderes Intervall verwenden."
+		"duplicateResetPeriod": "Doppelter Reset-Zeitraum; jede Budgetzeile muss ein anderes Intervall verwenden.",
+		"contentLogging": "Inhaltsprotokollierung",
+		"contentLoggingInherit": "Übernehmen",
+		"contentLoggingOff": "Für dieses Team aus",
+		"contentLoggingOn": "Für dieses Team an",
+		"contentLoggingHelp": "Ob Anfrage- und Antwortinhalt für den Verkehr dieses Teams in Protokollen gespeichert wird. Das Team hat Vorrang vor seinen virtuellen Schlüsseln und Provider-Schlüsseln, daher kann ein Schlüssel Inhalt, den das Team ausgeschaltet hat, nicht wieder einschalten. „Aus“ entfernt den Inhalt auch aus den Connector-Exporten. Der Header pro Anfrage gilt weiter, wenn Überschreibungen pro Anfrage erlaubt sind."
 	},
 	"filters": {
 		"filters": "Filter",

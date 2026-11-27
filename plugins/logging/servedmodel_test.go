@@ -9,7 +9,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -27,13 +26,13 @@ func newServedModelPlugin(t *testing.T) *LoggerPlugin {
 	if err := os.WriteFile(path, []byte(servedModelPricingJSON), 0o600); err != nil {
 		t.Fatalf("write pricing file: %v", err)
 	}
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + path})
 	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}
 	return &LoggerPlugin{
 		store:          newTestStore(t),
-		pricingManager: modelcatalog.NewTestCatalogWithDatasheet(ds),
+		pricingManager: catalogWithDatasheetForTest(t, ds),
 		logger:         testLogger{},
 	}
 }

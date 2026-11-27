@@ -7,15 +7,15 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
 )
 
 // newestTestHandler serves two providers whose list-models responses were
 // cached with creation times, plus one model without a time.
-func newestTestHandler() *ProviderHandler {
-	catalog := modelcatalog.NewTestCatalog(nil)
+func newestTestHandler(t testing.TB) *ProviderHandler {
+	catalog := catalogForTest(t, nil)
 	catalog.UpsertLiveFromResponse(schemas.OpenAI, "key-a", false, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
 		{ID: "openai/synthetic-old", Created: schemas.Ptr(int64(100))},
 		{ID: "openai/synthetic-new", Created: schemas.Ptr(int64(300))},
@@ -26,14 +26,16 @@ func newestTestHandler() *ProviderHandler {
 		{ID: "mistral/synthetic-a", Created: schemas.Ptr(int64(9999))},
 	}})
 	return &ProviderHandler{
-		inMemoryStore: &lib.Config{
+		config: libtest.FileOnly(t, &lib.Config{
 			ClientConfig: &configstore.ClientConfig{},
 			ModelCatalog: catalog,
-			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-				schemas.OpenAI:  {Keys: []schemas.Key{{ID: "key-a"}}},
-				schemas.Mistral: {Keys: []schemas.Key{{ID: "key-m"}}},
-			},
-		},
+		}, map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI:  {},
+			schemas.Mistral: {},
+		}, map[schemas.ModelProvider][]schemas.Key{
+			schemas.OpenAI:  {{ID: "key-a"}},
+			schemas.Mistral: {{ID: "key-m"}},
+		}),
 		modelsManager: &mockModelsManager{filtered: map[schemas.ModelProvider][]string{
 			schemas.OpenAI:  {"synthetic-old", "synthetic-new", "synthetic-mid", "synthetic-untimed"},
 			schemas.Mistral: {"synthetic-a"},
@@ -59,7 +61,7 @@ func callNewestModels(t *testing.T, h *ProviderHandler, query string) (int, []Ne
 // TestListNewestModels returns each requested provider's newest models, in
 // the requested provider order, comparing times only within a provider.
 func TestListNewestModels(t *testing.T) {
-	h := newestTestHandler()
+	h := newestTestHandler(t)
 	status, models := callNewestModels(t, h, "providers=openai,mistral&limit=2")
 	if status != fasthttp.StatusOK {
 		t.Fatalf("status = %d", status)
@@ -90,8 +92,8 @@ func TestListNewestModels(t *testing.T) {
 // listing by the unfiltered entries' times, so a model the key's rules hide
 // from the filtered entry still ranks by the time the provider reported.
 func TestListNewestModelsUnfilteredReadsUnfilteredTimes(t *testing.T) {
-	h := newestTestHandler()
-	h.inMemoryStore.ModelCatalog.UpsertLiveFromResponse(schemas.OpenAI, "key-a", true, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
+	h := newestTestHandler(t)
+	h.config.ModelCatalog.UpsertLiveFromResponse(schemas.OpenAI, "key-a", true, &schemas.BifrostListModelsResponse{Data: []schemas.Model{
 		{ID: "openai/synthetic-new", Created: schemas.Ptr(int64(300))},
 		{ID: "openai/synthetic-hidden", Created: schemas.Ptr(int64(500))},
 	}})
@@ -110,11 +112,14 @@ func TestListNewestModelsUnfilteredReadsUnfilteredTimes(t *testing.T) {
 
 // BenchmarkListNewestModels measures one request over three providers that
 // each cache 300 timed models, about the size of a real list-models response.
+// Each provider has a key ID of its own, so all three keep their key in the
+// live store, which holds one record per key ID.
 func BenchmarkListNewestModels(b *testing.B) {
 	providers := []schemas.ModelProvider{schemas.OpenAI, schemas.Anthropic, schemas.Mistral}
-	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog := catalogForTest(b, nil)
 	filtered := make(map[schemas.ModelProvider][]string, len(providers))
 	configs := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(providers))
+	keys := make(map[schemas.ModelProvider][]schemas.Key, len(providers))
 	for _, provider := range providers {
 		data := make([]schemas.Model, 0, 300)
 		for i := range 300 {
@@ -122,11 +127,13 @@ func BenchmarkListNewestModels(b *testing.B) {
 			data = append(data, schemas.Model{ID: string(provider) + "/" + name, Created: schemas.Ptr(int64(i))})
 			filtered[provider] = append(filtered[provider], name)
 		}
-		catalog.UpsertLiveFromResponse(provider, "key", false, &schemas.BifrostListModelsResponse{Data: data})
-		configs[provider] = configstore.ProviderConfig{Keys: []schemas.Key{{ID: "key"}}}
+		keyID := "key-" + string(provider)
+		catalog.UpsertLiveFromResponse(provider, keyID, false, &schemas.BifrostListModelsResponse{Data: data})
+		configs[provider] = configstore.ProviderConfig{}
+		keys[provider] = []schemas.Key{{ID: keyID}}
 	}
 	h := &ProviderHandler{
-		inMemoryStore: &lib.Config{ClientConfig: &configstore.ClientConfig{}, ModelCatalog: catalog, Providers: configs},
+		config:        libtest.FileOnly(b, &lib.Config{ClientConfig: &configstore.ClientConfig{}, ModelCatalog: catalog}, configs, keys),
 		modelsManager: &mockModelsManager{filtered: filtered},
 	}
 	ctx := &fasthttp.RequestCtx{}
@@ -144,7 +151,7 @@ func BenchmarkListNewestModels(b *testing.B) {
 // TestListNewestModelsRejectsBadInput refuses a missing provider list and a
 // limit outside 1..50 instead of guessing.
 func TestListNewestModelsRejectsBadInput(t *testing.T) {
-	h := newestTestHandler()
+	h := newestTestHandler(t)
 	for _, query := range []string{"", "providers=openai&limit=0", "providers=openai&limit=51", "providers=openai&limit=x"} {
 		if status, _ := callNewestModels(t, h, query); status != fasthttp.StatusBadRequest {
 			t.Fatalf("%q: status = %d, want 400", query, status)

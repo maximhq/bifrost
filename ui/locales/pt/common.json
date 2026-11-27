@@ -191,8 +191,7 @@
 		"toggle": "Alternar barra lateral"
 	},
 	"sheet": {
-		"collapse": "Recolher",
-		"expand": "Expandir"
+		"resizeHandle": "Redimensionar painel"
 	},
 	"tabs": {
 		"showMore_one": "Mostrar mais {{count}} separador",

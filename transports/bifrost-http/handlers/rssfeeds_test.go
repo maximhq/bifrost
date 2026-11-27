@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/rssfeed"
@@ -119,9 +120,12 @@ func newRSSFeedTestServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-func newTestRSSFeedsHandler(srv *httptest.Server, feeds ...tables.TableRSSFeed) (*RSSFeedsHandler, *memoryRSSFeedStore) {
+func newTestRSSFeedsHandler(t testing.TB, srv *httptest.Server, feeds ...tables.TableRSSFeed) (*RSSFeedsHandler, *memoryRSSFeedStore) {
+	t.Helper()
 	store := &memoryRSSFeedStore{feeds: feeds, nextID: uint(len(feeds))}
-	return &RSSFeedsHandler{store: store, manager: rssfeed.NewManagerWithClient(srv.Client())}, store
+	manager, err := rssfeed.NewManagerWithClient(liveStoreForTest(t), srv.Client())
+	require.NoError(t, err)
+	return &RSSFeedsHandler{store: store, manager: manager}, store
 }
 
 func rssRequest(body string, id uint) *fasthttp.RequestCtx {
@@ -137,7 +141,7 @@ func rssRequest(body string, id uint) *fasthttp.RequestCtx {
 
 func TestRSSItemsMergesEnabledFeedsAndReportsFailures(t *testing.T) {
 	srv := newRSSFeedTestServer(t)
-	h, _ := newTestRSSFeedsHandler(srv,
+	h, _ := newTestRSSFeedsHandler(t, srv,
 		tables.TableRSSFeed{ID: 1, Slug: "rss", Name: "RSS", URL: srv.URL + "/rss", Icon: "openai", Source: tables.RSSFeedSourceBuiltin, Enabled: true},
 		tables.TableRSSFeed{ID: 2, Slug: "atom", Name: "Atom", URL: srv.URL + "/atom", IconURL: "https://example.com/atom.png", Source: tables.RSSFeedSourceCustom, Enabled: true},
 		tables.TableRSSFeed{ID: 3, Slug: "down", Name: "Down", URL: srv.URL + "/down", Source: tables.RSSFeedSourceCustom, Enabled: true},
@@ -187,7 +191,7 @@ func TestRSSItemsBoundsConcurrentFetches(t *testing.T) {
 		id := strconv.Itoa(i)
 		feeds = append(feeds, tables.TableRSSFeed{ID: uint(i), Slug: "f" + id, Name: "F" + id, URL: srv.URL + "/" + id, Source: tables.RSSFeedSourceCustom, Enabled: true})
 	}
-	h, _ := newTestRSSFeedsHandler(srv, feeds...)
+	h, _ := newTestRSSFeedsHandler(t, srv, feeds...)
 	ctx := rssRequest("", 0)
 	h.listItems(ctx)
 	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
@@ -220,7 +224,7 @@ func TestRSSItemsHonorsFetchDeadline(t *testing.T) {
 		id := strconv.Itoa(i)
 		feeds = append(feeds, tables.TableRSSFeed{ID: uint(i), Slug: "f" + id, Name: "F" + id, URL: srv.URL + "/" + id, Source: tables.RSSFeedSourceCustom, Enabled: true})
 	}
-	h, _ := newTestRSSFeedsHandler(srv, feeds...)
+	h, _ := newTestRSSFeedsHandler(t, srv, feeds...)
 	ctx := rssRequest("", 0)
 	start := time.Now()
 	h.listItems(ctx)
@@ -246,7 +250,7 @@ func TestRSSItemsSendsEachFeedLogoOnce(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body.String())) }))
 	t.Cleanup(srv.Close)
 	const logo = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="
-	h, _ := newTestRSSFeedsHandler(srv,
+	h, _ := newTestRSSFeedsHandler(t, srv,
 		tables.TableRSSFeed{ID: 7, Slug: "custom-logo", Name: "Logo", URL: srv.URL + "/feed", IconURL: logo, Source: tables.RSSFeedSourceCustom, Enabled: true},
 		tables.TableRSSFeed{ID: 8, Slug: "custom-plain", Name: "Plain", URL: srv.URL + "/plain", Source: tables.RSSFeedSourceCustom, Enabled: true},
 	)
@@ -282,7 +286,7 @@ func TestRSSItemsClampsLimit(t *testing.T) {
 		id := strconv.Itoa(i)
 		feeds = append(feeds, tables.TableRSSFeed{ID: uint(i), Slug: "f" + id, Name: "F" + id, URL: srv.URL + "/" + id, Source: tables.RSSFeedSourceCustom, Enabled: true})
 	}
-	h, _ := newTestRSSFeedsHandler(srv, feeds...)
+	h, _ := newTestRSSFeedsHandler(t, srv, feeds...)
 
 	ctx := rssRequest("", 0)
 	ctx.Request.SetRequestURI("/api/rss/items?limit=101")
@@ -300,7 +304,7 @@ func TestRSSItemsClampsLimit(t *testing.T) {
 
 func TestRSSFeedCreateValidatesAndProbes(t *testing.T) {
 	srv := newRSSFeedTestServer(t)
-	h, store := newTestRSSFeedsHandler(srv)
+	h, store := newTestRSSFeedsHandler(t, srv)
 
 	for name, body := range map[string]string{
 		"missing name": `{"name":"  ","url":"` + srv.URL + `/rss"}`,
@@ -334,7 +338,7 @@ func TestRSSFeedCreateValidatesAndProbes(t *testing.T) {
 // in the OpenAPI schema: RSS 1.0 feeds and news listing pages are accepted too.
 func TestRSSFeedCreateAcceptsRDFAndListingPages(t *testing.T) {
 	srv := newRSSFeedTestServer(t)
-	h, store := newTestRSSFeedsHandler(srv)
+	h, store := newTestRSSFeedsHandler(t, srv)
 	for _, path := range []string{"/rdf", "/listing"} {
 		ctx := rssRequest(`{"name":"feed `+path+`","url":"`+srv.URL+path+`"}`, 0)
 		h.createFeed(ctx)
@@ -352,7 +356,7 @@ func TestRSSFeedCreateProbesWhileNewsIsOff(t *testing.T) {
 		_, _ = w.Write([]byte(testAtomFeedBody))
 	}))
 	t.Cleanup(srv.Close)
-	h, store := newTestRSSFeedsHandler(srv)
+	h, store := newTestRSSFeedsHandler(t, srv)
 	store.newsDisabled = true
 
 	ctx := rssRequest(`{"name":"x","url":"`+srv.URL+`/atom"}`, 0)
@@ -363,7 +367,7 @@ func TestRSSFeedCreateProbesWhileNewsIsOff(t *testing.T) {
 
 func TestRSSFeedBuiltinGuards(t *testing.T) {
 	srv := newRSSFeedTestServer(t)
-	h, store := newTestRSSFeedsHandler(srv,
+	h, store := newTestRSSFeedsHandler(t, srv,
 		tables.TableRSSFeed{ID: 1, Slug: "openai", Name: "OpenAI", URL: srv.URL + "/rss", Source: tables.RSSFeedSourceBuiltin},
 	)
 
@@ -391,7 +395,7 @@ func TestRSSFeedBuiltinGuards(t *testing.T) {
 
 func TestRSSFeedCustomUpdateAndDelete(t *testing.T) {
 	srv := newRSSFeedTestServer(t)
-	h, store := newTestRSSFeedsHandler(srv,
+	h, store := newTestRSSFeedsHandler(t, srv,
 		tables.TableRSSFeed{ID: 1, Slug: "custom-x", Name: "X", URL: srv.URL + "/rss", Source: tables.RSSFeedSourceCustom, Enabled: true},
 	)
 	// Warm the cache so a URL change has an entry to drop.
@@ -430,7 +434,7 @@ func TestRSSFeedCustomUpdateAndDelete(t *testing.T) {
 // update and delete when the config store write fails.
 func TestRSSFeedWriteStoreFailureIs500(t *testing.T) {
 	srv := newRSSFeedTestServer(t)
-	h, store := newTestRSSFeedsHandler(srv,
+	h, store := newTestRSSFeedsHandler(t, srv,
 		tables.TableRSSFeed{ID: 1, Slug: "custom-x", Name: "X", URL: srv.URL + "/rss", Source: tables.RSSFeedSourceCustom, Enabled: true},
 	)
 	store.writeErr = errors.New("database is locked")
@@ -444,11 +448,35 @@ func TestRSSFeedWriteStoreFailureIs500(t *testing.T) {
 	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 }
 
-func TestRSSFeedsUnavailableWithoutStore(t *testing.T) {
-	h := NewRSSFeedsHandler(nil, nil)
-	ctx := rssRequest("", 0)
-	h.listItems(ctx)
-	require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode())
+// TestRSSFeedRoutesAnswer503WhenTheConfigStoreLacksFeedStorage pins that every feed route answers
+// 503 instead of panicking when the config store is set but does not provide RSS feed storage. The
+// store embeds the ConfigStore interface, as a store that wraps another does, so the optional
+// RSSFeedStore methods are not promoted and the handler's store is nil, while
+// RequireConfigStoreMiddleware lets the request through. The items route comes first: the
+// dashboard's notification tray polls it from every signed-in page.
+func TestRSSFeedRoutesAnswer503WhenTheConfigStoreLacksFeedStorage(t *testing.T) {
+	var store configstore.ConfigStore = struct{ configstore.ConfigStore }{}
+	r := router.New()
+	NewRSSFeedsHandler(store, nil).RegisterRoutes(r, RequireConfigStoreMiddleware(store))
+	for _, route := range []struct{ method, uri, body string }{
+		{fasthttp.MethodGet, "/api/rss/items?limit=50", ""},
+		{fasthttp.MethodGet, "/api/rss/feeds", ""},
+		{fasthttp.MethodPost, "/api/rss/feeds", "{}"},
+		{fasthttp.MethodPut, "/api/rss/feeds/1", `{"enabled":false}`},
+		{fasthttp.MethodDelete, "/api/rss/feeds/1", ""},
+		{fasthttp.MethodGet, "/api/rss/settings", ""},
+		{fasthttp.MethodPut, "/api/rss/settings", `{"enabled":false}`},
+	} {
+		t.Run(route.method+" "+route.uri, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(route.method)
+			ctx.Request.SetRequestURI(route.uri)
+			ctx.Request.SetBodyString(route.body)
+			r.Handler(ctx)
+			require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			require.Contains(t, string(ctx.Response.Body()), "rss feed storage is unavailable")
+		})
+	}
 }
 
 func TestRSSNewsSwitchStopsFetching(t *testing.T) {
@@ -458,7 +486,7 @@ func TestRSSNewsSwitchStopsFetching(t *testing.T) {
 		_, _ = w.Write([]byte(testRSSFeedBody))
 	}))
 	t.Cleanup(srv.Close)
-	h, store := newTestRSSFeedsHandler(srv,
+	h, store := newTestRSSFeedsHandler(t, srv,
 		tables.TableRSSFeed{ID: 1, Slug: "rss", Name: "RSS", URL: srv.URL + "/rss", Source: tables.RSSFeedSourceCustom, Enabled: true},
 	)
 
@@ -490,4 +518,71 @@ func TestRSSNewsSwitchStopsFetching(t *testing.T) {
 	require.True(t, response.Enabled)
 	require.Len(t, response.Items, 1)
 	require.Equal(t, 1, hits)
+}
+
+// TestRSSFeedWritesRecordAuditEvents pins a typed audit event for every feed and news-switch
+// write, none for a write the store refused, and no inline logo in a snapshot.
+func TestRSSFeedWritesRecordAuditEvents(t *testing.T) {
+	srv := newRSSFeedTestServer(t)
+	h, store := newTestRSSFeedsHandler(t, srv)
+
+	ctx := rssRequest(`{"name":"Releases","url":"`+srv.URL+`/atom"}`, 0)
+	h.createFeed(ctx)
+	require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	created := requireSingleAuditChange(t, ctx, "rss_feed.created")
+	require.Contains(t, string(created.After), `"name":"Releases"`)
+	id := store.feeds[0].ID
+
+	ctx = rssRequest(`{"name":"Renamed","icon_url":"data:image/png;base64,iVBORw0KGgo="}`, id)
+	h.updateFeed(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	updated := requireSingleAuditChange(t, ctx, "rss_feed.updated")
+	require.Contains(t, string(updated.Before), `"name":"Releases"`)
+	require.Contains(t, string(updated.After), `"name":"Renamed"`)
+	require.NotContains(t, string(updated.After), "iVBORw0KGgo", "an inline logo is not copied into the audit log")
+
+	ctx = rssRequest(`{"enabled":false}`, 0)
+	h.updateSettings(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	settings := requireSingleAuditChange(t, ctx, "rss_settings.updated")
+	require.JSONEq(t, `{"enabled":true}`, string(settings.Before))
+	require.JSONEq(t, `{"enabled":false}`, string(settings.After))
+
+	store.writeErr = errors.New("database is locked")
+	ctx = rssRequest(`{"enabled":false}`, id)
+	h.updateFeed(ctx)
+	require.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode())
+	require.Empty(t, liveAuditChanges(ctx), "a refused write records nothing")
+	store.writeErr = nil
+
+	ctx = rssRequest("", id)
+	h.deleteFeed(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+	requireSingleAuditChange(t, ctx, "rss_feed.deleted")
+}
+
+// TestRSSFeedAuditKeepsOnlyTheURLOrigin pins that a private feed's token, which a feed URL can
+// carry in its path as well as in userinfo or the query, never reaches the audit log: the
+// snapshots record the scheme and host only, and a URL that does not parse not at all.
+func TestRSSFeedAuditKeepsOnlyTheURLOrigin(t *testing.T) {
+	srv := newRSSFeedTestServer(t)
+	h, _ := newTestRSSFeedsHandler(t, srv, tables.TableRSSFeed{
+		ID: 1, Slug: "private", Name: "Private", Source: "custom", Enabled: true,
+		URL:     "https://feeds.example.com/private/tok-feed-4f9a/rss?key=q-secret",
+		IconURL: "https://cdn.example.com/logos/tok-icon-77c1/logo.png",
+	})
+
+	ctx := rssRequest(`{"name":"Renamed"}`, 1)
+	h.updateFeed(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	updated := requireSingleAuditChange(t, ctx, "rss_feed.updated")
+	for _, snap := range []string{string(updated.Before), string(updated.After)} {
+		for _, secret := range []string{"tok-feed-4f9a", "q-secret", "/private", "tok-icon-77c1"} {
+			require.NotContains(t, snap, secret, "the audit snapshot carries part of a private feed URL")
+		}
+	}
+	require.Contains(t, string(updated.After), `"url":"https://feeds.example.com"`)
+	require.Contains(t, string(updated.After), `"icon_url":"https://cdn.example.com"`)
+
+	require.Equal(t, "<redacted: unparseable url>", auditRSSFeed(&tables.TableRSSFeed{URL: "https://user:p%zztok@feeds.example.com/rss"})["url"])
 }

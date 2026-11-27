@@ -112,7 +112,7 @@ export function CustomerDetailSheet({ customer, open, onOpenChange }: Props) {
 
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
-			<SheetContent className="max-w-[700px] overflow-y-auto p-0 pt-4">
+			<SheetContent resizeKey="customer-details" className="max-w-[700px] overflow-y-auto p-0 pt-4">
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 px-4 md:px-8 sticky -top-4 bg-card z-10">
 					<div className="flex min-w-0 items-center gap-1">
 						<SheetTitle className="truncate text-lg">{customer?.name || t("customers.detail.title")}</SheetTitle>

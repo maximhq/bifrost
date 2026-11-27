@@ -224,6 +224,7 @@ export function RelayLogDetailSheet({
 	return (
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent
+				resizeKey="relay-log-details"
 				className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%] 2xl:max-w-[40%]"
 				data-testid="relay-log-details"
 			>

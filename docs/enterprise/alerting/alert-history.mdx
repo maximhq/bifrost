@@ -11,7 +11,7 @@ Bifrost records every alert evaluation outcome in **alert history**. Each record
 
 Alert history is stored in the configured logs store. PostgreSQL and ClickHouse logs stores both support history writes, filtering, and recovery of alert state. With ClickHouse, Bifrost creates an `enterprise_alert_history` table with the configured `history_retention_days` TTL.
 
-Bifrost uses its shared key-value store for live rule cooldown, channel cooldown, and reset-cycle checks. After startup or a leadership change, the alerting engine bulk-loads only the latest relevant `sent` timestamps and reset-cycle identities from history before it can dispatch alerts. Normal evaluation sweeps do not query alert history for each rule or channel.
+Bifrost uses compact state that every gateway instance shares for live rule cooldown, channel cooldown, and reset-cycle checks. After startup or a leadership change, the alerting engine bulk-loads only the latest relevant `sent` timestamps and reset-cycle identities from history before it can dispatch alerts. Normal evaluation sweeps do not query alert history for each rule or channel.
 
 With ClickHouse, a cold recovery performs an immediate read and a delayed second read before dispatch starts. This allows replicated ClickHouse tables time to converge and reduces duplicate notifications after failover.
 

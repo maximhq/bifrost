@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 // recordingDelegate captures OnSet invocations so tests can assert delegate
@@ -35,20 +37,33 @@ func (d *recordingDelegate) Calls() []recordedCall {
 	return out
 }
 
+// newTestStore returns an OSS flag store over a new live store, with an empty registry.
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	resetRegistryForTest()
-	s, err := New(Config{})
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatalf("live store: %v", err)
+	}
+	t.Cleanup(live.Close)
+	s, err := New(live, Config{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return s
 }
 
+// newEnterpriseTestStore returns an enterprise flag store over a new live store, with an empty
+// registry.
 func newEnterpriseTestStore(t *testing.T) *Store {
 	t.Helper()
 	resetRegistryForTest()
-	s, err := New(Config{IsEnterprise: true})
+	live, err := livestore.New()
+	if err != nil {
+		t.Fatalf("live store: %v", err)
+	}
+	t.Cleanup(live.Close)
+	s, err := New(live, Config{IsEnterprise: true})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -303,7 +318,7 @@ func TestSnapshotRestore_PreservesSource(t *testing.T) {
 	// back. Direct entry write since Set would be rejected by the file
 	// lock - we want to verify Restore puts the metadata back exactly.
 	s.mu.Lock()
-	s.entries["feat.file"] = entry{enabled: false, source: SourceRemote, writtenAt: 999}
+	s.entries.Put("feat.file", entry{enabled: false, source: SourceRemote, writtenAt: 999})
 	s.mu.Unlock()
 
 	s.Restore("feat.file", snap, had)

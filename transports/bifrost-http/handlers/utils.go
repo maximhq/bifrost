@@ -562,3 +562,36 @@ const RequestWorkTimeout = 30 * time.Second
 func RequestWorkContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }
+
+// ErrSavedButNotReloaded marks an error a manager returns when its write is saved but a follow-up
+// that brings memory up to it failed: the handler answers it as a saved write whose in-memory state
+// is stale (a 500 that says so), not as a failed write.
+var ErrSavedButNotReloaded = errors.New("saved but not reloaded into memory")
+
+// reloadGrantingVirtualKeys refreshes, in one batched reload, the virtual keys holding a grant that a
+// change to what they grant (an MCP client, an agent, a relay, a Virtual MCP) just touched. Each id
+// is reloaded once and empty ids are skipped. The change itself is already saved, so the reload's
+// error is returned for the caller to answer: the keys keep their previous records until it succeeds.
+func reloadGrantingVirtualKeys(ctx context.Context, governanceManager GovernanceManager, idSets ...[]string) error {
+	if governanceManager == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var ids []string
+	for _, set := range idSets {
+		for _, id := range set {
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return governanceManager.ReloadVirtualKeys(ctx, ids)
+}

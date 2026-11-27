@@ -114,20 +114,20 @@ Streaming is controlled entirely by the client request. If you want streaming, s
 
 ## Cache and updates
 
-The plugin keeps an in-memory cache of prompts and versions (loaded with a small number of store queries at startup). When you create, update, or delete prompts or versions through the **gateway APIs**, the server **reloads** that cache so new commits are visible without a full process restart.
+The plugin reads prompts and versions from Bifrost's live store, loaded with the rest of the configuration at startup. When you create, update, or delete prompts or versions through the **gateway APIs**, the server refreshes them there, so new commits are visible without a full process restart.
 
 ---
 
 ## Go SDK and custom resolution
 
-For embedded Bifrost (Go SDK), register the plugin with `prompts.Init` and a **config store** that implements the prompt tables API. The default resolver reads the same logical keys from `BifrostContext`:
+For embedded Bifrost (Go SDK), register the plugin with `prompts.Init(ctx, configStore, live, logger)`: a **config store** that implements the prompt tables API, and a live store (`framework/livestore`, created with `livestore.New()` and loaded from the config store's database with `live.LoadAll(ctx, configStore.DB())`) that holds the prompts. The default resolver reads the same logical keys from `BifrostContext`:
 
 - `prompts.PromptIDKey` (`x-bf-prompt-id`)
 - `prompts.PromptVersionKey` (`x-bf-prompt-version`)
 
 Set them on the context you pass to `ChatCompletion` / `Responses` if you are not going through the HTTP transport hooks.
 
-For advanced routing (for example, choosing a prompt from governance metadata), implement `prompts.PromptResolver` and use **`prompts.InitWithResolver`**. The interface is:
+For advanced routing (for example, choosing a prompt from governance metadata), implement `prompts.PromptResolver` and use **`prompts.InitWithResolver(ctx, live, resolver, logger)`**. The interface is:
 
 ```go
 type PromptResolver interface {

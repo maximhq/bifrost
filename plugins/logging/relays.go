@@ -73,7 +73,7 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	*entry = logstore.RelayLog{
 		ID:        uuid.New().String(),
 		RequestID: clampString(requestID, 255),
-		Timestamp: time.Now().UTC(),
+		Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime),
 		RelayName: clampString(req.RelayName, 64),
 		Kind:      logstore.RelayLogKindCall,
 		Method:    clampString(req.Method, 10),
@@ -109,10 +109,11 @@ func (p *LoggerPlugin) PreRelayHook(ctx *schemas.BifrostContext, req *schemas.Bi
 	entry.MetadataParsed = mergeVirtualKeyMetadata(p.captureLoggingHeaders(ctx), ctx)
 	entry.RequestHeadersParsed = relayMatchedHeaders(req)
 	// The body is captured under the policy as the context stands now, or provisionally while
-	// governance has yet to resolve the presented key or the named project (its pre-hook runs
-	// after this one), exactly as PreLLMHook gates input capture. PostRelayHook applies the final
+	// governance has yet to resolve the presented caller or the named project (its pre-hook runs
+	// after this one), exactly as PreLLMHook gates input capture. A relay picks no provider key, so
+	// only the caller's layers can still change. PostRelayHook applies the final
 	// policy and drops what it does not allow, and an eviction drops provisional input.
-	pending.provisionalInput = governanceDecisionPending(ctx)
+	pending.provisionalInput = contentDecisionPending(ctx, contentScopeMCP)
 	pending.policy = p.resolveContentPolicy(ctx)
 	capture := pending.policy.storeContent || pending.provisionalInput
 	if capture && len(req.Body) > 0 {
@@ -164,9 +165,9 @@ func (p *LoggerPlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *schemas.
 	case evicted:
 		// The update names the output columns only, so the partial row keeps its request side; the
 		// marker carries what the update also writes, so a reply-less finish does not blank it.
-		entry = &logstore.RelayLog{ID: marker.rowID, RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall, Path: marker.path, RelayName: marker.relayName, RoutePath: marker.routePath, Streamed: marker.streamed}
+		entry = &logstore.RelayLog{ID: marker.rowID, RequestID: clampString(requestID, 255), Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime), Kind: logstore.RelayLogKindCall, Path: marker.path, RelayName: marker.relayName, RoutePath: marker.routePath, Streamed: marker.streamed}
 	default:
-		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: time.Now().UTC(), Kind: logstore.RelayLogKindCall}
+		entry = &logstore.RelayLog{ID: uuid.New().String(), RequestID: clampString(requestID, 255), Timestamp: logRequestTimestamp(ctx, schemas.BifrostContextKeyRequestStartTime), Kind: logstore.RelayLogKindCall}
 	}
 	entry.ApplyGovernanceContext(ctx)
 	applyRelayGrantAttribution(ctx, entry)
