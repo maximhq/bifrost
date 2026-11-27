@@ -24,12 +24,14 @@ interface ExportPopoverProps {
 	/** Enters export mode, loads the scoped tabs' uncapped data and waits for it to render. */
 	onPreloadData: (scope: ExportTab) => Promise<void>;
 	onPdfExport: (scope: ExportTab) => Promise<{ element: HTMLElement; label: string }[]>;
+	/** Called before the first await of either flow, so the page can lock controls for the whole export. */
+	onExportStart: () => void;
 	/** Leaves export mode; both flows must call this, since both enter it via onPreloadData. */
 	onExportDone: () => void;
 }
 
 /** Dashboard export menu: CSV or PDF, for the active tab or every tab. */
-export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, onExportDone }: ExportPopoverProps) {
+export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, onExportStart, onExportDone }: ExportPopoverProps) {
 	const { t } = useTranslation("observability");
 	const [exporting, setExporting] = useState(false);
 
@@ -38,6 +40,7 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 	const handleCsvExport = useCallback(
 		async (scope: ExportTab) => {
 			setExporting(true);
+			onExportStart();
 			try {
 				await onPreloadData(scope);
 				const sections = getCSVSections(getData(), scope);
@@ -56,12 +59,13 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 				setExporting(false);
 			}
 		},
-		[getData, onPreloadData, onExportDone, fileName],
+		[getData, onPreloadData, onExportStart, onExportDone, fileName],
 	);
 
 	const handlePdfExport = useCallback(
 		async (scope: ExportTab) => {
 			setExporting(true);
+			onExportStart();
 
 			// Yield a frame so the spinner renders before heavy work starts
 			await new Promise((r) => requestAnimationFrame(r));
@@ -82,7 +86,7 @@ export function ExportPopover({ getData, activeTab, onPreloadData, onPdfExport, 
 				setExporting(false);
 			}
 		},
-		[onPdfExport, onExportDone, fileName, t],
+		[onPdfExport, onExportStart, onExportDone, fileName, t],
 	);
 
 	const activeTabLabel = getExportTabLabel(activeTab);

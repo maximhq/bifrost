@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -61,6 +62,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	collectorpb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/protobuf/proto"
 	"gorm.io/gorm"
 )
 
@@ -457,6 +460,72 @@ func (agentGatewayRouteLogger) SetLevel(schemas.LogLevel)              {}
 func (agentGatewayRouteLogger) SetOutputType(schemas.LoggerOutputType) {}
 func (agentGatewayRouteLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuilder {
 	return schemas.NoopLogEvent
+}
+
+func TestBootstrapTracesInitialPushPrune(t *testing.T) {
+	// Bootstrap installs process-wide settings and starts background workers.
+	// Give the embedded server its own process and a fresh SQLite store.
+	const appDirEnv = "BIFROST_TEST_PUSH_PRUNE_APP_DIR"
+	if dir := os.Getenv(appDirEnv); dir != "" {
+		log := bifrost.NewNoOpLogger()
+		SetLogger(log)
+		lib.SetLogger(log)
+		handlers.SetLogger(log)
+		s := &BifrostHTTPServer{AppDir: dir}
+		require.NoError(t, s.Bootstrap(t.Context()))
+		// Wait for the relay to finish pruning and for its trace to reach the collector.
+		s.CloseAgentGateway()
+		s.TracingMiddleware.GetTracer().Stop()
+		return
+	}
+
+	var sawPrune atomic.Bool
+	collector := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if !assert.NoError(t, err) {
+			return
+		}
+		var export collectorpb.ExportTraceServiceRequest
+		if !assert.NoError(t, proto.Unmarshal(body, &export)) {
+			return
+		}
+		for _, resource := range export.ResourceSpans {
+			for _, scope := range resource.ScopeSpans {
+				for _, span := range scope.Spans {
+					if span.Name == "a2a.push.maintenance.prune" {
+						sawPrune.Store(true)
+					}
+				}
+			}
+		}
+	}))
+	defer collector.Close()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "catalog.json"), []byte("{}"), 0o600))
+	config := fmt.Sprintf(`{
+		"$schema": "https://www.getbifrost.ai/schema",
+		"config_store": {"enabled": true, "type": "sqlite", "config": {"path": "config.db"}},
+		"logs_store": {"enabled": false},
+		"framework": {"pricing": {
+			"pricing_url": "file://./catalog.json",
+			"model_parameters_url": "file://./catalog.json",
+			"mcp_library_sync_interval": 0
+		}},
+		"plugins": [{
+			"name": "otel", "enabled": true,
+			"config": {"protocol": "http", "collector_url": %q}
+		}]
+	}`, collector.URL)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(config), 0o600))
+	testBinary, err := os.Executable()
+	require.NoError(t, err)
+	cmd := exec.CommandContext(t.Context(), testBinary, "-test.run=^"+t.Name()+"$", "-test.timeout=1m")
+	cmd.Dir = dir
+	cmd.Env = []string{appDirEnv + "=" + dir}
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", output)
+	require.True(t, sawPrune.Load(), "expected the first push relay prune to export a trace")
 }
 
 func TestAgentGatewayRoutesRegisteredAfterStartupInitialization(t *testing.T) {
