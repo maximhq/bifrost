@@ -1639,6 +1639,37 @@
         "virtual_key_id": "vk-harness-relay-budget"
       }
     ],
+    "model_configs": [
+      {
+        "id": "harness-cfgreqlimits-tier",
+        "scope": "virtual_key",
+        "scope_id": "vk-harness-cfgreqlimits",
+        "model_name": "*"
+      }
+    ],
+    "rate_limits": [
+      {
+        "id": "harness-cfgreqlimits-shared",
+        "model_config_id": "harness-cfgreqlimits-tier",
+        "request_max_limit": 1000,
+        "request_reset_duration": "1d",
+        "scope": "shared"
+      },
+      {
+        "id": "harness-cfgreqlimits-model",
+        "model_config_id": "harness-cfgreqlimits-tier",
+        "request_max_limit": 2,
+        "request_reset_duration": "1d",
+        "scope": "model"
+      },
+      {
+        "id": "harness-cfgreqlimits-mcp",
+        "model_config_id": "harness-cfgreqlimits-tier",
+        "request_max_limit": 1,
+        "request_reset_duration": "1d",
+        "scope": "mcp"
+      }
+    ],
     "teams": [
       {
         "id": "team-nocontent",
@@ -1647,6 +1678,20 @@
       }
     ],
     "virtual_keys": [
+      {
+        "name": "Harness config.json request limits key",
+        "id": "vk-harness-cfgreqlimits",
+        "value": "sk-bf-harness-cfgreqlimits",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
+        ]
+      },
       {
         "name": "Harness config.json budget key",
         "id": "vk-harness-cfgbudget",

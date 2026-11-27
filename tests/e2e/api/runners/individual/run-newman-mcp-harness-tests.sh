@@ -33,7 +33,9 @@
 # config.json also declares a few MCP clients, because a client that boots pending
 # verification (an OAuth or per-user headers client nobody has verified yet) can
 # only come from config.json. Each belongs to one test, which its id names, and
-# points at a fleet server of the same name that the test sets up.
+# points at a fleet server of the same name that the test sets up. Its governance
+# section declares the keys GOV-46 checks scoped request limits on, as only
+# config.json can before the request_limits API exists.
 #
 # Bifrost is built with the harness tag and started with BIFROST_HARNESS_CLIENT_METADATA_PRIVATE_ALLOWLIST
 # 127.0.0.1, so its OAuth server fetches Client ID Metadata Documents from the fleet over http: real
@@ -329,6 +331,29 @@ write_config() {
     { "client_id": "set35-c", "name": "set35_c", "endpoint_slug": "set35", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/set35/mcp", "auth_type": "none", "tool_sync_interval": "5s", "tools_to_execute": ["*"], "is_code_mode_client": true, "server_type_on_slug": "disabled" },
     { "client_id": "pud68-o", "name": "pud68_o", "connection_type": "http", "connection_string": "http://127.0.0.1:$CHAOS_PORT/s/pud68/mcp", "auth_type": "per_user_oauth", "per_user_discovery": true, "tools_to_execute": ["*"] }
   ] },
+  "governance": {
+    "virtual_keys": [
+      { "id": "gov46-a", "name": "GOV-46 key a", "value": "sk-bf-gov46-a", "is_active": true, "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1 }] },
+      { "id": "gov46-b", "name": "GOV-46 key b", "value": "sk-bf-gov46-b", "is_active": true, "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1 }] },
+      { "id": "gov46-c", "name": "GOV-46 key c", "value": "sk-bf-gov46-c", "is_active": true, "provider_configs": [{ "provider": "openai", "allowed_models": ["*"], "key_ids": ["*"], "weight": 1 }] }
+    ],
+    "model_configs": [
+      { "id": "gov46-a-tier", "scope": "virtual_key", "scope_id": "gov46-a", "model_name": "*" },
+      { "id": "gov46-b-tier", "scope": "virtual_key", "scope_id": "gov46-b", "model_name": "*" },
+      { "id": "gov46-c-tier", "scope": "virtual_key", "scope_id": "gov46-c", "model_name": "*" }
+    ],
+    "rate_limits": [
+      { "id": "gov46-a-shared", "model_config_id": "gov46-a-tier", "request_max_limit": 10, "request_reset_duration": "1h", "scope": "shared" },
+      { "id": "gov46-a-mcp", "model_config_id": "gov46-a-tier", "request_max_limit": 2, "request_reset_duration": "1h", "scope": "mcp" },
+      { "id": "gov46-a-model", "model_config_id": "gov46-a-tier", "request_max_limit": 2, "request_reset_duration": "1h", "scope": "model" },
+      { "id": "gov46-b-shared", "model_config_id": "gov46-b-tier", "request_max_limit": 2, "request_reset_duration": "1h", "scope": "shared" },
+      { "id": "gov46-b-mcp", "model_config_id": "gov46-b-tier", "request_max_limit": 10, "request_reset_duration": "1h", "scope": "mcp" },
+      { "id": "gov46-b-model", "model_config_id": "gov46-b-tier", "request_max_limit": 10, "request_reset_duration": "1h", "scope": "model" },
+      { "id": "gov46-c-shared", "model_config_id": "gov46-c-tier", "request_max_limit": 10, "request_reset_duration": "1h", "scope": "shared" },
+      { "id": "gov46-c-mcp", "model_config_id": "gov46-c-tier", "request_max_limit": 2, "request_reset_duration": "1h", "scope": "mcp" },
+      { "id": "gov46-c-model", "model_config_id": "gov46-c-tier", "request_max_limit": 10, "request_reset_duration": "1h", "scope": "model" }
+    ]
+  },
   "providers": {
     "openai": { "keys": [{ "name": "openai-mock", "value": "sk-mock", "models": ["*"], "weight": 1 }],
       "network_config": { "base_url": "http://127.0.0.1:$CHAOS_PORT/s/llm/llm/openai", "max_retries": 0, "default_request_timeout_in_seconds": 30 } },
