@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,12 +100,13 @@ func TestExecuteTool_DeadSession_SalvagesTheCallForARetryableTool(t *testing.T) 
 	// Read-only: safe to auto-retry, so the caller's own request is salvaged.
 	ts, upstream := buildRecoveryMCPServer(t, mcpgo.WithReadOnlyHintAnnotation(true))
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	// connectToMCPClient starts a connection checker per client; without this
 	// its goroutine outlives the test and can probe an httptest server that
 	// t.Cleanup has already closed.
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-dead-session-salvage", "salvage-client", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-echo"
 
@@ -138,12 +141,13 @@ func TestExecuteTool_DeadSession_SalvagesTheCallForARetryableTool(t *testing.T) 
 func TestExecuteTool_DeadSession_HealsEvenWhenTheRetryIsSuppressed(t *testing.T) {
 	ts, upstream := buildRecoveryMCPServer(t) // unannotated: assumed destructive
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	// connectToMCPClient starts a connection checker per client; without this
 	// its goroutine outlives the test and can probe an httptest server that
 	// t.Cleanup has already closed.
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-dead-session-heal", "heal-client", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-echo"
 
@@ -215,13 +219,14 @@ func TestExecuteTool_DeadSession_RecoveryHonoursTheToolExecutionTimeout(t *testi
 
 	ts, upstream, initDelay := buildSlowReconnectMCPServer(t, mcpgo.WithReadOnlyHintAnnotation(true))
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	// connectToMCPClient starts a connection checker per client; without this
 	// its goroutine outlives the test and can probe an httptest server that
 	// t.Cleanup has already closed.
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-dead-session-deadline", "deadline-client", ts.URL)
 	config.ToolExecutionTimeout = toolBudget
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-echo"
 
@@ -253,6 +258,59 @@ func TestExecuteTool_DeadSession_RecoveryHonoursTheToolExecutionTimeout(t *testi
 		_, err := executeEchoTool(m, toolName)
 		return err == nil
 	}, 30*time.Second, 250*time.Millisecond, "the background reconnect must still heal the client")
+}
+
+// TestExecuteTool_TimeoutNamesTheDeadlineThatApplied checks that a call stopped by the caller's own
+// deadline, shorter than the client's tool_execution_timeout, reports how long it actually had
+// rather than the client's timeout, and still reads as a timeout. A deadline that has already
+// passed when the call starts reports a budget of zero, never a negative one.
+func TestExecuteTool_TimeoutNamesTheDeadlineThatApplied(t *testing.T) {
+	s := server.NewMCPServer("test-timeout-message", "1.0.0", server.WithToolCapabilities(true))
+	s.AddTool(mcpgo.NewTool("slow", mcpgo.WithDescription("Slow tool")), func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+		}
+		return mcpgo.NewToolResultText("late"), nil
+	})
+	ts := httptest.NewServer(server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125)))
+	t.Cleanup(ts.Close)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := newRecoveryClientConfig("client-timeout-message", "timeoutclient", ts.URL)
+	config.ToolExecutionTimeout = 30 * time.Second
+	accountOf(m).set(config)
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	toolName := config.Name + "-slow"
+
+	// call runs the slow tool under a caller deadline at the given offset from now.
+	call := func(t *testing.T, offset time.Duration) string {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(offset))
+		defer cancel()
+		_, bErr := m.ExecuteChatTool(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.ChatAssistantMessageToolCall{
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: "{}"},
+		})
+		require.NotNil(t, bErr)
+		require.NotNil(t, bErr.Error)
+		assert.Equal(t, "timeout", mcpErrorType(bErr))
+		assert.NotContains(t, bErr.Error.Message, "30s", "the client's timeout is not what stopped the call")
+		return bErr.Error.Message
+	}
+
+	t.Run("shorter caller deadline", func(t *testing.T) {
+		msg := call(t, 500*time.Millisecond)
+		match := regexp.MustCompile(`timed out after (\d+)ms`).FindStringSubmatch(msg)
+		require.NotNil(t, match, "the message names the caller's deadline: %s", msg)
+		waited, err := strconv.Atoi(match[1])
+		require.NoError(t, err)
+		assert.LessOrEqual(t, waited, 500)
+	})
+
+	t.Run("caller deadline already passed", func(t *testing.T) {
+		msg := call(t, -2*time.Second)
+		assert.Contains(t, msg, "timed out after 0s:", "an expired deadline left no budget: %s", msg)
+	})
 }
 
 // TestIsDeadSessionError_TypedSentinelAndTextFallback pins both halves of the
@@ -394,9 +452,10 @@ func TestExecuteTool_ToolErrorMentioningSession_DoesNotTriggerRecovery(t *testin
 	ts := httptest.NewServer(server.NewStreamableHTTPServer(s))
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-tool-error-near-miss", "near-miss-client", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-lookup"
 
@@ -442,9 +501,10 @@ func TestExecuteTool_404OnModernConnection_DoesNotTriggerDeadSessionRecovery(t *
 	}))
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newRecoveryClientConfig("client-modern-404", "modern-404-client", ts.URL)
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 	toolName := config.Name + "-echo"
 

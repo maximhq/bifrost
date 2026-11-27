@@ -104,6 +104,45 @@ helm install bifrost bifrost/bifrost --set image.tag=v1.4.11
 | `resources.limits.cpu` | CPU limit | `2000m` |
 | `resources.limits.memory` | Memory limit | `2Gi` |
 
+### Server
+
+These map to the [`server`](/deployment-guides/config-json/schema-reference#server) block of the rendered `config.json`. Bifrost reads them once at startup, so a change rolls the pods.
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `bifrost.server.readBufferSize` | Buffer size in bytes for reading HTTP request headers | `65536` |
+| `bifrost.server.basePath` | URL path prefix Bifrost is served under, e.g. `/bifrost` | unset (domain root) |
+| `bifrost.server.bodyBufferPoolLimitBytes` | Largest request-body buffer a keep-alive connection keeps for reuse; `0` keeps every buffer. Process-wide: also bounds outbound fasthttp request buffers | `4194304` |
+| `bifrost.server.pluginDownloadPrivateAllowlist` | Hosts, IPs or CIDRs custom plugin downloads may reach despite resolving to a private, loopback, link-local or CGNAT address (all blocked by default to prevent SSRF) | unset |
+| `bifrost.server.a2aGrpcBaseDomain` | Base domain for the Agent Gateway's shared gRPC listener | unset |
+| `bifrost.server.a2aGrpcPort` | Public port advertised for that gRPC listener | unset |
+| `bifrost.server.a2aAllowPrivatePushCallbacks` | Allow Agent push delivery to private addresses (development only) | `false` |
+
+#### Serving under a path prefix
+
+To host Bifrost at `https://example.com/bifrost/` instead of a host of its own, set `basePath` and point the ingress path at the same prefix:
+
+```yaml
+bifrost:
+  server:
+    basePath: "/bifrost"
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: example.com
+      paths:
+        - path: /bifrost
+          pathType: Prefix
+  tls:
+    - secretName: example-com-tls
+      hosts:
+        - example.com
+```
+
+No rewrite annotation is needed: Bifrost accepts requests with or without the prefix, so the ingress may forward or strip it. The dashboard is then at `https://example.com/bifrost/` and SDK base URLs become `https://example.com/bifrost/v1`. Probes stay on `/health`. Public URLs you set explicitly, such as `mcpExternalClientUrl`, must include the prefix. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix) for the prefix rules and OAuth discovery.
+
 ### Service
 
 | Parameter | Description | Default |
@@ -148,7 +187,7 @@ ingress:
 | `readinessProbe.initialDelaySeconds` | Seconds before first readiness check | `10` |
 | `readinessProbe.periodSeconds` | Readiness check interval | `10` |
 
-Both probes hit `GET /health`.
+Both probes hit `GET /health`. Keep them on `/health` even when Bifrost is served under a path prefix: unprefixed paths keep working.
 
 ### Graceful Shutdown
 

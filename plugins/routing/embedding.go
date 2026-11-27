@@ -139,6 +139,7 @@ func (p *RoutingPlugin) SetEmbeddingRequestExecutor(executor EmbeddingRequestExe
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.SetEmbeddingFunctions(embed, embedBatch)
 	}
+	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.semantic.SetEmbeddingFunctions(embed, embedBatch) })
 }
 
 // SetComplexityVectorStore supplies the configured shared VectorStore. The
@@ -152,6 +153,7 @@ func (p *RoutingPlugin) SetComplexityVectorStore(store vectorstore.VectorStore) 
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.SetConfiguredStore(store)
 	}
+	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.semantic.SetConfiguredStore(store) })
 }
 
 // SetComplexityWarmupDependencies supplies the configured VectorStore and the
@@ -170,6 +172,7 @@ func (p *RoutingPlugin) SetComplexityWarmupDependencies(store vectorstore.Vector
 	if p.semanticClassifier != nil {
 		p.semanticClassifier.SetWarmupDependencies(store, embed, embedBatch)
 	}
+	p.forEachModelRouter(func(rt *modelRouterRuntime) { rt.semantic.SetWarmupDependencies(store, embed, embedBatch) })
 }
 
 // storeComplexityVectorStore publishes the store for the classification path
@@ -506,10 +509,21 @@ func (p *RoutingPlugin) generateEmbeddings(ctx *schemas.BifrostContext, semantic
 				ErrEmbeddingTimeout,
 			)
 		}
+		// Single-input models (Bedrock Titan and Nova) refuse a multi-input request
+		// as invalid before sending it. That says nothing about one input, so mark
+		// it batch-unsupported and let warmup retry one text per call. Rate limits
+		// and outages are left alone so a fallback never multiplies their calls.
+		var cause error
+		if len(texts) > 1 && bifrostErr.StatusCode != nil {
+			switch *bifrostErr.StatusCode {
+			case 400, 413, 422:
+				cause = complexity.ErrBatchEmbeddingsUnsupported
+			}
+		}
 		return nil, 0, newSemanticEmbeddingFailure(
 			embeddingProviderFailureReason(bifrostErr),
 			fmt.Sprintf("failed to generate embedding: %v", bifrostErr),
-			nil,
+			cause,
 		)
 	}
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -312,16 +313,20 @@ func seedFixtures(t *testing.T, store *testConfigStore, tokenURL string) (oauthC
 	return oauthConfigID, tokenID
 }
 
-func newTestWorker(store *testConfigStore) *OAuthTokenRefreshWorker {
+// newTestWorker returns a refresh worker over a caching provider on store.
+func newTestWorker(t testing.TB, store *testConfigStore) *OAuthTokenRefreshWorker {
+	t.Helper()
 	noopLogger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	provider := NewOAuth2Provider(store, noopLogger)
+	provider := newCachingProvider(t, store, noopLogger)
 	provider.retryBaseDelay = 1 * time.Millisecond // speed up retry backoff in tests
 	return NewOAuthTokenRefreshWorker(provider, noopLogger)
 }
 
-func newTestProvider(store *testConfigStore) *OAuth2Provider {
+// newTestProvider returns a caching provider over store.
+func newTestProvider(t testing.TB, store *testConfigStore) *OAuth2Provider {
+	t.Helper()
 	noopLogger := bifrost.NewDefaultLogger(schemas.LogLevelError)
-	provider := NewOAuth2Provider(store, noopLogger)
+	provider := newCachingProvider(t, store, noopLogger)
 	provider.retryBaseDelay = 1 * time.Millisecond
 	return provider
 }
@@ -350,7 +355,7 @@ func TestRefreshAccessToken_CallerCancellationDoesNotAbortOtherWaiters(t *testin
 
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -482,7 +487,7 @@ func TestTokenRefreshWorker_DefaultAuthModes_ExcludesUserModeTokens(t *testing.T
 		Scopes:        "[]",
 	}
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	assert.Equal(t, []string{"shared", "admin"}, worker.AuthModes, "constructor must default AuthModes to shared + admin")
 	worker.refreshExpiredTokens(context.Background())
 
@@ -497,7 +502,7 @@ func TestTokenRefreshWorker_DefaultAuthModes_ExcludesUserModeTokens(t *testing.T
 
 func TestMCPTempTokenAuthEnabled(t *testing.T) {
 	store := newTestConfigStore()
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 
 	assert.False(t, provider.mcpTempTokenAuthEnabled(context.Background()))
 
@@ -509,7 +514,7 @@ func TestMCPTempTokenAuthEnabled(t *testing.T) {
 }
 
 func TestBuildAuthorizeURLWithPKCE_IncludesResource(t *testing.T) {
-	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
 
 	authURL := provider.buildAuthorizeURLWithPKCE(
 		"https://auth.example.com/oauth/authorize?existing=1",
@@ -532,7 +537,7 @@ func TestBuildAuthorizeURLWithPKCE_IncludesResource(t *testing.T) {
 }
 
 func TestBuildAuthorizeURLWithPKCE_OmitsEmptyResource(t *testing.T) {
-	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
 
 	authURL := provider.buildAuthorizeURLWithPKCE(
 		"https://auth.example.com/oauth/authorize",
@@ -563,7 +568,7 @@ func TestExchangeCodeForTokensWithPKCE_IncludesResource(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
 	_, err := provider.exchangeCodeForTokensWithPKCE(
 		context.Background(),
 		server.URL,
@@ -593,7 +598,7 @@ func TestExchangeCodeForTokensWithPKCE_OmitsEmptyResource(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
 	_, err := provider.exchangeCodeForTokensWithPKCE(
 		context.Background(),
 		server.URL,
@@ -623,7 +628,7 @@ func TestExchangeRefreshToken_IncludesResource(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
 	_, err := provider.exchangeRefreshToken(
 		context.Background(),
 		server.URL,
@@ -651,7 +656,7 @@ func TestExchangeRefreshToken_OmitsEmptyResource(t *testing.T) {
 	}))
 	defer server.Close()
 
-	provider := NewOAuth2Provider(newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, newTestConfigStore(), bifrost.NewDefaultLogger(schemas.LogLevelError))
 	_, err := provider.exchangeRefreshToken(
 		context.Background(),
 		server.URL,
@@ -678,7 +683,7 @@ func TestTokenRefreshWorker_TransientError_DoesNotMarkNeedsReauth(t *testing.T) 
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	worker.refreshExpiredTokens(context.Background())
 
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
@@ -702,7 +707,7 @@ func TestTokenRefreshWorker_PermanentError_MarksNeedsReauth(t *testing.T) {
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	worker.refreshExpiredTokens(context.Background())
 
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
@@ -729,7 +734,7 @@ func TestTokenRefreshWorker_SuccessfulRefresh_UpdatesToken(t *testing.T) {
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	worker.refreshExpiredTokens(context.Background())
 
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
@@ -763,7 +768,7 @@ func TestTokenRefreshWorker_ConcurrentReauth_DoesNotOverwriteStaleRefresh(t *tes
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -810,7 +815,7 @@ func TestRefreshAccessToken_CASLostToConcurrentActiveRefresh_ReturnsNilNotExpire
 
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
-	provider := newTestProvider(store)
+	provider := newTestProvider(t, store)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -854,7 +859,7 @@ func TestTokenRefreshWorker_ConnectionRefused_DoesNotMarkNeedsReauth(t *testing.
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, tokenURL)
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	worker.refreshExpiredTokens(context.Background())
 
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
@@ -878,7 +883,7 @@ func TestTokenRefreshWorker_400InvalidGrant_MarksNeedsReauth(t *testing.T) {
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	worker.refreshExpiredTokens(context.Background())
 
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
@@ -898,7 +903,7 @@ func TestTokenRefreshWorker_429RateLimit_DoesNotMarkNeedsReauth(t *testing.T) {
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	worker.refreshExpiredTokens(context.Background())
 
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
@@ -920,7 +925,7 @@ func TestTokenRefreshWorker_400InvalidRequest_DoesNotMarkNeedsReauth(t *testing.
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	worker.refreshExpiredTokens(context.Background())
 
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
@@ -942,7 +947,7 @@ func TestTokenRefreshWorker_400UnauthorizedClient_MarksNeedsReauth(t *testing.T)
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	worker.refreshExpiredTokens(context.Background())
 
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
@@ -982,7 +987,7 @@ func TestTokenRefreshWorker_OnTokenRefreshed_FiresOnceOnSuccess(t *testing.T) {
 	store := newTestConfigStore()
 	seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	hook, calls := newRecordingRefreshHook()
 	worker.SetOnTokenRefreshed(hook)
 	worker.refreshExpiredTokens(context.Background())
@@ -1015,7 +1020,7 @@ func TestTokenRefreshWorker_OnTokenRefreshed_NoFireOnRefreshFailure(t *testing.T
 			store := newTestConfigStore()
 			seedFixtures(t, store, server.URL+"/token")
 
-			worker := newTestWorker(store)
+			worker := newTestWorker(t, store)
 			hook, calls := newRecordingRefreshHook()
 			worker.SetOnTokenRefreshed(hook)
 			worker.refreshExpiredTokens(context.Background())
@@ -1040,7 +1045,7 @@ func TestTokenRefreshWorker_OnTokenRefreshed_NoFireWhenMCPClientIDEmpty(t *testi
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 	store.oauthTokens[tokenID].MCPClientID = "" // legacy row with no owning client
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	hook, calls := newRecordingRefreshHook()
 	worker.SetOnTokenRefreshed(hook)
 	worker.refreshExpiredTokens(context.Background())
@@ -1066,7 +1071,7 @@ func TestTokenRefreshWorker_SetOnTokenRefreshed_NilSafe(t *testing.T) {
 	store := newTestConfigStore()
 	_, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	worker := newTestWorker(store)
+	worker := newTestWorker(t, store)
 	hook, calls := newRecordingRefreshHook()
 	worker.SetOnTokenRefreshed(hook)
 	worker.SetOnTokenRefreshed(nil) // clearing must be safe and must silence the hook
@@ -1106,7 +1111,7 @@ func TestInitiateUserOAuthFlow_AdminMode_CreatesFlowWithNoIdentity(t *testing.T)
 	oauthConfigID := "admin-oauth-config"
 	seedAdminOauthConfig(store, oauthConfigID)
 
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
 	initiation, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
@@ -1136,7 +1141,7 @@ func TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow(t *testing.T) {
 	oauthConfigID := "admin-oauth-config"
 	seedAdminOauthConfig(store, oauthConfigID)
 
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
 	_, flowID1, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
@@ -1178,7 +1183,7 @@ func TestPerUserOAuthSweepWorker_SweepsAbandonedSharedInstall(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = store.Close(ctx) })
 
-	provider := NewOAuth2Provider(store, logger)
+	provider := newCachingProvider(t, store, logger)
 	initiate := func() string {
 		initiation, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
 			ClientID:     schemas.NewSecretVar("client-id"),
@@ -1223,4 +1228,86 @@ func TestPerUserOAuthSweepWorker_SweepsAbandonedSharedInstall(t *testing.T) {
 	var clients int64
 	require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableMCPClient{}).Where("client_id = ?", "linked-client").Count(&clients).Error)
 	assert.Equal(t, int64(1), clients, "sweeping must never cascade-delete an MCP client")
+}
+
+// sweepCountingStore counts the per-user OAuth sweep's deletes.
+type sweepCountingStore struct {
+	*testConfigStore
+	flowSweeps   atomic.Int32
+	configSweeps atomic.Int32
+	orphanSweeps atomic.Int32
+}
+
+func (s *sweepCountingStore) DeleteExpiredOauthUserSessions(context.Context) (int64, error) {
+	s.flowSweeps.Add(1)
+	return 0, nil
+}
+
+func (s *sweepCountingStore) DeleteAbandonedOauthConfigs(context.Context, time.Duration) (int64, error) {
+	s.configSweeps.Add(1)
+	return 0, nil
+}
+
+func (s *sweepCountingStore) DeleteOrphanedOauthUserTokens(context.Context, time.Duration) (int64, error) {
+	s.orphanSweeps.Add(1)
+	return 0, nil
+}
+
+// TestPerUserOAuthSweepWorker_GateDecidesEverySweep pins that the sweep gate is
+// consulted before every sweep (expired flows, abandoned OAuth configs and
+// orphaned tokens), the one run on start included: a closed gate deletes
+// nothing, an open one deletes, and clearing it sweeps unconditionally.
+func TestPerUserOAuthSweepWorker_GateDecidesEverySweep(t *testing.T) {
+	newWorker := func(t *testing.T) (*PerUserOAuthSweepWorker, *sweepCountingStore) {
+		t.Helper()
+		store := &sweepCountingStore{testConfigStore: newTestConfigStore()}
+		w := NewPerUserOAuthSweepWorker(newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError)), time.Hour, nil)
+		require.NotNil(t, w)
+		return w, store
+	}
+
+	t.Run("run on start", func(t *testing.T) {
+		w, store := newWorker(t)
+		consulted := make(chan struct{}, 2)
+		w.SetShouldSweepGate(func(context.Context) bool {
+			consulted <- struct{}{}
+			return false
+		})
+		w.Start(context.Background())
+		defer w.Stop()
+
+		<-consulted
+		<-consulted
+		assert.Zero(t, store.flowSweeps.Load())
+		assert.Zero(t, store.configSweeps.Load())
+		assert.Zero(t, store.orphanSweeps.Load())
+	})
+
+	t.Run("each sweep", func(t *testing.T) {
+		w, store := newWorker(t)
+		ctx := context.Background()
+		sweep := func() {
+			w.sweepExpiredFlows(ctx)
+			w.sweepOrphanedTokens(ctx)
+		}
+		var open atomic.Bool
+		w.SetShouldSweepGate(func(context.Context) bool { return open.Load() })
+
+		sweep()
+		assert.Zero(t, store.flowSweeps.Load(), "closed gate")
+		assert.Zero(t, store.configSweeps.Load(), "closed gate")
+		assert.Zero(t, store.orphanSweeps.Load(), "closed gate")
+
+		open.Store(true)
+		sweep()
+		assert.EqualValues(t, 1, store.flowSweeps.Load(), "open gate")
+		assert.EqualValues(t, 1, store.configSweeps.Load(), "open gate")
+		assert.EqualValues(t, 1, store.orphanSweeps.Load(), "open gate")
+
+		w.SetShouldSweepGate(nil)
+		sweep()
+		assert.EqualValues(t, 2, store.flowSweeps.Load(), "no gate")
+		assert.EqualValues(t, 2, store.configSweeps.Load(), "no gate")
+		assert.EqualValues(t, 2, store.orphanSweeps.Load(), "no gate")
+	})
 }

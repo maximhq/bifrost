@@ -17,21 +17,18 @@ import (
 func TestComputeToolsHash_StableAcrossMapIterationOrder(t *testing.T) {
 	toolsA := map[string]schemas.ChatTool{"b": {Type: "function"}, "a": {Type: "function"}}
 	toolsB := map[string]schemas.ChatTool{"a": {Type: "function"}, "b": {Type: "function"}}
-	mapping := map[string]string{"a": "a-orig", "b": "b-orig"}
 
-	assert.Equal(t, computeDiscoveryHash(&schemas.MCPDiscovery{Tools: toolsA, ToolNameMapping: mapping}), computeDiscoveryHash(&schemas.MCPDiscovery{Tools: toolsB, ToolNameMapping: mapping}))
+	assert.Equal(t, computeDiscoveryHash(&schemas.MCPDiscovery{Tools: toolsA}), computeDiscoveryHash(&schemas.MCPDiscovery{Tools: toolsB}))
 }
 
 // TestComputeToolsHash_DiffersOnContentChange confirms the hash actually
 // reflects content, not just key sets — a change to a tool's own fields
 // (not just which names are present) must produce a different hash.
 func TestComputeToolsHash_DiffersOnContentChange(t *testing.T) {
-	base := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, ToolNameMapping: map[string]string{"echo": "echo-orig"}})
-	changedType := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "custom"}}, ToolNameMapping: map[string]string{"echo": "echo-orig"}})
-	changedMapping := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, ToolNameMapping: map[string]string{"echo": "renamed"}})
+	base := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}})
+	changedType := computeDiscoveryHash(&schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "custom"}}})
 
 	assert.NotEqual(t, base, changedType)
-	assert.NotEqual(t, base, changedMapping)
 }
 
 // A tool's annotations and metadata are left out of ChatTool's JSON, so the hash covers them on its own:
@@ -50,30 +47,27 @@ func TestComputeDiscoveryHash_CoversToolMetadata(t *testing.T) {
 // registered callback's whole purpose (persist to DB, resync the local MCP
 // server) is wasted work when nothing actually changed.
 func TestSetClientDiscovery_UnchangedTools_DoesNotFireCallback(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{ID: "client-1", Name: "client-one"}
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, ToolMap: map[string]schemas.ChatTool{}}
-	m.mu.Unlock()
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
-	mapping := map[string]string{"echo": "echo-server"}
 
 	callCount := 0
 	m.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
 		callCount++
 	})
 
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: tools})
 	require.Equal(t, 1, callCount, "the first discovery must always fire")
 
 	// Re-set with the exact same content (a fresh map literal, so this isn't
 	// just testing pointer equality).
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, ToolNameMapping: map[string]string{"echo": "echo-server"}})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}})
 	assert.Equal(t, 1, callCount, "an unchanged rediscovery must not re-fire the callback")
 
 	// A genuine change must still fire.
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}, "new-tool": {Type: "function"}}, ToolNameMapping: map[string]string{"echo": "echo-server", "new-tool": "new-tool-server"}})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}, "new-tool": {Type: "function"}}})
 	assert.Equal(t, 2, callCount, "a genuine content change must fire")
 }
 
@@ -82,11 +76,13 @@ func TestSetClientDiscovery_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 // one most likely to rediscover identical tools tick after tick.
 func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 	manager := &MCPManager{
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(nil, nil),
+		logger:         &MockLogger{},
+		account:        newTestAccount(),
+		clientMap:      map[string]*clientConn{},
 	}
-	state, config := newSyncTestClientState("client-checker", "checker-client", schemas.MCPAuthTypeHeaders, map[string]schemas.ChatTool{})
-	manager.clientMap[config.ID] = state
+	state, config := newSyncTestClientState("client-checker", "checker-client", schemas.MCPAuthTypeHeaders)
+	putClient(manager, state)
 
 	callCount := 0
 	manager.SetDiscoveryChangeCallback(func(clientID, name string, discovery *schemas.MCPDiscovery) {
@@ -94,15 +90,14 @@ func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 	})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
-	mapping := map[string]string{"echo": "echo-server"}
 
-	manager.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: tools, ToolNameMapping: mapping}, false)
+	manager.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: tools}, false)
 	require.Equal(t, 1, callCount)
 
-	manager.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}, ToolNameMapping: map[string]string{"echo": "echo-server"}}, false)
+	manager.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"echo": {Type: "function"}}}, false)
 	assert.Equal(t, 1, callCount, "an unchanged tick must not re-fire")
 
-	manager.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}, ToolNameMapping: map[string]string{}}, false)
+	manager.writeBackDiscovery(config.ID, 0, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{}}, false)
 	assert.Equal(t, 2, callCount, "the server legitimately losing all its tools is still a genuine change")
 }
 
@@ -114,7 +109,7 @@ func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 // look like a "change" even when it rediscovers the exact same tools,
 // causing a needless persist/resync immediately after every boot.
 func TestAddClient_RestoreFromConfig_SeedsHashSoSubsequentIdenticalDiscoveryNoOps(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	callCount := 0
@@ -123,23 +118,21 @@ func TestAddClient_RestoreFromConfig_SeedsHashSoSubsequentIdenticalDiscoveryNoOp
 	})
 
 	restoredTools := map[string]schemas.ChatTool{"tool-a": {Type: "function"}}
-	restoredMapping := map[string]string{"tool-a": "tool-a-orig"}
 	config := &schemas.MCPClientConfig{
-		ID:                        "restore-seed-client",
-		Name:                      "restore_seed_client",
-		ConnectionType:            schemas.MCPConnectionTypeHTTP,
-		ConnectionString:          schemas.NewSecretVar("https://example.invalid/mcp"),
-		AuthType:                  schemas.MCPAuthTypePerUserHeaders,
-		PerUserHeaderKeys:         []string{"X-User-Token"},
-		DiscoveredTools:           restoredTools,
-		DiscoveredToolNameMapping: restoredMapping,
+		ID:                "restore-seed-client",
+		Name:              "restore_seed_client",
+		ConnectionType:    schemas.MCPConnectionTypeHTTP,
+		ConnectionString:  schemas.NewSecretVar("https://example.invalid/mcp"),
+		AuthType:          schemas.MCPAuthTypePerUserHeaders,
+		PerUserHeaderKeys: []string{"X-User-Token"},
+		DiscoveredTools:   restoredTools,
 	}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	require.Equal(t, 0, callCount, "restoring from config must not itself fire")
 
 	// Simulate the periodic checker rediscovering the exact same tools right
 	// after boot — must not fire, since nothing actually changed from what
 	// was restored.
-	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"tool-a": {Type: "function"}}, ToolNameMapping: map[string]string{"tool-a": "tool-a-orig"}})
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"tool-a": {Type: "function"}}})
 	assert.Equal(t, 0, callCount, "rediscovering the exact tools that were just restored must not fire")
 }

@@ -536,3 +536,51 @@ func BenchmarkCompute(b *testing.B) {
 		Compute(trace, 100, true, 200, true)
 	}
 }
+
+// A relay span plays the llm.call role: its own time beyond the upstream is the relay's glue
+// (request building, reply copy, usage reading, pricing), reported as provider-internal rather
+// than left in the scheduling residual.
+func TestComputeOverheadBreakdown_RelaySpanIsTheCall(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/relay/docs/search", schemas.SpanKindHTTPRequest, 0, 100)
+	trace := &schemas.Trace{
+		RootSpan: root,
+		Spans: []*schemas.Span{
+			root,
+			span(base, "relay", "root", "relay docs", schemas.SpanKindRelay, 10, 90), // 80ms, 70ms of it upstream
+		},
+	}
+	buckets, _, isStreaming := Compute(trace, 30, true, 70, true)
+	if isStreaming {
+		t.Fatal("a relay span not marked streamed is a unary call")
+	}
+	got := map[string]float64{}
+	for _, b := range buckets {
+		got[b.Name] = b.DurationUs
+	}
+	if got["provider-internal"] != 10000 {
+		t.Errorf("provider-internal = %v us, want 10000 (relay span 80ms minus 70ms upstream)", got["provider-internal"])
+	}
+	if got["scheduling"] != 20000 {
+		t.Errorf("scheduling = %v us, want only the 20ms no span covers", got["scheduling"])
+	}
+}
+
+// A relay span marked streamed makes the trace a stream even with no stream-overhead figure on
+// the root span (a fast, empty or non-SSE stream), so its stream is not read as scheduling.
+func TestComputeOverheadBreakdown_StreamedRelayIsAStream(t *testing.T) {
+	base := time.Now()
+	root := span(base, "root", "", "/relay/tts/speak", schemas.SpanKindHTTPRequest, 0, 1000)
+	relaySpan := span(base, "relay", "root", "relay tts", schemas.SpanKindRelay, 10, 990)
+	relaySpan.Attributes = map[string]any{schemas.AttrBifrostRelayStreamed: true}
+	trace := &schemas.Trace{RootSpan: root, Spans: []*schemas.Span{root, relaySpan}}
+	buckets, _, isStreaming := Compute(trace, 400, true, 600, true)
+	if !isStreaming {
+		t.Fatal("a streamed relay span makes the trace a stream")
+	}
+	for _, b := range buckets {
+		if b.Name == "scheduling" || b.Name == "provider-internal" {
+			t.Errorf("a stream emits no %s bucket, got %v us", b.Name, b.DurationUs)
+		}
+	}
+}

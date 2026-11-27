@@ -1,0 +1,482 @@
+[
+  {
+    "tokenizer": "cl100k_base",
+    "text": "",
+    "tokens": 0
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "hello world",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "think carefully",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "café 你好 👩‍💻",
+    "tokens": 11
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "<|endoftext|>",
+    "tokens": 7
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "{\"city\":\"Paris\"}",
+    "tokens": 5
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tokens": 257
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "Ｆｕｌｌｗｉｄｔｈ ①② ﬁ ¼ ™  nbsp​zw",
+    "tokens": 34
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "日本語のテキスト、カタカナ。中文测试。한국어",
+    "tokens": 22
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "It'S we'll 12345678 3.14159 0x1F",
+    "tokens": 18
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "  lead\t\ttabs\n\n\r\n   trail   ",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "func main() {\n\tfmt.Println(\"hi\")\n}\n",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "a <s> b</s><unk>",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "x<EOT>y<META>",
+    "tokens": 7
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "<|begin_of_text|>hi<|eot_id|>",
+    "tokens": 15
+  },
+  {
+    "tokenizer": "cl100k_base",
+    "text": "<｜begin▁of▁sentence｜>hi<｜end▁of▁sentence｜>",
+    "tokens": 27
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "",
+    "tokens": 0
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "hello world",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "think carefully",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "café 你好 👩‍💻",
+    "tokens": 9
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "<|endoftext|>",
+    "tokens": 7
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "{\"city\":\"Paris\"}",
+    "tokens": 5
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tokens": 257
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "Ｆｕｌｌｗｉｄｔｈ ①② ﬁ ¼ ™  nbsp​zw",
+    "tokens": 28
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "日本語のテキスト、カタカナ。中文测试。한국어",
+    "tokens": 17
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "It'S we'll 12345678 3.14159 0x1F",
+    "tokens": 17
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "  lead\t\ttabs\n\n\r\n   trail   ",
+    "tokens": 9
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "func main() {\n\tfmt.Println(\"hi\")\n}\n",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "a <s> b</s><unk>",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "x<EOT>y<META>",
+    "tokens": 8
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "<|begin_of_text|>hi<|eot_id|>",
+    "tokens": 15
+  },
+  {
+    "tokenizer": "o200k_base",
+    "text": "<｜begin▁of▁sentence｜>hi<｜end▁of▁sentence｜>",
+    "tokens": 23
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "",
+    "tokens": 0
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "hello world",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "think carefully",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "café 你好 👩‍💻",
+    "tokens": 12
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "<|endoftext|>",
+    "tokens": 7
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "{\"city\":\"Paris\"}",
+    "tokens": 5
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tokens": 129
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "Ｆｕｌｌｗｉｄｔｈ ①② ﬁ ¼ ™  nbsp​zw",
+    "tokens": 13
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "日本語のテキスト、カタカナ。中文测试。한국어",
+    "tokens": 22
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "It'S we'll 12345678 3.14159 0x1F",
+    "tokens": 16
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "  lead\t\ttabs\n\n\r\n   trail   ",
+    "tokens": 9
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "func main() {\n\tfmt.Println(\"hi\")\n}\n",
+    "tokens": 16
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "a <s> b</s><unk>",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "x<EOT>y<META>",
+    "tokens": 4
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "<|begin_of_text|>hi<|eot_id|>",
+    "tokens": 18
+  },
+  {
+    "tokenizer": "anthropic",
+    "text": "<｜begin▁of▁sentence｜>hi<｜end▁of▁sentence｜>",
+    "tokens": 23
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "",
+    "tokens": 0
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "hello world",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "think carefully",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "café 你好 👩‍💻",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "<|endoftext|>",
+    "tokens": 7
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "{\"city\":\"Paris\"}",
+    "tokens": 5
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tokens": 257
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "Ｆｕｌｌｗｉｄｔｈ ①② ﬁ ¼ ™  nbsp​zw",
+    "tokens": 28
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "日本語のテキスト、カタカナ。中文测试。한국어",
+    "tokens": 17
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "It'S we'll 12345678 3.14159 0x1F",
+    "tokens": 18
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "  lead\t\ttabs\n\n\r\n   trail   ",
+    "tokens": 11
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "func main() {\n\tfmt.Println(\"hi\")\n}\n",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "a <s> b</s><unk>",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "x<EOT>y<META>",
+    "tokens": 9
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "<|begin_of_text|>hi<|eot_id|>",
+    "tokens": 15
+  },
+  {
+    "tokenizer": "deepseek",
+    "text": "<｜begin▁of▁sentence｜>hi<｜end▁of▁sentence｜>",
+    "tokens": 3
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "",
+    "tokens": 1
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "hello world",
+    "tokens": 3
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "think carefully",
+    "tokens": 3
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "café 你好 👩‍💻",
+    "tokens": 16
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "<|endoftext|>",
+    "tokens": 8
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "{\"city\":\"Paris\"}",
+    "tokens": 7
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tokens": 515
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "Ｆｕｌｌｗｉｄｔｈ ①② ﬁ ¼ ™  nbsp​zw",
+    "tokens": 46
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "日本語のテキスト、カタカナ。中文测试。한국어",
+    "tokens": 24
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "It'S we'll 12345678 3.14159 0x1F",
+    "tokens": 29
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "  lead\t\ttabs\n\n\r\n   trail   ",
+    "tokens": 13
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "func main() {\n\tfmt.Println(\"hi\")\n}\n",
+    "tokens": 17
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "a <s> b</s><unk>",
+    "tokens": 9
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "x<EOT>y<META>",
+    "tokens": 11
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "<|begin_of_text|>hi<|eot_id|>",
+    "tokens": 19
+  },
+  {
+    "tokenizer": "llama2",
+    "text": "<｜begin▁of▁sentence｜>hi<｜end▁of▁sentence｜>",
+    "tokens": 24
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "",
+    "tokens": 0
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "hello world",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "think carefully",
+    "tokens": 2
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "café 你好 👩‍💻",
+    "tokens": 9
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "<|endoftext|>",
+    "tokens": 7
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "{\"city\":\"Paris\"}",
+    "tokens": 5
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "tokens": 257
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "Ｆｕｌｌｗｉｄｔｈ ①② ﬁ ¼ ™  nbsp​zw",
+    "tokens": 28
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "日本語のテキスト、カタカナ。中文测试。한국어",
+    "tokens": 17
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "It'S we'll 12345678 3.14159 0x1F",
+    "tokens": 18
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "  lead\t\ttabs\n\n\r\n   trail   ",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "func main() {\n\tfmt.Println(\"hi\")\n}\n",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "a <s> b</s><unk>",
+    "tokens": 10
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "x<EOT>y<META>",
+    "tokens": 7
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "<|begin_of_text|>hi<|eot_id|>",
+    "tokens": 3
+  },
+  {
+    "tokenizer": "llama3",
+    "text": "<｜begin▁of▁sentence｜>hi<｜end▁of▁sentence｜>",
+    "tokens": 23
+  }
+]

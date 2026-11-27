@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"time"
 
+	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/openapimcp"
@@ -18,9 +18,6 @@ import (
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
-
-// openAPISpecFetchTimeout bounds a spec_url download made on a caller's behalf.
-const openAPISpecFetchTimeout = 15 * time.Second
 
 // MCPOpenAPIPreviewRequest is the body of POST /api/mcp/openapi/preview.
 type MCPOpenAPIPreviewRequest struct {
@@ -57,18 +54,19 @@ func (h *MCPHandler) previewOpenAPISpec(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "spec or spec_url is required")
 		return
 	}
+	maxSpecBytes := h.store.MCPOpenAPIMaxSpecBytes()
 	var data []byte
 	fetched := false
 	if spec != "" {
 		var err error
-		if data, err = openapimcp.LoadBytes([]byte(spec)); err != nil {
+		if data, err = openapimcp.LoadBytes([]byte(spec), maxSpecBytes); err != nil {
 			SendError(ctx, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid OpenAPI spec: %v", err))
 			return
 		}
 	} else {
 		var status int
 		var err error
-		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL); err != nil {
+		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL, maxSpecBytes); err != nil {
 			SendError(ctx, status, err.Error())
 			return
 		}
@@ -78,7 +76,7 @@ func (h *MCPHandler) previewOpenAPISpec(ctx *fasthttp.RequestCtx) {
 	if b := strings.TrimSpace(req.BaseURL); b != "" {
 		baseOverride = &b
 	}
-	result, _, err := openapimcp.Preview(data, openapimcp.ParseOptions{SpecURL: specURL}, openapimcp.SynthesizeOptions{ClientName: strings.TrimSpace(req.ClientName), IncludeDeprecated: req.IncludeDeprecated}, baseOverride)
+	result, _, err := openapimcp.Preview(data, openapimcp.ParseOptions{SpecURL: specURL, MaxBytes: maxSpecBytes}, openapimcp.SynthesizeOptions{ClientName: strings.TrimSpace(req.ClientName), IncludeDeprecated: req.IncludeDeprecated}, baseOverride)
 	if err != nil {
 		SendError(ctx, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid OpenAPI spec: %v", err))
 		return
@@ -99,12 +97,12 @@ func (h *MCPHandler) getMCPClientOpenAPISpec(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid id: %v", err))
 		return
 	}
-	// Copied out under the MCP config lock: a concurrent update replaces the
-	// block this reads.
+	// The live store's record is never changed, so the spec read here is the one stored.
 	var spec string
-	var isOpenAPI bool
-	if h.store != nil {
-		spec, isOpenAPI, _ = h.store.GetMCPClientOpenAPISpec(id)
+	client := findMCPClientConfig(h.store, id)
+	isOpenAPI := client != nil && client.ConnectionType == schemas.MCPConnectionTypeOpenAPI
+	if isOpenAPI && client.OpenAPIConfig != nil {
+		spec = client.OpenAPIConfig.Spec
 	}
 	if !isOpenAPI {
 		SendError(ctx, fasthttp.StatusNotFound, "OpenAPI MCP client not found")
@@ -137,21 +135,23 @@ var (
 // download itself goes through the strict SSRF-safe client; an authenticated
 // admin may point at private hosts. Returns the document's final URL after
 // redirects (what relative servers resolve against) and, on error, the HTTP
-// status to answer with.
-func fetchOpenAPISpecForCaller(ctx *fasthttp.RequestCtx, specURL string) ([]byte, string, int, error) {
+// status to answer with. maxSpecBytes is the configured size limit (0 = openapimcp's).
+func fetchOpenAPISpecForCaller(ctx *fasthttp.RequestCtx, specURL string, maxSpecBytes int) ([]byte, string, int, error) {
 	authBypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	timeout := openapimcp.SpecFetchTimeout(maxSpecBytes)
 	var client *http.Client
 	if authBypassed {
 		if msg, refused := privateTargetRefusal(specURL); refused {
 			return nil, "", fasthttp.StatusForbidden, errors.New(msg)
 		}
-		client = newUnauthenticatedSpecClient(openAPISpecFetchTimeout)
+		client = newUnauthenticatedSpecClient(timeout)
 	} else {
-		client = newAuthenticatedSpecClient(openAPISpecFetchTimeout)
+		client = newAuthenticatedSpecClient(timeout)
 	}
-	fetchCtx, cancel := context.WithTimeout(context.Background(), openAPISpecFetchTimeout)
+	// Derived from the request context, so a server shutdown cancels the download.
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	data, finalURL, err := openapimcp.LoadURL(fetchCtx, client, specURL)
+	data, finalURL, err := openapimcp.LoadURL(fetchCtx, client, specURL, maxSpecBytes)
 	if err != nil {
 		return nil, "", openAPISpecErrorStatus(err), fmt.Errorf("could not load spec_url: %w", err)
 	}
@@ -166,12 +166,14 @@ func openAPISpecErrorStatus(err error) int {
 }
 
 // preparedOpenAPIClient is what the create/update paths need from a validated
-// openapi_config: the normalized block (spec inlined, metadata filled) and the
-// synthesized tool names tools_to_execute is checked against.
+// openapi_config: the normalized block (spec inlined, metadata filled), the
+// synthesized tool names tools_to_execute is checked against, and the
+// document's security schemes.
 type preparedOpenAPIClient struct {
 	config    *schemas.MCPOpenAPIConfig
 	toolNames map[string]bool
 	baseURL   string
+	schemes   map[string]openapimcp.SecurityScheme
 }
 
 // requestSpecFileRefusal refuses a spec_file sent over the API. A stored
@@ -184,12 +186,37 @@ func requestSpecFileRefusal(requested *schemas.MCPOpenAPIConfig) (string, bool) 
 	return "", false
 }
 
+// perUserHeaderCredentialConflict refuses a stored credential for a scheme whose
+// header each caller of a per_user_headers client supplies. Stored credentials
+// are applied to every call after the caller's headers, so that one value would
+// replace every caller's own. Credentials for other schemes, such as a key sent
+// in the query or a cookie, are kept alongside the per-user headers.
+func perUserHeaderCredentialConflict(schemes map[string]openapimcp.SecurityScheme, creds map[string]schemas.MCPOpenAPICredential, perUserHeaderKeys []string) (string, bool) {
+	keys := make(map[string]bool, len(perUserHeaderKeys))
+	for _, key := range mcputils.CanonicalizeHeaderKeys(perUserHeaderKeys) {
+		keys[key] = true
+	}
+	names := make([]string, 0, len(creds))
+	for name := range creds {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		header := openapimcp.SchemeHeader(schemes[name])
+		if header != "" && keys[mcputils.CanonicalizeHeaderKey(header)] {
+			return fmt.Sprintf("openapi_config.security_credentials.%s cannot be stored: its header %s is in per_user_header_keys, so each caller supplies it; leave the scheme out of security_credentials or remove the header from per_user_header_keys", name, header), true
+		}
+	}
+	return "", false
+}
+
 // prepareOpenAPIConfig validates an openapi_config arriving over the API,
 // inlines a spec_url document so the stored row carries the spec, resolves the
 // upstream base URL (subject to the public-target rule for unauthenticated
 // callers), and synthesizes the tool set. status is 0 on success. It writes
-// into cfg, so callers pass a block they own, never the live one.
-func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *schemas.MCPOpenAPIConfig) (*preparedOpenAPIClient, int, string) {
+// into cfg, so callers pass a block they own, never the live one. maxSpecBytes
+// is the configured size limit (0 = openapimcp's).
+func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *schemas.MCPOpenAPIConfig, maxSpecBytes int) (*preparedOpenAPIClient, int, string) {
 	if cfg == nil {
 		return nil, fasthttp.StatusBadRequest, "openapi_config is required for connection_type 'openapi'"
 	}
@@ -203,13 +230,13 @@ func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *sche
 	var data []byte
 	if strings.TrimSpace(cfg.Spec) != "" {
 		var err error
-		if data, err = openapimcp.LoadBytes([]byte(cfg.Spec)); err != nil {
+		if data, err = openapimcp.LoadBytes([]byte(cfg.Spec), maxSpecBytes); err != nil {
 			return nil, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid openapi_config.spec: %v", err)
 		}
 	} else if specURL != "" {
 		var status int
 		var err error
-		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL); err != nil {
+		if data, specURL, status, err = fetchOpenAPISpecForCaller(ctx, specURL, maxSpecBytes); err != nil {
 			return nil, status, err.Error()
 		}
 		// The document is stored inline; its final URL (after redirects) is
@@ -229,7 +256,7 @@ func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *sche
 			baseOverride = &trimmed
 		}
 	}
-	result, syn, err := openapimcp.Preview(data, openapimcp.ParseOptions{SpecURL: specURL}, openapimcp.SynthesizeOptions{ClientName: clientName, IncludeDeprecated: cfg.IncludeDeprecated}, baseOverride)
+	result, syn, err := openapimcp.Preview(data, openapimcp.ParseOptions{SpecURL: specURL, MaxBytes: maxSpecBytes}, openapimcp.SynthesizeOptions{ClientName: clientName, IncludeDeprecated: cfg.IncludeDeprecated}, baseOverride)
 	if err != nil {
 		return nil, openAPISpecErrorStatus(err), fmt.Sprintf("Invalid openapi_config.spec: %v", err)
 	}
@@ -269,7 +296,11 @@ func prepareOpenAPIConfig(ctx *fasthttp.RequestCtx, clientName string, cfg *sche
 	for _, name := range syn.ToolNames() {
 		names[name] = true
 	}
-	return &preparedOpenAPIClient{config: cfg, toolNames: names, baseURL: result.BaseURL}, 0, ""
+	var schemes map[string]openapimcp.SecurityScheme
+	if syn.Document != nil {
+		schemes = syn.Document.SecuritySchemes
+	}
+	return &preparedOpenAPIClient{config: cfg, toolNames: names, baseURL: result.BaseURL, schemes: schemes}, 0, ""
 }
 
 // unknownOpenAPITools lists entries of a tool allow-list that the synthesized

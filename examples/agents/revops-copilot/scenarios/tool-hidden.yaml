@@ -1,0 +1,6 @@
+description: Open a Virtual MCP the access profile does not grant. Bifrost answers 403 with no detail, the same as for a slug that does not exist, so slugs cannot be probed.
+surface: 5-mcp-discovery
+kind: mcp_list
+slug: revops-not-granted
+expect:
+  surface: 5-mcp-discovery

@@ -16,18 +16,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// refreshToolMapKeys snapshots the prefixed tool names currently cached on a
-// client, so a test can watch the manager's view of an upstream tool set
-// without reaching into the connection.
+// refreshToolMapKeys snapshots the prefixed tool names currently recorded for
+// a client in the manager's discovery store, so a test can watch the manager's view
+// of an upstream tool set without reaching into the connection.
 func refreshToolMapKeys(m *MCPManager, id string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	cs, ok := m.clientMap[id]
-	if !ok || cs.ToolMap == nil {
+	tools := m.discoveryStore.GetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: id}).GetTools()
+	if len(tools) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(cs.ToolMap))
-	for k := range cs.ToolMap {
+	keys := make([]string, 0, len(tools))
+	for k := range tools {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -97,11 +95,11 @@ func newRefreshConfig(id, name, url string, sticky bool) *schemas.MCPClientConfi
 func TestRefreshClientTools_PerCallClient_RediscoversOnDemand(t *testing.T) {
 	ts, addTool := buildRefreshMCPServer(t)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := newRefreshConfig("refresh-percall", "percall", ts.URL, false)
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	require.True(t, m.RequiresPerCallConnection(config),
 		"precondition: this client must be per-call for the test to exercise the gap")
 	require.Equal(t, []string{"percall-echo"}, refreshToolMapKeys(m, config.ID),
@@ -122,11 +120,11 @@ func TestRefreshClientTools_PerCallClient_RediscoversOnDemand(t *testing.T) {
 func TestRefreshClientTools_StickyClient_RelistsOverLiveConnection(t *testing.T) {
 	ts, addTool := buildRefreshMCPServer(t)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := newRefreshConfig("refresh-sticky", "sticky", ts.URL, true)
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	require.False(t, m.RequiresPerCallConnection(config),
 		"precondition: this client must be sticky for the test to exercise the live-connection branch")
 	require.Equal(t, []string{"sticky-echo"}, refreshToolMapKeys(m, config.ID),
@@ -159,7 +157,7 @@ func TestRefreshClientTools_FiresToolsChangeCallback(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ts, addTool := buildRefreshMCPServer(t)
 
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 
 			fired := make(chan map[string]schemas.ChatTool, 4)
@@ -169,7 +167,7 @@ func TestRefreshClientTools_FiresToolsChangeCallback(t *testing.T) {
 			})
 
 			config := newRefreshConfig("refresh-callback-"+name, "cb", ts.URL, sticky)
-			require.NoError(t, m.AddClient(context.Background(), config))
+			require.NoError(t, addClient(context.Background(), m, config))
 			drainToolsChange(fired)
 
 			// A refresh that rediscovers the identical set is not a change,
@@ -190,7 +188,7 @@ func TestRefreshClientTools_FiresToolsChangeCallback(t *testing.T) {
 
 // TestRefreshClientTools_UnknownClient_Errors keeps the handler's 404 mapping honest.
 func TestRefreshClientTools_UnknownClient_Errors(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	_, err := m.RefreshClientTools(context.Background(), "no-such-client")
@@ -211,12 +209,8 @@ func drainToolsChange(ch chan map[string]schemas.ChatTool) {
 
 // TestRefreshClientTools_AwaitingAdminVerification_Refuses covers the case an
 // on-demand refresh must not quietly resolve. A client parked in
-// pending_verification is waiting on a human, and for token_exchange the
-// refresh would not merely fail — it would succeed, because that auth type
-// resolves its own client-credentials token with no admin involved. Since
-// awaitsAdminVerification reads DiscoveredTools == nil as the pending signal
-// there, persisting a discovered set would promote the client out of
-// pending_verification permanently and drop the Verify CTA with it.
+// pending_verification is waiting on a human, and a refresh is not the admin
+// step it waits for: it must not run in its place, whichever auth type.
 func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -226,28 +220,34 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 		{
 			name:     "oauth_with_unauthorized_inline_config",
 			authType: schemas.MCPAuthTypeOauth,
-			pending:  func(c *schemas.MCPClientConfig) { c.PendingOAuthConfig = &schemas.OAuth2Config{} },
+			pending: func(c *schemas.MCPClientConfig) {
+				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+				c.PendingVerification = true
+			},
 		},
 		{
 			name:     "per_user_oauth_with_unauthorized_inline_config",
 			authType: schemas.MCPAuthTypePerUserOauth,
-			pending:  func(c *schemas.MCPClientConfig) { c.PendingOAuthConfig = &schemas.OAuth2Config{} },
+			pending: func(c *schemas.MCPClientConfig) {
+				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+				c.PendingVerification = true
+			},
 		},
 		{
 			name:     "token_exchange_never_verified",
 			authType: schemas.MCPAuthTypeTokenExchange,
-			pending:  func(c *schemas.MCPClientConfig) { c.DiscoveredTools = nil },
+			pending:  func(c *schemas.MCPClientConfig) { c.PendingVerification = true },
 		},
 		{
 			name:     "per_user_headers_never_verified",
 			authType: schemas.MCPAuthTypePerUserHeaders,
-			pending:  func(c *schemas.MCPClientConfig) { c.DiscoveredTools = nil },
+			pending:  func(c *schemas.MCPClientConfig) { c.PendingVerification = true },
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { m.checkerManager.StopAll() })
 
 			config := &schemas.MCPClientConfig{
@@ -261,29 +261,49 @@ func TestRefreshClientTools_AwaitingAdminVerification_Refuses(t *testing.T) {
 			require.True(t, awaitsAdminVerification(config),
 				"precondition: this config must be one AddClient parks in pending_verification")
 
-			m.mu.Lock()
-			m.clientMap[config.ID] = &schemas.MCPClientState{
+			putClient(m, &schemas.MCPClientState{
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           schemas.MCPConnectionStatePendingVerification,
-				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
-			}
-			m.mu.Unlock()
+			})
 
 			_, err := m.RefreshClientTools(context.Background(), config.ID)
 			require.ErrorIs(t, err, schemas.ErrMCPRefreshNotApplicable)
 
 			m.mu.RLock()
 			state := m.clientMap[config.ID].State
-			tools := len(m.clientMap[config.ID].ToolMap)
 			m.mu.RUnlock()
 			assert.Equal(t, schemas.MCPConnectionStatePendingVerification, state,
 				"a refused refresh must leave the client awaiting its admin")
-			assert.Zero(t, tools, "nothing may be discovered onto a client still awaiting verification")
+			assert.Empty(t, storedTools(m, config.ID),
+				"nothing may be discovered onto a client still awaiting verification")
 		})
 	}
+}
+
+// TestRefreshClientTools_RefusesAPerUserDiscoveryClient: a client with
+// per_user_discovery on has no shared tool list to refresh and no admin
+// credential to discover one with, so the refresh is refused as not
+// applicable rather than failing on the missing credential, and says where
+// one caller's tools are refreshed instead.
+func TestRefreshClientTools_RefusesAPerUserDiscoveryClient(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
+	t.Cleanup(func() { m.checkerManager.StopAll() })
+
+	config := newRefreshConfig("refresh-per-user", "svc", "http://127.0.0.1:0/mcp", false)
+	config.AuthType = schemas.MCPAuthTypePerUserOauth
+	config.PerUserDiscovery = schemas.Ptr(true)
+	putClient(m, &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStateHealthy,
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	})
+
+	_, err := m.RefreshClientTools(context.Background(), config.ID)
+	require.ErrorIs(t, err, schemas.ErrMCPRefreshNotApplicable)
+	assert.Contains(t, err.Error(), "refresh a caller's tools from their session")
 }
 
 // TestRefreshClientTools_DisabledAndNeedsReauth_Refuse pins the other two
@@ -296,20 +316,16 @@ func TestRefreshClientTools_DisabledAndNeedsReauth_Refuse(t *testing.T) {
 		schemas.MCPConnectionStateNeedsReauth,
 	} {
 		t.Run(string(state), func(t *testing.T) {
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { m.checkerManager.StopAll() })
 
 			config := newRefreshConfig("refresh-"+string(state), "svc", "http://127.0.0.1:0/mcp", false)
-			m.mu.Lock()
-			m.clientMap[config.ID] = &schemas.MCPClientState{
+			putClient(m, &schemas.MCPClientState{
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           state,
-				ToolMap:         map[string]schemas.ChatTool{},
-				ToolNameMapping: map[string]string{},
 				ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
-			}
-			m.mu.Unlock()
+			})
 
 			_, err := m.RefreshClientTools(context.Background(), config.ID)
 			require.ErrorIs(t, err, schemas.ErrMCPRefreshNotApplicable)
@@ -386,11 +402,11 @@ func TestRefreshClientTools_StaleWriteBack_ReportsInstalledCount(t *testing.T) {
 		m.mu.Unlock()
 	})
 
-	m = NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m = NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := newRefreshConfig(clientID, "stale", ts.URL, false)
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 	require.Equal(t, []string{"stale-echo"}, refreshToolMapKeys(m, clientID),
 		"precondition: the initial tool must be cached after AddClient")
 
@@ -425,7 +441,7 @@ func TestRefreshClientTools_StaleWriteBack_ReportsInstalledCount(t *testing.T) {
 func TestRefreshClientTools_EditedVerifiedClient_StillRefreshes(t *testing.T) {
 	ts, addTool := buildRefreshMCPServer(t)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	// The admin's stored sample values, which per_user_headers discovery runs on.
 	m.credStore = &fakeAdminCredStore{headers: http.Header{"X-Api-Key": []string{"admin-sample"}}}
@@ -436,19 +452,17 @@ func TestRefreshClientTools_EditedVerifiedClient_StillRefreshes(t *testing.T) {
 	// Already verified: exactly what a restart loads for a server whose admin
 	// verification ran in an earlier process.
 	config.DiscoveredTools = map[string]schemas.ChatTool{"edited-echo": {}}
-	config.DiscoveredToolNameMapping = map[string]string{}
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 
 	_, err := m.RefreshClientTools(context.Background(), config.ID)
 	require.NoError(t, err, "precondition: a verified client refreshes before it is edited")
 
 	// An ordinary edit, shaped the way the update handler shapes it: the
 	// editable fields, and no DiscoveredTools.
-	edit := *config
-	edit.DiscoveredTools = nil
-	edit.DiscoveredToolNameMapping = nil
-	edit.ToolsToAutoExecute = []string{"echo"}
-	require.NoError(t, m.UpdateClient(config.ID, &edit))
+	require.NoError(t, editClient(m, config.ID, func(edit *schemas.MCPClientConfig) {
+		edit.DiscoveredTools = nil
+		edit.ToolsToAutoExecute = []string{"echo"}
+	}))
 
 	addTool("ping", "Ping tool added after the client was edited")
 
@@ -456,5 +470,41 @@ func TestRefreshClientTools_EditedVerifiedClient_StillRefreshes(t *testing.T) {
 	require.NoError(t, err, "editing a verified client must not make it read as awaiting admin verification")
 	require.Equal(t, 2, count)
 	require.Equal(t, []string{"edited-echo", "edited-ping"}, refreshToolMapKeys(m, config.ID),
+		"and the refresh picks up what changed upstream")
+}
+
+// TestRefreshClientTools_AVerificationThatLandedBeforeItsRecordRefreshes: once a verification's
+// discovery lands, the client is verified in this process, even while the Account still serves the
+// record from before the step. A refresh then runs instead of being refused as awaiting the step.
+func TestRefreshClientTools_AVerificationThatLandedBeforeItsRecordRefreshes(t *testing.T) {
+	ts, addTool := buildRefreshMCPServer(t)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	// The admin's stored sample values, which per_user_headers discovery runs on.
+	m.credStore = &fakeAdminCredStore{headers: http.Header{"X-Api-Key": []string{"admin-sample"}}}
+
+	config := newRefreshConfig("refresh-verified", "verified", ts.URL, false)
+	config.AuthType = schemas.MCPAuthTypePerUserHeaders
+	config.PerUserHeaderKeys = []string{"X-Api-Key"}
+	config.PendingVerification = true
+	putClient(m, &schemas.MCPClientState{
+		Name:            config.Name,
+		ExecutionConfig: config,
+		State:           schemas.MCPConnectionStatePendingVerification,
+		ConnectionInfo:  &schemas.MCPClientConnectionInfo{Type: config.ConnectionType},
+	})
+
+	// What the verify handlers hand the runtime once the admin's credential checks out. The
+	// Account keeps serving the pending record until the row is loaded again.
+	m.SetClientDiscovery(config.ID, &schemas.MCPDiscovery{Tools: map[string]schemas.ChatTool{"verified-echo": {}}})
+	require.True(t, awaitsAdminVerification(m.config(config.ID)), "precondition: the record still says pending")
+
+	addTool("ping", "Ping tool added after the client was verified")
+
+	count, err := m.RefreshClientTools(context.Background(), config.ID)
+	require.NoError(t, err, "a client verified in this process is not awaiting its admin step")
+	require.Equal(t, 2, count)
+	require.Equal(t, []string{"verified-echo", "verified-ping"}, refreshToolMapKeys(m, config.ID),
 		"and the refresh picks up what changed upstream")
 }

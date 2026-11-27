@@ -1,3 +1,4 @@
+import i18n from "@/lib/i18n";
 import type { RelayAuthConfig, RelayRouteConfig, RelayRouteMethod } from "@/lib/types/relays";
 import { compareRoutes } from "@/lib/utils/relayForm";
 
@@ -16,6 +17,8 @@ export interface OpenAPIImport {
 	partial?: boolean;
 }
 
+const T = { ns: "config" } as const;
+
 const ROUTE_METHODS: RelayRouteMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 
 type Doc = Record<string, unknown>;
@@ -27,7 +30,7 @@ const asString = (v: unknown): string | undefined => (typeof v === "string" ? v 
 // is not part of the main bundle.
 export async function parseOpenAPIText(text: string): Promise<Doc> {
 	const trimmed = text.trim();
-	if (!trimmed) throw new Error("The document is empty");
+	if (!trimmed) throw new Error(i18n.t("relays.openapiImport.docEmpty", T));
 	if (trimmed.startsWith("{")) {
 		// JSON first; a flow-style YAML document ({openapi: 3.0.0, ...}) also starts with "{" and is
 		// parsed as YAML when it is not valid JSON.
@@ -39,13 +42,13 @@ export async function parseOpenAPIText(text: string): Promise<Doc> {
 		}
 		if (json !== undefined) {
 			const parsed = asRecord(json);
-			if (!parsed) throw new Error("The document is not a JSON object");
+			if (!parsed) throw new Error(i18n.t("relays.openapiImport.docNotJson", T));
 			return parsed;
 		}
 	}
 	const yaml = await import("yaml");
 	const parsed = asRecord(yaml.parse(trimmed));
-	if (!parsed) throw new Error("The document is not an OpenAPI object");
+	if (!parsed) throw new Error(i18n.t("relays.openapiImport.docNotOpenapi", T));
 	return parsed;
 }
 
@@ -91,7 +94,7 @@ export function authFromSecuritySchemes(doc: Doc, security: unknown = doc.securi
 	if (!schemes) return {};
 	const mapScheme = (name: string): { auth?: RelayAuthConfig; warning?: string } => {
 		const scheme = asRecord(schemes[name]);
-		if (!scheme) return { warning: `Security scheme ${name} is required but not declared; set the auth type by hand` };
+		if (!scheme) return { warning: i18n.t("relays.openapiImport.warn.schemeUndeclared", { ...T, name }) };
 		const type = asString(scheme.type)?.toLowerCase();
 		if (type === "apikey") {
 			const location = asString(scheme.in)?.toLowerCase();
@@ -103,17 +106,27 @@ export function authFromSecuritySchemes(doc: Doc, security: unknown = doc.securi
 			}
 			if (location === "query" && paramName) return { auth: { type: "query", query_param: paramName } };
 			return {
-				warning: `Security scheme ${name} uses an apiKey in ${location ?? "an unsupported location"}, which the relay cannot inject`,
+				warning: i18n.t("relays.openapiImport.warn.apiKeyLocation", {
+					...T,
+					name,
+					location: location ?? i18n.t("relays.openapiImport.warn.unsupportedLocation", T),
+				}),
 			};
 		}
 		if (type === "http") {
 			const httpScheme = asString(scheme.scheme)?.toLowerCase();
 			if (httpScheme === "bearer") return { auth: { type: "bearer" } };
 			if (httpScheme === "basic") return { auth: { type: "basic" } };
-			return { warning: `Security scheme ${name} uses HTTP ${httpScheme ?? "?"} auth, which the relay cannot inject` };
+			return { warning: i18n.t("relays.openapiImport.warn.httpScheme", { ...T, name, scheme: httpScheme ?? "?" }) };
 		}
 		if (type === "basic") return { auth: { type: "basic" } };
-		return { warning: `Security scheme ${name} is ${type ?? "unknown"}; set the auth type by hand` };
+		return {
+			warning: i18n.t("relays.openapiImport.warn.schemeType", {
+				...T,
+				name,
+				type: type ?? i18n.t("relays.openapiImport.warn.unknownType", T),
+			}),
+		};
 	};
 	// The document's top-level security lists alternatives; schemes inside one alternative are
 	// required together, which one injected key cannot satisfy. The first alternative that is a
@@ -121,8 +134,7 @@ export function authFromSecuritySchemes(doc: Doc, security: unknown = doc.securi
 	if (Array.isArray(security)) {
 		// An empty alternative ({}) makes auth optional: the call works without a key, so no scheme
 		// is required of the endpoint.
-		if (security.some(isEmptyRequirement))
-			return { warning: "The document makes authentication optional; set the auth type by hand if the API needs a key" };
+		if (security.some(isEmptyRequirement)) return { warning: i18n.t("relays.openapiImport.warn.authOptional", T) };
 		const warnings: string[] = [];
 		for (const requirement of security) {
 			const names = Object.keys(asRecord(requirement) ?? {});
@@ -132,12 +144,12 @@ export function authFromSecuritySchemes(doc: Doc, security: unknown = doc.securi
 			if (mapped.warning) warnings.push(mapped.warning);
 		}
 		return {
-			warning: warnings[0] ?? "No security alternative in the document is a single scheme the relay can inject; set the auth type by hand",
+			warning: warnings[0] ?? i18n.t("relays.openapiImport.warn.noSingleScheme", T),
 		};
 	}
 	const names = Object.keys(schemes);
 	if (names.length === 1) return mapScheme(names[0]);
-	return { warning: "The document declares several security schemes and requires none; set the auth type by hand" };
+	return { warning: i18n.t("relays.openapiImport.warn.severalSchemes", T) };
 }
 
 // baseUrlFromServers reads the first absolute server URL (OpenAPI 3) or host + basePath (Swagger 2).
@@ -222,7 +234,7 @@ export function importOpenAPI(doc: Doc, documentUrl?: string): OpenAPIImport {
 	// document's. An empty list marks a public operation, which needs no key.
 	const requirements: unknown[] = [];
 	if (!paths) {
-		result.warnings.push("The document declares no paths");
+		result.warnings.push(i18n.t("relays.openapiImport.warn.noPaths", T));
 	} else {
 		const referenced: string[] = [];
 		for (const [template, rawItem] of Object.entries(paths)) {
@@ -245,12 +257,9 @@ export function importOpenAPI(doc: Doc, documentUrl?: string): OpenAPIImport {
 		result.routes.sort(compareRoutes);
 		if (referenced.length > 0) {
 			result.partial = true;
-			result.warnings.push(
-				`${referenced.join(", ")} ${referenced.length === 1 ? "is" : "are"} defined by $ref, which the import does not resolve, so those operations were not imported; add their routes by hand and review the routes list.`,
-			);
+			result.warnings.push(i18n.t("relays.openapiImport.warn.refPaths", { ...T, count: referenced.length, paths: referenced.join(", ") }));
 		}
-		if (result.routes.length === 0 && referenced.length === 0)
-			result.warnings.push("No operation in the document uses a method the relay serves");
+		if (result.routes.length === 0 && referenced.length === 0) result.warnings.push(i18n.t("relays.openapiImport.warn.noMethods", T));
 	}
 	// One endpoint injects one auth, so it is set only when every operation that needs a key agrees.
 	// When operations were read and none needs a key, nothing is inferred: the document's default
@@ -264,16 +273,13 @@ export function importOpenAPI(doc: Doc, documentUrl?: string): OpenAPIImport {
 	const first = candidates[0] ?? {};
 	const agree = candidates.every((c) => JSON.stringify(c.auth) === JSON.stringify(first.auth));
 	if (!agree) {
-		result.warnings.push("The operations require different security schemes, and one endpoint applies one auth; set the auth type by hand");
+		result.warnings.push(i18n.t("relays.openapiImport.warn.differentSchemes", T));
 	} else {
 		if (first.auth) result.auth = first.auth;
 		if (first.warning) result.warnings.push(first.warning);
 	}
 	const server = serverBase(doc, documentUrl);
 	result.baseUrl = server.baseUrl;
-	if (server.droppedQuery)
-		result.warnings.push(
-			`The server URL's query (${server.droppedQuery}) is left out of the suggested base URL, since a relay base URL cannot carry one; callers must send it themselves.`,
-		);
+	if (server.droppedQuery) result.warnings.push(i18n.t("relays.openapiImport.warn.serverQuery", { ...T, query: server.droppedQuery }));
 	return result;
 }

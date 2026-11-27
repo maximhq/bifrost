@@ -316,6 +316,79 @@ func TestConsentOAuth2AuthorizeRequest_AtomicPendingTransition(t *testing.T) {
 	assert.Equal(t, "code-hash-1", *got.CodeHash)
 }
 
+// TestDenyOAuth2AuthorizeRequest_OnlyFromPending pins that refusing a sign-in on the consent page
+// moves a pending request to revoked, and never undoes a consent that already won.
+func TestDenyOAuth2AuthorizeRequest_OnlyFromPending(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	seedAuthorizeRequest(t, s, "req-pending", tables.OAuth2AuthorizeRequestStatusPending, nil, time.Now().Add(time.Minute))
+	seedAuthorizeRequest(t, s, "req-consented", tables.OAuth2AuthorizeRequestStatusConsented, nil, time.Now().Add(time.Minute))
+
+	require.NoError(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-pending"))
+	got, err := s.GetOAuth2AuthorizeRequestByID(ctx, "req-pending")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusRevoked, got.Status)
+
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-pending"), ErrNotFound, "a refused request cannot be refused again")
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "req-consented"), ErrNotFound, "a consented request is not undone")
+	got, err = s.GetOAuth2AuthorizeRequestByID(ctx, "req-consented")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusConsented, got.Status)
+	assert.ErrorIs(t, s.DenyOAuth2AuthorizeRequest(ctx, "missing"), ErrNotFound)
+}
+
+func TestOAuth2AuthorizeRequest_DeviceCodeLookups(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	seedDevice := func(id, deviceHash, userHash string, status tables.OAuth2AuthorizeRequestStatus, expires time.Time) {
+		require.NoError(t, s.CreateOAuth2AuthorizeRequest(ctx, &tables.TableOAuth2AuthorizeRequest{
+			ID: id, ClientID: "bifrost-claude-code", Resource: "https://bifrost.test/gateway/claude-code", Status: status,
+			DeviceCodeHash: strPtr(deviceHash), UserCodeHash: strPtr(userHash),
+			ExpiresAt: expires, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}))
+	}
+	seedDevice("dev-pending", "device-1", "user-1", tables.OAuth2AuthorizeRequestStatusPending, time.Now().Add(time.Minute))
+	seedDevice("dev-consented", "device-2", "user-2", tables.OAuth2AuthorizeRequestStatusConsented, time.Now().Add(time.Minute))
+	seedDevice("dev-expired", "device-3", "user-3", tables.OAuth2AuthorizeRequestStatusPending, time.Now().Add(-time.Minute))
+	// Authorization-code rows leave both columns NULL; many may coexist under the unique indexes.
+	seedAuthorizeRequest(t, s, "code-1", tables.OAuth2AuthorizeRequestStatusPending, nil, time.Now().Add(time.Minute))
+	seedAuthorizeRequest(t, s, "code-2", tables.OAuth2AuthorizeRequestStatusPending, nil, time.Now().Add(time.Minute))
+
+	// The device-code lookup returns the row in any status, so polling can tell pending from consented.
+	for hash, id := range map[string]string{"device-1": "dev-pending", "device-2": "dev-consented", "device-3": "dev-expired"} {
+		got, err := s.GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx, hash)
+		require.NoError(t, err)
+		assert.Equal(t, id, got.ID)
+	}
+	_, err := s.GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx, "missing")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// The user-code lookup only finds a still-pending, unexpired sign-in.
+	got, err := s.GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx, "user-1")
+	require.NoError(t, err)
+	assert.Equal(t, "dev-pending", got.ID)
+	for _, hash := range []string{"user-2", "user-3", "missing"} {
+		_, err := s.GetPendingOAuth2AuthorizeRequestByUserCodeHash(ctx, hash)
+		assert.ErrorIs(t, err, ErrNotFound, hash)
+	}
+
+	// Device codes are unique.
+	err = s.CreateOAuth2AuthorizeRequest(ctx, &tables.TableOAuth2AuthorizeRequest{
+		ID: "dev-dup", ClientID: "bifrost-claude-code", Status: tables.OAuth2AuthorizeRequestStatusPending,
+		DeviceCodeHash: strPtr("device-1"), ExpiresAt: time.Now().Add(time.Minute), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	assert.Error(t, err)
+
+	// Consent without a code hash (the device-grant path) completes the row.
+	require.NoError(t, s.ConsentOAuth2AuthorizeRequest(ctx, &tables.TableOAuth2AuthorizeRequest{
+		ID: "dev-pending", BfMode: "vk", BfSub: "vk-1", UpdatedAt: time.Now(),
+	}))
+	got, err = s.GetOAuth2AuthorizeRequestByDeviceCodeHash(ctx, "device-1")
+	require.NoError(t, err)
+	assert.Equal(t, tables.OAuth2AuthorizeRequestStatusConsented, got.Status)
+	assert.Nil(t, got.CodeHash)
+}
+
 func TestConsumeOAuth2AuthorizeRequest_SingleUse(t *testing.T) {
 	s := setupOAuth2TestStore(t)
 	ctx := context.Background()
@@ -385,10 +458,12 @@ func TestRevokeOAuth2RefreshTokensByFamilyID(t *testing.T) {
 	require.NoError(t, s.DB().Create(makeRefreshToken("b", "fam-1", "c", "hb")).Error)
 	require.NoError(t, s.DB().Create(makeRefreshToken("c", "fam-2", "c", "hc")).Error)
 
-	require.NoError(t, s.RevokeOAuth2RefreshTokensByFamilyID(ctx, "fam-1"))
+	n, err := s.RevokeOAuth2RefreshTokensByFamilyID(ctx, "fam-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n)
 
 	// fam-1 fully revoked; fam-2 untouched.
-	_, err := s.GetOAuth2RefreshTokenByHash(ctx, "ha")
+	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "ha")
 	assert.ErrorIs(t, err, ErrNotFound)
 	_, err = s.GetOAuth2RefreshTokenByHash(ctx, "hb")
 	assert.ErrorIs(t, err, ErrNotFound)
@@ -547,10 +622,12 @@ func TestRevokeOAuth2GrantsBySubject(t *testing.T) {
 		require.NoError(t, s.DB().Create(ar).Error)
 	}
 
-	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+	revoked, err := s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), revoked, "both of the subject's active refresh tokens are counted")
 
 	// The subject's pending code can no longer be exchanged; another key's still can.
-	err := s.ConsumeOAuth2AuthorizeRequest(ctx, "ar-vk1", makeRefreshToken("v-new-1", "ar-vk1", "c", "h-new-1"))
+	err = s.ConsumeOAuth2AuthorizeRequest(ctx, "ar-vk1", makeRefreshToken("v-new-1", "ar-vk1", "c", "h-new-1"))
 	assert.ErrorIs(t, err, ErrNotFound, "a consented code for the revoked subject must not mint a new grant")
 	otherKeyToken := makeRefreshToken("v-new-2", "ar-vk2", "c", "h-new-2")
 	otherKeyToken.BfSub = "vk-2"
@@ -571,7 +648,9 @@ func TestRevokeOAuth2GrantsBySubject(t *testing.T) {
 	require.NoError(t, err)
 
 	// Idempotent on an identity with nothing left to revoke.
-	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+	revoked, err = s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1")
+	require.NoError(t, err)
+	assert.Zero(t, revoked)
 }
 
 // TestRevokeOAuth2GrantsBySubjectEndsCodesFirst: a revoked identity's consented codes move to a
@@ -594,7 +673,8 @@ func TestRevokeOAuth2GrantsBySubjectEndsCodesFirst(t *testing.T) {
 	}))
 	t.Cleanup(func() { _ = s.DB().Callback().Update().Remove("test:record_update_order") })
 
-	require.NoError(t, s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1"))
+	_, err := s.RevokeOAuth2GrantsBySubject(ctx, "vk", "vk-1")
+	require.NoError(t, err)
 
 	assert.Equal(t, []string{"oauth2_authorize_requests", "oauth2_refresh_tokens"}, updated, "codes are ended before tokens are revoked")
 	ar, err := s.GetOAuth2AuthorizeRequestByID(ctx, "ar-vk1")
@@ -919,6 +999,43 @@ func TestMarkOauthTokenNeedsReauthIfUnrenewable(t *testing.T) {
 				assert.Equal(t, "no refresh token", stored.StatusReason)
 			} else {
 				assert.Equal(t, tc.status, stored.Status, "a row that can still be used or renewed is left alone")
+			}
+		})
+	}
+}
+
+// The flip deletes the discovery made with the token, as every other needs_reauth flip does: a caller
+// whose token can no longer be used is offered the client's connect tool, not tools that fail.
+func TestMarkOauthTokenNeedsReauthIfUnrenewable_DeletesTheCallersDiscovery(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableMCPOauthToken{}))
+	ctx := context.Background()
+	past, future := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
+	for _, tc := range []struct {
+		id, user    string
+		expiresAt   *time.Time
+		wantDeleted bool
+	}{
+		{"expired-no-refresh", "alice", &past, true},
+		{"still-usable", "bob", &future, false},
+	} {
+		t.Run(tc.id, func(t *testing.T) {
+			user := tc.user
+			require.NoError(t, s.DB().Create(&tables.TableMCPOauthToken{
+				ID: tc.id, AuthMode: string(schemas.MCPAuthModeUser), UserID: &user, MCPClientID: "notes",
+				OauthConfigID: "cfg-" + tc.id, Status: "active", AccessToken: "at", TokenType: "Bearer",
+				ExpiresAt: tc.expiresAt, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}).Error)
+			require.NoError(t, s.UpsertMCPPerUserDiscovery(ctx, samplePerUserDiscovery(schemas.MCPAuthModeUser, user, "notes", "search")))
+
+			_, err := s.MarkOauthTokenNeedsReauthIfUnrenewable(ctx, tc.id, "no refresh token")
+			require.NoError(t, err)
+			discovery, err := s.GetMCPPerUserDiscoveryByMode(ctx, schemas.MCPAuthModeUser, user, "notes")
+			require.NoError(t, err)
+			if tc.wantDeleted {
+				assert.Nil(t, discovery, "the discovery goes with the token it was made with")
+			} else {
+				assert.NotNil(t, discovery, "a token left usable keeps its discovery")
 			}
 		})
 	}

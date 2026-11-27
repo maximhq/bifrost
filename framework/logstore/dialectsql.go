@@ -126,6 +126,16 @@ func agentDimensionFanoutFrom(dialect, idCol string) (string, bool) {
 	return strings.ReplaceAll(from, "FROM logs", "FROM agent_logs"), true
 }
 
+// mcpDimensionFanoutFrom is dimensionFanoutFrom over mcp_tool_logs, which carries the same scalar and
+// JSON-array team, customer and business unit columns as logs.
+func mcpDimensionFanoutFrom(dialect, idCol string) (string, bool) {
+	from, ok := dimensionFanoutFrom(dialect, idCol)
+	if !ok {
+		return "", false
+	}
+	return strings.ReplaceAll(from, "FROM logs", "FROM mcp_tool_logs"), true
+}
+
 // sqliteDimensionFanoutFrom builds the SQLite fan-out subquery using the JSON1
 // extension (always compiled in: the bundled mattn/go-sqlite3 amalgamation
 // registers json_each unconditionally, and JSON has been on by default since

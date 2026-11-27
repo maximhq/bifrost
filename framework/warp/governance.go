@@ -444,14 +444,14 @@ func describeUserLimitsTool() Tool {
 			if id == "" {
 				return nil, fmt.Errorf("user_id is required")
 			}
-			gov, err := deps.userGovernance.DescribeUserGovernance(ctx, id)
+			limits, err := DescribeUserLimits(ctx, deps.userGovernance, id)
 			if err != nil {
 				if errors.Is(err, ErrUserNotFound) {
 					return nil, fmt.Errorf("no user with id %q that you can see - describe_filter_space gives the caller's id, and a user ranking gives everyone else's", id)
 				}
 				return nil, fmt.Errorf("user limits lookup failed: %w", err)
 			}
-			return describeUserGovernance(gov), nil
+			return withUserLimitsGuidance(limits), nil
 		},
 	}
 }
@@ -460,10 +460,39 @@ func describeUserLimitsTool() Tool {
 // declarations name the same tool.
 const UserLimitsToolName = "describe_user_limits"
 
-// describeUserGovernance projects a person's governance the way
-// describeVirtualKey projects a key's, with the same budget and rate-limit
-// summaries so a number means the same thing in both.
+// DescribeUserLimits is what governs one person's spend: their access profiles'
+// budgets and rate limits, per profile, provider and model, with live usage.
+// GET /api/governance/users/{user_id}/limits serves it and describe_user_limits
+// reads it, so both report the same numbers. A user the caller may not see is
+// ErrUserNotFound.
+func DescribeUserLimits(ctx context.Context, reader UserGovernanceReader, userID string) (map[string]any, error) {
+	gov, err := reader.DescribeUserGovernance(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return userLimits(gov), nil
+}
+
+// describeUserGovernance is the tool's view of a person's governance: the
+// limits, plus guidance on reading them.
 func describeUserGovernance(gov *UserGovernance) map[string]any {
+	return withUserLimitsGuidance(userLimits(gov))
+}
+
+// withUserLimitsGuidance adds the tool's reading guidance to a user's limits.
+func withUserLimitsGuidance(out map[string]any) map[string]any {
+	if profiles, _ := out["profiles"].([]map[string]any); len(profiles) == 0 {
+		out["guidance"] = "No access profile is attached to this user, so nothing caps their spend at the user level. A budget on a key they use, or on their team, customer or business unit, may still apply."
+	} else {
+		out["guidance"] = "remaining_usd is max_limit_usd minus current_usage_usd, per budget, in US dollars, and resets reset_duration after last_reset. An inactive or expired profile does not cap anything. Report each profile by name."
+	}
+	return out
+}
+
+// userLimits projects a person's governance the way describeVirtualKey
+// projects a key's, with the same budget and rate-limit summaries so a number
+// means the same thing in both.
+func userLimits(gov *UserGovernance) map[string]any {
 	out := map[string]any{"user_id": gov.UserID}
 	if gov.Name != "" {
 		out["name"] = gov.Name
@@ -513,10 +542,5 @@ func describeUserGovernance(gov *UserGovernance) map[string]any {
 		profiles[i] = entry
 	}
 	out["profiles"] = profiles
-	if len(profiles) == 0 {
-		out["guidance"] = "No access profile is attached to this user, so nothing caps their spend at the user level. A budget on a key they use, or on their team, customer or business unit, may still apply."
-	} else {
-		out["guidance"] = "remaining_usd is max_limit_usd minus current_usage_usd, per budget, in US dollars, and resets reset_duration after last_reset. An inactive or expired profile does not cap anything. Report each profile by name."
-	}
 	return out
 }

@@ -1275,6 +1275,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.StopReasons) == 0 &&
 		len(f.ComplexityTiers) == 0 &&
 		len(f.ComplexityMechanisms) == 0 &&
+		len(f.ModelRouterIDs) == 0 &&
 		f.MinLatency == nil && f.MaxLatency == nil &&
 		f.MinTokens == nil && f.MaxTokens == nil &&
 		f.MinCost == nil && f.MaxCost == nil &&
@@ -1282,6 +1283,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.CacheHitTypes) == 0 &&
 		len(f.ErrorTypes) == 0 && len(f.ErrorCodes) == 0 && len(f.StatusCodes) == 0 &&
 		len(f.GuardrailOutcomes) == 0 &&
+		len(f.GuardrailActions) == 0 && len(f.GuardrailRuleIDs) == 0 && len(f.GuardrailProfileIDs) == 0 && len(f.GuardrailPhases) == 0 &&
 		len(f.UserAgents) == 0 &&
 		// A topic is a membership test against the assignments table, which
 		// the hourly view does not carry.

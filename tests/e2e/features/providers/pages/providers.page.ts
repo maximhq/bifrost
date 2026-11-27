@@ -137,6 +137,10 @@ export class ProvidersPage extends BasePage {
     // Note: Model selection is skipped for now as it requires specific UI interaction
     // that may vary based on the provider type
 
+    if (config.contentLogging && config.contentLogging !== 'inherit') {
+      await this.setKeyContentLogging(config.contentLogging)
+    }
+
     // Save the key
     await this.keySaveBtn.click()
 
@@ -298,6 +302,41 @@ export class ProvidersPage extends BasePage {
     await waitForNetworkIdle(this.page)
   }
 
+  /**
+   * Add a key that federates through Anthropic Workload Identity Federation, reading its identity
+   * token from a file, to the currently selected anthropic-based provider. No token exchange runs
+   * at save time, so the IDs and the path only need to be present.
+   */
+  async addAnthropicWorkloadIdentityKey(config: {
+    name: string
+    federationRuleId: string
+    organizationId: string
+    serviceAccountId: string
+    workspaceId?: string
+    identityTokenFile: string
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('apikey-anthropic-workload-identity-tab').click()
+    await this.page.getByTestId('key-input-anthropic-wif-federation-rule-id').fill(config.federationRuleId)
+    await this.page.getByTestId('key-input-anthropic-wif-organization-id').fill(config.organizationId)
+    await this.page.getByTestId('key-input-anthropic-wif-service-account-id').fill(config.serviceAccountId)
+    if (config.workspaceId !== undefined) {
+      await this.page.getByTestId('key-input-anthropic-wif-workspace-id').fill(config.workspaceId)
+    }
+    // Token File is the default source, so its path input is already on screen.
+    await expect(this.page.getByTestId('key-select-anthropic-wif-token-source')).toContainText('Token File')
+    await this.page.getByTestId('key-input-anthropic-wif-identity-token-file').fill(config.identityTokenFile)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
   private async fillOAuthScopes(scopes: string[] | undefined): Promise<void> {
     for (const scope of scopes ?? []) {
       await this.page.getByTestId('key-input-oauth-scopes').fill(scope)
@@ -319,7 +358,7 @@ export class ProvidersPage extends BasePage {
     await this.addKeyBtn.click()
     await expect(this.keyForm).toBeVisible()
 
-    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByLabel('Name', { exact: true }).fill(config.name)
     await this.page.getByTestId('apikey-sagemaker-explicit-credentials-tab').click()
     await this.page.getByTestId('apikey-sagemaker-access-key-input').fill(config.accessKey)
     await this.page.getByTestId('apikey-sagemaker-secret-key-input').fill(config.secretKey)
@@ -506,9 +545,43 @@ export class ProvidersPage extends BasePage {
       }
     }
 
+    if (updates.contentLogging) {
+      await this.setKeyContentLogging(updates.contentLogging)
+    }
+
     // Save
     await this.keySaveBtn.click()
     await this.waitForSuccessToast()
+  }
+
+  /**
+   * Pick the key's content-logging choice in the open key form
+   */
+  async setKeyContentLogging(choice: 'inherit' | 'disabled' | 'enabled'): Promise<void> {
+    await this.page.getByTestId('apikey-content-logging-select').click()
+    await this.page.getByTestId(`apikey-content-logging-option-${choice}`).click()
+  }
+
+  /**
+   * Open the key's editor, read its content-logging choice by the label it shows, and cancel out
+   */
+  async getKeyContentLogging(keyName: string): Promise<'inherit' | 'disabled' | 'enabled'> {
+    const keyRow = this.getKeyRow(keyName)
+    await keyRow.scrollIntoViewIfNeeded()
+    const menuBtn = keyRow.locator('button').filter({ has: this.page.locator('svg') }).last()
+    await menuBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await menuBtn.click()
+    await this.page.getByRole('menuitem', { name: /Edit/i }).click()
+    await expect(this.keyForm).toBeVisible()
+    const text = (await this.page.getByTestId('apikey-content-logging-select').textContent()) ?? ''
+    await this.keyCancelBtn.click()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    // Map only the exact labels: an empty or unexpected label must fail, not read as inherit.
+    const label = text.trim()
+    if (label === 'Inherit') return 'inherit'
+    if (label === 'Off for this key') return 'disabled'
+    if (label === 'On for this key') return 'enabled'
+    throw new Error(`unexpected key content-logging label: ${JSON.stringify(label)}`)
   }
 
   /**

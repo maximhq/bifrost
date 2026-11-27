@@ -1165,3 +1165,53 @@ func TestGuardedClientBoundsIdleConnections(t *testing.T) {
 		t.Errorf("unproxied transport must bound idle connections too")
 	}
 }
+
+// TestGuardedClientTrustsGlobalProxyTLS pins that the guarded clients (catalog, RSS,
+// datasheet, MCP spec fetches) apply the global proxy's TLS settings on the proxied
+// path, like the factory's own clients: skip_tls_verify covers only the https:// proxy's
+// certificate, and ca_cert_pem is trusted for the proxy and for targets re-signed by a
+// TLS-inspecting proxy. One client is built before the CA is saved, to pin that a later
+// proxy config reaches a client built earlier.
+func TestGuardedClientTrustsGlobalProxyTLS(t *testing.T) {
+	targetAddr, targetCA := tlsTarget(t)
+	proxyURL, proxyCA := tunnelingHTTPSProxy(t, targetAddr)
+	_, targetPort, _ := net.SplitHostPort(targetAddr)
+	targetURL := "https://upstream.test:" + targetPort + "/"
+
+	previous := DefaultHTTPClientFactory()
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(previous) })
+	factory := NewHTTPClientFactory(enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, proxyURL), noopTestLogger{})
+	SetDefaultHTTPClientFactory(factory)
+	builtEarly := NewPrivateNetworkHTTPClient(5 * time.Second)
+
+	for _, tc := range []struct {
+		name    string
+		skip    bool
+		caPEM   string
+		wantErr string
+	}{
+		{"no CA: the proxy hop is refused", false, "", "certificate"},
+		{"skip covers the proxy hop only, not the target", true, "", "certificate"},
+		{"skip for the hop, target verified by the proxy CA", true, targetCA, ""},
+		{"no skip: the CA verifies the proxy and the target", false, proxyCA + targetCA, ""},
+		{"no skip, CA for the target only: the proxy hop is verified and refused", false, targetCA, "certificate"},
+	} {
+		cfg := enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, proxyURL)
+		cfg.SkipTLSVerify = tc.skip
+		cfg.CACertPEM = tc.caPEM
+		factory.UpdateProxyConfig(cfg)
+		for name, client := range map[string]*http.Client{
+			"built before the config": builtEarly,
+			"built after the config":  NewPrivateNetworkHTTPClient(5 * time.Second),
+		} {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				r, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, targetURL, nil)
+				resp, err := client.Do(r)
+				if err == nil {
+					resp.Body.Close()
+				}
+				assertTLSOutcome(t, err, tc.wantErr)
+			})
+		}
+	}
+}

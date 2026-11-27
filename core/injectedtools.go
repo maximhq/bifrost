@@ -1,11 +1,14 @@
 package bifrost
 
 import (
+	"context"
+	"slices"
 	"strings"
 	"sync"
 
 	"github.com/google/uuid"
-	"github.com/maximhq/bifrost/core/internal/injectedauth"
+	"github.com/maximhq/bifrost/core/internal/mcpvouch"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/core/toolsearch"
 )
@@ -20,18 +23,29 @@ import (
 
 // injectedToolSource is the slice of the MCP manager that injected tools need.
 type injectedToolSource interface {
-	GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error)
+	GetInjectedTool(ctx context.Context, clientName, toolName string) (schemas.ChatTool, error)
 	GetMaxAgentDepth() int
 }
 
 // injectedToolSet is the resolved set of tools injected into one attempt.
 type injectedToolSet struct {
-	tools         []schemas.ChatTool        // function tools named as the model sees them
-	targets       map[string]injectedTarget // model-facing name -> MCP tool, for classifying and running the model's calls
-	mcpNames      map[string]string         // prefixed MCP name -> model-facing name, so MCP auto-injection never declares one twice
-	webSearchName string                    // model-facing name of the tool replacing native web search, "" when none
-	maxDepth      int                       // model turns the tool loop may run before it stops executing
-	search        *toolsearch.Session       // gateway-run search over the caller's deferred tools, nil when none
+	tools         []schemas.ChatTool               // function tools named as the model sees them
+	targets       map[string]injectedTarget        // model-facing name -> MCP tool, for classifying and running the model's calls
+	mcpNames      map[string]string                // prefixed MCP name -> model-facing name, so MCP auto-injection never declares one twice
+	webSearchName string                           // model-facing name of the tool replacing native web search, "" when none
+	maxDepth      int                              // model turns the tool loop may run before it stops executing
+	search        *toolsearch.Session              // gateway-run search over the caller's deferred tools, nil when none
+	searchRequest *schemas.BifrostResponsesRequest // caller's request with additional_tools hoisted for the search, nil when none
+}
+
+// responsesRequest returns the request the Responses loops build every turn from: the
+// caller's, or the copy whose additional_tools items withGatewayToolSearch hoisted into
+// the tool list.
+func (s *injectedToolSet) responsesRequest(r *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
+	if s.searchRequest != nil {
+		return s.searchRequest
+	}
+	return r
 }
 
 // injectedTarget is the MCP tool behind one model-facing injected tool name.
@@ -71,7 +85,7 @@ func (s *injectedToolSet) duplicates(name string) bool {
 // tool) fails open on its own: it is left out and the rest are still injected. When it
 // is the web_search tool, the caller's native web search goes out untouched. Failing
 // closed would turn an MCP server outage into an outage of every model on the provider.
-func resolveInjectedTools(src injectedToolSource, config *schemas.ProviderConfig, requestType schemas.RequestType, logger schemas.Logger) *injectedToolSet {
+func resolveInjectedTools(ctx context.Context, src injectedToolSource, config *schemas.ProviderConfig, requestType schemas.RequestType, logger schemas.Logger) *injectedToolSet {
 	if src == nil || config == nil || len(config.InjectedTools) == 0 {
 		return nil
 	}
@@ -92,7 +106,7 @@ func resolveInjectedTools(src injectedToolSource, config *schemas.ProviderConfig
 			continue
 		}
 		seen[ref.Name] = struct{}{}
-		tool, err := src.GetInjectedTool(ref.MCPClientName, ref.ToolName)
+		tool, err := src.GetInjectedTool(ctx, ref.MCPClientName, ref.ToolName)
 		if err != nil || tool.Function == nil {
 			if logger != nil {
 				logger.Warn("injected tool %s (%s/%s) unavailable, sending request without it: %v", ref.Name, ref.MCPClientName, ref.ToolName, err)
@@ -162,7 +176,7 @@ func applyInjectedToolsChat(r *schemas.BifrostChatRequest, set *injectedToolSet)
 			continue
 		}
 		// A client tool with an injected tool's name is replaced by it.
-		if (tool.Function != nil && set.duplicates(tool.Function.Name)) || set.duplicates(tool.Name) {
+		if (tool.Function != nil && set.duplicates(tool.Function.Name)) || (tool.Custom != nil && set.duplicates(tool.Custom.Name)) || set.duplicates(tool.Name) {
 			continue
 		}
 		tools = append(tools, tool)
@@ -171,6 +185,9 @@ func applyInjectedToolsChat(r *schemas.BifrostChatRequest, set *injectedToolSet)
 	for _, tool := range tools {
 		if tool.Function != nil {
 			delete(replaced, tool.Function.Name)
+		}
+		if tool.Custom != nil && tool.Custom.Name != "" {
+			delete(replaced, tool.Custom.Name)
 		}
 		if tool.Name != "" {
 			delete(replaced, tool.Name)
@@ -489,7 +506,8 @@ func runInjectedResponsesLoop(
 	dispatch func(*schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError),
 	exec func(schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage,
 ) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	turn := applyInjectedToolsResponses(original, set)
+	original = set.responsesRequest(original)
+	turn := firstResponsesTurn(original, set)
 	var usage *schemas.BifrostLLMUsage
 	var priorItems []schemas.ResponsesMessage
 	for depth := 1; ; depth++ {
@@ -520,7 +538,7 @@ func runInjectedResponsesLoop(
 
 		results := executeInjectedCalls(injected, exec)
 		next := *turn
-		next.Params = relaxForcedResponsesChoice(nextResponsesTools(original, turn, set).Params)
+		next.Params = relaxForcedResponsesChoice(nextResponsesTools(original, turn, set, depth+1).Params)
 		next.Input = make([]schemas.ResponsesMessage, 0, len(turn.Input)+len(resp.Output)+len(injected))
 		next.Input = append(next.Input, turn.Input...)
 		for _, item := range resp.Output {
@@ -536,18 +554,117 @@ func runInjectedResponsesLoop(
 		for _, result := range results {
 			next.Input = append(next.Input, result.ToResponsesMessages()...)
 		}
+		if lastSearchTurn(set, depth+1) {
+			next.Input = searchesAsText(next.Input)
+		}
 		turn = &next
 	}
 }
 
-// nextResponsesTools returns the request whose tools the next turn sends. The tool set
-// only changes when the gateway search loaded tools during the turn, so the request is
-// rebuilt from the caller's original only then.
-func nextResponsesTools(original, turn *schemas.BifrostResponsesRequest, set *injectedToolSet) *schemas.BifrostResponsesRequest {
+// nextResponsesTools returns the request whose tools turn number depth sends. The tool
+// set only changes when the gateway search loaded tools during the turn, so the request
+// is rebuilt from the caller's original only then. The last turn the loop allows goes
+// out without the search (see lastSearchTurn).
+func nextResponsesTools(original, turn *schemas.BifrostResponsesRequest, set *injectedToolSet, depth int) *schemas.BifrostResponsesRequest {
 	if set.search == nil {
 		return turn
 	}
-	return applyInjectedToolsResponses(original, set)
+	next := applyInjectedToolsResponses(original, set)
+	if lastSearchTurn(set, depth) {
+		dropSearchTool(next)
+	}
+	return next
+}
+
+// firstResponsesTurn returns the request the first turn sends. With a max agent depth
+// of 1 the first turn is also the last, so it goes out without the search, as any last
+// turn does (lastSearchTurn); there are no earlier searches to report yet.
+func firstResponsesTurn(original *schemas.BifrostResponsesRequest, set *injectedToolSet) *schemas.BifrostResponsesRequest {
+	turn := applyInjectedToolsResponses(original, set)
+	if lastSearchTurn(set, 1) {
+		dropSearchTool(turn)
+	}
+	return turn
+}
+
+// dropSearchTool removes the gateway search function from turn, a request built by
+// applyInjectedToolsResponses: its Params and Tools are fresh copies, so they are
+// filtered in place.
+func dropSearchTool(turn *schemas.BifrostResponsesRequest) {
+	turn.Params.Tools = slices.DeleteFunc(turn.Params.Tools, func(tool schemas.ResponsesTool) bool {
+		return tool.Type == schemas.ResponsesToolTypeFunction && tool.Name != nil && *tool.Name == toolsearch.ToolName
+	})
+}
+
+// lastSearchTurn reports whether turn number depth is the last the loop allows while
+// the gateway search is active. A search called on that turn could not be followed by a
+// turn that uses what it found, and the loop would strip it, leaving the caller a
+// completed response with no output. So the turn goes out without the search, and its
+// input carries the earlier searches as text (searchesAsText): a model shown its own
+// search calls repeats them even when the search is no longer declared.
+func lastSearchTurn(set *injectedToolSet, depth int) bool {
+	return set.search != nil && depth >= set.maxDepth
+}
+
+// searchesAsText returns input with the gateway search calls and their results replaced
+// by one user message, placed where the first result was (after any other results of
+// that turn), that reports what each search loaded. A search call without a call ID has no result to pair with and is kept.
+func searchesAsText(input []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	searches := make(map[string]bool)
+	for _, item := range input {
+		if isSearchCall(item) && item.CallID != nil {
+			searches[*item.CallID] = true
+		}
+	}
+	if len(searches) == 0 {
+		return input
+	}
+	var b strings.Builder
+	b.WriteString("Tool searches already run, and the tools they loaded. Those tools can be called now. Tool search is no longer available, so call one of the loaded tools or answer.")
+	out := make([]schemas.ResponsesMessage, 0, len(input))
+	at := -1
+	for _, item := range input {
+		if isSearchCall(item) && item.CallID != nil {
+			continue
+		}
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCallOutput && item.ResponsesToolMessage != nil &&
+			item.CallID != nil && searches[*item.CallID] {
+			if at < 0 {
+				at = len(out)
+			}
+			if item.Output != nil && item.Output.ResponsesToolCallOutputStr != nil {
+				b.WriteString("\n- ")
+				b.WriteString(*item.Output.ResponsesToolCallOutputStr)
+			}
+			continue
+		}
+		out = append(out, item)
+	}
+	if at < 0 {
+		at = len(out)
+	}
+	// A search run alongside another tool leaves that tool's results right after where
+	// the search result was; the summary goes after them, so no call is separated from
+	// its result.
+	for at < len(out) && out[at].Type != nil && *out[at].Type == schemas.ResponsesMessageTypeFunctionCallOutput {
+		at++
+	}
+	return slices.Insert(out, at, schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(b.String())},
+	})
+}
+
+func isSearchCall(item schemas.ResponsesMessage) bool {
+	return isFunctionCall(item) && item.Name != nil && *item.Name == toolsearch.ToolName && topLevelCall(item)
+}
+
+// topLevelCall reports whether a function call names a top-level tool: no namespace, or
+// the default one. The gateway declares its tools at the top level, so a call inside a
+// caller's namespace that shares a name with one of them is the caller's tool.
+func topLevelCall(item schemas.ResponsesMessage) bool {
+	return item.Namespace == nil || *item.Namespace == "" || *item.Namespace == providerUtils.DefaultToolNamespace
 }
 
 // executeInjectedCalls runs the calls in parallel and returns their results in call
@@ -570,9 +687,15 @@ func isFunctionCall(item schemas.ResponsesMessage) bool {
 	return item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall && item.ResponsesToolMessage != nil
 }
 
+// callsInjected reports whether the item is a top-level call of an injected tool. A
+// call in a caller's namespace is the caller's, whatever its name.
+func callsInjected(item schemas.ResponsesMessage, set *injectedToolSet) bool {
+	return isFunctionCall(item) && item.Name != nil && topLevelCall(item) && set.isInjected(*item.Name)
+}
+
 // injectedResponsesCall returns the item as a chat tool call when it calls an injected tool.
 func injectedResponsesCall(item schemas.ResponsesMessage, set *injectedToolSet) (schemas.ChatAssistantMessageToolCall, bool) {
-	if !isFunctionCall(item) || item.Name == nil || !set.isInjected(*item.Name) {
+	if !callsInjected(item, set) {
 		return schemas.ChatAssistantMessageToolCall{}, false
 	}
 	arguments := ""
@@ -734,7 +857,7 @@ func prependChatText(resp *schemas.BifrostChatResponse, prior []string) {
 func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest, baseProvider schemas.ModelProvider, model string) *injectedToolSet {
 	var set *injectedToolSet
 	if bifrost.MCPManager != nil {
-		set = resolveInjectedTools(bifrost.MCPManager, config, req.RequestType, bifrost.logger)
+		set = resolveInjectedTools(ctx, bifrost.MCPManager, config, req.RequestType, bifrost.logger)
 	}
 	return withGatewayToolSearch(set, req, baseProvider, schemas.ResolveCanonicalModel(ctx, model))
 }
@@ -742,19 +865,71 @@ func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, con
 // withGatewayToolSearch adds the gateway tool search to set when the attempt needs it.
 // The check costs one pass over the request's tools and allocates nothing when no
 // tool is deferred.
+//
+// Tools Codex declares in additional_tools input items are searched and held back too.
+// When the gateway runs the search the items are hoisted into the tool list first, on
+// every provider: a held-back tool must not reach the upstream inside an item either.
+// Tools the client's own earlier searches loaded (client tool_search_output items, from
+// a session that started on a model with tool search) join the catalog the same way,
+// deferred; the session starts the most recent of them out loaded.
+// The input is only scanned for items when the request declares a tool_search tool,
+// which deferred tools require, so other requests never walk their conversation.
 func withGatewayToolSearch(set *injectedToolSet, req *schemas.BifrostRequest, baseProvider schemas.ModelProvider, model string) *injectedToolSet {
-	if (req.RequestType != schemas.ResponsesRequest && req.RequestType != schemas.ResponsesStreamRequest) ||
-		!toolsearch.Candidate(req.ResponsesRequest) ||
-		toolsearch.NativeSupport(baseProvider, model) {
+	if req.RequestType != schemas.ResponsesRequest && req.RequestType != schemas.ResponsesStreamRequest {
 		return set
 	}
-	session := toolsearch.NewSession(req.ResponsesRequest)
+	r := req.ResponsesRequest
+	candidate, declaresToolSearch := toolsearch.Inspect(r)
+	if (!candidate && !declaresToolSearch) || toolsearch.NativeSupport(baseProvider, model) {
+		return set
+	}
+	if declaresToolSearch {
+		additionalTools, searchOutputs := toolItemsInHistory(r.Input)
+		// An item that does not decode is left for prepareResponsesRequest to reject.
+		if additionalTools {
+			if hoisted, bifrostErr := hoistResponsesAdditionalTools(r); bifrostErr == nil {
+				r = hoisted
+			}
+		}
+		if searchOutputs {
+			if merged, bifrostErr := mergeClientToolSearchOutputTools(r); bifrostErr == nil {
+				r = merged
+			}
+		}
+		candidate = toolsearch.Candidate(r)
+	}
+	if !candidate {
+		return set
+	}
+	session := toolsearch.NewSession(r)
 	if set == nil {
 		set = &injectedToolSet{maxDepth: toolsearch.MaxTurns}
 	}
 	set.search = session
 	set.tools = append(set.tools, session.Tool())
+	if r != req.ResponsesRequest {
+		set.searchRequest = r
+	}
 	return set
+}
+
+// toolItemsInHistory reports whether input holds additional_tools items, and client
+// tool_search_output items, which declare tools outside the request's tool list.
+func toolItemsInHistory(input []schemas.ResponsesMessage) (additionalTools, searchOutputs bool) {
+	for i := range input {
+		if input[i].Type == nil {
+			continue
+		}
+		switch *input[i].Type {
+		case schemas.ResponsesMessageTypeAdditionalTools:
+			additionalTools = true
+		case schemas.ResponsesMessageTypeToolSearchOutput:
+			if input[i].IsClientToolSearchItem() && len(input[i].ToolSearchOutputTools) > 0 {
+				searchOutputs = true
+			}
+		}
+	}
+	return additionalTools, searchOutputs
 }
 
 // runInjectedTools serves one non-streaming attempt whose provider injects tools. Every
@@ -804,7 +979,7 @@ func (bifrost *Bifrost) executeInjectedCall(ctx *schemas.BifrostContext, set *in
 	toolCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	toolCtx.SetValue(schemas.BifrostContextKeyMCPLogID, uuid.New().String())
 	call, target := mcpInjectedCall(set, call)
-	injectedauth.Set(toolCtx, target.clientName, target.toolName)
+	mcpvouch.Set(toolCtx, schemas.MCPToolCallKindInjected, target.clientName, target.toolName)
 	result, bifrostErr := bifrost.MCPManager.ExecuteChatTool(toolCtx, &call)
 	if bifrostErr == nil && result != nil {
 		return result
@@ -903,14 +1078,13 @@ const injectedToolsPassthroughKey injectedToolsContextKey = "injected-tools-pass
 var passthroughKeys = []schemas.BifrostContextKey{
 	schemas.BifrostContextKeyUseRawRequestBody,
 	schemas.BifrostContextKeyRawRequestBodyTextRewriter,
-	schemas.BifrostContextKeyRawStreamTextCodec,
 	schemas.BifrostContextKeySendBackRawResponse,
 	schemas.BifrostContextKeyPassthroughOverridesPresent,
 	schemas.BifrostContextKeyURLPath,
 }
 
 // passthroughSnapshot holds the passthrough settings as ingress set them. Small handles
-// only: flags, a path and codec pointers.
+// only: flags, a path and a rewriter func.
 type passthroughSnapshot struct {
 	values map[schemas.BifrostContextKey]any
 }

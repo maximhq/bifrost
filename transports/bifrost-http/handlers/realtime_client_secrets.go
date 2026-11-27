@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/modelcatalogresolver"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
@@ -103,6 +104,9 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 	if userName, ok := ctx.UserValue(schemas.BifrostContextKeyUserName).(string); ok && userName != "" {
 		bifrostCtx.SetValue(schemas.BifrostContextKeyUserName, userName)
 	}
+	if userEmail, ok := ctx.UserValue(schemas.BifrostContextKeyUserEmail).(string); ok && userEmail != "" {
+		bifrostCtx.SetValue(schemas.BifrostContextKeyUserEmail, userEmail)
+	}
 	if bifrostErr := h.evaluateMintingGovernance(bifrostCtx, providerKey, model); bifrostErr != nil {
 		SendBifrostError(ctx, bifrostErr)
 		return
@@ -178,7 +182,7 @@ func (h *RealtimeClientSecretsHandler) handleRequest(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if bifrostErr := replaceAndCacheRealtimeEphemeralToken(
-		h.handlerStore.GetKVStore(),
+		h.handlerStore.GetSharedTables().RealtimeKeys,
 		resp,
 		key.ID,
 		virtualKey,
@@ -380,14 +384,6 @@ func rewriteGASessionTranscriptionModel(session map[string]json.RawMessage, norm
 	return rewritten, true, nil
 }
 
-const realtimeEphemeralKeyMappingPrefix = "realtime:ephemeral-key:"
-
-type realtimeEphemeralKeyMapping struct {
-	KeyID         string `json:"key_id,omitempty"`
-	VirtualKey    string `json:"virtual_key,omitempty"`
-	ProviderToken string `json:"provider_token,omitempty"`
-}
-
 func realtimeMappingVirtualKey(ctx *schemas.BifrostContext) string {
 	if ctx == nil {
 		return ""
@@ -400,8 +396,10 @@ func realtimeMappingVirtualKey(ctx *schemas.BifrostContext) string {
 	return bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyVirtualKey)
 }
 
-func replaceAndCacheRealtimeEphemeralToken(kv schemas.KVStore, resp *schemas.BifrostPassthroughResponse, keyID string, virtualKey string) *schemas.BifrostError {
-	if kv == nil || resp == nil || len(resp.Body) == 0 || strings.TrimSpace(keyID) == "" {
+// replaceAndCacheRealtimeEphemeralToken swaps the provider's ephemeral token in resp for one of our
+// own, keeps the mapping to keyID and virtualKey in keys, and reports a failure as a Bifrost error.
+func replaceAndCacheRealtimeEphemeralToken(keys *livestore.Table[string, lib.RealtimeKeyMapping], resp *schemas.BifrostPassthroughResponse, keyID string, virtualKey string) *schemas.BifrostError {
+	if keys == nil || resp == nil || len(resp.Body) == 0 || strings.TrimSpace(keyID) == "" {
 		return newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to secure realtime client secret", nil)
 	}
 
@@ -416,15 +414,12 @@ func replaceAndCacheRealtimeEphemeralToken(kv schemas.KVStore, resp *schemas.Bif
 		return newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to secure realtime client secret", err)
 	}
 
-	mapping := realtimeEphemeralKeyMapping{
+	mapping := lib.RealtimeKeyMapping{
 		KeyID:         strings.TrimSpace(keyID),
 		VirtualKey:    strings.TrimSpace(virtualKey),
 		ProviderToken: strings.TrimSpace(providerToken),
 	}
-	if err := kv.SetWithTTL(buildRealtimeEphemeralKeyMappingKey(bifrostToken), mapping, ttl); err != nil {
-		logger.Error("failed to cache realtime ephemeral key mapping for key_id=%s: %v", keyID, err)
-		return newRealtimeClientSecretHandlerError(fasthttp.StatusInternalServerError, "server_error", "failed to secure realtime client secret", err)
-	}
+	keys.PutWithTTL(buildRealtimeEphemeralKeyMappingKey(bifrostToken), mapping, ttl)
 
 	resp.Body = body
 	return nil
@@ -506,7 +501,7 @@ func parseRealtimeEphemeralKeyMapping(body []byte) (string, time.Duration, bool,
 }
 
 func buildRealtimeEphemeralKeyMappingKey(token string) string {
-	return realtimeEphemeralKeyMappingPrefix + strings.TrimSpace(token)
+	return lib.RealtimeKeyPrefix + strings.TrimSpace(token)
 }
 
 func realtimeSessionNotSupportedError(providerKey schemas.ModelProvider, provider schemas.Provider) *schemas.BifrostError {

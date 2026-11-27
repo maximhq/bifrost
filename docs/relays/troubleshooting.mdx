@@ -1,74 +1,159 @@
 ---
 title: "Troubleshooting"
-description: "Work from the status the caller received to the relay, route, grant or mapping that produced it."
+description: "What each relay error means, why it happens and how to fix it."
 icon: "wrench"
 ---
 
-Start from the status the caller got back. Refusals before the hooks (`404`, `400` from the relay itself) write no Relay Logs row; everything from governance onwards does (when Relay Logs are enabled), so a missing row is itself a clue.
+Start from the status code and message your application got back. Each section below shows the message, explains it in one line and gives the fix.
 
-## 404 `relay "name" not found`
+A good first check is **Observability → Relay Logs**. If the call has a row there, Bifrost accepted the call and the row tells you what happened next. Before concluding a call has no row, widen the time window and clear any filters, and make sure Relay Logs is set up at all (it needs the logging plugin and a log store). A genuinely missing row usually means Bifrost turned the call away before checking access: an unknown relay, no matching route, or a request body it could not measure.
 
-The name in `/relay/{name}/...` matches no live relay. Check the spelling against **Relays**, and that the relay compiled: a relay whose CA certificate or proxy URL fails to parse is skipped at startup with a warning in the server log (`relays skipped: ...`). Names are case-sensitive.
+---
 
-If the config store is disabled, no relay is served at all and the `/api/relays` management API is not registered, so it answers `404`.
+## The call is refused
 
-## 404 `no route for POST /path on relay "name"`
+### 404 `relay "web-search" not found`
 
-No route matched the method, path and headers, and **Relay Any Path** is off. Compare the request with the route list: a trailing slash is an extra segment that only a `/**` glob admits, `*` does not cross a `/`, and a header matcher must be satisfied too. Run the request through **Test Pricing**, which reports the matched route index or the reason none matched.
+**Why:** no relay has that name. Names are case-sensitive.
 
-## 404 `route POST /path on relay "name" is disabled`
+**Fix:**
+- Check the name in the URL against the list on the **Relays** page.
+- If the relay comes from `config.json` or Helm, look for `skipping relay "web-search" from config file` in the server log. The message after it says which setting is wrong. See [A relay from config.json is missing](#a-relay-from-configjson-or-helm-is-missing).
+- If the config store is turned off, no relays are served at all.
 
-A route matched but its **Enabled** switch is off. Disabled routes refuse their requests even with Relay Any Path on, and even when a broader route lower in the list would have matched.
+### 404 `no route for POST /search on relay "web-search"`
 
-## 403 `Relay 'name' is not allowed for virtual key '...'`
+**Why:** the relay has no route for this method and path, and **Relay Any Path** is off.
 
-The key holds no grant for this relay. Add the relay under **Relay access** on the key ([virtual key access](./access)). In Enterprise the message names the access profile or project that refused.
+**Fix:** compare the call with the route table:
+- A trailing slash is an extra segment: `/search/` does not match `/search`.
+- `*` stays inside one segment: `/results/*` does not match `/results/abc/pages`. Use `/results/**` to match everything below.
+- If the route has **Header Matchers**, the call must send those headers too.
+- The method must match: a `GET` route does not cover `POST`.
 
-## 400 refusals before relaying
+To see which route a call would match, enter it in **Test Pricing**. The result names the matched route, or says that none matched. Add the missing route, or [import them all from OpenAPI](./routes#import-routes-from-openapi).
 
-| Message | Cause | Fix |
+### 404 `route DELETE /results/abc on relay "web-search" is disabled`
+
+**Why:** the call matched a route whose **Enabled** switch is off. A disabled route refuses its calls, even with Relay Any Path on, and even if a broader route lower down would match.
+
+**Fix:** turn the route back on in the route table, or delete it if you want calls to reach a route below it.
+
+### 403 `Relay 'text-to-speech' is not allowed for virtual key 'research-assistant'`
+
+**Why:** the virtual key has no access to this relay. Relay access is off until you grant it, relay by relay.
+
+**Fix:** open the virtual key and add the relay under **Relay access**. See [Virtual keys: relay access](/features/governance/virtual-keys#relay-access).
+
+In Enterprise, the message may name an access profile or a project instead, such as `Relay 'translate' is not allowed for access profile 'contractors'`. Grant the relay on that [access profile](/enterprise/access-profiles#configure-relay-access) or [project](/enterprise/projects#relays). A key that belongs to a team, customer or user with an access profile takes its relays from the profile, so a grant on the key itself is not used.
+
+### 402 or 429: budget or rate limit
+
+**Why:** the caller's budget is used up, or it hit its request rate limit. Relay calls count against the same budgets and rate limits as model calls. The message names which limit ran out.
+
+**Fix:** raise or reset the limit named in the message — the virtual key, team or customer, or in Enterprise an access profile or a project the call was scoped to. See [Budgets and limits](/features/governance/budget-and-limits).
+
+### 400 before the call is sent
+
+Bifrost refuses these before contacting the API, so nothing is charged.
+
+| Message | Why | Fix |
 | --- | --- | --- |
-| `this route bills on <path> in the request body, which must be JSON` | A route prices request-side units at a path and the body is not JSON. | Send JSON, or switch the mapping to `body_bytes` or `body_chars`. |
-| `the request body names a key more than once (case-insensitively) ...` | The body repeats a key, so the billed quantity is ambiguous. | Send each key once. |
-| `the request body names <path> with different letter case` | The body spells the key as `text` while `units_path` says `Text`. | Match the key exactly. |
-| `relay request body must carry the model key at most once` | The body repeats the `model_path` key. | Send it once. |
-| `header X is set under two spellings; send it once` | The same header was sent as `X-Amz-Target` and `x-amz-target`. | Send one spelling. |
-| `query string cannot be parsed: a ; separator is ambiguous under query auth` | Query auth is on and the query uses `;`. | Use `&`. |
-| `invalid passthrough path: ...` | The path starts with `//`, contains `\` or a scheme. | Send a plain rooted path. |
+| `this route bills on Text in the request body, which must be JSON` | The route reads units from the request at a path, and the body is not JSON. | Send JSON, or price by the whole body (`body_bytes` or `body_chars`). |
+| `the request body names Text with different letter case; use the exact key so the billed quantity can be read` | The body says `text` but **Units Path** says `Text`. | Use the key exactly as written in **Units Path**. |
+| `the request body names a key more than once (case-insensitively) ...` | The body repeats a key, so the amount to charge is unclear. | Send each key once. |
+| `relay request body must carry the model key at most once (model)` | The body repeats the key set as **Model Path**. | Send it once. |
+| `header X-Amz-Target is set under two spellings; send it once` | The same header was sent twice with different capitalization. | Send it once. |
+| `query string cannot be parsed: a ; separator is ambiguous under query auth` | The relay signs in with a query parameter, and the URL uses `;` between parameters. | Use `&` between query parameters. |
 
-## 502 `relay response is too large to buffer`
+---
 
-A buffered reply exceeded 64 MB. Set `stream: true` on the route or add the path to `streaming.paths` so the reply is forwarded without being held.
+## The API returns an error
 
-## Timeouts
+When the call reached the API, its status and body are passed back to you unchanged, and the call has a row in Relay Logs. Calls with a `4xx` or `5xx` reply are not charged.
 
-A buffered call that outlasts `network.timeout_seconds` (default 60) returns a timeout error. For a stream, the same bound applies to receiving the upstream's headers; after that `network.stream_idle_timeout_in_seconds` (default 60) closes a stream that stays silent. Raise either on the **Network** tab.
+### 401 or 403 from the API
 
-## The call succeeded but the cost is 0 or wrong
+**Why:** the API did not accept the relay's credential.
 
-Open the row in **Relay Logs → More details → Cost** and compare the terms with the mapping, or replay the bodies through **Test Pricing**, whose notes say which field read nothing and why. Common causes:
+**Fix:**
+- Check the key on the relay's **Authentication** tab. A key written as `env.VAR_NAME` is read when Bifrost starts, so make sure that variable is set.
+- Check the method. An API that wants `X-Api-Key: <key>` needs **Custom header**, not **Bearer token**. Some APIs also need a **Value Prefix**, such as `Token `.
+- Remember that the caller's own `Authorization` header never reaches the API. Only the relay's credential is sent.
 
-- **Not counted.** The method is not `POST` and the route does not set `billable: true`, or the upstream answered a non-`2xx` status. The row shows **Not billable** or the error status.
-- **Wrong body.** `units_source` points at the response while the quantity is in the request, or the other way round.
-- **Path mismatch.** gjson paths are case-sensitive and dot-separated: `usage.credits`, not `Usage.Credits` or `usage/credits`. An array of objects needs `#.field`.
-- **Content type.** Token, cost and `value` paths are read only from bodies whose content type contains `json` (or has none and parses as JSON). Whole-body measures read any body.
-- **Reported cost ignored.** `ignore_upstream_cost` is on, so `cost_path` is dropped by design.
-- **Route override.** A route sets a field to `0`, which waives it on that route; the route table shows the effective price and an **override** badge.
-- **Stream read nothing.** An SSE event carried none of the mapped paths. Each field keeps the last value reported; a non-SSE stream is forwarded unread unless priced by size.
+### AWS returns a signature error
 
-Token counts never change the cost; they are logged only.
+**Why:** the signature does not match what AWS expects.
 
-## The upstream rejects the request
+**Fix:**
+- **AWS Service** must be the signing name (`textract`, `translate`, `comprehend`), not the product name.
+- **Region** must be the region in the base URL. `https://translate.us-east-1.amazonaws.com` needs `us-east-1`.
+- With **IAM Role (Inherited)**, the machine running Bifrost must have AWS credentials allowed to call that service.
 
-- **401 from the upstream.** Check the credential and auth type: a `header` type needs the exact header name the upstream expects and, for some APIs, a `value_prefix` such as `Token `. Remember that a caller's `Authorization` is dropped; only the relay's credential reaches the upstream.
-- **Missing header.** The caller sent a header the relay also sets in **Extra Headers**; the operator's value wins and the caller's copy is dropped. Under `aws_sigv4`, caller `x-amz-*` headers other than `X-Amz-Target` are dropped.
-- **SigV4 signature mismatch.** `auth.aws.service` must be the signing name (`textract`, `translate`), `credential.aws.region` the region the `base_url` host belongs to, and the base URL the regional endpoint.
-- **Wrong host or base path.** The caller's path is appended to `base_url`; a base URL that already ends in `/v1` plus a route of `/v1/search` sends `/v1/v1/search`.
+### The API says the path is wrong (404)
 
-## The row is missing bodies or headers
+**Why:** the caller's path is added to the end of the base URL. If the base URL already ends in `/v1` and the caller also sends `/v1/search`, the API receives `/v1/v1/search`.
 
-Content logging is off for the request through `client.disable_content_logging`, the virtual key, the project or the `x-bf-disable-content-logging` header (honoured when `client.allow_per_request_content_storage_override` is on), and the row says **Content logging has been disabled for this request**. Bodies over 64 KB are truncated and binary bodies are not kept. See [content logging](/features/observability/content-logging).
+**Fix:** put the shared prefix in one place only: either in the base URL or in the routes and calls, not both.
 
-## A relay from config.json did not appear
+### A header the caller sent is missing
 
-The server log says why: `skipping relay "name" from config file: ...` with the validation error, `skipping duplicate relay` when two entries share a name, or `config store is disabled` when there is no store to reconcile into. Validate the entry against `transports/config.schema.json`; the Web UI and `POST /api/relays` return the same validation messages.
+**Why:** Bifrost removes some caller headers on purpose:
+- credentials (`Authorization`, `x-api-key` and similar)
+- any header the relay also sets under **Extra Headers**, since the relay's value wins
+- under AWS SigV4, every `X-Amz-*` header except `X-Amz-Target`
+
+**Fix:** if the API needs a fixed value, add it under [Extra headers](./configuration#extra-headers). If it needs a per-caller value, use a header name Bifrost does not remove.
+
+### 502 `relay response is too large to buffer`
+
+**Why:** a normal call's reply was over 64 MB.
+
+**Fix:** make the route stream: set **Streaming** to **Always stream**, or add the path under **Always-Stream Paths**. Streamed replies have no size limit. If the route's **Streaming** is set to **Never stream**, that setting wins over **Always-Stream Paths**; change it to **Always stream** or **Auto** first. See [Streaming](./routes#streaming).
+
+### The call times out
+
+**Why:** a normal call took longer than **Timeout (seconds)** (60 by default). A stream is bound by the same **Timeout (seconds)** while it waits for the API to start replying, and by **Stream Idle Timeout (seconds)** (60 by default) once it has started, if it then goes quiet.
+
+**Fix:** raise the relevant value on the relay's [Network](./configuration#network) tab — **Timeout (seconds)** for a slow-to-start reply, **Stream Idle Timeout (seconds)** for a stream that stalls partway through.
+
+---
+
+## The cost is 0 or wrong
+
+Open the call in **Relay Logs** and look at the **Cost** block: it shows the fee per call, the price per unit, the units read and the units billed. Then paste the same bodies into **Test Pricing**. Its notes say which part came out empty and why, for example `no quantity could be read from the response body with measure value at path usage.credits`.
+
+The usual causes:
+
+- **The call was not charged.** Only billable routes with a `2xx` reply are charged, and only `POST` routes are billable by default. The row shows **not billable** or an error status. See [Which calls are charged](./routes#which-calls-are-charged).
+- **The units are read from the wrong body.** **Units Read From** says **Response body** but the number is in the request, or the other way round.
+- **The path is wrong.** Paths are case-sensitive and use dots: `usage.credits`, not `Usage.Credits` or `usage/credits`. For a list, use `#`, as in `results.#.credits`.
+- **The body is not read as JSON.** Paths only work on JSON bodies, and a response is only read as JSON when its content type contains `json`. If the body is actually JSON but mislabeled (for example `text/plain`), fix the content type rather than switching measures — that keeps the billed quantity the same. For a body that genuinely isn't JSON, use **Size of the whole body** or **Characters of the whole body** instead, which changes what's billed.
+- **The reported cost is ignored.** **Ignore Reported Cost** is on, so the API's own cost is not added.
+- **The route overrides the price.** A route with an **override** badge sets its own price, and a field set to `0` there removes that part. Open the route's **Pricing Override** to check.
+- **A stream reported nothing.** Only events that carry a mapped field are read, and a stream that is not server-sent events is not read at all unless it is priced by size. See [Streamed replies](./pricing#streamed-replies).
+
+Token counts never change the cost. They are only recorded on the row.
+
+---
+
+## Relay Logs is missing data
+
+- **No rows at all:** Relay Logs need a log store. Without one, the page shows an error.
+- **A call has no row:** the call was refused before access checks (unknown relay, no route, a `400` above). Fix the call, and the next one gets a row.
+- **No bodies on a row:** content logging is off for that call, by the global setting, the virtual key or the project. The row says *Content logging has been disabled for this request*. The `x-bf-disable-content-logging` request header only has this effect when `client.allow_per_request_content_storage_override` is turned on (off by default) — with it off, a caller sending that header has no effect, and content is still stored. See [Content logging](/features/observability/content-logging).
+- **A body is missing:** a binary body (audio, images) is not kept; text bodies are kept in full.
+
+---
+
+## A relay from config.json or Helm is missing
+
+Look for one of these warnings in the server log at startup:
+
+| Log message | Why | Fix |
+| --- | --- | --- |
+| `skipping relay "web-search" from config file: ...` | The entry has an invalid setting. The rest of the message says which. | Fix the setting. The dashboard and `POST /api/relays` show the same validation errors, which can be easier to read. |
+| `skipping duplicate relay "web-search" from config file` | Two entries share a name. | Rename or remove one. |
+| `config store is disabled: relays cannot be managed` | The config store is turned off. | Turn on the [config store](/deployment-guides/config-json/storage). |
+
+If a virtual key in the same file names a relay that does not exist, that one grant is skipped with a warning and the rest of the key is loaded. Fix the relay, and the grant is applied the next time the key's entry is synced.

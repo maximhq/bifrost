@@ -160,14 +160,13 @@ async function createDbClient(url) {
   }
 
   // SQLite
-  let Database;
-  try { Database = require('better-sqlite3'); }
-  catch (_) {
-    console.warn('[dbverify] better-sqlite3 not found. Run: npm install in tests/e2e/api/');
+  const filePath = resolveSqlitePath(url);
+  let db;
+  try { db = openSqliteReadonly(filePath); }
+  catch (err) {
+    console.warn(`[dbverify] cannot open ${filePath} read-only (${err.message}); on Node without node:sqlite, run npm install in tests/e2e/api/`);
     return null;
   }
-  const filePath = resolveSqlitePath(url);
-  const db = new Database(filePath, { readonly: true });
   return {
     type: 'sqlite',
     query: async (sql, params) => {
@@ -636,6 +635,7 @@ function loadDatasheet() {
 // Datasheet entry resolver + provider alias normalization live in the shared
 // lib so this reporter and runners/run-stream-cancellation.mjs can't drift.
 const { resolvePricingEntry, expectedCostFromRow } = require('../lib/pricing');
+const { openSqliteReadonly } = require('../lib/sqlite-readonly');
 
 // Recompute the expected cost from the datasheet at the rates of the tier the
 // provider actually served (the logs row's service_tier column), mirroring

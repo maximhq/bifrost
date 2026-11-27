@@ -1,14 +1,21 @@
 import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
-import { CheckboxFilterItem, FilterSection, SearchableCheckboxList, useAutoFocusOnOpen } from "@/components/filters/primitives";
+import {
+	CheckboxFilterItem,
+	EntityFilter,
+	FilterSection,
+	SearchableCheckboxList,
+	useAutoFocusOnOpen,
+} from "@/components/filters/primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useGetRelayLogFilterDataQuery } from "@/lib/store";
-import type { RelayLogFilterDimension, RelayLogFilterEntity, RelayLogFilters } from "@/lib/types/relays";
+import type { RelayLogFilterDimension, RelayLogFilters } from "@/lib/types/relays";
 import { formatCostBound, parseCostBound } from "@/lib/utils/relayLogQuery";
-import { PanelLeftClose, RotateCcw } from "lucide-react";
+import { PanelLeftClose, RotateCcw, Search } from "lucide-react";
 import { type KeyboardEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 const COLLAPSE_STORAGE_KEY = "relay-filter-sidebar-collapsed";
 
@@ -21,11 +28,11 @@ interface RelayFilterSidebarProps {
 	onFiltersChange: (filters: RelayLogFilters) => void;
 }
 
-type MultiKey = "relay_names" | "methods" | "statuses" | "kinds" | "virtual_key_ids" | "apps";
-type EntityKey = "user_ids" | "team_ids" | "customer_ids" | "business_unit_ids" | "project_ids";
+type MultiKey = "relay_names" | "methods" | "status" | "kinds" | "virtual_key_ids" | "apps";
 
 /** The Relay Logs filter sidebar, built on the same primitives as the LLM and MCP log sidebars. */
 export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSidebarProps) {
+	const { t } = useTranslation("observability");
 	const isMobile = useIsMobile();
 	const [collapsed, setCollapsed] = useState(false);
 
@@ -47,7 +54,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 	}, []);
 
 	const activeFilterCount = useMemo(() => {
-		const excluded = ["start_time", "end_time", "search", "period"];
+		const excluded = ["start_time", "end_time", "search", "content_search", "period"];
 		return Object.entries(filters).reduce((c, [key, value]) => {
 			if (excluded.includes(key)) return c;
 			if (Array.isArray(value)) return c + value.length;
@@ -75,7 +82,7 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 			data-testid="relay-filter-sidebar"
 		>
 			<div className="flex h-11 items-center justify-between border-b pr-2 pl-5">
-				<span className="text-sm font-semibold">Filters</span>
+				<span className="text-sm font-semibold">{t("filters.filters")}</span>
 				<div className="flex items-center gap-1">
 					{activeFilterCount > 0 && (
 						<Button
@@ -86,10 +93,17 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 							data-testid="relay-filter-reset-btn"
 						>
 							<RotateCcw className="size-3" />
-							Reset
+							{t("relayLogs.filters.reset")}
 						</Button>
 					)}
-					<Button variant="ghost" size="icon" className="size-7" onClick={toggleCollapsed} title="Hide filters" aria-label="Hide filters">
+					<Button
+						variant="ghost"
+						size="icon"
+						className="size-7"
+						onClick={toggleCollapsed}
+						title={t("filters.hideFilters")}
+						aria-label={t("filters.hideFilters")}
+					>
 						<PanelLeftClose className="size-4" />
 					</Button>
 				</div>
@@ -97,14 +111,21 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 			<ScrollArea className="flex flex-1 overflow-y-auto p-2 pb-0" viewportClassName="no-table">
 				<div className="flex grow flex-col gap-1">
 					{/* First two open by default; the rest open only when they carry a value. */}
-					<FilterSection title="Status" defaultOpen testId="relay-status-filter-toggle">
-						{["success", "error", "cancelled"].map((status) => (
+					<FilterSection title={t("filters.status")} defaultOpen testId="relay-status-filter-toggle">
+						{(
+							[
+								["success", t("labels.success")],
+								["error", t("labels.error")],
+								["cancelled", t("labels.cancelled")],
+								["processing", t("logs.statuses.processing")],
+							] as const
+						).map(([status, statusLabel]) => (
 							<CheckboxFilterItem
 								key={status}
 								labelClassName="capitalize"
-								label={status}
-								checked={(filters.statuses ?? []).includes(status)}
-								onCheckedChange={() => toggle("statuses", status)}
+								label={statusLabel}
+								checked={(filters.status ?? []).includes(status)}
+								onCheckedChange={() => toggle("status", status)}
 								testId={`relay-status-filter-checkbox-${status}`}
 							/>
 						))}
@@ -114,8 +135,8 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="relay_names"
 						dimension="relay_names"
-						title="Relay"
-						placeholder="Search relays"
+						title={t("relayLogs.fields.relay")}
+						placeholder={t("relayLogs.filters.searchRelays")}
 						testIdPrefix="relay-filter"
 						defaultOpen
 					/>
@@ -124,46 +145,86 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						onFiltersChange={onFiltersChange}
 						filterKey="methods"
 						dimension="methods"
-						title="Method"
-						placeholder="Search methods"
+						title={t("relayLogs.fields.method")}
+						placeholder={t("relayLogs.filters.searchMethods")}
 						testIdPrefix="relay-method-filter"
 					/>
-					<FilterSection title="Billing" defaultOpen={filters.billable !== undefined} testId="relay-billing-filter-toggle">
+					<FilterSection
+						title={t("relayLogs.filters.billing")}
+						defaultOpen={filters.billable !== undefined}
+						testId="relay-billing-filter-toggle"
+					>
 						<CheckboxFilterItem
-							label="Billable"
+							label={t("relayLogs.fields.billable")}
 							checked={filters.billable === true}
 							onCheckedChange={() => onFiltersChange({ ...filters, billable: filters.billable === true ? undefined : true })}
 							testId="relay-billing-filter-checkbox-billable"
 						/>
 						<CheckboxFilterItem
-							label="Not billable"
+							label={t("relayLogs.fields.notBillable")}
 							checked={filters.billable === false}
 							onCheckedChange={() => onFiltersChange({ ...filters, billable: filters.billable === false ? undefined : false })}
 							testId="relay-billing-filter-checkbox-not-billable"
 						/>
 					</FilterSection>
-					<FilterSection title="Kind" defaultOpen={(filters.kinds ?? []).length > 0} testId="relay-kind-filter-toggle">
+					<FilterSection
+						title={t("relayLogs.fields.kind")}
+						defaultOpen={(filters.kinds ?? []).length > 0}
+						testId="relay-kind-filter-toggle"
+					>
 						<CheckboxFilterItem
-							label="Calls"
+							label={t("relayLogs.filters.calls")}
 							checked={(filters.kinds ?? []).includes("call")}
 							onCheckedChange={() => toggle("kinds", "call")}
 							testId="relay-kind-filter-checkbox-call"
 						/>
 						<CheckboxFilterItem
-							label="Job settlements"
+							label={t("relayLogs.filters.jobSettlements")}
 							checked={(filters.kinds ?? []).includes("job")}
 							onCheckedChange={() => toggle("kinds", "job")}
 							testId="relay-kind-filter-checkbox-job"
 						/>
 					</FilterSection>
 					<CostFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="session_id"
+						title={t("filters.sessionID")}
+						placeholder={t("filters.exactSessionID")}
+						testId="relay-session-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="job_id"
+						title={t("relayLogs.fields.job")}
+						placeholder={t("relayLogs.filters.exactJobID")}
+						testId="relay-job-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="parent_request_id"
+						title={t("logs.detail.parentRequestID")}
+						placeholder={t("relayLogs.filters.exactParentRequestID")}
+						testId="relay-parent-request-id-filter"
+					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="agent_correlation_id"
+						title={t("filters.agentCorrelationID")}
+						placeholder={t("filters.exactAgentCorrelationID")}
+						testId="relay-agent-correlation-id-filter"
+					/>
 					<NamesFilter
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="apps"
 						dimension="apps"
-						title="App"
-						placeholder="Search apps"
+						title={t("labels.app")}
+						placeholder={t("filters.searchApps")}
 						testIdPrefix="relay-app-filter"
 						searchable={false}
 					/>
@@ -171,18 +232,20 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="virtual_key_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="virtual_keys"
-						title="Virtual key"
-						placeholder="Search virtual keys"
+						title={t("relayLogs.fields.virtualKey")}
+						placeholder={t("filters.searchVirtualKeys")}
 						testIdPrefix="relay-vk-filter"
 					/>
 					<EntityFilter
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="user_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="users"
-						title="User"
-						placeholder="Search or add a user"
+						title={t("labels.user")}
+						placeholder={t("filters.searchOrAddAUser")}
 						testIdPrefix="relay-user-filter"
 						allowCustom
 					/>
@@ -190,9 +253,10 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="team_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="teams"
-						title="Teams"
-						placeholder="Search or add a team"
+						title={t("relayLogs.filters.teams")}
+						placeholder={t("filters.searchOrAddATeam")}
 						testIdPrefix="relay-teams-filter"
 						allowCustom
 					/>
@@ -200,9 +264,10 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="customer_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="customers"
-						title="Customers"
-						placeholder="Search or add a customer"
+						title={t("relayLogs.filters.customers")}
+						placeholder={t("filters.searchOrAddACustomer")}
 						testIdPrefix="relay-customers-filter"
 						allowCustom
 					/>
@@ -210,9 +275,10 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="business_unit_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="business_units"
-						title="Business units"
-						placeholder="Search or add a business unit"
+						title={t("relayLogs.filters.businessUnits")}
+						placeholder={t("filters.searchOrAddABusinessUnit")}
 						testIdPrefix="relay-business-units-filter"
 						allowCustom
 					/>
@@ -220,9 +286,10 @@ export function RelayFilterSidebar({ filters, onFiltersChange }: RelayFilterSide
 						filters={filters}
 						onFiltersChange={onFiltersChange}
 						filterKey="project_ids"
+						useFilterData={useGetRelayLogFilterDataQuery}
 						dimension="projects"
-						title="Projects"
-						placeholder="Search or add a project"
+						title={t("relayLogs.filters.projects")}
+						placeholder={t("filters.searchOrAddAProject")}
 						testIdPrefix="relay-projects-filter"
 						allowCustom
 					/>
@@ -240,6 +307,37 @@ interface FilterComponentProps {
 	filters: RelayLogFilters;
 	onFiltersChange: (filters: RelayLogFilters) => void;
 	defaultOpen?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// ExactIDFilter – one exact correlation id (session, parent request, agent correlation), as on
+// the LLM and MCP sidebars.
+// ---------------------------------------------------------------------------
+
+interface ExactIDFilterProps extends FilterComponentProps {
+	filterKey: "session_id" | "job_id" | "parent_request_id" | "agent_correlation_id";
+	title: string;
+	placeholder: string;
+	/** Base test id: the section is `<testId>-toggle` and the field `<testId>-input`, as on the LLM sidebar. */
+	testId: string;
+}
+
+function ExactIDFilter({ filters, onFiltersChange, filterKey, title, placeholder, testId }: ExactIDFilterProps) {
+	const hasActive = !!filters[filterKey];
+	return (
+		<FilterSection title={title} defaultOpen={hasActive} testId={`${testId}-toggle`}>
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters[filterKey] || ""}
+					onChange={(event) => onFiltersChange({ ...filters, [filterKey]: event.target.value || undefined })}
+					placeholder={placeholder}
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid={`${testId}-input`}
+				/>
+			</div>
+		</FilterSection>
+	);
 }
 
 // ---------------------------------------------------------------------------
@@ -326,81 +424,13 @@ function NamesFilter({
 // carried in the URL stays visible and clearable.
 // ---------------------------------------------------------------------------
 
-interface EntityFilterProps extends FilterComponentProps {
-	filterKey: EntityKey | "virtual_key_ids";
-	dimension: Extract<RelayLogFilterDimension, "virtual_keys" | "users" | "teams" | "customers" | "business_units" | "projects">;
-	title: string;
-	placeholder: string;
-	testIdPrefix: string;
-	/** Lets the user add an id that is not in the list (the LLM sidebar's "Search or add ..."). */
-	allowCustom?: boolean;
-}
-
-function EntityFilter({
-	filters,
-	onFiltersChange,
-	defaultOpen,
-	filterKey,
-	dimension,
-	title,
-	placeholder,
-	testIdPrefix,
-	allowCustom,
-}: EntityFilterProps) {
-	const selectedValues = filters[filterKey];
-	const selected = useMemo(() => selectedValues ?? [], [selectedValues]);
-	const hasActive = selected.length > 0;
-	const [opened, setOpened] = useState(!!defaultOpen || hasActive);
-	const searchInputRef = useAutoFocusOnOpen(opened);
-	const [searchQuery, setSearchQuery] = useState("");
-	const {
-		data: filterData,
-		isUninitialized,
-		isLoading,
-		isFetching,
-	} = useGetRelayLogFilterDataQuery({ dimensions: [dimension], q: searchQuery || undefined }, { skip: !opened && !hasActive });
-	const available: RelayLogFilterEntity[] = useMemo(() => filterData?.[dimension] ?? [], [filterData, dimension]);
-	const items = useMemo(() => {
-		const seen = new Set(available.map((e) => e.id));
-		const extras = selected.filter((id) => !seen.has(id));
-		return [...available.map((e) => ({ key: e.id, label: e.name || e.id })), ...extras.map((id) => ({ key: id, label: id }))];
-	}, [available, selected]);
-
-	if (!isUninitialized && !isLoading && available.length === 0 && !hasActive && !opened && !searchQuery) return null;
-
-	return (
-		<FilterSection
-			title={title}
-			defaultOpen={!!defaultOpen || hasActive}
-			loading={isLoading}
-			onOpenChange={setOpened}
-			testId={`${testIdPrefix}-toggle`}
-		>
-			<SearchableCheckboxList
-				inputRef={searchInputRef}
-				placeholder={placeholder}
-				items={items}
-				allowCustom={allowCustom}
-				isSelected={(id) => selected.includes(id)}
-				onToggle={(id) => {
-					const next = selected.includes(id) ? selected.filter((v) => v !== id) : [...selected, id];
-					onFiltersChange({ ...filters, [filterKey]: next });
-				}}
-				onSearch={setSearchQuery}
-				fetching={isFetching}
-				testIdPrefix={testIdPrefix}
-				normalizeTestIdKey
-			/>
-		</FilterSection>
-	);
-}
-
 // ---------------------------------------------------------------------------
 // CostFilter – min/max bounds in USD. Zero is a real bound (max 0 = free calls only), so the
 // inputs commit on blur or Enter and an empty field clears that bound.
 // ---------------------------------------------------------------------------
 
 function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const { t } = useTranslation("observability");
 	const hasActive = filters.min_cost !== undefined || filters.max_cost !== undefined;
 	const [minText, setMinText] = useState(formatCostBound(filters.min_cost));
 	const [maxText, setMaxText] = useState(formatCostBound(filters.max_cost));
@@ -422,7 +452,7 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 	};
 
 	return (
-		<FilterSection title="Cost" defaultOpen={defaultOpen || hasActive} testId="relay-cost-filter-toggle">
+		<FilterSection title={t("labels.cost")} defaultOpen={defaultOpen || hasActive} testId="relay-cost-filter-toggle">
 			<div className="grid grid-cols-2 gap-2 px-3 py-2">
 				<Input
 					type="number"
@@ -433,8 +463,8 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 					onChange={(event) => setMinText(event.target.value)}
 					onBlur={(event) => commit("min_cost", event.target.value)}
 					onKeyDown={onKeyDown("min_cost")}
-					placeholder="Min $"
-					aria-label="Minimum cost"
+					placeholder={t("relayLogs.filters.minCost")}
+					aria-label={t("relayLogs.filters.minimumCost")}
 					className="h-8 text-xs"
 					data-testid="relay-cost-filter-min"
 				/>
@@ -447,8 +477,8 @@ function CostFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPr
 					onChange={(event) => setMaxText(event.target.value)}
 					onBlur={(event) => commit("max_cost", event.target.value)}
 					onKeyDown={onKeyDown("max_cost")}
-					placeholder="Max $"
-					aria-label="Maximum cost"
+					placeholder={t("relayLogs.filters.maxCost")}
+					aria-label={t("relayLogs.filters.maximumCost")}
 					className="h-8 text-xs"
 					data-testid="relay-cost-filter-max"
 				/>

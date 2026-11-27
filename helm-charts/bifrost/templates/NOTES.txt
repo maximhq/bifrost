@@ -1,4 +1,6 @@
 Bifrost has been installed!
+{{- /* Trailing slash trimmed so "/bifrost/" and "/" never print a double slash. */ -}}
+{{- $basePath := .Values.bifrost.server.basePath | default "" | trimSuffix "/" }}
 
 {{- $isLegacy := true }}
 {{- range $k, $v := .Values.ingress }}
@@ -8,7 +10,7 @@ Bifrost has been installed!
 
 1. Access Bifrost at:
 {{- range .Values.ingress.hosts }}
-   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}{{ $basePath }}
 {{- end }}
 
 {{- else if and .Values.ingress (not $isLegacy) }}
@@ -18,7 +20,7 @@ Bifrost has been installed!
 {{- $ing := index $.Values.ingress . }}
 {{- if and (kindIs "map" $ing) $ing.enabled }}
 {{- range $ing.hosts }}
-   http{{ if $ing.tls }}s{{ end }}://{{ .host }}
+   http{{ if $ing.tls }}s{{ end }}://{{ .host }}{{ $basePath }}
 {{- end }}
 {{- end }}
 {{- end }}
@@ -46,7 +48,7 @@ Bifrost has been installed!
    kubectl port-forward svc/{{ include "bifrost.fullname" . }} 8080:{{ .Values.service.port }} -n {{ .Release.Namespace }}
 
 2. Access Bifrost at:
-   http://localhost:8080
+   http://localhost:8080{{ $basePath }}
 
 {{- end }}
 
@@ -77,6 +79,6 @@ Configuration:
 - Replicas: {{ .Values.replicaCount }}
 {{- end }}
 
-Metrics: http://{{ include "bifrost.fullname" . }}:{{ .Values.service.port }}/metrics
+Metrics: http://{{ include "bifrost.fullname" . }}:{{ .Values.service.port }}{{ $basePath }}/metrics
 
 For documentation, visit: https://www.getbifrost.ai/docs

@@ -699,7 +699,7 @@ func TestRuntimeServesResponsesResolvesAliasedModel(t *testing.T) {
 }
 
 func TestRuntimeOpenAIURL(t *testing.T) {
-	if got := runtimeOpenAIURL(nil, "us-east-1", "responses"); got != "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses" {
+	if got := (&BedrockProvider{}).runtimeOpenAIURL(nil, "us-east-1", "responses"); got != "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses" {
 		t.Errorf("runtimeOpenAIURL = %q", got)
 	}
 }

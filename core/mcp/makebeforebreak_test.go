@@ -124,12 +124,12 @@ func newMakeBeforeBreakConfig(id, serverURL string) *schemas.MCPClientConfig {
 // tool execution uses (GetClientForTool + AcquireClientConn + CallTool) and
 // returns any error along the way.
 func callEchoTool(m *MCPManager, toolName string) error {
-	state := m.GetClientForTool(toolName)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	state, _ := m.GetClientForTool(ctx, toolName)
 	if state == nil {
 		return fmt.Errorf("tool '%s' is not available or not permitted", toolName)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	bfCtx := schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	conn, release, err := m.AcquireClientConn(bfCtx, state)
 	if err != nil {
@@ -147,16 +147,41 @@ func callEchoTool(m *MCPManager, toolName string) error {
 	return callErr
 }
 
+// clientSnapshot is what the assertions below work with: the connection-state
+// snapshot plus the client's discovery read from the store (client state no
+// longer carries discovery data).
+type clientSnapshot struct {
+	schemas.MCPClientState
+	ToolMap            map[string]schemas.ChatTool
+	ServerInstructions string
+	Resources          []mcpgo.Resource
+	ResourceTemplates  []mcpgo.ResourceTemplate
+	Prompts            []mcpgo.Prompt
+}
+
 // snapshotClientState copies the fields the assertions below care about while
-// holding the manager lock.
-func snapshotClientState(m *MCPManager, id string) (state schemas.MCPClientState, exists bool) {
+// holding the manager lock, with the client's discovery read from the store.
+func snapshotClientState(m *MCPManager, id string) (state clientSnapshot, exists bool) {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	cs, ok := m.clientMap[id]
 	if !ok {
-		return schemas.MCPClientState{}, false
+		m.mu.RUnlock()
+		return clientSnapshot{}, false
 	}
-	return *cs, true
+	snapshot := *m.snapshot(id, cs)
+	m.mu.RUnlock()
+	discovery := m.discoveryStore.GetDiscovery(context.Background(), &schemas.MCPClientConfig{ID: id})
+	if discovery == nil {
+		discovery = &schemas.MCPDiscovery{}
+	}
+	return clientSnapshot{
+		MCPClientState:     snapshot,
+		ToolMap:            discovery.Tools,
+		ServerInstructions: discovery.Instructions,
+		Resources:          discovery.Resources,
+		ResourceTemplates:  discovery.ResourceTemplates,
+		Prompts:            discovery.Prompts,
+	}, true
 }
 
 // =============================================================================
@@ -168,9 +193,10 @@ func TestConnectToMCPClient_MakeBeforeBreak_ServesDuringDialAndClosesOldConn(t *
 	gate := newDialGate()
 	ts := buildGatedMCPServer(t, gate)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, nil, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("serves-during-dial", ts.URL)
+	accountOf(m).set(config)
 	toolName := config.Name + "-echo"
 
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
@@ -229,9 +255,10 @@ func TestConnectToMCPClient_MakeBeforeBreak_ServesDuringDialAndClosesOldConn(t *
 func TestConnectToMCPClient_MakeBeforeBreak_ConcurrentCallsAcrossSwap(t *testing.T) {
 	ts := buildGatedMCPServer(t, nil)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, nil, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("concurrent-swap", ts.URL)
+	accountOf(m).set(config)
 	toolName := config.Name + "-echo"
 
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
@@ -351,9 +378,10 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			ts := buildGatedMCPServer(t, nil)
 
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, &flipCredStore{failWith: tc.failWith}, nil, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), &flipCredStore{failWith: tc.failWith}, nil, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 			config := newMakeBeforeBreakConfig("dial-failure", ts.URL)
+			accountOf(m).set(config)
 
 			require.NoError(t, m.connectToMCPClient(context.Background(), config))
 
@@ -382,7 +410,6 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 			// "needs re-authorization" / "disconnected" reason instead of a
 			// generic "not available").
 			assert.NotEmpty(t, after.ToolMap, "a failed re-dial must keep the last-known tool map")
-			assert.NotEmpty(t, after.ToolNameMapping)
 
 			// Reachability of the captured connection, which is the whole
 			// point of the split above.
@@ -417,7 +444,6 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 				assert.Nil(t, afterSecondFailure.Conn)
 			}
 			assert.Equal(t, before.ToolMap, afterSecondFailure.ToolMap, "a second failed re-dial must keep the original last-known tool map")
-			assert.Equal(t, before.ToolNameMapping, afterSecondFailure.ToolNameMapping)
 		})
 	}
 }
@@ -437,9 +463,10 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_PostFailureState(t *test
 func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_KeepsLiveConnectionServing(t *testing.T) {
 	ts := buildGatedMCPServer(t, nil)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, &flipCredStore{failWith: fmt.Errorf("connection refused")}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), &flipCredStore{failWith: fmt.Errorf("connection refused")}, nil, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("dial-failure-keeps-conn", ts.URL)
+	accountOf(m).set(config)
 	toolName := config.Name + "-echo"
 
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
@@ -461,6 +488,38 @@ func TestConnectToMCPClient_MakeBeforeBreak_DialFailure_KeepsLiveConnectionServi
 
 	// The point of every assertion above: traffic keeps flowing.
 	require.NoError(t, callEchoTool(m, toolName), "the surviving connection must still serve tool calls")
+}
+
+// TestUpdateClientCredentials_FailedTLSApplyKeepsConnectionAndStoresSettings pins
+// what a TLS edit whose live apply fails leaves on a client with a persistent
+// connection: the working connection keeps serving on its old settings, and the
+// runtime config already carries the new ones, so the client's next reconnect
+// dials with them. Nothing redials on its own while that connection stays healthy.
+func TestUpdateClientCredentials_FailedTLSApplyKeepsConnectionAndStoresSettings(t *testing.T) {
+	ts := buildGatedMCPServer(t, nil)
+
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), &flipCredStore{failWith: fmt.Errorf("connection refused")}, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
+	config := newMakeBeforeBreakConfig("failed-tls-apply", ts.URL)
+	config.Name = "mbb_failed_tls_apply" // UpdateClient refuses a hyphenated name
+	accountOf(m).set(config)
+	require.NoError(t, m.connectToMCPClient(context.Background(), config))
+	before, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	require.NotNil(t, before.Conn)
+
+	require.NoError(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) {
+		c.TLSConfig = &schemas.MCPTLSConfig{InsecureSkipVerify: true}
+	}))
+	require.Error(t, m.UpdateClientCredentials(config.ID), "the live apply fails")
+
+	after, ok := snapshotClientState(m, config.ID)
+	require.True(t, ok)
+	assert.Same(t, before.Conn, after.Conn, "the working connection keeps serving")
+	require.NotNil(t, after.ExecutionConfig)
+	require.NotNil(t, after.ExecutionConfig.TLSConfig, "the runtime config carries the new TLS settings")
+	assert.True(t, after.ExecutionConfig.TLSConfig.InsecureSkipVerify, "so the next reconnect dials with them")
+	require.NoError(t, callEchoTool(m, config.Name+"-echo"), "tool calls keep flowing meanwhile")
 }
 
 // =============================================================================
@@ -509,9 +568,10 @@ func TestConnectionChecker_PerformCheck_StaleGenerationWriteDropped(t *testing.T
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, nil, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newMakeBeforeBreakConfig("stale-sync", ts.URL)
+	accountOf(m).set(config)
 
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 
@@ -540,7 +600,7 @@ func TestConnectionChecker_PerformCheck_StaleGenerationWriteDropped(t *testing.T
 	markerTools := map[string]schemas.ChatTool{"marker-tool": {}}
 	m.mu.Lock()
 	m.clientMap[config.ID].ConnGeneration++
-	m.clientMap[config.ID].ToolMap = markerTools
+	m.discoveryStore.SetDiscovery(context.Background(), config, &schemas.MCPDiscovery{Tools: markerTools})
 	m.mu.Unlock()
 
 	close(listRelease)
@@ -558,15 +618,16 @@ func TestConnectionChecker_PerformCheck_StaleGenerationWriteDropped(t *testing.T
 
 func TestHandleSSEConnectionLost_StaleGenerationNoOp(t *testing.T) {
 	m := &MCPManager{
-		logger:    &MockLogger{},
-		clientMap: map[string]*schemas.MCPClientState{},
+		discoveryStore: NewDiscoveryStore(nil, nil),
+		logger:         &MockLogger{},
+		clientMap:      map[string]*clientConn{},
 	}
 	config := &schemas.MCPClientConfig{ID: "sse-client", Name: "sse-client"}
-	m.clientMap[config.ID] = &schemas.MCPClientState{
-		Name:            config.Name,
-		ExecutionConfig: config,
-		State:           schemas.MCPConnectionStateHealthy,
-		ConnGeneration:  2,
+	m.clientMap[config.ID] = &clientConn{
+		Name:           config.Name,
+		State:          schemas.MCPConnectionStateHealthy,
+		ConnGeneration: 2,
+		dialed:         config,
 	}
 
 	// A callback registered against the replaced connection (generation 1)

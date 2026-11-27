@@ -58,7 +58,7 @@ func TestSyncFromURLBedrockRowBeatsMantleRow(t *testing.T) {
 		_, _ = w.Write([]byte(bedrockMantleCollisionDatasheet))
 	}))
 	defer srv.Close()
-	store := New(cs, logger, Config{URL: srv.URL, ModelParametersURL: srv.URL})
+	store := newForTest(t, cs, logger, Config{URL: srv.URL, ModelParametersURL: srv.URL})
 
 	for i := 0; i < syncRepeats; i++ {
 		if err := store.SyncFromURL(ctx); err != nil {
@@ -93,11 +93,11 @@ func TestApplyPricingDataBedrockRowBeatsMantleRow(t *testing.T) {
 	entries["anthropic.claude-sonnet-5-5"] = Entry{Provider: "bedrock", Mode: "chat", InputCostPerToken: &in, OutputCostPerToken: &out}
 	entries["bedrock_mantle/anthropic.claude-sonnet-5-5"] = Entry{Provider: "bedrock_mantle", Mode: "chat", InputCostPerToken: &inMantle, OutputCostPerToken: &outMantle}
 
-	store := NewTestStore(nil)
+	store := testStore(t, nil)
 	for i := 0; i < syncRepeats; i++ {
 		store.applyPricingData(entries)
 		store.mu.RLock()
-		row, ok := store.pricingData[makeKey("anthropic.claude-sonnet-5-5", "bedrock", "chat")]
+		row, ok := store.pricingData.Get(makeKeyNormalized("anthropic.claude-sonnet-5-5", "bedrock", "chat"))
 		store.mu.RUnlock()
 		if !ok || row.InputCostPerToken == nil || *row.InputCostPerToken != 2e-06 {
 			t.Fatalf("apply %d stored input cost %v, want 2e-06 from the bedrock row", i, deref(row.InputCostPerToken))
@@ -135,7 +135,7 @@ func TestResolvePricingRowsTieBreakIsOrderIndependentAndWarns(t *testing.T) {
 	}
 	for i := 0; i < syncRepeats; i++ {
 		rec := &warnRecorder{}
-		s := NewTestStore(nil)
+		s := testStore(t, nil)
 		s.logger = rec
 		rows := s.resolvePricingRows(entries)
 		if len(rows) != 1 || rows[0].InputCostPerToken == nil || *rows[0].InputCostPerToken != 1e-06 {
@@ -147,10 +147,35 @@ func TestResolvePricingRowsTieBreakIsOrderIndependentAndWarns(t *testing.T) {
 	}
 }
 
+// The database keeps each casing as its own row, so a sync neither drops one nor
+// warns about it. Only the in-memory map collapses them, onto the lowercase row.
+func TestResolvePricingRowsKeepsCaseVariantsForDatabase(t *testing.T) {
+	entries := map[string]Entry{
+		"azure/deepseek-v4-pro": costEntry("azure", 1e-06),
+		"azure/DeepSeek-V4-Pro": costEntry("azure", 2e-06),
+	}
+	rec := &warnRecorder{}
+	s := testStore(t, nil)
+	s.logger = rec
+	rows := s.resolvePricingRows(entries)
+	if len(rows) != 2 || rows[0].Model != "DeepSeek-V4-Pro" || rows[1].Model != "deepseek-v4-pro" {
+		t.Fatalf("rows=%+v, want one row per casing", rows)
+	}
+	if len(rec.warns) != 0 {
+		t.Fatalf("warnings=%q, want none", rec.warns)
+	}
+
+	s.applyPricingData(entries)
+	row := s.Get("DeepSeek-V4-Pro", "azure", schemas.ChatCompletionRequest)
+	if row == nil || row.InputCostPerToken == nil || *row.InputCostPerToken != 1e-06 {
+		t.Fatalf("Get() = %+v, want the lowercase row at 1e-06", row)
+	}
+}
+
 // Rows folded onto one key at the same price lose nothing, so they stay quiet.
 func TestResolvePricingRowsSamePriceFoldIsSilent(t *testing.T) {
 	rec := &warnRecorder{}
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.logger = rec
 	rows := s.resolvePricingRows(map[string]Entry{
 		"m":                costEntry("bedrock", 2e-06),
@@ -166,7 +191,7 @@ func TestResolvePricingRowsSamePriceFoldIsSilent(t *testing.T) {
 // so the fold is reported.
 func TestResolvePricingRowsNonListPriceFoldWarns(t *testing.T) {
 	rec := &warnRecorder{}
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.logger = rec
 	a, b := costEntry("bedrock_mantle", 2e-06), costEntry("bedrock_x", 2e-06)
 	cacheA, cacheB := 2e-07, 3e-07
@@ -181,7 +206,7 @@ func TestResolvePricingRowsNonListPriceFoldWarns(t *testing.T) {
 // and never as a Warn on every sync.
 func TestResolvePricingRowsExactRuleFoldLogsDebugNotWarn(t *testing.T) {
 	rec := &warnRecorder{}
-	s := NewTestStore(nil)
+	s := testStore(t, nil)
 	s.logger = rec
 	rows := s.resolvePricingRows(map[string]Entry{
 		"m":                costEntry("bedrock", 2e-06),
@@ -207,7 +232,7 @@ func BenchmarkResolvePricingRows(b *testing.B) {
 		entries[fmt.Sprintf("bedrock_mantle/anthropic.m-%d", i)] = costEntry("bedrock_mantle", in*1.1)
 		entries[fmt.Sprintf("anthropic.m-%d", i)] = costEntry("bedrock", in)
 	}
-	s := NewTestStore(nil)
+	s := testStore(b, nil)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -224,7 +249,7 @@ func TestResolvePricingRowsExactProviderBeatsSmallerKey(t *testing.T) {
 		"bedrock_mantle/openai.x": costEntry("bedrock_mantle", 3e-06),
 	}
 	for i := 0; i < syncRepeats; i++ {
-		rows := NewTestStore(nil).resolvePricingRows(entries)
+		rows := testStore(t, nil).resolvePricingRows(entries)
 		if len(rows) != 1 || rows[0].InputCostPerToken == nil || *rows[0].InputCostPerToken != 2e-06 {
 			t.Fatalf("run %d: got %d rows (first input cost %v), want the bedrock row (2e-06) although its key sorts after bedrock_mantle/", i, len(rows), firstInputCost(rows))
 		}

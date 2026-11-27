@@ -38,6 +38,8 @@ describe("pricingFieldUnit", () => {
 			"cache_read_input_token_cost_above_200k_tokens",
 			"cache_read_input_token_cost_above_200k_tokens_priority",
 			"cache_creation_input_token_cost_above_1hr_fast",
+			"cache_creation_input_token_cost_above_12hr",
+			"cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex",
 			"cache_read_input_token_cost_flex_above_272k_tokens",
 			"input_cost_per_token_above_272k_tokens_ultrafast",
 			"output_cost_per_token_above_272k_tokens_ultrafast",
@@ -91,7 +93,7 @@ describe("pricingFieldUnit", () => {
 			expect(byUnit[unit], `${field.key} resolved to unexpected unit ${unit}`).toBeDefined();
 			byUnit[unit].push(field.key);
 		}
-		expect(PRICING_FIELDS).toHaveLength(129);
+		expect(PRICING_FIELDS).toHaveLength(137);
 		expect(byUnit.multiplier).toEqual(["inference_geo_us_multiplier", "off_peak_cost_multiplier"]);
 		expect(byUnit.character).toEqual(["input_cost_per_character"]);
 		// Sanity: the split is real, not everything collapsing into one bucket.
@@ -133,7 +135,7 @@ describe("request type groups", () => {
 	// GPT Live bills voice time per second, so its overrides use the audio fields.
 	it("offers live under the audio group with per-second pricing", () => {
 		expect(REQUEST_TYPE_OPTIONS).toContain("live");
-		expect(getRequestTypeGroup("live")).toBe("Audio");
+		expect(getRequestTypeGroup("live")).toBe("customPricing.groupAudio");
 		const perSecond = PRICING_FIELDS.find((f) => f.key === "input_cost_per_second");
 		expect(perSecond?.requestTypeGroups).toContain("audio");
 	});
@@ -143,7 +145,7 @@ describe("request type groups", () => {
 	// decisions offers exactly those two fields.
 	it("offers decisions with its input and output decision token fields", () => {
 		expect(REQUEST_TYPE_OPTIONS).toContain("decisions");
-		expect(getRequestTypeGroup("decisions")).toBe("Decisions");
+		expect(getRequestTypeGroup("decisions")).toBe("customPricing.groupDecisions");
 		const decisionFields = PRICING_FIELDS.filter((f) => (f.requestTypeGroups as readonly string[]).includes("decisions")).map((f) => f.key);
 		expect(decisionFields).toEqual(["input_cost_per_token_decisions", "output_cost_per_token_decisions"]);
 	});

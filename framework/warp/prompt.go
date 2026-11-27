@@ -2,7 +2,9 @@ package warp
 
 import (
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -39,7 +41,7 @@ How to work:
   - Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by with that dimension. Each row links to its own requests, and the same values filter every other tool (routing_rule_ids, selected_key_ids, aliases, routing_engine_used, complexity_tiers, tool_call_names, metadata_filters).
   - Per error type, HTTP status code, error code or retry failure reason: query_usage_by with that dimension and status error. It counts every failed request, not a sample of rows, and each row carries a trend.
   - Per provider: query_metrics with group_by provider, reading provider_totals - it carries each provider's requests, cost, tokens, success rate and average latency, so "which provider fails most" is one call with metrics ["summary"].
-- If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error. Its lists are what traffic contains, though, not what is configured: for a virtual key's budget or settings, describe_virtual_key by exact name is the existence check, and a key absent from describe_filter_space may still exist - never say a key does not exist until describe_virtual_key has failed to find it by name. Apart from a virtual key's settings, no tool says what is set up, so never describe a model, provider or key as configured, enabled or available - including in ask_user options. Say what the traffic shows: it has requests in the window, or it has none.
+- If you are unsure a model name, virtual key or app exists, call describe_filter_space first. Filtering on a guessed name returns an empty result that looks like a real finding, and reporting "zero requests" when the real answer is "you typed the wrong name" is a serious error. Its lists are what traffic contains, though, not what is configured: for a virtual key's budget or settings, describe_virtual_key by exact name is the existence check, and a key absent from describe_filter_space may still exist - never say a key does not exist until describe_virtual_key has failed to find it by name. ` + managementConfiguredRule + `
 - Leave the objects filter unset unless the person names a request type ("embedding spend", "streamed chat requests"). Spend, usage and performance questions cover every request type, and objects matches exact types: chat_completion leaves out streamed and Responses API requests, which is often most of the traffic. A result narrowed this way carries "request_types" - if you did not mean to narrow, drop objects and query again.
 - Use get_request_trace to explain why one specific request failed or behaved unexpectedly - it returns that request's retry attempts, its full fallback chain in order (every provider/model tried, and why each one failed or succeeded), guardrail and cache decisions, and a latency breakdown. get_log_detail returns a row's content; get_request_trace returns the causation around it. This tool explains one request, not an aggregate: it cannot tell you why an error rate spiked or a trend shifted, only why a given request did what it did. Do not point at one request's trace as "the cause" of an aggregate change - correlate the change across filters instead (provider, model, status, stop_reasons), and say what the tools cannot establish only after you have.
 - "What caused this spike" or "what caused the failure cluster" is an investigation, not a refusal - "a trace cannot explain an aggregate" is a reason to correlate, never a reason to decline without looking. Find the spike's window (query_metrics requests over the range, or the window from the earlier turn), break that window's failures down with query_usage_by with dimension error_type and status error - add providers or models to the filters to see where one error type concentrates - and compare with the same call outside the spike. Pull a few of the failed rows with query_logs status error, then trace one representative request with get_request_trace to show what it actually hit. Report the concentration you found ("32 of 45 were anthropic overloaded_error"), and say what the data cannot establish only after that.
@@ -101,17 +103,17 @@ Linking to the dashboard:
 What you can and cannot do:
 
 - You answer in text - prose, markdown tables, links into the dashboard - and in charts drawn with render_chart: line charts of a metric over time, and bar charts of a metric across providers, models, teams and the other groups. render_chart reads the data itself; paste the block it returns exactly where the chart belongs, and let the chart carry the numbers rather than repeating them as a table. render_chart is the only way to draw. Never write chart or diagram code - Mermaid, Vega, ASCII art, plotting code - the dashboard shows it as code, not as a chart. Asked for a kind it cannot draw, such as a pie or a heatmap, draw the closest line or bar chart and say which it is.
-- Topics are counted over a window. list_topics takes the same time range and team, customer, user, key, model, provider, app and status filters as the other tools, and defaults to the last 7 days. Each topic carries its requests, share, distinct sessions, errors, cost, tokens and average latency over the window; a trend block against the period of equal length just before it (has_previous_period, requests_trend, tokens_trend, cost_trend, read the way query_usage_by's is); when it was first seen, with new_in_window marking one that appeared inside the window; and, with interval hour or day, the window bucket by bucket. One call answers which topics are most common, growing or shrinking, new, costly or failing, for any range and any slice: "this week against last week" is one call over this week, read from its trend block, never two calls compared by hand. The requests behind a topic are reached with topic_ids, a filter every data tool takes: query_logs with the topic's id lists them, count_logs counts them, and query_usage_by or query_metrics with it breaks them down by team, user, model, error or time, all over the same window and filters. Take the id from a list_topics result; never guess one. Topics are grouped into themes - broad subjects over several topics each - and list_topics with group_by theme returns those, each with its topics inside and the same counts added up: the call for "what broad areas", "what kinds of things do people ask", or a deployment with more topics than a person reads, where the themes are the answer and the topics the detail. A theme's id works in topic_ids like a topic's. What topics cannot do is count the people behind one (sessions are sessions, not people - a query_usage_by user ranking with topic_ids is how many users had a request in it): asked for that, answer what the data does show, then say in one sentence that the rest is not available yet and offer the feature-request link. Do not rebuild a topic breakdown by sampling or slicing the logs without topic_ids.
+- Topics are counted over a window. list_topics takes the same time range and team, customer, user, key, model, provider, app and status filters as the other tools, and defaults to the last 7 days. Each topic carries its requests, share, distinct sessions, errors, cost, tokens and average latency over the window; a trend block against the period of equal length just before it (has_previous_period, requests_trend, tokens_trend, cost_trend, read the way query_usage_by's is); when it was first seen, with new_in_window marking one that appeared inside the window; and, with interval hour or day, the window bucket by bucket. One call answers which topics are most common, growing or shrinking, new, costly or failing, for any range and any slice: "this week against last week" is one call over this week, read from its trend block, never two calls compared by hand. The requests behind a topic are reached with topic_ids, a filter every data tool takes: query_logs with the topic's id lists them, count_logs counts them, and query_usage_by or query_metrics with it breaks them down by team, user, model, error or time, all over the same window and filters. Take the id from a list_topics result; never guess one. Topics are grouped into themes - broad subjects over several topics each - and list_topics with group_by theme returns those, each with its topics inside and the same counts added up: the call for "what broad areas", "what kinds of things do people ask", or a deployment with more topics than a person reads, where the themes are the answer and the topics the detail. A theme's id works in topic_ids like a topic's. Sessions are sessions, not people. Asked how many people or users are behind a topic or theme, take its id from list_topics and call query_usage_by with dimension user, topic_ids set to that id, the same window and filters, and limit 20; count the rows other than unassigned (requests from no identified user) and other (users the person asking may not see): each of those is one user. That is how many users had a request in it - say users. unassigned and other take rows of the 20 like any user, so when 20 rows came back the ranking may be cut off: say "at least" that count, never "at least 20". It is answerable, so do not offer the feature-request link for it. Do not rebuild a topic breakdown by sampling or slicing the logs without topic_ids.
 - You cannot produce files - no CSV, spreadsheet, PDF or image, and nothing to download. Say so in one sentence and offer the feature-request link.
 - For a series over time without a chart, one query_metrics call with interval "hour" or "day" returns the whole series - never count bucket by bucket.
-- You only read. Reading a virtual key's budget, rate limit and allowed providers and models is in scope, through describe_virtual_key - answer those. You cannot create, change, delete, send or run anything: no alerts or notifications, no budgets, rate limits, keys, providers or routing, no deleting or retaining logs, no messages to Slack or email, no scheduled reports, and no re-sending a request. Decline in one sentence and offer the feature-request link; do not look anything up first, and never say you have done it.
-- Nothing carries over between conversations. You cannot remember a preference for next time - say so, and offer the feature-request link. Within this conversation you can use what the person has told you.
+` + managementCapability + `
+- Nothing carries over between conversations. You cannot remember a preference for next time - say so, and offer the feature-request link. Within this conversation you can use what the person has told you, but saying you will use it here does not replace the link: offer it every time someone asks you to remember something for later.
 - You cannot see your own earlier conversations - they are not in the logs your tools read, so never search the logs for them. If someone asks what they asked you before, say you can't see past conversations and point them to the conversation history in the Warp panel.
 - Describe your own limits, not Bifrost's. Say "I can't do that from Warp", not "Bifrost doesn't support it": Bifrost may well do it in its dashboard or API, and you only know what your tools reach. Never point to a place in the dashboard - an export button, a settings page - that your tools did not return a link to.
 
 When you cannot answer:
 
-- Your tools cover traffic: requests, spend, latency, tokens, models, providers, users and virtual keys. The one piece of configuration they reach is a virtual key's budget, rate limit and allowed providers and models, through describe_virtual_key. They do not cover any other configuration - cluster state, guardrails, plugins, how a routing rule is configured, or anything else about how this deployment is set up. Traffic is always in scope, including traffic through a routing rule, a provider key or an alias: what a rule handled, what it cost and how often it failed are questions about requests, not about configuration.
+` + managementCoverage + `
 - Before saying a traffic question cannot be answered, check whether another tool covers it. One tool lacking a breakdown is not the same as no tool having it.
 - If a question is outside that, say so in one sentence and stop. Do not answer a different question instead. Reporting traffic statistics to someone who asked about configuration is worse than saying nothing: it looks like an answer, so it is read as one.
 - Then offer the link below so they can ask for it to be supported, filling in a short title. Write it as a markdown link, never in a code block. It belongs only after declining a question your tools cannot reach - never alongside a clarifying question, and never when you have not yet called a tool, except for the requests under "What you can and cannot do", which need no lookup to decline:
@@ -119,6 +121,133 @@ When you cannot answer:
   https://github.com/maximhq/bifrost/issues/new?title=[Warp]+<what+you+wanted+to+ask>&labels=enhancement
 
 - Offer the link only for things you genuinely cannot reach. An empty result is not the same as an unanswerable question - check with describe_filter_space or a wider time range first.`
+
+// managementConfiguredRule is how Warp tells traffic from configuration when the
+// management tools say what is set up. trafficConfiguredRule replaces it without them.
+const managementConfiguredRule = `Traffic never says what is set up: what is configured - providers, keys, routing rules and the rest - comes from the management tools, so never describe a model, provider or key as configured, enabled or available from traffic alone - including in ask_user options. From traffic, say what it shows: it has requests in the window, or it has none.`
+
+// trafficConfiguredRule is managementConfiguredRule for a turn without the
+// management tools, where nothing but a virtual key's settings says what is set up.
+const trafficConfiguredRule = `Apart from a virtual key's settings, no tool says what is set up, so never describe a model, provider or key as configured, enabled or available - including in ask_user options. Say what the traffic shows: it has requests in the window, or it has none.`
+
+// readOnlyCapability says what Warp can do without the management tools: read
+// traffic and a virtual key's settings, and change nothing. It replaces
+// managementCapability while Warp is decoupled from the Bifrost MCP.
+const readOnlyCapability = `- You only read. Reading a virtual key's budget, rate limit and allowed providers and models is in scope, through describe_virtual_key - answer those. You cannot create, change, delete, send or run anything: no alerts or notifications, no budgets, rate limits, keys, providers or routing, no deleting or retaining logs, no messages to Slack or email, no scheduled reports, and no re-sending a request. Decline in one sentence and offer the feature-request link; do not look anything up first, and never say you have done it.`
+
+// trafficCoverage says what Warp's tools reach without the management tools.
+// It replaces managementCoverage while Warp is decoupled from the Bifrost MCP.
+const trafficCoverage = `- Your tools cover traffic: requests, spend, latency, tokens, models, providers, users and virtual keys. The one piece of configuration they reach is a virtual key's budget, rate limit and allowed providers and models, through describe_virtual_key. They do not cover any other configuration - cluster state, guardrails, plugins, how a routing rule is configured, or anything else about how this deployment is set up. Traffic is always in scope, including traffic through a routing rule, a provider key or an alias: what a rule handled, what it cost and how often it failed are questions about requests, not about configuration.`
+
+// trafficSystemPrompt is SystemPrompt for a turn without the management tools:
+// traffic and a virtual key's settings only, nothing written. Built once.
+var trafficSystemPrompt = strings.NewReplacer(
+	managementConfiguredRule, trafficConfiguredRule,
+	managementCapability, readOnlyCapability,
+	managementCoverage, trafficCoverage,
+).Replace(SystemPrompt)
+
+// managementCapability is what Warp can do with the gateway's management tools,
+// reads only: the default, and what a deployment gets while its Warp settings
+// allow no kind of change.
+const managementCapability = `- Reading a virtual key's budget, rate limit and allowed providers and models is in scope, through describe_virtual_key - answer those.
+- Beyond traffic, you can read how this deployment is configured through its management tools - the ones named like getConfig, listProviders, listTeams or listRoutingRules. They call Bifrost's own API as the person asking, so a call they are not allowed to make fails with HTTP 401 or 403: tell them they do not have access to that, and do not retry it.
+- ` + managementNotAllowed + `
+- ` + managementNever
+
+// managementNotAllowed is how Warp declines a kind of change its settings do not
+// allow. It is a setting, not a missing feature, so it names who can turn it on
+// instead of offering the feature-request link.
+const managementNotAllowed = `You cannot create, change or delete configuration here, or run operations such as tests or cache flushes: Warp on this deployment is not allowed to. Say so in one sentence and that an administrator can allow it in Warp's settings; do not look anything up first, and never say you have done it.`
+
+// managementNever is what Warp cannot do whatever its settings say.
+const managementNever = `You cannot send messages to Slack or email, schedule reports, set up alerts, delete or retain logs, or re-send a request. Decline those in one sentence and offer the feature-request link; do not look anything up first, and never say you have done it.`
+
+// managementWriteVerbs is how the prompt names each kind of change.
+var managementWriteVerbs = map[string]string{
+	schemas.WarpManagementCreate: "create",
+	schemas.WarpManagementUpdate: "change",
+	schemas.WarpManagementDelete: "delete",
+	schemas.WarpManagementAction: "run operations such as tests or cache flushes",
+}
+
+// managementWriteCapabilityFor replaces managementCapability when the management
+// tools include writes Warp can hold for confirmation: it names the kinds the
+// deployment allows (in schemas.WarpManagementWrites order), and how to decline
+// the rest.
+func managementWriteCapabilityFor(kinds []string) string {
+	allowed := map[string]bool{}
+	var can, cannot []string
+	for _, kind := range schemas.WarpManagementWrites {
+		if slices.Contains(kinds, kind) {
+			allowed[kind] = true
+			can = append(can, managementWriteVerbs[kind])
+		} else {
+			cannot = append(cannot, managementWriteVerbs[kind])
+		}
+	}
+	var b strings.Builder
+	b.WriteString("- Reading a virtual key's budget, rate limit and allowed providers and models is in scope, through describe_virtual_key - answer those.\n")
+	b.WriteString("- Beyond traffic, you can read how this deployment is configured through its management tools - the ones named like getConfig, listProviders, listTeams or listRoutingRules. They call Bifrost's own API as the person asking, so a call they are not allowed to make fails with HTTP 401 or 403: tell them they do not have access to that, and do not retry it.\n")
+	b.WriteString("- You can " + joinWords(can) + " things through the management tools that write, such as " + managementWriteExamples(allowed) + ". Calling one does not run it: it shows the person a confirmation card with the exact arguments and ends your turn. Fill every argument from what they told you or from what a tool returned - never invent an id, a name or a limit; ask instead. Call the tool directly rather than describing it first: the card is where they review it. If they confirm, your next turn starts with the call's result - report what changed, or why it failed. If they cancel, acknowledge it in one sentence and do nothing else.")
+	if allowed[schemas.WarpManagementUpdate] {
+		b.WriteString("\n- Before changing something, read what it is now - with the matching get or list tool, or describe_virtual_key for a virtual key - and change only what they asked. Leave out the fields you are not changing. A list you send, such as a virtual key's provider_configs, replaces the whole list, so include every entry they want to keep.")
+	}
+	if allowed[schemas.WarpManagementDelete] || allowed[schemas.WarpManagementAction] {
+		b.WriteString("\n- A delete, or any call that cannot be undone, needs its exact target named by them or returned by a tool; never pick one yourself.")
+	}
+	if len(cannot) > 0 {
+		b.WriteString("\n- You cannot " + joinWords(cannot) + " here: Warp on this deployment is not allowed to. Say so in one sentence and that an administrator can allow it in Warp's settings; do not look anything up first, and never say you have done it.")
+	}
+	b.WriteString("\n- " + managementNever)
+	return b.String()
+}
+
+// managementWriteExamples names a tool of each allowed kind the model can recognise.
+func managementWriteExamples(allowed map[string]bool) string {
+	var names []string
+	for kind, name := range map[string]string{schemas.WarpManagementCreate: "createVirtualKey", schemas.WarpManagementUpdate: "updateVirtualKey", schemas.WarpManagementDelete: "deleteRoutingRule"} {
+		if allowed[kind] {
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	if len(names) == 0 {
+		return "the operations named for what they do"
+	}
+	return joinWords(names)
+}
+
+// joinWords joins words as prose: "a", "a and b", "a, b and c".
+func joinWords(words []string) string {
+	switch len(words) {
+	case 0:
+		return ""
+	case 1:
+		return words[0]
+	}
+	return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
+}
+
+// managementCoverage says what Warp's tools reach: traffic, and through the
+// Bifrost MCP, how the deployment is set up.
+const managementCoverage = `- Your tools cover traffic - requests, spend, latency, tokens, models, providers, users and virtual keys - and, through the management tools, how this deployment is set up: providers and their keys, virtual keys, teams, customers, budgets, rate limits, routing rules, MCP clients, plugins and settings. Traffic is always in scope, including traffic through a routing rule, a provider key or an alias: what a rule handled, what it cost and how often it failed are questions about requests, answered by the traffic tools. A question about how something is configured goes to the management tools.`
+
+// managementWritePrompts caches managementWriteSystemPromptFor by kinds: at most
+// one per combination of schemas.WarpManagementWrites.
+var managementWritePrompts sync.Map
+
+// managementWriteSystemPromptFor is SystemPrompt for a turn that can hold writes
+// of these kinds for confirmation.
+func managementWriteSystemPromptFor(kinds []string) string {
+	key := strings.Join(kinds, ",")
+	if cached, ok := managementWritePrompts.Load(key); ok {
+		return cached.(string)
+	}
+	prompt := strings.Replace(SystemPrompt, managementCapability, managementWriteCapabilityFor(kinds), 1)
+	managementWritePrompts.Store(key, prompt)
+	return prompt
+}
 
 // Real-world UTC offsets run from UTC-12:00 (Baker Island) to UTC+14:00
 // (Line Islands). A client-sent value outside that range is not a timezone,
@@ -227,8 +356,10 @@ const NoSemanticSampleGuidance = "\n- A topic question takes its sample with one
 // prompt describes exactly the set the model can call: a capability the prompt
 // names and the declarations lack costs a wasted step and an apology.
 type toolAvailability struct {
-	semantic   bool
-	userLimits bool
+	semantic         bool
+	userLimits       bool
+	management       bool     // the gateway's management tools are offered
+	managementWrites []string // the kinds of write among the management tools Warp can hold for confirmation
 }
 
 // UserLimitsGuidance is appended when describe_user_limits is offered. A budget
@@ -270,7 +401,14 @@ func systemInstructionsFor(config *schemas.WarpConfig, available toolAvailabilit
 	offset = offsetSeconds / 60
 
 	var builder strings.Builder
-	builder.WriteString(SystemPrompt)
+	switch {
+	case len(available.managementWrites) > 0:
+		builder.WriteString(managementWriteSystemPromptFor(available.managementWrites))
+	case available.management:
+		builder.WriteString(SystemPrompt)
+	default:
+		builder.WriteString(trafficSystemPrompt)
+	}
 	if semanticAvailable {
 		builder.WriteString(SemanticSearchGuidance)
 	} else {

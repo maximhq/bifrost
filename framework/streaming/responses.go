@@ -182,7 +182,12 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 
 	if original.Annotation != nil {
 		copyAnnotation := *original.Annotation
+		copyAnnotation.SourceContent = append([]string(nil), original.Annotation.SourceContent...)
 		copy.Annotation = &copyAnnotation
+	}
+	if original.BedrockContentBlockIndex != nil {
+		index := *original.BedrockContentBlockIndex
+		copy.BedrockContentBlockIndex = &index
 	}
 
 	if original.AnnotationIndex != nil {
@@ -683,6 +688,9 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 		// Annotations
 		if t.Annotations != nil {
 			t.Annotations = append([]schemas.ResponsesOutputMessageContentTextAnnotation(nil), t.Annotations...)
+			for i := range t.Annotations {
+				t.Annotations[i].SourceContent = append([]string(nil), t.Annotations[i].SourceContent...)
+			}
 		}
 		// LogProbs (and their inner slices)
 		if t.LogProbs != nil {
@@ -1195,6 +1203,10 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 					rawBuilder.WriteString("\n\n")
 				}
 				rawBuilder.WriteString(*chunk.RawResponse)
+				// Every frame comes from one provider stream, so the first declared format describes them all.
+				if data.RawResponseFormat == "" {
+					data.RawResponseFormat = chunk.RawResponseFormat
+				}
 			}
 		}
 		if rawBuilder.Len() > 0 {
@@ -1238,6 +1250,7 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 	} else if result != nil && result.ResponsesStreamResponse != nil {
 		if result.ResponsesStreamResponse.ExtraFields.RawResponse != nil {
 			chunk.RawResponse = bifrost.Ptr(fmt.Sprintf("%v", result.ResponsesStreamResponse.ExtraFields.RawResponse))
+			chunk.RawResponseFormat = result.ResponsesStreamResponse.ExtraFields.RawResponseFormat
 		}
 		// Store a deep copy of the stream response to prevent shared data mutation between plugins
 		chunk.StreamResponse = deepCopyResponsesStreamResponse(result.ResponsesStreamResponse)

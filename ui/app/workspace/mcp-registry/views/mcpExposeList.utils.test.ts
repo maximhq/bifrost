@@ -1,5 +1,18 @@
-import { describe, expect, it } from "vitest";
-import { exposedByRule, isExposed, nextExposeList } from "./mcpExposeList.utils";
+import { beforeAll, describe, expect, it } from "vitest";
+import i18n from "@/lib/i18n";
+import {
+	exposedByRule,
+	exposeRowLabel,
+	exposeRowState,
+	isExposed,
+	nextExposeList,
+	promptExposeItems,
+	resourceExposeItems,
+} from "./mcpExposeList.utils";
+
+beforeAll(async () => {
+	await i18n.changeLanguage("en");
+});
 
 describe("isExposed", () => {
 	it("serves everything when unset or ['*']", () => {
@@ -56,5 +69,61 @@ describe("nextExposeList keeps what the switch does not own", () => {
 		const cased = ["file:///A", "file:///a", "file:///B"];
 		expect(nextExposeList(undefined, cased, "file:///B", false)).toEqual(["file:///A"]);
 		expect(nextExposeList(["file:///A"], cased, "file:///B", true)).toEqual(["*"]);
+	});
+});
+
+describe("exposeRowLabel", () => {
+	it("reads what the switch would show, for a list that cannot be edited", () => {
+		expect(exposeRowLabel(undefined, "review")).toBe("Served");
+		expect(exposeRowLabel(["review"], "review")).toBe("Served");
+		expect(exposeRowLabel([], "review")).toBe("Not served");
+		expect(exposeRowLabel(["regex:rev.*"], "review")).toBe("Served by a pattern rule");
+	});
+
+	it("keys the badge by state, not by the translated label", () => {
+		expect(exposeRowState(undefined, "review")).toBe("served");
+		expect(exposeRowState([], "review")).toBe("notServed");
+		expect(exposeRowState(["regex:rev.*"], "review")).toBe("rule");
+	});
+});
+
+describe("expose items", () => {
+	it("lists prompts by the server's own name, without the client prefix", () => {
+		const items = promptExposeItems({
+			config: { client_id: "c1", name: "github", connection_type: "http" },
+			prompts: [
+				{
+					name: "github-review",
+					title: "Review a pull request",
+					description: "Asks for a review",
+					arguments: [{ name: "diff", required: true }, { name: "focus" }],
+				},
+				{ name: "summarize" },
+			],
+		});
+		expect(items).toEqual([
+			{
+				key: "review",
+				label: "Review a pull request",
+				detail: "review",
+				description: "Asks for a review",
+				arguments: [
+					{ name: "diff", required: true },
+					{ name: "focus", required: false },
+				],
+			},
+			{ key: "summarize", label: "summarize", detail: undefined, description: undefined, arguments: [] },
+		]);
+	});
+
+	it("lists resources by URI and templates by URI template", () => {
+		const items = resourceExposeItems({
+			resources: [{ uri: "file:///handbook.md", name: "handbook", title: "Handbook", mimeType: "text/markdown" }],
+			resource_templates: [{ uriTemplate: "file:///docs/{name}", name: "docs", description: "Any doc" }],
+		});
+		expect(items).toEqual([
+			{ key: "file:///handbook.md", label: "Handbook", detail: "file:///handbook.md", description: undefined, mimeType: "text/markdown" },
+			{ key: "file:///docs/{name}", label: "docs", detail: "file:///docs/{name}", description: "Any doc", mimeType: undefined },
+		]);
 	});
 });

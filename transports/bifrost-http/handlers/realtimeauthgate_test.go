@@ -8,6 +8,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/valyala/fasthttp"
 )
 
@@ -48,7 +49,7 @@ func TestRefuseUnauthenticatedRealtime_AnonymousAllowedWhenNotEnforced(t *testin
 }
 
 // TestRefuseUnauthenticatedRealtime_VirtualKeyAllowed proves a virtual-key caller is admitted.
-// The credential is recorded the same way createBifrostContextFromAuth records it at upgrade.
+// The credential is recorded the same way createBifrostContextFromHeaders records it at upgrade.
 func TestRefuseUnauthenticatedRealtime_VirtualKeyAllowed(t *testing.T) {
 	ctx, cancel := newRealtimeGateContext(t)
 	defer cancel()
@@ -124,8 +125,11 @@ func newRealtimeUpgradeRequest(path string) *fasthttp.RequestCtx {
 	return ctx
 }
 
-func newRealtimeUpgradeHandler(enforceAuthOnInference bool) *WSRealtimeHandler {
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuthOnInference}}
+// newRealtimeUpgradeHandler returns a realtime handler over a config with a live store and its
+// shared tables, as LoadConfig builds one.
+func newRealtimeUpgradeHandler(t *testing.T, enforceAuthOnInference bool) *WSRealtimeHandler {
+	t.Helper()
+	config := libtest.FileOnly(t, &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforceAuthOnInference}}, nil, nil)
 	return &WSRealtimeHandler{config: config, handlerStore: config}
 }
 
@@ -139,7 +143,7 @@ func TestWSRealtimeHandleUpgrade_AnonymousRefusedBeforeTargetResolution(t *testi
 	SetLogger(&mockLogger{})
 	ctx := newRealtimeUpgradeRequest("/v1/realtime") // no model: target resolution fails
 
-	newRealtimeUpgradeHandler(true).handleUpgrade(ctx)
+	newRealtimeUpgradeHandler(t, true).handleUpgrade(ctx)
 
 	if got := ctx.Response.StatusCode(); got != fasthttp.StatusUnauthorized {
 		t.Fatalf("expected an anonymous upgrade with an unresolvable target to be refused with 401 before any upgrade, got %d", got)
@@ -154,7 +158,7 @@ func TestWSRealtimeHandleUpgrade_TargetErrorStaysInBandWhenNotEnforced(t *testin
 	SetLogger(&mockLogger{})
 	ctx := newRealtimeUpgradeRequest("/v1/realtime")
 
-	newRealtimeUpgradeHandler(false).handleUpgrade(ctx)
+	newRealtimeUpgradeHandler(t, false).handleUpgrade(ctx)
 
 	if got := ctx.Response.StatusCode(); got != fasthttp.StatusSwitchingProtocols {
 		t.Fatalf("expected an open deployment to upgrade and report the target error in-band (101), got %d", got)
@@ -175,6 +179,7 @@ func (usableTestPermit) MCPPermits() []schemas.MCPPermit           { return nil 
 func (usableTestPermit) AgentPermits() []string                    { return nil }
 func (usableTestPermit) AllowsAllProviders() bool                  { return true }
 func (usableTestPermit) RelayPermits() []string                    { return nil }
+func (usableTestPermit) Level() int                                { return 0 }
 
 // newResolvedVirtualKeyContext is a context whose presented virtual key resolved to usable
 // access, mirroring what the per-request pipeline leaves behind for a real key.
@@ -183,7 +188,7 @@ func newResolvedVirtualKeyContext(t *testing.T) (*schemas.BifrostContext, contex
 	ctx, cancel := newRealtimeGateContext(t)
 	ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-valid")
 	lib.RecordCredential(ctx, grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-valid"))
-	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{usableTestPermit{}}, nil, "", nil))
+	ctx.Grant().SetAccess(grant.NewAccess([]schemas.Permit{usableTestPermit{}}, "", nil, "", nil))
 	return ctx, cancel
 }
 

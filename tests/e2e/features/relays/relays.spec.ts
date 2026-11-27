@@ -36,6 +36,12 @@ test.describe("Relays", () => {
     await page.select(name);
     await expect(page.editor).toBeVisible();
 
+    // The header names the relay and summarizes how callers reach it.
+    await expect(page.page.getByTestId("relay-title")).toHaveText(name);
+    await expect(page.page.getByTestId("relay-detail-gateway")).toContainText(`/relay/${name}`);
+    await expect(page.page.getByTestId("relay-detail-upstream")).toContainText("https://api.example.com");
+    await expect(page.page.getByTestId("relay-routes-count")).toHaveText("0");
+
     // Endpoint-level pricing lives on the General tab of the config sheet.
     await page.openConfigTab("general");
     await page.page.getByTestId("relay-usage-cost-per-request").fill("0.001");
@@ -413,6 +419,8 @@ test.describe("Relays", () => {
       await page.select(name);
 
       await page.page.getByTestId("relay-routes-import").click();
+      // The import opens in a side panel, not a modal dialog.
+      await expect(page.page.getByTestId("relay-openapi-sheet")).toBeVisible();
       await page.page.getByTestId("openapi-spec-source-tab-url").click();
       const url = page.page.getByTestId("openapi-spec-url-input");
 
@@ -437,7 +445,7 @@ test.describe("Relays", () => {
       // A missing document reports the gateway's error.
       await url.fill(`http://127.0.0.1:${port}/missing.json`);
       await page.page.getByTestId("openapi-parse-btn").click();
-      await expect(page.page.getByTestId("openapi-parse-error")).toContainText("could not load spec_url");
+      await expect(page.page.getByTestId("openapi-parse-error")).toContainText(/could not load spec_url/i);
 
       await url.fill(`http://127.0.0.1:${port}/openapi.json`);
       await page.page.getByTestId("openapi-parse-btn").click();
@@ -446,6 +454,7 @@ test.describe("Relays", () => {
       await expect(preview).toContainText("2 routes");
       await expect(preview).toContainText(`http://127.0.0.1:${port}/v1`);
       await page.page.getByTestId("relay-openapi-import").click();
+      await expect(page.page.getByTestId("relay-openapi-sheet")).toBeHidden();
 
       // The import is staged for review before it replaces the routes.
       await page.page.getByRole("button", { name: "Apply import" }).click();
@@ -499,6 +508,15 @@ test.describe("Relays", () => {
     await page.openConfigTab("proxy");
     await expect(page.saveButton("proxy")).toBeDisabled();
     await expect(page.page.getByTestId("relay-proxy-url")).toBeHidden();
+    // An unsaved choice can be discarded: the select has no unset entry to pick instead.
+    await expect(page.page.getByTestId("relay-discard-proxy")).toBeHidden();
+    await page.page.getByTestId("relay-proxy-type").click();
+    await page.page.getByRole("option", { name: "SOCKS5", exact: true }).click();
+    await expect(page.page.getByTestId("relay-proxy-url")).toBeVisible();
+    await page.page.getByTestId("relay-discard-proxy").click();
+    await expect(page.page.getByTestId("relay-proxy-url")).toBeHidden();
+    await expect(page.page.getByTestId("relay-proxy-type")).not.toContainText("SOCKS5");
+    await expect(page.saveButton("proxy")).toBeDisabled();
     await page.page.getByTestId("relay-proxy-type").click();
     await page.page.getByRole("option", { name: "HTTP", exact: true }).click();
     await expect(page.page.getByTestId("relay-proxy-url")).toBeVisible();
@@ -611,5 +629,32 @@ test.describe("Relays", () => {
     await expect(virtualKeysPage.page.getByTestId(`vk-details-relay-grant-${relayName}`)).toBeVisible({ timeout: 10000 });
     await expect(virtualKeysPage.page.getByTestId(`vk-details-relay-grant-${relayName}`)).toHaveText(relayName);
     await expect(virtualKeysPage.page.getByTestId("vk-details-relay-none")).toHaveCount(0);
+  });
+
+  test("scrolls to the routes toolbar when a long description outgrows the pane", async ({ relaysPage: page, request }) => {
+    const name = `e2e-pte-longdesc-${Date.now()}`;
+    created.push(name);
+    const res = await request.post(API, {
+      data: {
+        name,
+        description: "A relay with a very long description. ".repeat(300),
+        base_url: "https://api.example.com",
+        auth: { type: "bearer" },
+        credential: { value: { value: "sk-e2e" } },
+      },
+    });
+    expect(res.status(), await res.text()).toBe(201);
+
+    await page.goto();
+    await page.select(name);
+
+    const addRoute = page.page.getByTestId("relay-routes-add");
+    await expect(addRoute).not.toBeInViewport();
+    // A real wheel, not scrollIntoView, which also moves a pane that clips its overflow.
+    await page.page.getByTestId("relay-header").hover();
+    await page.page.mouse.wheel(0, 20000);
+    await expect(addRoute).toBeInViewport();
+    await addRoute.click();
+    await expect(page.page.getByTestId("relay-route-sheet")).toBeVisible();
   });
 });

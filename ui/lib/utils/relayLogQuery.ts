@@ -1,11 +1,11 @@
 import type { RelayLogFilters, RelayLogPagination } from "@/lib/types/relays";
-import { getRangeForPeriod } from "@/lib/utils/timeRange";
+import { getPeriodTimezone } from "@/lib/utils/timeRange";
 
 /** Filters sent as repeated query params, one value each. */
 export const RELAY_LOG_MULTI_FILTER_KEYS = [
 	"relay_names",
 	"methods",
-	"statuses",
+	"status",
 	"kinds",
 	"virtual_key_ids",
 	"user_ids",
@@ -13,12 +13,11 @@ export const RELAY_LOG_MULTI_FILTER_KEYS = [
 	"customer_ids",
 	"business_unit_ids",
 	"project_ids",
-	"apps",
 ] as const;
 
 /**
  * Builds the query string shared by the relay log list, stats and histogram requests so all three
- * narrow to the same rows. A relative period is expanded to a fresh window per call, so polling
+ * narrow to the same rows. A relative period is sent as is for the server to resolve, so polling
  * always queries a rolling window.
  */
 export function buildRelayLogQuery(filters: RelayLogFilters, pagination?: RelayLogPagination): string {
@@ -34,16 +33,29 @@ export function buildRelayLogQuery(filters: RelayLogFilters, pagination?: RelayL
 			if (value) params.append(key, value);
 		}
 	}
+	// Apps are names an operator types into a user-agent mapping, so they go as one JSON array, as
+	// the LLM logs send them: a comma inside a name must not split it.
+	const apps = (filters.apps ?? []).filter(Boolean);
+	if (apps.length > 0) params.set("apps", JSON.stringify(apps));
 	if (filters.billable !== undefined) params.set("billable", String(filters.billable));
 	// 0 is a real bound (max_cost=0 is "free calls only"), so only undefined and NaN mean unset.
 	if (filters.min_cost !== undefined && Number.isFinite(filters.min_cost)) params.set("min_cost", String(filters.min_cost));
 	if (filters.max_cost !== undefined && Number.isFinite(filters.max_cost)) params.set("max_cost", String(filters.max_cost));
+	if (filters.min_latency !== undefined && Number.isFinite(filters.min_latency)) params.set("min_latency", String(filters.min_latency));
+	if (filters.max_latency !== undefined && Number.isFinite(filters.max_latency)) params.set("max_latency", String(filters.max_latency));
 	if (filters.request_id) params.set("request_id", filters.request_id);
+	if (filters.session_id) params.set("session_id", filters.session_id);
+	if (filters.job_id) params.set("job_id", filters.job_id);
+	if (filters.parent_request_id) params.set("parent_request_id", filters.parent_request_id);
+	if (filters.agent_correlation_id) params.set("agent_correlation_id", filters.agent_correlation_id);
 	if (filters.search) params.set("search", filters.search);
+	if (filters.content_search) params.set("content_search", filters.content_search);
 	if (filters.period) {
-		const { from, to } = getRangeForPeriod(filters.period);
-		params.set("start_time", from.toISOString());
-		params.set("end_time", to.toISOString());
+		// The server resolves the period, as it does for the LLM logs, so every poll is a fresh
+		// rolling window and the day periods follow the browser's timezone.
+		params.set("period", filters.period);
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.set("timezone", timezone);
 	} else if (filters.start_time && filters.end_time) {
 		params.set("start_time", filters.start_time);
 		params.set("end_time", filters.end_time);
