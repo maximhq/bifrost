@@ -618,6 +618,7 @@ func TestConnectionChecker_PerformCheck_StaleGenerationWriteDropped(t *testing.T
 
 func TestHandleSSEConnectionLost_StaleGenerationNoOp(t *testing.T) {
 	m := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		logger:         &MockLogger{},
 		clientMap:      map[string]*clientConn{},

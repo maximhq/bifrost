@@ -76,6 +76,7 @@ func TestSetClientDiscovery_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 // one most likely to rediscover identical tools tick after tick.
 func TestWriteBackTools_UnchangedTools_DoesNotFireCallback(t *testing.T) {
 	manager := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		logger:         &MockLogger{},
 		account:        newTestAccount(),

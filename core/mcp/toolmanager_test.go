@@ -1438,7 +1438,7 @@ func TestExecuteTool_CallsTheUpstreamToolByItsExactName(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	ctx := context.Background()
-	m := &MCPManager{credStore: &fakeAdminCredStore{headers: http.Header{}}, logger: &MockLogger{}, account: newTestAccount(), clientMap: map[string]*clientConn{}, discoveryStore: NewDiscoveryStore(nil, nil)}
+	m := &MCPManager{ctx: ctx, credStore: &fakeAdminCredStore{headers: http.Header{}}, logger: &MockLogger{}, account: newTestAccount(), clientMap: map[string]*clientConn{}, discoveryStore: NewDiscoveryStore(nil, nil)}
 	config := &schemas.MCPClientConfig{
 		ID:               "client-alpha",
 		Name:             "alpha",

@@ -111,7 +111,7 @@ func TestEnableClient_StillPendingVerification_KeepsThatState(t *testing.T) {
 // "something is wrong". Same treatment NeedsReauth already gets.
 func TestPerformCheck_PendingVerification_StaysQuiet(t *testing.T) {
 	cred := &fakeAdminCredStore{err: errors.New("admin credential unavailable")}
-	m := &MCPManager{credStore: cred, logger: &MockLogger{}, account: newTestAccount(), clientMap: map[string]*clientConn{}}
+	m := &MCPManager{ctx: context.Background(), credStore: cred, logger: &MockLogger{}, account: newTestAccount(), clientMap: map[string]*clientConn{}}
 
 	config := newPendingClientConfig("client-check-pending", schemas.MCPAuthTypePerUserOauth)
 	putClient(m, &schemas.MCPClientState{
@@ -133,7 +133,7 @@ func TestPerformCheck_PendingVerification_StaysQuiet(t *testing.T) {
 // the single writer, so a check already in flight when a client is parked in
 // pending_verification cannot land on it afterwards.
 func TestSetState_PendingVerification_NotOverwritten(t *testing.T) {
-	m := &MCPManager{logger: &MockLogger{}, account: newTestAccount(), clientMap: map[string]*clientConn{}}
+	m := &MCPManager{ctx: context.Background(), logger: &MockLogger{}, account: newTestAccount(), clientMap: map[string]*clientConn{}}
 	config := newPendingClientConfig("client-setstate-pending", schemas.MCPAuthTypeOauth)
 	putClient(m, &schemas.MCPClientState{
 		Name:            config.Name,

@@ -66,5 +66,6 @@
 - fix: gemini - audio `fileData` parts are no longer treated as transcription
 - fix: vertex - model listing on `us` and `eu` keys uses the regional endpoint host, and token errors show the underlying cause
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
+- fix: mcp - cleanup cancels pending MCP connections and discovery, including per-list discovery timeouts, and keeps recovery from restarting clients afterwards (thanks [@Xytronix](https://github.com/Xytronix)!)
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4

@@ -149,6 +149,9 @@ func (c *ClientConnectionChecker) Start() {
 	if c.isRunning || c.stopped {
 		return
 	}
+	if c.manager.ctx.Err() != nil {
+		return
+	}
 	if !exists {
 		c.logger.Error("%s Connection checker failed to start for client %s, client not found in manager", MCPLogPrefix, c.clientID)
 		return
@@ -160,7 +163,7 @@ func (c *ClientConnectionChecker) Start() {
 	}
 
 	c.isRunning = true
-	c.ctx, c.cancel = context.WithCancel(context.Background())
+	c.ctx, c.cancel = context.WithCancel(c.manager.ctx)
 	c.timer = time.NewTimer(firstInterval)
 	c.onSteadyCadence = onSteady
 
@@ -700,6 +703,10 @@ func (m *ConnectionCheckerManager) updateInterval(clientID string, interval time
 // registry itself; only the (already lock-free) Start() call moves outside.
 func (m *ConnectionCheckerManager) StartChecking(checker *ClientConnectionChecker) {
 	m.mu.Lock()
+	if checker.manager.ctx.Err() != nil {
+		m.mu.Unlock()
+		return
+	}
 	if existing, ok := m.checkers[checker.clientID]; ok {
 		existing.Stop()
 	}

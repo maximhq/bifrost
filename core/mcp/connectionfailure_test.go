@@ -51,6 +51,7 @@ func TestNewConnectionFailure_PreservesSince(t *testing.T) {
 // it along with the flip to Healthy.
 func TestSetState_RecordsFailureAndClearsOnHealthy(t *testing.T) {
 	manager := &MCPManager{
+		ctx:            context.Background(),
 		discoveryStore: NewDiscoveryStore(nil, nil),
 		logger:         &MockLogger{},
 		account:        newTestAccount(),
