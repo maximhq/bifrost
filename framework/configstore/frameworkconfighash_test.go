@@ -87,6 +87,25 @@ func TestGenerateFrameworkConfigHash_NilLiveIntervalPreservesLegacyDigest(t *tes
 			t.Fatal("expected setting live_models_sync_interval to change the digest; a config.json edit would otherwise go undetected")
 		}
 	})
+
+	t.Run("a nil openapi_url leaves both payloads unchanged and a set one changes them", func(t *testing.T) {
+		mcpURL := "https://example.com/mcp.json"
+		mcpInterval := int64(86400)
+		withNil, err := GenerateFrameworkConfigHash(&pricingURL, &modelParamsURL, &syncInterval, FrameworkConfigHashOptions{
+			MCPLibraryURL:          &mcpURL,
+			MCPLibrarySyncInterval: &mcpInterval,
+			OpenAPIURL:             nil,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "8dbe17439dad62ba0ac9d63bd2dbe6413ad46749c7d18739887c29a6a7cb5652", withNil, "a nil openapi_url must not shift the mcp payload digest")
+
+		openAPIURL := "specs/openapi.json"
+		base, err := GenerateFrameworkConfigHash(&pricingURL, &modelParamsURL, &syncInterval)
+		require.NoError(t, err)
+		withOpenAPI, err := GenerateFrameworkConfigHash(&pricingURL, &modelParamsURL, &syncInterval, FrameworkConfigHashOptions{OpenAPIURL: &openAPIURL})
+		require.NoError(t, err)
+		assert.NotEqual(t, base, withOpenAPI, "setting openapi_url in config.json must register as a file change")
+	})
 }
 
 // ruleWithFallbacks decodes a routing fixture through the persisted fallback wire format.
@@ -189,4 +208,43 @@ func TestGenerateRoutingRuleHash_FallbackIdentity(t *testing.T) {
 	assert.NotEqual(t, base, hash(`[{"provider":"azure","model":"m","key_id":"k1"}]`), "a different provider must change the hash")
 	assert.Equal(t, hash(`["vertex/m"]`), hash(`[{"provider":"vertex","model":"m"}]`), "an unpinned object must hash like its string form")
 	assert.Equal(t, hash(`["anthropic/"]`), hash(`[{"provider":"anthropic"}]`), "an unpinned provider-only object must hash like its string form")
+}
+
+// TestGenerateRoutingRuleHash_IDDigestIsPinned pins the routing rule hash for a rule with an id
+// and for one without. config.json rules without an id are hashed with ID "" (never with the ID
+// they adopt), and rules with an id keep the hash they had before ids became optional, so an
+// upgrade rewrites no stored rule. The literals are hardcoded so a change to the hash input
+// fails here instead of resyncing every rule on first boot.
+func TestGenerateRoutingRuleHash_IDDigestIsPinned(t *testing.T) {
+	scopeID := "team-1"
+	fallbacks := `["anthropic/claude-sonnet-4"]`
+	query := `{"combinator":"and","rules":[]}`
+	enabled := false
+	ttft := 1500
+	rule := tables.TableRoutingRule{
+		ID:            "rule-1",
+		Name:          "primary",
+		Description:   "route gpt-4o",
+		Enabled:       &enabled,
+		CelExpression: `model == "gpt-4o"`,
+		Targets: []tables.TableRoutingTarget{
+			{Provider: strPtr("openai"), Model: strPtr("gpt-4o"), KeyID: strPtr("k1"), Weight: 0.7, TTFTTimeoutMs: &ttft},
+			{Provider: strPtr("azure"), Model: strPtr("gpt-4o"), Weight: 0.3},
+		},
+		Fallbacks: &fallbacks,
+		Query:     &query,
+		Scope:     "team",
+		ScopeID:   &scopeID,
+		ChainRule: true,
+		Priority:  7,
+	}
+
+	withID, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	assert.Equal(t, "3635a3f113fdea6c5ed4fdf419403a05c6e5f5ae75db1adceb0a4f7db2699680", withID)
+
+	rule.ID = ""
+	withoutID, err := GenerateRoutingRuleHash(rule)
+	require.NoError(t, err)
+	assert.Equal(t, "f21939c285b4db30a64394e8b15816065a3ffd685ed8d1976ebcaf4a205cbf1c", withoutID)
 }

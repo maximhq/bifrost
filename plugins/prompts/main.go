@@ -11,11 +11,13 @@ import (
 	"maps"
 	"strconv"
 	"strings"
-	"sync"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
 
 const (
@@ -31,13 +33,6 @@ const (
 	PromptIDKey      schemas.BifrostContextKey = PromptIDHeader
 	PromptVersionKey schemas.BifrostContextKey = PromptVersionHeader
 )
-
-// InMemoryStore is the data source for prompts and all versions. Implementations typically
-// wrap the framework config store; the plugin keeps an in-memory index built by loadCache.
-type InMemoryStore interface {
-	GetPrompts(ctx context.Context, folderID *string) ([]configstoreTables.TablePrompt, error)
-	GetAllPromptVersions(ctx context.Context) ([]configstoreTables.TablePromptVersion, error)
-}
 
 // PromptResolver decides which prompt and version to inject for a given request.
 // Returning an empty promptID means no injection for this request.
@@ -71,105 +66,52 @@ func (r *headerResolver) Resolve(ctx *schemas.BifrostContext, req *schemas.Bifro
 // messages before chat or Responses input.
 //
 // Fields:
-//   - store: backing persistence for prompts and versions
+//   - live: the live store holding the prompts and their versions
 //   - logger: Bifrost logger for non-fatal merge/param warnings
 //   - resolver: chooses prompt ID and version; defaults to headerResolver
-//   - mu: protects promptsByID and versionsByPromptAndNumber
-//   - promptsByID: prompt ID → prompt row (includes LatestVersion when using “latest”)
-//   - versionsByPromptAndNumber: prompt ID → version number → version row
 type Plugin struct {
-	store    InMemoryStore
+	live     *livestore.Store
 	logger   schemas.Logger
 	resolver PromptResolver
-
-	mu                        sync.RWMutex
-	promptsByID               map[string]*configstoreTables.TablePrompt
-	versionsByPromptAndNumber map[string]map[int]*configstoreTables.TablePromptVersion
 }
 
 // Init constructs a Plugin using the default header-based resolver (x-bf-prompt-id / x-bf-prompt-version).
 //
 // Parameters:
-//   - ctx: used for the initial loadCache call
-//   - store: required config store backend for prompts
+//   - ctx: unused; kept for the plugin constructors' shape
+//   - configStore: the config store prompts are saved in; required
+//   - live: the live store prompts are served from; required
 //   - logger: used by the default resolver and param merge paths
 //
 // Returns:
 //   - schemas.LLMPlugin: the initialized plugin
-//   - error: if the store is missing or the initial cache load fails
-func Init(ctx context.Context, store InMemoryStore, logger schemas.Logger) (schemas.LLMPlugin, error) {
-	return InitWithResolver(ctx, store, &headerResolver{logger: logger}, logger)
+//   - error: if the config store or the live store is missing
+func Init(ctx context.Context, configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (schemas.LLMPlugin, error) {
+	if configStore == nil {
+		return nil, fmt.Errorf("config store is required for prompts plugin")
+	}
+	return InitWithResolver(ctx, live, &headerResolver{logger: logger}, logger)
 }
 
 // InitWithResolver constructs a Plugin with an explicit PromptResolver (nil falls back to headerResolver).
 //
 // Parameters:
-//   - ctx: used for the initial loadCache call
-//   - store: required config store backend for prompts
+//   - ctx: unused; kept for the plugin constructors' shape
+//   - live: the live store prompts are served from; required
 //   - resolver: custom resolution logic; if nil, headerResolver is used
 //   - logger: passed to the default resolver when it is constructed internally
 //
 // Returns:
-//   - *Plugin: the initialized plugin (concrete type for Reload and handler integration)
-//   - error: if the store is missing or the initial cache load fails
-func InitWithResolver(ctx context.Context, store InMemoryStore, resolver PromptResolver, logger schemas.Logger) (*Plugin, error) {
-	if store == nil {
-		return nil, fmt.Errorf("config store is required for prompts plugin")
+//   - *Plugin: the initialized plugin (concrete type for handler integration)
+//   - error: if the live store is missing
+func InitWithResolver(_ context.Context, live *livestore.Store, resolver PromptResolver, logger schemas.Logger) (*Plugin, error) {
+	if live == nil {
+		return nil, fmt.Errorf("prompts plugin: %w", livestore.ErrNoLiveStore)
 	}
 	if resolver == nil {
 		resolver = &headerResolver{logger: logger}
 	}
-	p := &Plugin{
-		store:                     store,
-		logger:                    logger,
-		resolver:                  resolver,
-		promptsByID:               make(map[string]*configstoreTables.TablePrompt),
-		versionsByPromptAndNumber: make(map[string]map[int]*configstoreTables.TablePromptVersion),
-	}
-	if err := p.loadCache(ctx); err != nil {
-		return nil, fmt.Errorf("failed to load prompts into memory: %w", err)
-	}
-	return p, nil
-}
-
-// loadCache rebuilds the in-memory maps with exactly two DB queries:
-// one for all prompts (with their latest version), one for all versions.
-func (p *Plugin) loadCache(ctx context.Context) error {
-	prompts, err := p.store.GetPrompts(ctx, nil)
-	if err != nil {
-		return err
-	}
-
-	versions, err := p.store.GetAllPromptVersions(ctx)
-	if err != nil {
-		return fmt.Errorf("loading all prompt versions: %w", err)
-	}
-
-	newPrompts := make(map[string]*configstoreTables.TablePrompt, len(prompts))
-	for i := range prompts {
-		newPrompts[prompts[i].ID] = &prompts[i]
-	}
-
-	newVersionsByPromptAndNumber := make(map[string]map[int]*configstoreTables.TablePromptVersion)
-	for i := range versions {
-		v := &versions[i]
-		if _, ok := newVersionsByPromptAndNumber[v.PromptID]; !ok {
-			newVersionsByPromptAndNumber[v.PromptID] = make(map[int]*configstoreTables.TablePromptVersion)
-		}
-		newVersionsByPromptAndNumber[v.PromptID][v.VersionNumber] = v
-	}
-
-	p.mu.Lock()
-	p.promptsByID = newPrompts
-	p.versionsByPromptAndNumber = newVersionsByPromptAndNumber
-	p.mu.Unlock()
-	return nil
-}
-
-// Reload refreshes the in-memory cache from the store. Called by the HTTP handler
-// after any create/update/delete operation on prompts or versions.
-func (p *Plugin) Reload(ctx context.Context) error {
-	return p.loadCache(ctx)
+	return &Plugin{live: live, logger: logger, resolver: resolver}, nil
 }
 
 // GetName returns the plugin identifier ("prompts").
@@ -453,34 +395,35 @@ func applyVersionParamsToResponsesRequest(version *configstoreTables.TablePrompt
 	req.Params = &result
 }
 
-// resolveVersion centralises the map-lookup logic shared by setPromptStreamFromVersionForTransport
-// and PreLLMHook. It returns the prompt and its resolved version.
+// resolveVersion centralises the lookup shared by setPromptStreamFromVersionForTransport and
+// PreLLMHook. It returns the prompt and its resolved version, both shared records that callers must
+// not change.
 //
-// If versionNumber > 0, that explicit version is loaded from versionsByPromptAndNumber (from
-// x-bf-prompt-version header or a custom PromptResolver such as deployment traffic routing).
-// If versionNumber == 0, the prompt's latest version is used (no header / resolver chose latest).
+// If versionNumber > 0, that explicit version is looked up by number (from the x-bf-prompt-version
+// header or a custom PromptResolver such as deployment traffic routing). If versionNumber == 0, the
+// prompt's latest version is used (no header / resolver chose latest); a prompt with none returns
+// a nil version. A version stored in a form this version cannot read is logged and treated as
+// missing.
 func (p *Plugin) resolveVersion(promptID string, versionNumber int) (
-	*configstoreTables.TablePrompt, *configstoreTables.TablePromptVersion, bool,
+	*registry.Prompt, *configstoreTables.TablePromptVersion, bool,
 ) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	prompt, ok := p.promptsByID[promptID]
-	if !ok || prompt == nil {
+	cols := p.live.Collections
+	prompt, ok := cols.Prompts.Get(promptID)
+	if !ok {
 		return nil, nil, false
 	}
+	index, key := registry.PromptVersionLatest, promptID
 	if versionNumber > 0 {
-		byNumber, ok := p.versionsByPromptAndNumber[promptID]
-		if !ok {
-			return nil, nil, false
-		}
-		v, found := byNumber[versionNumber]
-		if !found || v == nil {
-			return nil, nil, false
-		}
-		return prompt, v, true
+		index, key = registry.PromptVersionByNumber, registry.PromptVersionKey(promptID, versionNumber)
 	}
-	return prompt, prompt.LatestVersion, true
+	version, ok := cols.PromptVersions.GetBy(index, key)
+	if !ok {
+		if versionNumber > 0 {
+			return nil, nil, false
+		}
+		return prompt, nil, true
+	}
+	return prompt, &version.TablePromptVersion, true
 }
 
 // Cleanup releases plugin resources; the prompts plugin has nothing to tear down.

@@ -42,7 +42,7 @@ func cohereContentBlockFromEmbeddingPart(part schemas.EmbeddingContentPart) (*Co
 		}
 		return nil, providerUtils.InvalidRequestErrorf("cohere image part missing data")
 	default:
-		return nil, providerUtils.InvalidRequestErrorf("cohere embeddings support only text and image parts")
+		return nil, providerUtils.InvalidRequestErrorf("this provider supports only text and image embedding parts")
 	}
 }
 
@@ -138,7 +138,7 @@ func ToCohereEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Coh
 		cohereReq.EmbeddingTypes = []string{*bifrostReq.Params.EncodingFormat}
 	}
 
-	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams("cohere"); err != nil {
+	if err := schemas.EmbeddingInput(bifrostReq.Input).RejectPerItemParams(); err != nil {
 		return nil, providerUtils.InvalidRequestErrorf("%s", err)
 	}
 	contents := schemas.EmbeddingInput(bifrostReq.Input).Contents()
@@ -362,30 +362,23 @@ func ToCohereEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *C
 	data := slices.Clone(bifrostResp.Data)
 	slices.SortStableFunc(data, func(a, b schemas.EmbeddingData) int { return cmp.Compare(a.Index, b.Index) })
 
-	// Unlabelled entries mean the provider returned only plain float vectors.
-	isTyped := false
+	// Unlabelled entries are plain float vectors.
 	for _, item := range data {
 		emb := item.Embedding
 		switch item.EncodingFormat {
 		case schemas.EmbeddingEncodingFloat:
-			isTyped = true
 			cohereResp.Embeddings.Float = append(cohereResp.Embeddings.Float, emb.EmbeddingArray)
 		case schemas.EmbeddingEncodingBase64:
-			isTyped = true
 			if emb.EmbeddingStr != nil {
 				cohereResp.Embeddings.Base64 = append(cohereResp.Embeddings.Base64, *emb.EmbeddingStr)
 			}
 		case schemas.EmbeddingEncodingInt8:
-			isTyped = true
 			cohereResp.Embeddings.Int8 = append(cohereResp.Embeddings.Int8, emb.EmbeddingInt8Array)
 		case schemas.EmbeddingEncodingBinary:
-			isTyped = true
 			cohereResp.Embeddings.Binary = append(cohereResp.Embeddings.Binary, emb.EmbeddingInt8Array)
 		case schemas.EmbeddingEncodingUint8:
-			isTyped = true
 			cohereResp.Embeddings.Uint8 = append(cohereResp.Embeddings.Uint8, emb.EmbeddingInt32Array)
 		case schemas.EmbeddingEncodingUbinary:
-			isTyped = true
 			cohereResp.Embeddings.Ubinary = append(cohereResp.Embeddings.Ubinary, emb.EmbeddingInt32Array)
 		default:
 			if emb.EmbeddingArray != nil {
@@ -394,11 +387,8 @@ func ToCohereEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *C
 		}
 	}
 
-	if isTyped {
-		cohereResp.ResponseType = schemas.Ptr("embeddings_by_type")
-	} else {
-		cohereResp.ResponseType = schemas.Ptr("embeddings_floats")
-	}
+	// The object form above is what Cohere's v2 API labels embeddings_by_type.
+	cohereResp.ResponseType = schemas.Ptr("embeddings_by_type")
 
 	// /v2/embed reports usage as billed_units only.
 	if bifrostResp.Usage != nil {

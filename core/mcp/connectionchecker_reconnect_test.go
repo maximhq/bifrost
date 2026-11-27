@@ -64,6 +64,7 @@ func (s *sessionInvalidator) reject(w http.ResponseWriter, r *http.Request) bool
 
 // buildExpiringSessionMCPServer starts a streamable-HTTP MCP server (one
 // "echo" tool) whose sessions the test can invalidate at will.
+// Pinned to 2025-11-25: protocol sessions ended with 2026-07-28.
 func buildExpiringSessionMCPServer(t *testing.T) (*httptest.Server, *sessionInvalidator) {
 	t.Helper()
 
@@ -75,7 +76,7 @@ func buildExpiringSessionMCPServer(t *testing.T) (*httptest.Server, *sessionInva
 		},
 	)
 
-	streamable := server.NewStreamableHTTPServer(s)
+	streamable := server.NewStreamableHTTPServer(s, server.WithStreamableHTTPProtocolVersions(mcpgo.ProtocolVersion20251125))
 	invalidator := &sessionInvalidator{dead: map[string]bool{}}
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if invalidator.reject(w, r) {
@@ -98,7 +99,8 @@ func buildExpiringSessionMCPServer(t *testing.T) (*httptest.Server, *sessionInva
 func TestPerformCheck_LiveConn_FailedCheck_TriggersReconnect(t *testing.T) {
 	ts, upstream := buildExpiringSessionMCPServer(t)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := &schemas.MCPClientConfig{
 		ID:                     "client-live-check-reconnect",
 		Name:                   "sticky-http-client",
@@ -108,6 +110,7 @@ func TestPerformCheck_LiveConn_FailedCheck_TriggersReconnect(t *testing.T) {
 		NeedsSessionStickiness: schemas.Ptr(true), // sticky: holds the persistent connection under test
 		ToolsToExecute:         []string{"*"},
 	}
+	accountOf(m).set(config)
 	require.NoError(t, m.connectToMCPClient(context.Background(), config))
 
 	before, ok := snapshotClientState(m, config.ID)
@@ -193,7 +196,7 @@ func TestReconnectAfterFailedCheck_StaleOrAuthoritativeState_DoesNotReconnect(t 
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			config := &schemas.MCPClientConfig{
 				ID:                     "client-reconnect-guard",
 				Name:                   "guarded-client",
@@ -202,14 +205,12 @@ func TestReconnectAfterFailedCheck_StaleOrAuthoritativeState_DoesNotReconnect(t 
 				ConnectionString:       schemas.NewSecretVar("http://127.0.0.1:0/mcp"), // unreachable: only the attempt matters
 				NeedsSessionStickiness: schemas.Ptr(true),
 			}
-			m.mu.Lock()
-			m.clientMap[config.ID] = &schemas.MCPClientState{
+			putClient(m, &schemas.MCPClientState{
 				Name:            config.Name,
 				ExecutionConfig: config,
 				State:           tc.state,
 				ConnGeneration:  currentGeneration,
-			}
-			m.mu.Unlock()
+			})
 
 			checker := NewClientConnectionChecker(m, config.ID, time.Minute, false, &MockLogger{})
 			checker.reconnectAfterFailedCheck(config.Name, tc.checkGeneration)

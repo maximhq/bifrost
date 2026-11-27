@@ -46,8 +46,10 @@ func (s *testConfigStore) GetOauthUserTokenByMode(_ context.Context, mode schema
 	return nil, nil
 }
 
-func newForceRefreshTestProvider(store *testConfigStore) *OAuth2Provider {
-	return NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+// newForceRefreshTestProvider returns a caching provider over store for the forced-refresh tests.
+func newForceRefreshTestProvider(t testing.TB, store *testConfigStore) *OAuth2Provider {
+	t.Helper()
+	return newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 }
 
 func tokenRefreshServer(t *testing.T, accessToken string) *httptest.Server {
@@ -73,7 +75,7 @@ func TestForceRefreshAccessToken_SharedOAuth_RefreshesResolvedToken(t *testing.T
 	store := newTestConfigStore()
 	oauthConfigID, tokenID := seedFixtures(t, store, server.URL+"/token")
 
-	provider := newForceRefreshTestProvider(store)
+	provider := newForceRefreshTestProvider(t, store)
 	config := &schemas.MCPClientConfig{
 		ID:            "test-mcp-client",
 		Name:          "Test Client",
@@ -89,11 +91,24 @@ func TestForceRefreshAccessToken_SharedOAuth_RefreshesResolvedToken(t *testing.T
 	assert.Equal(t, "forced-new-access-token", token.AccessToken, "ForceRefreshAccessToken must resolve the shared token and refresh it via the real RefreshAccessToken path")
 }
 
+// After an upstream 401, a forced refresh of an expired shared credential with no refresh token
+// marks it needs_reauth instead of failing with a plain error the registry reads as transient.
+func TestForceRefreshAccessToken_SharedOAuth_ExpiredWithoutRefreshTokenNeedsReauth(t *testing.T) {
+	store, oauthConfigID := newAccessTokenTestStore("http://127.0.0.1:0/token")
+	seedAccessToken(store, oauthConfigID, "shared", "tok-norefresh", "old-access-token", "", bifrost.Ptr(time.Now().Add(-time.Minute)))
+	config := &schemas.MCPClientConfig{ID: oauthConfigID, Name: "No Refresh", AuthType: schemas.MCPAuthTypeOauth, OauthConfigID: &oauthConfigID}
+
+	err := newForceRefreshTestProvider(t, store).ForceRefreshAccessToken(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config)
+	require.ErrorIs(t, err, schemas.ErrOAuth2TokenExpired)
+	assert.Equal(t, "needs_reauth", store.oauthTokens["tok-norefresh"].Status)
+	assert.Equal(t, unrenewableTokenReason, store.oauthTokens["tok-norefresh"].StatusReason)
+}
+
 // (b) MCPAuthTypeOauth with OauthConfigID nil/missing returns a sensible
 // error instead of panicking.
 func TestForceRefreshAccessToken_SharedOAuth_MissingOauthConfigID_ReturnsError(t *testing.T) {
 	store := newTestConfigStore()
-	provider := newForceRefreshTestProvider(store)
+	provider := newForceRefreshTestProvider(t, store)
 
 	t.Run("nil OauthConfigID", func(t *testing.T) {
 		config := &schemas.MCPClientConfig{
@@ -139,7 +154,7 @@ func TestForceRefreshAccessToken_SharedOAuth_InactiveToken_ShortCircuitsWithoutN
 	oauthConfigID, tokenID := seedFixtures(t, store, server.URL+"/token")
 	store.oauthTokens[tokenID].Status = "needs_reauth"
 
-	provider := newForceRefreshTestProvider(store)
+	provider := newForceRefreshTestProvider(t, store)
 	config := &schemas.MCPClientConfig{
 		ID:            "test-mcp-client",
 		Name:          "Test Client",
@@ -180,7 +195,7 @@ func TestForceRefreshAccessToken_PerUserOAuth_ResolvesAndRefreshesToken(t *testi
 		Scopes:        "[]",
 	}
 
-	provider := newForceRefreshTestProvider(store)
+	provider := newForceRefreshTestProvider(t, store)
 	config := &schemas.MCPClientConfig{
 		ID:            mcpClientID,
 		Name:          "Test Client",
@@ -203,7 +218,7 @@ func TestForceRefreshAccessToken_PerUserOAuth_ResolvesAndRefreshesToken(t *testi
 // error instead of panicking.
 func TestForceRefreshAccessToken_PerUserOAuth_NoIdentity_ReturnsError(t *testing.T) {
 	store := newTestConfigStore()
-	provider := newForceRefreshTestProvider(store)
+	provider := newForceRefreshTestProvider(t, store)
 	config := &schemas.MCPClientConfig{
 		ID:       "test-mcp-client",
 		Name:     "Test Client",
@@ -224,7 +239,7 @@ func TestForceRefreshAccessToken_PerUserOAuth_NoIdentity_ReturnsError(t *testing
 // error rather than silently no-op'ing or panicking.
 func TestForceRefreshAccessToken_UnsupportedAuthType_ReturnsError(t *testing.T) {
 	store := newTestConfigStore()
-	provider := newForceRefreshTestProvider(store)
+	provider := newForceRefreshTestProvider(t, store)
 	config := &schemas.MCPClientConfig{
 		ID:       "test-mcp-client",
 		Name:     "Test Client",

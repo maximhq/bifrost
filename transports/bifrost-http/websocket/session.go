@@ -17,7 +17,8 @@ type Session struct {
 	mu      sync.RWMutex
 	writeMu sync.Mutex // serializes all WriteMessage calls to clientConn
 
-	id string
+	id        string
+	startedAt time.Time // Immutable local creation time, before any turn log can be written.
 
 	// Client connection
 	clientConn *ws.Conn
@@ -36,17 +37,18 @@ type Session struct {
 	// providerSessionID tracks the upstream provider's session identifier when exposed.
 	providerSessionID string
 
+	responsesKeyProvider schemas.ModelProvider // provider of responsesKeyID
+	responsesKeyID       string                // key that served this session's last Responses turn
+
 	// realtimeOutputText accumulates assistant/provider turn text until the terminal event.
 	realtimeOutputText string
+	// realtimeInterimUsage totals the generations of the current turn that did not end it.
+	realtimeInterimUsage *schemas.BifrostLLMUsage
 
 	// realtimeTurnInputs accumulates finalized user/tool inputs in arrival order so the
 	// completed assistant turn can persist the full turn history instead of only the
 	// latest finalized input event.
 	realtimeTurnInputs []RealtimeTurnInput
-
-	// realtimeConsumedTurnItemIDs tracks finalized item IDs that have already been
-	// attached to a persisted turn, so late transcript updates do not pollute later turns.
-	realtimeConsumedTurnItemIDs map[string]struct{}
 
 	// realtimeSessionTools holds the latest session tool definitions from
 	// session.created / session.updated / session.update events, so that
@@ -55,11 +57,16 @@ type Session struct {
 
 	// realtimeVoice holds the voice from the latest session configuration.
 	realtimeVoice string
+	// realtimeVoiceType holds that voice's type, such as Azure Voice Live's "azure-standard".
+	realtimeVoiceType string
 
 	// realtimeTurnHooks tracks the active turn-scoped plugin pipeline between
 	// response.create and response.done.
 	realtimeTurnHooks *RealtimeTurnPluginState
 	realtimeTurnBusy  bool
+
+	realtimeTranslator   schemas.RealtimeTranslator // nil when the provider's frames map event by event
+	realtimeTranslatorMu sync.Mutex                 // orders translation and the provider writes it produces
 
 	closed bool
 }
@@ -70,10 +77,11 @@ type RealtimeToolOutput struct {
 }
 
 type RealtimeTurnInput struct {
-	ItemID  string
-	Role    string
-	Summary string
-	Raw     string
+	ItemID             string
+	Role               string
+	Summary            string
+	Raw                string
+	TranscriptComplete bool // Prevent an item.done echo from replacing a completed transcript.
 }
 
 type RealtimeTurnPluginState struct {
@@ -90,8 +98,14 @@ type RealtimeTurnPluginState struct {
 func NewSession(clientConn *ws.Conn) *Session {
 	return &Session{
 		id:         uuid.NewString(),
+		startedAt:  time.Now().UTC(),
 		clientConn: clientConn,
 	}
+}
+
+// StartedAt returns the session creation time used to bound persisted turn lookups.
+func (s *Session) StartedAt() time.Time {
+	return s.startedAt
 }
 
 // ID returns the stable Bifrost session identifier for this websocket session.
@@ -167,6 +181,25 @@ func (s *Session) MarkResponsesTurnCompleted() {
 	s.responsesCompleted = true
 }
 
+// SetResponsesKey records the key that served a Responses WS turn on provider.
+func (s *Session) SetResponsesKey(provider schemas.ModelProvider, keyID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.responsesKeyProvider = provider
+	s.responsesKeyID = keyID
+}
+
+// ResponsesKey returns the key that served this session's last Responses WS turn on provider,
+// or "" when no turn on provider has been served yet.
+func (s *Session) ResponsesKey(provider schemas.ModelProvider) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.responsesKeyProvider != provider {
+		return ""
+	}
+	return s.responsesKeyID
+}
+
 // SetProviderSessionID stores the upstream provider session identifier when available.
 func (s *Session) SetProviderSessionID(id string) {
 	s.mu.Lock()
@@ -217,6 +250,48 @@ func (s *Session) RealtimeVoice() string {
 	return s.realtimeVoice
 }
 
+// SetRealtimeVoiceType updates the tracked voice type from session configuration.
+func (s *Session) SetRealtimeVoiceType(voiceType string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	s.realtimeVoiceType = voiceType
+}
+
+// RealtimeVoiceType returns the current session voice's type, or empty string.
+func (s *Session) RealtimeVoiceType() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.realtimeVoiceType
+}
+
+// SetRealtimeTranslator pins the provider's translator to this session. Call it before the relays start.
+func (s *Session) SetRealtimeTranslator(translator schemas.RealtimeTranslator) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.realtimeTranslator = translator
+}
+
+// RealtimeTranslator returns the session's translator, or nil when the provider's frames map event by event.
+func (s *Session) RealtimeTranslator() schemas.RealtimeTranslator {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.realtimeTranslator
+}
+
+// LockRealtimeTranslator starts one translation step. Hold it from the translate call until the frames
+// it produced for the provider are written, so both relay directions keep the translator's frame order.
+func (s *Session) LockRealtimeTranslator() {
+	s.realtimeTranslatorMu.Lock()
+}
+
+// UnlockRealtimeTranslator ends the step started by LockRealtimeTranslator.
+func (s *Session) UnlockRealtimeTranslator() {
+	s.realtimeTranslatorMu.Unlock()
+}
+
 // AppendRealtimeOutputText appends provider output content for the current realtime turn.
 func (s *Session) AppendRealtimeOutputText(text string) {
 	if text == "" {
@@ -228,6 +303,32 @@ func (s *Session) AppendRealtimeOutputText(text string) {
 		return
 	}
 	s.realtimeOutputText += text
+}
+
+// AddRealtimeInterimUsage adds the usage of a generation that did not end the turn.
+func (s *Session) AddRealtimeInterimUsage(usage *schemas.BifrostLLMUsage) {
+	if usage == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return
+	}
+	if s.realtimeInterimUsage == nil {
+		s.realtimeInterimUsage = usage.DeepCopy()
+		return
+	}
+	s.realtimeInterimUsage.AddTokenCounts(usage)
+}
+
+// ConsumeRealtimeInterimUsage returns the usage added since the last turn ended and clears it.
+func (s *Session) ConsumeRealtimeInterimUsage() *schemas.BifrostLLMUsage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	usage := s.realtimeInterimUsage
+	s.realtimeInterimUsage = nil
+	return usage
 }
 
 // ConsumeRealtimeOutputText returns the accumulated provider output and clears it.
@@ -254,9 +355,15 @@ func (s *Session) AddRealtimeInput(summary, raw string) {
 }
 
 // RecordRealtimeInput stores or updates a finalized user turn event keyed by item ID.
-// Late updates for items already attached to a completed turn are ignored.
+// Completion events must use UpdateRealtimeTurnInput so they cannot introduce an old item.
 func (s *Session) RecordRealtimeInput(itemID, summary, raw string) {
-	s.recordRealtimeTurnInput(itemID, string(schemas.ChatMessageRoleUser), summary, raw)
+	s.recordRealtimeTurnInput(RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleUser), Summary: summary, Raw: raw}, true, false)
+}
+
+// RecordRealtimeEchoedInput stores a user item the provider announced. The announcement of text that a message
+// the client sent without an id is still waiting with answers that message, so it takes its place.
+func (s *Session) RecordRealtimeEchoedInput(itemID, summary, raw string) {
+	s.recordRealtimeTurnInput(RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleUser), Summary: summary, Raw: raw}, true, true)
 }
 
 // AddRealtimeToolOutput stores a pending tool result for the next assistant turn.
@@ -274,53 +381,65 @@ func (s *Session) AddRealtimeToolOutput(summary, raw string) {
 }
 
 // RecordRealtimeToolOutput stores or updates a finalized tool result keyed by item ID.
-// Late updates for items already attached to a completed turn are ignored.
+// Provider echoes must use UpdateRealtimeTurnInput after the client introduces the result.
 func (s *Session) RecordRealtimeToolOutput(itemID, summary, raw string) {
-	s.recordRealtimeTurnInput(itemID, string(schemas.ChatMessageRoleTool), summary, raw)
+	s.recordRealtimeTurnInput(RealtimeTurnInput{ItemID: itemID, Role: string(schemas.ChatMessageRoleTool), Summary: summary, Raw: raw}, true, false)
 }
 
-func (s *Session) recordRealtimeTurnInput(itemID, role, summary, raw string) {
-	if summary == "" && raw == "" {
-		return
-	}
+// UpdateRealtimeTurnInput updates only an existing pending item under the consume lock.
+// It reports whether the item matched and whether the session has already closed.
+func (s *Session) UpdateRealtimeTurnInput(input RealtimeTurnInput) (updated, closed bool) {
+	return s.recordRealtimeTurnInput(input, false, false)
+}
 
+// recordRealtimeTurnInput merges pending state without retaining completed-item history.
+func (s *Session) recordRealtimeTurnInput(input RealtimeTurnInput, allowNew, claimsEcho bool) (updated, closed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return
+		return false, true
 	}
-
-	itemID = strings.TrimSpace(itemID)
-	if itemID != "" {
-		if s.realtimeConsumedTurnItemIDs != nil {
-			if _, consumed := s.realtimeConsumedTurnItemIDs[itemID]; consumed {
-				return
-			}
-		}
+	if input.Summary == "" && input.Raw == "" {
+		return false, false
+	}
+	input.ItemID = strings.TrimSpace(input.ItemID)
+	if input.ItemID != "" {
 		for idx := range s.realtimeTurnInputs {
-			if s.realtimeTurnInputs[idx].ItemID != itemID || s.realtimeTurnInputs[idx].Role != role {
+			pending := &s.realtimeTurnInputs[idx]
+			if pending.ItemID != input.ItemID || pending.Role != input.Role {
 				continue
 			}
-			if strings.TrimSpace(summary) != "" {
-				s.realtimeTurnInputs[idx].Summary = summary
+			if pending.TranscriptComplete && !input.TranscriptComplete {
+				return true, false
 			}
-			if strings.TrimSpace(raw) != "" {
-				// Same item ID + role: replace raw with the latest event.
-				// Later events (e.g. conversation.item.created after
-				// conversation.item.create) carry the same or more complete
-				// data, so the newest version is always preferred.
-				s.realtimeTurnInputs[idx].Raw = raw
+			if strings.TrimSpace(input.Summary) != "" {
+				pending.Summary = input.Summary
 			}
-			return
+			if strings.TrimSpace(input.Raw) != "" {
+				pending.Raw = input.Raw
+			}
+			pending.TranscriptComplete = input.TranscriptComplete
+			return true, false
+		}
+		if summary := strings.TrimSpace(input.Summary); claimsEcho && summary != "" {
+			for idx := range s.realtimeTurnInputs {
+				pending := &s.realtimeTurnInputs[idx]
+				if pending.ItemID != "" || pending.Role != input.Role || strings.TrimSpace(pending.Summary) != summary {
+					continue
+				}
+				pending.ItemID = input.ItemID
+				if strings.TrimSpace(input.Raw) != "" {
+					pending.Raw = input.Raw
+				}
+				return true, false
+			}
 		}
 	}
-
-	s.realtimeTurnInputs = append(s.realtimeTurnInputs, RealtimeTurnInput{
-		ItemID:  itemID,
-		Role:    role,
-		Summary: summary,
-		Raw:     raw,
-	})
+	if allowNew {
+		s.realtimeTurnInputs = append(s.realtimeTurnInputs, input)
+		return true, false
+	}
+	return false, false
 }
 
 // ConsumeRealtimeTurnInputs returns pending realtime turn inputs and clears them.
@@ -328,16 +447,6 @@ func (s *Session) ConsumeRealtimeTurnInputs() []RealtimeTurnInput {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	inputs := append([]RealtimeTurnInput(nil), s.realtimeTurnInputs...)
-	if len(inputs) > 0 {
-		if s.realtimeConsumedTurnItemIDs == nil {
-			s.realtimeConsumedTurnItemIDs = make(map[string]struct{}, len(inputs))
-		}
-		for _, input := range inputs {
-			if strings.TrimSpace(input.ItemID) != "" {
-				s.realtimeConsumedTurnItemIDs[input.ItemID] = struct{}{}
-			}
-		}
-	}
 	s.realtimeTurnInputs = nil
 	return inputs
 }
@@ -432,10 +541,11 @@ func (s *Session) Close() {
 	// Release accumulated turn data so GC can reclaim memory even if a
 	// goroutine briefly holds a reference to this session after close.
 	s.realtimeTurnInputs = nil
-	s.realtimeConsumedTurnItemIDs = nil
 	s.realtimeSessionTools = nil
 	s.realtimeVoice = ""
+	s.realtimeVoiceType = ""
 	s.realtimeOutputText = ""
+	s.realtimeInterimUsage = nil
 
 	if s.clientConn != nil {
 		_ = s.clientConn.Close()
@@ -451,6 +561,7 @@ type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[*ws.Conn]*Session
 	maxConns int
+	closed   bool // set by CloseAll; Create refuses afterwards
 }
 
 // NewSessionManager creates a new session manager.
@@ -467,6 +578,9 @@ func (m *SessionManager) Create(clientConn *ws.Conn) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.closed {
+		return nil, ErrSessionManagerClosed
+	}
 	if m.maxConns > 0 && len(m.sessions) >= m.maxConns {
 		return nil, ErrConnectionLimitReached
 	}
@@ -507,6 +621,7 @@ func (m *SessionManager) Count() int {
 // CloseAll closes all active sessions.
 func (m *SessionManager) CloseAll() {
 	m.mu.Lock()
+	m.closed = true
 	sessions := m.sessions
 	m.sessions = make(map[*ws.Conn]*Session)
 	m.mu.Unlock()

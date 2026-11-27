@@ -8,6 +8,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	tables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
 
 // ============================================================
@@ -76,38 +78,6 @@ func (l *MockLogger) Warned() bool {
 }
 
 // ============================================================
-// mockStore — satisfies InMemoryStore with controllable responses.
-// ============================================================
-
-type mockStore struct {
-	prompts  []tables.TablePrompt
-	versions []tables.TablePromptVersion
-	err      error
-}
-
-func (m *mockStore) GetPrompts(_ context.Context, _ *string) ([]tables.TablePrompt, error) {
-	return m.prompts, m.err
-}
-
-func (m *mockStore) GetAllPromptVersions(_ context.Context) ([]tables.TablePromptVersion, error) {
-	return m.versions, m.err
-}
-
-// versionsErrStore succeeds on GetPrompts but fails on GetAllPromptVersions.
-type versionsErrStore struct {
-	prompts []tables.TablePrompt
-	err     error
-}
-
-func (s *versionsErrStore) GetPrompts(_ context.Context, _ *string) ([]tables.TablePrompt, error) {
-	return s.prompts, nil
-}
-
-func (s *versionsErrStore) GetAllPromptVersions(_ context.Context) ([]tables.TablePromptVersion, error) {
-	return nil, s.err
-}
-
-// ============================================================
 // staticResolver — returns fixed IDs; decouples PreLLMHook
 // tests from HTTP header / context mechanics.
 // ============================================================
@@ -126,21 +96,8 @@ func (r *staticResolver) Resolve(_ *schemas.BifrostContext, _ *schemas.BifrostRe
 // Plugin builders
 // ============================================================
 
-// newPluginWithStore builds a Plugin whose store is set but maps are empty.
-// Use only for loadCache tests.
-func newPluginWithStore(s InMemoryStore) *Plugin {
-	return &Plugin{
-		store:                     s,
-		logger:                    NewMockLogger(),
-		resolver:                  &staticResolver{},
-		promptsByID:               make(map[string]*tables.TablePrompt),
-		versionsByPromptAndNumber: make(map[string]map[int]*tables.TablePromptVersion),
-	}
-}
-
-// newTestPlugin builds a Plugin with pre-seeded in-memory maps, bypassing Init
-// and loadCache entirely. The store is nil — safe as long as no test path calls
-// into the store.
+// newTestPlugin builds a Plugin over a live store loaded with the prompts and versions the maps
+// hold, bypassing Init.
 func newTestPlugin(resolver PromptResolver, promptMap map[string]*tables.TablePrompt, versionMap map[string]map[int]*tables.TablePromptVersion) *Plugin {
 	return newTestPluginWithLogger(resolver, promptMap, versionMap, NewMockLogger())
 }
@@ -148,22 +105,62 @@ func newTestPlugin(resolver PromptResolver, promptMap map[string]*tables.TablePr
 // newTestPluginWithLogger is like newTestPlugin but accepts a caller-provided logger
 // so tests can inspect logged warnings.
 func newTestPluginWithLogger(resolver PromptResolver, promptMap map[string]*tables.TablePrompt, versionMap map[string]map[int]*tables.TablePromptVersion, log schemas.Logger) *Plugin {
+	var prompts []tables.TablePrompt
+	for _, prompt := range promptMap {
+		if prompt != nil {
+			prompts = append(prompts, *prompt)
+		}
+	}
+	var versions []tables.TablePromptVersion
+	for _, byNumber := range versionMap {
+		for _, version := range byNumber {
+			if version != nil {
+				versions = append(versions, *version)
+			}
+		}
+	}
+	return newPluginWithRows(resolver, prompts, versions, log)
+}
+
+// newPluginWithRows builds a Plugin over a live store holding prompts and versions as rows load
+// into it. A prompt's latest version is the one its LatestVersion names, added when versions lack
+// it; version record IDs are assigned afresh, since tests reuse version numbers across prompts.
+func newPluginWithRows(resolver PromptResolver, prompts []tables.TablePrompt, versions []tables.TablePromptVersion, log schemas.Logger) *Plugin {
 	if resolver == nil {
 		resolver = &staticResolver{}
 	}
-	if promptMap == nil {
-		promptMap = make(map[string]*tables.TablePrompt)
+	live, err := livestore.New()
+	if err != nil {
+		panic(err)
 	}
-	if versionMap == nil {
-		versionMap = make(map[string]map[int]*tables.TablePromptVersion)
+	cols := live.Collections
+	latest := make(map[string]int)
+	var recs []livestore.Record
+	for _, prompt := range prompts {
+		recs = append(recs, livestore.Rec(cols.Prompts, &registry.Prompt{ID: prompt.ID, Name: prompt.Name}))
+		if prompt.LatestVersion != nil {
+			latest[prompt.ID] = prompt.LatestVersion.VersionNumber
+			versions = append(versions, *prompt.LatestVersion)
+		}
 	}
-	return &Plugin{
-		store:                     nil,
-		logger:                    log,
-		resolver:                  resolver,
-		promptsByID:               promptMap,
-		versionsByPromptAndNumber: versionMap,
+	seen := make(map[string]bool)
+	var nextID uint
+	for _, version := range versions {
+		key := registry.PromptVersionKey(version.PromptID, version.VersionNumber)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		nextID++
+		version.ID = nextID
+		number, ok := latest[version.PromptID]
+		version.IsLatest = ok && number == version.VersionNumber
+		recs = append(recs, livestore.Rec(cols.PromptVersions, &registry.PromptVersion{TablePromptVersion: version}))
 	}
+	if err := live.LoadRecords(context.Background(), recs); err != nil {
+		panic(err)
+	}
+	return &Plugin{live: live, logger: log, resolver: resolver}
 }
 
 // ============================================================

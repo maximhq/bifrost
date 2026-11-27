@@ -1,6 +1,7 @@
 package vectorstore
 
 import (
+	"math"
 	"math/rand"
 	"os"
 	"strconv"
@@ -33,6 +34,15 @@ func generateTestEmbedding(dim int) []float32 {
 		embedding[i] = rand.Float32()*2 - 1 // Random values between -1 and 1
 	}
 	return embedding
+}
+
+// unitVectorAtCosine returns a unit vector of dim dimensions whose cosine similarity with
+// (1, 0, 0, ...) is exactly cosine; the dimensions past the first two are zero.
+func unitVectorAtCosine(dim int, cosine float64) []float32 {
+	v := make([]float32, dim)
+	v[0] = float32(cosine)
+	v[1] = float32(math.Sqrt(1 - cosine*cosine))
+	return v
 }
 
 func generateSimilarEmbedding(original []float32, similarity float32) []float32 {

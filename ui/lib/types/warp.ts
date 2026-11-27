@@ -28,6 +28,12 @@ export interface WarpConfig {
 	 */
 	api_key_id?: string;
 	/**
+	 * The virtual key Warp's model calls present when the person asking has no
+	 * user identity (the local admin, or no identity provider). A reference to
+	 * the key row, not the secret. Absent when none is set.
+	 */
+	virtual_key_id?: string;
+	/**
 	 * The other models an operator exposed. `provider` and `model` above stay
 	 * the default; the panel's switcher offers the default followed by these.
 	 */
@@ -59,7 +65,32 @@ export interface WarpConfig {
 	log_vector_store_namespace: string;
 	semantic_search_threshold: number;
 	semantic_search_limit: number;
+	/** How many requests that matched no topic start a discovery of new topics. */
+	topic_discovery_min_requests: number;
 	vector_store_connected: boolean;
+	/** Whether the gateway's Bifrost MCP is loaded. While bifrost_mcp_enabled, Warp does not answer without it. */
+	bifrost_mcp_available: boolean;
+	/** Whether Warp uses the Bifrost MCP at all. Off for now: no setup step, no management tools section. */
+	bifrost_mcp_enabled: boolean;
+	/** Kinds of configuration change Warp may offer; empty is reads only (the default). */
+	management_writes: WarpManagementWrite[];
+	/** Whether the Bifrost MCP serves writes at all: bifrost_mcp_allow_writes is the ceiling. */
+	management_writes_available: boolean;
+	/** Per kind, what Warp could be offered and roughly what it adds to every request. Absent while the Bifrost MCP is not loaded. */
+	management_tool_sizes?: WarpManagementToolSize[];
+}
+
+/** A kind of configuration change Warp may offer. Mirrors schemas.WarpManagementWrites. */
+export type WarpManagementWrite = "create" | "update" | "delete" | "action";
+
+/** Every kind, in the order the settings page lists them and the server stores them. */
+export const WARP_MANAGEMENT_WRITES: readonly WarpManagementWrite[] = ["create", "update", "delete", "action"];
+
+export interface WarpManagementToolSize {
+	kind: "read" | WarpManagementWrite;
+	tools: number;
+	/** Rough: declaration characters / 3. */
+	estimated_tokens: number;
 }
 
 /** The write body. Every field round-trips; nothing here is write-only. */
@@ -68,6 +99,8 @@ export interface WarpConfigInput {
 	provider: string;
 	model: string;
 	api_key_id?: string;
+	/** Omitted keeps the stored value; "" clears it. */
+	virtual_key_id?: string;
 	/** Replaced whole on every write: leaving it out clears the list. */
 	additional_models?: WarpModel[];
 	max_iterations?: number;
@@ -84,6 +117,10 @@ export interface WarpConfigInput {
 	log_vector_store_namespace: string;
 	semantic_search_threshold?: number;
 	semantic_search_limit?: number;
+	/** 10 to 20000. Zero means "use the default"; omitted keeps the stored value. */
+	topic_discovery_min_requests?: number;
+	/** Omitted keeps the stored value; [] is reads only. */
+	management_writes?: WarpManagementWrite[];
 }
 
 /**
@@ -101,7 +138,7 @@ export const WARP_MAX_TEMPERATURE = 2;
  * its settings, while a deployment with no log store has nothing to read and no
  * in-panel remedy.
  */
-export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store";
+export type WarpUnavailableReason = "not_configured" | "no_log_store" | "no_vector_store" | "no_bifrost_mcp";
 
 export interface WarpBackfillInput {
 	start_time: string;
@@ -127,6 +164,8 @@ export interface WarpBackfillJob {
 	indexed: number;
 	skipped: number;
 	failed: number;
+	/** Topic runs only: how many themes the topics were grouped into once written. */
+	themes?: number;
 	/** Tokens the job's embedding calls have consumed so far, across resumes. */
 	embedding_tokens?: number;
 	/** USD cost of those calls. Absent when the deployment cannot price them - unknown, not free. */
@@ -171,6 +210,8 @@ export interface WarpStoredMessage {
 	content: string;
 	tool_calls?: WarpStoredToolCall[];
 	error?: string;
+	/** The error frame's code (budget_exceeded, access_denied, ...); absent on turns filed before codes were kept. */
+	error_code?: string;
 	finish_reason?: string;
 	/**
 	 * The structured clarifying question this turn ended with, when it ended by
@@ -182,6 +223,8 @@ export interface WarpStoredMessage {
 		options?: { label: string; hint?: string }[];
 		allow_other?: boolean;
 		kind?: string;
+		/** On a confirmation card, the write it asks about. */
+		action?: { tool: string; arguments: string; destructive?: boolean };
 	};
 	total_tokens?: number;
 	cost?: number;
@@ -204,9 +247,28 @@ export interface WarpConversationDetail extends WarpConversation {
  */
 export type WarpLogIndexState = "unavailable" | "not_configured" | "indexing" | "failed" | "ready";
 
+/** How live topic filing is doing, from GET /api/warp/log-index/status. */
+export interface WarpTopicHealth {
+	active_topics: number;
+	themes: number;
+	/** Requests waiting in the pool for a topic to be discovered. */
+	pooled: number;
+	requests_24h: number;
+	unmatched_24h: number;
+	/** unmatched_24h over requests_24h; 0 when nothing was filed. */
+	unmatched_share_24h: number;
+}
+
 export interface WarpLogIndexStatus {
 	state: WarpLogIndexState;
 	vector_store_connected: boolean;
 	embedding_configured: boolean;
 	backfill?: WarpBackfillStatus;
+	/** Present when the index is usable and the log store keeps topics. */
+	topics?: WarpTopicHealth;
+	/**
+	 * Whether anything is indexed to seed topics from. Only while the embedding
+	 * model has no topics; absent when the vector store cannot say.
+	 */
+	has_indexed_requests?: boolean;
 }

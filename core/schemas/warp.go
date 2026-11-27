@@ -53,17 +53,30 @@ const (
 	WarpDefaultHistoryRetentionDays = 30
 	// WarpDefaultSemanticSearchThreshold is the minimum similarity accepted by
 	// semantic log search when an operator has not supplied one. It is a
-	// Weaviate certainty, (1 + cosine) / 2, and a question matched against a
-	// logged conversation scores well below a near-duplicate: 0.80 (cosine 0.6)
-	// cut off clearly relevant rows with text-embedding-3-small, so search came
-	// back empty for ordinary questions. 0.70 is cosine 0.4.
-	WarpDefaultSemanticSearchThreshold = 0.70
+	// similarity in 0..1, (1 + cosine) / 2, on a cosine-scored index (a Pinecone
+	// score is read as cosine, so its index must use that metric). A topic
+	// query scores cosine 0.15 to 0.47 against conversations that really are
+	// about it with text-embedding-3-small, and unrelated ones score inside
+	// that range too, so no threshold separates them: 0.5 (cosine 0) admits
+	// every real match, and the ranking, the result limit and Warp reading
+	// each row decide what is relevant.
+	WarpDefaultSemanticSearchThreshold = 0.50
 
 	// WarpDefaultSemanticSearchLimit is the default number of semantic matches.
 	WarpDefaultSemanticSearchLimit = 10
 
 	// WarpMaxSemanticSearchLimit bounds tool output and scoped rehydration work.
 	WarpMaxSemanticSearchLimit = 25
+
+	// WarpDefaultTopicDiscoveryMinRequests is how many requests that matched no
+	// topic have to be waiting before discovery clusters them into new topics.
+	// WarpMinTopicDiscoveryMinRequests and WarpMaxTopicDiscoveryMinRequests
+	// bound a configured value: below the minimum a pool cannot hold even one
+	// cluster large enough to be a topic, and above the maximum the pool is
+	// pruned before it could ever be reached.
+	WarpDefaultTopicDiscoveryMinRequests = 100
+	WarpMinTopicDiscoveryMinRequests     = 10
+	WarpMaxTopicDiscoveryMinRequests     = 20000
 
 	// WarpDefaultLogVectorStoreNamespace is deliberately Warp-specific: sharing
 	// an embedding namespace with another feature mixes incompatible metadata.
@@ -104,6 +117,27 @@ func IsWarpReasoningEffort(value string) bool {
 	return slices.Contains(WarpReasoningEfforts, value)
 }
 
+// The kinds of configuration change Warp may make through the Bifrost MCP, each
+// run only after the person confirms it. Reads are always offered; a deployment
+// turns each of these on in Warp's settings, and none is on by default: every
+// kind adds its tools to every Warp request, and the updates alone can outgrow a
+// model's context window. bifrost_mcp_allow_writes stays the ceiling: with it
+// off the Bifrost MCP serves no writes, whatever is chosen here.
+const (
+	WarpManagementCreate = "create" // POST operations named create*
+	WarpManagementUpdate = "update" // PUT and PATCH
+	WarpManagementDelete = "delete" // DELETE
+	WarpManagementAction = "action" // the other POSTs: test, rotate, flush, ...
+)
+
+// WarpManagementWrites lists the kinds in the order they are shown and stored.
+var WarpManagementWrites = []string{WarpManagementCreate, WarpManagementUpdate, WarpManagementDelete, WarpManagementAction}
+
+// IsWarpManagementWrite reports whether value names one of WarpManagementWrites.
+func IsWarpManagementWrite(value string) bool {
+	return slices.Contains(WarpManagementWrites, value)
+}
+
 // WarpConfig is the deployment's Warp settings. Exactly one row exists.
 type WarpConfig struct {
 	Enabled bool `json:"enabled"`
@@ -121,6 +155,12 @@ type WarpConfig struct {
 	// Empty is valid and common: a provider on a trusted network, or one using
 	// ambient IAM credentials, needs no key at all.
 	APIKeyID string `json:"api_key_id,omitempty"`
+	// VirtualKeyID names the virtual key Warp's model calls present when the person
+	// asking has no user identity of their own: the local admin, or a deployment
+	// without an identity provider. Like APIKeyID it is a reference, not the key.
+	// Empty leaves such a caller's calls carrying no credential, which enforced
+	// inference auth refuses.
+	VirtualKeyID string `json:"virtual_key_id,omitempty"`
 	// AdditionalModels are the other models an operator has exposed. Provider
 	// and Model above stay the default; see ForModel.
 	AdditionalModels []WarpModel `json:"additional_models,omitempty"`
@@ -168,6 +208,11 @@ type WarpConfig struct {
 	LogVectorStoreNamespace string        `json:"log_vector_store_namespace"`
 	SemanticSearchThreshold float64       `json:"semantic_search_threshold"`
 	SemanticSearchLimit     int           `json:"semantic_search_limit"`
+	// TopicDiscoveryMinRequests is how many unmatched requests start a
+	// discovery; zero means the default.
+	TopicDiscoveryMinRequests int `json:"topic_discovery_min_requests"`
+	// ManagementWrites are the kinds of change Warp may offer (WarpManagementWrites); empty means reads only.
+	ManagementWrites []string `json:"management_writes,omitempty"`
 	// RetiredLogVectorStoreNamespaces is internal lifecycle state. It is stored
 	// so source-log deletion can clean embedding spaces that are no longer read.
 	RetiredLogVectorStoreNamespaces []string `json:"-"`
@@ -264,6 +309,15 @@ func (c *WarpConfig) EffectiveSemanticSearchLimit() int {
 	return min(c.SemanticSearchLimit, WarpMaxSemanticSearchLimit)
 }
 
+// EffectiveTopicDiscoveryMinRequests is how many unmatched requests start a
+// discovery, the default when none is configured.
+func (c *WarpConfig) EffectiveTopicDiscoveryMinRequests() int {
+	if c == nil || c.TopicDiscoveryMinRequests <= 0 {
+		return WarpDefaultTopicDiscoveryMinRequests
+	}
+	return min(max(c.TopicDiscoveryMinRequests, WarpMinTopicDiscoveryMinRequests), WarpMaxTopicDiscoveryMinRequests)
+}
+
 func (c *WarpConfig) EffectiveLogVectorStoreNamespace() string {
 	if c == nil {
 		return WarpDefaultLogVectorStoreNamespace
@@ -313,6 +367,11 @@ const (
 	WarpUnavailableNoLogStore WarpUnavailableReason = "no_log_store"
 	// WarpUnavailableNoVectorStore means semantic log storage is not connected.
 	WarpUnavailableNoVectorStore WarpUnavailableReason = "no_vector_store"
+	// WarpUnavailableNoBifrostMCP means the Bifrost MCP is not loaded (no
+	// bifrost_url, or its OpenAPI spec could not be read). Warp needs it to read
+	// configuration, so it does not answer at all without it. The dashboard shows
+	// admins the setup notice and everyone else an ask-an-admin message.
+	WarpUnavailableNoBifrostMCP WarpUnavailableReason = "no_bifrost_mcp"
 )
 
 // WarpUnavailableResponse is the 503 body for both reasons above.
@@ -384,6 +443,7 @@ type WarpStoredMessage struct {
 	// came from nowhere.
 	ToolCalls []WarpStoredToolCall `json:"tool_calls,omitempty"`
 	Error     string               `json:"error,omitempty"`
+	ErrorCode string               `json:"error_code,omitempty"` // the error frame's code, e.g. budget_exceeded
 	// FinishReason is "partial" when the answer was given on the last research
 	// step without settling, so a reopened thread still shows it as partial.
 	FinishReason string `json:"finish_reason,omitempty"`
@@ -407,6 +467,27 @@ type WarpStoredQuestion struct {
 	Options    []WarpStoredQuestionOpt `json:"options"`
 	AllowOther bool                    `json:"allow_other"`
 	Kind       string                  `json:"kind,omitempty"`
+	// Action is what a confirmation card shows: the call without its token.
+	Action *WarpConfirmAction `json:"action,omitempty"`
+	// Pending is the management call a confirmation card is asking about. It is
+	// persisted with the card and never returned by the conversation API.
+	Pending *WarpPendingCall `json:"pending,omitempty"`
+}
+
+// WarpConfirmAction is the management write a confirmation card describes.
+type WarpConfirmAction struct {
+	Tool        string `json:"tool"`
+	Arguments   string `json:"arguments"`
+	Destructive bool   `json:"destructive,omitempty"`
+}
+
+// WarpPendingCall is a management write held until the person confirms it.
+// Token is what the card's Confirm option sends back; Arguments is the JSON the
+// model gave the tool.
+type WarpPendingCall struct {
+	Token     string `json:"token"`
+	Tool      string `json:"tool"`
+	Arguments string `json:"arguments"`
 }
 
 // WarpStoredQuestionOpt is one pickable answer.

@@ -19,9 +19,10 @@ const configuredWarp = {
   embedding_model: 'text-embedding-3-small',
   embedding_dimension: 1536,
   log_vector_store_namespace: 'BifrostWarpLogs',
-  semantic_search_threshold: 0.7,
+  semantic_search_threshold: 0.5,
   semantic_search_limit: 10,
   vector_store_connected: true,
+  bifrost_mcp_available: true,
 }
 
 function sse(answer: string): string {
@@ -218,3 +219,39 @@ test.describe('Warp model switcher', () => {
     expect(sent[0].model).toBeUndefined()
   })
 })
+
+// The panel is a lazy chunk, so the first open used to show an empty card until it arrived.
+test.describe('Warp panel loading state', () => {
+  for (const layout of [
+    { name: 'docked', width: 1440, container: 'warp-dock-panel' },
+    { name: 'sheet', width: 800, container: 'warp-dock-sheet' },
+  ]) {
+    test(`shows a loader in the ${layout.name} layout until the panel chunk arrives`, async ({ dashboardPage }) => {
+      const page = dashboardPage.page
+      await page.setViewportSize({ width: layout.width, height: 900 })
+      await enableWarpFlag(page)
+      await mockWarpConfig(page)
+      let release!: () => void
+      const held = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      // Matches the built chunk (assets/warpPanel-<hash>.js) and the dev module (warpPanel.tsx).
+      await page.route(/\/warpPanel[-.][^/]*$/, async (route) => {
+        await held
+        await route.continue()
+      })
+      await dashboardPage.goto()
+      await expect(dashboardPage.pageTitle).toBeVisible()
+
+      await page.getByTestId('topbar-warp-btn').click()
+      const container = page.getByTestId(layout.container)
+      await expect(container.getByTestId('warp-panel-loading')).toBeVisible()
+      await expect(page.getByTestId('warp-composer-input')).toHaveCount(0)
+
+      release()
+      await expect(page.getByTestId('warp-composer-input')).toBeVisible()
+      await expect(page.getByTestId('warp-panel-loading')).toHaveCount(0)
+    })
+  }
+})
+

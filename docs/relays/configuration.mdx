@@ -1,0 +1,401 @@
+---
+title: "Create a relay"
+description: "Register an API with its base URL and secret, then set how Bifrost signs in, which headers it adds, its timeouts and its proxy."
+icon: "plus"
+---
+
+A relay needs two things to start working: the API's **base URL** and the **credential** Bifrost signs in with. Everything else (routes, pricing, headers, timeouts) can be added or changed later. The name cannot.
+
+The examples on this page use a relay called `web-search` that points at `https://api.example.com`. Replace them with your API's name, URL and secret.
+
+---
+
+## Create the relay
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Open **Relays** in the sidebar and select **Add Relay**.
+2. Enter a **Name**. Callers will use `/relay/<name>/...`.
+3. Enter the **Base URL** of the API.
+4. Pick how Bifrost signs in under **Authentication**, and enter the **API Key**.
+5. Select **Add Relay**.
+
+<Frame>
+  <img
+    src="/media/relays/ui-add-relay.png"
+    alt="The Add relay sheet with a name, base URL and authentication method"
+    style={{ maxHeight: "460px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+The new relay appears in the list on the left, with no routes yet. Select **Edit Relay Config** to change any of the settings below. The settings are split across five tabs: **General**, **Authentication**, **Advanced**, **Network** and **Proxy**. Each tab has its own save button.
+
+To create and manage relays over the API, see the [API reference](/api-reference/relays/create-relay).
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "relays": [
+    {
+      "name": "web-search",
+      "description": "Web search for the research assistant",
+      "base_url": "https://api.example.com",
+      "auth": { "type": "bearer" },
+      "credential": { "value": "env.WEB_SEARCH_API_KEY" }
+    }
+  ]
+}
+```
+
+`env.WEB_SEARCH_API_KEY` tells Bifrost to read the key from that environment variable, so the secret stays out of the file.
+
+Bifrost loads relays from `config.json` at startup, before virtual keys, so a virtual key in the same file can be given access to them. Each relay is matched by name:
+
+- A new name creates the relay.
+- A changed entry updates the stored relay. An unchanged one is left alone.
+- An entry that fails validation is skipped with a warning in the server log. Any stored relay with that name stays as it was.
+- When `config.json` is the [source of truth](/deployment-guides/config-json/source-of-truth), stored relays whose name is not in the list are deleted. An explicit empty list (`"relays": []`) deletes them all; leaving `relays` out keeps them.
+
+</Tab>
+<Tab title="Helm">
+
+`bifrost.relays` takes the same fields as `config.json`:
+
+```yaml
+bifrost:
+  relays:
+    - name: web-search
+      description: "Web search for the research assistant"
+      base_url: "https://api.example.com"
+      auth:
+        type: bearer
+      credential:
+        value: "env.WEB_SEARCH_API_KEY"
+
+# Load WEB_SEARCH_API_KEY into the pod from a Kubernetes Secret
+envFrom:
+  - secretRef:
+      name: relay-credentials
+```
+
+The chart checks each relay against the same schema and refuses to render if two relays share a name. Relays are loaded the same way as from `config.json`: with `bifrost.sourceOfTruth: config.json`, relays that are not in the list are deleted; leaving `bifrost.relays` out keeps them.
+
+</Tab>
+</Tabs>
+
+### Name and base URL
+
+| Setting | Rules |
+| --- | --- |
+| **Name** | Letters, digits, `.`, `_` and `-`, up to 64 characters. It becomes part of the address (`/relay/<name>/...`) and cannot be changed later. |
+| **Base URL** | A full `http://` or `https://` URL. It may include a path, such as `https://speech.example.com/v1`, but no query string, `#fragment` or `user:password@`. Every call is sent under this URL: a caller's `/search` becomes `https://api.example.com/search`. |
+| **Description** | Optional. Shown in the relay list. |
+
+---
+
+## Authentication
+
+Callers never see or send the API's secret. They send their Bifrost virtual key, and Bifrost adds the relay's credential to each call before it goes out. Any credential header the caller sends (`Authorization`, `x-api-key`, `api-key`, cookies and similar) is removed first.
+
+Pick the method the API expects under **Authentication**, either when you add the relay or on the **Authentication** tab of **Edit Relay Config**.
+
+| Method | `auth.type` | What Bifrost sends |
+| --- | --- | --- |
+| **Bearer token** (default) | `bearer` | `Authorization: Bearer <key>` |
+| **Custom header** | `header` | `<Header Name>: <Value Prefix><key>` |
+| **Query parameter** | `query` | `?<Query Parameter>=<key>` added to the URL |
+| **Basic auth** | `basic` | `Authorization: Basic ...` |
+| **AWS SigV4** | `aws_sigv4` | An AWS signature |
+| **No authentication** | `none` | Nothing |
+
+<Tabs>
+<Tab title="Bearer token">
+
+The most common method. Enter the key under **API Key**, and Bifrost sends it as `Authorization: Bearer <key>`.
+
+<Frame>
+  <img
+    src="/media/relays/ui-auth-type.png"
+    alt="The Authentication tab with Bearer token selected"
+    style={{ maxHeight: "360px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+The same relay in `config.json`:
+
+```json
+{
+  "name": "web-search",
+  "base_url": "https://api.example.com",
+  "auth": { "type": "bearer" },
+  "credential": { "value": "env.WEB_SEARCH_API_KEY" }
+}
+```
+
+</Tab>
+<Tab title="Custom header">
+
+For APIs that read the key from their own header, such as `X-Api-Key`. Enter the header under **Header Name**. Add a **Value Prefix** if the API wants text before the key, such as `Token `.
+
+<Frame>
+  <img
+    src="/media/relays/ui-auth-header.png"
+    alt="The Authentication tab with Custom header selected and X-Api-Key as the header name"
+    style={{ maxHeight: "420px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+A text-to-speech relay that sends its key in `X-Api-Key`, in `config.json`:
+
+```json
+{
+  "name": "text-to-speech",
+  "base_url": "https://speech.example.com",
+  "auth": { "type": "header", "header_name": "X-Api-Key" },
+  "credential": { "value": "env.TTS_API_KEY" }
+}
+```
+
+If a caller sends their own copy of that header, it is removed.
+
+</Tab>
+<Tab title="Query parameter">
+
+For APIs that take the key in the URL, such as `?key=...`. Enter the parameter name under **Query Parameter**.
+
+<Frame>
+  <img
+    src="/media/relays/ui-auth-query.png"
+    alt="The Authentication tab with Query parameter selected and key as the parameter name"
+    style={{ maxHeight: "420px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+A maps relay that sends its key as `?key=...`, in `config.json`:
+
+```json
+{
+  "name": "maps",
+  "base_url": "https://maps.example.com/api",
+  "auth": { "type": "query", "query_param": "key" },
+  "credential": { "value": "env.MAPS_API_KEY" }
+}
+```
+
+Bifrost removes any `key` parameter the caller sends and adds its own. The rest of the query string is forwarded as is. The key is also hidden in logs and in any redirect the API sends back.
+
+</Tab>
+<Tab title="Basic auth">
+
+For APIs that use a username and password. Enter them under **Credentials** as `username:password`, and Bifrost encodes them.
+
+<Frame>
+  <img
+    src="/media/relays/ui-auth-basic.png"
+    alt="The Authentication tab with Basic auth selected and a username:password credential"
+    style={{ maxHeight: "360px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+An internal API that uses basic auth, in `config.json`:
+
+```json
+{
+  "name": "internal-api",
+  "base_url": "https://internal.example.com",
+  "auth": { "type": "basic" },
+  "credential": { "value": "env.INTERNAL_API_CREDENTIALS" }
+}
+```
+
+</Tab>
+<Tab title="AWS SigV4">
+
+For AWS APIs such as Textract, Translate or Comprehend. Bifrost signs each call with AWS Signature Version 4.
+
+<Frame>
+  <img
+    src="/media/relays/ui-auth-aws.png"
+    alt="AWS SigV4 settings with the AWS service, explicit credentials and region"
+    style={{ maxHeight: "560px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+- **AWS Service** is the AWS signing name, such as `translate` or `textract`.
+- **Region** is the region of the base URL, such as `us-east-1`.
+- **Authentication Method** picks where the AWS keys come from:
+  - **IAM Role (Inherited)** uses the credentials of the machine Bifrost runs on (an instance role, IRSA, or AWS environment variables). No keys are stored.
+  - **Explicit Credentials** uses the **Access Key** and **Secret Key** you enter, plus an optional **Session Token**.
+- **Assume Role ARN** and **External ID** are optional. When set, Bifrost assumes that role before signing.
+
+An Amazon Translate relay with explicit keys, in `config.json`:
+
+```json
+{
+  "name": "translate",
+  "base_url": "https://translate.us-east-1.amazonaws.com",
+  "auth": { "type": "aws_sigv4", "aws": { "service": "translate" } },
+  "credential": {
+    "aws": {
+      "access_key": "env.AWS_ACCESS_KEY_ID",
+      "secret_key": "env.AWS_SECRET_ACCESS_KEY",
+      "region": "us-east-1"
+    }
+  }
+}
+```
+
+Leave out `access_key` and `secret_key` to use the IAM role. `role_arn`, `external_id` and `session_name` assume a role; `session_token` adds a temporary credential.
+
+Because Bifrost signs the call itself, any signature headers the caller sends are removed. Of the caller's `X-Amz-*` headers, only `X-Amz-Target` is forwarded, because AWS uses it to name the operation.
+
+</Tab>
+<Tab title="No authentication">
+
+For APIs that need no credential, such as an internal service on a private network. Bifrost adds nothing, and still removes any credential the caller sends.
+
+```json
+{
+  "name": "internal-tools",
+  "base_url": "https://tools.internal.example.com",
+  "auth": { "type": "none" }
+}
+```
+
+</Tab>
+</Tabs>
+
+In Helm, every example above goes under `bifrost.relays` with the same fields.
+
+---
+
+## Extra headers
+
+**Extra Headers** on the **Advanced** tab are added to every call the relay sends. Use them for headers the API always needs, such as an account ID, an API version or a second key.
+
+<Frame>
+  <img
+    src="/media/relays/ui-extra-headers.png"
+    alt="The Advanced tab with the Extra Headers table highlighted"
+    style={{ maxHeight: "560px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+In `config.json`, this adds a team name and a second account key (read from an environment variable) to every call:
+
+```json
+{
+  "extra_headers": {
+    "X-Team": "research",
+    "X-Account-Key": "env.ACCOUNT_KEY"
+  }
+}
+```
+
+- If a caller sends a header with the same name, the caller's copy is removed and yours is used.
+- Each header name may appear once. `X-Team` and `x-team` together are refused.
+- Values of headers that carry credentials are masked in the dashboard and API.
+
+---
+
+## Network
+
+The **Network** tab controls the connection from Bifrost to the API.
+
+<Frame>
+  <img
+    src="/media/relays/ui-network.png"
+    alt="The Network tab with timeouts, connection limit and TLS settings"
+    style={{ maxHeight: "480px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+| Setting | Field | Default | What it does |
+| --- | --- | --- | --- |
+| **Timeout (seconds)** | `network.timeout_seconds` | `60` | How long a normal call may take from start to finish. For a [streamed](./routes#streaming) call, how long the API may take to start replying. |
+| **Stream Idle Timeout (seconds)** | `network.stream_idle_timeout_in_seconds` | `60` | A stream is closed if no data arrives for this long. |
+| **Max Connections per Host** | `network.max_conns_per_host` | `5000` | Most connections Bifrost keeps open to the API at once. |
+| **Insecure Skip Verify** | `network.insecure_skip_verify` | off | Skip checking the API's TLS certificate. Use only for self-signed certificates in development. |
+| **CA Certificate (PEM)** | `network.ca_cert_pem` | none | An extra certificate authority to trust, for APIs behind a private CA. |
+
+In `config.json`, this gives a slow API 30 seconds per call, lets its streams stay quiet for 2 minutes, and caps it at 1,000 open connections:
+
+```json
+{
+  "network": {
+    "timeout_seconds": 30,
+    "stream_idle_timeout_in_seconds": 120,
+    "max_conns_per_host": 1000
+  }
+}
+```
+
+A normal (not streamed) reply can be up to 64 MB. For larger replies, make the route [stream](./routes#streaming).
+
+---
+
+## Proxy
+
+The **Proxy** tab sends this relay's traffic through a forward proxy.
+
+<Frame>
+  <img
+    src="/media/relays/ui-proxy.png"
+    alt="The Proxy tab with an HTTP proxy configured"
+    style={{ maxHeight: "560px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+| Proxy Type | `proxy_config.type` | What it does |
+| --- | --- | --- |
+| *(not set)* | omit `proxy_config` | Use the global proxy if one is set for inference, otherwise connect directly. |
+| **None (direct)** | `none` | Always connect directly, even when a global proxy is set. |
+| **HTTP** | `http` | Use the HTTP proxy at **Proxy URL**. |
+| **SOCKS5** | `socks5` | Use the SOCKS5 proxy at **Proxy URL**. |
+| **Environment** | `environment` | Use the `HTTP_PROXY` / `HTTPS_PROXY` variables of the Bifrost process. |
+
+**Username**, **Password** and **CA Certificate (PEM)** are optional. The CA certificate is for proxies that inspect TLS traffic.
+
+In `config.json`, this sends the relay's traffic through an HTTP proxy inside your network:
+
+```json
+{
+  "proxy_config": {
+    "type": "http",
+    "url": "http://egress-proxy.internal:3128"
+  }
+}
+```
+
+When the global proxy changes, every relay that inherits it picks up the change.
+
+---
+
+## All fields
+
+| Field | Required | Description |
+| --- | --- | --- |
+| `name` | Yes | Address of the relay: `/relay/{name}`. Pattern `^[A-Za-z0-9._-]{1,64}$`. Cannot be changed. |
+| `base_url` | Yes | Full `http(s)` URL every call is sent under. |
+| `description` | No | Shown in the relay list. |
+| `auth` | No | How Bifrost signs in: `type`, plus `header_name` and `value_prefix` (custom header), `query_param` (query parameter) or `aws.service` (AWS SigV4). Defaults to `bearer`. |
+| `credential` | No | `value` for bearer, custom header, query parameter and basic auth. `aws` for AWS SigV4: `region` (required), `access_key`, `secret_key`, `session_token`, `role_arn`, `external_id`, `session_name`. Leave out for `none`. |
+| `extra_headers` | No | Headers added to every call. See [Extra headers](#extra-headers). |
+| `network` | No | See [Network](#network). |
+| `proxy_config` | No | See [Proxy](#proxy). |
+| `routes` | No | The operations callers may use. See [Routes](./routes). |
+| `skip_route_check` | No | Forward calls that match no route. See [Relay any path](./routes#relay-any-path). Default `false`. |
+| `streaming` | No | `paths` that always stream. See [Streaming](./routes#streaming). |
+| `usage` | No | The relay's pricing. See [Pricing](./pricing). |
+| `ignore_upstream_cost` | No | Ignore a cost the API reports. See [Cost the API reports](./pricing#cost-the-api-reports). Default `false`. |
+
+---
+
+## Next steps
+
+- **[Routes](./routes)**: list the operations callers may use.
+- **[Pricing](./pricing)**: put a price on each call.
+- **[Virtual keys: relay access](/features/governance/virtual-keys#relay-access)**: let a key call the relay.

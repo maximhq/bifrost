@@ -1,3 +1,3 @@
-- fix: Claude Code now launches in its normal terminal mode instead of forcing `CLAUDE_CODE_SIMPLE=1`
-- fix: Shift+Tab is forwarded to child CLIs instead of being consumed by Bifrost tab switching, preserving Claude Code shortcuts while keeping plain `Ctrl+Tab` for tab cycling
-- fix: sticky tab-bar errors now always let `Esc` clear the error before scroll mode, quit confirmation, or other overlays can consume the key
+[feat]: Enterprise SSO sign-in over SSH and in dev containers: fixed callback port via --callback-port / BIFROST_CALLBACK_PORT, and pasting the redirected callback address into auth login [@R-droid101](https://github.com/R-droid101)
+[feat]: CLI project ID/name selection for inference and coding harnesses, reversible native configuration, and Claude Desktop credential-helper JSON [@R-droid101](https://github.com/R-droid101)
+[feat]: add optional browser login to auth print-token [@CallumWayve](https://github.com/CallumWayve)

@@ -23,6 +23,12 @@ variable "container_port" {
   type        = number
 }
 
+variable "ingress_path" {
+  description = "Path prefix the Kubernetes ingress routes to Bifrost; \"/\" owns the whole host."
+  type        = string
+  default     = "/"
+}
+
 variable "health_check_path" {
   description = "HTTP path for health checks."
   type        = string

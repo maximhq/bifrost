@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"math"
 	"mime"
 	"net/url"
 	"path/filepath"
@@ -24,11 +26,13 @@ import (
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// awsRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
+// AWSRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
 // (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions (us-gov-east-1) are
 // recognised alongside standard single-segment ones (eu-north-1, ap-southeast-2).
-var awsRegionRegex = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
-var bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+var (
+	AWSRegionRegex                 = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
+	bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+)
 
 // bedrockUnsafeToolUseIDCharRegex matches characters outside Bedrock's toolUseId charset
 // (^[a-zA-Z0-9_.:-]+$), which is wider than the tool-name charset above.
@@ -59,7 +63,7 @@ func resolveMantleProjectID(ctx *schemas.BifrostContext, key schemas.Key) string
 func parseBedrockRegionAndModel(model string) (region, bareModel string) {
 	if idx := strings.IndexByte(model, '/'); idx > 0 {
 		prefix := model[:idx]
-		if awsRegionRegex.MatchString(prefix) {
+		if AWSRegionRegex.MatchString(prefix) {
 			return prefix, model[idx+1:]
 		}
 	}
@@ -107,6 +111,15 @@ func awsPartitionForRegion(region string) string {
 // returned value is a bare host, so callers keep ownership of the scheme and path — including
 // the bucket prefix S3's virtual-hosted URLs carry.
 func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	return resolveBedrockHostWithRuntimeDefault(endpoints, service, region, "")
+}
+
+// resolveBedrockHostWithRuntimeDefault is resolveBedrockHost with a provider-wide host for the
+// bedrock-runtime service, taken from network_config.base_url. Precedence for bedrock-runtime is
+// the per-key endpoints.runtime override, then runtimeDefault, then the public regional host.
+// The other services ignore runtimeDefault: one base URL cannot serve the control plane, mantle,
+// agent-runtime and S3 as well, so those keep their per-key overrides or public hosts.
+func resolveBedrockHostWithRuntimeDefault(endpoints *schemas.BedrockEndpoints, service bedrockService, region, runtimeDefault string) string {
 	if endpoints != nil {
 		var override *schemas.SecretVar
 		switch service {
@@ -125,11 +138,20 @@ func resolveBedrockHost(endpoints *schemas.BedrockEndpoints, service bedrockServ
 			return host
 		}
 	}
+	if service == bedrockServiceRuntime && runtimeDefault != "" {
+		return runtimeDefault
+	}
 	// Mantle is the odd one out: its public host lives under api.aws, not amazonaws.com.
 	if service == bedrockServiceMantle {
 		return fmt.Sprintf("%s.%s.api.aws", service, region)
 	}
 	return fmt.Sprintf("%s.%s.amazonaws.com", service, region)
+}
+
+// serviceHost resolves the host for an AWS endpoint service, applying network_config.base_url as
+// the provider-wide bedrock-runtime host when the key carries no endpoints.runtime override.
+func (provider *BedrockProvider) serviceHost(endpoints *schemas.BedrockEndpoints, service bedrockService, region string) string {
+	return resolveBedrockHostWithRuntimeDefault(endpoints, service, region, provider.runtimeHost)
 }
 
 // bedrockEndpoints returns the endpoint overrides on a key config, tolerating a nil config so
@@ -405,6 +427,8 @@ func materializeBedrockDocument(
 	fileURL *string,
 	filename *string,
 	fileType *string,
+	fileContent json.RawMessage,
+	citations *schemas.Citations,
 	sourceRequirement bedrockDocumentSourceRequirement,
 ) (*BedrockDocumentSource, error) {
 	document := &BedrockDocumentSource{
@@ -412,8 +436,45 @@ func materializeBedrockDocument(
 		Format: "pdf",
 		Source: &BedrockDocumentSourceData{},
 	}
+	if citations != nil && citations.Enabled != nil {
+		document.Citations = &BedrockCitationsConfig{Enabled: *citations.Enabled}
+	}
 	if filename != nil {
 		document.Name = normalizeBedrockFilename(*filename)
+	}
+
+	if len(fileContent) > 0 {
+		if (fileData != nil && *fileData != "") || (fileURL != nil && *fileURL != "") {
+			return nil, providerUtils.InvalidRequestErrorf("document file_content cannot be combined with file_data or file_url")
+		}
+		if document.Citations == nil || !document.Citations.Enabled {
+			return nil, providerUtils.InvalidRequestErrorf("Bedrock custom document file_content requires citations.enabled=true")
+		}
+		content := bytes.TrimSpace(fileContent)
+		if len(content) > 0 && content[0] == '"' {
+			var text string
+			if err := sonic.Unmarshal(content, &text); err != nil {
+				return nil, providerUtils.InvalidRequestErrorf("invalid document file_content: %v", err)
+			}
+			document.Source.Content = []BedrockDocumentContentBlock{{Text: &text}}
+		} else {
+			var blocks []struct {
+				Type string  `json:"type"`
+				Text *string `json:"text"`
+			}
+			if err := sonic.Unmarshal(content, &blocks); err != nil || len(blocks) == 0 {
+				return nil, providerUtils.InvalidRequestErrorf("document file_content must be a string or a non-empty array of text blocks")
+			}
+			document.Source.Content = make([]BedrockDocumentContentBlock, 0, len(blocks))
+			for _, block := range blocks {
+				if block.Type != "text" || block.Text == nil {
+					return nil, providerUtils.InvalidRequestErrorf("Bedrock custom document file_content supports only text blocks")
+				}
+				document.Source.Content = append(document.Source.Content, BedrockDocumentContentBlock{Text: block.Text})
+			}
+		}
+		document.Format = ""
+		return document, nil
 	}
 
 	dataURLMediaType, dataURLPayload := "", ""
@@ -495,7 +556,7 @@ func materializeBedrockDocument(
 		if sourceRequirement == bedrockDocumentSourceOptional {
 			return document, nil
 		}
-		return nil, fmt.Errorf("bedrock document requires file_data or file_url")
+		return nil, providerUtils.InvalidRequestErrorf("bedrock document requires file_data, file_url or file_content")
 	}
 
 	if isDataURL {
@@ -611,13 +672,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		bedrockReq.InferenceConfig = inferenceConfig
 	}
 
-	// Handle structured output conversion through the synthetic `bf_so_*` tool
-	// path for all Bedrock models, including Anthropic. We avoid native
-	// `output_config.format` because Bedrock Converse rejects it on some Claude
-	// variants (e.g. Opus 4.7 returns "output_config.format: Extra inputs are not
-	// permitted"), whereas the synthetic-tool path is a regular Converse tool
-	// call accepted by all variants.
-	responseFormatTool, _ := convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	// Structured output goes natively through outputConfig.textFormat when the model and schema
+	// allow it, otherwise through the synthetic `bf_so_*` tool.
+	var responseFormatTool *BedrockTool
+	if outputConfig := chatNativeOutputConfig(ctx, caps, bifrostReq.Model, bifrostReq.Params, bedrockReq.Messages); outputConfig != nil {
+		bedrockReq.OutputConfig = outputConfig
+	} else {
+		responseFormatTool, _ = convertResponseFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params)
+	}
 
 	// Filter provider-unsupported server tools once; both convertToolConfig and
 	// collectBedrockServerTools consume the same filtered set, and
@@ -630,7 +692,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// literally contain "nova-2" fails the check and drops web_search/code_execution
 	// instead of converting them. Mirrors ToBedrockResponsesRequest, which already
 	// passes the canonical model to the same check.
-	toolConfig, modelDropped := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	toolConfig, modelDropped, err := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	if err != nil {
+		return err
+	}
 	if toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
 	}
@@ -671,6 +736,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 		}
 	}
 
+	var eagerFlags []*bool
+	for _, tool := range filteredTools {
+		if tool.Function != nil {
+			eagerFlags = append(eagerFlags, tool.EagerInputStreaming)
+		}
+	}
+	applyBedrockFineGrainedToolStreaming(ctx, bedrockReq, bifrostReq.Model, caps, eagerFlags)
+
 	// Convert reasoning config
 	if bifrostReq.Params.Reasoning != nil {
 		if bedrockReq.AdditionalModelRequestFields == nil {
@@ -706,6 +779,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					} else {
 						thinkingConfig["display"] = "summarized"
 					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					// Preserve a co-present effort — these models support effort,
 					// and the budget is otherwise dropped.
@@ -716,10 +790,15 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					if tokenBudget < anthropic.MinimumReasoningMaxTokens {
 						return fmt.Errorf("reasoning.max_tokens must be >= %d for anthropic", anthropic.MinimumReasoningMaxTokens)
 					}
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type":          "enabled",
 						"budget_tokens": tokenBudget,
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 				}
 			} else if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
 				minBudgetTokens := MinimumReasoningMaxTokens
@@ -820,6 +899,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					} else if caps.AdaptiveOnlyThinking(anthropic.DefaultAdaptiveOnlyThinking(caps.Model())) {
 						thinkingConfig["display"] = "summarized"
 					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
 					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 					setOutputConfigField(bedrockReq.AdditionalModelRequestFields, "effort", effort)
 				} else {
@@ -828,10 +908,15 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 					if err != nil {
 						return err
 					}
-					bedrockReq.AdditionalModelRequestFields.Set("thinking", map[string]any{
+					thinkingConfig := map[string]any{
 						"type":          "enabled",
 						"budget_tokens": budgetTokens,
-					})
+					}
+					if bifrostReq.Params.Reasoning.Display != nil {
+						thinkingConfig["display"] = *bifrostReq.Params.Reasoning.Display
+					}
+					applyBedrockThinkingDisplayUpdates(bedrockReq, caps, thinkingConfig)
+					bedrockReq.AdditionalModelRequestFields.Set("thinking", thinkingConfig)
 				}
 			} else if levels, ok := converseReasoningEffortLevels(ctx, caps); ok {
 				setConverseReasoningEffort(bedrockReq.AdditionalModelRequestFields, caps, levels, *bifrostReq.Params.Reasoning.Effort)
@@ -888,13 +973,16 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	bedrockReq.ServiceTier = bedrockServiceTierForModel(caps, bifrostReq.Params.ServiceTier)
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
-		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+		bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
 		if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
 			return err
 		}
 		if len(bedrockReq.ExtraParams) == 0 {
 			bedrockReq.ExtraParams = nil
 		}
+	}
+	if bedrockReq.OutputConfig != nil {
+		setNativeStructuredOutputStrict(ctx, bifrostReq.Model, bedrockReq)
 	}
 	return nil
 }
@@ -1430,6 +1518,27 @@ func mergeAdditionalModelRequestFields(existing, incoming *schemas.OrderedMap) *
 
 	merged := existing.Clone()
 	incoming.Range(func(key string, value interface{}) bool {
+		if key == "anthropic_beta" {
+			// Union with the betas the gateway already derived (server tools,
+			// fine-grained tool streaming, thinking display): replacing the list
+			// would strip a beta the request body depends on. The caller's
+			// values lead; a value that is not a string or string list passes
+			// through as before.
+			incomingBetas, ok := anthropicBetaValues(value)
+			if !ok {
+				merged.Set(key, value)
+				return true
+			}
+			var derived []string
+			if existingValue, has := merged.Get(key); has {
+				derived, _ = anthropicBetaValues(existingValue)
+			}
+			merged.Delete(key)
+			for _, beta := range append(incomingBetas, derived...) {
+				appendAnthropicBetaToFields(merged, beta)
+			}
+			return true
+		}
 		if key == "output_config" {
 			current := schemas.NewOrderedMap()
 			if existingValue, ok := merged.Get(key); ok {
@@ -1521,20 +1630,7 @@ func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
 	}
 	var existing []string
 	if raw, ok := fields.Get("anthropic_beta"); ok {
-		switch v := raw.(type) {
-		case []string:
-			existing = v
-		case []interface{}:
-			for _, item := range v {
-				if s, ok := item.(string); ok {
-					existing = append(existing, s)
-				}
-			}
-		case string:
-			if v != "" {
-				existing = []string{v}
-			}
-		}
+		existing, _ = anthropicBetaValues(raw)
 	}
 	for _, h := range existing {
 		if h == header {
@@ -1542,6 +1638,94 @@ func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
 		}
 	}
 	fields.Set("anthropic_beta", append(existing, header))
+}
+
+// anthropicBetaValues reads an anthropic_beta value as a fresh string slice.
+// ok is false when the value is neither a string nor a list of strings; the
+// string entries of a mixed list are still returned.
+func anthropicBetaValues(raw any) (values []string, ok bool) {
+	switch v := raw.(type) {
+	case []string:
+		return append([]string(nil), v...), true
+	case []interface{}:
+		ok = true
+		for _, item := range v {
+			if s, isString := item.(string); isString {
+				values = append(values, s)
+			} else {
+				ok = false
+			}
+		}
+		return values, ok
+	case string:
+		if v == "" {
+			return nil, true
+		}
+		return []string{v}, true
+	}
+	return nil, false
+}
+
+// applyBedrockThinkingDisplayUpdates settles thinking.display:"updates" on a Converse thinking
+// config. A model that takes it gets the beta in additionalModelRequestFields, where Bedrock's edge
+// leaves it for the model; any other model gets "omitted", which Bedrock accepts everywhere and which
+// is what "updates" returns on a model that writes no progress updates.
+func applyBedrockThinkingDisplayUpdates(bedrockReq *BedrockConverseRequest, caps schemas.ModelCaps, thinkingConfig map[string]any) {
+	if thinkingConfig["display"] != anthropic.AnthropicThinkingDisplayUpdates {
+		return
+	}
+	if anthropic.SupportsThinkingDisplayUpdates(caps) {
+		appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicThinkingDisplayUpdatesBetaHeader)
+		return
+	}
+	thinkingConfig["display"] = "omitted"
+}
+
+// applyBedrockFineGrainedToolStreaming opts a Claude Converse request into
+// fine-grained tool streaming. Without it Claude emits tool input one complete
+// JSON value at a time, so a long argument arrives as one burst after a long
+// silence. Converse has no slot for the per-tool eager_input_streaming flag
+// and Bedrock's edge consumes the outer anthropic-beta header, so the beta
+// must ride in additionalModelRequestFields.anthropic_beta.
+//
+// eagerFlags holds each custom function tool's eager_input_streaming value.
+// The beta is added when a tool sets it to true, the caller's anthropic-beta
+// asks for it, or a tool leaves it unset and
+// anthropic.ShouldDefaultEagerInputStreaming holds for the model. A request
+// whose custom tools all set it to false is left alone.
+func applyBedrockFineGrainedToolStreaming(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, model string, caps schemas.ModelCaps, eagerFlags []*bool) {
+	if len(eagerFlags) == 0 || !schemas.IsAnthropicModelFamily(ctx, model) {
+		return
+	}
+	if !caps.SupportsEagerInputStreaming(anthropic.ProviderFeatures[schemas.Bedrock].EagerInputStreaming) {
+		return
+	}
+	want, hasUnset := false, false
+	for _, flag := range eagerFlags {
+		if flag == nil {
+			hasUnset = true
+		} else if *flag {
+			want = true
+		}
+	}
+	if !want {
+		for _, beta := range anthropic.MergeBetaHeaders(ctx, nil) {
+			if strings.HasPrefix(beta, anthropic.AnthropicEagerInputStreamingBetaHeaderPrefix) {
+				want = true
+				break
+			}
+		}
+	}
+	if !want && hasUnset {
+		want = anthropic.ShouldDefaultEagerInputStreaming(schemas.Bedrock, caps.Model())
+	}
+	if !want {
+		return
+	}
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicEagerInputStreamingBetaHeader)
 }
 
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
@@ -1563,7 +1747,6 @@ func ensureChatToolConfigForConversation(ctx context.Context, bifrostReq *schema
 // model is the canonical model id, carried down to the content-block converters because
 // two source unions are model-dependent: see schemas.BedrockModelSupportsS3Location.
 func convertMessages(ctx context.Context, model string, bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
-
 	docNamer := newBedrockDocNamer()
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
@@ -1580,6 +1763,7 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 	// arrives. Giving them a turn of their own instead would read as assistant, user, user once
 	// that turn lands, and Converse turns have to alternate.
 	var pendingReminderBlocks []BedrockContentBlock
+	trimInlineJoin := schemas.ResolveModelCaps(schemas.Bedrock, model).StripsUserTurnTrailingWhitespace(anthropic.DefaultStripsUserTurnTrailingWhitespace(model))
 
 	// if only system / developer message is there, convert it to user message (since openai allows it)
 	if len(bifrostMessages) == 1 && (bifrostMessages[0].Role == schemas.ChatMessageRoleSystem || bifrostMessages[0].Role == schemas.ChatMessageRoleDeveloper) {
@@ -1602,6 +1786,9 @@ func convertMessages(ctx context.Context, model string, bifrostMessages []schema
 				// Mid-conversation reminder: inline in place (see seenNonSystemMessage).
 				if reminder := convertChatSystemReminderToBedrockUserMessage(msg); reminder != nil {
 					if n := len(messages); n > 0 && messages[n-1].Role == BedrockMessageRoleUser {
+						if trimInlineJoin {
+							trimUserTurnTail(messages[n-1].Content)
+						}
 						messages[n-1].Content = append(messages[n-1].Content, reminder.Content...)
 					} else {
 						pendingReminderBlocks = append(pendingReminderBlocks, reminder.Content...)
@@ -1737,24 +1924,185 @@ const foreignRedactedContentPrefix = "bifrost:redacted:v1:"
 // Bedrock blob) untouched and wraps anything else. Canonical, not merely decodable:
 // SDKs replay the decoded bytes re-encoded, so only a canonical blob comes back
 // byte-identical.
-func encodeRedactedContentForConverse(token string) string {
+//
+// A wrapped token also carries the reasoning item id it was issued under
+// (providerUtils.EmbedReasoningItemID). OpenAI and Azure bind encrypted reasoning
+// to that id and reject a replay under any other, and Converse has no field for it
+// (#7729). No provider gate is needed: the wrapper is Bifrost's own and is always
+// unwrapped on ingress, so the id never reaches an upstream inside a payload.
+//
+// The canonical check only guesses at origin from the token's characters. A caller
+// that knows a non-Bedrock upstream served the token wraps it with
+// wrapRedactedContentForConverse instead, since a foreign token can be canonical too.
+func encodeRedactedContentForConverse(id *string, token string) string {
 	if decoded, err := base64.StdEncoding.DecodeString(token); err == nil && base64.StdEncoding.EncodeToString(decoded) == token {
 		return token
 	}
-	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + token))
+	return wrapRedactedContentForConverse(id, token)
+}
+
+// isConverseBlob reports whether token can be sent upstream as Converse redactedContent.
+// The field is a blob, so a token that is not canonical base64 cannot even deserialize:
+// Bedrock answers 400 SerializationException with an empty message, which names no
+// reasoning token and so never triggers the strip-and-retry fail-soft. Such a token was
+// minted by another host (Mantle hands back the bare rsn_ token Bedrock base64-wraps)
+// and could not verify here anyway, so the replay drops it instead.
+func isConverseBlob(token string) bool {
+	decoded, err := base64.StdEncoding.DecodeString(token)
+	return err == nil && token != "" && base64.StdEncoding.EncodeToString(decoded) == token
+}
+
+// wrapRedactedContentForConverse wraps token unconditionally, embedding id.
+func wrapRedactedContentForConverse(id *string, token string) string {
+	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + providerUtils.EmbedReasoningItemID(id, token)))
 }
 
 // decodeRedactedContentFromConverse unwraps a blob encodeRedactedContentForConverse
-// wrapped and returns every other blob unchanged.
-func decodeRedactedContentFromConverse(blob string) string {
+// wrapped, returning the reasoning item id it carried (nil if none) and the
+// upstream's token. Every other blob comes back unchanged with a nil id.
+func decodeRedactedContentFromConverse(blob string) (*string, string) {
 	decoded, err := base64.StdEncoding.DecodeString(blob)
 	if err != nil {
-		return blob
+		return nil, blob
 	}
-	if token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix); ok {
-		return token
+	token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix)
+	if !ok {
+		return nil, blob
 	}
-	return blob
+	if id, rest, found := providerUtils.ExtractReasoningItemID(token); found {
+		return id, rest
+	}
+	return nil, token
+}
+
+// bedrockTopLevelCacheControl reads Anthropic's request-level cache_control (automatic caching)
+// out of ExtraParams. The value arrives as *schemas.CacheControl from the Anthropic ingress, as
+// json.RawMessage from the InvokeModel ingress and as a decoded map from the /v1 routes. Returns
+// nil when the field is absent, unparseable or not an ephemeral marker.
+func bedrockTopLevelCacheControl(extraParams map[string]interface{}) *schemas.CacheControl {
+	raw, ok := extraParams["cache_control"]
+	if !ok || raw == nil {
+		return nil
+	}
+	var cc *schemas.CacheControl
+	switch v := raw.(type) {
+	case *schemas.CacheControl:
+		cc = v
+	case schemas.CacheControl:
+		cc = &v
+	default:
+		var data []byte
+		switch b := v.(type) {
+		case json.RawMessage:
+			data = b
+		case []byte:
+			data = b
+		default:
+			var err error
+			if data, err = providerUtils.MarshalSorted(v); err != nil {
+				return nil
+			}
+		}
+		var parsed schemas.CacheControl
+		if sonic.Unmarshal(data, &parsed) != nil {
+			return nil
+		}
+		cc = &parsed
+	}
+	if cc == nil || cc.Type != schemas.CacheControlTypeEphemeral {
+		return nil
+	}
+	return cc
+}
+
+// withoutTopLevelCacheControl returns extraParams minus "cache_control", cloning only when the key
+// is present. The map belongs to the Bifrost request, which fallbacks reuse, so it is never written.
+func withoutTopLevelCacheControl(extraParams map[string]interface{}) map[string]interface{} {
+	if _, ok := extraParams["cache_control"]; !ok {
+		return extraParams
+	}
+	out := maps.Clone(extraParams)
+	delete(out, "cache_control")
+	return out
+}
+
+// applyBedrockAutomaticCachePoint translates Anthropic automatic caching (a top-level
+// cache_control) into the Converse cachePoint Bedrock understands. Converse has no request-level
+// marker, so the breakpoint goes where the Claude API puts it: after the last cacheable block,
+// walking backward past blocks that cannot carry one (reasoning, empty text, existing markers),
+// across messages and then the system prompt. When that block already ends in an explicit marker,
+// a matching TTL is a no-op and a different one is a caller error, matching the Claude API (which
+// answers both with a 400 rather than silently picking one retention). Runs before the
+// cache-point gate and clamp so unsupported models still have it stripped and the 4-marker cap
+// still applies.
+func applyBedrockAutomaticCachePoint(req *BedrockConverseRequest, cc *schemas.CacheControl) error {
+	if req == nil || cc == nil {
+		return nil
+	}
+	// Unlike block-level markers, which newBedrockCachePoint normalizes to the default, an
+	// automatic marker with a TTL Bedrock cannot honour is rejected, as on the Claude API.
+	if cc.TTL != nil && *cc.TTL != "" && *cc.TTL != "5m" && *cc.TTL != "1h" {
+		return providerUtils.InvalidRequestErrorf("top-level cache_control ttl %q is not supported: Bedrock accepts \"5m\" or \"1h\"", *cc.TTL)
+	}
+	marker := newBedrockCachePoint(cc.TTL)
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		content := req.Messages[i].Content
+		for j := len(content) - 1; j >= 0; j-- {
+			if !isBedrockCacheableBlock(&content[j]) {
+				continue
+			}
+			if j+1 < len(content) && content[j+1].CachePoint != nil {
+				return checkAutomaticCachePointTTL(content[j+1].CachePoint, marker)
+			}
+			if tr := content[j].ToolResult; tr != nil && len(tr.Content) > 0 && tr.Content[len(tr.Content)-1].CachePoint != nil {
+				return checkAutomaticCachePointTTL(tr.Content[len(tr.Content)-1].CachePoint, marker)
+			}
+			req.Messages[i].Content = slices.Insert(content, j+1, BedrockContentBlock{CachePoint: marker})
+			return nil
+		}
+	}
+	for i := len(req.System) - 1; i >= 0; i-- {
+		if req.System[i].Text == nil || *req.System[i].Text == "" {
+			continue
+		}
+		if req.System[i].CachePoint != nil {
+			return checkAutomaticCachePointTTL(req.System[i].CachePoint, marker)
+		}
+		if i+1 < len(req.System) && req.System[i+1].CachePoint != nil {
+			return checkAutomaticCachePointTTL(req.System[i+1].CachePoint, marker)
+		}
+		req.System = slices.Insert(req.System, i+1, BedrockSystemMessage{CachePoint: marker})
+		return nil
+	}
+	return nil
+}
+
+// checkAutomaticCachePointTTL compares an explicit marker with the automatic one that would have
+// landed on the same block. An absent TTL is Bedrock's 5m default on both sides.
+func checkAutomaticCachePointTTL(explicit, automatic *BedrockCachePoint) error {
+	explicitTTL, automaticTTL := bedrockCachePointTTL(explicit), bedrockCachePointTTL(automatic)
+	if explicitTTL == automaticTTL {
+		return nil
+	}
+	return providerUtils.InvalidRequestErrorf("top-level cache_control ttl %q conflicts with the explicit cache_control ttl %q on the last cacheable block", automaticTTL, explicitTTL)
+}
+
+func bedrockCachePointTTL(cp *BedrockCachePoint) string {
+	if cp.TTL == nil {
+		return "5m"
+	}
+	return *cp.TTL
+}
+
+// isBedrockCacheableBlock reports whether a cachePoint may follow this message block.
+func isBedrockCacheableBlock(block *BedrockContentBlock) bool {
+	switch {
+	case block.CachePoint != nil, block.ReasoningContent != nil:
+		return false
+	case block.Text != nil:
+		return *block.Text != ""
+	}
+	return true
 }
 
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
@@ -1767,12 +2115,31 @@ func newBedrockCachePoint(ttl *string) *BedrockCachePoint {
 	return cp
 }
 
+// trimUserTurnTail strips trailing whitespace from the text that ends a user turn (a trailing
+// cachePoint aside), called before an inlined reminder joins that turn on a model that strips it at
+// the end of a turn (ModelCaps.StripsUserTurnTrailingWhitespace). Applied whether or not a
+// cachePoint follows: see the anthropic twin.
+func trimUserTurnTail(content []BedrockContentBlock) {
+	k := len(content) - 1
+	if k >= 0 && content[k].CachePoint != nil {
+		k--
+	}
+	if k < 0 || content[k].Text == nil {
+		return
+	}
+	// The pointer is replaced, not written through: it can alias the caller's request.
+	if trimmed := strings.TrimRight(*content[k].Text, " \n\r\t"); trimmed != "" && len(trimmed) < len(*content[k].Text) {
+		content[k].Text = new(trimmed)
+	}
+}
+
 // convertChatSystemReminderToBedrockUserMessage is the Chat Completions twin of
 // convertBifrostSystemReminderToBedrockUserMessage: a mid-conversation role:"system" chat message
-// rendered as a user turn, each text wrapped in the <system-reminder> envelope, with only the LAST
-// breakpoint kept as a trailing cachePoint (an intermediate marker inside one message closes over
-// nothing the final one does not, and would burn one of the four checkpoints). The breakpoint is
-// taken from either dialect: a cache_control on a text block, or a standalone cachePoint block.
+// rendered as a user turn, each text wrapped in the <system-reminder> envelope (no trailing newline,
+// see convertBifrostSystemReminderToBedrockUserMessage), with only the LAST breakpoint kept, as a
+// cachePoint right after the text it closes over (an intermediate marker inside one message closes
+// over nothing the final one does not, and would burn one of the four checkpoints). The breakpoint
+// is taken from either dialect: a cache_control on a text block, or a standalone cachePoint block.
 // Text-only, like the `system` branch it replaces. Returns nil when the message yields no text.
 func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *BedrockMessage {
 	if msg.Content == nil {
@@ -1780,7 +2147,7 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 	}
 	var contentBlocks []BedrockContentBlock
 	wrap := func(text string) {
-		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>"
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
 	// Whichever breakpoint comes last wins, in whichever dialect it arrived: a cache_control on a
@@ -1788,7 +2155,7 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 	// (Converse-native, and the form convertSystemMessages preserves on the hoisted path). Reading
 	// only the first kind drops the boundary a Converse-native client asked for.
 	var lastBreakpointTTL *string
-	haveBreakpoint := false
+	breakpointAt := -1
 	if msg.Content.ContentStr != nil {
 		if *msg.Content.ContentStr != "" {
 			wrap(*msg.Content.ContentStr)
@@ -1798,20 +2165,22 @@ func convertChatSystemReminderToBedrockUserMessage(msg schemas.ChatMessage) *Bed
 			if block.Text != nil && *block.Text != "" {
 				wrap(*block.Text)
 				if block.CacheControl != nil {
-					lastBreakpointTTL, haveBreakpoint = block.CacheControl.TTL, true
+					lastBreakpointTTL, breakpointAt = block.CacheControl.TTL, len(contentBlocks)
 				}
 				continue
 			}
 			if block.CachePoint != nil {
-				lastBreakpointTTL, haveBreakpoint = block.CachePoint.TTL, true
+				lastBreakpointTTL, breakpointAt = block.CachePoint.TTL, len(contentBlocks)
 			}
 		}
 	}
 	if len(contentBlocks) == 0 {
 		return nil
 	}
-	if haveBreakpoint {
-		contentBlocks = append(contentBlocks, BedrockContentBlock{CachePoint: newBedrockCachePoint(lastBreakpointTTL)})
+	if breakpointAt >= 0 {
+		// A cachePoint ahead of every text still follows at least the first one, so the message
+		// never opens with a cachePoint.
+		contentBlocks = slices.Insert(contentBlocks, max(breakpointAt, 1), BedrockContentBlock{CachePoint: newBedrockCachePoint(lastBreakpointTTL)})
 	}
 	return &BedrockMessage{Role: BedrockMessageRoleUser, Content: contentBlocks}
 }
@@ -1910,7 +2279,7 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 				// signature, without one, empty or not -- with an opaque 500. The
 				// encrypted blob is the only replayable detail, and dropping the
 				// rest beats sending a shape that cannot be accepted.
-				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil {
+				if detail.Type == schemas.BifrostReasoningDetailsTypeEncrypted && detail.Data != nil && isConverseBlob(*detail.Data) {
 					contentBlocks = append(contentBlocks, BedrockContentBlock{
 						ReasoningContent: &BedrockReasoningContent{RedactedContent: detail.Data},
 					})
@@ -1967,6 +2336,11 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 			contentBlocks = append(contentBlocks, convertToolCallToContentBlock(ctx, toolCall))
+			if toolCall.CacheControl != nil {
+				contentBlocks = append(contentBlocks, BedrockContentBlock{
+					CachePoint: newBedrockCachePoint(toolCall.CacheControl.TTL),
+				})
+			}
 		}
 	}
 
@@ -2023,6 +2397,13 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 
 	for _, msg := range msgs {
 		var toolResultContent []BedrockContentBlock
+		// Converse ignores a cachePoint inside toolResult content, so the last marker trails the block.
+		var cacheControl *schemas.CacheControl
+		if content := schemas.FlattenToolResultMedia(msg.Content, schemas.IsImageBlock); content != msg.Content {
+			flattened := msg
+			flattened.Content = content
+			msg = flattened
+		}
 		if msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string. The helper
 			// validates, compacts, wraps arrays and primitives, falls back to a text
@@ -2030,18 +2411,23 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 			// as objects carrying an empty-string key).
 			toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*msg.Content.ContentStr))
 		} else if msg.Content.ContentBlocks != nil {
+			// A lone text block renders exactly like the equivalent string. Clients that
+			// put cache_control on the last message send it as one block on that turn and
+			// as a string afterwards, so a text/json flip would break the cached prefix.
+			singleText := len(msg.Content.ContentBlocks) == 1
 			for _, block := range msg.Content.ContentBlocks {
 				switch block.Type {
 				case schemas.ChatContentBlockTypeText:
 					if block.Text != nil {
-						toolResultContent = append(toolResultContent, BedrockContentBlock{
-							Text: block.Text,
-						})
-						// Cache point must be in a separate block
-						if block.CacheControl != nil {
+						if singleText {
+							toolResultContent = append(toolResultContent, tryParseJSONIntoContentBlock(*block.Text))
+						} else {
 							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
+								Text: block.Text,
 							})
+						}
+						if block.CacheControl != nil {
+							cacheControl = block.CacheControl
 						}
 					}
 				case schemas.ChatContentBlockTypeImage:
@@ -2053,11 +2439,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
 							Image: imageSource,
 						})
-						// Cache point must be in a separate block
 						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
+							cacheControl = block.CacheControl
 						}
 					}
 				}
@@ -2086,6 +2469,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 		}
 
 		contentBlocks = append(contentBlocks, toolResultBlock)
+		if cacheControl != nil {
+			contentBlocks = append(contentBlocks, BedrockContentBlock{
+				CachePoint: newBedrockCachePoint(cacheControl.TTL),
+			})
+		}
 	}
 
 	bedrockMsg.Content = contentBlocks
@@ -2195,6 +2583,8 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 			block.File.FileURL,
 			block.File.Filename,
 			block.File.FileType,
+			block.File.FileContent,
+			block.Citations,
 			bedrockDocumentSourceOptional,
 		)
 		if err != nil {
@@ -2347,6 +2737,599 @@ func convertImageToBedrockSource(ctx context.Context, model, imageURL string) (*
 			Bytes: encoded,
 		},
 	}, nil
+}
+
+// chatNativeOutputConfig returns the native outputConfig for a json_schema response_format, or nil
+// when the request keeps the synthetic bf_so_* tool.
+func chatNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps, model string, params *schemas.ChatParameters, messages []BedrockMessage) json.RawMessage {
+	if params == nil || params.ResponseFormat == nil || !supportsNativeStructuredOutput(caps) || claudePrefill(ctx, model, messages) {
+		return nil
+	}
+	// Converse has no "none" choice: only the pinned bf_so_* tool keeps the model off the caller's tools.
+	if tc := params.ToolChoice; len(params.Tools) > 0 && tc != nil &&
+		((tc.ChatToolChoiceStr != nil && *tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeNone)) ||
+			(tc.ChatToolChoiceStruct != nil && tc.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeNone)) {
+		return nil
+	}
+	rf, ok := schemas.ParseChatResponseFormat(params.ResponseFormat)
+	if !ok || rf.Type != "json_schema" || !rf.HasJSONSchema() {
+		return nil
+	}
+	name, _ := rf.Name()
+	description, _ := rf.Description()
+	var load claudeSchemaLoad
+	for i := range params.Tools {
+		if f := params.Tools[i].Function; f != nil && f.Strict != nil && *f.Strict {
+			load.add(f.Parameters)
+		}
+	}
+	return nativeOutputConfig(ctx, model, rf.RawSchema(), name, description, load)
+}
+
+func responsesNativeOutputConfig(ctx *schemas.BifrostContext, caps schemas.ModelCaps, model string, params *schemas.ResponsesParameters, messages []BedrockMessage) json.RawMessage {
+	textConfig, tools := params.Text, params.Tools
+	if textConfig == nil || textConfig.Format == nil || textConfig.Format.Type != "json_schema" || textConfig.Format.JSONSchema == nil ||
+		!supportsNativeStructuredOutput(caps) || claudePrefill(ctx, model, messages) {
+		return nil
+	}
+	// Converse has no "none" choice: only the pinned bf_so_* tool keeps the model off the caller's tools.
+	if tc := params.ToolChoice; len(tools) > 0 && tc != nil &&
+		((tc.ResponsesToolChoiceStr != nil && *tc.ResponsesToolChoiceStr == string(schemas.ResponsesToolChoiceTypeNone)) ||
+			(tc.ResponsesToolChoiceStruct != nil && tc.ResponsesToolChoiceStruct.Type == schemas.ResponsesToolChoiceTypeNone)) {
+		return nil
+	}
+	if _, acceptAll, err := textConfig.Format.JSONSchema.CompositeSchema(); err != nil || acceptAll {
+		return nil
+	}
+	var name, description string
+	if textConfig.Format.Name != nil {
+		name = strings.TrimSpace(*textConfig.Format.Name)
+	}
+	if textConfig.Format.JSONSchema.Description != nil {
+		description = *textConfig.Format.JSONSchema.Description
+	}
+	var load claudeSchemaLoad
+	for i := range tools {
+		if f := tools[i].ResponsesToolFunction; f != nil && f.Strict != nil && *f.Strict {
+			load.add(f.Parameters)
+		}
+	}
+	return nativeOutputConfig(ctx, model, extractJSONSchemaObject(textConfig.Format.JSONSchema), name, description, load)
+}
+
+// claudePrefill reports a trailing assistant message on Claude, which 400s beside an output format
+// while the forced tool accepts it.
+func claudePrefill(ctx *schemas.BifrostContext, model string, messages []BedrockMessage) bool {
+	return len(messages) > 0 && messages[len(messages)-1].Role == BedrockMessageRoleAssistant && schemas.IsAnthropicModelFamily(ctx, model)
+}
+
+// claudeSchemaLoad counts the optional and union-typed properties of strict caller tools, which share
+// Claude's structured-output limits with the output schema (verified live).
+type claudeSchemaLoad struct {
+	optional, unions int
+}
+
+func (l *claudeSchemaLoad) add(params *schemas.ToolFunctionParameters) {
+	if params == nil {
+		return
+	}
+	raw, err := providerUtils.MarshalSorted(params)
+	if err != nil {
+		return
+	}
+	walk := claudeSchemaWalk{schema: raw}
+	walk.node(gjson.ParseBytes(raw), false)
+	l.optional += walk.optional
+	l.unions += walk.unions
+}
+
+// setNativeStructuredOutputStrict sets additionalModelRequestFields.text.format.strict for GPT, which
+// otherwise treats outputConfig's schema as a hint (verified live); Claude 400s on the field.
+func setNativeStructuredOutputStrict(ctx *schemas.BifrostContext, model string, req *BedrockConverseRequest) {
+	if !schemas.IsOpenAIModelFamily(ctx, model) {
+		return
+	}
+	if req.AdditionalModelRequestFields == nil {
+		req.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	existingText, hasText := req.AdditionalModelRequestFields.Get("text")
+	if !hasText {
+		req.AdditionalModelRequestFields.Set("text", map[string]any{"format": map[string]any{"strict": true}})
+		return
+	}
+	text, format := schemas.NewOrderedMap(), schemas.NewOrderedMap()
+	if om, ok := toOrderedMap(existingText); ok && om != nil {
+		text = om
+	}
+	if existing, ok := text.Get("format"); ok {
+		if om, ok := toOrderedMap(existing); ok && om != nil {
+			format = om
+		}
+	}
+	format.Set("strict", true)
+	text.Set("format", format)
+	req.AdditionalModelRequestFields.Set("text", text)
+}
+
+// supportsNativeStructuredOutput reports whether the model takes outputConfig.textFormat.
+func supportsNativeStructuredOutput(caps schemas.ModelCaps) bool {
+	model := caps.Model()
+	fallback := anthropic.IsOpus47Plus(model) || anthropic.IsOpus5Plus(model) || anthropic.IsSonnet5Plus(model) ||
+		anthropic.IsHaiku5Plus(model) || (schemas.IsAnthropicModel(model) && (strings.Contains(model, "-4-5") || strings.Contains(model, "-4-6"))) ||
+		(schemas.IsOpenAIModel(model) && !strings.Contains(model, "gpt-oss"))
+	return caps.SupportsNativeStructuredOutput(fallback)
+}
+
+// nativeOutputConfig builds Converse outputConfig.textFormat for schema, or returns nil when
+// Claude would reject the schema. Callers check supportsNativeStructuredOutput first.
+func nativeOutputConfig(ctx *schemas.BifrostContext, model string, schema json.RawMessage, name, description string, load claudeSchemaLoad) json.RawMessage {
+	if len(schema) == 0 {
+		return nil
+	}
+	// Core re-sends once with the synthetic tool after a grammar-limit rejection.
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputForceTool {
+		return nil
+	}
+	if schemas.IsAnthropicModelFamily(ctx, model) {
+		prepared, ok := prepareClaudeNativeSchema(schema, load)
+		if !ok {
+			return nil
+		}
+		schema = prepared
+	} else if gjson.GetBytes(schema, "type").String() != "object" {
+		// Non-Claude models answer a non-object schema with unconstrained text.
+		return nil
+	} else if bytes.Contains(schema, []byte(`"$ref"`)) && !localRefsResolve(gjson.ParseBytes(schema)) {
+		return nil
+	} else if schemas.IsOpenAIModelFamily(ctx, model) && !gptStrictSchemaAccepted(gjson.ParseBytes(schema)) {
+		return nil
+	}
+	// GPT answers a name outside [A-Za-z0-9_-] with 200 and no text.
+	if bedrockUnsafeToolNameCharRegex.MatchString(name) {
+		name = strings.Trim(bedrockUnsafeToolNameCharRegex.ReplaceAllString(name, "_"), "_")
+	}
+	if name == "" {
+		name = "json_response"
+	}
+	config := BedrockOutputConfig{TextFormat: &BedrockOutputTextFormat{
+		Type:      "json_schema",
+		Structure: BedrockOutputTextStructure{JSONSchema: BedrockOutputJSONSchema{Schema: string(schema), Name: name}},
+	}}
+	if description != "" {
+		config.TextFormat.Structure.JSONSchema.Description = &description
+	}
+	out, err := providerUtils.MarshalSorted(config)
+	if err != nil {
+		return nil
+	}
+	if ctx != nil {
+		if _, stale := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); stale {
+			ctx.ClearValue(schemas.BifrostContextKeyStructuredOutputToolName)
+		}
+	}
+	return out
+}
+
+// gptStrictRejectedSchemaKeys are keywords Bedrock's GPT answers with a 400 or 500 under
+// text.format.strict.
+var gptStrictRejectedSchemaKeys = map[string]bool{
+	"contains": true, "minContains": true, "maxContains": true, "unevaluatedItems": true, "not": true,
+	"if": true, "then": true, "else": true,
+	"propertyNames": true, "dependentRequired": true, "dependentSchemas": true, "unevaluatedProperties": true,
+}
+
+var gptStrictSchemaFormats = map[string]bool{
+	"date-time": true, "time": true, "date": true, "duration": true, "email": true,
+	"hostname": true, "ipv4": true, "ipv6": true, "uuid": true,
+}
+
+// gptStrictSchemaAccepted reports whether Bedrock's GPT takes the schema under text.format.strict.
+func gptStrictSchemaAccepted(n gjson.Result) bool {
+	if !n.IsObject() {
+		return true
+	}
+	var typ, enum, properties, required gjson.Result
+	ok := true
+	each := func(v gjson.Result) {
+		v.ForEach(func(_, sub gjson.Result) bool {
+			ok = gptStrictSchemaAccepted(sub)
+			return ok
+		})
+	}
+	n.ForEach(func(k, v gjson.Result) bool {
+		switch key := k.String(); {
+		case gptStrictRejectedSchemaKeys[key]:
+			ok = false
+		case key == "uniqueItems":
+			ok = v.Type != gjson.True
+		case key == "format":
+			ok = gptStrictSchemaFormats[v.String()]
+		case key == "pattern":
+			p := v.String()
+			ok = !patternHasLookaroundOrBackref(p) && !strings.Contains(p, `\b`)
+		case key == "type":
+			typ = v
+		case key == "enum":
+			enum = v
+		case key == "required":
+			required = v
+		case key == "properties":
+			properties = v
+			each(v)
+		case key == "$defs", key == "definitions", key == "patternProperties", key == "prefixItems",
+			key == "anyOf", key == "oneOf", key == "allOf":
+			each(v)
+		case key == "items", key == "additionalProperties":
+			if v.IsArray() {
+				each(v)
+			} else {
+				ok = gptStrictSchemaAccepted(v)
+			}
+		}
+		return ok
+	})
+	if !ok {
+		return false
+	}
+	if enum.Exists() && (len(enum.Array()) == 0 || typ.Type == gjson.String && !enumMatchesType(typ.Str, enum)) {
+		return false
+	}
+	// A required name missing from properties answers 500.
+	accepted := true
+	required.ForEach(func(_, name gjson.Result) bool {
+		accepted = properties.Get(gjson.Escape(name.String())).Exists()
+		return accepted
+	})
+	return accepted
+}
+
+var claudeRejectedSchemaKeys = map[string]bool{
+	"oneOf": true, "not": true,
+	"minimum": true, "maximum": true, "exclusiveMinimum": true, "exclusiveMaximum": true, "multipleOf": true,
+	"maxItems": true, "uniqueItems": true, "prefixItems": true, "contains": true, "minContains": true, "maxContains": true, "unevaluatedItems": true,
+	"patternProperties": true, "propertyNames": true, "minProperties": true, "maxProperties": true,
+	"dependentRequired": true, "dependentSchemas": true, "unevaluatedProperties": true,
+}
+
+var claudeSchemaFormats = map[string]bool{
+	"date-time": true, "time": true, "date": true, "duration": true, "email": true,
+	"hostname": true, "uri": true, "ipv4": true, "ipv6": true, "uuid": true,
+}
+
+const (
+	claudeSchemaMaxOptionalProperties = 10
+	claudeSchemaMaxUnionProperties    = 16
+)
+
+var regexBackreferenceRe = regexp.MustCompile(`\\[1-9]|\\k<`)
+
+// prepareClaudeNativeSchema closes every object that leaves additionalProperties unset, which
+// Claude requires, and reports false when the schema uses anything Claude structured output
+// rejects so the caller keeps the synthetic tool. An unchanged schema is returned as-is.
+func prepareClaudeNativeSchema(schema []byte, load claudeSchemaLoad) ([]byte, bool) {
+	root := gjson.ParseBytes(schema)
+	if !root.IsObject() {
+		return nil, false
+	}
+	walk := claudeSchemaWalk{schema: schema}
+	if !walk.node(root, root.Get("properties").Exists()) || walk.optional+load.optional > claudeSchemaMaxOptionalProperties ||
+		walk.unions+load.unions > claudeSchemaMaxUnionProperties || (bytes.Contains(schema, []byte(`"$ref"`)) && schemaRefsRejected(root)) {
+		return nil, false
+	}
+	if len(walk.closeAt) == 0 {
+		return schema, true
+	}
+	// One pass: insert the key before each recorded closing brace.
+	const closing = `,"additionalProperties":false`
+	slices.Sort(walk.closeAt)
+	out := make([]byte, 0, len(schema)+len(walk.closeAt)*len(closing))
+	prev := 0
+	for _, at := range walk.closeAt {
+		out = append(out, schema[prev:at]...)
+		out = append(out, closing...)
+		prev = at
+	}
+	return append(out, schema[prev:]...), true
+}
+
+// claudeSchemaWalk collects the closing-brace offsets of objects to close and the counts Bedrock limits.
+type claudeSchemaWalk struct {
+	schema   []byte
+	closeAt  []int
+	optional int
+	unions   int
+}
+
+// claudeSchemaAnnotations are keys Claude accepts on every node.
+var claudeSchemaAnnotations = map[string]bool{
+	"title": true, "description": true, "default": true, "examples": true, "deprecated": true,
+	"readOnly": true, "writeOnly": true, "$schema": true, "$id": true,
+}
+
+// claudeSchemaObjectKeys are the only other keys Claude accepts on an object node.
+var claudeSchemaObjectKeys = map[string]bool{
+	"type": true, "properties": true, "required": true, "additionalProperties": true, "$defs": true, "definitions": true,
+}
+
+// node checks one sub-schema, reporting false when Claude would reject it; needType requires a
+// type or a combinator, which Claude asks of property, $defs, anyOf and items schemas.
+func (w *claudeSchemaWalk) node(n gjson.Result, needType bool) bool {
+	if !n.IsObject() {
+		return false
+	}
+	var typ, properties, required, enum gjson.Result
+	ok, closed, hasAllOf, conditional := true, false, false, false
+	// structural counts anyOf/allOf/$ref; objectExtra counts keys an object node may not carry;
+	// other counts non-annotation keys a combinator node may not carry.
+	structural, objectExtra, other, typed := 0, 0, 0, false
+	n.ForEach(func(k, v gjson.Result) bool {
+		key := k.String()
+		switch {
+		case claudeSchemaAnnotations[key]:
+		case key == "anyOf", key == "allOf", key == "$ref":
+			structural++
+			objectExtra++
+			typed = true
+		case claudeSchemaObjectKeys[key]:
+			other++
+		default:
+			objectExtra++
+			other++
+		}
+		switch {
+		case claudeRejectedSchemaKeys[key]:
+			ok = false
+		case key == "type":
+			typ, typed = v, true
+		case key == "required":
+			required = v
+		case key == "minItems":
+			ok = v.Int() <= 1
+		case key == "format":
+			ok = claudeSchemaFormats[v.String()]
+		case key == "pattern":
+			ok = !patternHasLookaroundOrBackref(v.String())
+		case key == "enum":
+			enum, typed = v, true
+			ok = v.IsArray()
+			v.ForEach(func(_, e gjson.Result) bool {
+				ok = !e.IsObject() && !e.IsArray()
+				return ok
+			})
+		case key == "const":
+			typed = true
+			ok = !v.IsObject() && !v.IsArray()
+		case key == "additionalProperties":
+			ok, closed = v.Type == gjson.False, true
+		case key == "items":
+			// Claude accepts an empty items schema.
+			ok = w.node(v, !isEmptyJSONObject(v))
+		case key == "if", key == "then", key == "else":
+			conditional = true
+			ok = w.node(v, false)
+		case key == "anyOf", key == "allOf":
+			hasAllOf = hasAllOf || key == "allOf"
+			ok = v.IsArray()
+			branches, refBranch := 0, false
+			v.ForEach(func(_, branch gjson.Result) bool {
+				branches++
+				refBranch = refBranch || strings.Contains(branch.Raw, `"$ref"`)
+				ok = w.node(branch, key == "anyOf")
+				return ok
+			})
+			if ok && key == "allOf" && branches > 1 && refBranch {
+				ok = false
+			}
+		case key == "properties", key == "$defs", key == "definitions":
+			ok = v.IsObject()
+			if key == "properties" {
+				properties = v
+			}
+			v.ForEach(func(_, sub gjson.Result) bool {
+				if key == "properties" && isUnionSchema(sub) {
+					w.unions++
+				}
+				ok = w.node(sub, true)
+				return ok
+			})
+		}
+		return ok
+	})
+	if !ok || needType && !typed {
+		return false
+	}
+	isObject := isObjectSchema(typ, properties)
+	if isObject && objectExtra > 0 || structural > 1 || structural == 1 && other > 0 {
+		return false
+	}
+	if enum.Exists() && !claudeEnumAccepted(typ, enum) {
+		return false
+	}
+	// Live: Claude cannot merge allOf beside the node's own properties, and rejects if/then/else on objects.
+	if hasAllOf && properties.Exists() || conditional && isObject {
+		return false
+	}
+	if !isObject {
+		return true
+	}
+	hasProperties, requiredNames := false, required.Array()
+	properties.ForEach(func(name, _ gjson.Result) bool {
+		hasProperties = true
+		if !slices.ContainsFunc(requiredNames, func(r gjson.Result) bool { return r.Str == name.Str }) {
+			w.optional++
+		}
+		return true
+	})
+	if !closed {
+		// Closing an object that declares no properties would only allow {}.
+		at := n.Index + len(n.Raw) - 1
+		if !hasProperties || at <= 0 || at >= len(w.schema) || w.schema[at] != '}' {
+			return false
+		}
+		w.closeAt = append(w.closeAt, at)
+	}
+	return true
+}
+
+// isEmptyJSONObject reports whether v is {}.
+func isEmptyJSONObject(v gjson.Result) bool {
+	empty := v.IsObject()
+	v.ForEach(func(_, _ gjson.Result) bool {
+		empty = false
+		return false
+	})
+	return empty
+}
+
+// claudeEnumAccepted reports whether Claude takes this enum beside typ: non-empty, no type array,
+// and every value matching a single type.
+func claudeEnumAccepted(typ, enum gjson.Result) bool {
+	if len(enum.Array()) == 0 || typ.IsArray() {
+		return false
+	}
+	return !typ.Exists() || enumMatchesType(typ.String(), enum)
+}
+
+// enumMatchesType reports whether every enum value is an instance of the JSON Schema type name typ.
+func enumMatchesType(typ string, enum gjson.Result) bool {
+	matches := true
+	enum.ForEach(func(_, e gjson.Result) bool {
+		switch typ {
+		case "string":
+			matches = e.Type == gjson.String
+		case "integer":
+			matches = e.Type == gjson.Number && e.Num == math.Trunc(e.Num)
+		case "number":
+			matches = e.Type == gjson.Number
+		case "boolean":
+			matches = e.Type == gjson.True || e.Type == gjson.False
+		case "null":
+			matches = e.Type == gjson.Null
+		}
+		return matches
+	})
+	return matches
+}
+
+// patternHasLookaroundOrBackref reports a lookahead, lookbehind or backreference in a regex.
+func patternHasLookaroundOrBackref(p string) bool {
+	return strings.Contains(p, "(?=") || strings.Contains(p, "(?!") || strings.Contains(p, "(?<") || regexBackreferenceRe.MatchString(p)
+}
+
+// isUnionSchema reports whether a property uses a type array or anyOf, which Bedrock counts.
+func isUnionSchema(sub gjson.Result) bool {
+	union := false
+	sub.ForEach(func(k, v gjson.Result) bool {
+		union = (k.Str == "type" && v.IsArray() && len(v.Array()) > 1) || k.Str == "anyOf"
+		return !union
+	})
+	return union
+}
+
+// isObjectSchema reports whether a subschema with this type and properties describes an object.
+func isObjectSchema(typ, properties gjson.Result) bool {
+	if !typ.Exists() {
+		return properties.Exists()
+	}
+	if typ.IsArray() {
+		for _, item := range typ.Array() {
+			if item.Str == "object" {
+				return true
+			}
+		}
+		return false
+	}
+	return typ.Str == "object"
+}
+
+// schemaRefsRejected reports whether a $ref is one Claude rejects: anything but a literal
+// #/$defs/<name> or #/definitions/<name> entry (verified live), or a recursive one.
+func schemaRefsRejected(root gjson.Result) bool {
+	defs := map[string]gjson.Result{}
+	for _, container := range []string{"$defs", "definitions"} {
+		root.Get(gjson.Escape(container)).ForEach(func(name, def gjson.Result) bool {
+			// A name needing JSON Pointer escapes is left out, so a ref to it is rejected.
+			if !strings.ContainsAny(name.String(), "/~") {
+				defs["#/"+container+"/"+name.String()] = def
+			}
+			return true
+		})
+	}
+	var rootRefs []string
+	collectSchemaRefs(root, &rootRefs)
+	for _, ref := range rootRefs {
+		if _, known := defs[ref]; !known {
+			return true
+		}
+	}
+	edges := make(map[string][]string, len(defs))
+	for ref, def := range defs {
+		var refs []string
+		collectSchemaRefs(def, &refs)
+		edges[ref] = refs
+	}
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := map[string]int{}
+	var cyclic func(string) bool
+	cyclic = func(ref string) bool {
+		switch state[ref] {
+		case visiting:
+			return true
+		case done:
+			return false
+		}
+		state[ref] = visiting
+		for _, next := range edges[ref] {
+			if _, known := defs[next]; known && cyclic(next) {
+				return true
+			}
+		}
+		state[ref] = done
+		return false
+	}
+	for ref := range defs {
+		if cyclic(ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// localRefsResolve reports whether every $ref is a local JSON Pointer that resolves within root.
+func localRefsResolve(root gjson.Result) bool {
+	var refs []string
+	collectSchemaRefs(root, &refs)
+	for _, ref := range refs {
+		if ref == "#" {
+			continue
+		}
+		if !strings.HasPrefix(ref, "#/") {
+			return false
+		}
+		tokens := strings.Split(ref[2:], "/")
+		for i, token := range tokens {
+			tokens[i] = gjson.Escape(strings.ReplaceAll(strings.ReplaceAll(token, "~1", "/"), "~0", "~"))
+		}
+		if !root.Get(strings.Join(tokens, ".")).Exists() {
+			return false
+		}
+	}
+	return true
+}
+
+// collectSchemaRefs appends every $ref string found under n.
+func collectSchemaRefs(n gjson.Result, refs *[]string) {
+	n.ForEach(func(k, v gjson.Result) bool {
+		if k.String() == "$ref" && v.Type == gjson.String {
+			*refs = append(*refs, v.String())
+		} else if v.IsObject() || v.IsArray() {
+			collectSchemaRefs(v, refs)
+		}
+		return true
+	})
 }
 
 // convertResponseFormatToTool converts a response_format parameter to a Bedrock tool
@@ -2628,6 +3611,25 @@ func converseRequiresSignedReasoning(model string) bool {
 	return schemas.ResolveModelCaps(schemas.Bedrock, model).BedrockRequiresSignedReasoning(schemas.IsAnthropicModel(model))
 }
 
+// converseAcceptsStopSequences reports whether Converse accepts inferenceConfig.stopSequences for model
+// most newer families 400 on it, so unknown models default to omitting it.
+func converseAcceptsStopSequences(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case schemas.IsAnthropicModel(m), schemas.IsNovaModel(m), schemas.IsTitanModel(m),
+		schemas.IsLlamaModel(m), schemas.IsCohereModel(m):
+		return true
+	case strings.Contains(m, "deepseek.r1"), strings.Contains(m, "writer.palmyra-x"):
+		return true
+	}
+	for _, legacy := range []string{"mistral-7b", "mixtral-8x7b", "mistral-large-2402", "mistral-large-2407", "mistral-small-2402", "pixtral-large-2502"} {
+		if strings.Contains(m, legacy) {
+			return true
+		}
+	}
+	return false
+}
+
 // setConverseReasoningEffort writes the OpenAI-shaped reasoning field, mapping
 // the requested effort onto a rung the model publishes.
 func setConverseReasoningEffort(fields *schemas.OrderedMap, caps schemas.ModelCaps, levels *schemas.EffortControl, effort string) {
@@ -2676,8 +3678,7 @@ func convertInferenceConfig(params *schemas.ChatParameters, caps schemas.ModelCa
 		config.TopP = params.TopP
 	}
 
-	// GLM models on Bedrock reject the stopSequences field.
-	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, schemas.IsGLMModel(caps.Model())) {
+	if params.Stop != nil && !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(caps.Model())) {
 		config.StopSequences = params.Stop
 	}
 
@@ -2817,6 +3818,7 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		}
 	}
 
+	var choice map[string]any
 	switch choiceType {
 	case schemas.ChatToolChoiceTypeFunction, schemas.ChatToolChoiceTypeCustom,
 		schemas.ChatToolChoiceType("tool"):
@@ -2828,14 +3830,10 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		if _, ok := serverToolNames[pinnedName]; !ok {
 			return nil, false
 		}
-		bytes, err := providerUtils.MarshalSorted(map[string]any{
+		choice = map[string]any{
 			"type": "tool",
 			"name": pinnedName,
-		})
-		if err != nil {
-			return nil, false
 		}
-		return json.RawMessage(bytes), true
 
 	case schemas.ChatToolChoiceTypeAny, schemas.ChatToolChoiceTypeRequired:
 		// When function/custom tools are present, Converse's typed
@@ -2843,16 +3841,50 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		if hasFunctionOrCustom || len(serverToolNames) == 0 {
 			return nil, false
 		}
-		bytes, err := providerUtils.MarshalSorted(map[string]any{"type": "any"})
-		if err != nil {
-			return nil, false
-		}
-		return json.RawMessage(bytes), true
+		choice = map[string]any{"type": "any"}
 
 	default:
 		// auto, none, allowed_tools, empty, unknown — no tunneling.
 		return nil, false
 	}
+
+	// This choice is the only tool_choice Claude sees, so parallel_tool_calls rides on it.
+	if params.ParallelToolCalls != nil && !*params.ParallelToolCalls {
+		choice["disable_parallel_tool_use"] = true
+	}
+	bytes, err := providerUtils.MarshalSorted(choice)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(bytes), true
+}
+
+// applyBedrockParallelToolUse carries parallel_tool_calls=false to Claude, which Converse can
+// only express as additionalModelRequestFields.tool_choice.disable_parallel_tool_use.
+func applyBedrockParallelToolUse(bedrockReq *BedrockConverseRequest) {
+	// A tunneled server-tool choice already carries the flag, and a caller-supplied one wins.
+	if _, ok := bedrockReq.AdditionalModelRequestFields.Get("tool_choice"); ok {
+		return
+	}
+	_, hasServerTools := bedrockReq.AdditionalModelRequestFields.Get("tools")
+	hasTools := bedrockReq.ToolConfig != nil && len(bedrockReq.ToolConfig.Tools) > 0
+	if !hasTools && !hasServerTools {
+		return
+	}
+	choice := schemas.NewOrderedMap()
+	if hasTools {
+		// A type here conflicts with toolConfig.toolChoice (ValidationException), so the typed field holds it.
+		if bedrockReq.ToolConfig.ToolChoice == nil {
+			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{Auto: &BedrockToolChoiceAuto{}}
+		}
+	} else {
+		choice.Set("type", "auto")
+	}
+	choice.Set("disable_parallel_tool_use", true)
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	bedrockReq.AdditionalModelRequestFields.Set("tool_choice", choice)
 }
 
 // deriveBedrockBetaHeadersForToolType maps an Anthropic server-tool Type string
@@ -2878,6 +3910,42 @@ func deriveBedrockBetaHeadersForToolType(toolType string) []string {
 	return nil
 }
 
+// bedrockStrictGate decides whether a tool's strict flag reaches Converse
+// toolSpec.strict for one request.
+type bedrockStrictGate struct {
+	ctx      *schemas.BifrostContext
+	model    string
+	resolved bool
+	allowed  bool
+}
+
+// forward returns the client's tool strict flag for Converse toolSpec.strict
+// ("Flag to enable structured output enforcement on a tool usage response",
+// https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ToolSpecification.html).
+// It is forwarded for Claude only: AWS documents strict tool use for Claude on
+// Converse, while support for other families varies per model and is unverified,
+// so they keep the prior behaviour of dropping it. Only true is forwarded: false
+// is the default, and omitting it keeps clients that never asked for enforcement
+// (Codex sends strict:false on every tool) on the pre-strict bytes even for
+// profiles without structured outputs, such as in.anthropic Claude Haiku 4.5
+// (https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html).
+// An explicit true is left for Bedrock to accept or reject rather than silently
+// dropping the enforcement the client asked for. The family is resolved on the
+// first true flag and reused, so requests without one pay nothing.
+func (g *bedrockStrictGate) forward(strict *bool) *bool {
+	if strict == nil || !*strict {
+		return nil
+	}
+	if !g.resolved {
+		g.allowed = schemas.IsAnthropicModelFamily(g.ctx, g.model)
+		g.resolved = true
+	}
+	if !g.allowed {
+		return nil
+	}
+	return strict
+}
+
 // convertToolConfig converts Bifrost tools to Bedrock tool config.
 //
 // Responsibilities (split from collectBedrockServerTools):
@@ -2898,7 +3966,7 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 	}
 	// Strip unsupported server tools before the conversion loop.
 	filtered, _ := anthropic.ValidateChatToolsForProvider(params.Tools, schemas.ResolveModelCaps(schemas.Bedrock, model))
-	toolConfig, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
+	toolConfig, _, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
 	return toolConfig
 }
 
@@ -2930,23 +3998,30 @@ func convertToNovaSystemTool(systemToolName BedrockSystemToolType, isNova2 bool)
 // survive ValidateChatToolsForProvider via the Nova carve-out but only actually
 // work on Nova2 models). Callers combine this with ValidateChatToolsForProvider's
 // own dropped list for a complete picture.
-func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string) {
+func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string, error) {
 	if params == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	isNova2 := schemas.IsNova2Model(model)
+	strictGate := bedrockStrictGate{ctx: ctx, model: model}
 	var bedrockTools []BedrockTool
 	var droppedForModel []string
 	for _, tool := range filtered {
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
 			var schemaObjectBytes []byte
-			if tool.Function.Parameters != nil {
+			if parameters := tool.Function.Parameters; parameters != nil {
+				var err error
+				// Claude rejects oneOf/anyOf/allOf at the input_schema root.
+				if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, model) {
+					if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
+						return nil, nil, err
+					}
+				}
 				// ToolFunctionParameters.MarshalJSON handles all fields including
 				// properties, required, enum, additionalProperties, $defs, etc.
-				var err error
-				schemaObjectBytes, err = providerUtils.MarshalSorted(tool.Function.Parameters)
+				schemaObjectBytes, err = providerUtils.MarshalSorted(parameters)
 				if err != nil {
 					continue
 				}
@@ -2968,6 +4043,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 					InputSchema: BedrockToolInputSchema{
 						JSON: json.RawMessage(schemaObjectBytes),
 					},
+					Strict: strictGate.forward(tool.Function.Strict),
 				},
 			}
 			bedrockTools = append(bedrockTools, bedrockTool)
@@ -3003,7 +4079,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 	// doesn't support), omit ToolConfig entirely so the request is valid and
 	// the model simply answers without tool access.
 	if len(bedrockTools) == 0 {
-		return nil, droppedForModel
+		return nil, droppedForModel, nil
 	}
 
 	toolConfig := &BedrockToolConfig{
@@ -3060,7 +4136,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		}
 	}
 
-	return toolConfig, droppedForModel
+	return toolConfig, droppedForModel, nil
 }
 
 // convertToolChoice converts Bifrost tool choice to Bedrock format
@@ -3592,9 +4668,9 @@ func clampBedrockCachePoints(req *BedrockConverseRequest) int {
 				total++
 			}
 			// Nested tool-result markers count against the same per-request cap — AWS counts
-			// checkpoints across `messages` as a whole, and convertToolMessages emits a CachePoint
-			// inside ToolResult.Content whenever a client puts cache_control on a tool-result
-			// block. Both sibling passes (stripCachePointsFromBedrockRequest,
+			// checkpoints across `messages` as a whole, and injectContentBlockCachePoints (invoke.go) emits
+			// a CachePoint inside ToolResult.Content whenever a client puts cache_control on a block
+			// nested in a tool_result. Both sibling passes (stripCachePointsFromBedrockRequest,
 			// downgradeExtendedCacheTTLInBedrockRequest) already recurse here; missing it would
 			// let a request with 4 direct plus 1 nested marker reach Bedrock at 5 and be rejected
 			// by the very limit this clamp exists to respect.
@@ -3772,6 +4848,27 @@ func stripCachePointsFromBedrockRequest(req *BedrockConverseRequest) {
 	}
 }
 
+// stripNonTextCachePoints keeps a message cachePoint only directly after a text block, for
+// Nova, which 400s on one after a toolResult or image ("extraneous key [cachePoint] is not
+// permitted"). A cachePoint nested in a toolResult goes too.
+func stripNonTextCachePoints(req *BedrockConverseRequest) {
+	for i := range req.Messages {
+		content := req.Messages[i].Content
+		n := 0
+		for j := range content {
+			if content[j].CachePoint != nil && (n == 0 || content[n-1].Text == nil) {
+				continue
+			}
+			if tr := content[j].ToolResult; tr != nil {
+				tr.Content = slices.DeleteFunc(tr.Content, func(b BedrockContentBlock) bool { return b.CachePoint != nil })
+			}
+			content[n] = content[j]
+			n++
+		}
+		req.Messages[i].Content = content[:n]
+	}
+}
+
 // downgradeExtendedCacheTTLInBedrockRequest drops the 1h (extended) cache TTL to
 // the default for models that support cache points but not extended TTL (e.g. Nova),
 // which otherwise 400 with "Extended TTL prompt caching is only supported for
@@ -3800,4 +4897,44 @@ func downgradeExtendedCacheTTLInBedrockRequest(req *BedrockConverseRequest) {
 			downgrade(req.ToolConfig.Tools[i].CachePoint)
 		}
 	}
+}
+
+// heldStreamRaw keeps the raw payloads of upstream stream events that produced no chunk of their
+// own (messageStop, metadata, a text block's contentBlockStop), so each rides on a later chunk that
+// has no payload of its own instead of being dropped from the raw record. It lives in the stream
+// goroutine, is used only when raw responses are sent back, and holds a few small events at most.
+//
+// A chunk that carries its own event never takes a held one: raw text plugins edit a single-event
+// payload in place, and a second event in it would leave the chunk's text unsynced. A held event
+// that meets no chunk without a payload before the stream ends goes out on the stream's last chunk.
+type heldStreamRaw struct {
+	payloads []string
+}
+
+// hold copies payload, since the decoder reuses its buffer for the next event.
+func (h *heldStreamRaw) hold(payload []byte) {
+	if h.payloads == nil {
+		h.payloads = make([]string, 0, 4) // a stream's end holds about three
+	}
+	h.payloads = append(h.payloads, string(payload))
+}
+
+// attach gives extra the oldest held payload; with last set it gives it every remaining one, a
+// blank line apart. Several events in one chunk are not a single stream event, so the chunk then
+// declares no raw format and raw text plugins leave it alone.
+func (h *heldStreamRaw) attach(extra *schemas.BifrostResponseExtraFields, last bool) {
+	if len(h.payloads) == 0 || extra.RawResponse != nil {
+		return
+	}
+	n := 1
+	if last {
+		n = len(h.payloads)
+	}
+	if n == 1 {
+		extra.RawResponse = h.payloads[0]
+		extra.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+	} else {
+		extra.RawResponse = strings.Join(h.payloads[:n], "\n\n")
+	}
+	h.payloads = h.payloads[n:]
 }

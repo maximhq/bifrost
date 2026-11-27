@@ -1,0 +1,134 @@
+{
+  "model_id": "huggingface-textembedding-bge-base-en-v1-5",
+  "version": "1.0.16",
+  "inference_environment_variables": [
+    {
+      "name": "ENDPOINT_SERVER_TIMEOUT",
+      "type": "int",
+      "default": 3600,
+      "scope": "container"
+    },
+    {
+      "name": "HF_MODEL_ID",
+      "type": "text",
+      "default": "/opt/ml/model",
+      "scope": "container"
+    },
+    {
+      "name": "MODEL_CACHE_ROOT",
+      "type": "text",
+      "default": "/opt/ml/model",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_CONTAINER_LOG_LEVEL",
+      "type": "text",
+      "default": "20",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_ENV",
+      "type": "text",
+      "default": "1",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_MODEL_SERVER_TIMEOUT",
+      "type": "text",
+      "default": "3600",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_MODEL_SERVER_WORKERS",
+      "type": "int",
+      "default": 1,
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_PROGRAM",
+      "type": "text",
+      "default": "inference.py",
+      "scope": "container"
+    },
+    {
+      "name": "SAGEMAKER_SUBMIT_DIRECTORY",
+      "type": "text",
+      "default": "/opt/ml/model/code",
+      "scope": "container"
+    }
+  ],
+  "hosting_ecr_specs": {
+    "framework": "huggingface-tei",
+    "framework_version": "1.4.0",
+    "py_version": "py310",
+    "huggingface_transformers_version": "4.17.0"
+  },
+  "hosting_artifact_key": "huggingface-textembedding/huggingface-textembedding-bge-base-en-v1-5/artifacts/inference/v1.0.0/",
+  "hosting_prepacked_artifact_key": "huggingface-textembedding/huggingface-textembedding-bge-base-en-v1-5/artifacts/inference-prepack/v1.0.0/",
+  "hosting_artifact_s3_data_type": "S3Prefix",
+  "hosting_artifact_compression_type": "None",
+  "hosting_eula_key": null,
+  "gated_bucket": null,
+  "hosting_use_script_uri": false,
+  "inference_enable_network_isolation": true,
+  "default_inference_instance_type": "ml.g5.xlarge",
+  "supported_inference_instance_types": [
+    "ml.g5.xlarge",
+    "ml.g5.2xlarge",
+    "ml.g5.4xlarge",
+    "ml.g5.8xlarge",
+    "ml.g5.12xlarge",
+    "ml.g5.24xlarge",
+    "ml.g5.48xlarge",
+    "ml.g6.xlarge",
+    "ml.g6.2xlarge",
+    "ml.g6.4xlarge",
+    "ml.g6.8xlarge",
+    "ml.g6.12xlarge",
+    "ml.g6.24xlarge",
+    "ml.g6.48xlarge",
+    "ml.p4d.24xlarge"
+  ],
+  "hosting_resource_requirements": {
+    "min_memory_mb": 8192,
+    "num_accelerators": 1
+  },
+  "hosting_instance_type_variants": {
+    "regional_aliases": {
+      "us-east-1": {
+        "gpu_ecr_uri_1": "683313688378.dkr.ecr.us-east-1.amazonaws.com/tei:2.0.1-tei1.4.0-gpu-py310-cu122-ubuntu22.04"
+      }
+    },
+    "variants": {
+      "g5": {
+        "regional_properties": {
+          "image_uri": "$gpu_ecr_uri_1"
+        }
+      },
+      "g6": {
+        "regional_properties": {
+          "image_uri": "$gpu_ecr_uri_1"
+        }
+      },
+      "ml.g6.xlarge": {
+        "properties": {
+          "resource_requirements": {
+            "min_memory_mb": 8192,
+            "num_accelerators": 1
+          }
+        }
+      },
+      "ml.g6.2xlarge": {
+        "properties": {
+          "resource_requirements": {
+            "min_memory_mb": 16384,
+            "num_accelerators": 1
+          }
+        }
+      }
+    }
+  },
+  "inference_config_rankings": null,
+  "inference_configs": null,
+  "inference_config_components": null
+}

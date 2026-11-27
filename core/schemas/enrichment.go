@@ -84,6 +84,11 @@ var EnrichmentDims = []EnrichmentDim{
 	{Name: "fallback_index", SpanAttr: AttrBifrostFallbackIndex, Tier: TierMetric},
 
 	// --- High cardinality. ---
+	// The stored prompt a request ran. The prompt count is operator-curated, but a new
+	// version is minted on every edit and never pruned, so the tuple is unbounded.
+	{Name: "prompt_id", SpanAttr: AttrBifrostPromptID, Tier: TierHighCardinalityMetric},
+	{Name: "prompt_name", SpanAttr: AttrBifrostPromptName, Tier: TierHighCardinalityMetric},
+	{Name: "prompt_version", SpanAttr: AttrBifrostPromptVersion, Tier: TierHighCardinalityMetric},
 	{Name: "user_id", SpanAttr: AttrBifrostUserID, Tier: TierHighCardinalityMetric},
 	{Name: "user_name", SpanAttr: AttrBifrostUserName, Tier: TierHighCardinalityMetric},
 	{Name: "user_email", SpanAttr: AttrBifrostUserEmail, Tier: TierRecord},

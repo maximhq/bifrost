@@ -114,7 +114,7 @@ func TestResponsesAccumulator_MaxMergesRatherThanSums(t *testing.T) {
 		// Out-of-order/stale event must not regress the accumulated value.
 		`{"input_tokens": 23, "output_tokens": 50, "output_tokens_details": {"thinking_tokens": 30}}`,
 	} {
-		accumulateAnthropicResponsesUsage(usage, billed, mustParseUsage(t, raw))
+		accumulateResponsesUsageFromStruct(usage, billed, mustParseUsage(t, raw))
 	}
 
 	if usage.OutputTokensDetails == nil {
@@ -131,6 +131,36 @@ func TestResponsesAccumulator_MaxMergesRatherThanSums(t *testing.T) {
 	}
 	if usage.OutputTokensDetails.ReasoningTokens > usage.OutputTokens {
 		t.Error("invariant violated: ReasoningTokens > OutputTokens")
+	}
+}
+
+// Adaptive thinking that chose not to think streams an explicit thinking_tokens: 0
+// on message_delta. The accumulator must keep that breakdown, as the non-streaming
+// converter does, or the Bedrock invoke stream egress drops output_tokens_details
+// (#7649 follow-up). Billing is unchanged: a zero adds no reasoning cost.
+func TestResponsesAccumulator_KeepsExplicitZeroThinkingTokens(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{}
+	billed := &schemas.BifrostLLMUsage{}
+
+	accumulateResponsesUsageFromStruct(usage, billed, mustParseUsage(t, `{"input_tokens": 63, "output_tokens": 1}`))
+	accumulateResponsesUsageFromStruct(usage, billed, mustParseUsage(t, zeroThinkingUsage))
+
+	if usage.OutputTokensDetails == nil {
+		t.Fatal("OutputTokensDetails is nil; an explicit thinking_tokens: 0 breakdown was dropped in streaming")
+	}
+	if r := usage.OutputTokensDetails.ReasoningTokens; r != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", r)
+	}
+	if billed.CompletionTokensDetails != nil {
+		t.Errorf("billed CompletionTokensDetails = %+v, want nil for a zero breakdown", billed.CompletionTokensDetails)
+	}
+}
+
+func TestResponsesAccumulator_AbsentDetailsStayAbsent(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{}
+	accumulateResponsesUsageFromStruct(usage, nil, mustParseUsage(t, `{"input_tokens": 10, "output_tokens": 5}`))
+	if usage.OutputTokensDetails != nil {
+		t.Errorf("OutputTokensDetails = %+v on a stream without a breakdown, want nil", usage.OutputTokensDetails)
 	}
 }
 

@@ -12,11 +12,48 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// Cache the same completion usage fields sent to clients, so explicit zeros
+// survive without a separate metadata format. Encoding stays sonic.Marshal as
+// before the fix; only Chat/Text responses with an explicit zero are wrapped.
+func marshalCachedResponse(res *schemas.BifrostResponse) ([]byte, error) {
+	if res.ChatResponse != nil {
+		if view := res.ChatResponse.WithPreservedUsage(); view != res.ChatResponse {
+			return sonic.Marshal(&struct {
+				*schemas.BifrostResponse
+				ChatResponse any
+			}{res, view})
+		}
+	}
+	if res.TextCompletionResponse != nil {
+		if view := res.TextCompletionResponse.WithPreservedUsage(); view != res.TextCompletionResponse {
+			return sonic.Marshal(&struct {
+				*schemas.BifrostResponse
+				TextCompletionResponse any
+			}{res, view})
+		}
+	}
+	return sonic.Marshal(res)
+}
+
+func unmarshalCachedResponse(data []byte, res *schemas.BifrostResponse) error {
+	if err := json.Unmarshal(data, res); err != nil {
+		return err
+	}
+	if res.ChatResponse != nil {
+		res.ChatResponse.Usage.PreserveTokenCountZeros(data, "ChatResponse.usage.prompt_tokens", "ChatResponse.usage.completion_tokens")
+	}
+	if res.TextCompletionResponse != nil {
+		res.TextCompletionResponse.Usage.PreserveTokenCountZeros(data, "TextCompletionResponse.usage.prompt_tokens", "TextCompletionResponse.usage.completion_tokens")
+	}
+	return nil
+}
 
 // directCacheNamespace is a fixed namespace UUID for generating deterministic
 // UUID v5 cache IDs via uuid.NewSHA1, used by generateDirectCacheID. The
@@ -301,7 +338,75 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
 
+	// identity_scope keeps entries with the identity that wrote them (see
+	// resolveIdentityScope). Like request_family it is set after the params, so a
+	// request body field of the same name can never claim another identity's
+	// scope; with scoping disabled such a field is dropped rather than hashed, so
+	// the key stays the plugin's own in both modes.
+	if state != nil && state.IdentityScope != nil {
+		metadata["identity_scope"] = state.IdentityScope
+	} else {
+		delete(metadata, "identity_scope")
+	}
+
+	// conversation_history pins a follow-up turn to its exact earlier messages. Semantic search
+	// filters on this hash, so a follow-up can only match an entry written after the same history,
+	// never an earlier turn of the conversation, and only the newest message is compared by meaning
+	// (see extractTextForEmbedding). One-message requests carry no key, so their entries are unchanged.
+	// Like identity_scope it is set after the params, so a request field cannot supply it.
+	delete(metadata, "conversation_history")
+	history, err := plugin.conversationHistoryHash(req)
+	if err != nil {
+		return nil, err
+	}
+	if history != "" {
+		metadata["conversation_history"] = history
+	}
+
 	return metadata, nil
+}
+
+// conversationHistoryHash returns a hash of every normalized input message before the newest one, or
+// "" when the request has at most one message or is not a conversation (chat or responses) request.
+func (plugin *Plugin) conversationHistoryHash(req *schemas.BifrostRequest) (string, error) {
+	// Only a chat or Responses request with two or more messages has a history. Check before
+	// normalizing, so every other request (one message, embeddings, speech, images) pays nothing.
+	switch {
+	case req.ChatRequest != nil && len(req.ChatRequest.Input) >= 2:
+	case req.ResponsesRequest != nil && len(req.ResponsesRequest.Input) >= 2:
+	default:
+		return "", nil
+	}
+	var history any
+	switch input := plugin.getNormalizedInputForCaching(req).(type) {
+	case []schemas.ChatMessage:
+		if len(input) < 2 {
+			return "", nil
+		}
+		history = input[:len(input)-1]
+	case []schemas.ResponsesMessage:
+		if len(input) < 2 {
+			return "", nil
+		}
+		history = input[:len(input)-1]
+	default:
+		return "", nil
+	}
+	data, err := schemas.MarshalDeeplySorted(history)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal conversation history for hashing: %w", err)
+	}
+	return fmt.Sprintf("%x", xxhash.Sum64(data)), nil
+}
+
+// newestMessage returns only the last message of a conversation. Earlier messages are matched exactly
+// through the conversation_history filter, so embedding them would let a long shared history hide a
+// different newest question.
+func newestMessage[T any](messages []T) []T {
+	if len(messages) > 1 {
+		return messages[len(messages)-1:]
+	}
+	return messages
 }
 
 // responseHasToolCalls reports whether a response (or stream chunk) carries a
@@ -346,12 +451,58 @@ func responsesOutputHasToolCalls(output []schemas.ResponsesMessage) bool {
 	return false
 }
 
+// isAgentTurn reports whether a chat or Responses request offers tools or carries tool calls or tool
+// results in its input. A chat request also offers tools through the parameters a provider runs as
+// tools: web search options and MCP servers.
+func isAgentTurn(req *schemas.BifrostRequest) bool {
+	switch {
+	case req.ChatRequest != nil:
+		if params := req.ChatRequest.Params; params != nil &&
+			(len(params.Tools) > 0 || params.WebSearchOptions != nil || len(params.MCPServers) > 0) {
+			return true
+		}
+		for _, msg := range req.ChatRequest.Input {
+			if msg.Role == schemas.ChatMessageRoleTool ||
+				(msg.ChatAssistantMessage != nil && len(msg.ChatAssistantMessage.ToolCalls) > 0) {
+				return true
+			}
+		}
+	case req.ResponsesRequest != nil:
+		if req.ResponsesRequest.Params != nil && len(req.ResponsesRequest.Params.Tools) > 0 {
+			return true
+		}
+		for _, item := range req.ResponsesRequest.Input {
+			if item.ResponsesToolMessage != nil || (item.Type != nil && !isResponsesConversationItem(*item.Type)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isResponsesConversationItem reports whether t is an input item that carries conversation text or
+// state and no tool declaration, tool call or tool result. Every other type marks an agent turn.
+func isResponsesConversationItem(t schemas.ResponsesMessageType) bool {
+	switch t {
+	case schemas.ResponsesMessageTypeMessage,
+		schemas.ResponsesMessageTypeReasoning,
+		schemas.ResponsesMessageTypeRefusal,
+		schemas.ResponsesMessageTypeCompaction,
+		schemas.ResponsesMessageTypeItemReference,
+		schemas.ResponsesMessageTypeConfigurationUpdate:
+		return true
+	}
+	return false
+}
+
 func isResponsesToolCallItem(t schemas.ResponsesMessageType) bool {
 	switch t {
 	case schemas.ResponsesMessageTypeFunctionCall,
 		schemas.ResponsesMessageTypeCustomToolCall,
 		schemas.ResponsesMessageTypeComputerCall,
 		schemas.ResponsesMessageTypeLocalShellCall,
+		schemas.ResponsesMessageTypeShellCall,
+		schemas.ResponsesMessageTypeApplyPatchCall,
 		schemas.ResponsesMessageTypeMCPCall,
 		schemas.ResponsesMessageTypeMCPApprovalRequest:
 		return true
@@ -433,7 +584,7 @@ func extractChatMessageContent(msg schemas.ChatMessage) string {
 // single string, mirroring extractChatMessageContent but for the Responses API.
 func extractResponsesMessageContent(msg schemas.ResponsesMessage) string {
 	if msg.Content == nil {
-		return ""
+		return extractResponsesToolOutputText(msg)
 	}
 	if msg.Content.ContentStr != nil {
 		return *msg.Content.ContentStr
@@ -448,6 +599,34 @@ func extractResponsesMessageContent(msg schemas.ResponsesMessage) string {
 		return strings.Join(parts, " ")
 	}
 	return ""
+}
+
+// extractResponsesToolOutputText returns the text of a tool output item (function, custom, shell),
+// which carries its result in Output, not Content. Outputs with no text, such as a computer
+// screenshot, return "".
+func extractResponsesToolOutputText(msg schemas.ResponsesMessage) string {
+	if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Output == nil {
+		return ""
+	}
+	output := msg.ResponsesToolMessage.Output
+	if output.ResponsesToolCallOutputStr != nil {
+		return *output.ResponsesToolCallOutputStr
+	}
+	var parts []string
+	for _, block := range output.ResponsesFunctionToolCallOutputBlocks {
+		if block.Text != nil {
+			parts = append(parts, *block.Text)
+		}
+	}
+	for _, shell := range output.ResponsesShellCallOutput {
+		if shell.Stdout != "" {
+			parts = append(parts, shell.Stdout)
+		}
+		if shell.Stderr != "" {
+			parts = append(parts, shell.Stderr)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // extractTextForEmbedding flattens the request input into a single string
@@ -476,7 +655,7 @@ func (plugin *Plugin) extractTextForEmbedding(state *cacheState, req *schemas.Bi
 			return "", fmt.Errorf("failed to cast request input to chat messages")
 		}
 		var textParts []string
-		for _, msg := range reqInput {
+		for _, msg := range newestMessage(reqInput) {
 			content := extractChatMessageContent(msg)
 			if content == "" {
 				continue
@@ -494,7 +673,7 @@ func (plugin *Plugin) extractTextForEmbedding(state *cacheState, req *schemas.Bi
 			return "", fmt.Errorf("failed to cast request input to responses messages")
 		}
 		var textParts []string
-		for _, msg := range reqInput {
+		for _, msg := range newestMessage(reqInput) {
 			content := extractResponsesMessageContent(msg)
 			if content == "" {
 				continue
@@ -1049,6 +1228,9 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
 	putIfSet(metadata, "encoding_format", params.EncodingFormat)
 	putIfSet(metadata, "dimensions", params.Dimensions)
+	putIfSet(metadata, "task_type", params.TaskType)
+	putIfSet(metadata, "title", params.Title)
+	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}

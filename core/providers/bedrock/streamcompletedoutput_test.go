@@ -1,14 +1,225 @@
 package bedrock_test
 
 import (
+	"context"
+	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestDocumentCitationsStreamOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		citationFirst, stopBlock bool
+	}{
+		{"citation first", true, true},
+		{"text first, EOF", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := bedrock.NewBedrockResponsesStreamState()
+			var events []*schemas.BifrostResponsesStreamResponse
+			emit := func(event *bedrock.BedrockStreamEvent) {
+				out, err, _ := event.ToBifrostResponsesStream(len(events), state)
+				require.Nil(t, err)
+				events = append(events, out...)
+			}
+			emit(&bedrock.BedrockStreamEvent{Role: schemas.Ptr("assistant")})
+			var citation bedrock.BedrockContentBlockDelta
+			require.NoError(t, sonic.Unmarshal([]byte(`{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}`), &citation))
+			textEvent := &bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &bedrock.BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}}
+			citationEvent := &bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &citation}
+			if tc.citationFirst {
+				emit(citationEvent)
+				emit(textEvent)
+			} else {
+				emit(textEvent)
+				emit(citationEvent)
+			}
+			if tc.stopBlock {
+				emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true})
+			}
+			events = append(events, bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{}, nil)...)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			added, annotations, nativeCitations := 0, 0, 0
+			for i, event := range events {
+				require.Equal(t, i, event.SequenceNumber)
+				if event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded {
+					added++
+				}
+				if event.Type == schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded {
+					require.Equal(t, 1, added, "annotation must follow item initialization")
+					require.Equal(t, "content_block_location", event.Annotation.Type)
+					require.NotNil(t, event.ItemID)
+					annotations++
+					native, err := bedrock.ToBedrockConverseStreamResponse(event)
+					require.NoError(t, err)
+					require.Equal(t, citation.Citation, native.Delta.Citation)
+				}
+				for _, native := range anthropic.ToAnthropicResponsesStreamResponse(ctx, event) {
+					if native.Delta != nil && native.Delta.Type == anthropic.AnthropicStreamDeltaTypeCitations {
+						nativeCitations++
+					}
+				}
+			}
+			require.Equal(t, 1, annotations)
+			require.Equal(t, 1, nativeCitations, "completion must not duplicate Anthropic citations")
+			output := events[len(events)-1].Response.Output
+			require.Len(t, output, 1)
+			block := output[0].Content.ContentBlocks[0]
+			require.Equal(t, "$4.2M.", *block.Text)
+			require.Len(t, block.Annotations, 1)
+			require.Equal(t, "content_block_location", block.Annotations[0].Type)
+		})
+	}
+}
+
+// Each emitted event and the retained response.completed output own their citation data, so a
+// post-hook editing one annotation cannot change another event or the terminal response.
+func TestDocumentCitationsStreamEventsShareNoAnnotationData(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	var events []*schemas.BifrostResponsesStreamResponse
+	emit := func(event *bedrock.BedrockStreamEvent) {
+		out, err, _ := event.ToBifrostResponsesStream(len(events), state)
+		require.Nil(t, err)
+		events = append(events, out...)
+	}
+	var citation bedrock.BedrockContentBlockDelta
+	require.NoError(t, sonic.Unmarshal([]byte(`{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}`), &citation))
+	emit(&bedrock.BedrockStreamEvent{Role: schemas.Ptr("assistant")})
+	emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &citation})
+	emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &bedrock.BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}})
+	emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true})
+
+	var holders []*schemas.ResponsesOutputMessageContentTextAnnotation
+	for _, event := range events {
+		switch event.Type {
+		case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
+			holders = append(holders, event.Annotation)
+		case schemas.ResponsesStreamResponseTypeContentPartDone:
+			holders = append(holders, &event.Part.Annotations[0])
+		case schemas.ResponsesStreamResponseTypeOutputItemDone:
+			holders = append(holders, &event.Item.Content.ContentBlocks[0].Annotations[0])
+		}
+	}
+	require.Len(t, holders, 3, "annotation.added, content_part.done and output_item.done")
+	edit := func(a *schemas.ResponsesOutputMessageContentTextAnnotation) {
+		a.SourceContent[0] = "edited"
+		*a.Text = "edited"
+		*a.Filename = "edited"
+		*a.StartBlockIndex = 9
+	}
+	unchanged := func(name string, a schemas.ResponsesOutputMessageContentTextAnnotation) {
+		assert.Equal(t, []string{"Budget: $4.2M."}, a.SourceContent, name)
+		assert.Equal(t, "Budget: $4.2M.", *a.Text, name)
+		assert.Equal(t, "pack", *a.Filename, name)
+		assert.Equal(t, 0, *a.StartBlockIndex, name)
+	}
+	// A post-hook edits the citation on annotation.added and content_part.done...
+	edit(holders[0])
+	edit(holders[1])
+	unchanged("output_item.done", *holders[2])
+	// ...and then on output_item.done, before response.completed is built.
+	edit(holders[2])
+	final := bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{}, nil)
+	unchanged("response.completed", final[len(final)-1].Response.Output[0].Content.ContentBlocks[0].Annotations[0])
+}
+
+func TestDocumentCitationsIgnoreUnknownLocations(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.Model = schemas.Ptr("global.anthropic.claude-haiku-5-5")
+	emit := func(delta *bedrock.BedrockContentBlockDelta) []*schemas.BifrostResponsesStreamResponse {
+		out, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(1), Delta: delta}).ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+		return out
+	}
+	require.Empty(t, emit(&bedrock.BedrockContentBlockDelta{Citation: &bedrock.BedrockCitation{}}))
+	events := emit(&bedrock.BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")})
+	require.Equal(t, schemas.ResponsesStreamResponseTypeOutputItemAdded, events[0].Type, "unknown citation must not consume the item start")
+}
+
+func TestDocumentCitationsStreamClosesTextBeforeTool(t *testing.T) {
+	for _, citationOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("citationOnly=%t", citationOnly), func(t *testing.T) {
+			state := bedrock.NewBedrockResponsesStreamState()
+			for i := range 2 {
+				events, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(2), Delta: &bedrock.BedrockContentBlockDelta{
+					Citation: &bedrock.BedrockCitation{Title: schemas.Ptr("pack"), SourceContent: []bedrock.BedrockDocumentContentBlock{{Text: schemas.Ptr("Budget.")}},
+						Location: bedrock.BedrockCitationLocation{DocumentChunk: &bedrock.BedrockDocumentCitationLocation{DocumentIndex: schemas.Ptr(0), Start: schemas.Ptr(i), End: schemas.Ptr(i + 1)}},
+					},
+				}}).ToBifrostResponsesStream(0, state)
+				require.Nil(t, err)
+				require.Equal(t, i, *events[len(events)-1].AnnotationIndex)
+			}
+			text := ""
+			if !citationOnly {
+				text = "$4.2M."
+				_, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(2), Delta: &bedrock.BedrockContentBlockDelta{Text: &text}}).ToBifrostResponsesStream(0, state)
+				require.Nil(t, err)
+			}
+			events, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(3), Start: &bedrock.BedrockContentBlockStart{
+				ToolUse: &bedrock.BedrockToolUseStart{ToolUseID: "call_audit", Name: "audit"},
+			}}).ToBifrostResponsesStream(0, state)
+			require.Nil(t, bErr)
+			require.Len(t, events, 4)
+			require.Equal(t, schemas.ResponsesStreamResponseTypeOutputTextDone, events[0].Type)
+			require.Equal(t, schemas.ResponsesStreamResponseTypeContentPartDone, events[1].Type)
+			require.Equal(t, schemas.ResponsesStreamResponseTypeOutputItemDone, events[2].Type)
+			require.Equal(t, schemas.ResponsesStreamResponseTypeOutputItemAdded, events[3].Type)
+			*events[1].Part.Text = "changed by a post-hook"
+			require.Equal(t, text, *events[0].Text)
+			require.Len(t, events[1].Part.Annotations, 2)
+			require.Len(t, events[2].Item.Content.ContentBlocks[0].Annotations, 2)
+			require.Zero(t, *events[1].ContentIndex)
+			native, err := bedrock.ToBedrockConverseStreamResponse(events[2])
+			require.NoError(t, err)
+			require.Equal(t, 2, *native.ContentBlockIndex)
+			final := bedrock.FinalizeBedrockStream(state, 4, &schemas.ResponsesResponseUsage{}, nil)
+			for _, event := range final {
+				if event.Type == schemas.ResponsesStreamResponseTypeOutputItemDone {
+					require.Equal(t, 1, *event.OutputIndex, "EOF must not close cited text twice")
+				}
+			}
+			output := final[len(final)-1].Response.Output
+			require.Len(t, output, 2)
+			require.Equal(t, text, *output[0].Content.ContentBlocks[0].Text)
+			require.Len(t, output[0].Content.ContentBlocks[0].Annotations, 2)
+		})
+	}
+}
+
+func TestDocumentCitationsStreamClosesReasoningBeforeText(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.Model = schemas.Ptr("global.anthropic.claude-sonnet-5-5")
+	// Citation-led text must close signature-only reasoning.
+	_, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &bedrock.BedrockContentBlockDelta{
+		ReasoningContent: &bedrock.BedrockReasoningContentText{Text: schemas.Ptr(""), Signature: schemas.Ptr("fixture-signature")},
+	}}).ToBifrostResponsesStream(0, state)
+	require.Nil(t, bErr)
+	var delta bedrock.BedrockContentBlockDelta
+	require.NoError(t, sonic.Unmarshal([]byte(`{"citation":{"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}`), &delta))
+	events, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(1), Delta: &delta}).ToBifrostResponsesStream(3, state)
+	require.Nil(t, bErr)
+	reasoningDone, textAdded := -1, -1
+	for i, event := range events {
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && event.Item != nil && event.Item.Type != nil && *event.Item.Type == schemas.ResponsesMessageTypeReasoning {
+			reasoningDone = i
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && event.Item != nil && event.Item.Type != nil && *event.Item.Type == schemas.ResponsesMessageTypeMessage {
+			textAdded = i
+		}
+	}
+	require.GreaterOrEqual(t, reasoningDone, 0)
+	require.Greater(t, textAdded, reasoningDone)
+}
 
 // driveBedrockTextStream replays the Converse event sequence AWS sends for a
 // plain text answer ("Hello world") and returns every emitted Responses event
@@ -133,4 +344,142 @@ func TestBedrockResponsesStreamCompletedWireShape(t *testing.T) {
 		"wire \"output\" must not be null - the OpenAI Agents SDK requires a list")
 	assert.NotEmpty(t, envelope.Response.Output,
 		"wire \"output\" must contain the streamed assistant message")
+}
+
+// response.function_call_arguments.done is {type, sequence_number, item_id, output_index,
+// arguments}. Both Converse close paths attached a partial item with no type, which strict
+// Responses clients (opencode v2) reject. The anthropic and bedrock checks pin that the
+// reverse converters still rebuild each tool call once the done event stops carrying it.
+func TestBedrockResponsesStreamFunctionCallArgumentsDoneShape(t *testing.T) {
+	names := []string{"write_file", "read_file"}
+	wantArgs := []string{`{"path":"/tmp/probe.txt","content":"OK"}`, `{"path":"/tmp/probe.txt"}`}
+
+	// stopEachBlock false leaves the first tool block open, so the second block's start
+	// closes it; the second block always closes on its own contentBlockStop.
+	for name, stopEachBlock := range map[string]bool{
+		"closed by contentBlockStop":        true,
+		"closed by the next block starting": false,
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := bedrock.NewBedrockResponsesStreamState()
+			state.Model = new("anthropic.claude-sonnet-4-5-20250929-v1:0")
+			var events []*schemas.BifrostResponsesStreamResponse
+			emit := func(chunk *bedrock.BedrockStreamEvent) {
+				responses, bErr, _ := chunk.ToBifrostResponsesStream(len(events), state)
+				require.Nil(t, bErr)
+				events = append(events, responses...)
+			}
+			emit(&bedrock.BedrockStreamEvent{Role: new("assistant")})
+			for i := range names {
+				emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: new(i), Start: &bedrock.BedrockContentBlockStart{
+					ToolUse: &bedrock.BedrockToolUseStart{ToolUseID: "tooluse_" + names[i], Name: names[i]},
+				}})
+				emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: new(i), Delta: &bedrock.BedrockContentBlockDelta{
+					ToolUse: &bedrock.BedrockToolUseDelta{Input: wantArgs[i]},
+				}})
+				if stopEachBlock || i == len(names)-1 {
+					emit(&bedrock.BedrockStreamEvent{ContentBlockIndex: new(i), ContentBlockStop: true})
+				}
+			}
+			emit(&bedrock.BedrockStreamEvent{StopReason: new("tool_use")})
+			events = append(events, bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{InputTokens: 9, OutputTokens: 6, TotalTokens: 15}, nil)...)
+
+			// /v1/responses marshals the event as is; /openai/v1/responses marshals WithDefaults().
+			for route, render := range map[string]func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse{
+				"v1 responses":        func(ev *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse { return ev },
+				"openai v1 responses": (*schemas.BifrostResponsesStreamResponse).WithDefaults,
+			} {
+				addedIDs := map[int64]string{}
+				var doneArgs []string
+				for _, ev := range events {
+					wire, err := schemas.Marshal(render(ev))
+					require.NoError(t, err)
+					if item := gjson.GetBytes(wire, "item"); item.Exists() {
+						require.True(t, item.Get("type").Type == gjson.String && item.Get("type").Str != "", "%s: %s carries an item without a string type: %s", route, ev.Type, wire)
+					}
+					if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && gjson.GetBytes(wire, "item.type").Str == "function_call" {
+						addedIDs[gjson.GetBytes(wire, "output_index").Int()] = gjson.GetBytes(wire, "item.id").Str
+					}
+					if ev.Type != schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone {
+						continue
+					}
+					require.False(t, gjson.GetBytes(wire, "item").Exists(), "%s: function_call_arguments.done must not carry an item: %s", route, wire)
+					index := gjson.GetBytes(wire, "output_index")
+					require.True(t, index.Exists(), "%s: done event lacks output_index: %s", route, wire)
+					require.NotEmpty(t, addedIDs[index.Int()], "%s: no output_item.added for %s", route, wire)
+					require.Equal(t, addedIDs[index.Int()], gjson.GetBytes(wire, "item_id").Str, "%s: done item_id must match its output_item.added: %s", route, wire)
+					doneArgs = append(doneArgs, gjson.GetBytes(wire, "arguments").Str)
+				}
+				assert.Equal(t, wantArgs, doneArgs, "%s: done arguments", route)
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			toolNames := map[int]string{}
+			inputs := map[int]string{}
+			var order []int
+			for _, ev := range events {
+				for _, out := range anthropic.ToAnthropicResponsesStreamResponse(ctx, ev) {
+					if out.Index == nil {
+						continue
+					}
+					if out.ContentBlock != nil && out.ContentBlock.Type == anthropic.AnthropicContentBlockTypeToolUse && out.ContentBlock.Name != nil {
+						toolNames[*out.Index] = *out.ContentBlock.Name
+						order = append(order, *out.Index)
+					}
+					if out.Delta != nil && out.Delta.PartialJSON != nil {
+						inputs[*out.Index] += *out.Delta.PartialJSON
+					}
+				}
+			}
+			require.Len(t, order, len(names), "anthropic: tool_use blocks %v", toolNames)
+			for i := range names {
+				assert.Equal(t, names[i], toolNames[order[i]], "anthropic: tool_use %d name", i)
+				assert.Equal(t, wantArgs[i], inputs[order[i]], "anthropic: tool_use %d input", i)
+			}
+
+			starts := map[int]string{}
+			deltas := map[int]string{}
+			for _, ev := range events {
+				out, err := bedrock.ToBedrockConverseStreamResponse(ev)
+				require.NoError(t, err)
+				if out == nil || out.ContentBlockIndex == nil {
+					continue
+				}
+				if out.Start != nil && out.Start.ToolUse != nil {
+					starts[*out.ContentBlockIndex] = out.Start.ToolUse.Name
+				}
+				if out.Delta != nil && out.Delta.ToolUse != nil {
+					deltas[*out.ContentBlockIndex] += out.Delta.ToolUse.Input
+				}
+			}
+			require.Len(t, starts, len(names), "bedrock: toolUse starts %v", starts)
+			for index, name := range starts {
+				i := slices.Index(names, name)
+				require.NotEqual(t, -1, i, "bedrock: unexpected toolUse %s", name)
+				assert.Equal(t, wantArgs[i], deltas[index], "bedrock: toolUse %s input", name)
+			}
+
+			// /genai read the function name off the done event's item; it now comes from output_item.added.
+			genaiState := gemini.NewBifrostToGeminiStreamState()
+			var calls []*gemini.FunctionCall
+			for _, ev := range events {
+				out := gemini.ToGeminiResponsesStreamResponse(ev, genaiState)
+				if out == nil || len(out.Candidates) == 0 || out.Candidates[0].Content == nil {
+					continue
+				}
+				for _, part := range out.Candidates[0].Content.Parts {
+					if part.FunctionCall != nil {
+						calls = append(calls, part.FunctionCall)
+					}
+				}
+			}
+			require.Len(t, calls, len(names), "genai: functionCall parts %+v", calls)
+			for i, call := range calls {
+				assert.Equal(t, names[i], call.Name, "genai: functionCall %d name", i)
+				assert.Equal(t, "tooluse_"+names[i], call.ID, "genai: functionCall %d id", i)
+				assert.JSONEq(t, wantArgs[i], string(call.Args), "genai: functionCall %d args", i)
+			}
+		})
+	}
 }

@@ -3,60 +3,41 @@ package schemas
 import (
 	"maps"
 	"sort"
-	"strconv"
 	"strings"
 )
 
-// RawRequestBodyTextRewriter synchronizes runtime literal replacements into provider-native JSON.
+// RawRequestBodyTextRewriter synchronizes runtime literal replacements, from redaction or provider-managed
+// transformations, into provider-native JSON.
 // Integrations implement this contract because only they know which native fields correspond to
 // guardrail-visible normalized text. Callers must pass owned rawBody bytes and use only the returned
 // slice because implementations may mutate the input in place; any rewrite error is unsafe to forward.
+// A literal found in no owned field is reported as a *RawRequestLiteralsNotFoundError.
 type RawRequestBodyTextRewriter func(rawBody []byte, replacements map[string]string) ([]byte, error)
 
-// TextTargetID identifies one integration-owned text field that mirrors normalized guardrail content.
-// It is opaque outside the integration/guardrail boundary so callers cannot infer native JSON paths
-// or replace a similarly-valued field by accident.
-type TextTargetID string
-
-// TextTargetIDForIndex returns the stable identifier for one guardrail-visible text row.
-// Native integrations and guardrail extraction use the same row order only within one request or response phase.
-func TextTargetIDForIndex(index int) TextTargetID {
-	return TextTargetID(strconv.Itoa(index))
+// RawRequestLiteralsNotFoundError reports the replacement literals a RawRequestBodyTextRewriter found in none of the
+// fields it owns, so a caller can tell which redactions the raw body could not carry. Its message never includes the
+// literals, which are the values being redacted.
+type RawRequestLiteralsNotFoundError struct {
+	Literals []string
 }
 
-// TextRewrite replaces one exact guardrail-visible text field after its original value is verified.
-// Unlike literal redaction maps, repeated originals may have distinct replacements because TargetID
-// identifies the field rather than its content.
-type TextRewrite struct {
-	TargetID    TextTargetID
-	Original    string
-	Replacement string
+// Error describes the failure without naming any literal.
+func (e *RawRequestLiteralsNotFoundError) Error() string {
+	return "one or more runtime replacement literals were not found in an integration-owned content path"
 }
 
-// RawRequestBodyTextTransformer synchronizes exact provider-managed transformations into provider-native JSON.
-// Integrations must verify TargetID ownership and Original before returning a body; a rewrite error is unsafe to
-// forward because raw passthrough would otherwise retain the untransformed value.
-type RawRequestBodyTextTransformer func(rawBody []byte, rewrites []TextRewrite) ([]byte, error)
-
-// RawResponseTextTransformer synchronizes exact provider-managed transformations into a native client response.
-// Integrations preserve the concrete raw response type and may rewrite only fields they own; errors must prevent
-// forwarding the original native response when its normalized counterpart has changed.
-type RawResponseTextTransformer func(rawResponse any, rewrites []TextRewrite) (any, error)
-
-// RawStreamTextEvent identifies guardrail-visible text carried by one provider-native stream event.
-type RawStreamTextEvent struct {
-	TargetID string
-	Text     string
-}
-
-// RawStreamTextCodec inspects and rewrites text in one provider-native raw stream event.
-// Integrations own this contract because only they know which raw event fields mirror
-// normalized assistant text; unrelated reasoning, tool, and lifecycle fields stay opaque.
-type RawStreamTextCodec interface {
-	// Inspect returns the event's text and opaque provider target identity when it is eligible.
-	Inspect(rawResponse string) (event RawStreamTextEvent, eligible bool, err error)
-	// Rewrite returns a copy of an eligible raw event with only its text field replaced.
-	Rewrite(rawResponse string, text string) (string, error)
+// DecodedJSONLiteral returns literal with its JSON string escapes decoded, and whether that differs from literal. A
+// literal cut from JSON text, such as a tool call's arguments, holds a value with escapes that a body carrying the same
+// value as a decoded JSON string holds without them.
+func DecodedJSONLiteral(literal string) (string, bool) {
+	if strings.IndexByte(literal, '\\') < 0 {
+		return "", false
+	}
+	var decoded string
+	if err := Unmarshal([]byte(`"`+literal+`"`), &decoded); err != nil || decoded == "" || decoded == literal {
+		return "", false
+	}
+	return decoded, true
 }
 
 // RedactionPhase identifies which request lifecycle phase produced a redaction finding.
@@ -299,6 +280,21 @@ func StripSpanAttributes(src *Span, denied map[string]struct{}) *Span {
 	// Raw payloads sit on LLM but export under attribute names, so denying a name
 	// must clear the field too. Copy-on-write: the source is pooled.
 	llm := src.LLM
+	a2a := src.A2A
+	if a2a != nil {
+		_, denyRequest := denied[AttrBifrostRawRequest]
+		_, denyResponse := denied[AttrBifrostRawResponse]
+		if denyRequest || denyResponse {
+			cp := *a2a
+			if denyRequest {
+				cp.RawRequest = ""
+			}
+			if denyResponse {
+				cp.RawResponse = ""
+			}
+			a2a = &cp
+		}
+	}
 	if llm != nil {
 		_, denyRequest := denied[AttrBifrostRawRequest]
 		_, denyResponse := denied[AttrBifrostRawResponse]
@@ -329,6 +325,7 @@ func StripSpanAttributes(src *Span, denied map[string]struct{}) *Span {
 		StatusMsg:  src.StatusMsg,
 		Attributes: denyAttrs(src.Attributes, denied),
 		LLM:        llm,
+		A2A:        a2a,
 		Enrichment: src.Enrichment,
 		Events:     events,
 	}
@@ -391,6 +388,16 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 	if text == "" || len(replacements) == 0 {
 		return text
 	}
+	redacted := text
+	for _, raw := range literalReplacementOrder(replacements) {
+		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
+	}
+	return redacted
+}
+
+// literalReplacementOrder returns the non-empty keys of replacements in the order ApplyLiteralReplacements applies
+// them: longest first, so a value wins over a shorter one it contains, and alphabetically among equal lengths.
+func literalReplacementOrder(replacements map[string]string) []string {
 	keys := make([]string, 0, len(replacements))
 	for raw := range replacements {
 		if raw != "" {
@@ -403,11 +410,7 @@ func ApplyLiteralReplacements(text string, replacements map[string]string) strin
 		}
 		return len(keys[i]) > len(keys[j])
 	})
-	redacted := text
-	for _, raw := range keys {
-		redacted = strings.ReplaceAll(redacted, raw, replacements[raw])
-	}
-	return redacted
+	return keys
 }
 
 // RedactAttributeValue applies literal replacements to supported attribute value shapes.
