@@ -244,10 +244,11 @@ func BenchmarkWithToolCostOff(b *testing.B) {
 	resp, _ := toolResult("notes", "search")(nil)
 	b.ReportAllocs()
 	for b.Loop() {
-		callCtx := m.codeModeCallContext(ctx, req)
-		sum, end := m.startCodeModeCostSum(callCtx, req)
+		callCtx, endCall := m.codeModeCallContext(ctx, req)
+		sum, end := m.startCodeModeCostSum(callCtx, req, req)
 		_ = m.withToolCost(callCtx, req.RequestType, resp, sum)
 		end()
+		endCall()
 	}
 }
 
@@ -259,9 +260,9 @@ func TestCodeModeCostSumStaysOffTheCallersContext(t *testing.T) {
 	shared := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	req := toolCallOn("", ToolTypeExecuteToolCode)
 
-	callCtx := m.codeModeCallContext(shared, req)
+	callCtx, endCall := m.codeModeCallContext(shared, req)
 	require.NotSame(t, shared, callCtx, "executeToolCode runs on its own child context")
-	sum, end := m.startCodeModeCostSum(callCtx, req)
+	sum, end := m.startCodeModeCostSum(callCtx, req, req)
 	require.NotNil(t, sum)
 	assert.Nil(t, shared.Value(codeModeCostSumKey{}), "the shared context never sees the sum")
 	assert.Same(t, sum, schemas.NewBifrostContext(callCtx, schemas.NoDeadline).Value(codeModeCostSumKey{}), "the call's nested contexts do")
@@ -274,6 +275,52 @@ func TestCodeModeCostSumStaysOffTheCallersContext(t *testing.T) {
 	end()
 
 	// Other tools, and executeToolCode with the setting off, keep the caller's context.
-	assert.Same(t, shared, m.codeModeCallContext(shared, toolCallOn("notes", "search")))
-	assert.Same(t, shared, pricedToolManager(nil, false).codeModeCallContext(shared, req))
+	for _, keep := range []struct {
+		m   *MCPManager
+		req *schemas.BifrostMCPRequest
+	}{{m, toolCallOn("notes", "search")}, {pricedToolManager(nil, false), req}} {
+		got, endKept := keep.m.codeModeCallContext(shared, keep.req)
+		assert.Same(t, shared, got)
+		endKept()
+	}
+	require.NoError(t, shared.Err(), "ending a call never cancels the caller's context")
+
+	// The call's own context is cancelled once the call ends, so it leaves nothing running.
+	endCall()
+	select {
+	case <-callCtx.Done():
+	default:
+		t.Fatal("the call's own context is still live after the call ended")
+	}
+	require.NoError(t, shared.Err(), "and the caller's context is not cancelled with it")
+}
+
+// retargetPipeline is a pipeline whose pre-hook sends every call to another tool.
+type retargetPipeline struct {
+	responseRecordingPipeline
+	to *schemas.BifrostMCPRequest
+}
+
+func (p *retargetPipeline) RunMCPPreHooks(*schemas.BifrostContext, *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	return p.to, nil, 1
+}
+
+// A pre-hook may retarget a call. The cost follows the tool that ran: executeToolCode sent
+// to a priced tool carries that tool's price, not an empty code-mode sum, and a priced
+// tool sent to executeToolCode, whose context is not its own, carries no sum.
+func TestRunWithPluginPipeline_PricesTheRetargetedTool(t *testing.T) {
+	m := pricedToolManager(&retargetPipeline{to: toolCallOn("notes", "search")}, true)
+	ctx, endCall := m.codeModeCallContext(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), toolCallOn("", ToolTypeExecuteToolCode))
+	defer endCall()
+	resp, bErr := m.RunWithPluginPipeline(ctx, toolCallOn("", ToolTypeExecuteToolCode), toolResult("notes", "search"))
+	require.Nil(t, bErr)
+	require.NotNil(t, resp.ExtraFields.Cost, "the retargeted tool's price is returned")
+	assert.Equal(t, 0.002, resp.ExtraFields.Cost.TotalCost)
+
+	shared := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	m = pricedToolManager(&retargetPipeline{to: toolCallOn("", ToolTypeExecuteToolCode)}, true)
+	resp, bErr = m.RunWithPluginPipeline(shared, toolCallOn("notes", "search"), toolResult("", ToolTypeExecuteToolCode))
+	require.Nil(t, bErr)
+	assert.Nil(t, resp.ExtraFields.Cost)
+	assert.Nil(t, shared.Value(codeModeCostSumKey{}), "no sum is installed on a context the call does not own")
 }

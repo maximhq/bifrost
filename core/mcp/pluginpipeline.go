@@ -170,10 +170,6 @@ func (m *MCPManager) RunWithPluginPipeline(
 		}
 	}()
 
-	// Send back cost: executeToolCode collects its nested calls' costs while its code runs.
-	costSum, endCostSum := m.startCodeModeCostSum(ctx, req)
-	defer endCostSum()
-
 	// Attribution for the errors and short-circuit responses below, so PostHooks and observers
 	// see ClientName/ToolName; the PreHooks may retarget it.
 	var clientName, toolName string
@@ -184,6 +180,9 @@ func (m *MCPManager) RunWithPluginPipeline(
 	// No pipeline configured → run the op directly under its own span, no hooks.
 	pipeline := m.GetPluginPipeline()
 	if pipeline == nil {
+		// Send back cost: executeToolCode collects its nested calls' costs while its code runs.
+		costSum, endCostSum := m.startCodeModeCostSum(ctx, req, req)
+		defer endCostSum()
 		startOpSpan(req)
 		resp, opErr := op(req)
 		if opErr != nil {
@@ -246,6 +245,10 @@ func (m *MCPManager) RunWithPluginPipeline(
 		bErr.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
 		return nil, bErr
 	}
+
+	// Decided on the request the PreHooks let through, which may have been retargeted.
+	costSum, endCostSum := m.startCodeModeCostSum(ctx, req, preReq)
+	defer endCostSum()
 
 	// Op span created after the PreHooks so it nests under the last PreHook; PostHooks nest
 	// under it.

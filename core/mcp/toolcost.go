@@ -43,26 +43,37 @@ func (m *MCPManager) toolCostEnabled(ctx *schemas.BifrostContext) bool {
 // codeModeCallContext gives an executeToolCode call its own child of ctx when
 // send-back cost is on, so the sum startCodeModeCostSum installs is seen only by
 // that call's nested tool calls. ctx may be shared: a nil-context SDK call runs on
-// Bifrost's own context, and a caller may reuse one for concurrent calls. Any
-// other request keeps ctx.
-func (m *MCPManager) codeModeCallContext(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) *schemas.BifrostContext {
+// Bifrost's own context, and a caller may reuse one for concurrent calls. The
+// returned function cancels the child once the call has finished. Any other
+// request keeps ctx and gets a no-op.
+func (m *MCPManager) codeModeCallContext(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostContext, func()) {
 	if req == nil || req.GetToolName() != ToolTypeExecuteToolCode || !m.toolCostEnabled(ctx) {
-		return ctx
+		return ctx, func() {}
 	}
-	return schemas.NewBifrostContext(ctx, schemas.NoDeadline)
+	callCtx, cancel := schemas.NewBifrostContextWithCancel(ctx)
+	return callCtx, cancel
 }
 
 // startCodeModeCostSum installs a sum for an executeToolCode call when send-back
 // cost is on, and returns a function that removes it. It returns a nil sum and a
-// no-op for every other request. ctx must be the call's own context (see
-// codeModeCallContext).
-func (m *MCPManager) startCodeModeCostSum(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*codeModeCostSum, func()) {
-	if req == nil || !req.RequestType.IsExecuteTool() || req.GetToolName() != ToolTypeExecuteToolCode || !m.toolCostEnabled(ctx) {
+// no-op for every other request. requested is the call as it reached the gate,
+// which decided its context (see codeModeCallContext), and executed is the call
+// the pre-hooks let through: the sum is started only when both are
+// executeToolCode, so a call retargeted to another tool is priced as that tool,
+// and one retargeted to executeToolCode, whose context may be shared, carries no
+// sum (each of its nested calls still carries its own cost).
+func (m *MCPManager) startCodeModeCostSum(ctx *schemas.BifrostContext, requested, executed *schemas.BifrostMCPRequest) (*codeModeCostSum, func()) {
+	if !isExecuteToolCode(requested) || !isExecuteToolCode(executed) || !m.toolCostEnabled(ctx) {
 		return nil, func() {}
 	}
 	sum := &codeModeCostSum{}
 	ctx.SetValue(codeModeCostSumKey{}, sum)
 	return sum, func() { ctx.ClearValue(codeModeCostSumKey{}) }
+}
+
+// isExecuteToolCode reports whether req executes the executeToolCode tool.
+func isExecuteToolCode(req *schemas.BifrostMCPRequest) bool {
+	return req != nil && req.RequestType.IsExecuteTool() && req.GetToolName() == ToolTypeExecuteToolCode
 }
 
 // withToolCost returns resp with its tool cost attached, or resp unchanged when

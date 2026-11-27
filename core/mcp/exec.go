@@ -98,7 +98,8 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 	}
 
-	ctx = m.codeModeCallContext(ctx, request)
+	ctx, endCodeModeCall := m.codeModeCallContext(ctx, request)
+	defer endCodeModeCall()
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// A plugin may have retargeted the request; connect runs only for the
 		// tool it was decided on, and only as the plugins were told it would.
