@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -114,8 +115,8 @@ func TestLangfuseOTLPScoresMediaAndTraceURL(t *testing.T) {
 	}
 	require.NoError(t, sonic.Unmarshal(media.Response.Body(), &created))
 	require.NotNil(t, created.UploadURL)
-	assert.Equal(t, "http://bifrost.test/tracing/uploads/"+created.MediaID, *created.UploadURL)
-	require.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodPut, "/tracing/uploads/"+created.MediaID, map[string]string{"Content-Type": "image/png"}, []byte("png-bytes")).Response.StatusCode())
+	assert.True(t, strings.HasPrefix(*created.UploadURL, "http://bifrost.test/tracing/uploads/"+created.MediaID+"?token="), *created.UploadURL)
+	require.Equal(t, fasthttp.StatusOK, env.do(fasthttp.MethodPut, strings.TrimPrefix(*created.UploadURL, "http://bifrost.test"), map[string]string{"Content-Type": "image/png"}, []byte("png-bytes")).Response.StatusCode())
 	assert.Equal(t, fasthttp.StatusNoContent, env.do(fasthttp.MethodPatch, "/tracing/langfuse/api/public/media/"+created.MediaID, auth, []byte(`{"uploadedAt":"2026-11-12T10:00:00Z","uploadHttpStatus":200}`)).Response.StatusCode())
 	again := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/media", auth, mediaBody)
 	require.Equal(t, fasthttp.StatusCreated, again.Response.StatusCode())
@@ -150,12 +151,13 @@ func TestLangfuseUploadAcceptsOnlyTheHashedBytes(t *testing.T) {
 	media := env.do(fasthttp.MethodPost, "/tracing/langfuse/api/public/media", auth, body)
 	require.Equal(t, fasthttp.StatusCreated, media.Response.StatusCode(), string(media.Response.Body()))
 	var created struct {
-		MediaID string `json:"mediaId"`
+		UploadURL string `json:"uploadUrl"`
 	}
 	require.NoError(t, sonic.Unmarshal(media.Response.Body(), &created))
+	uploadPath := strings.TrimPrefix(created.UploadURL, "http://bifrost.test")
 
-	forged := env.do(fasthttp.MethodPut, "/tracing/uploads/"+created.MediaID, map[string]string{"Content-Type": "image/png"}, []byte("something else entirely"))
+	forged := env.do(fasthttp.MethodPut, uploadPath, map[string]string{"Content-Type": "image/png"}, []byte("something else entirely"))
 	assert.Equal(t, fasthttp.StatusBadRequest, forged.Response.StatusCode(), "bytes that do not match the hash are refused")
-	ok := env.do(fasthttp.MethodPut, "/tracing/uploads/"+created.MediaID, map[string]string{"Content-Type": "image/png"}, real)
+	ok := env.do(fasthttp.MethodPut, uploadPath, map[string]string{"Content-Type": "image/png"}, real)
 	assert.Equal(t, fasthttp.StatusOK, ok.Response.StatusCode(), string(ok.Response.Body()))
 }

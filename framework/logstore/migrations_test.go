@@ -1704,3 +1704,20 @@ func TestTraceTablesMigrationIsIdempotent(t *testing.T) {
 	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_trace_tables").Error)
 	require.NoError(t, migrationAddTraceTables(ctx, db, testLogger{}), "a rerun over existing tables and indexes succeeds")
 }
+
+// The row id index rollback leaves Postgres alone: the migration never built the index there, and a
+// plain DROP INDEX would take an ACCESS EXCLUSIVE lock on a live trace table.
+func TestRollbackTraceSpanRowIDIndexSkipsPostgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	require.NoError(t, db.Migrator().DropTable(&TraceSpan{}))
+	require.NoError(t, db.AutoMigrate(&TraceSpan{}))
+	t.Cleanup(func() { _ = db.Migrator().DropTable(&TraceSpan{}) })
+	if !db.Migrator().HasIndex(&TraceSpan{}, "idx_trace_spans_row_id") {
+		require.NoError(t, db.Migrator().CreateIndex(&TraceSpan{}, "idx_trace_spans_row_id"))
+	}
+	require.NoError(t, rollbackTraceSpanRowIDIndex(db))
+	assert.True(t, db.Migrator().HasIndex(&TraceSpan{}, "idx_trace_spans_row_id"), "the Postgres index is not dropped")
+}
