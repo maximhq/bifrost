@@ -25552,6 +25552,33 @@ func TestAttachWarpHistoryLock(t *testing.T) {
 	require.Nil(t, bare.locker)
 }
 
+// scopedLogStore is a logs store with a SQL handle, as RDBLogStore has.
+type scopedLogStore struct {
+	logstore.LogStore
+	db *gorm.DB
+}
+
+func (s *scopedLogStore) ScopedDB(ctx context.Context) *gorm.DB { return s.db.WithContext(ctx) }
+
+// pgvector keeps its tables in the logs store's database, so the vector store
+// must be handed the logs store at startup, and nothing when there is none.
+func TestVectorStoreDependencies(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open("file::memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	store := &scopedLogStore{db: db}
+	require.Same(t, store, vectorStoreDependencies(&Config{LogsStore: store}).LogStore)
+
+	require.Nil(t, vectorStoreDependencies(&Config{}).LogStore, "no logs store")
+	require.Nil(t, vectorStoreDependencies(&Config{LogsStore: &lockableLogStore{}}).LogStore, "a logs store with no SQL handle")
+
+	// And the vector store refuses a logs store it cannot keep vectors in,
+	// naming why, rather than failing on its first query.
+	_, err = vectorstore.NewVectorStoreWithDependencies(context.Background(),
+		&vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypePgVector},
+		vectorStoreDependencies(&Config{LogsStore: store}), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	require.ErrorContains(t, err, "the logs store is sqlite")
+}
+
 // TestReconcileProviderKeys_AnthropicWorkloadIdentity pins that an unchanged config.json key keeps
 // its dashboard edits when the env-backed identity token behind it rotates, on both the stored-hash
 // and the legacy no-hash paths, while an edit to the block still replaces the stored key.

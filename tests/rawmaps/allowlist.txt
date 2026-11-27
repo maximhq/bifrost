@@ -114,6 +114,7 @@ syncmap	framework/tracing	Tracer.deferredCompletions	inflight: traces and spans 
 syncmap	framework/tracing	Tracer.flushHolds	inflight: traces and spans being built
 lockedmap	framework/vectorstore	ChromemStore.namespaceDimensions	backend: the vector store backends' own bookkeeping
 lockedmap	framework/vectorstore	ChromemStore.snapshots	backend: the vector store backends' own bookkeeping
+lockedmap	framework/vectorstore	PgVectorStore.namespaces	backend: the vector store backends' own bookkeeping
 lockedmap	framework/vectorstore	PineconeStore.namespaces	backend: the vector store backends' own bookkeeping
 lockedmap	framework/vectorstore	RedisStore.namespaceFieldTypes	backend: the vector store backends' own bookkeeping
 lockedmap	framework/warp	ManagementCatalog.byName	config: built once from the management spec, then only read
