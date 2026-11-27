@@ -558,6 +558,49 @@ func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
 	}
 }
 
+// send_back_cost is copied only when sent, so a partial save from an older API client or UI does
+// not turn the cost off again. The real store also pins the column round trip.
+func TestUpdateConfig_SendBackCostPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.SendBackCost = true
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() bool {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.SendBackCost
+	}
+	require.True(t, stored(), "the column round-trips through the store")
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.True(t, cfg.ClientConfig.SendBackCost, "an omitted field keeps the live value")
+	assert.True(t, stored(), "an omitted field keeps the stored value")
+
+	disabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"send_back_cost":false}}`)
+	h.updateConfig(disabled)
+	require.Equal(t, fasthttp.StatusOK, disabled.Response.StatusCode(), string(disabled.Response.Body()))
+	assert.False(t, cfg.ClientConfig.SendBackCost)
+	assert.False(t, stored())
+
+	enabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"send_back_cost":true}}`)
+	h.updateConfig(enabled)
+	require.Equal(t, fasthttp.StatusOK, enabled.Response.StatusCode(), string(enabled.Response.Body()))
+	assert.True(t, cfg.ClientConfig.SendBackCost)
+	assert.True(t, stored())
+
+	// null would decode as false and pass the presence check, so it is refused before anything changes.
+	refused := putConfigCtx(`{"client_config":{"log_retention_days":8,"send_back_cost":null}}`)
+	h.updateConfig(refused)
+	assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), string(refused.Response.Body()))
+	assert.True(t, cfg.ClientConfig.SendBackCost, "null left the live value unchanged")
+	assert.True(t, stored(), "null left the stored value unchanged")
+}
+
 // TestUpdateConfig_SkipAccessProfileUserVirtualKeyLifecyclePresence pins that each access-profile
 // user-key setting is copied only when sent, so a partial save from an API client can't silently hand
 // user key lifecycle back to access profiles, and that the two move independently.

@@ -518,6 +518,9 @@ false
 {{- if hasKey .Values.bifrost.client "allowDirectKeys" }}
 {{- $_ := set $client "allow_direct_keys" .Values.bifrost.client.allowDirectKeys }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "sendBackCost" }}
+{{- $_ := set $client "send_back_cost" .Values.bifrost.client.sendBackCost }}
+{{- end }}
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}

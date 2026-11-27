@@ -435,3 +435,30 @@ func TestSendHelpers_ExtraFieldsPlacement(t *testing.T) {
 		assert.Equal(t, "openai", string(streamErrCtx.Response.Header.Peek(lib.HeaderBifrostProvider)))
 	}
 }
+
+// Integration routes answer in the provider's own error shape, which has no
+// extra_fields, so the send-back cost of a failed request reaches the caller
+// only as x-bifrost-cost. Both error writers carry it, including before a
+// stream starts.
+func TestIntegrationErrorsCarrySendBackCostHeader(t *testing.T) {
+	router := newTestGenericRouter()
+	providerShaped := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		return map[string]any{"error": map[string]any{"message": err.Error.Message}}
+	}
+	newErr := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			StatusCode:  ptr(fasthttp.StatusBadGateway),
+			Error:       &schemas.ErrorField{Message: "upstream failed"},
+			ExtraFields: schemas.BifrostErrorExtraFields{Cost: &schemas.BifrostCost{InputCost: 0.25, TotalCost: 0.25}},
+		}
+	}
+
+	errCtx := &fasthttp.RequestCtx{}
+	router.sendError(errCtx, newTestBifrostContext(), providerShaped, newErr())
+	assert.Equal(t, "0.25", string(errCtx.Response.Header.Peek(lib.HeaderBifrostCost)))
+	assert.NotContains(t, string(errCtx.Response.Body()), "extra_fields")
+
+	streamErrCtx := &fasthttp.RequestCtx{}
+	router.sendStreamError(streamErrCtx, newTestBifrostContext(), RouteConfig{ErrorConverter: providerShaped}, newErr())
+	assert.Equal(t, "0.25", string(streamErrCtx.Response.Header.Peek(lib.HeaderBifrostCost)))
+}

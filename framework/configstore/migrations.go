@@ -614,6 +614,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_notification_subject_resolution_columns"}, run: migrationAddNotificationSubjectResolutionColumns},
 	{IDs: []string{"add_notification_subject_index"}, run: migrationAddNotificationSubjectIndex},
 	{IDs: []string{"add_governance_usage_reset_epochs"}, run: migrationAddGovernanceUsageResetEpochs},
+	{IDs: []string{"add_client_config_send_back_cost_column"}, run: migrationAddClientConfigSendBackCostColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -17938,4 +17939,25 @@ func migrationAddGovernanceUsageResetEpochs(ctx context.Context, db *gorm.DB, lo
 		},
 	}})
 	return migration.Migrate()
+}
+
+// migrationAddClientConfigSendBackCostColumn adds the send_back_cost column to config_client.
+func migrationAddClientConfigSendBackCostColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_send_back_cost_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "send_back_cost")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column the setting reads as off, as before.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "send_back_cost")
+		},
+	})
 }

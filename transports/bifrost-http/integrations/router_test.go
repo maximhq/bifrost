@@ -3694,3 +3694,64 @@ func BenchmarkHandleStreamingSpeech(b *testing.B) {
 		})
 	}
 }
+
+// fixedCostCatalog prices every response at a fixed breakdown.
+type fixedCostCatalog struct{ cost *schemas.BifrostCost }
+
+func (c fixedCostCatalog) GetModelInfo(schemas.ModelProvider, string) *schemas.Model { return nil }
+func (c fixedCostCatalog) CalculateRequestCost(*schemas.BifrostContext, *schemas.BifrostResponse) float64 {
+	return c.cost.TotalCost
+}
+func (c fixedCostCatalog) CalculateRequestCostBreakdown(*schemas.BifrostContext, *schemas.BifrostResponse) *schemas.BifrostCost {
+	return c.cost.DeepCopy()
+}
+
+// answeringPlugin answers every request itself, so no provider is called.
+type answeringPlugin struct{}
+
+func (answeringPlugin) GetName() string { return "answering" }
+func (answeringPlugin) Cleanup() error  { return nil }
+func (answeringPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (answeringPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 5, CompletionTokens: 3, TotalTokens: 8}
+	resp := &schemas.BifrostResponse{}
+	if req.ResponsesRequest != nil {
+		resp.ResponsesResponse = &schemas.BifrostResponsesResponse{Model: req.ResponsesRequest.Model, Usage: usage.ToResponsesResponseUsage()}
+	} else {
+		resp.ChatResponse = &schemas.BifrostChatResponse{Model: req.ChatRequest.Model, Usage: usage}
+	}
+	return req, &schemas.LLMPluginShortCircuit{Response: resp}, nil
+}
+func (answeringPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+// An integration route answers in the provider's own body shape, which has no
+// extra_fields, so the send-back cost of a successful request reaches the caller
+// only as x-bifrost-cost. Pins that the router reads it from the response core
+// returned, not from the converted body.
+func TestIntegrationSuccessCarriesSendBackCostHeader(t *testing.T) {
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:      passthroughRewriteAccount{baseURL: "http://127.0.0.1:1"},
+		Logger:       bifrost.NewDefaultLogger(schemas.LogLevelError),
+		LLMPlugins:   []schemas.LLMPlugin{answeringPlugin{}},
+		ModelCatalog: fixedCostCatalog{cost: &schemas.BifrostCost{InputCost: 0.25, TotalCost: 0.25}},
+		SendBackCost: true,
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	router := NewGenericRouter(client, &mockHandlerStore{}, nil, nil, nil, &testLogger{})
+	route := createAnthropicMessagesRouteConfig("/anthropic", &testLogger{})[0]
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"model":"anthropic/claude-sonnet-4-5","max_tokens":32,"messages":[{"role":"user","content":"hi"}]}`)
+	router.createHandler(route)(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+	assert.Equal(t, "0.25", string(ctx.Response.Header.Peek(lib.HeaderBifrostCost)))
+	assert.NotContains(t, string(ctx.Response.Body()), "extra_fields", "the Anthropic body shape carries no extra_fields")
+}

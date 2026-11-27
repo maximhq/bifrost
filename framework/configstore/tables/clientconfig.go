@@ -97,6 +97,7 @@ type TableClientConfig struct {
 	WhitelistedRoutesJSON                   string                         `gorm:"type:text" json:"-"`                                              // JSON serialized []string
 	AllowPerRequestContentStorageOverride   bool                           `gorm:"default:false" json:"allow_per_request_content_storage_override"` // Allow per-request override for content storage (e.g. long-term vs ephemeral)
 	AllowPerRequestRawOverride              bool                           `gorm:"default:false" json:"allow_per_request_raw_override"`             // Allow per-request override for raw request/response storage
+	SendBackCost                            bool                           `gorm:"default:false" json:"send_back_cost"`                             // Return Bifrost's computed cost to callers
 	AllowDirectKeys                         bool                           `gorm:"default:false" json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key header
 	VKRotationCooldownNS                    int64                          `gorm:"column:vk_rotation_cooldown_ns;default:0" json:"-"`               // Rotation grace period in nanoseconds (Go duration encoding); 0 = previous value stops working immediately
 

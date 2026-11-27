@@ -41,6 +41,7 @@ type testHandlerStore struct {
 	allowDirectKeys      bool
 	extraFieldsInHeaders bool
 	captureClientIP      bool
+	mcpAllowlist         schemas.WhiteList
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -50,7 +51,10 @@ func (s testHandlerStore) GetAsyncJobExecutor() *logstore.AsyncJobExecutor      
 func (s testHandlerStore) GetAsyncJobResultTTL() int                             { return 0 }
 func (s testHandlerStore) GetSharedTables() *SharedTables                        { return nil }
 func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
-	return schemas.WhiteList{}
+	if s.mcpAllowlist == nil {
+		return schemas.WhiteList{}
+	}
+	return s.mcpAllowlist
 }
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
@@ -158,6 +162,58 @@ func TestConvertToBifrostContext_ClientIPOffByDefault(t *testing.T) {
 	}
 	if !(&Config{LogsStoreConfig: &logstore.Config{CaptureClientIP: true}}).ShouldCaptureClientIP() || (&Config{}).ShouldCaptureClientIP() {
 		t.Error("ShouldCaptureClientIP must follow logs_store.capture_client_ip")
+	}
+}
+
+// x-bf-send-back-cost overrides client.send_back_cost in either direction and,
+// unlike the raw-response headers, needs no allow_per_request_raw_override.
+// Anything ParseBool rejects leaves the global setting in charge.
+func TestConvertToBifrostContext_SendBackCostHeader(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  any
+	}{
+		{value: "true", want: true},
+		{value: "false", want: false},
+		{value: "maybe", want: nil},
+	} {
+		t.Run(test.value, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-send-back-cost", test.value)
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, testHandlerStore{})
+			defer cancel()
+			if got := bifrostCtx.Value(schemas.BifrostContextKeySendBackCost); got != test.want {
+				t.Errorf("send-back-cost override = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+// A forwarding allowlist or an MCP header allowlist that matches every header must
+// not swallow x-bf-send-back-cost before it is read, or a caller could not turn the
+// cost off for one request while client.send_back_cost is on.
+func TestConvertToBifrostContext_SendBackCostHeaderSurvivesStarAllowlists(t *testing.T) {
+	for name, store := range map[string]testHandlerStore{
+		"forwarding allowlist": {matcher: NewHeaderMatcher(&configstoreTables.GlobalHeaderFilterConfig{Allowlist: []string{"*"}})},
+		"mcp header allowlist": {mcpAllowlist: schemas.WhiteList{"*"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.Set("x-bf-send-back-cost", "false")
+			bifrostCtx, cancel := ConvertToBifrostContext(ctx, store)
+			defer cancel()
+			if got := bifrostCtx.Value(schemas.BifrostContextKeySendBackCost); got != false {
+				t.Fatalf("send-back-cost override = %v, want false", got)
+			}
+			extraHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string)
+			mcpHeaders, _ := bifrostCtx.Value(schemas.BifrostContextKeyMCPExtraHeaders).(map[string][]string)
+			if _, ok := extraHeaders["x-bf-send-back-cost"]; ok {
+				t.Error("x-bf-send-back-cost was forwarded as an extra header")
+			}
+			if _, ok := mcpHeaders["x-bf-send-back-cost"]; ok {
+				t.Error("x-bf-send-back-cost was forwarded as an MCP header")
+			}
+		})
 	}
 }
 

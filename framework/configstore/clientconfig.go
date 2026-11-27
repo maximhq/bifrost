@@ -106,6 +106,7 @@ type ClientConfig struct {
 	RetainContentInObjectStorage            bool                                  `json:"retain_content_in_object_storage"`           // When content logging is disabled (config or header), still offload content to object storage as hidden instead of dropping it
 	AllowPerRequestContentStorageOverride   bool                                  `json:"allow_per_request_content_storage_override"` // Allow per-request override of content storage via x-bf-disable-content-logging header/context
 	AllowPerRequestRawOverride              bool                                  `json:"allow_per_request_raw_override"`             // Allow per-request override of raw request/response visibility via x-bf-send-back-raw-request and x-bf-send-back-raw-response headers
+	SendBackCost                            bool                                  `json:"send_back_cost"`                             // Return Bifrost's computed cost in extra_fields.cost and the x-bifrost-cost header
 	AllowDirectKeys                         bool                                  `json:"allow_direct_keys"`                          // Allow callers to bypass the registered key pool via x-bf-direct-key: true header
 	VKRotationCooldown                      schemas.Duration                      `json:"vk_rotation_cooldown,omitempty"`             // Grace period during which a rotated virtual key's previous value still authenticates (e.g. "5m"); 0 = old value stops working immediately
 	DisableDBPingsInHealth                  bool                                  `json:"disable_db_pings_in_health"`
@@ -355,6 +356,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 
 	if c.AllowPerRequestRawOverride {
 		hash.Write([]byte("allowPerRequestRawOverride:true"))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.SendBackCost {
+		hash.Write([]byte("sendBackCost:true"))
 	}
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.

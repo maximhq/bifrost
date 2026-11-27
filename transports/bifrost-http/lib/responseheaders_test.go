@@ -727,3 +727,41 @@ func TestExposedResponseHeadersListsEveryGatewayHeader(t *testing.T) {
 	}
 	assert.Contains(t, exposed, HeaderRequestID)
 }
+
+// x-bifrost-cost carries core's send-back cost on successes and errors in both
+// placement modes, since integration routes have no extra_fields in their body.
+// Nothing billable writes no header at all, never a 0.
+func TestApplyBifrostCostHeader(t *testing.T) {
+	cost := &schemas.BifrostCost{InputCost: 0.000125, OutputCost: 0.0005, TotalCost: 0.000625}
+	newBifrostCtx := func() *schemas.BifrostContext {
+		return schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	}
+
+	t.Run("success response", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Cost: cost})
+		assert.Equal(t, "0.000625", string(ctx.Response.Header.Peek(HeaderBifrostCost)))
+	})
+
+	t.Run("error response reads the error's own cost", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ApplyBifrostErrorResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest, Cost: cost})
+		assert.Equal(t, "0.000625", string(ctx.Response.Header.Peek(HeaderBifrostCost)))
+	})
+
+	t.Run("headers placement mode", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Cost: cost})
+		assert.Equal(t, "0.000625", string(ctx.Response.Header.Peek(HeaderBifrostCost)))
+	})
+
+	for name, unbillable := range map[string]*schemas.BifrostCost{"no cost": nil, "zero total": {TotalCost: 0}} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ApplyBifrostResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Cost: unbillable})
+			ApplyBifrostErrorResponseHeaders(ctx, newBifrostCtx(), schemas.BifrostErrorExtraFields{Cost: unbillable})
+			assert.Nil(t, ctx.Response.Header.Peek(HeaderBifrostCost))
+		})
+	}
+}

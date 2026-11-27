@@ -932,6 +932,7 @@ type Config struct {
 // DefaultClientConfig is the default client config used when no config is provided.
 var DefaultClientConfig = configstore.ClientConfig{
 	DropExcessRequests:              false,
+	SendBackCost:                    false,
 	PrometheusLabels:                []string{},
 	InitialPoolSize:                 schemas.DefaultInitialPoolSize,
 	EnableLogging:                   new(true),
