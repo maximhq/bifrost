@@ -10607,6 +10607,95 @@ func TestCompaction_ReplayedCustomCallsAsFunctions(t *testing.T) {
 	}
 }
 
+// TestExecuteRequestWithRetries_DisableRetriesMakesOneAttempt pins
+// BifrostContextKeyDisableRetries: with a retry budget configured, a retryable
+// status, or a per-key failure that would otherwise walk to the next key, still
+// produces exactly one upstream call, and its error is the one returned.
+func TestExecuteRequestWithRetries_DisableRetriesMakesOneAttempt(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+	}{
+		{name: "retryable 503", status: 503},
+		{name: "rate limit 429 rotates keys", status: 429},
+		{name: "rejected credential 401 walks to the next key", status: 401},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+			ctx.SetValue(schemas.BifrostContextKeyDisableRetries, true)
+			keys := []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("sk-1")}, {ID: "k2", Value: *schemas.NewSecretVar("sk-2")}}
+			keyProvider := func(used, dead map[string]bool) (schemas.Key, error) {
+				for _, key := range keys {
+					if !used[key.ID] && !dead[key.ID] {
+						return key, nil
+					}
+				}
+				return keys[0], nil
+			}
+			calls := 0
+			handler := func(schemas.Key) (string, *schemas.BifrostError) {
+				calls++
+				return "", createBifrostError("upstream failed", Ptr(tc.status), nil, false)
+			}
+
+			_, err := executeRequestWithRetries(ctx, createTestConfig(3, time.Millisecond, time.Millisecond), handler, keyProvider,
+				schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, NewDefaultLogger(schemas.LogLevelError))
+
+			if calls != 1 {
+				t.Fatalf("upstream calls got %d, want 1", calls)
+			}
+			if err == nil || err.StatusCode == nil || *err.StatusCode != tc.status {
+				t.Fatalf("error got %v, want the first attempt's %d", err, tc.status)
+			}
+		})
+	}
+}
+
+// BenchmarkExecuteRequestWithRetries_PlainRequest measures the retry loop for an
+// ordinary request that succeeds on its first attempt with retries enabled. It is
+// the success-path control: the handler returns before the loop reads
+// BifrostContextKeyDisableRetries, so it performs no lookup (see
+// BenchmarkExecuteRequestWithRetries_TerminalFailure for the path that does).
+func BenchmarkExecuteRequestWithRetries_PlainRequest(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	key := schemas.Key{ID: "k1", Value: *schemas.NewSecretVar("sk-1")}
+	keyProvider := func(map[string]bool, map[string]bool) (schemas.Key, error) { return key, nil }
+	handler := func(schemas.Key) (string, *schemas.BifrostError) { return "ok", nil }
+	config := createTestConfig(3, time.Millisecond, time.Millisecond)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _ = executeRequestWithRetries(ctx, config, handler, keyProvider, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, logger)
+	}
+}
+
+// BenchmarkExecuteRequestWithRetries_TerminalFailure measures the path the
+// BifrostContextKeyDisableRetries lookup was added to: an attempt that fails with
+// a status nothing retries (a plain 400), so the loop reads the flag once and
+// returns that error without backoff or a second dispatch.
+func BenchmarkExecuteRequestWithRetries_TerminalFailure(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	key := schemas.Key{ID: "k1", Value: *schemas.NewSecretVar("sk-1")}
+	keyProvider := func(map[string]bool, map[string]bool) (schemas.Key, error) { return key, nil }
+	failure := createBifrostError("invalid request", Ptr(400), nil, false)
+	handler := func(schemas.Key) (string, *schemas.BifrostError) { return "", failure }
+	config := createTestConfig(3, time.Millisecond, time.Millisecond)
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_, _ = executeRequestWithRetries(ctx, config, handler, keyProvider, schemas.ChatCompletionRequest, schemas.OpenAI, "gpt-4o", nil, logger)
+	}
+}
+
 // grammarLimitRequest is a chat request for the structured-output grammar-limit retry tests.
 func grammarLimitRequest(requestType schemas.RequestType) *schemas.BifrostRequest {
 	return &schemas.BifrostRequest{

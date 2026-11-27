@@ -563,6 +563,7 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.ClearValue(schemas.BifrostContextKeyAPIKeyName)
 	ctx.ClearValue(schemas.BifrostContextKeyDirectKey)
 	ctx.ClearValue(schemas.BifrostContextKeySkipKeySelection)
+	ctx.ClearValue(schemas.BifrostContextKeyDisableRetries)
 	ctx.ClearValue(schemas.BifrostContextKeyLoadBalancerAttempt)
 	// Body transport.
 	ctx.ClearValue(schemas.BifrostContextKeyUseRawRequestBody)
@@ -586,6 +587,16 @@ func ClearContextForInternalRequest(ctx *schemas.BifrostContext) {
 func PrepareContextForInternalRequest(ctx *schemas.BifrostContext) {
 	ctx.SetValue(schemas.BifrostContextKeySkipPluginPipeline, true)
 	ClearContextForInternalRequest(ctx)
+}
+
+// PrepareContextForSingleAttemptInternalRequest is PrepareContextForInternalRequest
+// for an internal request that must reach the provider exactly once, such as a
+// route probe: it also sets BifrostContextKeyDisableRetries (a reserved core
+// key), so no retry, key rotation, or encrypted-reasoning retry replaces the
+// first upstream answer.
+func PrepareContextForSingleAttemptInternalRequest(ctx *schemas.BifrostContext) {
+	PrepareContextForInternalRequest(ctx)
+	ctx.SetValue(schemas.BifrostContextKeyDisableRetries, true)
 }
 
 // PrepareContextForInternalEmbeddingRequest prepares a plugin-owned embedding request without capturing its raw payloads.

@@ -819,6 +819,8 @@ paths:
     $ref: "./paths/management/providers.yaml#/provider-keys"
   /api/providers/{provider}/keys/{key_id}:
     $ref: "./paths/management/providers.yaml#/provider-key-by-id"
+  /api/providers/{provider}/decisions/probe:
+    $ref: "./paths/management/providers.yaml#/provider-decisions-probe"
   /api/providers/{provider}/keys/{key_id}/refresh-models:
     $ref: "./paths/management/providers.yaml#/provider-key-refresh-models"
   /api/keys:

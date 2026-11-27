@@ -7948,8 +7948,14 @@ func executeRequestWithRetries[T any](
 		// missed phrasing handed a healable 400 to the client. stripUnverifiableReasoning
 		// returns false when there is nothing to strip, so the extra attempt is spent
 		// only on requests that carry a token. Runs once per request.
+		//
+		// An internal caller that needs the first upstream answer as is (a route probe) asks
+		// for exactly one attempt: a retry would be another billed call and would replace the
+		// error the caller is asking about. Read only once an attempt has failed, so a
+		// request that succeeds first time pays nothing for it.
+		disableRetries, _ := ctx.Value(schemas.BifrostContextKeyDisableRetries).(bool)
 		lastWasEncryptedContentStrip = false
-		if !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
+		if !disableRetries && !shouldRetry && !strippedEncryptedContent && shouldStripReasoningAfterClientError(bifrostError) &&
 			stripUnverifiableReasoning(ctx, req) {
 			strippedEncryptedContent = true
 			lastWasEncryptedContentStrip = true
@@ -7967,7 +7973,7 @@ func executeRequestWithRetries[T any](
 		// request works with the schema as the synthetic tool, so it gets one more attempt on the
 		// same key in that form. Once per request: a body that keeps its native schema cannot loop.
 		lastWasStructuredOutputForceTool = false
-		if !shouldRetry && !forcedStructuredOutputTool && ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputGrammarRejected {
+		if !disableRetries && !shouldRetry && !forcedStructuredOutputTool && ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputGrammarRejected {
 			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputForceTool)
 			forcedStructuredOutputTool = true
 			lastWasStructuredOutputForceTool = true
@@ -7977,7 +7983,7 @@ func executeRequestWithRetries[T any](
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelWarn, fmt.Sprintf("Native structured-output schema rejected by %s/%s; re-sending once with the schema as a tool", providerKey, model))
 		}
 
-		if !shouldRetry {
+		if !shouldRetry || disableRetries {
 			break
 		}
 

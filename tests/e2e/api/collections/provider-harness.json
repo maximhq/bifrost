@@ -352257,6 +352257,185 @@
           }
         }
       ]
+    },
+    {
+      "name": "375. Decision route probe through the registered management route (decision probe)",
+      "description": "Pins POST /api/providers/{provider}/decisions/probe through the registered route and the management middleware (PR #10270). Case 1 reads the id of the opted-in custom provider's key. Case 2 probes kserve-decider through that key: one fixed decision is sent and the probe reports ok with the provider and the model that answered. Case 3 asks for a chat model on openai and is refused with 400 before anything is sent. Case 4 names a key the provider does not have and is refused with 400.",
+      "item": [
+        {
+          "name": "Setup - read the opted-in key id - openai_decisions_optin/kserve-decider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the opted-in provider lists its key', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "    var keys = pm.response.json().keys;",
+                  "    pm.expect(keys, 'keys: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "    pm.collectionVariables.set('decisionProbeKeyId', keys[0].id);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/openai_decisions_optin/keys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai_decisions_optin",
+                "keys"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/providers/{provider}/decisions/probe - pinned key answers the probe - openai_decisions_optin/kserve-decider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('the probe is answered', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "    var body = pm.response.json();",
+                  "    pm.expect(body.ok, 'probe: ' + pm.response.text()).to.eql(true);",
+                  "    pm.expect(body.error, 'probe: ' + pm.response.text()).to.be.undefined;",
+                  "    pm.expect(body.provider).to.eql('openai_decisions_optin');",
+                  "    pm.expect(body.model, 'probe: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "    pm.expect(body.latency_ms).to.be.a('number');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/openai_decisions_optin/decisions/probe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai_decisions_optin",
+                "decisions",
+                "probe"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"model\": \"kserve-decider\", \"key_id\": \"{{decisionProbeKeyId}}\" }"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/providers/{provider}/decisions/probe - chat model is refused before sending [EXPECT-400] - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('a chat model is not probed', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include('not served on the decisions endpoint');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/openai/decisions/probe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "decisions",
+                "probe"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"model\": \"gpt-4o-mini\" }"
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/providers/{provider}/decisions/probe - unknown key is refused [EXPECT-400] - openai_decisions_optin/kserve-decider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('an unknown key is refused', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(400);",
+                  "    pm.expect(pm.response.text()).to.include('is not configured for provider');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/openai_decisions_optin/decisions/probe",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai_decisions_optin",
+                "decisions",
+                "probe"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"model\": \"kserve-decider\", \"key_id\": \"harness-no-such-key\" }"
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }

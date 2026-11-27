@@ -941,6 +941,20 @@ func TestClearContextForInternalRequestShedsAnthropicNativeSurfaceOnFreshChild(t
 		"shedding it on the derived context must not disarm the caller's own request")
 }
 
+// TestPrepareContextForSingleAttemptInternalRequest pins that the single-attempt
+// variant prepares an internal request and asks core for exactly one attempt,
+// and that the plain variant does not.
+func TestPrepareContextForSingleAttemptInternalRequest(t *testing.T) {
+	single := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	PrepareContextForSingleAttemptInternalRequest(single)
+	assert.Equal(t, true, single.Value(schemas.BifrostContextKeyDisableRetries))
+	assert.Equal(t, true, single.Value(schemas.BifrostContextKeySkipPluginPipeline))
+
+	plain := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	PrepareContextForInternalRequest(plain)
+	assert.Nil(t, plain.Value(schemas.BifrostContextKeyDisableRetries))
+}
+
 // TestClearContextForInternalRequestShedsEveryKeyOnFreshChild is the general
 // case of the test above. ClearValue shadows a parent's value through this
 // context's OWN value map, and NewBifrostContext leaves that map unallocated
