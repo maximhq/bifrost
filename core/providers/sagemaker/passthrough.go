@@ -221,7 +221,6 @@ func (provider *SageMakerProvider) PassthroughStream(ctx *schemas.BifrostContext
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 	}
 
-	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 	rawBodyStream := resp.BodyStream()
 	if rawBodyStream == nil {
 		providerUtils.ReleaseStreamingResponse(ctx, resp)
@@ -229,13 +228,17 @@ func (provider *SageMakerProvider) PassthroughStream(ctx *schemas.BifrostContext
 	}
 	// A failed call answers with a plain JSON error, not an event stream; relay that as is.
 	body := rawBodyStream
+	var headers map[string]string
 	if resp.StatusCode() == fasthttp.StatusOK {
+		headers = providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
 		body = &eventStreamPayloadReader{src: rawBodyStream}
 		for k, v := range headers {
 			if strings.EqualFold(k, streamContentTypeHeader) && v != "" {
 				headers["Content-Type"] = v
 			}
 		}
+	} else {
+		headers = providerUtils.ExtractPassthroughStreamResponseHeaders(resp)
 	}
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 

@@ -4776,3 +4776,39 @@ func BenchmarkProcessAndSendResponseFinalChunk(b *testing.B) {
 		<-ch
 	}
 }
+
+func TestPassthroughStreamResponseHeaders(t *testing.T) {
+	fast := &fasthttp.Response{}
+	standard := &http.Response{Header: http.Header{}}
+	for key, value := range map[string]string{
+		"Content-Encoding": "gzip", "Content-Type": "text/event-stream",
+		"Content-Length": "42", "Set-Cookie": "example=1",
+	} {
+		fast.Header.Set(key, value)
+		standard.Header.Set(key, value)
+	}
+	for _, tc := range []struct {
+		name    string
+		headers map[string]string
+		raw     bool
+	}{
+		{"fasthttp raw", ExtractPassthroughStreamResponseHeaders(fast), true},
+		{"net/http raw", ExtractPassthroughStreamResponseHeadersFromHTTP(standard), true},
+		{"fasthttp buffered", ExtractPassthroughProviderResponseHeaders(fast), false},
+		{"net/http buffered", ExtractPassthroughProviderResponseHeadersFromHTTP(standard), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if v, ok := lookupHeaderFold(tc.headers, "Content-Encoding"); ok != tc.raw || (ok && v != "gzip") {
+				t.Errorf("Content-Encoding = %q (present=%v), raw=%v", v, ok, tc.raw)
+			}
+			if v, _ := lookupHeaderFold(tc.headers, "Content-Type"); v != "text/event-stream" {
+				t.Errorf("Content-Type = %q", v)
+			}
+			for _, key := range []string{"Content-Length", "Set-Cookie"} {
+				if _, ok := lookupHeaderFold(tc.headers, key); ok {
+					t.Errorf("retained %s", key)
+				}
+			}
+		})
+	}
+}

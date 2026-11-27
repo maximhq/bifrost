@@ -2,6 +2,8 @@ package utils
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
@@ -197,5 +199,61 @@ func TestStreamPassthrough_StampsChunkIndexes(t *testing.T) {
 
 	if want := []int{0, 1, 2, 3}; !slices.Equal(indexes, want) {
 		t.Fatalf("chunk indexes = %v, want %v", indexes, want)
+	}
+}
+
+func TestStreamPassthrough_EncodingControlsFraming(t *testing.T) {
+	// Stored DEFLATE blocks retain the literal SSE delimiter and data line on the wire.
+	const event = "\n\ndata: {}\n\n"
+	var encoded bytes.Buffer
+	writer, err := gzip.NewWriterLevel(&encoded, gzip.NoCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(writer, event); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		encoding   string
+		wire       []byte
+		wantEvents int
+	}{
+		{"gzip", encoded.Bytes(), 0},
+		{"Identity", []byte(event), 1},
+		{"", []byte(event), 1},
+	} {
+		t.Run(tc.encoding, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			resp := fasthttp.AcquireResponse()
+			resp.Header.SetContentEncoding(tc.encoding)
+			resp.SetBodyStream(bytes.NewReader(tc.wire), len(tc.wire))
+			runner := func(_ *schemas.BifrostContext, r *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return r, err
+			}
+			var checked, observed, ends int
+			chunks := StreamPassthrough(ctx, runner, nil, resp, resp.BodyStream(), PassthroughStreamParams{
+				StatusCode: 200, StartTime: time.Now(),
+				HasUsage:   func([]byte) bool { checked++; return true },
+				Observe:    func([]byte) *schemas.BifrostPassthroughUsage { observed++; return nil },
+				EndsStream: func([]byte) bool { ends++; return false },
+			})
+			var body bytes.Buffer
+			for chunk := range chunks {
+				if chunk.BifrostPassthroughResponse == nil {
+					t.Fatalf("unexpected chunk: %+v", chunk)
+				}
+				body.Write(chunk.BifrostPassthroughResponse.Body)
+			}
+			if !bytes.Equal(body.Bytes(), tc.wire) {
+				t.Fatal("forwarded body differs from the upstream bytes")
+			}
+			if checked != tc.wantEvents || observed != tc.wantEvents || ends != tc.wantEvents {
+				t.Fatalf("HasUsage=%d Observe=%d EndsStream=%d, want %d each", checked, observed, ends, tc.wantEvents)
+			}
+		})
 	}
 }

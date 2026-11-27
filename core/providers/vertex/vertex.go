@@ -5258,7 +5258,7 @@ func (provider *VertexProvider) PassthroughStream(
 		provider.removeVertexClient(key)
 	}
 
-	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughStreamResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	bodyStream := resp.BodyStream()

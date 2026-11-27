@@ -8827,7 +8827,7 @@ func (provider *OpenAIProvider) PassthroughStream(
 		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
 	}
 
-	headers := providerUtils.ExtractPassthroughProviderResponseHeaders(resp)
+	headers := providerUtils.ExtractPassthroughStreamResponseHeaders(resp)
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, headers)
 
 	rawBodyStream := resp.BodyStream()
