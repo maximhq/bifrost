@@ -378,7 +378,59 @@ func TestTerminalToolArgumentsStreamEmitsMissingSuffix(t *testing.T) {
 		if state := getOrCreateAnthropicToResponsesStreamState(ctx); state.emittedInputJSONMask != 0 || len(state.emittedInputJSONOverflow) != 0 {
 			t.Fatalf("overflow progress leaked: mask=%#x overflow=%#v", state.emittedInputJSONMask, state.emittedInputJSONOverflow)
 		}
+	})
 
+	t.Run("interleaved open calls across mask and overflow", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
+		const calls = 66
+		id := func(i int) string { return fmt.Sprintf("call_%d", i) }
+		args := func(i int) string { return fmt.Sprintf(`{"idx":%d}`, i) }
+		for i := range calls {
+			convertTerminalTextEvents(ctx, terminalToolItem(id(i), i, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded))
+		}
+		doneEvent := func(i int) *schemas.BifrostResponsesStreamResponse {
+			return terminalToolArgsEvent(id(i), i, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, args(i))
+		}
+		deltaEvent := func(i int) *schemas.BifrostResponsesStreamResponse {
+			return terminalToolArgsEvent(id(i), i, schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, args(i))
+		}
+
+		state := getOrCreateAnthropicToResponsesStreamState(ctx)
+		for _, i := range []int{1, 64, 65} {
+			if idx, ok := state.blockIndexByItem[reverseStreamItemKey(doneEvent(i))]; !ok || idx != i {
+				t.Fatalf("call %d block index = %d (open=%v), want %d", i, idx, ok, i)
+			}
+		}
+
+		if got := terminalToolInputJSON(convertTerminalTextEvents(ctx, deltaEvent(0), deltaEvent(64))); got != args(0)+args(64) {
+			t.Fatalf("streamed deltas = %q", got)
+		}
+		for _, tc := range []struct {
+			call int
+			want string
+		}{
+			{1, args(1)},
+			{65, args(65)},
+			{0, ""},
+			{64, ""},
+			{1, ""},
+			{65, ""},
+		} {
+			if got := terminalToolInputJSON(convertTerminalTextEvents(ctx, doneEvent(tc.call))); got != tc.want {
+				t.Fatalf("arguments.done for call %d emitted %q, want %q", tc.call, got, tc.want)
+			}
+		}
+
+		for i := range calls {
+			convertTerminalTextEvents(ctx, terminalToolItem(id(i), i, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemDone))
+		}
+		if state.emittedInputJSONMask != 0 || len(state.emittedInputJSONOverflow) != 0 {
+			t.Fatalf("progress leaked after close: mask=%#x overflow=%#v", state.emittedInputJSONMask, state.emittedInputJSONOverflow)
+		}
+	})
+
+	t.Run("websearch and passthrough guards", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(nil, time.Time{})
 		// WebSearch skips terminal arguments.done so output_item.done sanitization remains the single source.
 		wsAdded := terminalToolItem("ws_1", 70, schemas.ResponsesMessageTypeFunctionCall, schemas.ResponsesStreamResponseTypeOutputItemAdded)
 		wsAdded.Item.ResponsesToolMessage.Name = schemas.Ptr("WebSearch")
