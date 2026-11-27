@@ -29,3 +29,4 @@ export * from "./skillsApi";
 export * from "./virtualMcpsApi";
 export * from "./webhooksApi";
 export * from "./sbsMcpApi";
+export * from "./sbsModelsApi";

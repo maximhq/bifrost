@@ -735,7 +735,15 @@ func prependChatText(resp *schemas.BifrostChatResponse, prior []string) {
 // provider's configured MCP tools, and the gateway tool search when the request defers
 // tools on a provider with no tool search of its own (baseProvider and model are this
 // attempt's).
+// SBSContextKeySkipInjectedTools (SBS fork), when true, sends the request without the
+// provider's injected tools.
+const SBSContextKeySkipInjectedTools schemas.BifrostContextKey = "sbs-skip-injected-tools"
+
 func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, config *schemas.ProviderConfig, req *schemas.BifrostRequest, baseProvider schemas.ModelProvider, model string) *injectedToolSet {
+	// SBS fork: the Model Catalog test sends exactly one bare message.
+	if skip, _ := ctx.Value(SBSContextKeySkipInjectedTools).(bool); skip {
+		return nil
+	}
 	var set *injectedToolSet
 	if bifrost.MCPManager != nil {
 		set = resolveInjectedTools(ctx, bifrost.MCPManager, config, req.RequestType, bifrost.logger)

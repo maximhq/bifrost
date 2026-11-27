@@ -3300,6 +3300,8 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	oauth2ConsentHandler.RegisterRoutes(s.Router, middlewares...)
 	healthHandler.RegisterRoutes(s.Router, middlewares...)
 	providerHandler.RegisterRoutes(s.Router, middlewares...)
+	// SBS fork: Model Catalog "Test" button.
+	handlers.NewSBSModelTestHandler(s.Client).RegisterRoutes(s.Router, middlewares...)
 	handlers.NewGithubCopilotSignInHandler().RegisterRoutes(s.Router, middlewares...)
 	mcpHandler.RegisterRoutes(s.Router, middlewares...)
 	if virtualMCPHandler != nil {

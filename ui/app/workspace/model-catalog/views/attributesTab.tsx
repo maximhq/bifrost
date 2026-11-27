@@ -19,6 +19,7 @@ import AttributeSheet from "./attributeSheet";
 import OverriddenPrice from "./overriddenPrice";
 import { useTranslation } from "react-i18next";
 import { getLocale } from "@/lib/i18n";
+import ModelTestButton from "@/components/sbs/modelTestButton";
 
 // The filter spells "no provider filter" as a sentinel, since the control needs a value to
 // show for it. Module level so its identity is stable across renders.
@@ -170,7 +171,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 								<TableHead className="w-[108px] px-2 text-right font-medium">{t("modelCatalog.colCacheRead")}</TableHead>
 								<TableHead className="font-medium">{t("modelCatalog.colDescription")}</TableHead>
 								<TableHead className="w-[68px] font-medium">{t("modelCatalog.colOther")}</TableHead>
-								<TableHead className="w-[80px] px-1"></TableHead>
+								<TableHead className="w-[96px] px-1"></TableHead>
 							</TableRow>
 						</TableHeader>
 						<TableBody>
@@ -252,10 +253,13 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 												)}
 											</TableCell>
 											<TableCell className="px-1 py-3">
+												<div className="flex items-center justify-end gap-1">
+												{/* SBS fork: test the model end to end */}
+												<ModelTestButton provider={m.provider} model={m.name} testId={`model-catalog-test-${testKey}`} />
 												<Button
 													variant="ghost"
 													size="icon"
-													className="ml-6 h-7 w-7"
+													className="h-7 w-7"
 													disabled={!hasUpdateAccess}
 													onClick={() => setEditing(m)}
 													aria-label={t("modelCatalog.editAttributesFor", { name: m.name })}
@@ -263,6 +267,7 @@ export default function AttributesTab({ hasAccess }: AttributesTabProps) {
 												>
 													<Edit className="h-4 w-4" />
 												</Button>
+												</div>
 											</TableCell>
 										</TableRow>
 									);
