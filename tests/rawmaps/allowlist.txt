@@ -54,6 +54,9 @@ syncmap	core/providers/utils/tokencache	Cache.slots	core: OSS core cannot import
 syncmap	core/providers/vertex	VertexProvider.tokenSources	core: OSS core cannot import livestore
 atomicmaps	core/relay	Manager.endpoints	decided: compiled relay endpoints, a handle map
 syncmap	core/schemas	A2ARawCaptureManager.captures	core: OSS core cannot import livestore
+# Unguarded per-stream maps are not findings of the raw-map scanner.
+# inflight core/schemas ResponsesToChatStreamState.byItemID: one stream's tool calls, released with its post-hook closure.
+# inflight core/schemas ResponsesToChatStreamState.byOutputIndex: one stream's tool calls, released with its post-hook closure.
 lockedmap	core/schemas	BifrostContext.realtimeTurnKeys	inflight: request-scoped context values
 lockedmap	core/schemas	BifrostContext.trustedValues	inflight: request-scoped context values
 lockedmap	core/schemas	BifrostContext.userValues	inflight: request-scoped context values
