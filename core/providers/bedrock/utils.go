@@ -2287,7 +2287,7 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 				if detail.Data == nil || !isConverseBlob(*detail.Data) {
 					// Not a Converse blob: it cannot even deserialize, and Bedrock
 					// fails the whole turn with an empty SerializationException that
-					// no reasoning fail-soft recognises. Drop it instead (#9685).
+					// no reasoning fail-soft recognises. Drop it instead.
 					continue
 				}
 				if shape == schemas.BedrockReasoningShapeRedacted {

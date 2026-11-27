@@ -222,14 +222,13 @@ func TestConvertBifrostReasoningToBedrockReasoning(t *testing.T) {
 	}
 }
 
-// TestConvertBifrostReasoningToBedrockReasoningEncryptedContent keeps the original
-// test's intent -- encrypted replay data must survive translation into the Bedrock
-// signature field -- and corrects the shape it pinned.
+// TestConvertBifrostReasoningToBedrockReasoningEncryptedContent checks that
+// encrypted replay data survives translation into the Bedrock signature field with
+// the text present as an explicit empty string.
 //
-// It previously asserted Text was nil. That is the state Bedrock rejects: `text` is
-// omitempty, so a nil pointer means the key is absent from the serialised request,
-// and Converse answers "reasoningContent.reasoningText.text ... Member must not be
-// null". Preserving the signature was right; dropping the text was not.
+// `text` is omitempty: a nil pointer leaves the key out of the serialised request,
+// and Converse rejects that block with "reasoningContent.reasoningText.text ...
+// Member must not be null". The signature alone is not a complete block.
 func TestConvertBifrostReasoningToBedrockReasoningEncryptedContent(t *testing.T) {
 	encryptedContent := "EqQBCgIYAhIM...fixture"
 	message := &schemas.ResponsesMessage{
@@ -582,11 +581,10 @@ func TestChatReplayDropsForeignRedactedToken(t *testing.T) {
 	require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
 }
 
-// The Claude half of TestRedactedReasoningSurvivesTheReplayLoop. The response side
-// surfaces a Claude redacted-thinking block as an encrypted reasoning detail the same
-// way it does for Grok, but convertMessage replayed the blob only for redacted-shape
-// models, so a Claude turn that redacted its thinking reached Bedrock without it and
-// the drop was silent (#10177).
+// TestClaudeRedactedReasoningSurvivesTheReplayLoop is the Claude half of
+// TestRedactedReasoningSurvivesTheReplayLoop. The response side surfaces a Claude
+// redacted-thinking block as an encrypted reasoning detail the same way it does for
+// Grok, and replay has to carry that detail back for a text-shape model too.
 //
 // The blob cannot go back as reasoningContent.redactedContent: converseReasoningShape
 // documents that Anthropic answers that variant with a 400. The Responses converter
