@@ -795,3 +795,52 @@ func testSDKInProcessResults(t *testing.T) {
 		t.Fatalf("tools after reconnect = %s (before %s), want echo,error,image,slow,stops", after, before)
 	}
 }
+
+// A direct tool call returns only the tool message, so a Go SDK caller reads
+// the call's send-back cost from a capture it installs on the call's context.
+// Nothing is written for a caller without one, nor onto the shared context a
+// nil-context call runs on.
+func TestMCPSDKToolCostCapture(t *testing.T) {
+	a := newAlphaServer(t)
+	b := connectedAlpha(t, a, func(c *schemas.MCPClientConfig) { c.ToolPricing = map[string]float64{"echo_tool": 0.003} })
+	echo := func(ctx *schemas.BifrostContext) {
+		t.Helper()
+		if _, bErr := b.ExecuteChatMCPTool(ctx, &schemas.ChatAssistantMessageToolCall{
+			ID:       schemas.Ptr("c1"),
+			Type:     schemas.Ptr("function"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("alpha-echo_tool"), Arguments: `{"text":"priced"}`},
+		}); bErr != nil {
+			t.Fatalf("chat execute: %s", errorText(bErr))
+		}
+	}
+
+	off := newCtx()
+	offCapture := off.CaptureMCPToolCost()
+	echo(off)
+	if offCapture.Cost != nil {
+		t.Fatalf("cost = %+v with the setting off, want none", offCapture.Cost)
+	}
+
+	b.UpdateSendBackCost(true)
+	ctx := newCtx()
+	capture := ctx.CaptureMCPToolCost()
+	echo(ctx)
+	if capture.Cost == nil || capture.Cost.TotalCost != 0.003 || capture.Cost.AdditionalCostDetails == nil || capture.Cost.AdditionalCostDetails.MCPCost != 0.003 {
+		t.Fatalf("captured cost = %+v, want the tool's price 0.003 as mcp cost", capture.Cost)
+	}
+
+	responsesCtx := newCtx()
+	responsesCapture := responsesCtx.CaptureMCPToolCost()
+	if _, bErr := b.ExecuteResponsesMCPTool(responsesCtx, &schemas.ResponsesToolMessage{CallID: schemas.Ptr("r1"), Name: schemas.Ptr("alpha-echo_tool"), Arguments: schemas.Ptr(`{"text":"priced"}`)}); bErr != nil {
+		t.Fatalf("Responses execute: %s", errorText(bErr))
+	}
+	if responsesCapture.Cost == nil || responsesCapture.Cost.TotalCost != 0.003 {
+		t.Fatalf("captured Responses cost = %+v, want 0.003", responsesCapture.Cost)
+	}
+
+	echo(newCtx())
+	echo(nil)
+	if got := b.ctx.Value(schemas.BifrostContextKeyMCPToolCostCapture); got != nil {
+		t.Fatalf("a nil-context call left %v on the shared context", got)
+	}
+}

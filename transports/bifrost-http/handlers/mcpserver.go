@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -46,6 +47,12 @@ type MCPToolManager interface {
 	GetMCPServerInstructions(ctx context.Context) string
 	ExecuteChatMCPTool(ctx context.Context, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesMCPTool(ctx context.Context, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
+}
+
+// MCPToolCostReporter is implemented by an MCPToolManager that returns tool calls' send-back
+// cost. runTool sets up the cost capture only for a call it reports on; without it, no call does.
+type MCPToolCostReporter interface {
+	SendBackCostEnabled(ctx context.Context) bool
 }
 
 // MCPGatewayAdmitter decides whether a /mcp request may be served, and what it may reach. It runs
@@ -487,8 +494,9 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 		},
 	}
 
-	// Execute the tool via tool executor
+	// Execute the tool via tool executor.
 	ctx = withInputResumption(withCallerCapabilities(ctx), request.Params.MultiRoundTripParams)
+	ctx, costCapture := h.toolCostCapture(ctx)
 	toolMessage, err := h.toolManager.ExecuteChatMCPTool(ctx, &toolCall)
 	if err != nil {
 		logger.Debug("[mcp-server] tool handler error tool=%q error=%s", toolName, bifrost.GetErrorMessage(err))
@@ -500,11 +508,41 @@ func (h *MCPServerHandler) runTool(ctx context.Context, toolName string, declare
 	logger.Debug("[mcp-server] tool handler success tool=%q", toolName)
 
 	result := gatewayToolResult(toolMessage, declaresOutputSchema)
+	if costCapture != nil && costCapture.Cost != nil {
+		result.Meta = withBifrostCostMeta(result.Meta, costCapture.Cost)
+	}
 	if result.NeedsInput() {
 		// The caller's retry names this call, so its rounds share one id in the MCP logs.
 		result.RequestState = coremcp.WrapRoundTripState(coremcp.CallRoundTripID(ctx), result.RequestState)
 	}
 	return result
+}
+
+// toolCostCapture returns ctx carrying a capture for the call's send-back cost, found through the
+// child context the executor creates for the call, and the capture. A call that will carry no cost
+// gets ctx unchanged and a nil capture.
+func (h *MCPServerHandler) toolCostCapture(ctx context.Context) (context.Context, *schemas.MCPToolCostCapture) {
+	reporter, ok := h.toolManager.(MCPToolCostReporter)
+	if !ok || !reporter.SendBackCostEnabled(ctx) {
+		return ctx, nil
+	}
+	return schemas.WithMCPToolCostCapture(ctx)
+}
+
+// bifrostCostMetaKey names the send-back cost in a tools/call result's _meta. Headers cannot carry it:
+// an SSE answer has already sent them, so _meta is the one per-result channel.
+const bifrostCostMetaKey = "bifrost/cost"
+
+// withBifrostCostMeta returns a new _meta holding every field of meta plus the call's send-back cost.
+// gatewayToolResult's copy of an upstream result shares its _meta, so meta itself is never written.
+func withBifrostCostMeta(meta *mcp.Meta, cost *schemas.BifrostCost) *mcp.Meta {
+	out := &mcp.Meta{AdditionalFields: map[string]any{}}
+	if meta != nil {
+		out.ProgressToken = meta.ProgressToken
+		maps.Copy(out.AdditionalFields, meta.AdditionalFields)
+	}
+	out.AdditionalFields[bifrostCostMetaKey] = cost
+	return out
 }
 
 // gatewayTool is the MCP form of a Bifrost tool, as tools/list sends it.

@@ -98,6 +98,8 @@ func (m *MCPManager) executeToolWithHooks(
 		}
 	}
 
+	ctx, endCodeModeCall := m.codeModeCallContext(ctx, request)
+	defer endCodeModeCall()
 	resp, bErr := m.RunWithPluginPipeline(ctx, request, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// A plugin may have retargeted the request; connect runs only for the
 		// tool it was decided on, and only as the plugins were told it would.
@@ -328,6 +330,10 @@ func (m *MCPManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *sche
 		}
 	}
 
+	// A capture reused from an earlier call must not report that call's cost if this one fails.
+	if capture := toolCostCapture(ctx); capture != nil {
+		capture.Cost = nil
+	}
 	mcpRequest := getMCPRequest()
 	mcpRequest.RequestType = schemas.MCPRequestTypeChatToolCall
 	mcpRequest.ChatAssistantMessageToolCall = toolCall
@@ -344,6 +350,7 @@ func (m *MCPManager) ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *sche
 			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ChatCompletionRequest},
 		}
 	}
+	captureToolCost(ctx, result)
 	return result.ChatMessage, nil
 }
 
@@ -358,6 +365,10 @@ func (m *MCPManager) ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall 
 		}
 	}
 
+	// A capture reused from an earlier call must not report that call's cost if this one fails.
+	if capture := toolCostCapture(ctx); capture != nil {
+		capture.Cost = nil
+	}
 	mcpRequest := getMCPRequest()
 	mcpRequest.RequestType = schemas.MCPRequestTypeResponsesToolCall
 	mcpRequest.ResponsesToolMessage = toolCall
@@ -374,5 +385,6 @@ func (m *MCPManager) ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall 
 			ExtraFields:    schemas.BifrostErrorExtraFields{RequestType: schemas.ResponsesRequest},
 		}
 	}
+	captureToolCost(ctx, result)
 	return result.ResponsesMessage, nil
 }

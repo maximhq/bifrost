@@ -79,6 +79,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 	if req != nil {
 		mcpReqType = req.RequestType
 	}
+	// Read before the PreHooks, which may rewrite req in place (see startCodeModeCostSum).
+	codeModeCall := isExecuteToolCode(req)
 
 	// Set by startOpSpan only when the wire op runs (nil for short-circuits → deferred end
 	// is a no-op). startOpSpan threads the new span id onto ctx (no restore) so the op and
@@ -180,6 +182,9 @@ func (m *MCPManager) RunWithPluginPipeline(
 	// No pipeline configured → run the op directly under its own span, no hooks.
 	pipeline := m.GetPluginPipeline()
 	if pipeline == nil {
+		// Send back cost: executeToolCode collects its nested calls' costs while its code runs.
+		costSum, endCostSum := m.startCodeModeCostSum(ctx, codeModeCall, req)
+		defer endCostSum()
 		startOpSpan(req)
 		resp, opErr := op(req)
 		if opErr != nil {
@@ -194,7 +199,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 			}
 			return resp, bErr
 		}
-		return resp, nil
+		return m.withToolCost(ctx, mcpReqType, resp, costSum), nil
 	}
 	defer m.ReleasePluginPipeline(pipeline)
 
@@ -243,6 +248,10 @@ func (m *MCPManager) RunWithPluginPipeline(
 		return nil, bErr
 	}
 
+	// Decided on the request the PreHooks let through, which may have been retargeted.
+	costSum, endCostSum := m.startCodeModeCostSum(ctx, codeModeCall, preReq)
+	defer endCostSum()
+
 	// Op span created after the PreHooks so it nests under the last PreHook; PostHooks nest
 	// under it.
 	startOpSpan(preReq)
@@ -274,7 +283,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 	if finalErr != nil {
 		return finalResp, finalErr
 	}
-	return finalResp, nil
+	// Priced after the PostHooks, on a copy: plugins may still hold finalResp.
+	return m.withToolCost(ctx, mcpReqType, finalResp, costSum), nil
 }
 
 // MCPConnectOpFunc is the closure each Connect call site provides to

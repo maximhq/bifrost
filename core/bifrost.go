@@ -436,6 +436,8 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 					bifrost.releasePluginPipeline(pp)
 				}
 			}
+			// Tool executions follow the same send-back-cost setting as model requests.
+			mcpConfig.ResponseCostEnabled = bifrost.responseCostEnabled
 			// Create Starlark CodeMode for code execution
 			var codeModeConfig *mcp.CodeModeConfig
 			if mcpConfig.ToolManagerConfig != nil {
@@ -4839,6 +4841,7 @@ func (bifrost *Bifrost) lazyMCPConfig() schemas.MCPConfig {
 		InProcessServerFactory: bifrost.mcpInProcessServerFactory,
 		SharedDiscoveryStore:   bifrost.mcpSharedDiscoveryStore,
 		PerUserDiscoveryStore:  bifrost.mcpPerUserDiscoveryStore,
+		ResponseCostEnabled:    bifrost.responseCostEnabled,
 	}
 }
 
@@ -4925,6 +4928,8 @@ func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 // into the manager's CodeMode so that nested tool calls run through the plugin hooks.
 //
 // A factory registered with SetMCPInProcessServerFactory is forwarded to it.
+// The send-back-cost setting is not: a manager built here prices tool calls only
+// if its own MCPConfig.ResponseCostEnabled was set when it was created.
 //
 // Parameters:
 //   - manager: The MCP manager to set (must implement MCPManagerInterface)

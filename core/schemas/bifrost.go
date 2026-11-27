@@ -346,6 +346,7 @@ const (
 	BifrostContextKeyIntegrationType                     BifrostContextKey = "bifrost-integration-type"                         // integration used in gateway (e.g. openai, anthropic, bedrock, etc.)
 	BifrostContextKeyIsResponsesToChatCompletionFallback BifrostContextKey = "bifrost-is-responses-to-chat-completion-fallback" // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostMCPAgentOriginalRequestID                     BifrostContextKey = "bifrost-mcp-agent-original-request-id"            // string (to store the original request ID for MCP agent mode)
+	BifrostContextKeyMCPToolCostCapture                  BifrostContextKey = "bifrost-mcp-tool-cost-capture"                    // *MCPToolCostCapture (installed by a direct tool caller to receive the call's send-back cost)
 	BifrostContextKeyParentMCPRequestID                  BifrostContextKey = "bf-parent-mcp-request-id"                         // string (parent request ID for nested tool calls from executeCode)
 	BifrostContextKeyStructuredOutputToolName            BifrostContextKey = "bifrost-structured-output-tool-name"              // string (to store the name of the structured output tool (set by bifrost))
 	BifrostContextKeyStructuredOutputGrammarRetry        BifrostContextKey = "bifrost-structured-output-grammar-retry"          // string (StructuredOutputGrammarRejected set by a provider, StructuredOutputForceTool set by bifrost)
@@ -2181,6 +2182,17 @@ type BifrostMCPResponse struct {
 	ExtraFields BifrostMCPResponseExtraFields
 }
 
+// WithCost returns a copy of r with ExtraFields.Cost set to cost. Post-hook
+// plugins may still hold r, so r itself is never written.
+func (r *BifrostMCPResponse) WithCost(cost *BifrostCost) *BifrostMCPResponse {
+	if r == nil {
+		return nil
+	}
+	out := *r
+	out.ExtraFields.Cost = cost
+	return &out
+}
+
 // Latency for envelope MCP responses (ping, list_tools, execute_tool) is reported via
 // BifrostMCPResponse.ExtraFields.Latency (milliseconds). Connect carries its own
 // ExtraFields on BifrostMCPConnectResponse below — see typed Connect path.
@@ -2413,8 +2425,9 @@ type ResolvedKeyAlias struct {
 type BifrostMCPResponseExtraFields struct {
 	MCPRequestType MCPRequestType `json:"mcp_request_type"` // request type this response corresponds to — lets PostMCPHook discriminate ping/list_tools from tool execute on success too
 	ClientName     string         `json:"client_name"`
-	ToolName       string         `json:"tool_name"` // empty for all but MCPRequestTypeExecuteTool requests for backwards compat, will be a pointer from next major bump.
-	Latency        int64          `json:"latency"`   // in milliseconds
+	ToolName       string         `json:"tool_name"`      // empty for all but MCPRequestTypeExecuteTool requests for backwards compat, will be a pointer from next major bump.
+	Latency        int64          `json:"latency"`        // in milliseconds
+	Cost           *BifrostCost   `json:"cost,omitempty"` // tool_pricing cost of a successful execution, set only when send-back-cost is on
 }
 
 // BifrostCacheMetadata represents cache execution metadata.

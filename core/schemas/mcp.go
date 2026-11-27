@@ -246,6 +246,31 @@ type MCPCredentialStore interface {
 	AdminConnectionHeaders(ctx context.Context, config *MCPClientConfig) (http.Header, error)
 }
 
+// MCPToolCostCapture receives the send-back cost of one direct tool call
+// (ExecuteChatMCPTool / ExecuteResponsesMCPTool), whose public result is only
+// the tool message. The caller installs it on the call's context and reads Cost
+// after the call returns; Cost stays nil when nothing was billable or the
+// setting is off. A capture serves one call: install a new one per call.
+type MCPToolCostCapture struct {
+	Cost *BifrostCost
+}
+
+// CaptureMCPToolCost installs a new capture on bc for the next direct tool call
+// made with it, and returns that capture.
+func (bc *BifrostContext) CaptureMCPToolCost() *MCPToolCostCapture {
+	capture := &MCPToolCostCapture{}
+	bc.SetValue(BifrostContextKeyMCPToolCostCapture, capture)
+	return capture
+}
+
+// WithMCPToolCostCapture is CaptureMCPToolCost for a plain context, for callers
+// whose BifrostContext is created further down (it is found through the
+// context's parent chain).
+func WithMCPToolCostCapture(ctx context.Context) (context.Context, *MCPToolCostCapture) {
+	capture := &MCPToolCostCapture{}
+	return context.WithValue(ctx, BifrostContextKeyMCPToolCostCapture, capture), capture
+}
+
 // MCPConfig represents the configuration for MCP integration in Bifrost.
 // It enables tool auto-discovery and execution from local and external MCP servers.
 // The MCP clients themselves come from the Account (GetConfiguredMCPClients and
@@ -285,6 +310,10 @@ type MCPConfig struct {
 	// The transport registers framework/openapimcp.Factory here; Go SDK users opt in
 	// the same way. Nil means openapi clients fail to connect with a clear error.
 	InProcessServerFactory InProcessServerFactory `json:"-"`
+
+	// ResponseCostEnabled reports whether a tool execution on ctx should carry its
+	// send-back cost. Core sets it to its own send-back-cost check; nil means off.
+	ResponseCostEnabled func(ctx *BifrostContext) bool `json:"-"`
 
 	// SharedDiscoveryStore is where the manager keeps the discoveries of
 	// clients without per_user_discovery, one per client served to every
