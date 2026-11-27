@@ -58,6 +58,36 @@ func TestParseOpenAIError_PreservesProviderMessageWhenPresent(t *testing.T) {
 	}
 }
 
+func TestParseOpenAIError_PreservesFastAPIDetailMessage(t *testing.T) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusBadRequest)
+	resp.SetBodyString(`{"detail":"Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"The input (1101004 tokens) is longer than the model's context length (1048576 tokens).\",\"type\":\"BadRequestError\",\"param\":null,\"code\":400}"}`)
+
+	errResp := ParseOpenAIError(&resp)
+	if errResp == nil || errResp.Error == nil {
+		t.Fatal("expected non-nil error response")
+	}
+	expected := `Error: 400 - Bad Request - {"object":"error","message":"The input (1101004 tokens) is longer than the model's context length (1048576 tokens).","type":"BadRequestError","param":null,"code":400}`
+	if errResp.Error.Message != expected {
+		t.Fatalf("expected detail message %q, got %q", expected, errResp.Error.Message)
+	}
+}
+
+func TestParseOpenAIError_PreservesFastAPIDetailWhenNestedMessageIsWhitespace(t *testing.T) {
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusBadRequest)
+	resp.SetBodyString(`{"detail":"request too large","error":{"message":"   "}}`)
+
+	errResp := ParseOpenAIError(&resp)
+	if errResp == nil || errResp.Error == nil {
+		t.Fatal("expected non-nil error response")
+	}
+	expected := "request too large"
+	if errResp.Error.Message != expected {
+		t.Fatalf("expected detail message %q, got %q", expected, errResp.Error.Message)
+	}
+}
+
 func TestParseOpenAIError_FallbackMessageWhenBodyIsEmpty(t *testing.T) {
 	var resp fasthttp.Response
 	resp.SetStatusCode(fasthttp.StatusBadRequest)

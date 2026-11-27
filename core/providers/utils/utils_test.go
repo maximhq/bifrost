@@ -3429,6 +3429,21 @@ func TestHandleProviderAPIErrorRootMessage(t *testing.T) {
 			body:            `{"message":"   "}`,
 			expectedMessage: "",
 		},
+		{
+			name:            "FastAPI flat error detail shape",
+			body:            `{"detail":"Error: 400 - Bad Request - {\"object\":\"error\",\"message\":\"The input (1101004 tokens) is longer than the model's context length (1048576 tokens).\",\"type\":\"BadRequestError\",\"param\":null,\"code\":400}"}`,
+			expectedMessage: `Error: 400 - Bad Request - {"object":"error","message":"The input (1101004 tokens) is longer than the model's context length (1048576 tokens).","type":"BadRequestError","param":null,"code":400}`,
+		},
+		{
+			name:            "blank root detail is ignored",
+			body:            `{"detail":"   "}`,
+			expectedMessage: "",
+		},
+		{
+			name:            "message takes precedence over detail when both are present",
+			body:            `{"message":"primary error","detail":"secondary error"}`,
+			expectedMessage: "primary error",
+		},
 	}
 
 	for _, tt := range tests {
