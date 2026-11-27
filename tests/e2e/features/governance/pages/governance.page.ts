@@ -1,7 +1,7 @@
 import { Locator, Page } from '@playwright/test'
 import { expect } from '../../../core/fixtures/base.fixture'
 import { BasePage } from '../../../core/pages/base.page'
-import { fillSelect, waitForNetworkIdle } from '../../../core/utils/test-helpers'
+import { fillRequestLimitLines, fillSelect, type RequestLimitLineInput, waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
 export interface TeamConfig {
   name: string
@@ -17,11 +17,11 @@ export interface TeamConfig {
   rateLimit?: {
     tokenMaxLimit?: number
     tokenResetDuration?: string
-    requestMaxLimit?: number
-    requestResetDuration?: string
   }
   /** The team's content-logging choice; omit to leave the sheet's current choice. */
   contentLogging?: ContentLoggingChoice
+  /** Request limit lines, filled from line 0 (an existing line is overwritten in place). */
+  requestLimits?: RequestLimitLineInput[]
 }
 
 export type ContentLoggingChoice = 'inherit' | 'disabled' | 'enabled'
@@ -32,8 +32,6 @@ export interface CustomerConfig {
   rateLimit?: {
     tokenMaxLimit?: number
     tokenResetDuration?: string
-    requestMaxLimit?: number
-    requestResetDuration?: string
   }
 }
 
@@ -129,6 +127,9 @@ export class GovernancePage extends BasePage {
       await this.teamDialog.getByTestId('team-add-budget-btn').click()
       await this.teamDialog.getByTestId('budget-max-limit-input-0').fill(String(config.budget.maxLimit))
     }
+    if (config.requestLimits) {
+      await fillRequestLimitLines(this.teamDialog, 'team-request-limit-lines', config.requestLimits)
+    }
 
     if (config.contentLogging && config.contentLogging !== 'inherit') {
       await this.setTeamContentLogging(config.contentLogging)
@@ -222,6 +223,9 @@ export class GovernancePage extends BasePage {
         await this.teamDialog.getByTestId('team-add-budget-btn').click()
       }
       await budgetInput.fill(String(updates.budget.maxLimit))
+    }
+    if (updates.requestLimits) {
+      await fillRequestLimitLines(this.teamDialog, 'team-request-limit-lines', updates.requestLimits)
     }
 
     if (updates.contentLogging) {

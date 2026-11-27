@@ -396,14 +396,15 @@ test.describe("Provider Settings", () => {
           providerSettingsPage.page.getByText("Rate Limiting Configuration"),
         ).toBeVisible();
 
-        // Should see token and request limit inputs
+        // Should see the token limit input (model requests only) and the request limit lines
         const tokenInput = providerSettingsPage.page.locator("#providerTokenMaxLimit");
-        const requestInput = providerSettingsPage.page.locator(
-          "#providerRequestMaxLimit",
-        );
-
         await expect(tokenInput).toBeVisible();
-        await expect(requestInput).toBeVisible();
+        await expect(
+          providerSettingsPage.page.getByTestId("provider-governance-token-limit-info"),
+        ).toBeVisible();
+        await expect(
+          providerSettingsPage.page.getByTestId("provider-governance-request-limits-add-btn"),
+        ).toBeVisible();
       }
     });
 
@@ -443,17 +444,60 @@ test.describe("Provider Settings", () => {
         await tokenInput.fill("");
         await tokenInput.pressSequentially("100000");
 
-        // Set request limit
-        const requestInput = providerSettingsPage.page.locator(
-          "#providerRequestMaxLimit",
+        // Set a shared request limit line; the provider tier offers no scope
+        await providerSettingsPage.setGovernanceConfig({ requestLimit: 1000 });
+        const requestInput = providerSettingsPage.page.getByTestId(
+          "provider-governance-request-limits-amount-0",
         );
-        await requestInput.click();
-        await requestInput.fill("");
-        await requestInput.pressSequentially("1000");
+        await expect(
+          providerSettingsPage.page.getByTestId("provider-governance-request-limits-scope-0"),
+        ).toHaveCount(0);
 
         // Verify values
         expect(await tokenInput.inputValue()).toBe("100000");
         expect(await requestInput.inputValue()).toBe("1000");
+      }
+    });
+
+    test("keeps the scopes of request limits through an unrelated edit", async ({ providersPage, providerSettingsPage }) => {
+      const page = providerSettingsPage.page;
+      if (!(await providerSettingsPage.isGovernanceTabVisible())) return;
+      type Rule = { request_max_limit: number; request_reset_duration: string; scope?: string };
+      const openaiGovernance = async () => {
+        const res = await page.request.get("/api/governance/providers");
+        expect(res.status(), await res.text()).toBe(200);
+        const providers = ((await res.json()).providers ?? []) as Array<{ provider: string; request_limits?: Rule[] }>;
+        return providers.find((p) => p.provider === "openai");
+      };
+      test.skip(!!(await openaiGovernance()), "openai already has provider governance; this test would replace it");
+      // A Shared and a Model limit may share a reset period on a provider tier; the form offers no scope,
+      // so it must carry each one through as stored.
+      const seeded = await page.request.put("/api/governance/providers/openai", {
+        data: {
+          request_limits: [
+            { max_limit: 10, reset_duration: "1h" },
+            { max_limit: 20, reset_duration: "1h", scope: "model" },
+          ],
+        },
+      });
+      expect(seeded.status(), await seeded.text()).toBe(200);
+      try {
+        await providersPage.goto();
+        await providersPage.selectProvider("openai");
+        await providerSettingsPage.selectConfigTab("governance");
+        await expect(page.getByTestId("provider-governance-request-limits-amount-1")).toBeVisible();
+        const tokenInput = page.locator("#providerTokenMaxLimit");
+        await tokenInput.click();
+        await tokenInput.fill("");
+        await tokenInput.pressSequentially("5000");
+        await providerSettingsPage.getConfigSaveBtn("governance").click();
+        await providerSettingsPage.waitForSuccessToast();
+
+        const stored = await openaiGovernance();
+        const rules = (stored?.request_limits ?? []).map((r) => `${r.request_max_limit}/${r.request_reset_duration}/${r.scope ?? "shared"}`).sort();
+        expect(rules).toEqual(["10/1h/shared", "20/1h/model"]);
+      } finally {
+        await page.request.delete("/api/governance/providers/openai");
       }
     });
   });

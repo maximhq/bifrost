@@ -1,7 +1,9 @@
 import { Locator, Page, expect } from "@playwright/test";
 import { BasePage } from "../../../core/pages/base.page";
 import {
+  fillRequestLimitLines,
   fillSelect,
+  type RequestLimitLineInput,
   waitForNetworkIdle,
 } from "../../../core/utils/test-helpers";
 
@@ -80,6 +82,8 @@ export interface VirtualKeyConfig {
   providerConfigs?: ProviderConfig[];
   budgets?: BudgetConfig[];
   rateLimit?: RateLimitConfig;
+  /** Request limit lines of the key itself, filled after rateLimit's (line 0 when it sets one). */
+  requestLimits?: RequestLimitLineInput[];
   entityType?: "none" | "team" | "customer";
   teamId?: string;
   customerId?: string;
@@ -317,6 +321,7 @@ export class VirtualKeysPage extends BasePage {
     if (config.rateLimit) {
       await this.setRateLimit(config.rateLimit);
     }
+    await this.setRequestLimits(config.rateLimit, config.requestLimits);
 
     // Set entity assignment if specified
     if (config.entityType && config.entityType !== "none") {
@@ -451,10 +456,20 @@ export class VirtualKeysPage extends BasePage {
       await tokenInput.fill(String(rateLimit.tokenMaxLimit));
     }
 
-    // Set request limits (fill() clears and sets atomically)
-    if (rateLimit.requestMaxLimit !== undefined) {
-      const requestInput = this.page.locator("#requestMaxLimit");
-      await requestInput.fill(String(rateLimit.requestMaxLimit));
+  }
+
+  /**
+   * Fill the key's request limit lines: rateLimit's request limit (as line 0) followed by requestLimits.
+   */
+  private async setRequestLimits(rateLimit?: RateLimitConfig, requestLimits: RequestLimitLineInput[] = []): Promise<void> {
+    const lines = [
+      ...(rateLimit?.requestMaxLimit !== undefined
+        ? [{ maxLimit: rateLimit.requestMaxLimit, resetDuration: rateLimit.requestResetDuration }]
+        : []),
+      ...requestLimits,
+    ];
+    if (lines.length > 0) {
+      await fillRequestLimitLines(this.page, "vk-request-limit-lines", lines);
     }
   }
 
@@ -551,6 +566,7 @@ export class VirtualKeysPage extends BasePage {
     if (updates.rateLimit) {
       await this.setRateLimit(updates.rateLimit);
     }
+    await this.setRequestLimits(updates.rateLimit, updates.requestLimits);
 
     await this.setExpiry(updates.expiryPreset, updates.deleteAfterExpire);
 
