@@ -1,10 +1,16 @@
 import { FilterSidebarTrigger } from "@/components/filters/filterSidebarTrigger";
-import { CheckboxFilterItem, FilterSection, SearchableCheckboxList, useAutoFocusOnOpen } from "@/components/filters/primitives";
+import {
+	CheckboxFilterItem,
+	EntityFilter,
+	FilterSection,
+	SearchableCheckboxList,
+	useAutoFocusOnOpen,
+} from "@/components/filters/primitives";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { useIsMobile } from "@/hooks/use-mobile";
-import { Statuses } from "@/lib/constants/logs";
+import { MCPStatuses } from "@/lib/constants/logs";
 import { useGetAgentsQuery, useGetMCPLogsFilterDataQuery } from "@/lib/store";
 import type { MCPToolLogFilters } from "@/lib/types/logs";
 import { PanelLeftClose, RotateCcw, Search } from "lucide-react";
@@ -121,33 +127,86 @@ export function MCPFilterSidebar({ filters, onFiltersChange }: MCPFilterSidebarP
 						placeholder={tObs("filters.exactAgentCorrelationID")}
 						testId="mcp-agent-correlation-id-filter"
 					/>
+					<ExactIDFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="round_trip_id"
+						title={tObs("filters.roundTripID")}
+						placeholder={tObs("filters.exactRoundTripID")}
+						testId="mcp-round-trip-id-filter"
+					/>
 					<AppFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<VirtualKeysFilter filters={filters} onFiltersChange={onFiltersChange} />
-					{(
-						[
-							["user_ids", "filters.users"],
-							["team_ids", "filters.teams"],
-							["customer_ids", "filters.customers"],
-							["business_unit_ids", "filters.businessUnits"],
-							["project_ids", "filters.projects"],
-							["device_ids", "filters.devices"],
-						] as const
-					).map(([key, labelKey]) =>
-						filters[key]?.length ? (
-							<FilterSection key={key} title={t(labelKey)} defaultOpen>
-								<Button
-									variant="ghost"
-									size="sm"
-									className="w-full justify-between"
-									data-testid={`mcp-clear-${key}`}
-									onClick={() => onFiltersChange({ ...filters, [key]: [] })}
-								>
-									<span>{t("filters.selectedCount", { count: filters[key]!.length })}</span>
-									<RotateCcw className="size-3" />
-								</Button>
-							</FilterSection>
-						) : null,
-					)}
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="user_ids"
+						dimension="users"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.users")}
+						placeholder={tObs("filters.searchOrAddAUser")}
+						testIdPrefix="mcp-user-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="team_ids"
+						dimension="teams"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.teams")}
+						placeholder={tObs("filters.searchOrAddATeam")}
+						testIdPrefix="mcp-teams-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="customer_ids"
+						dimension="customers"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.customers")}
+						placeholder={tObs("filters.searchOrAddACustomer")}
+						testIdPrefix="mcp-customers-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="business_unit_ids"
+						dimension="business_units"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.businessUnits")}
+						placeholder={tObs("filters.searchOrAddABusinessUnit")}
+						testIdPrefix="mcp-business-units-filter"
+						allowCustom
+					/>
+					<EntityFilter
+						filters={filters}
+						onFiltersChange={onFiltersChange}
+						filterKey="project_ids"
+						dimension="projects"
+						useFilterData={useGetMCPLogsFilterDataQuery}
+						title={t("filters.projects")}
+						placeholder={tObs("filters.searchOrAddAProject")}
+						testIdPrefix="mcp-projects-filter"
+						allowCustom
+					/>
+					{/* Devices have no filter options yet, so a device filter set from a log's link only shows how many are set. */}
+					{filters.device_ids?.length ? (
+						<FilterSection title={t("filters.devices")} defaultOpen>
+							<Button
+								variant="ghost"
+								size="sm"
+								className="w-full justify-between"
+								data-testid="mcp-clear-device_ids"
+								onClick={() => onFiltersChange({ ...filters, device_ids: [] })}
+							>
+								<span>{t("filters.selectedCount", { count: filters.device_ids.length })}</span>
+								<RotateCcw className="size-3" />
+							</Button>
+						</FilterSection>
+					) : null}
 				</div>
 			</ScrollArea>
 		</div>
@@ -197,7 +256,7 @@ function AgentsFilter({ filters, onFiltersChange }: FilterComponentProps) {
 }
 
 interface ExactIDFilterProps extends FilterComponentProps {
-	filterKey: "session_id" | "agent_correlation_id";
+	filterKey: "session_id" | "agent_correlation_id" | "round_trip_id";
 	title: string;
 	placeholder: string;
 	testId: string;
@@ -227,15 +286,17 @@ function ExactIDFilter({ filters, onFiltersChange, filterKey, title, placeholder
 
 function StatusFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const { t } = useTranslation("governance");
+	const { t: tObs } = useTranslation("observability");
 	const hasActive = (filters.status || []).length > 0;
 
 	return (
 		<FilterSection title={t("filters.status")} defaultOpen={defaultOpen || hasActive}>
-			{[...Statuses, "unknown"].map((status) => (
+			{[...MCPStatuses, "unknown"].map((status) => (
 				<CheckboxFilterItem
 					key={status}
 					labelClassName="capitalize"
-					label={status}
+					label={tObs(`logs.statuses.${status}`, { defaultValue: status })}
+					testId={`mcp-status-filter-${status}`}
 					checked={(filters.status || []).includes(status)}
 					onCheckedChange={() => {
 						const current = filters.status || [];

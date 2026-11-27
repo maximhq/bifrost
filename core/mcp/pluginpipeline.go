@@ -170,6 +170,13 @@ func (m *MCPManager) RunWithPluginPipeline(
 		}
 	}()
 
+	// Attribution for the errors and short-circuit responses below, so PostHooks and observers
+	// see ClientName/ToolName; the PreHooks may retarget it.
+	var clientName, toolName string
+	if req != nil {
+		clientName, toolName = req.ClientName, req.GetToolName()
+	}
+
 	// No pipeline configured → run the op directly under its own span, no hooks.
 	pipeline := m.GetPluginPipeline()
 	if pipeline == nil {
@@ -179,8 +186,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 			bErr := &schemas.BifrostError{
 				IsBifrostError: false,
 				Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
-				ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 			}
+			bErr.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
 			var authRequiredErr *schemas.MCPAuthRequiredError
 			if errors.As(opErr, &authRequiredErr) {
 				bErr.ExtraFields.MCPAuthRequired = authRequiredErr
@@ -193,18 +200,11 @@ func (m *MCPManager) RunWithPluginPipeline(
 
 	// PreHooks. preReq is the (possibly mutated) request for the op. Their spans chain under
 	// the /mcp HTTP span — no op span exists yet.
+	ctx.SetValue(schemas.BifrostContextKeyMCPRequestStartTime, time.Now())
 	preReq, shortCircuit, preCount := pipeline.RunMCPPreHooks(ctx, req)
 
-	// Pull attribution from the request so short-circuit responses still carry
-	// ClientName/ToolName when PostHooks or observers consume them.
-	clientName := ""
-	toolName := ""
 	if preReq != nil {
-		clientName = preReq.ClientName
-		toolName = preReq.GetToolName()
-	} else if req != nil {
-		clientName = req.ClientName
-		toolName = req.GetToolName()
+		clientName, toolName = preReq.ClientName, preReq.GetToolName()
 	}
 
 	if shortCircuit != nil {
@@ -220,9 +220,7 @@ func (m *MCPManager) RunWithPluginPipeline(
 		}
 		// Short-circuit with error — still run PostHooks (they may recover).
 		if shortCircuit.Error != nil {
-			if shortCircuit.Error.ExtraFields.MCPRequestType == "" {
-				shortCircuit.Error.ExtraFields.MCPRequestType = mcpReqType
-			}
+			shortCircuit.Error.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
 			finalResp, finalErr := pipeline.RunMCPPostHooks(ctx, nil, shortCircuit.Error, preCount)
 			drainMCPPluginLogs(ctx)
 			if finalErr != nil {
@@ -237,11 +235,12 @@ func (m *MCPManager) RunWithPluginPipeline(
 	}
 
 	if preReq == nil {
-		return nil, &schemas.BifrostError{
+		bErr := &schemas.BifrostError{
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: "MCP request after plugin hooks cannot be nil"},
-			ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 		}
+		bErr.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
+		return nil, bErr
 	}
 
 	// Op span created after the PreHooks so it nests under the last PreHook; PostHooks nest
@@ -261,8 +260,8 @@ func (m *MCPManager) RunWithPluginPipeline(
 		bErr = &schemas.BifrostError{
 			IsBifrostError: false,
 			Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
-			ExtraFields:    schemas.BifrostErrorExtraFields{MCPRequestType: mcpReqType},
 		}
+		bErr.PopulateMCPExtraFields(mcpReqType, clientName, toolName)
 		var authRequiredErr *schemas.MCPAuthRequiredError
 		if errors.As(opErr, &authRequiredErr) {
 			bErr.ExtraFields.MCPAuthRequired = authRequiredErr
@@ -546,15 +545,16 @@ func (m *MCPManager) connectionTypeForClientName(name string) schemas.MCPConnect
 	if name == "" {
 		return ""
 	}
+	config := m.configByName(name)
+	if config == nil {
+		return ""
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for _, state := range m.clientMap {
-		// Match on ExecutionConfig.Name, as GetClientByName does.
-		if state != nil && state.ExecutionConfig != nil && state.ExecutionConfig.Name == name {
-			return state.ExecutionConfig.ConnectionType
-		}
+	if _, ok := m.clientMap[config.ID]; !ok {
+		return ""
 	}
-	return ""
+	return config.ConnectionType
 }
 
 // mcpErrorType classifies a failed MCP op into a low-cardinality error.type for the

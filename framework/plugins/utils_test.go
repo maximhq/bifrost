@@ -31,6 +31,7 @@ func newPlainClient() *http.Client {
 }
 
 func TestDownloadPlugin_DirectDownload(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fakePluginBytes))
@@ -47,6 +48,7 @@ func TestDownloadPlugin_DirectDownload(t *testing.T) {
 }
 
 func TestDownloadPlugin_FollowsRedirect(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	// Final destination
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -70,6 +72,7 @@ func TestDownloadPlugin_FollowsRedirect(t *testing.T) {
 }
 
 func TestDownloadPlugin_TooManyRedirects(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	// Server that always redirects to itself
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,6 +86,7 @@ func TestDownloadPlugin_TooManyRedirects(t *testing.T) {
 }
 
 func TestDownloadPlugin_NonOKStatus(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -94,6 +98,7 @@ func TestDownloadPlugin_NonOKStatus(t *testing.T) {
 }
 
 func TestDownloadPlugin_FileExtensionPreserved(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fakePluginBytes))
@@ -111,6 +116,7 @@ func TestDownloadPlugin_FileExtensionPreserved(t *testing.T) {
 // refuses a plugin URL pointing at a loopback address, since that's exactly the class of
 // internal/metadata-endpoint target this guard exists to block.
 func TestDownloadPlugin_BlocksSSRFToLoopback(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fakePluginBytes))
@@ -125,6 +131,7 @@ func TestDownloadPlugin_BlocksSSRFToLoopback(t *testing.T) {
 // TestDownloadPlugin_RejectsNonHTTPScheme verifies non-http(s) schemes are rejected
 // before any network call is made.
 func TestDownloadPlugin_RejectsNonHTTPScheme(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	_, err := DownloadPlugin("file:///etc/passwd", ".so", NewPluginDownloadClient(nil))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported plugin URL scheme")
@@ -133,6 +140,7 @@ func TestDownloadPlugin_RejectsNonHTTPScheme(t *testing.T) {
 // TestDownloadPlugin_AllowlistPermitsLoopbackWhenHostAllowlisted verifies that a plugin
 // download to a private/loopback address succeeds once that exact host is allowlisted.
 func TestDownloadPlugin_AllowlistPermitsLoopbackWhenHostAllowlisted(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fakePluginBytes))
@@ -157,6 +165,7 @@ func TestDownloadPlugin_AllowlistPermitsLoopbackWhenHostAllowlisted(t *testing.T
 // host-specific - allowlisting a different private address does not open up all private
 // targets.
 func TestDownloadPlugin_AllowlistDoesNotPermitDifferentPrivateHost(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(fakePluginBytes))
@@ -176,6 +185,7 @@ func TestDownloadPlugin_AllowlistDoesNotPermitDifferentPrivateHost(t *testing.T)
 // proxy, an allowlisted private host too, and a non-allowlisted private host is refused
 // before anything reaches the proxy.
 func TestProxiedPluginDownloadClientHonoursGlobalProxy(t *testing.T) {
+	t.Setenv(PluginURLAllowlistEnv, "*")
 	set := proxytest.NewSet(t)
 	factory := network.NewHTTPClientFactory(&network.GlobalProxyConfig{
 		Enabled:      true,

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,9 +20,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestIsEnableable pins the guard that decides whether EnableClient will act
-// on an entry: a Disabled state, or a config that still says disabled while
-// the runtime state has moved on, so the two can reconverge.
+// TestIsEnableable pins the guard that decides whether an update that enables a
+// client acts on its entry: a Disabled state, and nothing else. The entry keeps
+// no configuration of its own to disagree with its state: the record it was
+// dialed from is never consulted, and a record that says disabled for a client
+// whose state has moved on is applied by UpdateClient as a disable.
 func TestIsEnableable(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -47,9 +50,11 @@ func TestIsEnableable(t *testing.T) {
 		},
 		{
 			// The DB row was rolled back to disabled while the runtime moved
-			// on — enabling must remain possible so the two can reconverge.
+			// on. The two reconverge through UpdateClient, which disables a
+			// client whose record says disabled; the dialed record's flag is
+			// not read here.
 			name:  "unstable with config still disabled",
-			state: schemas.MCPConnectionStateUnstable, cfgDisabled: true, want: true,
+			state: schemas.MCPConnectionStateUnstable, cfgDisabled: true, want: false,
 		},
 		{
 			name:  "healthy client is not enableable",
@@ -77,9 +82,9 @@ func TestIsEnableable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cs := &schemas.MCPClientState{State: tt.state}
+			cs := &clientConn{State: tt.state}
 			if !tt.nilConfig {
-				cs.ExecutionConfig = &schemas.MCPClientConfig{Disabled: tt.cfgDisabled}
+				cs.dialed = &schemas.MCPClientConfig{Disabled: tt.cfgDisabled}
 			}
 			if got := isEnableable(cs); got != tt.want {
 				t.Errorf("isEnableable(state=%q, cfgDisabled=%v, nilConfig=%v) = %v, want %v",
@@ -90,57 +95,55 @@ func TestIsEnableable(t *testing.T) {
 }
 
 // TestEnableClient_NilExecutionConfig_ReturnsErrorNotPanic pins the guard for
-// an entry that is Disabled by state but carries no ExecutionConfig.
-// isEnableable admits it on the state clause alone (deliberately — see the
-// nil-config cases above), so EnableClient is the layer that has to notice the
-// missing config: without a check it dereferences the nil pointer to flip
-// Disabled and takes the whole process down on what should be a per-client
-// error.
+// an entry that is Disabled by state but whose client has no record in the
+// account. isEnableable admits it on the state clause alone (deliberately, see
+// the nil-config cases above), so the update is the layer that has to notice
+// the missing record: without a check it dereferences the nil pointer and
+// takes the whole process down on what should be a per-client error.
 func TestEnableClient_NilExecutionConfig_ReturnsErrorNotPanic(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
 
 	m.mu.Lock()
-	m.clientMap["client-nil-config"] = &schemas.MCPClientState{
+	m.clientMap["client-nil-config"] = &clientConn{
 		Name:  "client-nil-config",
 		State: schemas.MCPConnectionStateDisabled,
 	}
 	m.mu.Unlock()
 
-	err := m.EnableClient("client-nil-config")
-	require.Error(t, err, "an entry with no ExecutionConfig must be rejected, not dereferenced")
-	assert.Contains(t, err.Error(), "execution config")
+	err := m.UpdateClient("client-nil-config")
+	require.Error(t, err, "an entry with no record must be rejected, not dereferenced")
+	assert.Contains(t, err.Error(), "no configuration in the account")
 
 	m.mu.RLock()
 	state := *m.clientMap["client-nil-config"]
 	m.mu.RUnlock()
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, state.State, "a rejected enable must leave the entry untouched")
-	assert.Nil(t, state.ExecutionConfig)
+	assert.Nil(t, state.dialed)
 }
 
 // TestEnableClient_ConnectFailure_StaysUnstableAndItsCheckerRetries drives the
 // real enable path with a dial that fails and pins what the failure branch
 // leaves behind: the ErrMCPEnableConnectFailed sentinel callers match on to
-// keep their persisted disabled=false, the un-disabled ExecutionConfig, an
-// Unstable state carrying the failure, and a checker whose tick dials again.
+// keep their persisted disabled=false, an entry built from the enabled record,
+// an Unstable state carrying the failure, and a checker whose tick dials again.
 // The client used to be parked back at Disabled, where its checker stopped
 // instead of dialling, so only a manual reconnect could bring it back up.
 func TestEnableClient_ConnectFailure_StaysUnstableAndItsCheckerRetries(t *testing.T) {
 	cred := &countingFailureCredStore{}
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, cred, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), cred, nil, nil)
 	defer m.checkerManager.StopAll()
 
 	config := newSharedOAuthClientConfig("client-enable-dial-fails")
+	config.Name = "client_enable_dial_fails" // UpdateClient refuses a hyphenated name
 	config.Disabled = true
 
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateDisabled,
-	}
-	m.mu.Unlock()
+	})
 
-	err := m.EnableClient(config.ID)
+	err := editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Disabled = false })
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrMCPEnableConnectFailed),
 		"callers key off this sentinel to keep the persisted disabled=false; got: %v", err)
@@ -149,7 +152,7 @@ func TestEnableClient_ConnectFailure_StaysUnstableAndItsCheckerRetries(t *testin
 	state := *m.clientMap[config.ID]
 	m.mu.RUnlock()
 
-	assert.False(t, state.ExecutionConfig.Disabled, "the enable itself stands; only the dial failed")
+	assert.False(t, state.dialed.Disabled, "the enable itself stands; only the dial failed")
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, state.State,
 		"an enabled client whose dial failed is unstable, not disabled")
 	require.NotNil(t, state.LastFailure, "the failure is recorded on the client")
@@ -213,20 +216,19 @@ func TestEnableClient_UpstreamBackAfterFailedEnable_RecoversWithoutAdmin(t *test
 	ts := buildGatedMCPServer(t, nil)
 	cred := &toggleCredStore{}
 	cred.down.Store(true)
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, cred, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), cred, nil, nil)
 	defer m.checkerManager.StopAll()
 
 	config := newMakeBeforeBreakConfig("client-reenable", ts.URL)
+	config.Name = "mbb_client_reenable" // UpdateClient refuses a hyphenated name
 	config.Disabled = true
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateDisabled,
-	}
-	m.mu.Unlock()
+	})
 
-	require.ErrorIs(t, m.EnableClient(config.ID), ErrMCPEnableConnectFailed)
+	require.ErrorIs(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Disabled = false }), ErrMCPEnableConnectFailed)
 
 	cred.down.Store(false)
 	m.checkerManager.mu.RLock()
@@ -241,7 +243,7 @@ func TestEnableClient_UpstreamBackAfterFailedEnable_RecoversWithoutAdmin(t *test
 		return cs.State == schemas.MCPConnectionStateHealthy && cs.Conn != nil
 	}, 10*time.Second, 20*time.Millisecond, "the checker reconnects the client once the upstream is back")
 
-	require.NoError(t, m.DisableClient(config.ID), "the recovered client can be disabled again")
+	require.NoError(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Disabled = true }), "the recovered client can be disabled again")
 	m.mu.RLock()
 	assert.Equal(t, schemas.MCPConnectionStateDisabled, m.clientMap[config.ID].State)
 	m.mu.RUnlock()
@@ -294,21 +296,20 @@ func (c *countingFailureCredStore) AdminConnectionHeaders(_ context.Context, _ *
 // so a future change can't quietly make needs_reauth enable-retryable and
 // spin the admin on a dial that is guaranteed to fail.
 func TestEnableClient_ConnectFailure_PreservesNeedsReauth(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
 	defer m.checkerManager.StopAll()
 
 	config := newSharedOAuthClientConfig("client-enable-needs-reauth")
+	config.Name = "client_enable_needs_reauth" // UpdateClient refuses a hyphenated name
 	config.Disabled = true
 
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateDisabled,
-	}
-	m.mu.Unlock()
+	})
 
-	err := m.EnableClient(config.ID)
+	err := editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Disabled = false })
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrMCPEnableConnectFailed))
 
@@ -318,7 +319,7 @@ func TestEnableClient_ConnectFailure_PreservesNeedsReauth(t *testing.T) {
 
 	assert.Equal(t, schemas.MCPConnectionStateNeedsReauth, state.State,
 		"a dead OAuth credential is a more specific signal than Disabled and must survive the failure branch")
-	assert.False(t, state.ExecutionConfig.Disabled)
+	assert.False(t, state.dialed.Disabled)
 	assert.False(t, isEnableable(&state),
 		"needs_reauth must not be enable-retryable: the credential is dead, so reauthorization is the only way out")
 }
@@ -346,18 +347,17 @@ func newStalledMCPServer(t *testing.T) *httptest.Server {
 // that reconnect holds the client's operation slot.
 func newCheckerReconnectFixture(t *testing.T, id, serverURL string, cred schemas.MCPCredentialStore) (*MCPManager, *schemas.MCPClientConfig, chan error) {
 	t.Helper()
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, cred, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), cred, nil, nil)
 	t.Cleanup(m.checkerManager.StopAll)
 
 	config := newMakeBeforeBreakConfig(id, serverURL)
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
+	config.Name = strings.ReplaceAll(config.Name, "-", "_") // UpdateClient refuses a hyphenated name
+	putClient(m, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateUnstable,
 		LastFailure:     &schemas.MCPConnectionFailure{Stage: schemas.MCPConnectionFailureStageConnect, Message: "connection refused"},
-	}
-	m.mu.Unlock()
+	})
 
 	reconnected := make(chan error, 1)
 	go func() { reconnected <- m.reconnectFromChecker(config.ID) }()
@@ -384,7 +384,7 @@ func TestCheckerReconnect_GivesWayToDisable(t *testing.T) {
 	m, config, reconnected := newCheckerReconnectFixture(t, "client-disable-during-reconnect", newStalledMCPServer(t).URL, &toggleCredStore{})
 
 	started := time.Now()
-	require.NoError(t, m.DisableClient(config.ID))
+	require.NoError(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Disabled = true }))
 	assert.Less(t, time.Since(started), checkerReconnectYieldWait, "the disable does not wait out the dial")
 	select {
 	case err := <-reconnected:
@@ -404,9 +404,7 @@ func TestCheckerReconnect_GivesWayToDisable(t *testing.T) {
 func TestCheckerReconnect_GivesWayToAnEdit(t *testing.T) {
 	m, config, reconnected := newCheckerReconnectFixture(t, "client-edit-during-reconnect", newStalledMCPServer(t).URL, &toggleCredStore{})
 
-	renamed := *config
-	renamed.Name = "mbb_renamed"
-	require.NoError(t, m.UpdateClient(config.ID, &renamed))
+	require.NoError(t, editClient(m, config.ID, func(c *schemas.MCPClientConfig) { c.Name = "mbb_renamed" }))
 	select {
 	case <-reconnected:
 	case <-time.After(5 * time.Second):
@@ -416,7 +414,8 @@ func TestCheckerReconnect_GivesWayToAnEdit(t *testing.T) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	cs := m.clientMap[config.ID]
-	assert.Equal(t, "mbb_renamed", cs.ExecutionConfig.Name)
+	assert.Equal(t, "mbb_renamed", cs.Name)
+	assert.Equal(t, "mbb_renamed", cs.dialed.Name, "the entry is built from the edited record")
 	assert.Equal(t, schemas.MCPConnectionStateUnstable, cs.State)
 	require.NotNil(t, cs.LastFailure)
 	assert.Equal(t, "connection refused", cs.LastFailure.Message, "the cancelled dial does not replace the last real failure")
@@ -425,7 +424,7 @@ func TestCheckerReconnect_GivesWayToAnEdit(t *testing.T) {
 // TestCheckerReconnect_DoesNotTakeTheSlot pins the other direction: a checker
 // reconnect never cancels another operation, it reports the client busy.
 func TestCheckerReconnect_DoesNotTakeTheSlot(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, &toggleCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), &toggleCredStore{}, nil, nil)
 	defer m.checkerManager.StopAll()
 
 	finish, ok := m.beginExclusiveClientOp("client-busy")
@@ -485,7 +484,7 @@ func newListStalledMCPServer(t *testing.T) (*httptest.Server, chan struct{}) {
 func requireDisableOvertakes(t *testing.T, m *MCPManager, id string, reconnected chan error) {
 	t.Helper()
 	started := time.Now()
-	require.NoError(t, m.DisableClient(id))
+	require.NoError(t, editClient(m, id, func(c *schemas.MCPClientConfig) { c.Disabled = true }))
 	assert.Less(t, time.Since(started), checkerReconnectYieldWait, "the disable does not wait out the reconnect")
 	select {
 	case <-reconnected:

@@ -13,6 +13,7 @@ import type {
 	UsagePreview,
 	UsagePreviewRequest,
 } from "@/lib/types/relays";
+import type { LatencyHistogramResponse } from "@/lib/types/logs";
 import { buildRelayLogQuery } from "@/lib/utils/relayLogQuery";
 import { baseApi } from "./baseApi";
 
@@ -72,9 +73,15 @@ export const relaysApi = baseApi.injectEndpoints({
 		getRelayLogHistogram: builder.query<RelayHistogramResponse, { filters: RelayLogFilters; bucketSizeSeconds?: number }>({
 			query: ({ filters, bucketSizeSeconds }) => {
 				const query = buildRelayLogQuery(filters);
-				const bucket = bucketSizeSeconds ? `bucket_size_seconds=${bucketSizeSeconds}` : "";
+				// bucket_size, the name /logs/histogram takes; the server still reads bucket_size_seconds.
+				const bucket = bucketSizeSeconds ? `bucket_size=${bucketSizeSeconds}` : "";
 				return { url: `/relay-logs/histogram?${[query, bucket].filter(Boolean).join("&")}` };
 			},
+			providesTags: ["RelayLogs"],
+		}),
+		// Per-bucket latency and overhead percentiles, the shape /logs/histogram/latency returns.
+		getRelayLogLatencyHistogram: builder.query<LatencyHistogramResponse, { filters: RelayLogFilters }>({
+			query: ({ filters }) => ({ url: `/relay-logs/histogram/latency?${buildRelayLogQuery(filters)}` }),
 			providesTags: ["RelayLogs"],
 		}),
 		// Filter sidebar values. Pass `dimensions` to fetch only a subset (relay_names, methods,
@@ -112,6 +119,7 @@ export const {
 	useGetRelayLogQuery,
 	useGetRelayLogStatsQuery,
 	useGetRelayLogHistogramQuery,
+	useGetRelayLogLatencyHistogramQuery,
 	useGetRelayLogFilterDataQuery,
 	useDeleteRelayLogsMutation,
 } = relaysApi;

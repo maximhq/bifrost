@@ -300,6 +300,18 @@ func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
 //	// session stickiness, and extra headers
 
+// ClientForwardedIP returns the leftmost X-Forwarded-For entry, else X-Real-IP, else "".
+// Both headers are caller-controlled and not verified unless a trusted proxy overwrites them.
+func ClientForwardedIP(ctx *fasthttp.RequestCtx) string {
+	if xff := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-For"))); xff != "" {
+		if first, _, found := strings.Cut(xff, ","); found {
+			return strings.TrimSpace(first)
+		}
+		return xff
+	}
+	return strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP")))
+}
+
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
 	// "transport-context" overhead phase: building the request-scoped BifrostContext —
 	// child-context alloc, request-id resolution, and the full request-header iteration
@@ -416,6 +428,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		// prevent auth/key overrides via x-bf-eh-*
 		"x-api-key":       true,
 		"x-goog-api-key":  true,
+		"xi-api-key":      true,
 		"x-bf-api-key":    true,
 		"x-bf-api-key-id": true,
 		"x-bf-vk":         true,
@@ -517,7 +530,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
-		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key, api-key headers)
+		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key, api-key, xi-api-key headers)
 		if keyStr == string(schemas.BifrostContextKeyVirtualKey) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
@@ -542,6 +555,10 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			return true
 		}
 		if keyStr == "api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
+			return true
+		}
+		if keyStr == "xi-api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
@@ -852,6 +869,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
+	// Same order as enterprise audit logs: the forwarding headers first, then the TCP peer.
+	if store != nil && store.ShouldCaptureClientIP() {
+		if clientIP := ClientForwardedIP(ctx); clientIP != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, clientIP)
+		} else if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, ip.String())
+		}
+	}
+
 	// Session stickiness: an explicit x-bf-session-id wins, otherwise the
 	// harness's own session header applies, so Claude Code / Codex CLI /
 	// OpenCode traffic gets key stickiness without the caller renaming anything.
@@ -969,7 +995,7 @@ func forwardedProtoIsHTTPS(value []byte) bool {
 func BuildHTTPRequestFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRequest {
 	req := schemas.AcquireHTTPRequest()
 	req.Method = string(ctx.Method())
-	req.Path = string(ctx.Path())
+	req.Path = string(ctx.Request.URI().PathOriginal())
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {

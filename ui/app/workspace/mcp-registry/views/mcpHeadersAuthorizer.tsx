@@ -25,6 +25,9 @@ interface MCPHeadersAuthorizerProps {
 	onConflict?: (error: string) => void;
 	// Required key schema, rendered as the form's input fields.
 	perUserHeaderKeys: string[];
+	// The client has per-caller discovery, so the sample values only verify
+	// it and are not kept.
+	perUserDiscovery?: boolean;
 	// Called with the collected sample values once the admin submits the
 	// form. The handler decides what endpoint to hit (Create flow's
 	// /api/mcp/client vs bootstrap's /api/mcp/client/{id}/verify-headers).
@@ -49,6 +52,7 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 	onError,
 	onConflict,
 	perUserHeaderKeys,
+	perUserDiscovery,
 	submitHandler,
 }) => {
 	const { t } = useTranslation("mcp");
@@ -157,7 +161,11 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 						<>
 							<InfoBox icon={<KeyRound className="size-4" />}>
 								<p>{t("registry.authorizer.headers.confirmBody")}</p>
-								<p className="text-muted-foreground/80 text-xs">{t("registry.authorizer.headers.confirmHint")}</p>
+								<p className="text-muted-foreground/80 text-xs">
+									{perUserDiscovery
+										? t("registry.authorizer.headers.confirmHintPerUserDiscovery")
+										: t("registry.authorizer.headers.confirmHint")}
+								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
 								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="per-user-headers-cancel">
@@ -174,7 +182,11 @@ export const MCPHeadersAuthorizer: React.FC<MCPHeadersAuthorizerProps> = ({
 					{status === "input" && (
 						<>
 							<InfoBox icon={<KeyRound className="size-4" />}>
-								<p>{t("registry.authorizer.headers.inputBody")}</p>
+								<p>
+									{perUserDiscovery
+										? t("registry.authorizer.headers.inputBodyPerUserDiscovery")
+										: t("registry.authorizer.headers.inputBody")}
+								</p>
 							</InfoBox>
 							<HeadersForm
 								requiredKeys={perUserHeaderKeys}

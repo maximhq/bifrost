@@ -27,6 +27,7 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
+import { parseMetadataFiltersParam } from "@/lib/utils/metadataFilters";
 import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -90,6 +91,7 @@ export default function LogsPage() {
 			selected_key_ids: parseAsSafeArrayOf.withDefault([]),
 			virtual_key_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
+			model_router_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			apps: parseAsSafeArrayOf.withDefault([]),
 			user_agents: parseAsSafeArrayOf.withDefault([]),
@@ -157,6 +159,7 @@ export default function LogsPage() {
 			selected_key_ids: urlState.selected_key_ids,
 			virtual_key_ids: urlState.virtual_key_ids,
 			routing_rule_ids: urlState.routing_rule_ids,
+			model_router_ids: urlState.model_router_ids,
 			routing_engine_used: urlState.routing_engine_used,
 			apps: urlState.apps,
 			user_agents: urlState.user_agents,
@@ -181,15 +184,7 @@ export default function LogsPage() {
 			max_tokens: urlState.max_tokens ?? undefined,
 			missing_cost_only: urlState.missing_cost_only,
 			cache_hit_types: urlState.cache_hit_types,
-			metadata_filters: urlState.metadata_filters
-				? (() => {
-						try {
-							return JSON.parse(urlState.metadata_filters);
-						} catch {
-							return undefined;
-						}
-					})()
-				: undefined,
+			metadata_filters: parseMetadataFiltersParam(urlState.metadata_filters),
 			// Use a period if present
 			...(urlState.period
 				? { period: urlState.period }
@@ -210,6 +205,7 @@ export default function LogsPage() {
 			urlState.selected_key_ids,
 			urlState.virtual_key_ids,
 			urlState.routing_rule_ids,
+			urlState.model_router_ids,
 			urlState.routing_engine_used,
 			urlState.apps,
 			urlState.user_agents,
@@ -284,6 +280,7 @@ export default function LogsPage() {
 				selected_key_ids: newFilters.selected_key_ids || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
 				routing_rule_ids: newFilters.routing_rule_ids || [],
+				model_router_ids: newFilters.model_router_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
 				apps: newFilters.apps || [],
 				user_agents: newFilters.user_agents || [],
@@ -725,10 +722,12 @@ export default function LogsPage() {
 		() => ({
 			timestamp: t("labels.time"),
 			request_type: t("labels.type"),
+			stop_reason: t("logs.detail.stopReason"),
 			input: t("labels.message"),
 			provider: t("labels.provider"),
 			model: t("labels.model"),
 			app: t("labels.app"),
+			client_ip: t("labels.clientIp"),
 			latency: t("labels.latency"),
 			tokens: t("labels.tokens"),
 			cost: t("labels.cost"),
@@ -745,7 +744,19 @@ export default function LogsPage() {
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(
-		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project"],
+		() => [
+			"stop_reason",
+			"session",
+			"service_tier",
+			"virtual_key",
+			"routing_rule",
+			"team",
+			"customer",
+			"user",
+			"business_unit",
+			"project",
+			"client_ip",
+		],
 		[],
 	);
 

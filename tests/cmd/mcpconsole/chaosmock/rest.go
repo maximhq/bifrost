@@ -239,7 +239,7 @@ func (s *Server) ServeREST(w http.ResponseWriter, r *http.Request, path string) 
 		call.Headers[name] = strings.Join(values, ", ")
 	}
 
-	f := s.faults.forRequest("")
+	f := s.faults.forRequest("", "")
 	if f.Refuse || f.Status != 0 {
 		if !f.Refuse {
 			call.Status = f.Status

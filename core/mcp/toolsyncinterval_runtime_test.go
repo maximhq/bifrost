@@ -24,14 +24,11 @@ func registerHealthyClientWithChecker(t *testing.T, m *MCPManager, id string, pe
 		ToolSyncInterval:       perClientInterval,
 		NeedsSessionStickiness: &sticky,
 	}
-	m.mu.Lock()
-	m.clientMap[id] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            id,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateHealthy,
-		ToolMap:         map[string]schemas.ChatTool{},
-	}
-	m.mu.Unlock()
+	})
 	checker := NewClientConnectionChecker(m, id, ResolveToolSyncInterval(config, m.checkerManager.GetGlobalInterval()), false, &MockLogger{})
 	m.checkerManager.StartChecking(checker)
 	t.Cleanup(func() { m.checkerManager.StopChecking(id) })
@@ -78,7 +75,7 @@ func TestResolveToolSyncInterval_InvalidOverridesFollowGlobal(t *testing.T) {
 // that follows the global (per-client 0) in place, leave explicit per-client
 // overrides alone, and treat a legacy stored negative like zero.
 func TestUpdateToolSyncInterval_RetimesClientsFollowingGlobal(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, newTestAccount(), nil, nil, nil)
 	follows := registerHealthyClientWithChecker(t, m, "follows-global", 0, false)
 	explicit := registerHealthyClientWithChecker(t, m, "explicit", 5*time.Minute, false)
 	legacyNegative := registerHealthyClientWithChecker(t, m, "legacy-negative", -time.Minute, false)
@@ -110,11 +107,9 @@ func TestUpdateToolSyncInterval_RetimesClientsFollowingGlobal(t *testing.T) {
 // tight Unstable cadence keeps its fast recovery tick, and only the stored
 // healthyInterval changes for the next successful check to pick up.
 func TestSetHealthyInterval_LeavesUnstableCadenceAlone(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, nil, nil)
 	config := &schemas.MCPClientConfig{ID: "unstable", Name: "unstable", AuthType: schemas.MCPAuthTypeHeaders, ConnectionType: schemas.MCPConnectionTypeHTTP}
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateUnstable}
-	m.mu.Unlock()
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateUnstable})
 
 	checker := NewClientConnectionChecker(m, config.ID, time.Hour, false, &MockLogger{})
 	m.checkerManager.StartChecking(checker)
@@ -135,20 +130,21 @@ func TestSetHealthyInterval_LeavesUnstableCadenceAlone(t *testing.T) {
 // change must re-time its running checker in place, in both directions
 // (explicit override, and back to following the global).
 func TestUpdateClient_RetimesCheckerOnToolSyncIntervalChange(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, newTestAccount(), nil, nil, nil)
 	checker := registerHealthyClientWithChecker(t, m, "retime", 0, false)
 
 	update := func(interval time.Duration) {
 		t.Helper()
 		sticky := false
-		require.NoError(t, m.UpdateClient("retime", &schemas.MCPClientConfig{
+		accountOf(m).set(&schemas.MCPClientConfig{
 			ID:                     "retime",
 			Name:                   "retime",
 			AuthType:               schemas.MCPAuthTypeHeaders,
 			ConnectionType:         schemas.MCPConnectionTypeHTTP,
 			ToolSyncInterval:       interval,
 			NeedsSessionStickiness: &sticky,
-		}))
+		})
+		require.NoError(t, m.UpdateClient("retime"))
 	}
 
 	update(3 * time.Minute)
@@ -168,18 +164,19 @@ func TestUpdateClient_RetimesCheckerOnToolSyncIntervalChange(t *testing.T) {
 // ephemeral discovery cycle for tool refresh, and used to lose it entirely
 // until a restart after this flip.
 func TestUpdateClient_StickyToPerCall_KeepsCheckerRunning(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, newTestAccount(), nil, nil, nil)
 	stickyChecker := registerHealthyClientWithChecker(t, m, "flip", 0, true)
-	require.False(t, m.credStore.RequiresPerCallConnection(m.clientMap["flip"].ExecutionConfig), "sanity: starts sticky")
+	require.False(t, m.credStore.RequiresPerCallConnection(m.config("flip")), "sanity: starts sticky")
 
 	perCall := false
-	require.NoError(t, m.UpdateClient("flip", &schemas.MCPClientConfig{
+	accountOf(m).set(&schemas.MCPClientConfig{
 		ID:                     "flip",
 		Name:                   "flip",
 		AuthType:               schemas.MCPAuthTypeHeaders,
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,
 		NeedsSessionStickiness: &perCall,
-	}))
+	})
+	require.NoError(t, m.UpdateClient("flip"))
 
 	replacement := registeredChecker(m, "flip")
 	require.NotNil(t, replacement, "a per-call checker must be registered after the flip")
@@ -194,7 +191,7 @@ func TestUpdateClient_StickyToPerCall_KeepsCheckerRunning(t *testing.T) {
 // stopped it and EnableClient starts a fresh one), so the flip must not
 // resurrect one for it.
 func TestUpdateClient_StickyToPerCall_DisabledClientGetsNoChecker(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, nil, nil)
 	sticky := true
 	config := &schemas.MCPClientConfig{
 		ID:                     "flip-disabled",
@@ -204,19 +201,18 @@ func TestUpdateClient_StickyToPerCall_DisabledClientGetsNoChecker(t *testing.T) 
 		NeedsSessionStickiness: &sticky,
 		Disabled:               true,
 	}
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateDisabled}
-	m.mu.Unlock()
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateDisabled})
 
 	perCall := false
-	require.NoError(t, m.UpdateClient(config.ID, &schemas.MCPClientConfig{
+	accountOf(m).set(&schemas.MCPClientConfig{
 		ID:                     config.ID,
 		Name:                   config.Name,
 		AuthType:               schemas.MCPAuthTypeHeaders,
 		ConnectionType:         schemas.MCPConnectionTypeHTTP,
 		NeedsSessionStickiness: &perCall,
 		Disabled:               true,
-	}))
+	})
+	require.NoError(t, m.UpdateClient(config.ID))
 
 	assert.Nil(t, registeredChecker(m, config.ID), "a disabled client must not get a checker from the flip")
 	m.mu.RLock()
@@ -231,13 +227,13 @@ func TestUpdateClient_StickyToPerCall_DisabledClientGetsNoChecker(t *testing.T) 
 // refresh its tools again until a restart, and interval edits would be
 // silent no-ops for it.
 func TestEnableClient_PerCall_RestartsChecker(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, nil, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{ToolSyncInterval: time.Hour}, newTestAccount(), nil, nil, nil)
 	registerHealthyClientWithChecker(t, m, "cycle", 0, false)
 
-	require.NoError(t, m.DisableClient("cycle"))
+	require.NoError(t, editClient(m, "cycle", func(c *schemas.MCPClientConfig) { c.Disabled = true }))
 	require.Nil(t, registeredChecker(m, "cycle"), "sanity: DisableClient stops the checker")
 
-	require.NoError(t, m.EnableClient("cycle"))
+	require.NoError(t, editClient(m, "cycle", func(c *schemas.MCPClientConfig) { c.Disabled = false }))
 
 	restarted := registeredChecker(m, "cycle")
 	require.NotNil(t, restarted, "EnableClient must start a per-call checker again")

@@ -18,6 +18,7 @@ import { WebSocketProvider } from "@/hooks/useWebSocket";
 import i18n from "@/lib/i18n";
 import { getErrorMessage, ReduxProvider, useGetCoreConfigQuery, useIsAuthEnabledQuery } from "@/lib/store";
 import { BifrostConfig } from "@/lib/types/config";
+import { canRenderWithStores } from "@/lib/utils/logsStoreRoutes";
 import { RbacProvider, useRbacContext } from "@enterprise/lib/contexts/rbacContext";
 import { useLocation, useMatches } from "@tanstack/react-router";
 import { RefreshCw, WifiOff } from "lucide-react";
@@ -191,10 +192,7 @@ function FullPage({
 	children: React.ReactNode;
 }) {
 	const pathname = useLocation({ select: (l) => l.pathname });
-	if (config && config.is_db_connected) {
-		return children;
-	}
-	if (config && config.is_logs_connected && pathname.startsWith("/workspace/logs")) {
+	if (config && canRenderWithStores(pathname, { isDbConnected: config.is_db_connected, isLogsConnected: config.is_logs_connected })) {
 		return children;
 	}
 	if (hasError) {

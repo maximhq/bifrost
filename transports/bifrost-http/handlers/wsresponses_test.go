@@ -4,9 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/fasthttp/websocket"
-	bifrost "github.com/maximhq/bifrost/core"
-	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"io"
 	"net"
 	"net/http"
@@ -16,14 +13,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bytedance/sonic"
+	"github.com/fasthttp/websocket"
+	bifrost "github.com/maximhq/bifrost/core"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
+
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
-	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib/libtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -50,7 +52,7 @@ func (s testWSHandlerStore) GetAsyncJobResultTTL() int {
 	return 0
 }
 
-func (s testWSHandlerStore) GetKVStore() *kvstore.Store {
+func (s testWSHandlerStore) GetSharedTables() *lib.SharedTables {
 	return nil
 }
 
@@ -62,6 +64,7 @@ func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { r
 func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
 func (s testWSHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return false }
+func (s testWSHandlerStore) ShouldCaptureClientIP() bool                     { return false }
 func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }
@@ -77,20 +80,18 @@ func (timeoutNetError) Timeout() bool   { return true }
 func (timeoutNetError) Temporary() bool { return false }
 
 func TestResolveWSStreamIdleTimeoutUsesProviderOverride(t *testing.T) {
-	cfg := &lib.Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.OpenAI: {
-				NetworkConfig: &schemas.NetworkConfig{StreamIdleTimeoutInSeconds: 7},
-			},
+	cfg := libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {
+			NetworkConfig: &schemas.NetworkConfig{StreamIdleTimeoutInSeconds: 7},
 		},
-	}
+	}, nil)
 
 	timeout := resolveWSStreamIdleTimeout(cfg, schemas.OpenAI)
 	assert.Equal(t, 7*time.Second, timeout)
 }
 
 func TestResolveWSStreamIdleTimeoutFallsBackToDefault(t *testing.T) {
-	timeout := resolveWSStreamIdleTimeout(&lib.Config{}, schemas.OpenAI)
+	timeout := resolveWSStreamIdleTimeout(&lib.Config{LiveStore: liveStoreForTest(t)}, schemas.OpenAI)
 	assert.Equal(t, time.Duration(schemas.DefaultStreamIdleTimeoutInSeconds)*time.Second, timeout)
 }
 
@@ -161,6 +162,20 @@ func TestCreateBifrostContextFromHeaders_SettlesIdentity(t *testing.T) {
 				t.Fatalf("credential = %+v, want kind %q value %q", got, tc.wantKind, tc.wantKey)
 			}
 		})
+	}
+}
+
+// An ElevenLabs client sends its key as xi-api-key: a virtual key there is the connection's identity, and a
+// provider key is not.
+func TestCreateBifrostContextFromHeaders_XiAPIKey(t *testing.T) {
+	for value, wantKind := range map[string]string{"sk-bf-elevenlabs": string(grant.CredentialVirtualKey), "elevenlabs-key": ""} {
+		ctx, cancel := createBifrostContextFromHeaders(testWSHandlerStore{}, &sessionHeaders{xiAPIKey: value})
+
+		got := ctx.Grant().Identity().Credential()
+		cancel()
+		if got.Kind != wantKind {
+			t.Errorf("xi-api-key %q: credential kind = %q, want %q", value, got.Kind, wantKind)
+		}
 	}
 }
 
@@ -476,6 +491,21 @@ func (a wsTwoKeyAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas
 	}, nil
 }
 
+// GetConfiguredMCPClients lists no MCP clients: this account configures none.
+func (a wsTwoKeyAccount) GetConfiguredMCPClients() ([]string, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClient finds no MCP client: this account configures none.
+func (a wsTwoKeyAccount) GetConfigForMCPClient(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
+// GetConfigForMCPClientByName finds no MCP client: this account configures none.
+func (a wsTwoKeyAccount) GetConfigForMCPClientByName(string) (*schemas.MCPClientConfig, error) {
+	return nil, nil
+}
+
 // fakeOpenAIResponses serves both Responses surfaces from one base URL: the WS mode socket and
 // the HTTP stream the bridge uses. With refuseEncrypted set, either surface refuses a turn that
 // replays encrypted_content, the way OpenAI refuses ciphertext another organization minted.
@@ -569,7 +599,7 @@ func newTwoKeyWSResponsesHarness(t *testing.T, fake *fakeOpenAIResponses) (*WSRe
 
 	h := &WSResponsesHandler{
 		client:       client,
-		config:       &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}},
+		config:       libtest.Config(t, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}, nil),
 		handlerStore: testWSHandlerStore{},
 		pool:         pool,
 		sessions:     bfws.NewSessionManager(10),
@@ -681,4 +711,35 @@ func TestEventLoopIgnoresResponseInterrupt(t *testing.T) {
 	_, data, err := clientConn.ReadMessage()
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "unsupported event type: response.unknown", "the interrupt must not produce an error frame ahead of the next event's reply")
+}
+
+// TestConvertEventToRequestKeepsAccessPrograms pins OpenAI's Daybreak selector on
+// the Responses WebSocket HTTP bridge. The native upstream relays the raw event,
+// but the bridge rebuilds typed params from the event, so a field the event does
+// not model only survives as an extra param, which is not sent without the
+// passthrough flag.
+func TestConvertEventToRequestKeepsAccessPrograms(t *testing.T) {
+	message := []byte(`{"type":"response.create","model":"openai/gpt-6-sol","input":"hi","access_programs":{"cyber":"daybreak_blue"}}`)
+	var event schemas.WebSocketResponsesEvent
+	if err := sonic.Unmarshal(message, &event); err != nil {
+		t.Fatal(err)
+	}
+	req, err := (&WSResponsesHandler{}).convertEventToRequest(&event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params, err := sonic.Marshal(req.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(params), `"access_programs":{"cyber":"daybreak_blue"}`) {
+		t.Errorf("access_programs lost on the HTTP bridge: %s", params)
+	}
+	extras, err := extractExtraParams(message, wsResponsesKnownFields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := extras["access_programs"]; ok {
+		t.Errorf("access_programs must be typed, not an extra param")
+	}
 }

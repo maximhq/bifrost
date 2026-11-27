@@ -7,6 +7,7 @@ import SessionsTable from "./sessionsTable";
 vi.mock("@/lib/store", () => ({
 	getErrorMessage: String,
 	useReauthMCPSessionMutation: () => [vi.fn(), { isLoading: false }],
+	useRefreshMCPSessionMutation: () => [vi.fn(), { isLoading: false }],
 	useRevokeMCPSessionMutation: () => [vi.fn(), { isLoading: false }],
 }));
 

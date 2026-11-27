@@ -25,6 +25,8 @@ describe("logsExport", () => {
 		status: "success",
 		stop_reason: "stop",
 		latency: 1250,
+		upstream_latency: 1000,
+		overhead_latency: 250,
 		token_usage: {
 			prompt_tokens: 100,
 			completion_tokens: 50,
@@ -40,6 +42,8 @@ describe("logsExport", () => {
 		user_name: "Ada Lovelace",
 		business_unit_name: "Platform",
 		project_name: "Search V2",
+		client_ip: "10.0.0.5",
+		user_email: "ada@example.com",
 		error_details: undefined,
 		number_of_retries: 0,
 		fallback_index: 0,
@@ -49,17 +53,22 @@ describe("logsExport", () => {
 		responses_input_history: [],
 	};
 
-	it("exports 23 predefined headers", () => {
-		expect(LOGS_CSV_HEADERS).toHaveLength(23);
+	it("exports 27 predefined headers", () => {
+		expect(LOGS_CSV_HEADERS).toHaveLength(27);
 		expect(LOGS_CSV_HEADERS[0]).toBe("Time");
 		expect(LOGS_CSV_HEADERS[1]).toBe("Request ID");
-		expect(LOGS_CSV_HEADERS[12]).toBe("Cost ($)");
-		expect(LOGS_CSV_HEADERS[22]).toBe("Stop Reason");
+		expect(LOGS_CSV_HEADERS[14]).toBe("Cost ($)");
+		expect(LOGS_CSV_HEADERS[24]).toBe("Stop Reason");
+		expect(LOGS_CSV_HEADERS[25]).toBe("Client IP");
+		expect(LOGS_CSV_HEADERS).not.toContain("Forwarded For");
+		expect(LOGS_CSV_HEADERS[26]).toBe("User Email");
 	});
 
 	it("converts a complete LogEntry to CSV row cells", () => {
 		const row = logEntryToCSVRow(mockLog);
-		expect(row).toHaveLength(23);
+		expect(row).toHaveLength(27);
+		expect(row[26]).toBe("ada@example.com");
+		expect(row[25]).toBe("10.0.0.5");
 		expect(row[0]).toBe("2026-10-15T12:00:00Z");
 		expect(row[1]).toBe("req-123");
 		expect(row[2]).toBe("success");
@@ -68,20 +77,22 @@ describe("logsExport", () => {
 		expect(row[5]).toBe("gpt-4o");
 		expect(row[6]).toBe("gpt-4o-2024-08-06");
 		expect(row[8]).toBe(1250);
-		expect(row[9]).toBe(100);
-		expect(row[10]).toBe(50);
-		expect(row[11]).toBe(150);
-		expect(row[12]).toBe(0.0035);
-		expect(row[13]).toBe("sess-abc");
-		expect(row[14]).toBe("priority");
-		expect(row[15]).toBe("prod-key");
-		expect(row[16]).toBe("rule-primary");
-		expect(row[17]).toBe("Engineering");
-		expect(row[18]).toBe("Acme Corp");
-		expect(row[19]).toBe("Ada Lovelace");
-		expect(row[20]).toBe("Platform");
-		expect(row[21]).toBe("Search V2");
-		expect(row[22]).toBe("stop");
+		expect(row[9]).toBe(1000); // upstream latency, as the relay export carries it
+		expect(row[10]).toBe(250); // overhead
+		expect(row[11]).toBe(100);
+		expect(row[12]).toBe(50);
+		expect(row[13]).toBe(150);
+		expect(row[14]).toBe(0.0035);
+		expect(row[15]).toBe("sess-abc");
+		expect(row[16]).toBe("priority");
+		expect(row[17]).toBe("prod-key");
+		expect(row[18]).toBe("rule-primary");
+		expect(row[19]).toBe("Engineering");
+		expect(row[20]).toBe("Acme Corp");
+		expect(row[21]).toBe("Ada Lovelace");
+		expect(row[22]).toBe("Platform");
+		expect(row[23]).toBe("Search V2");
+		expect(row[24]).toBe("stop");
 	});
 
 	it("handles missing optional values predictably", () => {
@@ -101,16 +112,20 @@ describe("logsExport", () => {
 		};
 
 		const row = logEntryToCSVRow(minimalLog);
-		expect(row).toHaveLength(23);
+		expect(row).toHaveLength(27);
+		expect(row[26]).toBe(""); // user email
+		expect(row[25]).toBe(""); // client ip
 		expect(row[2]).toBe("error");
 		expect(row[8]).toBe(""); // latency
-		expect(row[9]).toBe(""); // prompt tokens
-		expect(row[10]).toBe(""); // completion tokens
-		expect(row[11]).toBe(""); // total tokens
-		expect(row[12]).toBe(""); // cost
-		expect(row[13]).toBe(""); // session
-		expect(row[15]).toBe(""); // virtual key
-		expect(row[22]).toBe(""); // stop reason
+		expect(row[9]).toBe(""); // upstream latency
+		expect(row[10]).toBe(""); // overhead
+		expect(row[11]).toBe(""); // prompt tokens
+		expect(row[12]).toBe(""); // completion tokens
+		expect(row[13]).toBe(""); // total tokens
+		expect(row[14]).toBe(""); // cost
+		expect(row[15]).toBe(""); // session
+		expect(row[17]).toBe(""); // virtual key
+		expect(row[24]).toBe(""); // stop reason
 	});
 
 	it("normalizes export filters by converting period into fixed start_time and end_time", () => {
@@ -147,8 +162,8 @@ describe("logsExport", () => {
 			customer_names: ["Cust 1", "Cust 2"],
 		};
 		const row = logEntryToCSVRow(sliceLog);
-		expect(row[17]).toBe("Team A; Team B");
-		expect(row[18]).toBe("Cust 1; Cust 2");
+		expect(row[19]).toBe("Team A; Team B");
+		expect(row[20]).toBe("Cust 1; Cust 2");
 	});
 
 	it("extracts application display name from app or user-agent", () => {

@@ -4,9 +4,10 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const collection = JSON.parse(fs.readFileSync(new URL('../../collections/provider-harness.json', import.meta.url), 'utf8'));
-const folder = collection.item.find(item => item.name.startsWith('299. Responses-to-Chat streamed tool calls'));
+const folder = collection.item.find(item => item.name.startsWith('393. Responses-to-Chat streamed tool calls'));
 const parallel = folder.item.find(item => item.name.includes('parallel streamed tools'));
 const single = folder.item.find(item => item.name.includes('single streamed tools'));
+const mixed = folder.item.find(item => item.name.includes('mixed streamed tools'));
 
 // failuresFor runs the Postman assertions against synthetic SSE and returns their errors.
 function failuresFor(parts, item = parallel) {
@@ -50,7 +51,10 @@ test('parallel-enabled stream accepts other valid argument values', () => {
   assert.deepEqual(failuresFor([call]), []);
 });
 test('stream rejects no tool calls', () => assert.ok(failuresFor([]).length));
-test('stream rejects colliding indexes', () => assert.ok(failuresFor([read, { ...glob, index: 0 }]).length));
+test('stream rejects colliding indexes', () => {
+  const failures = failuresFor([read, { ...glob, index: 0 }]);
+  assert.ok(failures.some(error => error.message.includes('two call IDs share index 0')));
+});
 test('stream rejects non-contiguous indexes', () => assert.ok(failuresFor([read, { ...glob, index: 2 }]).length));
 test('stream rejects duplicate IDs', () => assert.ok(failuresFor([read, { ...glob, id: read.id }]).length));
 test('stream rejects missing arguments', () => assert.ok(failuresFor([{ ...read, function: { ...read.function, arguments: '{}' } }]).length));
@@ -62,3 +66,16 @@ test('single-tool stream accepts other valid argument values', () => {
   assert.deepEqual(failuresFor([call], single), []);
 });
 test('single-tool stream rejects missing arguments', () => assert.ok(failuresFor([{ ...read, function: { ...read.function, arguments: '{}' } }], single).length));
+
+const mixedRead = { ...read, type: 'function' };
+const custom = { index: 1, id: 'call-custom', type: 'custom', custom: { name: 'code_exec', input: 'print(1)' } };
+test('mixed stream accepts separate function and custom calls', () => assert.deepEqual(failuresFor([mixedRead, custom], mixed), []));
+test('mixed stream accepts a single custom call', () => assert.deepEqual(failuresFor([{ ...custom, index: 0 }], mixed), []));
+test('mixed stream rejects colliding indexes', () => {
+  const failures = failuresFor([mixedRead, { ...custom, index: 0 }], mixed);
+  assert.ok(failures.some(error => error.message.includes('two call IDs share index 0')));
+});
+test('mixed stream rejects an empty custom input', () => {
+  const failures = failuresFor([{ ...custom, index: 0, custom: { ...custom.custom, input: '' } }], mixed);
+  assert.ok(failures.some(error => error.message.includes('custom input missing')));
+});

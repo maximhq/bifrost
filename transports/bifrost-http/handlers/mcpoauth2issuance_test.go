@@ -28,7 +28,7 @@ import (
 // newRealOAuth2Store builds a real sqlite-backed ConfigStore (full migrations,
 // including the OAuth2 issuance tables) so issuance handlers exercise the actual
 // atomic store semantics rather than a hand-rolled mock.
-func newRealOAuth2Store(t *testing.T) configstore.ConfigStore {
+func newRealOAuth2Store(t testing.TB) configstore.ConfigStore {
 	t.Helper()
 	cs, err := configstore.NewConfigStore(context.Background(), &configstore.Config{
 		Enabled: true,
@@ -44,7 +44,7 @@ func newIssuanceHandler(t *testing.T) (*OAuth2IssuanceHandler, configstore.Confi
 	t.Helper()
 	SetLogger(&mockLogger{})
 	store := newRealOAuth2Store(t)
-	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeBoth, false)
+	cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeBoth, false)
 	return NewOAuth2IssuanceHandler(cfg, nil, nil), store, cfg
 }
 
@@ -170,6 +170,28 @@ func TestHandleRegister_DCR(t *testing.T) {
 		assert.Equal(t, longName, stored.ClientName)
 		assert.Equal(t, longScope, stored.Scope)
 	})
+
+	// Registration bodies real DCR clients send, as built by their source on 2026-11-03.
+	for _, tc := range []struct{ name, body string }{
+		// gemini-cli packages/core/src/mcp/oauth-provider.ts registerClient (scope is "" with no configured scopes)
+		{"Gemini CLI", `{"client_name":"Gemini CLI MCP Client","redirect_uris":["http://localhost:7777/oauth/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none","scope":""}`},
+		// zed crates/context_server/src/oauth.rs dcr_registration_body (scope omitted with no advertised scopes)
+		{"Zed", `{"client_name":"Zed","redirect_uris":["http://127.0.0.1:12345/callback"],"grant_types":["authorization_code","refresh_token"],"response_types":["code"],"token_endpoint_auth_method":"none"}`},
+	} {
+		t.Run("real client "+tc.name+" registers", func(t *testing.T) {
+			h, _, _ := newIssuanceHandler(t)
+			ctx := formPostCtx("")
+			ctx.Request.SetBodyString(tc.body)
+			ctx.Request.Header.SetContentType("application/json")
+
+			h.handleRegister(ctx)
+			require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var resp map[string]any
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+			assert.Equal(t, []any{"authorization_code", "refresh_token"}, resp["grant_types"])
+			assert.Equal(t, "mcp", resp["scope"])
+		})
+	}
 
 	t.Run("missing redirect_uris is rejected", func(t *testing.T) {
 		h, _, _ := newIssuanceHandler(t)
@@ -626,6 +648,45 @@ func TestHandleToken_RefreshRotationAndReplay(t *testing.T) {
 		assert.Contains(t, string(after.Response.Body()), "invalid_grant")
 	})
 
+	t.Run("debug lines trace a replay and never carry a token", func(t *testing.T) {
+		h, store, _ := newIssuanceHandler(t)
+		capLogger := &captureLogger{}
+		SetLogger(capLogger)
+		defer SetLogger(&mockLogger{})
+		seedClient(t, store, []string{"http://127.0.0.1/cb"})
+		seedRefresh(t, store, "refresh-plain-1")
+
+		rotate := formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-plain-1"}, "client_id": {"client-1"},
+		}.Encode())
+		h.handleToken(rotate)
+		require.Equal(t, fasthttp.StatusOK, rotate.Response.StatusCode())
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rotate.Response.Body(), &resp))
+
+		replay := formPostCtx(url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"refresh-plain-1"}, "client_id": {"client-1"},
+		}.Encode())
+		replay.Request.Header.Set("x-request-id", "req-replay")
+		h.handleToken(replay)
+		require.Equal(t, fasthttp.StatusBadRequest, replay.Response.StatusCode())
+
+		logs := strings.Join(capLogger.debugs, "\n")
+		assert.Contains(t, logs, "[oauth2-token] event=refresh.rotated")
+		assert.Contains(t, logs, "event=refresh.lookup")
+		assert.Contains(t, logs, "outcome=previously_revoked refresh_token_id=rt-1 family_id=fam-1")
+		assert.Contains(t, logs, "event=family.revoked")
+		assert.Contains(t, logs, "reason=refresh_replay family_id=fam-1 refresh_token_id=rt-1 revoked_rows=1")
+		assert.NotEmpty(t, rotate.Request.Header.Peek("x-request-id"), "an untraced token request gets a request ID")
+		assert.Contains(t, logs, `request_id="`+string(rotate.Request.Header.Peek("x-request-id"))+`"`)
+		assert.Contains(t, logs, `request_id="req-replay"`)
+		assert.Contains(t, logs, `grant_type="refresh_token"`)
+		assert.Contains(t, logs, `status=400 error=invalid_grant error_description="refresh token not found or revoked"`)
+		for _, secret := range []string{"refresh-plain-1", resp["refresh_token"].(string), resp["access_token"].(string)} {
+			assert.NotContains(t, logs, secret)
+		}
+	})
+
 	t.Run("client_id mismatch is rejected", func(t *testing.T) {
 		h, store, _ := newIssuanceHandler(t)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
@@ -667,7 +728,7 @@ func TestHandleToken_RefreshVKIdentityDisabled(t *testing.T) {
 
 	t.Run("vk refresh rejected when disabled and user mode available", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false)
 		cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = true
 		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true})
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
@@ -683,7 +744,7 @@ func TestHandleToken_RefreshVKIdentityDisabled(t *testing.T) {
 
 	t.Run("vk refresh not blocked by flag when user mode unavailable", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false)
 		cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity = true
 		// nil resolver → user mode unavailable → the flag is ignored and the flow
 		// falls through to the VK liveness check, which rejects the (unseeded) VK
@@ -727,7 +788,7 @@ func TestHandleToken_RefreshVKLiveness(t *testing.T) {
 
 	t.Run("an expired, active key is refused", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
 		past := time.Now().UTC().Add(-time.Second)
 		seed(t, store, &past)
@@ -741,7 +802,7 @@ func TestHandleToken_RefreshVKLiveness(t *testing.T) {
 
 	t.Run("control: a key that has not expired passes the check", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
 		future := time.Now().UTC().Add(time.Hour)
 		seed(t, store, &future)
@@ -765,7 +826,7 @@ func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
 	refresh := func(t *testing.T, resource string) *fasthttp.RequestCtx {
 		t.Helper()
 		store := newRealOAuth2Store(t)
-		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
 		require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
 			ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true),
@@ -791,11 +852,14 @@ func TestHandleToken_RefreshAfterIssuerChange(t *testing.T) {
 	assert.Equal(t, fasthttp.StatusOK, current.Response.StatusCode(), "control: a grant for the current resource refreshes: %s", current.Response.Body())
 }
 
-// TestHandleToken_RefreshNeedsTheRefreshGrant pins that only a client registered for the refresh_token
-// grant can refresh. Registration recorded grant_types but the token endpoint never consulted them.
-func TestHandleToken_RefreshNeedsTheRefreshGrant(t *testing.T) {
+// TestHandleToken_RefreshByAClientRegisteredWithoutTheRefreshGrant pins that a client registered for
+// authorization_code only, which is what RFC 7591 records when a registration omits grant_types, still
+// refreshes the refresh token its code exchange was issued. Neither the MCP authorization spec nor RFC
+// 7591 asks the token endpoint to enforce the registered grant types, and refusing here stopped every
+// existing grant of such a client from refreshing on upgrade.
+func TestHandleToken_RefreshByAClientRegisteredWithoutTheRefreshGrant(t *testing.T) {
 	store := newRealOAuth2Store(t)
-	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 	require.NoError(t, store.CreateOAuth2Client(context.Background(), &configtables.TableOAuth2Client{
 		ID: "client-row-1", ClientID: "client-1", ClientName: "Code only", RedirectURIs: []string{"http://127.0.0.1/cb"},
 		GrantTypes: []string{"authorization_code"}, Scope: "mcp", CreatedAt: time.Now(),
@@ -813,10 +877,11 @@ func TestHandleToken_RefreshNeedsTheRefreshGrant(t *testing.T) {
 		"grant_type": {"refresh_token"}, "refresh_token": {"refresh-vk-1"}, "client_id": {"client-1"},
 	}.Encode())
 	h.handleToken(ctx)
-	assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
-	body := string(ctx.Response.Body())
-	assert.Contains(t, body, "unauthorized_client")
-	assert.Contains(t, body, "client is not registered for the refresh_token grant")
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var tokens map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &tokens))
+	assert.NotEmpty(t, tokens["access_token"], "the refresh issues a new access token")
+	assert.NotEmpty(t, tokens["refresh_token"], "the refresh rotates the refresh token")
 }
 
 // TestHandleToken_CodeReplayRevokesItsTokens pins RFC 6749 section 4.1.2: an authorization code used a
@@ -824,7 +889,7 @@ func TestHandleToken_RefreshNeedsTheRefreshGrant(t *testing.T) {
 // refused but the grant it came from kept refreshing.
 func TestHandleToken_CodeReplayRevokesItsTokens(t *testing.T) {
 	store := newRealOAuth2Store(t)
-	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
+	h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false), nil, nil)
 	seedClient(t, store, []string{"http://127.0.0.1/cb"})
 	require.NoError(t, store.CreateVirtualKey(context.Background(), &configtables.TableVirtualKey{
 		ID: "vk-1", Name: "vk-1", Value: *schemas.NewSecretVar("sk-bf-vk-1"), IsActive: new(true),
@@ -878,7 +943,7 @@ func TestHandleToken_RefreshUserLiveness(t *testing.T) {
 
 	t.Run("user refresh rejected when the user is no longer active", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false)
 		// Resolver reports the user as gone: refresh must be denied rather than
 		// minting a new access token, mirroring the VK-mode liveness check.
 		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true, userInactive: true})
@@ -895,7 +960,7 @@ func TestHandleToken_RefreshUserLiveness(t *testing.T) {
 
 	t.Run("user refresh succeeds when the user is active", func(t *testing.T) {
 		store := newRealOAuth2Store(t)
-		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeOAuth, false)
+		cfg := newTestOAuth2Config(t, store, configtables.MCPServerAuthModeOAuth, false)
 		// Active user (default resolver) must pass the liveness check and rotate.
 		h := NewOAuth2IssuanceHandler(cfg, nil, &fakeResolver{userModeAvailable: true})
 		seedClient(t, store, []string{"http://127.0.0.1/cb"})
@@ -931,7 +996,7 @@ func TestUpdateConfig_RejectsAuthCodeTTLAboveMax(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			SetLogger(&mockLogger{})
 			store := newRealOAuth2Store(t)
-			cfg := newTestOAuth2Config(store, mode, false)
+			cfg := newTestOAuth2Config(t, store, mode, false)
 			h := &ConfigHandler{store: cfg}
 
 			// issuer_url is set so oauth/both modes clear the (separate) issuer_url-required
@@ -985,6 +1050,71 @@ func TestUpdateConfig_RejectsMissingIssuerURLForDiscovery(t *testing.T) {
 					assert.Contains(t, string(ctx.Response.Body()), "issuer_url")
 				})
 			}
+		})
+	}
+}
+
+// TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL pins that the Claude Code
+// gateway, which works in any MCP auth mode, cannot be stored on without a
+// pinned issuer_url, including via a partial update that clears the issuer.
+func TestUpdateConfig_ClaudeCodeGatewayRequiresIssuerURL(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	for name, body := range map[string]string{
+		"issuer omitted":       `{"client_config":{"oauth2_server_config":{"gateways":{"claude_code":{"enabled":true}}}}}`,
+		"issuer env unset":     `{"client_config":{"oauth2_server_config":{"issuer_url":"env.BIFROST_TEST_UNSET_ISSUER_URL","gateways":{"claude_code":{"enabled":true}}}}}`,
+		"issuer cleared later": `{"client_config":{"oauth2_server_config":{"issuer_url":"","gateways":{"claude_code":{"enabled":true}}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &lib.Config{
+				ConfigStore:  newRealOAuth2Store(t),
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+			ctx := putConfigCtx(body)
+			h.updateConfig(ctx)
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), "oauth2_server_config.gateways")
+		})
+	}
+}
+
+// TestUpdateConfig_ClientGatewayTelemetryValidated pins that PUT /api/config
+// refuses a switched-on telemetry block that could not forward or would store a
+// collector credential in the config: no destination, a non-http endpoint, or a
+// plain-text header value. A valid block passes telemetry validation.
+func TestUpdateConfig_ClientGatewayTelemetryValidated(t *testing.T) {
+	SetLogger(&mockLogger{})
+	t.Setenv("BIFROST_TEST_OTEL_TOKEN", "secret")
+	gateway := func(telemetry string) string {
+		return `{"client_config":{"oauth2_server_config":{"issuer_url":"https://bifrost.example.com","gateways":{"claude_code":{"enabled":true,"telemetry":` + telemetry + `}}}}}`
+	}
+	for name, tc := range map[string]struct {
+		body    string
+		wantErr string
+	}{
+		"no destinations":    {gateway(`{"enabled":true}`), "destinations must list at least one collector"},
+		"non-http endpoint":  {gateway(`{"enabled":true,"destinations":[{"endpoint":"ftp://otel.example.com"}]}`), "must be an http or https URL"},
+		"plain-text header":  {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"Bearer abc"}}]}`), ""},
+		"empty header value": {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":" "}}]}`), "needs a value"},
+		"valid":              {gateway(`{"enabled":true,"destinations":[{"endpoint":"https://otel.example.com","headers":{"authorization":"env.BIFROST_TEST_OTEL_TOKEN"}}],"drop_attributes":["prompt"]}`), ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := &lib.Config{
+				ConfigStore:  newRealOAuth2Store(t),
+				ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: configtables.MCPServerAuthModeHeaders},
+			}
+			h := &ConfigHandler{store: cfg}
+			ctx := putConfigCtx(tc.body)
+			h.updateConfig(ctx)
+			if tc.wantErr == "" {
+				// The partial body may still be refused for unrelated required fields;
+				// what matters here is that telemetry validation passed.
+				assert.NotContains(t, string(ctx.Response.Body()), "telemetry", string(ctx.Response.Body()))
+				return
+			}
+			require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			assert.Contains(t, string(ctx.Response.Body()), tc.wantErr)
 		})
 	}
 }
@@ -1059,7 +1189,7 @@ func TestIssuance_GatedOnAuthMode(t *testing.T) {
 	}
 
 	t.Run("headers mode returns 404 on all issuance endpoints", func(t *testing.T) {
-		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false), nil, nil)
+		h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, configtables.MCPServerAuthModeHeaders, false), nil, nil)
 		ctxs := requests()
 		for i, fn := range []func(*fasthttp.RequestCtx){h.handleRegister, h.handleAuthorize, h.handleToken} {
 			fn(ctxs[i])
@@ -1069,7 +1199,7 @@ func TestIssuance_GatedOnAuthMode(t *testing.T) {
 
 	t.Run("oauth and both modes serve issuance", func(t *testing.T) {
 		for _, mode := range []configtables.MCPServerAuthMode{configtables.MCPServerAuthModeBoth, configtables.MCPServerAuthModeOAuth} {
-			h := NewOAuth2IssuanceHandler(newTestOAuth2Config(store, mode, false), nil, nil)
+			h := NewOAuth2IssuanceHandler(newTestOAuth2Config(t, store, mode, false), nil, nil)
 			ctxs := requests()
 			for i, fn := range []func(*fasthttp.RequestCtx){h.handleRegister, h.handleAuthorize, h.handleToken} {
 				fn(ctxs[i])

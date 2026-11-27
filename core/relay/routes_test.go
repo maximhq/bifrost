@@ -208,7 +208,10 @@ func TestMatchRouteSeesSentHeaders(t *testing.T) {
 	operator := &endpoint{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(nil, nil), operatorHeaders: map[string]string{"x-amz-target": "Textract.AnalyzeDocument"}}
 	route := operator.matchRoute("POST", "/", map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis"})
 	require.NotNil(t, route)
-	assert.True(t, route.billable, "the operator's header is what is sent, so its route bills")
+	assert.False(t, route.billable, "the caller's header replaces the operator's on the wire, as on a passthrough call, so its route matches")
+	route = operator.matchRoute("POST", "/", nil)
+	require.NotNil(t, route)
+	assert.True(t, route.billable, "with no caller copy the operator's header is what is sent")
 
 	sdk := &endpoint{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(nil, nil)}
 	route = sdk.matchRoute("POST", "/", map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"})
@@ -216,8 +219,74 @@ func TestMatchRouteSeesSentHeaders(t *testing.T) {
 	assert.False(t, route.billable)
 }
 
+// A route matches only on headers the upstream request carries: one buildRequest drops (a
+// caller's x-amz-* on a SigV4 relay, plain or x-bf-eh-*, or its own Authorization) cannot select
+// a route, so a caller cannot reach a cheaper route with a header the upstream never sees. The
+// headers that are forwarded still match.
+func TestMatchRouteIgnoresDroppedHeaders(t *testing.T) {
+	cfg := &schemas.RelayConfig{
+		Auth: schemas.RelayAuthConfig{Type: schemas.RelayAuthAWSSigV4, AWS: &schemas.RelayAWSAuthConfig{Service: "s3"}},
+		Routes: []schemas.RelayRouteConfig{
+			{Method: "PUT", Path: "/**", Headers: map[string]string{"X-Amz-Acl": "public-read"}, Billable: schemas.Ptr(false)},
+			{Method: "PUT", Path: "/**", Headers: map[string]string{"Authorization": "Bearer free"}, Billable: schemas.Ptr(false)},
+			{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.Get*"}, Billable: schemas.Ptr(false)},
+			{Method: "PUT", Path: "/**", Billable: schemas.Ptr(true)},
+			{Method: "POST", Path: "/"},
+		},
+	}
+	sigv4 := &endpoint{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(nil, nil)}
+	billable := func(e *endpoint, method string, headers map[string]string, extra map[string][]string) bool {
+		_, b, route := resolveFor(e, method, "/bucket/key", e.routeHeaders(headers, extra))
+		if method == "POST" {
+			_, b, route = resolveFor(e, method, "/", e.routeHeaders(headers, extra))
+		}
+		require.NotNil(t, route)
+		return b
+	}
+	assert.True(t, billable(sigv4, "PUT", map[string]string{"x-amz-acl": "public-read"}, nil), "a plain x-amz-* header is dropped under SigV4, so it selects nothing")
+	assert.True(t, billable(sigv4, "PUT", nil, map[string][]string{"x-amz-acl": {"public-read"}}), "so is an x-bf-eh-x-amz-* header")
+	assert.True(t, billable(sigv4, "PUT", map[string]string{"authorization": "Bearer free"}, nil), "the caller's Authorization is replaced by the credential")
+	assert.False(t, billable(sigv4, "POST", map[string]string{"x-amz-target": "Textract.GetDocumentAnalysis"}, nil), "x-amz-target is forwarded, so it still selects its route")
+	assert.False(t, billable(sigv4, "POST", nil, map[string][]string{"x-amz-target": {"Textract.GetDocumentAnalysis"}}))
+
+	bearerCfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{
+		{Method: "PUT", Path: "/**", Headers: map[string]string{"X-Amz-Acl": "public-read"}, Billable: schemas.Ptr(false)},
+		{Method: "PUT", Path: "/**", Billable: schemas.Ptr(true)},
+	}}
+	bearer := &endpoint{cfg: bearerCfg, routes: compileRoutes(bearerCfg), usage: resolveUsage(nil, nil)}
+	assert.False(t, billable(bearer, "PUT", nil, map[string][]string{"x-amz-acl": {"public-read"}}), "off SigV4 the header is forwarded, so it matches")
+}
+
 // resolveFor is the usage mapping, billing flag and route a request resolves to.
 func resolveFor(e *endpoint, method, path string, headers map[string]string) (resolvedUsage, bool, *compiledRoute) {
 	p := e.plan(method, path, headers)
 	return p.usage, p.billing, p.route
+}
+
+// A caller header and its x-bf-eh-* copy under another spelling are one header: the caller's
+// own value is applied last and is what the upstream reads, so it is the one a route matches on.
+// The HTTP gateway lowercases names; a Go SDK caller may send X-Amz-Target.
+func TestRouteHeadersCallerValueWinsAcrossSpellings(t *testing.T) {
+	cfg := &schemas.RelayConfig{Routes: []schemas.RelayRouteConfig{
+		{Method: "POST", Path: "/", Headers: map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}, Billable: schemas.Ptr(false)},
+		{Method: "POST", Path: "/"},
+	}}
+	e := &endpoint{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(nil, nil)}
+	headers := e.routeHeaders(map[string]string{"X-Amz-Target": "Textract.AnalyzeDocument"}, map[string][]string{"x-amz-target": {"Textract.GetDocumentAnalysis"}})
+	_, billable, route := resolveFor(e, "POST", "/", headers)
+	require.NotNil(t, route)
+	assert.True(t, billable, "the caller's AnalyzeDocument is sent, so its route is the one matched")
+	assert.Len(t, headers, 1, "the two spellings are one header")
+}
+
+// BenchmarkRouteHeaders measures building the route-matching headers for a typical call: a few
+// forwarded headers and no x-bf-eh-* ones, the case that must not allocate.
+func BenchmarkRouteHeaders(b *testing.B) {
+	cfg := &schemas.RelayConfig{Auth: schemas.RelayAuthConfig{Type: schemas.RelayAuthBearer}}
+	e := &endpoint{cfg: cfg, routes: compileRoutes(cfg), usage: resolveUsage(nil, nil)}
+	headers := map[string]string{"content-type": "application/json", "accept": "application/json", "user-agent": "sdk/1.0", "x-request-id": "r-1", "x-tenant": "acme"}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = e.routeHeaders(headers, nil)
+	}
 }

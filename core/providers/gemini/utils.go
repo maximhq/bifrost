@@ -1108,6 +1108,28 @@ func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
 	return string(providerReason)
 }
 
+// MalformedOutputError returns a retryable error when the first candidate ended with
+// MALFORMED_FUNCTION_CALL or MALFORMED_RESPONSE, and nil otherwise. Gemini uses these
+// when the model produced output it could not encode, typically a broken tool call,
+// so the candidate carries nothing usable. The finish reason map above renders them
+// as "stop", which a caller sees as a successful, empty turn: an agent client then
+// ends its turn mid-task. Failing with a 502 instead lets the retry loop and any
+// configured fallbacks treat it like the transient upstream failure it is.
+func (response *GenerateContentResponse) MalformedOutputError() *schemas.BifrostError {
+	if response == nil || len(response.Candidates) == 0 || response.Candidates[0] == nil {
+		return nil
+	}
+	reason := response.Candidates[0].FinishReason
+	if reason != FinishReasonMalformedFunctionCall && reason != FinishReasonMalformedResponse {
+		return nil
+	}
+	message := "gemini returned " + string(reason) + " with no usable output"
+	if finishMessage := response.Candidates[0].FinishMessage; finishMessage != "" {
+		message += ": " + finishMessage
+	}
+	return providerUtils.NewProviderAPIError(message, nil, fasthttp.StatusBadGateway, schemas.Ptr(strings.ToLower(string(reason))), nil)
+}
+
 // geminiResponsesStatus derives the Responses status and incomplete_details from a
 // stop reason already converted by ConvertGeminiFinishReasonToBifrost. Error finish
 // reasons are handled by the callers (status "failed") before this is consulted.
@@ -3362,16 +3384,17 @@ func geminiFunctionOutputValue(output string) any {
 }
 
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.
-// It first tries to extract the "output" field if present, otherwise marshals the entire response.
-// Returns an empty string if the response is nil or extraction fails.
+// It unwraps only the documented {"output": X} envelope, where "output" is the sole key.
+// Any sibling field (stderr, ok, error, ...) means the whole object is the tool result,
+// so the raw response is returned intact rather than dropping the siblings.
+// Returns an empty string if the response is nil.
 func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 	if funcResp == nil || funcResp.Response == nil {
 		return ""
 	}
 
-	// Try to extract "output" field first
 	var respMap map[string]json.RawMessage
-	if err := sonic.Unmarshal(funcResp.Response, &respMap); err == nil {
+	if err := sonic.Unmarshal(funcResp.Response, &respMap); err == nil && len(respMap) == 1 {
 		if outputVal, ok := respMap["output"]; ok {
 			var outputStr string
 			if err := sonic.Unmarshal(outputVal, &outputStr); err == nil {
@@ -3381,7 +3404,7 @@ func extractFunctionResponseOutput(funcResp *FunctionResponse) string {
 		}
 	}
 
-	// If no "output" key or unmarshal failed, return raw JSON
+	// No sole "output" key, or not a JSON object: return the raw JSON
 	return string(funcResp.Response)
 }
 

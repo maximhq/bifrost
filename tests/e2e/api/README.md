@@ -2,6 +2,31 @@
 
 End-to-end API tests for the Bifrost API using Postman collections and [Newman](https://www.npmjs.com/package/newman) (CLI).
 
+## Immediate registration of management-created provider prefixes
+
+Folder 378 (`provider-prefix-registration`) creates fresh providers with discovery
+disabled and a virtual key weighted toward a competitor. The first native chat
+and streamed `/openai` Responses requests must retain the new provider prefix,
+even when the upstream returns `503`. A missing-key case must return `400` without
+rerouting. Each case removes its providers and virtual key.
+
+Start the local fixture and isolated gateway described in
+[Provider 5xx failover](#provider-5xx-failover-and-429-retry-hint-propagation), setting
+`BIFROST_SETUP_TOKEN=provider-registration-local-token` on that gateway. Then run:
+
+```bash
+newman run tests/e2e/api/collections/provider-harness.json \
+  --folder "378. Management-created provider prefixes route immediately (provider-prefix-registration)" \
+  --env-var baseUrl=http://127.0.0.1:8790 \
+  --env-var providerErrorFixture=1 \
+  --env-var providerErrorFixtureUrl=http://127.0.0.1:8791 \
+  --env-var setupToken=provider-registration-local-token \
+  --timeout-request 15000 --timeout-script 15000
+```
+
+The folder is skipped unless `providerErrorFixture=1`. Inline-script regression
+checks are included in `node tests/e2e/api/collections/collection-scripts.test.mjs`.
+
 ## Provider secret redaction
 
 The API management collection's `Provider Secret Redaction` folder covers every
@@ -221,6 +246,22 @@ Start the fixture and the isolated gateway as in
 make run-provider-harness-test PROVIDER=openai FEATURE="extra content deltas" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
 ```
 
+## Provider-reported zero cost
+
+Folder 391 pins that a provider's zero `usage.cost` reaches the client as
+`"cost": {"total_cost": 0}` and not as `"cost": {}`. The fixture model `upstream-zero-cost`
+answers like `upstream-ok` and reports `usage.cost: 0`. The native `/v1/chat/completions` cases
+check the non-streaming response and the streamed usage chunk; the OpenAI SDK route case checks
+that the bare `cost: 0` is still there. These cases make no live provider calls and are skipped
+unless `providerErrorFixture=1`.
+
+Start the fixture and the isolated gateway as in
+[Fixed-length response truncation](#fixed-length-response-truncation), then run:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="zero provider cost" BASE_URL=http://localhost:8790 ENV_FILE=tmp/content-length-truncation.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1
+```
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
@@ -261,6 +302,11 @@ fallback once. A model may carry a `~tag` suffix (`upstream-500~run-1-a1`): the 
 picks the behaviour and the hit is counted under the full name, so a case counts its own attempts.
 `test-key` is the only credential it accepts: a request whose `Authorization` header carries any
 other bearer is refused with 401, as a provider refuses a caller's direct key.
+
+The fixture also answers `POST /v1/audio/transcriptions` the way OpenAI answers audio with no
+speech: `upstream-transcribe-empty` returns 200 with an empty body and `upstream-transcribe-newline`
+returns 200 with `"\n"`, whatever the `response_format`. Folder 341 runs on these, so swap its name
+into `--folder` above to run it.
 The same gateway config also registers an Azure key; the fixture answers model `azure-filtered` on
 `/openai/v1/chat/completions` with Azure `prompt_filter_results` and per-choice `content_filter_results`,
 which is how the dropped-annotation defect was measured.
@@ -443,6 +489,57 @@ The cases are skipped unless `workloadIdentityFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Relay and log-store matrix
+
+`runners/run-log-store-matrix.mjs` checks that relays behave as documented and that relay rows
+follow every logging setting the way LLM rows do, on every log store. It is hermetic: every
+upstream is a local server (an echo LLM provider, a programmable relay upstream, an HTTPS twin,
+local HTTP and SOCKS5 proxies, and an S3-compatible bucket), so it needs no keys and makes no
+paid calls.
+
+```bash
+make run-log-store-matrix POSTGRES_URL=postgresql://bifrost:bifrost_password@localhost:5432/postgres PARALLEL=3
+make run-log-store-matrix BINARY=tmp/bifrost-http CELLS=sqlite SUITES=pricing,proxy SKIP_CONTENT_MATRIX=1
+```
+
+It boots one gateway per log-store cell, because the store is read at boot only:
+
+| Cell | Log store |
+|---|---|
+| `sqlite`, `postgres` | RDB store |
+| `sqlite+s3`, `postgres+s3` | Hybrid store over `lib/fake-s3.mjs` |
+| `sqlite+s3-exclude-types` | Hybrid, `relay` and `chat_completion` in `object_storage_exclude_request_types` |
+| `sqlite+s3-exclude-fields` | Hybrid, `request_body` in `object_storage_exclude_fields` |
+
+Postgres cells need `POSTGRES_URL` (an admin connection; each cell gets a fresh database) and are
+skipped without it. Against each cell it runs:
+
+- `run-content-logging-matrix.mjs`: every combination of client, virtual key, per-request
+  header and OTel connector content settings. Each case sends an LLM request and a relay request
+  on the same key and header, and the relay row must keep or drop content exactly as its LLM twin,
+  checked through the API and in the raw `logs` and `relay_logs` rows.
+- `run-relay-matrix.mjs`: the relay suites below. Run it alone against any gateway with
+  `BIFROST_E2E_BASE_URL` (and `--suites`).
+
+| Suite | Covers |
+|---|---|
+| `pricing` | Every usage mapping (source, measure, rate, fee, block, minimum, reported cost, `ignore_upstream_cost`) through an inherit, an override and a waive route, checked against an independent reference of the pricing rules (`lib/relay-matrix.mjs`) |
+| `streaming` | Route `stream` flag, `streaming.paths` and upstream content type, with SSE last-value usage and byte-priced bodies |
+| `billing` | Method, `billable` flag and upstream status |
+| `routes` | Path globs, header matchers, operator headers, route order, disabled routes, `skip_route_check` |
+| `auth` | `bearer`, `header`, `query`, `basic`, `none`, `aws_sigv4`, extra headers, credential stripping |
+| `governance` | Grants, inactive and unknown keys, inference auth, attribution parity with LLM rows, budgets and request limits at key, team and customer level, the request counter LLM and relay traffic share |
+| `settings` | `logging_headers`, `x-bf-lh-*`, `x-bf-dim-*`, key metadata, session ids, user agent and app, `hide_deleted_virtual_keys_in_filters`, query-string redaction, each compared with an LLM row |
+| `logsapi` | Shared filters, stats, histogram bucket sizes, sort, paging and delete on `/api/logs` and `/api/relay-logs` |
+| `network` | Timeouts, stream idle timeout, redirects, TLS with a private CA, unreachable upstreams, a reply past the old 64 MiB cap, a caller that hangs up mid-stream |
+| `proxy` | A relay's `proxy_config` (`http`, `socks5`, `none`, credentials, an HTTPS upstream through CONNECT) and the inherited global proxy |
+| `hybrid` | Offload, previews, hydration, hidden retention, exclusions and deletes, each compared with an LLM row (hybrid cells only) |
+
+A parity check that differs by design is listed in `KNOWN_GAPS` (`lib/relay-matrix.mjs`) and
+reports `GAP`; a listed gap that stops reproducing fails the run as `STALE`. The squid, stunnel
+and microsocks proxy matrix (`make run-e2e-api PROXY=1`) also sends the relays-e2e rows through
+every proxy cell, with the profile's relays given each cell's proxy.
+
 ## Contents
 
 ### V1 Endpoint Tests
@@ -479,7 +576,7 @@ Stop the fixture and isolated gateway with Ctrl+C after testing.
 
 | Path | Description |
 |------|-------------|
-| `collections/bifrost-routing-wiring.postman_collection.json` | Generated collection asserting how virtual-key gates and per-key catalog gates compose on the routing path: the route each request takes, the error on a refusal, and the stored log. **Generated — do not hand-edit.** |
+| `collections/bifrost-routing-wiring.postman_collection.json` | Generated collection for the routing path: how virtual keys, key and catalog gates, aliases, routing rules, fallbacks and governance load balancing pick the provider, model and key a request takes, the error on a refusal, and the stored log and routing trail. **Generated: do not hand-edit.** |
 | `runners/build-routing-wiring.mjs` | Generator for the collection above; its scenario table is the source of truth. |
 | `runners/individual/run-newman-routing-wiring-tests.sh` | Script to run the routing wiring collection; `--binary` boots a clean server for the run. |
 | `runners/lib/clean-bifrost.sh` | Boots that clean server for both wiring runners: no providers, sqlite stores in a throwaway app dir. |
@@ -780,17 +877,26 @@ These tests cover the path **HTTP mutation → config write → server-side cata
 hook → read endpoint**: the wiring that keeps the model catalog (`/api/models`,
 `/api/models/details`) in sync with provider and key changes made through the
 management API. Each scenario stands up an isolated custom provider backed by a
-real upstream (the per-provider scenarios run once each for OpenAI, Anthropic and
-Gemini), drives a sequence of mutations, and asserts the catalog reflects each one.
+real upstream, drives a sequence of mutations, and asserts the catalog reflects each one.
 
-What it covers (one scenario per contract):
+What it covers, one scenario per contract, each run once for OpenAI, Anthropic and Gemini:
 
-- **Add provider + key** — a gated key surfaces its allowed model.
-- **Update key model set** — changing a key's allow-list re-gates the catalog.
-- **Disable / re-enable key** — a disabled key drops its models; re-enabling restores them.
-- **Delete one of two keys** — only the deleted key's models drop; the sibling's survive.
-- **Delete provider** — the provider and its models disappear from the catalog.
-- **Alias resolution** — an inference call via a key alias routes to the underlying model.
+- **Add provider + key**: a gated key surfaces its allowed model.
+- **Update key model set**: changing a key's allow-list re-gates the catalog.
+- **Disable / re-enable key**: a disabled key drops its models; re-enabling restores them.
+- **Delete one of two keys**: only the deleted key's models drop; the sibling's survive.
+- **Delete provider**: the provider and its models disappear from the catalog.
+- **Alias resolution**: an inference call via a key alias routes to the underlying model.
+- **Blacklist re-gate**: blacklisting a model removes it from a wildcard key's catalog.
+- **Multi-key union**: two keys gating distinct models both contribute to the list.
+- **Model details gating**: `/api/models/details` lists only what the keys allow, like `/api/models`.
+- **Base models stable**: key changes leave the base model list unchanged.
+
+And once, on one base type:
+
+- **Keyless provider**: the provider is listed but contributes no catalog rows.
+- **Unreachable list-models upstream**: discovery failing keeps the keys' allow-listed models.
+- **Disallowed list-models**: with `list_models` not allowed, discovery never runs and only explicit allow-lists surface.
 
 Run locally (from this directory):
 
@@ -833,10 +939,15 @@ The only seed-env var it reads is `e2e_seed_prefix`, for run-id namespacing.
 
 ### Routing Wiring Tests
 
-These tests cover how governance and the model catalog compose on the routing
-path. Each scenario creates providers and keys, gates them with a virtual key,
-sends inference, and asserts the route taken (`extra_fields.routing_info`), the
-error on a refusal, and the stored log. Before a scenario's first inference
+These tests cover the routing path: how virtual keys, key and catalog gates,
+aliases, routing rules, request-level and rule fallbacks, and governance load
+balancing decide where a request goes. Each scenario creates providers and keys,
+gates them with a virtual key or a routing rule, sends inference on `/v1`, the
+OpenAI drop-in route or the Anthropic route, and asserts the route taken
+(`extra_fields.routing_info` and the routing headers), the error on a refusal,
+the stored log and its fallback rows, and the routing trail. New routing cases go
+in this suite, or in the model catalog wiring suite when they read the catalog, following
+`.claude/skills/routing-harness/SKILL.md`, not in the provider harness. Before a scenario's first inference
 request, one step polls until the model catalog lists every provider's models and
 asserts nothing about routing; each routing request after it is sent once and
 judged once, so a route that only shows up on a retry fails.
@@ -854,7 +965,7 @@ node runners/build-routing-wiring.mjs                                           
 It calls real providers through `env.<NAME>` keys, so the server's environment
 needs `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `AZURE_API_KEY` and
 `AZURE_ENDPOINT`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION`,
-and `VERTEX_PROJECT_ID` and `VERTEX_CREDENTIALS`. Both wiring collections send the
+and `VERTEX_PROJECT_ID`, `VERTEX_PROJECT_NUMBER` and `VERTEX_CREDENTIALS`. Both wiring collections send the
 setup token on `/api` calls (`BIFROST_SETUP_TOKEN`, default
 `bifrost-e2e-setup-token`), which a server with a setup token and no admin requires.
 

@@ -80,6 +80,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { parseAsBoolean, parseAsString, useQueryState } from "nuqs";
 import { toast } from "sonner";
 import BlockHeader from "../views/blockHeader";
+import { LogErrorCard } from "../views/logErrorCard";
 import { CopyInlineButton, HeroStat, StatusPill, statusCodeBadgeClass } from "../views/logHeroStat";
 import { FallbackChainBanner, FallbackChainTimeline, useFallbackChain } from "../views/fallbackChain";
 import CollapsibleBox from "../views/collapsibleBox";
@@ -98,6 +99,9 @@ import {
 	decisionQuestions,
 	extractProviderErrorMessage,
 	findLastPendingClientCallIndex,
+	formatGuardrailUsageUnits,
+	getExternalGuardrailCost,
+	isExternalGuardrailCall,
 	nextSessionLookupStart,
 	isShownMetadataKey,
 	parseRoutingDecisionLine,
@@ -637,6 +641,11 @@ interface LogDetailViewProps {
 	onFilterByParentRequestId?: (parentRequestId: string) => void;
 	onFilterBySessionId?: (sessionId: string) => void;
 	onOpenLog?: (logId: string) => void;
+	/**
+	 * "embedded" renders inside another surface (the agent trace tree): no sticky sheet header or sheet padding,
+	 * and the active tab and "More details" state stay local so several embedded views never share URL keys.
+	 */
+	variant?: "sheet" | "embedded";
 }
 
 // Explains an empty Raw JSON tab. Raw payloads are only persisted when the
@@ -704,7 +713,9 @@ export function LogDetailView({
 	onFilterByParentRequestId,
 	onFilterBySessionId,
 	onOpenLog,
+	variant = "sheet",
 }: LogDetailViewProps) {
+	const embedded = variant === "embedded";
 	const { t } = useTranslation("observability");
 	const { copy: copyBody } = useCopyToClipboard({
 		successMessage: t("logs.detail.copyRequestBodySuccess"),
@@ -725,11 +736,17 @@ export function LogDetailView({
 	// Kept in localStorage so a filter such as "reasoning only" survives reloads and new sessions.
 	const [visibleRoles, setVisibleRoles] = useMessageRoleFilterPreference();
 	// Kept in the URL so the open section and active tab survive switching logs, which remounts this view.
-	const [moreDetailsOpen, setMoreDetailsOpen] = useQueryState(
+	const [urlMoreDetailsOpen, setUrlMoreDetailsOpen] = useQueryState(
 		"log_more",
 		parseAsBoolean.withDefault(false).withOptions({ history: "replace" }),
 	);
-	const [tabParam, setTabParam] = useQueryState("log_tab", parseAsString.withOptions({ history: "replace" }));
+	const [urlTabParam, setUrlTabParam] = useQueryState("log_tab", parseAsString.withOptions({ history: "replace" }));
+	const [localMoreDetailsOpen, setLocalMoreDetailsOpen] = useState(false);
+	const [localTabParam, setLocalTabParam] = useState<string | null>(null);
+	const moreDetailsOpen = embedded ? localMoreDetailsOpen : urlMoreDetailsOpen;
+	const setMoreDetailsOpen = embedded ? setLocalMoreDetailsOpen : setUrlMoreDetailsOpen;
+	const tabParam = embedded ? localTabParam : urlTabParam;
+	const setTabParam = embedded ? setLocalTabParam : setUrlTabParam;
 
 	const handleToggleReveal = (checked: boolean) => {
 		setShowRevealedValues(checked && revealAvailable);
@@ -760,6 +777,8 @@ export function LogDetailView({
 	// A downstream build can draw its own routing record at the top of the Routing tab.
 	const RoutingPanel = getLogRoutingPanel();
 	const isPassthrough = isPassthroughLog(log);
+	const judgeGuardrailCost = log.cost_breakdown?.additional_cost_details?.guardrail_cost ?? 0;
+	const externalGuardrailCost = getExternalGuardrailCost(log.guardrail_debug?.judge_calls);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isRealtimeTranscription =
 		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
@@ -972,9 +991,14 @@ export function LogDetailView({
 	) : (
 		<>
 			{/* Breadcrumb header with actions */}
-			<div className="bg-card sticky -top-5 z-20 mx-4 flex items-center justify-between gap-3 pt-4 pb-2 md:mx-8 md:pt-8">
+			<div
+				className={cn(
+					"bg-card flex items-center justify-between gap-3",
+					embedded ? "pb-2" : "sticky -top-5 z-20 mx-4 pt-4 pb-2 md:mx-8 md:pt-8",
+				)}
+			>
 				<div className="text-muted-foreground flex items-center gap-2 text-sm">
-					{headerAction}
+					{!embedded && headerAction}
 					<span className="text-foreground font-medium">{t("logs.detail.requestDetails")}</span>
 				</div>
 				<div className="flex items-center gap-3">
@@ -1058,9 +1082,11 @@ export function LogDetailView({
 							<X className="h-3 w-3" />
 						</Button>
 					) : null}
+					{/* Embedded, the header action (e.g. "Open in LLM logs") sits at the right end. */}
+					{embedded && headerAction}
 				</div>
 			</div>
-			<div className="flex flex-col gap-4 px-4 pb-4 md:px-8 md:pb-8">
+			<div className={cn("flex flex-col gap-4", !embedded && "px-4 pb-4 md:px-8 md:pb-8")}>
 				{fallbackChain && <FallbackChainBanner chain={fallbackChain} currentId={log.id} onOpenLog={onOpenLog} />}
 				<div className="border-border rounded-sm border">
 					<div className="flex items-start justify-between gap-6 px-5 pt-5 pb-4">
@@ -1439,6 +1465,18 @@ export function LogDetailView({
 										}
 									/>
 								)}
+								{log.client_ip && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("labels.clientIp")}
+										valueTooltip={log.client_ip}
+										value={
+											<span className="font-mono" data-testid="logdetails-client-ip">
+												{log.client_ip}
+											</span>
+										}
+									/>
+								)}
 								<LogEntryDetailsView
 									className="w-full"
 									label={t("labels.type")}
@@ -1691,6 +1729,14 @@ export function LogDetailView({
 										}
 									/>
 								)}
+								{log.user_email && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("labels.userEmail")}
+										valueTooltip={log.user_email}
+										value={<span data-testid="logdetails-user-email">{log.user_email}</span>}
+									/>
+								)}
 								{log.fallback_index > 0 && (
 									<LogEntryDetailsView className="w-full" label={t("logs.detail.fallbackIndex")} value={log.fallback_index} />
 								)}
@@ -1746,6 +1792,22 @@ export function LogDetailView({
 												data-testid="logdetails-routing-rule-link"
 											>
 												{log.routing_rule.name}
+											</Link>
+										}
+									/>
+								)}
+								{log.model_router_id && (
+									<LogEntryDetailsView
+										className="w-full"
+										label={t("labels.modelRouter")}
+										value={
+											<Link
+												to="/workspace/logs"
+												search={(prev) => ({ ...prev, offset: 0, selected_log: "", model_router_ids: [log.model_router_id!] })}
+												className="text-blue-600 hover:underline dark:text-blue-400"
+												data-testid="logdetails-model-router-link"
+											>
+												{log.model_router_name || log.model_router_id}
 											</Link>
 										}
 									/>
@@ -1946,11 +2008,16 @@ export function LogDetailView({
 												value={formatCostPrecise(log.cost_breakdown?.additional_cost)}
 											/>
 										)}
-										{(log.cost_breakdown?.additional_cost_details?.guardrail_cost ?? 0) > 0 && (
+										{judgeGuardrailCost + externalGuardrailCost > 0 && (
 											<LogEntryDetailsView
 												className="w-full"
 												label={t("logs.detail.guardrailCost")}
-												value={formatCostPrecise(log.cost_breakdown?.additional_cost_details?.guardrail_cost)}
+												value={formatCostPrecise(judgeGuardrailCost + externalGuardrailCost)}
+												tooltip={
+													externalGuardrailCost > 0
+														? t("logs.detail.externalGuardrailCostNote", { cost: formatCostPrecise(externalGuardrailCost) })
+														: undefined
+												}
 											/>
 										)}
 										{(log.cost_breakdown?.additional_cost_details?.semantic_cache_cost ?? 0) > 0 && (
@@ -2434,9 +2501,33 @@ export function LogDetailView({
 												{call.judge_model && (
 													<LogEntryDetailsView className="w-full" label={t("logs.detail.judgeModel")} value={call.judge_model} />
 												)}
-												<LogEntryDetailsView className="w-full" label={t("logs.detail.promptTokens")} value={call.prompt_tokens ?? 0} />
-												<LogEntryDetailsView className="w-full" label={t("labels.completionTokens")} value={call.completion_tokens ?? 0} />
-												<LogEntryDetailsView className="w-full" label={t("logs.stats.totalTokens")} value={call.total_tokens ?? 0} />
+												{/* External guardrail services bill in usage units, not tokens. */}
+												{(!isExternalGuardrailCall(call) || (call.total_tokens ?? 0) > 0) && (
+													<>
+														<LogEntryDetailsView className="w-full" label={t("logs.detail.promptTokens")} value={call.prompt_tokens ?? 0} />
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("labels.completionTokens")}
+															value={call.completion_tokens ?? 0}
+														/>
+														<LogEntryDetailsView className="w-full" label={t("logs.stats.totalTokens")} value={call.total_tokens ?? 0} />
+													</>
+												)}
+												{isExternalGuardrailCall(call) && (
+													<>
+														<LogEntryDetailsView
+															className="w-full"
+															label={t("logs.detail.estimatedCost")}
+															value={formatCostPrecise(call.estimated_cost)}
+															tooltip={t("logs.detail.estimatedCostTooltip")}
+														/>
+														<LogEntryDetailsView
+															className="w-full md:col-span-3"
+															label={t("logs.detail.usageUnits")}
+															value={formatGuardrailUsageUnits(call.usage_units)}
+														/>
+													</>
+												)}
 												{call.reason && (
 													<LogEntryDetailsView className="w-full md:col-span-3" label={t("logs.detail.reason")} value={call.reason} />
 												)}
@@ -2809,7 +2900,7 @@ export function LogDetailView({
 							<SpeechView
 								speechInput={applyRedactionMappingToValue(log.speech_input, activeInputRevealMapping)}
 								speechOutput={log.speech_output}
-								isStreaming={log.stream}
+								isStreaming={log.stream && log.status === "processing"}
 							/>
 						)}
 						{(log.transcription_input || log.transcription_output) && (
@@ -3206,36 +3297,26 @@ export function LogDetailView({
 						)}
 
 						{(displayErrorMessage || log.error_details?.error.error != null || log.status === "error") && (
-							<div className="rounded-sm border border-red-200 bg-red-50/70 p-5 dark:border-red-900 dark:bg-red-950/30">
-								<div className="flex items-center gap-2 text-red-700 dark:text-red-400">
-									<AlertCircle className="h-4 w-4 shrink-0" />
-									<span className="text-[12.5px] font-semibold">{t("labels.error")}</span>
-									{displayErrorMessage ? <CopyInlineButton text={displayErrorMessage} /> : null}
-								</div>
-								<div className="mt-2 text-[13px] leading-relaxed break-words whitespace-pre-wrap text-red-700 dark:text-red-400">
-									{displayErrorMessage ??
-										(log.content_hidden
-											? statusCode
-												? t("logs.detail.errorNotStoredWithStatus", { statusCode })
-												: t("logs.detail.errorNotStored")
-											: statusCode
-												? t("logs.detail.providerErrorNoMessageWithStatus", { statusCode })
-												: t("logs.detail.providerErrorNoMessage"))}
-								</div>
-								{log.error_details?.error.error != null ? (
-									<details className="group mt-3 rounded-sm border border-red-200/70 bg-white/40 dark:border-red-900/70 dark:bg-red-950/40">
-										<summary className="flex cursor-pointer items-center justify-between px-3 py-2 text-[12px] text-red-700 hover:bg-red-50/80 dark:text-red-400 dark:hover:bg-red-950/60">
-											<span className="font-medium">{t("logs.detail.details")}</span>
-											<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-										</summary>
-										<div className="custom-scrollbar max-h-[400px] overflow-y-auto border-t border-red-200/70 px-3 py-2 font-mono text-[11.5px] leading-[1.6] break-words whitespace-pre-wrap text-red-900 dark:border-red-900/70 dark:text-red-300">
-											{typeof log.error_details.error.error === "string"
-												? log.error_details.error.error
-												: JSON.stringify(log.error_details.error.error, null, 2)}
-										</div>
-									</details>
-								) : null}
-							</div>
+							<LogErrorCard
+								message={
+									displayErrorMessage ??
+									(log.content_hidden
+										? statusCode
+											? t("logs.detail.errorNotStoredWithStatus", { statusCode })
+											: t("logs.detail.errorNotStored")
+										: statusCode
+											? t("logs.detail.providerErrorNoMessageWithStatus", { statusCode })
+											: t("logs.detail.providerErrorNoMessage"))
+								}
+								copyText={displayErrorMessage}
+								details={
+									log.error_details?.error.error != null
+										? typeof log.error_details.error.error === "string"
+											? log.error_details.error.error
+											: JSON.stringify(log.error_details.error.error, null, 2)
+										: null
+								}
+							/>
 						)}
 					</TabsContent>
 

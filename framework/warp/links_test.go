@@ -200,10 +200,14 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 		// Deliberately absent from the Logs page, so a query narrowed by one
 		// gets no link at all (TestWarpResultsFilteredByErrorFieldsCarryNoLogsLink)
 		// rather than a link that is silently wider.
-		"error_types":        "the Logs page has no error-type filter",
-		"error_codes":        "the Logs page has no error-code filter",
-		"status_codes":       "the Logs page has no status-code filter",
-		"guardrail_outcomes": "the Logs page has no guardrail-outcome filter",
+		"error_types":           "the Logs page has no error-type filter",
+		"error_codes":           "the Logs page has no error-code filter",
+		"status_codes":          "the Logs page has no status-code filter",
+		"guardrail_outcomes":    "the Logs page has no guardrail-outcome filter",
+		"guardrail_actions":     "the Logs page has no guardrail match filter",
+		"guardrail_rule_ids":    "the Logs page has no guardrail match filter",
+		"guardrail_profile_ids": "the Logs page has no guardrail match filter",
+		"guardrail_phases":      "the Logs page has no guardrail match filter",
 	}
 	filters := &logstore.SearchFilters{}
 	value := reflect.ValueOf(filters).Elem()
@@ -232,8 +236,8 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 			field.Set(reflect.ValueOf(new(7)))
 		case *time.Time:
 			field.Set(reflect.ValueOf(new(time.Unix(1789112579, 0))))
-		case map[string]string:
-			field.Set(reflect.ValueOf(map[string]string{"env": "prod", "app": "web"}))
+		case logstore.MetadataFilterMap:
+			field.Set(reflect.ValueOf(logstore.MetadataFilterMap{"env": {"prod", "staging"}, "app": {"web"}}))
 		default:
 			t.Fatalf("SearchFilters.%s has a type this test cannot fill: teach it, and logsViewLink", value.Type().Field(i).Name)
 		}
@@ -247,9 +251,9 @@ func TestWarpLogsViewLinkCarriesEveryFilter(t *testing.T) {
 		require.Contains(t, logsPageParams, name, "the Logs page has no %s parameter, so the link repair would unlink it", name)
 	}
 	// In the forms the page parses: comma-joined arrays, a JSON object with
-	// stable key order, a bare true.
+	// stable key order (one value as a string, several as an array), a bare true.
 	require.Equal(t, "a,b", values.Get("stop_reasons"))
-	require.Equal(t, `{"app":"web","env":"prod"}`, values.Get("metadata_filters"))
+	require.Equal(t, `{"app":"web","env":["prod","staging"]}`, values.Get("metadata_filters"))
 	require.Equal(t, "true", values.Get("missing_cost_only"))
 	require.Equal(t, "7", values.Get("min_tokens"))
 
@@ -584,6 +588,11 @@ func TestWarpLogsLinkPerFilterArgument(t *testing.T) {
 		"error_codes":           {arg: []any{"context_length_exceeded"}, noLink: true},
 		"status_codes":          {arg: []any{float64(429)}, noLink: true},
 		"guardrail_outcomes":    {arg: []any{"blocked", "detected"}, noLink: true},
+		"guardrail_actions":     {arg: []any{"blocked", "redacted"}, noLink: true},
+		"guardrail_rule_ids":    {arg: []any{"3"}, noLink: true},
+		"guardrail_profile_ids": {arg: []any{"7"}, noLink: true},
+		"guardrail_phases":      {arg: []any{"input"}, noLink: true},
+		"model_router_ids":      {arg: []any{"support"}, want: "support"},
 		// Widens the question; the page has no parameter for it.
 		"scope": {arg: "all"},
 	}
@@ -796,6 +805,7 @@ func TestWarpRankingLinksPerDimension(t *testing.T) {
 		logstore.RankingDimensionApp:                 "apps",
 		logstore.RankingDimensionUserAgent:           "user_agents",
 		logstore.RankingDimensionRoutingRule:         "routing_rule_ids",
+		logstore.RankingDimensionModelRouter:         "model_router_ids",
 		logstore.RankingDimensionRoutingEngine:       "routing_engine_used",
 		logstore.RankingDimensionSelectedKey:         "selected_key_ids",
 		logstore.RankingDimensionAlias:               "aliases",

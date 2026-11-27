@@ -2589,9 +2589,11 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 		"tool_call_names": []any{"get_weather"}, "user_agents": []any{"curl/8"},
 		"metadata_filters": map[string]any{"env": "prod"}, "session_id": "sess-1", "parent_request_id": "req-0", "request_id": "req-1",
 		"missing_cost_only": true, "agent_names": []any{"support-bot"}, "agent_correlation_id": "corr-1",
+		"model_router_ids": []any{"support"},
 	}, Now())
 	require.NoError(t, err)
 	require.Equal(t, []string{"rule-premium"}, filters.RoutingRuleIDs)
+	require.Equal(t, []string{"support"}, filters.ModelRouterIDs)
 	require.Equal(t, []string{"key-1"}, filters.SelectedKeyIDs)
 	require.Equal(t, []string{"smart"}, filters.Aliases)
 	require.Equal(t, []string{"loadbalancing"}, filters.RoutingEngineUsed)
@@ -2599,7 +2601,7 @@ func TestWarpToolsAcceptEveryLogsFilter(t *testing.T) {
 	require.Equal(t, []string{"semantic"}, filters.ComplexityMechanisms)
 	require.Equal(t, []string{"get_weather"}, filters.ToolCallNames)
 	require.Equal(t, []string{"curl/8"}, filters.UserAgents)
-	require.Equal(t, map[string]string{"env": "prod"}, filters.MetadataFilters)
+	require.Equal(t, logstore.MetadataFilterMap{"env": {"prod"}}, filters.MetadataFilters)
 	require.Equal(t, "sess-1", filters.SessionID)
 	require.Equal(t, "req-0", filters.ParentRequestID)
 	require.Equal(t, "req-1", filters.RequestID)
@@ -2653,7 +2655,11 @@ func TestWarpRanksAndLinksRoutingDimensions(t *testing.T) {
 
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 	require.Contains(t, content, "Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by")
+	// Without the management tools, how a rule is configured is out of reach.
 	require.Contains(t, content, "how a routing rule is configured")
+	// With them, it is a management-tool question, not a traffic one.
+	withManagement := systemInstructionsFor(&schemas.WarpConfig{}, toolAvailability{semantic: true, management: true})
+	require.Contains(t, withManagement, "A question about how something is configured goes to the management tools")
 }
 
 // A row says which rule, key and alias handled it, so a list of requests can be

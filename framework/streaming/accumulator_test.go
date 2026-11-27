@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -123,6 +124,39 @@ func TestAccumulatedChatStreamPreservesServiceTierBeforeUsageOnlyChunk(t *testin
 	requireNoError(err)
 	if data.ServiceTier == nil || *data.ServiceTier != schemas.BifrostServiceTierPriority {
 		t.Fatalf("expected priority service tier, got %v", data.ServiceTier)
+	}
+}
+
+// TestAccumulatedChatStreamKeepsRawResponseFormat verifies the joined raw keeps the format its chunks declared, so a
+// chunk without a declaration (a synthetic tail) does not clear it.
+func TestAccumulatedChatStreamKeepsRawResponseFormat(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "chat-raw-format")
+
+	declared := newChatChunkResponse(0, "Hello", nil, nil)
+	declared.ChatResponse.ExtraFields.RawResponse = `{"choices":[{"index":0,"delta":{"content":"Hello"}}]}`
+	declared.ChatResponse.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIChatCompletionChunk
+	if _, err := accumulator.processChatStreamingResponse(ctx, declared, nil); err != nil {
+		t.Fatalf("declared chunk: %v", err)
+	}
+	tail := newChatChunkResponse(1, "", bifrost.Ptr("stop"), nil)
+	tail.ChatResponse.ExtraFields.RawResponse = `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, tail, nil)
+	if err != nil {
+		t.Fatalf("tail chunk: %v", err)
+	}
+
+	if processed == nil || processed.Data == nil || processed.Data.RawResponse == nil {
+		t.Fatal("expected accumulated raw response on final chunk")
+	}
+	if want := `{"choices":[{"index":0,"delta":{"content":"Hello"}}]}` + "\n\n" + `{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`; *processed.Data.RawResponse != want {
+		t.Fatalf("accumulated raw = %q, want %q", *processed.Data.RawResponse, want)
+	}
+	if processed.Data.RawResponseFormat != schemas.RawResponseFormatOpenAIChatCompletionChunk {
+		t.Fatalf("accumulated raw format = %q, want %q", processed.Data.RawResponseFormat, schemas.RawResponseFormatOpenAIChatCompletionChunk)
 	}
 }
 
@@ -969,6 +1003,283 @@ func newChatChunkResponse(idx int, content string, finishReason *string, usage *
 	}
 }
 
+// newChatChoicesChunkResponse builds a chat streaming event carrying the given choices, the way n>1 streams send them.
+func newChatChoicesChunkResponse(idx int, usage *schemas.BifrostLLMUsage, choices ...schemas.BifrostResponseChoice) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ID:      "msg_choices",
+			Object:  "chat.completion.chunk",
+			Choices: choices,
+			Usage:   usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				Provider:    schemas.OpenAI,
+				ChunkIndex:  idx,
+			},
+		},
+	}
+}
+
+// chatStreamChoice builds one streamed chat choice with the given content and finish reason.
+func chatStreamChoice(index int, content string, finishReason *string) schemas.BifrostResponseChoice {
+	delta := &schemas.ChatStreamResponseChoiceDelta{}
+	if content != "" {
+		delta.Content = bifrost.Ptr(content)
+	}
+	return schemas.BifrostResponseChoice{
+		Index:                    index,
+		FinishReason:             finishReason,
+		ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: delta},
+	}
+}
+
+// chatToolCallChoice builds one streamed chat choice carrying a tool call fragment at tool index 0.
+func chatToolCallChoice(index int, name *string, arguments string) schemas.BifrostResponseChoice {
+	return schemas.BifrostResponseChoice{
+		Index: index,
+		ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{
+			ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+				Index:    0,
+				Function: schemas.ChatAssistantMessageToolCallFunction{Name: name, Arguments: arguments},
+			}},
+		}},
+	}
+}
+
+// chatChoiceContent returns the assembled content of a non-streaming chat choice, or "" when it has none.
+func chatChoiceContent(choice schemas.BifrostResponseChoice) string {
+	if choice.ChatNonStreamResponseChoice == nil || choice.ChatNonStreamResponseChoice.Message == nil {
+		return ""
+	}
+	content := choice.ChatNonStreamResponseChoice.Message.Content
+	if content == nil || content.ContentStr == nil {
+		return ""
+	}
+	return *content.ContentStr
+}
+
+// TestChatStreamingKeepsChoicesSeparate covers an n=2 chat stream whose choices interleave, as OpenAI sends them. Each
+// choice must keep its own content, tool call, finish reason and logprobs, and the top-level output must describe
+// choice 0 only.
+func TestChatStreamingKeepsChoicesSeparate(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "chat-n2")
+
+	firstHello := chatStreamChoice(0, "Hello ", nil)
+	firstHello.LogProbs = &schemas.BifrostLogProbs{Content: []schemas.ContentLogProb{{Token: "Hello"}}}
+	secondSecret := chatStreamChoice(1, "SECRET ", nil)
+	secondSecret.LogProbs = &schemas.BifrostLogProbs{Content: []schemas.ContentLogProb{{Token: "SECRET"}}}
+	events := []*schemas.BifrostResponse{
+		newChatChoicesChunkResponse(0, nil, firstHello),
+		newChatChoicesChunkResponse(1, nil, secondSecret),
+		newChatChoicesChunkResponse(2, nil, chatStreamChoice(0, "world", nil)),
+		newChatChoicesChunkResponse(3, nil, chatStreamChoice(1, "PASSWORD", nil)),
+		newChatChoicesChunkResponse(4, nil, chatToolCallChoice(0, bifrost.Ptr("get_weather"), `{"city":`)),
+		newChatChoicesChunkResponse(5, nil, chatToolCallChoice(1, bifrost.Ptr("send_email"), `{"to":`)),
+		newChatChoicesChunkResponse(6, nil, chatToolCallChoice(0, nil, `"Paris"}`)),
+		newChatChoicesChunkResponse(7, nil, chatToolCallChoice(1, nil, `"bob"}`)),
+		newChatChoicesChunkResponse(8, nil, chatStreamChoice(0, "", bifrost.Ptr("stop"))),
+		newChatChoicesChunkResponse(9, nil, chatStreamChoice(1, "", bifrost.Ptr("length"))),
+	}
+	for _, event := range events {
+		if _, err := accumulator.processChatStreamingResponse(ctx, event, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, newChatChoicesChunkResponse(10, &schemas.BifrostLLMUsage{TotalTokens: 12}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := processed.Data
+	if got := *data.OutputMessage.Content.ContentStr; got != "Hello world" {
+		t.Fatalf("OutputMessage content = %q, want choice 0's %q", got, "Hello world")
+	}
+	if data.FinishReason == nil || *data.FinishReason != "stop" {
+		t.Fatalf("FinishReason = %v, want choice 0's stop", data.FinishReason)
+	}
+	if len(data.ToolCalls) != 1 || *data.ToolCalls[0].Function.Name != "get_weather" || data.ToolCalls[0].Function.Arguments != `{"city":"Paris"}` {
+		t.Fatalf("ToolCalls = %+v, want only choice 0's get_weather call", data.ToolCalls)
+	}
+	if data.LogProbs == nil || len(data.LogProbs.Content) != 1 || data.LogProbs.Content[0].Token != "Hello" {
+		t.Fatalf("LogProbs = %+v, want only choice 0's", data.LogProbs)
+	}
+	if data.TokenUsage == nil || data.TokenUsage.TotalTokens != 12 {
+		t.Fatalf("TokenUsage = %+v, want the usage chunk's", data.TokenUsage)
+	}
+
+	choices := processed.ToBifrostResponse().ChatResponse.Choices
+	if len(choices) != 2 {
+		t.Fatalf("got %d choices, want 2", len(choices))
+	}
+	want := []struct {
+		content, finishReason, toolName, toolArguments string
+	}{
+		{"Hello world", "stop", "get_weather", `{"city":"Paris"}`},
+		{"SECRET PASSWORD", "length", "send_email", `{"to":"bob"}`},
+	}
+	for i, choice := range choices {
+		if choice.Index != i {
+			t.Fatalf("choice %d has index %d", i, choice.Index)
+		}
+		if got := chatChoiceContent(choice); got != want[i].content {
+			t.Fatalf("choice %d content = %q, want %q", i, got, want[i].content)
+		}
+		if choice.FinishReason == nil || *choice.FinishReason != want[i].finishReason {
+			t.Fatalf("choice %d finish reason = %v, want %q", i, choice.FinishReason, want[i].finishReason)
+		}
+		toolCalls := choice.ChatNonStreamResponseChoice.Message.ChatAssistantMessage.ToolCalls
+		if len(toolCalls) != 1 || *toolCalls[0].Function.Name != want[i].toolName || toolCalls[0].Function.Arguments != want[i].toolArguments {
+			t.Fatalf("choice %d tool calls = %+v, want one %s call with %s", i, toolCalls, want[i].toolName, want[i].toolArguments)
+		}
+	}
+	if choices[1].LogProbs == nil || len(choices[1].LogProbs.Content) != 1 || choices[1].LogProbs.Content[0].Token != "SECRET" {
+		t.Fatalf("choice 1 logprobs = %+v, want only its own", choices[1].LogProbs)
+	}
+}
+
+// TestChatStreamingTopLevelOutputIsEmptyWithoutChoiceZero covers an n>1 stream that has only emitted a later choice
+// (a paused snapshot taken before choice 0 spoke). The top-level output describes choice 0 alone, so it must stay
+// empty instead of borrowing choice 1's content, tool call, finish reason or logprobs.
+func TestChatStreamingTopLevelOutputIsEmptyWithoutChoiceZero(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "chat-no-choice-zero")
+
+	withLogProbs := chatStreamChoice(1, "SECRET ", nil)
+	withLogProbs.LogProbs = &schemas.BifrostLogProbs{Content: []schemas.ContentLogProb{{Token: "SECRET"}}}
+	for _, event := range []*schemas.BifrostResponse{
+		newChatChoicesChunkResponse(0, nil, withLogProbs),
+		newChatChoicesChunkResponse(1, nil, chatToolCallChoice(1, bifrost.Ptr("send_email"), `{"to":"bob"}`)),
+	} {
+		if _, err := accumulator.processChatStreamingResponse(ctx, event, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, newChatChoicesChunkResponse(2, nil, chatStreamChoice(1, "", bifrost.Ptr("length"))), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := processed.Data
+	if data.OutputMessage == nil || data.OutputMessage.Content == nil || data.OutputMessage.Content.ContentStr != nil || data.OutputMessage.ChatAssistantMessage != nil {
+		t.Fatalf("OutputMessage = %+v, want an empty assistant message", data.OutputMessage)
+	}
+	if data.FinishReason != nil || data.LogProbs != nil || len(data.ToolCalls) != 0 {
+		t.Fatalf("top-level output borrowed choice 1: finish %v, logprobs %+v, tool calls %+v", data.FinishReason, data.LogProbs, data.ToolCalls)
+	}
+	if len(data.OutputChoices) != 1 || data.OutputChoices[0].Index != 1 || *data.OutputChoices[0].Message.Content.ContentStr != "SECRET " {
+		t.Fatalf("OutputChoices = %+v, want choice 1 kept under its own index", data.OutputChoices)
+	}
+	if *data.OutputChoices[0].FinishReason != "length" || data.OutputChoices[0].LogProbs == nil {
+		t.Fatalf("choice 1 lost its own finish reason or logprobs: %+v", data.OutputChoices[0])
+	}
+}
+
+// TestChatStreamingSplitsBundledChoices covers an event that carries several choices at once. Each choice is kept
+// apart while the event's own fields (usage, raw response) are recorded once.
+func TestChatStreamingSplitsBundledChoices(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "chat-bundled")
+
+	bundled := newChatChoicesChunkResponse(0, nil, chatStreamChoice(0, "first", nil), chatStreamChoice(1, "second", nil))
+	bundled.ChatResponse.ExtraFields.RawResponse = "frame-0"
+	if _, err := accumulator.processChatStreamingResponse(ctx, bundled, nil); err != nil {
+		t.Fatal(err)
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	final := newChatChoicesChunkResponse(1, &schemas.BifrostLLMUsage{TotalTokens: 4},
+		chatStreamChoice(0, "", bifrost.Ptr("stop")), chatStreamChoice(1, "", bifrost.Ptr("stop")))
+	processed, err := accumulator.processChatStreamingResponse(ctx, final, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	choices := processed.ToBifrostResponse().ChatResponse.Choices
+	if len(choices) != 2 || chatChoiceContent(choices[0]) != "first" || chatChoiceContent(choices[1]) != "second" {
+		t.Fatalf("choices = %+v, want first and second kept apart", choices)
+	}
+	if processed.Data.RawResponse == nil || *processed.Data.RawResponse != "frame-0" {
+		t.Fatalf("RawResponse = %v, want the bundled frame once", processed.Data.RawResponse)
+	}
+	if processed.Data.TokenUsage == nil || processed.Data.TokenUsage.TotalTokens != 4 {
+		t.Fatalf("TokenUsage = %+v, want 4 total tokens", processed.Data.TokenUsage)
+	}
+}
+
+// TestTextStreamingKeepsChoicesSeparate covers an n=2 text completion stream: each choice keeps its own text and
+// finish reason in the text completion response.
+func TestTextStreamingKeepsChoicesSeparate(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "text-n2")
+
+	textEvent := func(idx, choiceIndex int, text string, finishReason *string) *schemas.BifrostResponse {
+		return &schemas.BifrostResponse{TextCompletionResponse: &schemas.BifrostTextCompletionResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				Index:                        choiceIndex,
+				FinishReason:                 finishReason,
+				TextCompletionResponseChoice: &schemas.TextCompletionResponseChoice{Text: bifrost.Ptr(text)},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.TextCompletionStreamRequest, ChunkIndex: idx},
+		}}
+	}
+	for _, event := range []*schemas.BifrostResponse{
+		textEvent(0, 0, "Hello ", nil),
+		textEvent(1, 1, "SECRET ", nil),
+		textEvent(2, 0, "world", bifrost.Ptr("stop")),
+	} {
+		if _, err := accumulator.processChatStreamingResponse(ctx, event, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed, err := accumulator.processChatStreamingResponse(ctx, textEvent(3, 1, "PASSWORD", bifrost.Ptr("length")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	choices := processed.ToBifrostResponse().TextCompletionResponse.Choices
+	want := []struct{ text, finishReason string }{{"Hello world", "stop"}, {"SECRET PASSWORD", "length"}}
+	if len(choices) != len(want) {
+		t.Fatalf("got %d choices, want %d", len(choices), len(want))
+	}
+	for i, choice := range choices {
+		if choice.Index != i || *choice.Text != want[i].text || *choice.FinishReason != want[i].finishReason {
+			t.Fatalf("choice %d = index %d, text %q, finish %q; want %q, %q", i, choice.Index, *choice.Text, *choice.FinishReason, want[i].text, want[i].finishReason)
+		}
+	}
+}
+
+// TestPutChatStreamChunkResetsEveryField guards the pool reset: a recycled chunk must not carry any field, including
+// ones added to the struct later, into another request.
+func TestPutChatStreamChunkResetsEveryField(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	chunk := &ChatStreamChunk{
+		Timestamp:      time.Now(),
+		Delta:          &schemas.ChatStreamResponseChoiceDelta{},
+		FinishReason:   bifrost.Ptr("stop"),
+		LogProbs:       &schemas.BifrostLogProbs{},
+		GuardrailDebug: &schemas.BifrostGuardrailMetadata{},
+		ChunkIndex:     3,
+		ChoiceIndex:    1,
+		ExtraChoices:   []ChatStreamChunk{{ChoiceIndex: 2}},
+	}
+	accumulator.putChatStreamChunk(chunk)
+	if !reflect.ValueOf(*chunk).IsZero() {
+		t.Fatalf("chunk not fully reset: %+v", *chunk)
+	}
+}
+
 // TestChatStreamingFinishReasonForwardedOnContentChunk covers providers that
 // send finish_reason together with the final content delta. The provider
 // forwards that terminal chunk as-is and then appends a synthetic tail chunk
@@ -1150,5 +1461,134 @@ func TestBuildChatMessageFromChunksKeepsGeneratedImages(t *testing.T) {
 	}
 	if len(got.Images) != 1 || got.Images[0].ImageURL.URL != imageURL {
 		t.Fatalf("streamed image missing from accumulated message: %s", encoded)
+	}
+}
+
+// passthroughStreamChunk returns a passthrough stream chunk carrying body at chunkIndex.
+func passthroughStreamChunk(chunkIndex int, body string) *schemas.BifrostResponse {
+	return &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{
+		StatusCode:  200,
+		Body:        []byte(body),
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.PassthroughStreamRequest, ChunkIndex: chunkIndex},
+	}}
+}
+
+// TestPassthroughStreamKeepsEachChunkOnceInOrder verifies a passthrough body fed by several plugins, out of order, is
+// accumulated once per chunk in ChunkIndex order, in the snapshot and on the final chunk, and that a reset lets a
+// retried attempt start again from index 0.
+func TestPassthroughStreamKeepsEachChunkOnceInOrder(t *testing.T) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(accumulator.Cleanup)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "passthrough-dedupe")
+	feed := func(result *schemas.BifrostResponse) *ProcessedStreamResponse {
+		t.Helper()
+		processed, err := accumulator.processPassthroughStreamingResponse(ctx, result, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return processed
+	}
+
+	for _, chunk := range []*schemas.BifrostResponse{passthroughStreamChunk(1, "b"), passthroughStreamChunk(0, "a"), passthroughStreamChunk(1, "b"), passthroughStreamChunk(0, "a"), passthroughStreamChunk(2, "c")} {
+		feed(chunk)
+	}
+	snapshot := accumulator.GetAccumulatedResponse("passthrough-dedupe")
+	if snapshot == nil || snapshot.PassthroughResponse == nil || string(snapshot.PassthroughResponse.Body) != "abc" {
+		t.Fatalf("snapshot = %+v, want body %q", snapshot, "abc")
+	}
+	if snapshot.PassthroughResponse.ExtraFields.RequestType != schemas.PassthroughStreamRequest {
+		t.Fatalf("snapshot request type = %q", snapshot.PassthroughResponse.ExtraFields.RequestType)
+	}
+
+	accumulator.ResetStreamAccumulator("passthrough-dedupe")
+	feed(passthroughStreamChunk(0, "x"))
+	feed(passthroughStreamChunk(1, "y"))
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	processed := feed(passthroughStreamChunk(2, ""))
+	if processed.Data == nil || string(processed.Data.PassthroughOutput.Body) != "xy" {
+		t.Fatalf("final body = %+v, want %q", processed.Data, "xy")
+	}
+}
+
+// BenchmarkPassthroughStreamAccumulate measures accumulating a 1 MB passthrough stream (256 chunks of 4 KB, each fed by
+// two plugins) and assembling its body on the final chunk.
+func BenchmarkPassthroughStreamAccumulate(b *testing.B) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	b.Cleanup(accumulator.Cleanup)
+	chunks := make([]*schemas.BifrostResponse, 256)
+	for index := range chunks {
+		chunks[index] = passthroughStreamChunk(index, strings.Repeat("x", 4096))
+	}
+	final := passthroughStreamChunk(len(chunks), "")
+	b.SetBytes(256 * 4096)
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "passthrough-bench")
+		for _, chunk := range chunks {
+			for range 2 {
+				if _, err := accumulator.processPassthroughStreamingResponse(ctx, chunk, nil); err != nil {
+					b.Fatal(err)
+				}
+			}
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		if _, err := accumulator.processPassthroughStreamingResponse(ctx, final, nil); err != nil {
+			b.Fatal(err)
+		}
+		accumulator.ResetStreamAccumulator("passthrough-bench")
+	}
+}
+
+// BenchmarkChatStreamAccumulate measures accumulating a single-choice chat stream (256 content chunks and a usage
+// chunk) and building its final response, the common n=1 path.
+func BenchmarkChatStreamAccumulate(b *testing.B) {
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	b.Cleanup(accumulator.Cleanup)
+	chunks := make([]*schemas.BifrostResponse, 256)
+	for index := range chunks {
+		chunks[index] = newChatChunkResponse(index, "token ", nil, nil)
+	}
+	final := newChatChunkResponse(len(chunks), "", bifrost.Ptr("stop"), &schemas.BifrostLLMUsage{TotalTokens: 256})
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "chat-bench")
+		for _, chunk := range chunks {
+			if _, err := accumulator.processChatStreamingResponse(ctx, chunk, nil); err != nil {
+				b.Fatal(err)
+			}
+		}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		processed, err := accumulator.processChatStreamingResponse(ctx, final, nil)
+		if err != nil {
+			b.Fatal(err)
+		}
+		processed.ToBifrostResponse()
+		accumulator.ResetStreamAccumulator("chat-bench")
+	}
+}
+
+// Streamed custom tool input accumulates into one custom call, as OpenAI sends it on chat.
+func TestBuildChatMessageFromChunks_CustomToolCall(t *testing.T) {
+	call := func(tc schemas.ChatAssistantMessageToolCall) *ChatStreamChunk {
+		return &ChatStreamChunk{Delta: &schemas.ChatStreamResponseChoiceDelta{ToolCalls: []schemas.ChatAssistantMessageToolCall{tc}}}
+	}
+	chunks := []*ChatStreamChunk{
+		call(schemas.ChatAssistantMessageToolCall{ID: bifrost.Ptr("call_1"), Type: bifrost.Ptr("custom"), Custom: &schemas.ChatAssistantMessageToolCallCustom{Name: bifrost.Ptr("code_exec")}}),
+		call(schemas.ChatAssistantMessageToolCall{Custom: &schemas.ChatAssistantMessageToolCallCustom{Input: "print("}}),
+		call(schemas.ChatAssistantMessageToolCall{Custom: &schemas.ChatAssistantMessageToolCallCustom{Input: "1)"}}),
+	}
+	message := BuildChatMessageFromChunks(chunks)
+	if message.ChatAssistantMessage == nil || len(message.ChatAssistantMessage.ToolCalls) != 1 {
+		t.Fatalf("tool calls not accumulated: %+v", message.ChatAssistantMessage)
+	}
+	tc := message.ChatAssistantMessage.ToolCalls[0]
+	if tc.Custom == nil || tc.Custom.Name == nil || *tc.Custom.Name != "code_exec" || tc.Custom.Input != "print(1)" {
+		t.Fatalf("custom call = %+v, want code_exec/print(1)", tc.Custom)
+	}
+	if body, _ := schemas.Marshal(message); strings.Contains(string(body), `"function"`) {
+		t.Fatalf("custom call carries a function object: %s", body)
 	}
 }

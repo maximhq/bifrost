@@ -1232,6 +1232,7 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.Latency = processedResp.Data.Latency
 		accResult.TimeToFirstToken = processedResp.Data.TimeToFirstToken
 		accResult.OutputMessage = processedResp.Data.OutputMessage
+		accResult.OutputChoices = processedResp.Data.OutputChoices
 		accResult.OutputMessages = processedResp.Data.OutputMessages
 		accResult.TokenUsage = processedResp.Data.TokenUsage
 		// Speed and InferenceGeo ride along inside TokenUsage (providers set them on
@@ -1250,6 +1251,7 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.PassthroughOutput = processedResp.Data.PassthroughOutput
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
+		accResult.RawResponseFormat = processedResp.Data.RawResponseFormat
 
 		// Fall back to the provider-reported cost when the catalog could not price
 		// the stream, unless the provider is configured with ignore_provider_cost.

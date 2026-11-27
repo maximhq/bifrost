@@ -8,7 +8,6 @@ import (
 
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
@@ -32,15 +31,15 @@ func TestGetModelParameters_ResolvesQualifiedAndBareIDs(t *testing.T) {
 		{Model: "openrouter/moonshotai/kimi-k2.5", Data: `{"model_parameters":[{"id":"temperature"}]}`},
 	}))
 
-	ds := datasheet.New(store, &mockLogger{}, datasheet.Config{})
+	ds := datasheetForTest(t, store, &mockLogger{}, datasheet.Config{})
 	rows, err := ds.LoadModelParamsFromDB(ctx)
 	require.NoError(t, err)
 	require.Equal(t, 2, rows)
 
 	h := &ProviderHandler{
-		dbStore: store,
-		inMemoryStore: &lib.Config{
-			ModelCatalog: modelcatalog.NewTestCatalogWithDatasheet(ds),
+		configStore: store,
+		config: &lib.Config{
+			ModelCatalog: catalogWithDatasheetForTest(t, ds),
 		},
 	}
 
@@ -98,7 +97,7 @@ func TestGetModelParameters_ResolvesQualifiedAndBareIDs(t *testing.T) {
 	}
 
 	t.Run("nil inMemoryStore falls back to exact DB lookup", func(t *testing.T) {
-		bare := &ProviderHandler{dbStore: store}
+		bare := &ProviderHandler{configStore: store}
 
 		var req fasthttp.Request
 		req.SetRequestURI("/api/models/parameters?model=gpt-5.5")

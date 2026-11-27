@@ -58,8 +58,16 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 		anthropicTool.Description = tool.Function.Description
 	}
 
-	// Convert function parameters to input_schema
-	if tool.Function.Parameters != nil && (tool.Function.Parameters.Type != "" || tool.Function.Parameters.Properties != nil) {
+	// Convert function parameters to input_schema. Anthropic rejects a custom
+	// tool without input_schema, and requires `"type":"object"` at its root.
+	// Every schema is carried with every key it has, including a root without
+	// `type`: a root oneOf/anyOf/allOf is rewritten into an object schema by
+	// normalizeAnthropicToolInputSchema, and any other typeless root (a bare
+	// `properties`, `description` or `$ref` object, a raw `{}`) gets
+	// `"type":"object"` from withAnthropicObjectRootType. Neither step, nor
+	// Normalized, writes through its input, so the deep copy here is not what
+	// keeps the caller's parameters unmutated.
+	if tool.Function.Parameters != nil {
 		anthropicTool.InputSchema = schemas.DeepCopyToolFunctionParameters(tool.Function.Parameters)
 	}
 
@@ -69,7 +77,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 		if err != nil {
 			return AnthropicTool{}, err
 		}
-		anthropicTool.InputSchema = anthropicTool.InputSchema.Normalized()
+		anthropicTool.InputSchema = withAnthropicObjectRootType(anthropicTool.InputSchema).Normalized()
 	}
 
 	if tool.CacheControl != nil {
@@ -293,29 +301,9 @@ func convertMCPToolsetConfigMap(m map[string]*schemas.ChatMCPToolsetConfig) map[
 //
 // Returns (nil, nil) for anything unrecognised, leaving existing behaviour intact.
 func promoteThinkingFromExtraParams(value interface{}) (*schemas.ChatReasoning, *AnthropicThinking) {
-	if value == nil {
+	thinking, ok := decodeThinkingExtraParam(value)
+	if !ok {
 		return nil, nil
-	}
-
-	// Accept the typed form as well as the decoded-JSON map, mirroring the
-	// context_management/diagnostics promotions above them.
-	var thinking AnthropicThinking
-	switch v := value.(type) {
-	case *AnthropicThinking:
-		if v == nil {
-			return nil, nil
-		}
-		thinking = *v
-	case AnthropicThinking:
-		thinking = v
-	default:
-		data, err := providerUtils.MarshalSorted(value)
-		if err != nil {
-			return nil, nil
-		}
-		if err := sonic.Unmarshal(data, &thinking); err != nil {
-			return nil, nil
-		}
 	}
 
 	switch thinking.Type {
@@ -342,6 +330,33 @@ func promoteThinkingFromExtraParams(value interface{}) (*schemas.ChatReasoning, 
 	}
 }
 
+// decodeThinkingExtraParam decodes an ExtraParams "thinking" value, accepting the
+// typed form as well as the decoded-JSON map, mirroring the
+// context_management/diagnostics promotions.
+func decodeThinkingExtraParam(value interface{}) (AnthropicThinking, bool) {
+	var thinking AnthropicThinking
+	switch v := value.(type) {
+	case nil:
+		return thinking, false
+	case *AnthropicThinking:
+		if v == nil {
+			return thinking, false
+		}
+		thinking = *v
+	case AnthropicThinking:
+		thinking = v
+	default:
+		data, err := providerUtils.MarshalSorted(value)
+		if err != nil {
+			return thinking, false
+		}
+		if err := sonic.Unmarshal(data, &thinking); err != nil {
+			return thinking, false
+		}
+	}
+	return thinking, true
+}
+
 // ToAnthropicChatRequest converts a Bifrost request to Anthropic format
 // This is the reverse of ConvertChatRequestToBifrost for provider-side usage
 func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostChatRequest) (*AnthropicMessageRequest, error) {
@@ -349,7 +364,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		return nil, fmt.Errorf("bifrost request is nil or input is nil")
 	}
 
-	messages := bifrostReq.Input
+	messages := providerUtils.ChatBreakpointsAsCacheControl(bifrostReq.Input, bifrostReq.Params, AnthropicMaxCacheBreakpoints)
 	if ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) == false {
 		trimmed := len(messages)
 		for trimmed > 0 && messages[trimmed-1].Role == schemas.ChatMessageRoleAssistant {
@@ -365,7 +380,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 
 	// capModel is the canonical model string used only for capability/version
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// A custom provider resolves to the built-in provider it wraps, so its datasheet row
+	// applies here as it already does in the request builder's re-strip.
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
 	// Fable 5.1+ rejects tool_choice "any"/"tool" outright, so every forced
 	// choice below — the caller's and the synthetic structured-output pin — is
 	// dropped and the model answers under the default "auto".
@@ -412,9 +429,16 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 		// it would send two conflicting thinking objects).
 		reasoningParams := bifrostReq.Params.Reasoning
 		var promotedThinking *AnthropicThinking
-		if reasoningParams == nil {
-			if passthrough, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !ok || !passthrough {
+		// thinking.block_binding has no neutral spelling either, and unlike the
+		// thinking mode it is taken even when an explicit Reasoning wins: it only
+		// says what to do with stale signed blocks, so it composes with any mode.
+		var promotedBlockBinding *AnthropicThinkingBlockBinding
+		if passthrough, ok := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !ok || !passthrough {
+			if reasoningParams == nil {
 				reasoningParams, promotedThinking = promoteThinkingFromExtraParams(bifrostReq.Params.ExtraParams["thinking"])
+			}
+			if thinking, ok := decodeThinkingExtraParam(bifrostReq.Params.ExtraParams["thinking"]); ok {
+				promotedBlockBinding = copyThinkingBlockBinding(thinking.BlockBinding)
 			}
 		}
 
@@ -878,6 +902,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			anthropicReq.Thinking = &AnthropicThinking{Type: "disabled"}
 		}
 
+		// Attached once the thinking mode is final; stripUnsupportedAnthropicFields
+		// below drops it again on a host without the beta.
+		if promotedBlockBinding != nil && anthropicReq.Thinking != nil && thinkingTypeTakesBlockBinding(anthropicReq.Thinking.Type) {
+			anthropicReq.Thinking.BlockBinding = promotedBlockBinding
+		}
+
 		// Convert service tier
 		if bifrostReq.Params.ServiceTier != nil {
 			mapped := MapBifrostServiceTierToAnthropicRequest(*bifrostReq.Params.ServiceTier)
@@ -893,8 +923,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// system message and is emitted as role:"system" in the messages array
 	// (Anthropic API + Opus 4.8+ only).
 	seenConversation := false
-	midConvSystemSupported := caps.SupportsMidConversationSystem(
-		DefaultSupportsMidConversationSystem(caps.Provider(), caps.Model()))
+	midConvSystemSupported := midConversationSystemSupported(caps)
 	// See the same gate in ConvertBifrostMessagesToAnthropicMessages: when the native
 	// role:"system" form isn't available, inline as a user turn instead of hoisting into the
 	// top-level system block, which would invalidate the cached prefix behind it. Every family:
@@ -903,6 +932,7 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 	// cached prefix unit, api-docs.deepseek.com/guides/kv_cache), so hoisting collapses it the
 	// same way. The <system-reminder> envelope is plain text those models read fine.
 	inlineMidConvSystem := true
+	trimInlineJoin := caps.StripsUserTurnTrailingWhitespace(DefaultStripsUserTurnTrailingWhitespace(caps.Model()))
 
 	i := 0
 	for i < len(messages) {
@@ -977,6 +1007,9 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					inlined = inlineMidConversationSystem(&newContent)
 				}
 				if inlined != nil {
+					if trimInlineJoin {
+						trimUserTurnTail(anthropicMessages)
+					}
 					anthropicMessages = append(anthropicMessages, *inlined)
 					i++
 					continue
@@ -1020,12 +1053,15 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 							for _, block := range content.ContentBlocks {
 								// Anthropic rejects cache_control nested inside tool_result.content
 								// ("cache_control may not be specified within `tool_result.content`.
-								// Instead, place it directly on `tool_result`"), so hoist the first
-								// one found onto the tool_result block itself rather than copying it
-								// onto the nested block -- mirrors the same hoist-to-outer-level
-								// pattern already used for Bedrock's nested cachePoint
-								// (core/providers/bedrock/responses.go).
-								if block.CacheControl != nil && toolResult.CacheControl == nil {
+								// Instead, place it directly on `tool_result`"), so hoist it onto the
+								// tool_result block itself rather than copying it onto the nested
+								// block -- mirrors the same hoist-to-outer-level pattern already used
+								// for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
+								// The hoisted marker ends where the last nested block ends, so the
+								// last marker found is the one kept, with its ttl; an earlier
+								// nested marker (and its ttl) is dropped, since a tool_result
+								// takes only one breakpoint.
+								if block.CacheControl != nil {
 									toolResult.CacheControl = block.CacheControl
 								}
 								if block.Text != nil && *block.Text != "" {
@@ -1134,8 +1170,12 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 					} else if compacted := compactJSONBytes([]byte(toolCall.Function.Arguments)); compacted != nil {
 						toolUse.Input = json.RawMessage(compacted)
 					} else {
-						// Preserve original payload instead of silently dropping args.
-						toolUse.Input = json.RawMessage([]byte(toolCall.Function.Arguments))
+						// OpenAI-shaped history can carry arguments that are not valid JSON
+						// (truncated at max_tokens, concatenated objects). Anthropic needs an
+						// object here, and raw bytes fail the request marshal with a 500.
+						// Replay {} like the Gemini and Bedrock Converse converters do:
+						// Anthropic does not check history tool_use inputs against the schema.
+						toolUse.Input = json.RawMessage("{}")
 					}
 
 					content = append(content, toolUse)
@@ -1443,9 +1483,10 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 	// Convert usage information
 	if response.Usage != nil {
 		billable := billableAnthropicUsage(response.Usage)
+		cacheCreation := anthropicCacheCreationTotal(billable)
 		promptTokensDetails := &schemas.ChatPromptTokensDetails{
 			CachedReadTokens:  billable.CacheReadInputTokens,
-			CachedWriteTokens: billable.CacheCreationInputTokens,
+			CachedWriteTokens: cacheCreation,
 		}
 		if billable.CacheCreation.Ephemeral5mInputTokens > 0 || billable.CacheCreation.Ephemeral1hInputTokens > 0 {
 			promptTokensDetails.CachedWriteTokenDetails = &schemas.ChatCachedWriteTokenDetails{
@@ -1454,7 +1495,7 @@ func (response *AnthropicMessageResponse) ToBifrostChatResponse(ctx *schemas.Bif
 			}
 		}
 		bifrostResponse.Usage = &schemas.BifrostLLMUsage{
-			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + billable.CacheCreationInputTokens,
+			PromptTokens:        billable.InputTokens + billable.CacheReadInputTokens + cacheCreation,
 			PromptTokensDetails: promptTokensDetails,
 			CompletionTokens:    billable.OutputTokens,
 		}

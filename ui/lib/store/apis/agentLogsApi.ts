@@ -12,7 +12,16 @@ import type {
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 
-const Agent_TEXT_FILTER_KEYS = ["request_id", "trace_id", "task_id", "context_id", "push_config_id", "delivery_id", "attempt_id"] as const;
+const Agent_TEXT_FILTER_KEYS = [
+	"request_id",
+	"trace_id",
+	"task_id",
+	"context_id",
+	"push_config_id",
+	"delivery_id",
+	"attempt_id",
+	"caller_correlation_id",
+] as const;
 
 const Agent_MULTI_FILTER_KEYS = [
 	"agent_name",

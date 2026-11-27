@@ -11,11 +11,13 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/cli/internal/apis"
+	"github.com/maximhq/bifrost/cli/internal/config"
 	"github.com/maximhq/bifrost/cli/internal/harness"
 )
 
 // LaunchSpec holds the parameters needed to launch a harness subprocess.
 type LaunchSpec struct {
+	Project    config.Project
 	Harness    harness.Harness
 	BaseURL    string
 	VirtualKey string
@@ -114,6 +116,24 @@ type PreparedCmd struct {
 // PrepareCommand builds the exec.Cmd for a harness launch, including
 // environment variables, pre-launch hooks, and CLI arguments.
 func PrepareCommand(ctx context.Context, spec LaunchSpec) (*PreparedCmd, error) {
+	if err := harness.ValidateProject(spec.Harness.ID, spec.Project, false); err != nil {
+		return nil, err
+	}
+	if spec.Project != (config.Project{}) {
+		if spec.Harness.ID == "opencode" && strings.TrimSpace(spec.Model) == "" {
+			return nil, fmt.Errorf("project-scoped OpenCode launch requires --model")
+		}
+		if spec.Harness.ID == "claude" {
+			for _, arg := range spec.Args {
+				if arg == "--settings" || strings.HasPrefix(arg, "--settings=") {
+					return nil, fmt.Errorf("project selection cannot be combined with Claude --settings; put other headers in repository settings")
+				}
+			}
+		}
+		if spec.Harness.ID == "opencode" && os.Getenv("OPENCODE_CONFIG_CONTENT") != "" {
+			return nil, fmt.Errorf("unset OPENCODE_CONFIG_CONTENT before a project-scoped OpenCode launch")
+		}
+	}
 	env, err := BuildEnv(spec)
 	if err != nil {
 		return nil, err
@@ -126,7 +146,7 @@ func PrepareCommand(ctx context.Context, spec LaunchSpec) (*PreparedCmd, error) 
 			return nil, fmt.Errorf("build endpoint for pre-launch: %w", err)
 		}
 		credential := strings.TrimSpace(spec.AgentToken)
-		if strings.TrimSpace(spec.TokenHelperCommand) != "" {
+		if strings.TrimSpace(spec.TokenHelperCommand) != "" || spec.Harness.AgentTokenEnv == "" {
 			credential = ""
 		}
 		if credential == "" {
@@ -151,7 +171,12 @@ func PrepareCommand(ctx context.Context, spec LaunchSpec) (*PreparedCmd, error) 
 			env = setEnv(env, name, value)
 		}
 	}
-	settingsArgs, settingsCleanup, err := prepareTokenHelperSettings(spec)
+	env, err = applyProjectEnvironment(spec, env)
+	if err != nil {
+		runCleanup(cleanupFunctions)
+		return nil, err
+	}
+	settingsArgs, settingsCleanup, err := prepareTokenHelperSettings(spec, env)
 	if err != nil {
 		runCleanup(cleanupFunctions)
 		return nil, err
@@ -198,9 +223,9 @@ func PrepareLaunchAuthentication(agent harness.Harness, agentToken, virtualKey s
 
 // prepareTokenHelperSettings gives Claude a refresh-aware credential command
 // without writing the access token or modifying the user's settings file.
-func prepareTokenHelperSettings(spec LaunchSpec) ([]string, func(), error) {
+func prepareTokenHelperSettings(spec LaunchSpec, env []string) ([]string, func(), error) {
 	command := strings.TrimSpace(spec.TokenHelperCommand)
-	if command == "" {
+	if command == "" && (spec.Harness.ID != "claude" || spec.Project == (config.Project{})) {
 		return nil, nil, nil
 	}
 	if spec.Harness.ID != "claude" {
@@ -211,7 +236,19 @@ func prepareTokenHelperSettings(spec LaunchSpec) ([]string, func(), error) {
 		return nil, nil, fmt.Errorf("create temporary Claude auth settings: %w", err)
 	}
 	cleanup := func() { _ = os.RemoveAll(dir) }
-	body, err := json.Marshal(map[string]any{"apiKeyHelper": command})
+	settings := map[string]any{}
+	if command != "" {
+		settings["apiKeyHelper"] = command
+	}
+	if spec.Project != (config.Project{}) {
+		for _, entry := range env {
+			if headers, ok := strings.CutPrefix(entry, "ANTHROPIC_CUSTOM_HEADERS="); ok {
+				settings["env"] = map[string]string{"ANTHROPIC_CUSTOM_HEADERS": headers}
+				break
+			}
+		}
+	}
+	body, err := json.Marshal(settings)
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("encode temporary Claude auth settings: %w", err)
@@ -289,6 +326,9 @@ func renderBanner(spec LaunchSpec) string {
 	b.WriteString(cyan + "bifrost>" + reset + " " + bold + spec.Harness.Label + reset + "  " + dim + spec.Model + reset + "\n")
 	b.WriteString(dim + "  endpoint : " + reset + endpoint + "\n")
 	b.WriteString(dim + "  auth     : " + reset + authStatus + "\n")
+	if name, value := spec.Project.Header(); name != "" {
+		b.WriteString(dim + "  project  : " + reset + value + " (" + name + ")\n")
+	}
 	b.WriteString(dim + "  command  : " + reset + cmdLine + "\n")
 	b.WriteString(dim + "───────────────────────────────────────────────────" + reset + "\n")
 	b.WriteString("\n")

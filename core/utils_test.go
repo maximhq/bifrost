@@ -115,7 +115,7 @@ func TestValidateExternalURL(t *testing.T) {
 			name:    "private 10.x.x.x",
 			url:     "http://10.0.0.1",
 			wantErr: true,
-			errMsg:  "private IP addresses are not allowed",
+			errMsg:  "private IP addresses are not allowed: set network_config.allow_private_network to true",
 		},
 		{
 			name:    "private 172.16.x.x",
@@ -403,6 +403,8 @@ func TestClearCtxForFallback(t *testing.T) {
 		schemas.BifrostContextKeySSEReaderFactory,
 		// The load balancer's record of the attempt that just failed.
 		schemas.BifrostContextKeyLoadBalancerAttempt,
+		// A fallback model decides its own structured-output path.
+		schemas.BifrostContextKeyStructuredOutputGrammarRetry,
 	}
 	// The next attempt resolves its own limits, which needs the same credential and caller.
 	preserved := []schemas.BifrostContextKey{
@@ -849,6 +851,22 @@ func TestWrapConvertedStreamPostHookRunnerPreservesToolCalls(t *testing.T) {
 			},
 		},
 		{
+			name: "interleaved function and custom calls retain their content",
+			events: []string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"custom_tool_call","id":"ct_1","call_id":"call_1","name":"code_exec"}}`,
+				`{"type":"response.custom_tool_call_input.delta","item_id":"ct_1","delta":"print("}`,
+				`{"type":"response.function_call_arguments.delta","item_id":"fc_0","delta":"{\"filePath\":"}`,
+				`{"type":"response.custom_tool_call_input.delta","item_id":"ct_1","delta":"1)"}`,
+				`{"type":"response.custom_tool_call_input.done","item_id":"ct_1","input":"print(1)"}`,
+				`{"type":"response.function_call_arguments.done","item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/demo.txt\"}"}`,
+			},
+			want: map[uint16]toolCall{
+				0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/demo.txt"}`},
+				1: {id: "call_1", name: "code_exec", arguments: "print(1)"},
+			},
+		},
+		{
 			name: "completed item supplies missing arguments",
 			events: []string{
 				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
@@ -878,6 +896,15 @@ func TestWrapConvertedStreamPostHookRunnerPreservesToolCalls(t *testing.T) {
 				`{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_0","delta":"{\"filePath\":\"/tmp/a\"}"}`,
 				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/b\"}"}`,
 				`{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":"{\"filePath\":\"/tmp/b\"}"}}`,
+			},
+			want: map[uint16]toolCall{0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/a"}`}},
+		},
+		{
+			name: "longer divergent terminal snapshot does not append a suffix",
+			events: []string{
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_0","call_id":"call_0","name":"read","arguments":""}}`,
+				`{"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_0","delta":"{\"filePath\":\"/tmp/a\"}"}`,
+				`{"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_0","arguments":"{\"filePath\":\"/tmp/b\",\"extra\":true}"}`,
 			},
 			want: map[uint16]toolCall{0: {id: "call_0", name: "read", arguments: `{"filePath":"/tmp/a"}`}},
 		},
@@ -923,6 +950,12 @@ func TestWrapConvertedStreamPostHookRunnerPreservesToolCalls(t *testing.T) {
 							call.name = *chunk.Function.Name
 						}
 						call.arguments += chunk.Function.Arguments
+						if chunk.Custom != nil {
+							if chunk.Custom.Name != nil {
+								call.name = *chunk.Custom.Name
+							}
+							call.arguments += chunk.Custom.Input
+						}
 						calls[chunk.Index] = call
 					}
 				}
@@ -1345,6 +1378,167 @@ func TestClearContextForInternalRequestKeepsTheAnthropicStreamPromptUsageWitness
 				}
 				if got.Int() != want {
 					t.Errorf("usage.%s is %s, want %d (%s)", key, got.Raw, want, frame)
+				}
+			}
+		})
+	}
+}
+
+// Only a video edit that names an existing video is walked across keys; one that uploads content keeps normal key selection.
+func TestIsKeyScopedLookupRequest_VideoEdit(t *testing.T) {
+	byID := &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Input: &schemas.VideoEditInput{Video: schemas.VideoInput{ID: "video_1"}}}}
+	byBytes := &schemas.BifrostRequest{RequestType: schemas.VideoEditRequest, VideoEditRequest: &schemas.BifrostVideoEditRequest{Input: &schemas.VideoEditInput{Video: schemas.VideoInput{Video: []byte("x")}}}}
+	if !isKeyScopedLookupRequest(byID) {
+		t.Fatal("edit by id should be walked across keys")
+	}
+	if isKeyScopedLookupRequest(byBytes) {
+		t.Fatal("edit with uploaded content should keep normal key selection")
+	}
+}
+
+// A Responses stream failure carries the event name ("response.failed", "error") as its top-level
+// type and the provider's error type nested; the fallback attempt reports the nested one, and a
+// refusal that sets only the top-level type (governance) keeps it.
+func TestFallbackAttemptOfPrefersNestedErrorType(t *testing.T) {
+	fallback := schemas.Fallback{Provider: "prov-b", Model: "m-b"}
+	cases := []struct {
+		name string
+		err  *schemas.BifrostError
+		want string
+	}{
+		{"response.failed event", &schemas.BifrostError{Type: schemas.Ptr("response.failed"), Error: &schemas.ErrorField{Type: schemas.Ptr("server_error"), Message: "upstream failed"}}, "server_error"},
+		{"error event", &schemas.BifrostError{Type: schemas.Ptr("error"), Error: &schemas.ErrorField{Type: schemas.Ptr("rate_limit_exceeded"), Message: "slow down"}}, "rate_limit_exceeded"},
+		{"top-level type only", &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), Error: &schemas.ErrorField{Message: "not allowed"}}, "provider_blocked"},
+		{"empty nested type", &schemas.BifrostError{Type: schemas.Ptr("provider_blocked"), Error: &schemas.ErrorField{Type: schemas.Ptr(""), Message: "not allowed"}}, "provider_blocked"},
+		{"nested type only", &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr("invalid_request_error"), Message: "bad"}}, "invalid_request_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, fallbackAttemptOf(fallback, tc.err).Type)
+		})
+	}
+}
+
+func TestWrapConvertedStreamPostHookRunner_ToolCallIndexes(t *testing.T) {
+	added := func(output int, itemType schemas.ResponsesMessageType, callID string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{
+			Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+			OutputIndex: schemas.Ptr(output),
+			Item: &schemas.ResponsesMessage{
+				ID:                   schemas.Ptr("item_" + callID),
+				Type:                 schemas.Ptr(itemType),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr(callID), Name: schemas.Ptr("tool_" + callID)},
+			},
+		}
+	}
+	argsDelta := func(output int, callID string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: schemas.Ptr(output), ItemID: schemas.Ptr("item_" + callID), Delta: schemas.Ptr(`{}`)}
+	}
+	inputDelta := func(output int, callID string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCustomToolCallInputDelta, OutputIndex: schemas.Ptr(output), ItemID: schemas.Ptr("item_" + callID), Delta: schemas.Ptr("print(1)")}
+	}
+	nonTool := func(output int, itemType schemas.ResponsesMessageType) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(output), Item: &schemas.ResponsesMessage{Type: schemas.Ptr(itemType)}}
+	}
+	run := func(events ...*schemas.BifrostResponsesStreamResponse) []uint16 {
+		var indexes []uint16
+		runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+			if result.ChatResponse != nil {
+				for _, choice := range result.ChatResponse.Choices {
+					if choice.ChatStreamResponseChoice != nil && choice.Delta != nil {
+						for _, tc := range choice.Delta.ToolCalls {
+							indexes = append(indexes, tc.Index)
+						}
+					}
+				}
+			}
+			return result, bifrostErr
+		}, schemas.ResponsesRequest)
+		for _, event := range events {
+			runner(nil, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		}
+		return indexes
+	}
+
+	t.Run("no reasoning item", func(t *testing.T) {
+		got := run(
+			added(0, schemas.ResponsesMessageTypeFunctionCall, "a"), argsDelta(0, "a"),
+			added(1, schemas.ResponsesMessageTypeCustomToolCall, "b"), inputDelta(1, "b"),
+		)
+		assert.Equal(t, []uint16{0, 0, 1, 1}, got)
+	})
+	t.Run("reasoning and a message first", func(t *testing.T) {
+		got := run(
+			nonTool(0, schemas.ResponsesMessageTypeReasoning), nonTool(1, schemas.ResponsesMessageTypeMessage),
+			added(2, schemas.ResponsesMessageTypeFunctionCall, "a"), argsDelta(2, "a"),
+			added(3, schemas.ResponsesMessageTypeFunctionCall, "b"), argsDelta(3, "b"),
+		)
+		assert.Equal(t, []uint16{0, 0, 1, 1}, got)
+	})
+	t.Run("mixed calls after reasoning", func(t *testing.T) {
+		got := run(
+			nonTool(0, schemas.ResponsesMessageTypeReasoning),
+			added(1, schemas.ResponsesMessageTypeFunctionCall, "a"), argsDelta(1, "a"),
+			added(2, schemas.ResponsesMessageTypeCustomToolCall, "b"), inputDelta(2, "b"),
+		)
+		assert.Equal(t, []uint16{0, 0, 1, 1}, got)
+	})
+	t.Run("custom then function without output indexes", func(t *testing.T) {
+		events := []*schemas.BifrostResponsesStreamResponse{
+			added(0, schemas.ResponsesMessageTypeCustomToolCall, "a"), inputDelta(0, "a"),
+			added(1, schemas.ResponsesMessageTypeFunctionCall, "b"), argsDelta(1, "b"),
+		}
+		for _, event := range events {
+			event.OutputIndex = nil
+		}
+		assert.Equal(t, []uint16{0, 0, 1, 1}, run(events...))
+	})
+	t.Run("terminal-only custom input keeps its index", func(t *testing.T) {
+		got := run(
+			added(0, schemas.ResponsesMessageTypeFunctionCall, "a"), argsDelta(0, "a"),
+			added(1, schemas.ResponsesMessageTypeCustomToolCall, "b"),
+			&schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCustomToolCallInputDone, ItemID: schemas.Ptr("item_b"), Input: schemas.Ptr("print(1)")},
+		)
+		assert.Equal(t, []uint16{0, 0, 1, 1}, got)
+	})
+}
+func BenchmarkWrapConvertedStreamPostHookRunnerLargeArguments(b *testing.B) {
+	for _, tc := range []struct {
+		name      string
+		size      int
+		chunkSize int
+		suffix    bool
+	}{
+		{"64KiB_complete", 64 << 10, 1024, false},
+		{"1MiB_complete", 1 << 20, 1024, false},
+		{"1MiB_suffix", 1 << 20, 1024, true},
+		{"1MiB_single_delta", 1 << 20, 1 << 20, false},
+		{"1MiB_single_delta_suffix", 1 << 20, 1 << 20, true},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			arguments := strings.Repeat("x", tc.size)
+			emitted := arguments
+			if tc.suffix {
+				emitted = arguments[:len(arguments)-1]
+			}
+			functionCall := schemas.ResponsesMessageTypeFunctionCall
+			events := []*schemas.BifrostResponsesStreamResponse{{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: schemas.Ptr(0), Item: &schemas.ResponsesMessage{ID: schemas.Ptr("fc_0"), Type: &functionCall, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_0"), Name: schemas.Ptr("read")}}}}
+			for i := 0; i < len(emitted); i += tc.chunkSize {
+				end := min(i+tc.chunkSize, len(emitted))
+				fragment := emitted[i:end]
+				events = append(events, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, OutputIndex: schemas.Ptr(0), ItemID: schemas.Ptr("fc_0"), Delta: &fragment})
+			}
+			events = append(events, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone, OutputIndex: schemas.Ptr(0), ItemID: schemas.Ptr("fc_0"), Arguments: &arguments})
+			noop := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				return result, err
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				runner := wrapConvertedStreamPostHookRunner(noop, schemas.ResponsesRequest)
+				for _, event := range events {
+					runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
 				}
 			}
 		})

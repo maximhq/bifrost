@@ -11,43 +11,47 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// snapshotAddClientState copies the fields the assertions below care about while
-// holding the manager lock.
-func snapshotAddClientState(m *MCPManager, id string) (state schemas.MCPClientState, exists bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	cs, ok := m.clientMap[id]
-	if !ok {
-		return schemas.MCPClientState{}, false
-	}
-	return *cs, true
+// snapshotAddClientState copies the fields the assertions below care about
+// while holding the manager lock, with the client's discovery read from the
+// store (client state no longer carries discovery data). Reuses clientSnapshot
+// from makebeforebreak_test.go (same package).
+func snapshotAddClientState(m *MCPManager, id string) (state clientSnapshot, exists bool) {
+	return snapshotClientState(m, id)
 }
 
-// TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection covers
-// AddClient's per_user_headers registration path, where nil vs. non-nil
-// DiscoveredTools carries a real lifecycle distinction: a nil map means admin
-// verification has never run (park in pending_verification, before ever
-// reaching the RequiresPerCallConnection branch below); any non-nil map means
-// verification ran and the client is not parked. A populated map is restored
-// as Healthy. An empty one gets a first discovery pass, which fails against
-// this test's unreachable host and so leaves the client Unstable, as its
-// checker would. All three cases must also preserve ConnectionURL from
-// ConnectionString.
-func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
+// TestAddClient_PerUserHeaders_StateSelection covers AddClient's
+// per_user_headers registration path. The client's record of its admin step
+// decides whether it parks in pending_verification, before ever reaching the
+// RequiresPerCallConnection branch below; its tools do not. A verified client
+// with stored tools restores them as Healthy. One with none gets a first
+// discovery pass, which fails against this test's unreachable host and so
+// leaves the client Unstable, as its checker would. Every case must also
+// preserve ConnectionURL from ConnectionString.
+func TestAddClient_PerUserHeaders_StateSelection(t *testing.T) {
 	tests := []struct {
 		name            string
 		clientID        string
 		clientName      string
+		pending         bool
 		discoveredTools map[string]schemas.ChatTool
 		wantState       schemas.MCPConnectionState
 		wantToolCount   int
 	}{
 		{
-			name:            "nil DiscoveredTools parks in pending_verification",
+			name:            "pending its admin step parks in pending_verification",
+			clientID:        "discovered-tools-pending",
+			clientName:      "discovered_tools_pending",
+			pending:         true,
+			discoveredTools: nil,
+			wantState:       schemas.MCPConnectionStatePendingVerification,
+			wantToolCount:   0,
+		},
+		{
+			name:            "verified with no stored tools records its failed first discovery",
 			clientID:        "discovered-tools-nil",
 			clientName:      "discovered_tools_nil",
 			discoveredTools: nil,
-			wantState:       schemas.MCPConnectionStatePendingVerification,
+			wantState:       schemas.MCPConnectionStateUnstable,
 			wantToolCount:   0,
 		},
 		{
@@ -76,20 +80,21 @@ func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 			// nil credStore: NewMCPManager defaults to a real credstore.CredStore,
 			// whose RequiresPerCallConnection is what production AddClient calls
 			// resolve against for per_user_headers clients.
-			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+			m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 			t.Cleanup(func() { _ = m.Cleanup() })
 
 			config := &schemas.MCPClientConfig{
-				ID:                tt.clientID,
-				Name:              tt.clientName,
-				ConnectionType:    schemas.MCPConnectionTypeHTTP,
-				ConnectionString:  schemas.NewSecretVar("https://example.invalid/mcp"),
-				AuthType:          schemas.MCPAuthTypePerUserHeaders,
-				PerUserHeaderKeys: []string{"X-User-Token"},
-				DiscoveredTools:   tt.discoveredTools,
+				ID:                  tt.clientID,
+				Name:                tt.clientName,
+				ConnectionType:      schemas.MCPConnectionTypeHTTP,
+				ConnectionString:    schemas.NewSecretVar("https://example.invalid/mcp"),
+				AuthType:            schemas.MCPAuthTypePerUserHeaders,
+				PerUserHeaderKeys:   []string{"X-User-Token"},
+				DiscoveredTools:     tt.discoveredTools,
+				PendingVerification: tt.pending,
 			}
 
-			require.NoError(t, m.AddClient(context.Background(), config))
+			require.NoError(t, addClient(context.Background(), m, config))
 
 			state, ok := snapshotAddClientState(m, config.ID)
 			require.True(t, ok)
@@ -110,7 +115,7 @@ func TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection(t *testing.T) {
 // revisits a client whose DiscoveredTools was empty/nil at add time — it
 // would sit at Healthy/0-tools forever.
 func TestAddClient_PerCallConnection_StartsConnectionChecker(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := &schemas.MCPClientConfig{
@@ -120,14 +125,10 @@ func TestAddClient_PerCallConnection_StartsConnectionChecker(t *testing.T) {
 		ConnectionString:  schemas.NewSecretVar("https://example.invalid/mcp"),
 		AuthType:          schemas.MCPAuthTypePerUserHeaders,
 		PerUserHeaderKeys: []string{"X-User-Token"},
-		// Non-nil (even empty) DiscoveredTools: a nil map means admin
-		// verification never ran, parking in pending_verification BEFORE
-		// ever reaching the RequiresPerCallConnection branch this test
-		// targets — see TestAddClient_PerUserHeaders_DiscoveredToolsStateSelection.
-		DiscoveredTools: map[string]schemas.ChatTool{},
+		DiscoveredTools:   map[string]schemas.ChatTool{},
 	}
 
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 
 	m.checkerManager.mu.RLock()
 	_, hasChecker := m.checkerManager.checkers[config.ID]
@@ -147,7 +148,7 @@ func TestAddClient_PerCallConnection_StartsConnectionChecker(t *testing.T) {
 func TestAddClient_PerCallConnection_SharedType_DiscoversToolsSynchronously(t *testing.T) {
 	ts, _ := buildAdminDiscoveryHTTPServer(t)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := &schemas.MCPClientConfig{
@@ -162,7 +163,7 @@ func TestAddClient_PerCallConnection_SharedType_DiscoversToolsSynchronously(t *t
 		// synchronous-discovery path this test targets.
 	}
 
-	require.NoError(t, m.AddClient(context.Background(), config))
+	require.NoError(t, addClient(context.Background(), m, config))
 
 	state, ok := snapshotAddClientState(m, config.ID)
 	require.True(t, ok)
@@ -181,7 +182,7 @@ func TestAddClient_PerCallConnection_FailedFirstDiscoveryIsUnstable(t *testing.T
 	}))
 	t.Cleanup(ts.Close)
 
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), nil, &MockLogger{}, nil)
 	t.Cleanup(func() { _ = m.Cleanup() })
 
 	config := &schemas.MCPClientConfig{
@@ -193,7 +194,7 @@ func TestAddClient_PerCallConnection_FailedFirstDiscoveryIsUnstable(t *testing.T
 		Headers:          map[string]schemas.SecretVar{"Authorization": *schemas.NewSecretVar("Bearer BAD")},
 	}
 
-	require.NoError(t, m.AddClient(context.Background(), config), "the add stands; only its first discovery failed")
+	require.NoError(t, addClient(context.Background(), m, config), "the add stands; only its first discovery failed")
 
 	state, ok := snapshotAddClientState(m, config.ID)
 	require.True(t, ok)

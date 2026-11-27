@@ -28,6 +28,9 @@ interface OAuth2AuthorizerProps {
 	expiresAt?: string;
 	mcpClientId: string;
 	isPerUserOauth?: boolean;
+	// The client has per-caller discovery, so this sign-in only verifies it
+	// and nothing from it is kept.
+	perUserDiscovery?: boolean;
 	// A popup the caller already opened synchronously (before any await), to
 	// preserve the triggering click's transient user-activation. When
 	// present, openPopup navigates this handle instead of calling
@@ -45,6 +48,11 @@ interface OAuth2AuthorizerProps {
 	// fresh flow here and swaps in the new authorizeUrl / flowId / expiresAt
 	// through its own state. Without it Retry only resets local state.
 	onRetry?: () => Promise<void>;
+	// Offered on the failure step when signing in on the client's stored OAuth
+	// client may be what failed: a provider that no longer recognises it
+	// rejects every sign-in on it, which only a new registration recovers. The
+	// dialog closes and the caller takes it from there.
+	onRegisterNewClient?: () => void;
 }
 
 type Status = "confirm" | "polling" | "blocked" | "success" | "failed";
@@ -70,9 +78,11 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	flowId,
 	expiresAt,
 	isPerUserOauth,
+	perUserDiscovery,
 	initialPopup,
 	isReauthorize,
 	onRetry,
+	onRegisterNewClient,
 }) => {
 	const { t } = useTranslation("mcp");
 	const { t: tc } = useTranslation("common");
@@ -287,7 +297,17 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		onClose();
 	};
 
-	const isPerUserReauth = isPerUserOauth && isReauthorize;
+	const handleRegisterNewClient = () => {
+		cancelledRef.current = true;
+		stopPolling();
+		isCompletingRef.current = false;
+		if (popupRef.current && !popupRef.current.closed) popupRef.current.close();
+		onRegisterNewClient?.();
+	};
+
+	// A client with per-caller discovery has no admin credential to renew:
+	// a sign-in after registering a new client only verifies it.
+	const isPerUserReauth = isPerUserOauth && isReauthorize && !perUserDiscovery;
 
 	const titles: Record<Status, string> = {
 		confirm: isPerUserReauth ? t("registry.actions.refreshAdminCredential") : t("registry.authorizer.oauth.authorizeConnection"),
@@ -298,7 +318,11 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	};
 
 	const subtitles: Record<Status, string> = {
-		confirm: isPerUserReauth ? t("registry.authorizer.oauth.confirmRenew") : t("registry.authorizer.oauth.confirmVerify"),
+		confirm: isPerUserReauth
+			? t("registry.authorizer.oauth.confirmRenew")
+			: perUserDiscovery
+				? t("registry.authorizer.oauth.confirmVerifyPerUserDiscovery")
+				: t("registry.authorizer.oauth.confirmVerify"),
 		polling: t("registry.authorizer.oauth.polling"),
 		blocked: t("registry.authorizer.oauth.blocked"),
 		success: t("registry.authorizer.oauth.success"),
@@ -343,13 +367,23 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 								<p>
 									<Trans
 										t={t}
-										i18nKey={isPerUserReauth ? "registry.authorizer.oauth.openHostRenew" : "registry.authorizer.oauth.openHostVerify"}
+										i18nKey={
+											isPerUserReauth
+												? "registry.authorizer.oauth.openHostRenew"
+												: perUserDiscovery
+													? "registry.authorizer.oauth.openHostVerifyPerUserDiscovery"
+													: "registry.authorizer.oauth.openHostVerify"
+										}
 										values={{ host: authorizationHost }}
 										components={{ strong: <strong /> }}
 									/>
 								</p>
 								<p className="text-muted-foreground/80 text-xs">
-									{isPerUserReauth ? t("registry.authorizer.oauth.renewHint") : t("registry.authorizer.oauth.verifyHint")}
+									{isPerUserReauth
+										? t("registry.authorizer.oauth.renewHint")
+										: perUserDiscovery
+											? t("registry.authorizer.oauth.verifyHintPerUserDiscovery")
+											: t("registry.authorizer.oauth.verifyHint")}
 								</p>
 							</InfoBox>
 							<div className="flex justify-end gap-2">
@@ -371,11 +405,21 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 								<p>{t("registry.authorizer.oauth.pollingBody")}</p>
 								<p className="text-muted-foreground/80 text-xs">{t("registry.authorizer.oauth.keepPopupOpen")}</p>
 							</InfoBox>
-							<div className="flex items-center justify-between">
+							<div className="flex items-center justify-between gap-2">
 								<StepDots active={2} total={3} />
-								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-polling-cancel-btn">
-									{tc("cancel")}
-								</Button>
+								{/* A provider that no longer recognises the client rejects the sign-in on its own
+								    page and never redirects back, so the flow stays pending: the new client is
+								    offered while waiting, not only once the flow fails. */}
+								<div className="flex flex-wrap justify-end gap-2">
+									<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-polling-cancel-btn">
+										{tc("cancel")}
+									</Button>
+									{onRegisterNewClient && (
+										<Button size="sm" variant="outline" onClick={handleRegisterNewClient} data-testid="oauth-polling-reregister-btn">
+											{t("registry.actions.reauthorizeNewClient")}
+										</Button>
+									)}
+								</div>
 							</div>
 						</>
 					)}
@@ -414,10 +458,21 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 								<p className="font-medium">{t("registry.authorizer.oauth.didNotComplete")}</p>
 								<p className="text-xs opacity-80">{errorMessage ?? t("registry.authorizer.oauth.checkProvider")}</p>
 							</InfoBox>
-							<div className="flex justify-end gap-2">
+							<div className="flex flex-wrap justify-end gap-2">
 								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-failed-close-btn">
 									{tc("close")}
 								</Button>
+								{onRegisterNewClient && (
+									<Button
+										size="sm"
+										variant="outline"
+										onClick={handleRegisterNewClient}
+										disabled={isRetrying}
+										data-testid="oauth-failed-reregister-btn"
+									>
+										{t("registry.actions.reauthorizeNewClient")}
+									</Button>
+								)}
 								<Button size="sm" onClick={() => void handleRetry()} disabled={isRetrying} data-testid="oauth-failed-retry-btn">
 									{isRetrying ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
 									{t("common.retry")}

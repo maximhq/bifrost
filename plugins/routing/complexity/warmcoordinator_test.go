@@ -168,14 +168,14 @@ context.Background(), coordinator, nil, nil, store, &config, embed.fn, nil, newS
 	assert.Positive(t, embed.count(), "a node must warm for itself once the claim is gone")
 }
 
-// TestCoordinatedWarmIgnoresAnUnavailableCoordinator keeps a degraded KV store
+// TestCoordinatedWarmIgnoresAnUnavailableCoordinator keeps a degraded coordinator
 // from being able to stall classification.
 func TestCoordinatedWarmIgnoresAnUnavailableCoordinator(t *testing.T) {
 	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
 	store := newTestChromemStore(t, logger)
 	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreConfigured)
 	coordinator := newFakeWarmCoordinator()
-	coordinator.claimErr = errors.New("kv unavailable")
+	coordinator.claimErr = errors.New("coordinator unavailable")
 
 	embed := &countingEmbed{}
 	loaded, _, _, err := coordinatedWarmSemanticExemplars(

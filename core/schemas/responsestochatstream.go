@@ -1,10 +1,6 @@
 package schemas
 
-import (
-	"bytes"
-	"crypto/sha256"
-	"hash"
-)
+import "hash/maphash"
 
 // ResponsesToChatStreamState correlates tool events within one Responses stream.
 // It must not be shared between streams.
@@ -18,7 +14,7 @@ type ResponsesToChatStreamState struct {
 type responsesChatToolCall struct {
 	index        uint16
 	itemID       string
-	hash         hash.Hash
+	hash         *maphash.Hash
 	argumentSize int
 	finished     bool
 }
@@ -33,7 +29,7 @@ func (state *ResponsesToChatStreamState) Convert(event *BifrostResponsesStreamRe
 	var call *responsesChatToolCall
 	switch event.Type {
 	case ResponsesStreamResponseTypeOutputItemAdded:
-		if !isResponsesFunctionCall(event.Item) {
+		if !isResponsesToolCall(event.Item) {
 			return response
 		}
 		if responsesStreamItemID(event) != "" || event.OutputIndex != nil {
@@ -50,7 +46,7 @@ func (state *ResponsesToChatStreamState) Convert(event *BifrostResponsesStreamRe
 		}
 		tool := &response.Choices[0].Delta.ToolCalls[0]
 		tool.Index = call.index
-		if event.Item.Arguments != nil {
+		if isResponsesFunctionCall(event.Item) && event.Item.Arguments != nil {
 			tool.Function.Arguments = *event.Item.Arguments
 			call.record(tool.Function.Arguments)
 		}
@@ -62,6 +58,13 @@ func (state *ResponsesToChatStreamState) Convert(event *BifrostResponsesStreamRe
 		}
 		response.Choices[0].Delta.ToolCalls[0].Index = call.index
 		call.record(*event.Delta)
+	case ResponsesStreamResponseTypeCustomToolCallInputDelta:
+		call = state.find(event)
+		if call == nil || event.Delta == nil {
+			response.Choices[0].Delta.ToolCalls = nil
+			return response
+		}
+		response.Choices[0].Delta.ToolCalls[0].Index = call.index
 	case ResponsesStreamResponseTypeFunctionCallArgumentsDone:
 		call = state.find(event)
 		if call != nil && event.Arguments != nil {
@@ -98,6 +101,12 @@ func (state *ResponsesToChatStreamState) Convert(event *BifrostResponsesStreamRe
 // isResponsesFunctionCall identifies output items that contain function-call data.
 func isResponsesFunctionCall(item *ResponsesMessage) bool {
 	return item != nil && item.Type != nil && *item.Type == ResponsesMessageTypeFunctionCall && item.ResponsesToolMessage != nil
+}
+
+// isResponsesToolCall identifies function and custom calls that need a Chat index.
+func isResponsesToolCall(item *ResponsesMessage) bool {
+	return item != nil && item.Type != nil && item.ResponsesToolMessage != nil &&
+		(*item.Type == ResponsesMessageTypeFunctionCall || *item.Type == ResponsesMessageTypeCustomToolCall)
 }
 
 // find correlates an event by item ID or output index, using the current call only when neither is present.
@@ -157,16 +166,16 @@ func responsesStreamItemID(event *BifrostResponsesStreamResponse) string {
 	return ""
 }
 
-// record tracks emitted argument bytes without retaining their contents.
+// record tracks the argument length and hash; maphash may buffer up to 128 argument bytes.
 func (call *responsesChatToolCall) record(fragment string) {
 	if fragment == "" {
 		return
 	}
 	if call.hash == nil {
-		call.hash = sha256.New()
+		call.hash = new(maphash.Hash)
 	}
-	// hash.Hash.Write never returns an error.
-	_, _ = call.hash.Write([]byte(fragment))
+	// WriteString never returns an error and avoids copying argument fragments.
+	_, _ = call.hash.WriteString(fragment)
 	call.argumentSize += len(fragment)
 }
 
@@ -175,12 +184,9 @@ func (state *ResponsesToChatStreamState) emitTerminal(response *BifrostChatRespo
 	if call.finished || len(arguments) < call.argumentSize {
 		return
 	}
-	if call.hash != nil {
-		prefix := sha256.Sum256([]byte(arguments[:call.argumentSize]))
-		var digest [sha256.Size]byte
-		if !bytes.Equal(call.hash.Sum(digest[:0]), prefix[:]) {
-			return
-		}
+	if len(arguments) > call.argumentSize && call.hash != nil &&
+		maphash.String(call.hash.Seed(), arguments[:call.argumentSize]) != call.hash.Sum64() {
+		return
 	}
 	call.finished = true
 	call.hash = nil

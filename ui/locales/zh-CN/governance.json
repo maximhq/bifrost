@@ -50,7 +50,8 @@
 			"budgetLimits": "预算上限",
 			"updateAction": "更新客户",
 			"createAction": "创建客户",
-			"calendarAlignHelp": "启用日历对齐会将此客户的预算用量重置为 <bold0>$0.00</bold0>，并将 token/请求速率限制计数重置为 <bold1>0</bold1>，然后将每个重置日期对齐到当前周期开始（例如日、周、月或年的开始）。用量重置无法撤销，但之后可以关闭日历对齐。此操作将在保存时生效。"
+			"calendarAlignHelp": "启用日历对齐会将此客户的预算用量重置为 <bold0>$0.00</bold0>，并将 token/请求速率限制计数重置为 <bold1>0</bold1>，然后将每个重置日期对齐到当前周期开始（例如日、周、月或年的开始）。用量重置无法撤销，但之后可以关闭日历对齐。此操作将在保存时生效。",
+			"limitsCheckFailed": "无法检查是什么在管控此客户的支出，因此暂时无法显示其预算和速率限制。"
 		},
 		"detail": {
 			"title": "客户详情",
@@ -408,6 +409,24 @@
 		"unlockTitle": "解锁项目以限定访问与支出",
 		"unlockDescription": "此功能属于 Bifrost 企业版许可证。项目由请求主动选择：它在调用方已有权限之外再授予访问，并决定花费记入谁的账本。"
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "在一处查看所有提供商的 AI 支出",
+			"unlockDescription": "此功能属于 Bifrost 企业版许可证。FinOps 从你的提供商账户读取已开票成本，并显示其中有多少支出经过了 Bifrost。"
+		},
+		"connections": {
+			"unlockTitle": "连接提供商账单账户",
+			"unlockDescription": "此功能属于 Bifrost 企业版许可证。以只读权限连接 OpenAI、Anthropic、AWS Bedrock、Vertex AI 和 Azure OpenAI 的账单。"
+		},
+		"explorer": {
+			"unlockTitle": "按模型和账户拆分 AI 支出",
+			"unlockDescription": "此功能属于 Bifrost 企业版许可证。逐个模型对比已开票支出与 Bifrost 记录的数据。"
+		},
+		"forecast": {
+			"unlockTitle": "预测 AI 支出并发现异常",
+			"unlockDescription": "此功能属于 Bifrost 企业版许可证。对照预算预测本月支出，并在支出激增时收到告警。"
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "解锁用户排行以获得更好可见性"
 	},
@@ -474,7 +493,12 @@
 		"maximumSpend": "最大支出（美元）",
 		"noBudgetLimits": "尚未配置预算上限。",
 		"removeBudgetAria": "移除预算 {{number}}",
-		"duplicateResetPeriod": "重置周期重复；每条预算必须使用不同的周期。"
+		"duplicateResetPeriod": "重置周期重复；每条预算必须使用不同的周期。",
+		"contentLogging": "内容日志",
+		"contentLoggingInherit": "继承",
+		"contentLoggingOff": "此团队关闭",
+		"contentLoggingOn": "此团队开启",
+		"contentLoggingHelp": "是否把此团队流量的请求和响应内容写入日志。团队优先于其虚拟密钥和提供商密钥，因此密钥无法重新开启团队已关闭的内容。「关闭」也会从连接器导出中去掉内容。在允许按请求覆盖时，单次请求的请求头仍然生效。"
 	},
 	"filters": {
 		"filters": "筛选",

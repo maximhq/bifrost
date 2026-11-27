@@ -14,7 +14,7 @@ import { fiscalQuarterNote, supportsCalendarAlignment } from "@/lib/constants/go
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { dateFnsLocale } from "@/lib/i18n/dateLocale";
-import { useGetCoreConfigQuery } from "@/lib/store";
+import { useGetCoreConfigQuery, useGetVirtualKeyQuery, useGetVirtualMCPQuery } from "@/lib/store";
 import { useRemoveVirtualKeyBudgetOverrideMutation, useSetVirtualKeyBudgetOverrideMutation } from "@/lib/store/apis/governanceApi";
 import { BudgetOverrideRequest, VirtualKey, VirtualKeyProviderConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
@@ -69,6 +69,17 @@ function UsageLine({ current, max, format }: { current: number; max: number; for
 	);
 }
 
+// One assigned Virtual MCP, named by id the same way the edit sheet's assignment rows are.
+function VirtualMcpBadge({ id }: { id: number }) {
+	const { t } = useTranslation("governance");
+	const { data } = useGetVirtualMCPQuery(id);
+	return (
+		<Badge variant="secondary" className="text-xs" data-testid={`vk-details-vmcp-${id}`}>
+			{data?.name || t("virtualMcp.fallbackName", { id })}
+		</Badge>
+	);
+}
+
 interface VirtualKeyDetailSheetProps {
 	virtualKey: VirtualKey;
 	onClose: () => void;
@@ -86,11 +97,14 @@ export default function VirtualKeyDetailSheet({
 }: VirtualKeyDetailSheetProps) {
 	const { t, i18n } = useTranslation("models");
 	const { t: tc } = useTranslation("common");
-	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit } =
+	const { assignedUsers, isManagedByProfile, isOwnerGoverned, managingProfile, displayBudgets, displayRateLimit, isExhausted } =
 		useVirtualKeyUsage(virtualKey);
 	const canUpdateVirtualKeys = useRbac(RbacResource.VirtualKeys, RbacOperation.Update);
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const deletesAfterExpire = virtualKey.delete_after_expire ?? coreConfig?.client_config?.delete_expired_virtual_keys ?? false;
+	// The list VK carries no Virtual MCP assignments; only the single-VK GET returns them.
+	const { data: vkDetail, isLoading: isVkDetailLoading } = useGetVirtualKeyQuery(virtualKey.id, { skip: isManagedByProfile });
+	const assignedVmcpIds = vkDetail?.virtual_mcp_ids ?? [];
 	const [setBudgetOverride] = useSetVirtualKeyBudgetOverrideMutation();
 	const [removeBudgetOverride] = useRemoveVirtualKeyBudgetOverrideMutation();
 	const saveBudgetOverride = async (budgetId: string, data: BudgetOverrideRequest) => {
@@ -130,25 +144,17 @@ export default function VirtualKeyDetailSheet({
 		if (virtualKey.customer) {
 			return { type: t("routing.customer"), name: virtualKey.customer.name };
 		}
+		if (virtualKey.business_unit_id) {
+			return { type: t("virtualKeys.businessUnit"), name: virtualKey.business_unit?.name ?? virtualKey.business_unit_id };
+		}
 		return { type: t("virtualKeys.none"), name: "" };
 	};
 
 	const entityInfo = getEntityInfo();
 
-	const isExhausted =
-		// Budget exhausted (AP-mirrored when managed, VK-own otherwise)
-		displayBudgets?.some((b) => b.current_usage >= getEffectiveBudgetLimit(b)) ||
-		// Rate limits exhausted
-		(displayRateLimit?.token_current_usage &&
-			displayRateLimit?.token_max_limit &&
-			displayRateLimit.token_current_usage >= displayRateLimit.token_max_limit) ||
-		(displayRateLimit?.request_current_usage &&
-			displayRateLimit?.request_max_limit &&
-			displayRateLimit.request_current_usage >= displayRateLimit.request_max_limit);
-
 	return (
 		<Sheet open onOpenChange={onClose}>
-			<SheetContent className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
+			<SheetContent resizeKey="virtual-key-details" className="flex w-full flex-col overflow-x-hidden p-0 pt-4 sm:max-w-2xl">
 				<SheetHeader
 					className="flex flex-row items-center justify-between px-0 py-4"
 					headerClassName="mb-0 sticky -top-4 bg-card z-10 px-4 md:px-8"
@@ -230,19 +236,23 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							)}
 
-							{typeof virtualKey.disable_content_logging === "boolean" && (
-								<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
-									<span className="text-muted-foreground text-sm">{t("virtualKeys.contentLogging")}</span>
-									<div className="col-span-2">
+							<div className="grid grid-cols-1 items-center gap-4 md:grid-cols-3">
+								<span className="text-muted-foreground text-sm">{t("virtualKeys.contentLogging")}</span>
+								<div className="col-span-2">
+									{typeof virtualKey.disable_content_logging === "boolean" ? (
 										<Badge
 											variant={virtualKey.disable_content_logging ? "secondary" : "default"}
 											data-testid="vk-details-content-logging-badge"
 										>
 											{virtualKey.disable_content_logging ? t("virtualKeys.contentLoggingOff") : t("virtualKeys.contentLoggingOn")}
 										</Badge>
-									</div>
+									) : (
+										<Badge variant="outline" data-testid="vk-details-content-logging-inherit">
+											{t("virtualKeys.contentLoggingInherit")}
+										</Badge>
+									)}
 								</div>
-							)}
+							</div>
 
 							{virtualKey.metadata && Object.keys(virtualKey.metadata).length > 0 && (
 								<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
@@ -675,6 +685,23 @@ export default function VirtualKeyDetailSheet({
 										</div>
 									)}
 								</div>
+							</div>
+
+							{/* Virtual MCP assignments: the Virtual MCP endpoints this key may reach. */}
+							<div className="space-y-4" data-testid="vk-details-vmcp-access">
+								<h3 className="font-semibold">{t("virtualKeys.virtualMcps")}</h3>
+
+								{isVkDetailLoading ? null : assignedVmcpIds.length === 0 ? (
+									<span className="text-muted-foreground text-sm" data-testid="vk-details-vmcp-none">
+										{t("virtualKeys.noVirtualMcpsAssigned")}
+									</span>
+								) : (
+									<div className="flex flex-wrap gap-1">
+										{assignedVmcpIds.map((id) => (
+											<VirtualMcpBadge key={id} id={id} />
+										))}
+									</div>
+								)}
 							</div>
 
 							{/* Agent access grants: the registered agents this key may call. */}

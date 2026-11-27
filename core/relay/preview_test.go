@@ -76,14 +76,19 @@ func TestPreviewUsage(t *testing.T) {
 		require.NotNil(t, out.RouteIndex, "the route is matched on the path without its query")
 		assert.False(t, out.Streams, "a JSON reply is read and priced whatever the caller asked for")
 	})
-	t.Run("routes match on the operator's extra headers over the sample's, as on the relay", func(t *testing.T) {
+	t.Run("routes match on the sample's headers over the operator's extra headers, as on the relay", func(t *testing.T) {
 		extra := map[string]schemas.SecretVar{"X-Amz-Target": *schemas.NewSecretVar("Textract.AnalyzeDocument")}
 		in := textract
 		in.Headers = map[string]string{"X-Amz-Target": "Textract.GetDocumentAnalysis"}
 		out, err := previewUsage(cfg, extra, in, false)
 		require.NoError(t, err)
 		require.NotNil(t, out.RouteIndex)
-		assert.Equal(t, 0, *out.RouteIndex, "the operator's X-Amz-Target picks the route, not the sample's")
+		assert.Equal(t, 1, *out.RouteIndex, "the sample's X-Amz-Target replaces the operator's on the wire, so it picks the route")
+		in.Headers = nil
+		out, err = previewUsage(cfg, extra, in, false)
+		require.NoError(t, err)
+		require.NotNil(t, out.RouteIndex)
+		assert.Equal(t, 0, *out.RouteIndex, "with no sample copy the operator's X-Amz-Target picks the route")
 	})
 	t.Run("under sigv4 a route can match on an x-amz header the upstream never receives", func(t *testing.T) {
 		s3 := &schemas.RelayConfig{

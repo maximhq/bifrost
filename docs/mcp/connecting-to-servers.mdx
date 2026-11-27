@@ -410,49 +410,105 @@ Deleting a config.json-declared client from the dashboard is temporary: the file
 
 ## Go SDK Setup
 
-Configure MCP in your Bifrost initialization:
+Your `Account` serves MCP clients the way it serves providers: `GetConfiguredMCPClients` lists their IDs, and `GetConfigForMCPClient` and `GetConfigForMCPClientByName` return a client's configuration. Each client needs an `ID`. Bifrost reads the configuration from the Account whenever it needs it, so the Account must keep serving a client for as long as it stays connected. Bifrost keeps the configuration your Account returns without copying it, so never edit a served configuration in place: serve a changed configuration as a new value, then call `UpdateMCPClient`. `bifrost.Init` connects nothing; call `ConnectConfiguredMCPClients` after registering your plugins, so their connection hooks see every client.
 
 ```go
 package main
 
 import (
     "context"
+    "fmt"
+    "sync"
+
     bifrost "github.com/maximhq/bifrost/core"
     "github.com/maximhq/bifrost/core/schemas"
 )
 
-func main() {
-    mcpConfig := &schemas.MCPConfig{
-        ClientConfigs: []*schemas.MCPClientConfig{
-            {
-                Name:             "filesystem",
-                ConnectionType:   schemas.MCPConnectionTypeSTDIO,
-                IsPingAvailable:  true,  // Use lightweight ping for health checks
-                StdioConfig: &schemas.MCPStdioConfig{
-                    Command: "npx",
-                    Args:    []string{"-y", "@anthropic/mcp-filesystem"},
-                    Envs:    []string{"HOME", "PATH"},
-                },
-                ToolsToExecute: []string{"*"},
-            },
-            {
-                Name:             "web_search",
-                ConnectionType:   schemas.MCPConnectionTypeHTTP,
-                ConnectionString: bifrost.Ptr("http://localhost:3001/mcp"),
-                IsPingAvailable:  false,  // Use listTools for health checks
-                ToolsToExecute:   []string{"search", "fetch_url"},
-            },
-        },
+type MyAccount struct {
+    // ... provider fields and methods as in the Go SDK setup guide ...
+    mu         sync.RWMutex                        // guards mcpClients, which can change while Bifrost runs
+    mcpClients map[string]*schemas.MCPClientConfig // by client ID
+}
+
+func (a *MyAccount) GetConfiguredMCPClients() ([]string, error) {
+    a.mu.RLock()
+    defer a.mu.RUnlock()
+    ids := make([]string, 0, len(a.mcpClients))
+    for id := range a.mcpClients {
+        ids = append(ids, id)
     }
+    return ids, nil
+}
+
+func (a *MyAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+    a.mu.RLock()
+    defer a.mu.RUnlock()
+    if config, ok := a.mcpClients[id]; ok {
+        return config, nil
+    }
+    return nil, fmt.Errorf("MCP client %s not configured", id)
+}
+
+func (a *MyAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+    a.mu.RLock()
+    defer a.mu.RUnlock()
+    for _, config := range a.mcpClients {
+        if config.Name == name {
+            return config, nil
+        }
+    }
+    return nil, fmt.Errorf("MCP client %s not configured", name)
+}
+
+// setMCPClient serves config for its client ID, replacing what was served before.
+// Pass a new value; never edit a configuration the Account already serves.
+func (a *MyAccount) setMCPClient(config *schemas.MCPClientConfig) {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    a.mcpClients[config.ID] = config
+}
+
+// deleteMCPClient stops serving the client with this ID.
+func (a *MyAccount) deleteMCPClient(id string) {
+    a.mu.Lock()
+    defer a.mu.Unlock()
+    delete(a.mcpClients, id)
+}
+
+func main() {
+    account := &MyAccount{mcpClients: map[string]*schemas.MCPClientConfig{
+        "filesystem": {
+            ID:              "filesystem",
+            Name:            "filesystem",
+            ConnectionType:  schemas.MCPConnectionTypeSTDIO,
+            IsPingAvailable: schemas.Ptr(true), // Use lightweight ping for health checks
+            StdioConfig: &schemas.MCPStdioConfig{
+                Command: "npx",
+                Args:    []string{"-y", "@anthropic/mcp-filesystem"},
+                Envs:    []string{"HOME", "PATH"},
+            },
+            ToolsToExecute: []string{"*"},
+        },
+        "web_search": {
+            ID:               "web_search",
+            Name:             "web_search",
+            ConnectionType:   schemas.MCPConnectionTypeHTTP,
+            ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+            IsPingAvailable:  schemas.Ptr(false), // Use listTools for health checks
+            ToolsToExecute:   []string{"search", "fetch_url"},
+        },
+    }}
 
     client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
-        Account:   account,
-        MCPConfig: mcpConfig,
-        Logger:    bifrost.NewDefaultLogger(schemas.LogLevelInfo),
+        Account: account,
+        Logger:  bifrost.NewDefaultLogger(schemas.LogLevelInfo),
     })
     if err != nil {
         panic(err)
     }
+
+    // Dial the MCP clients the Account lists. It returns once each has been tried.
+    client.ConnectConfiguredMCPClients(context.Background(), nil)
 }
 ```
 
@@ -509,7 +565,7 @@ Tool-manager behaviour is configured once and applies to every MCP server. Three
 <Tabs>
 <Tab title="Web UI">
 
-The MCP configuration panel under **Settings → MCP** exposes these knobs; the per-server overrides live on each client's own sheet, under **Sync & Timeouts**:
+The MCP configuration panel under **Settings → MCP** exposes these knobs; the per-server overrides are set on each server's edit sheet (**Edit** in its actions menu), under **Sync & Timeouts**:
 
 <Frame>
   <img src="/media/ui-mcp-config.png" alt="MCP Gateway configuration panel showing tool execution timeout, agent depth, code mode binding level, tool sync interval, and auto tool inject toggle" />
@@ -567,9 +623,7 @@ mcpConfig := &schemas.MCPConfig{
         CodeModeBindingLevel:  schemas.CodeModeBindingLevelServer,
         DisableAutoToolInject: true,
     },
-    ClientConfigs: []*schemas.MCPClientConfig{
-        { Name: "filesystem", ConnectionType: schemas.MCPConnectionTypeSTDIO, /* ... */ },
-    },
+    // MCP clients come from the Account, not from MCPConfig (see Go SDK Setup above).
 }
 ```
 
@@ -609,7 +663,7 @@ Changing either setting in the Web UI or through the API reconnects the affected
 
 **Per server:**
 - When adding a server, **Max Protocol Version** is under **Server Behavior**. It defaults to **Use global setting**.
-- On an existing server's sheet, it is under **Sync & Timeouts**. **Use global setting** shows the current global value in brackets.
+- On an existing server's edit sheet (**Edit** in its actions menu), it is under **Sync & Timeouts**. **Use global setting** shows the current global value in brackets.
 
 </Tab>
 <Tab title="API">
@@ -672,9 +726,11 @@ Omitting `mcp.max_protocol_version` keeps the stored value; it never clears it. 
 ```go
 mcpConfig := &schemas.MCPConfig{
     MaxProtocolVersion: "auto",
-    ClientConfigs: []*schemas.MCPClientConfig{
-        { Name: "legacy_tools", MaxProtocolVersion: "2025-06-18", /* ... */ },
-    },
+}
+
+// A per-server override goes on the client configuration your Account serves.
+legacyTools := &schemas.MCPClientConfig{
+    ID: "legacy_tools", Name: "legacy_tools", MaxProtocolVersion: "2025-06-18", /* ... */
 }
 ```
 
@@ -984,19 +1040,39 @@ for _, mcpClient := range clients {
 // Reconnect a disconnected client
 err = client.ReconnectMCPClient("filesystem")
 
-// Add new client at runtime
-err = client.AddMCPClient(schemas.MCPClientConfig{
-    Name:           "new_client",
-    ConnectionType: schemas.MCPConnectionTypeHTTP,
-    ConnectionString: bifrost.Ptr("http://localhost:3002/mcp"),
-    ToolsToExecute: []string{"*"},
+// Add a client at runtime: serve its configuration from your Account first
+// (setMCPClient from the Go SDK Setup sample), then connect it by ID.
+account.setMCPClient(&schemas.MCPClientConfig{
+    ID:               "new_client",
+    Name:             "new_client",
+    ConnectionType:   schemas.MCPConnectionTypeHTTP,
+    ConnectionString: schemas.NewSecretVar("http://localhost:3002/mcp"),
+    ToolsToExecute:   []string{"*"},
 })
+err = client.AddMCPClient(context.Background(), "new_client")
 
-// Remove a client
+// Change a client (its tools, or Disabled to switch it off or on): copy the configuration
+// the Account serves, change the copy, serve it, then apply the change by ID.
+current, err := account.GetConfigForMCPClient("filesystem")
+updated := *current
+updated.ToolsToExecute = []string{"read_file", "list_directory"}
+account.setMCPClient(&updated)
+err = client.UpdateMCPClient("filesystem")
+
+// Changed credentials (headers, OAuth) reconnect the client instead: serve a copy
+// holding the new credentials the same way, then reconnect it by ID.
+current, err = account.GetConfigForMCPClient("web_search")
+rotated := *current
+rotated.AuthType = schemas.MCPAuthTypeHeaders
+rotated.Headers = map[string]schemas.SecretVar{
+    "Authorization": *schemas.NewSecretVar("Bearer <new token>"),
+}
+account.setMCPClient(&rotated)
+err = client.UpdateMCPClientCredentials("web_search")
+
+// Remove a client, then stop serving it from the Account
 err = client.RemoveMCPClient("old_client")
-
-// Edit client tools
-err = client.EditMCPClientTools("filesystem", []string{"read_file", "list_directory"})
+account.deleteMCPClient("old_client")
 ```
 
 </Tab>
@@ -1065,13 +1141,13 @@ curl -X PUT http://localhost:8080/api/mcp/client/{id} \
 
 #### Via Go SDK
 
+Serve a copy of the client's configuration with `IsPingAvailable` changed, then apply it. `filesystem` is the configuration your Account serves for the client; copy it rather than editing it in place:
+
 ```go
-err := client.EditMCPClient(context.Background(), schemas.MCPClientConfig{
-    ID:               "filesystem",
-    Name:             "filesystem",
-    IsPingAvailable:  false,  // Use listTools instead of ping
-    ToolsToExecute:   []string{"*"},
-})
+updated := *filesystem
+updated.IsPingAvailable = schemas.Ptr(false) // Use listTools instead of ping
+account.setMCPClient(&updated)
+err := client.UpdateMCPClient("filesystem")
 ```
 
 ### Health Check Behavior

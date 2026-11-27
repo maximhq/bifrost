@@ -16,13 +16,14 @@ import (
 )
 
 // refusingRelayPipeline is the narrowest real pipeline: its pre-hook refuses every call the way
-// governance refuses a key without a grant, and its post-hook passes the refusal through.
+// governance refuses a key without a grant (a 403 classified as policy_access_denied), and its
+// post-hook passes the refusal through.
 type refusingRelayPipeline struct{}
 
 func (refusingRelayPipeline) RunRelayPreHooks(_ *schemas.BifrostContext, req *schemas.BifrostRelayRequest, entered func(int)) (*schemas.BifrostRelayRequest, *schemas.RelayPluginShortCircuit, int) {
 	entered(1)
 	status := http.StatusForbidden
-	return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "virtual key has no grant for relay tavily"}}}, 1
+	return req, &schemas.RelayPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "virtual key has no grant for relay tavily"}, ExtraFields: schemas.BifrostErrorExtraFields{ErrorType: schemas.ErrorTypePolicyAccessDenied}}}, 1
 }
 
 func (refusingRelayPipeline) RunRelayPostHooks(_ *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostRelayResponse, *schemas.BifrostError) {
@@ -94,7 +95,7 @@ func TestRecordRelayMetricsCountRefusedCalls(t *testing.T) {
 					status, _ := dp.Attributes.Value(attribute.Key(schemas.AttrHTTPResponseStatusCode))
 					errType, _ := dp.Attributes.Value(attribute.Key(schemas.AttrErrorTypeSpec))
 					name, _ := dp.Attributes.Value(attribute.Key(schemas.AttrBifrostRelayName))
-					if name.AsString() != "tavily" || status.AsInt64() != http.StatusForbidden || errType.AsString() != "403" || dp.Count != 1 {
+					if name.AsString() != "tavily" || status.AsInt64() != http.StatusForbidden || errType.AsString() != string(schemas.ErrorTypePolicyAccessDenied) || dp.Count != 1 {
 						t.Fatalf("refused call point = %v (count %d)", dp.Attributes, dp.Count)
 					}
 				}
@@ -105,5 +106,53 @@ func TestRecordRelayMetricsCountRefusedCalls(t *testing.T) {
 	}
 	if durations != 1 {
 		t.Fatalf("want the refused call in bifrost.relay.operation.duration, got %d points", durations)
+	}
+}
+
+// TestRecordRelayUpstreamAndNoLLMOverhead pins that a relay call records its upstream time and its
+// whole-call duration on the relay metrics, and that a relay trace never lands in the LLM overhead
+// histogram, where it would carry empty provider and model labels.
+func TestRecordRelayUpstreamAndNoLLMOverhead(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	m := &MetricsExporter{provider: provider, meter: provider.Meter("test")}
+	m.initMetrics()
+	start := time.Now()
+	trace := &schemas.Trace{
+		RootSpan: &schemas.Span{Attributes: map[string]any{schemas.AttrBifrostOverheadDurationMs: 3.0}},
+		Spans: []*schemas.Span{{Kind: schemas.SpanKindRelay, Status: schemas.SpanStatusOk, StartTime: start, EndTime: start.Add(time.Millisecond), Attributes: map[string]any{
+			schemas.AttrBifrostRelayName: "tavily", schemas.AttrHTTPRequestMethod: "POST", schemas.AttrHTTPResponseStatusCode: 200,
+			schemas.AttrBifrostRelayUpstreamDurationMs: 500.0, schemas.AttrBifrostRelayDurationMs: 750.0,
+		}}},
+	}
+	p := &OtelPlugin{}
+	p.recordRelayMetricsFromTrace(context.Background(), m, trace)
+	p.recordMetricsFromTrace(context.Background(), m, trace, true)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	sums := map[string]float64{}
+	for _, scope := range rm.ScopeMetrics {
+		for _, metric := range scope.Metrics {
+			if hist, ok := metric.Data.(metricdata.Histogram[float64]); ok {
+				for _, dp := range hist.DataPoints {
+					sums[metric.Name] += dp.Sum
+				}
+			}
+		}
+	}
+	if got := sums["bifrost.relay.upstream_socket.duration"]; got < 0.499 || got > 0.501 {
+		t.Fatalf("relay upstream duration = %v, want 0.5s", got)
+	}
+	if got := sums["bifrost.relay.operation.duration"]; got < 0.749 || got > 0.751 {
+		t.Fatalf("relay duration = %v, want the whole call's 0.75s", got)
+	}
+	if got := sums["bifrost.relay.overhead_latency"]; got < 2999 || got > 3001 {
+		t.Fatalf("relay overhead = %v, want the root span's 3ms in microseconds", got)
+	}
+	if _, recorded := sums["bifrost_overhead_latency_microseconds"]; recorded {
+		t.Fatal("a relay trace was recorded in the LLM overhead histogram")
 	}
 }

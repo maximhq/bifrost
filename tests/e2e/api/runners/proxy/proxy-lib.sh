@@ -217,17 +217,38 @@ proxy_reset_logs() {
   : > "$PROXY_DIR/stunnel.log"
 }
 
-# proxy_hosts_on_port <port> prints the CONNECT targets (host:port) squid accepted on
-# a port, one per line. Only authenticated CONNECTs count: a 407 is a refused client.
+# proxy_hosts_on_port <port> prints the targets (host:port) squid accepted on a port, one per
+# line: the CONNECT target as logged, or for a plain-HTTP request (an http:// upstream such as
+# the relay fixture) the authority of its absolute URL, port 80 when the URL names none. Only
+# authenticated requests count: a 407 is a refused client.
 proxy_hosts_on_port() {
-  awk -v port="$1" '$1 == port && $3 == "CONNECT" && $5 != "407" { print $4 }' "$PROXY_DIR/squid-access.log"
+  awk -v port="$1" '
+    function target(method, url,    rest, slash) {
+      if (method == "CONNECT") return url
+      if (url !~ /^http:\/\//) return ""
+      rest = substr(url, 8); slash = index(rest, "/")
+      if (slash > 0) rest = substr(rest, 1, slash - 1)
+      if (rest !~ /:[0-9]+$/) rest = rest ":80"
+      return rest
+    }
+    $1 == port && $5 != "407" { t = target($3, $4); if (t != "") print t }' "$PROXY_DIR/squid-access.log"
 }
 
-# proxy_hosts_on_port_since <port> <epoch seconds> prints the CONNECT targets of tunnels
-# opened at or after the given time. squid logs a tunnel when it closes, with its end
-# time and how long it was open, so a tunnel opened earlier can be logged later.
+# proxy_hosts_on_port_since <port> <epoch seconds> prints the targets of requests started at or
+# after the given time, read as proxy_hosts_on_port reads them. squid logs a tunnel when it
+# closes, with its end time and how long it was open, so a tunnel opened earlier can be logged
+# later.
 proxy_hosts_on_port_since() {
-  awk -v port="$1" -v since="$2" '$1 == port && $3 == "CONNECT" && $5 != "407" && $7 - $8 / 1000 >= since { print $4 }' "$PROXY_DIR/squid-access.log"
+  awk -v port="$1" -v since="$2" '
+    function target(method, url,    rest, slash) {
+      if (method == "CONNECT") return url
+      if (url !~ /^http:\/\//) return ""
+      rest = substr(url, 8); slash = index(rest, "/")
+      if (slash > 0) rest = substr(rest, 1, slash - 1)
+      if (rest !~ /:[0-9]+$/) rest = rest ":80"
+      return rest
+    }
+    $1 == port && $5 != "407" && $7 - $8 / 1000 >= since { t = target($3, $4); if (t != "") print t }' "$PROXY_DIR/squid-access.log"
 }
 
 proxy_socks_hosts() {

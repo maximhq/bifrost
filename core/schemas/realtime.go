@@ -346,6 +346,13 @@ type RealtimeLegacyWebRTCProvider interface {
 	ExchangeLegacyRealtimeWebRTCSDP(ctx *BifrostContext, key Key, sdp string, session json.RawMessage, model string) (string, *BifrostError)
 }
 
+// RealtimeNativeProvider is an optional interface for a provider whose Live endpoint a client may speak to
+// directly, such as the Google GenAI SDK. The gateway relays the client's frames as they are and only
+// addresses the first one, the setup, to the model it resolved on the key it selected.
+type RealtimeNativeProvider interface {
+	NativeRealtimeSetup(ctx *BifrostContext, key Key, setup []byte, model string) ([]byte, *BifrostError)
+}
+
 // RealtimeUsageExtractor lets providers parse terminal-turn usage/output from
 // their native wire payloads without coupling handlers to a specific protocol.
 type RealtimeUsageExtractor interface {
@@ -353,11 +360,85 @@ type RealtimeUsageExtractor interface {
 	ExtractRealtimeTurnOutput(terminalEventRaw []byte) *ChatMessage
 }
 
+// RealtimeInterimUsageExtractor is optional: a provider whose turn can pass through several generations
+// reports here the usage of one that did not end the turn, and the relay adds it to the turn's total.
+type RealtimeInterimUsageExtractor interface {
+	ExtractRealtimeInterimUsage(event *BifrostRealtimeEvent) *BifrostLLMUsage
+}
+
 // RealtimeSessionProvider is an optional interface for providers that can mint
 // short-lived client secrets for browser/client-side Realtime connections.
 // Checked via type assertion: provider.(RealtimeSessionProvider).
 type RealtimeSessionProvider interface {
 	CreateRealtimeClientSecret(ctx *BifrostContext, key Key, rawRequest json.RawMessage) (*BifrostPassthroughResponse, *BifrostError)
+}
+
+// RealtimeTranslation is the output of one RealtimeTranslator step: the frames to write, in order.
+type RealtimeTranslation struct {
+	Provider       []json.RawMessage // frames for the provider, in its native protocol
+	ProviderBinary []bool            // ProviderBinary[i] marks Provider[i] as a binary frame; frames past its end are text
+	Client         []json.RawMessage // events for the client, in the OpenAI Realtime protocol
+}
+
+// AddProviderBinary queues a binary frame for the provider, after the frames already queued.
+func (t *RealtimeTranslation) AddProviderBinary(frame []byte) {
+	for len(t.ProviderBinary) < len(t.Provider) {
+		t.ProviderBinary = append(t.ProviderBinary, false)
+	}
+	t.Provider = append(t.Provider, frame)
+	t.ProviderBinary = append(t.ProviderBinary, true)
+}
+
+// IsProviderBinary reports whether Provider[i] is a binary frame.
+func (t RealtimeTranslation) IsProviderBinary(i int) bool {
+	return i < len(t.ProviderBinary) && t.ProviderBinary[i]
+}
+
+// RealtimeTranslator translates one realtime connection between the OpenAI Realtime protocol the
+// client speaks and a provider's native protocol, for providers whose frames cannot be mapped
+// event by event (a one-shot setup frame, one frame carrying several events, state that spans
+// frames). Each connection has its own translator, so it may hold per-connection state.
+//
+// The relay calls a translator one step at a time across both directions and writes each step's
+// frames before the next step, so an implementation needs no locking and its frames keep the order
+// it produced them in.
+type RealtimeTranslator interface {
+	// Open runs once before either side speaks, for events the client expects first, such as session.created.
+	Open() RealtimeTranslation
+	// ToProvider translates a client event. An error is reported to the client; the connection stays open.
+	ToProvider(event *BifrostRealtimeEvent) (RealtimeTranslation, error)
+	// ToClient translates one provider frame, text or binary. An error ends the session.
+	ToClient(frame json.RawMessage) (RealtimeTranslation, error)
+	// Close runs when the provider closes the connection with a close frame, before the close is relayed,
+	// for protocols that report errors only through the close reason. Its Client events reach the client
+	// first, such as an error event; its Provider frames are dropped, the connection being closed.
+	Close(code int, reason string) RealtimeTranslation
+}
+
+// RealtimeTranslatorProvider is an optional interface for providers whose realtime protocol needs a
+// RealtimeTranslator. Checked via type assertion: provider.(RealtimeTranslatorProvider).
+//
+// The relay then applies the OpenAI Realtime rules (turn start, forwarding, usage) to the translated
+// stream instead of the provider's own, and does not call the provider's ToBifrostRealtimeEvent or
+// ToProviderRealtimeEvent for WebSocket connections. Translation is WebSocket only, so the provider
+// must report SupportsRealtimeWebRTC as false. model is the resolved model, after aliasing, and ctx is the
+// connection's context, which carries what the alias resolved to, such as a project or a region.
+type RealtimeTranslatorProvider interface {
+	NewRealtimeTranslator(ctx *BifrostContext, key Key, model string) (RealtimeTranslator, *BifrostError)
+}
+
+// RealtimeTranslationSelector is optional for a RealtimeTranslatorProvider that serves some sessions
+// as they are and translates others, such as a provider with an agent protocol and a transcription
+// protocol. Without it, every session of a translator provider is translated.
+type RealtimeTranslationSelector interface {
+	TranslatesRealtime(model, intent string) bool
+}
+
+// RealtimeBootstrapDialer is optional for providers whose upstream URL depends on the settings the client
+// sends first, which a transcription session does when the provider fixes them at connect. frames are the
+// text frames the client sent before the session was admitted, in order.
+type RealtimeBootstrapDialer interface {
+	RealtimeWebSocketURLForBootstrap(ctx *BifrostContext, key Key, model, intent string, frames [][]byte) (string, *BifrostError)
 }
 
 // ParseRealtimeEvent decodes a client/provider realtime event while preserving

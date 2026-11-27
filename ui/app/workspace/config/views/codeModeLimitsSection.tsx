@@ -14,7 +14,7 @@ interface CodeModeLimitsSectionProps {
 export function CodeModeLimitsSection({ value, onChange, disabled }: CodeModeLimitsSectionProps) {
 	const { t } = useTranslation("config");
 	return (
-		<div className="space-y-4 rounded-sm border p-4" data-testid="mcp-code-mode-limits">
+		<div className="space-y-4 border-t pt-6" data-testid="mcp-code-mode-limits">
 			<div className="space-y-0.5">
 				<p className="text-sm font-medium">{t("mcpSettings.codeModeLimitsTitle")}</p>
 				<p className="text-muted-foreground text-sm">{t("mcpSettings.codeModeLimitsDescription")}</p>

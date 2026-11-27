@@ -3,6 +3,7 @@ package tables
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -112,9 +113,15 @@ type TableKey struct {
 	DatabricksClientSecret       *schemas.SecretVar `gorm:"type:text" json:"databricks_client_secret,omitempty"`
 	DatabricksAPIFormat          *string            `gorm:"type:varchar(50)" json:"databricks_api_format,omitempty"`
 	DatabricksForwardGatewayTags *bool              `gorm:"column:databricks_forward_gateway_tags" json:"databricks_forward_gateway_tags,omitempty"`
+	DatabricksScopes             *string            `gorm:"column:databricks_scopes;type:text" json:"databricks_scopes,omitempty"` // OAuth scopes, space-joined
 
 	// Batch API configuration
 	UseForBatchAPI *bool `gorm:"default:false" json:"use_for_batch_api,omitempty"` // Whether this key can be used for batch API operations
+
+	// DisableContentLogging is the key's own content-logging decision: nil inherits, true forces
+	// content off, false forces it on. No gorm default: a default tag would make GORM write the
+	// default for a nil pointer on insert and collapse "inherit" into "false".
+	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
 
 	// UseAnthropicEndpoints routes inference through the provider's Anthropic-compatible
 	// endpoints instead of its OpenAI-compatible ones.
@@ -626,12 +633,19 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		t := k.DatabricksKeyConfig.ForwardGatewayTags
 		k.DatabricksForwardGatewayTags = &t
+		if len(k.DatabricksKeyConfig.Scopes) > 0 {
+			scopes := strings.Join(k.DatabricksKeyConfig.Scopes, " ")
+			k.DatabricksScopes = &scopes
+		} else {
+			k.DatabricksScopes = nil
+		}
 	} else {
 		k.DatabricksWorkspaceURL = nil
 		k.DatabricksClientID = nil
 		k.DatabricksClientSecret = nil
 		k.DatabricksAPIFormat = nil
 		k.DatabricksForwardGatewayTags = nil
+		k.DatabricksScopes = nil
 	}
 	// oauth_key_config. The credential fields are value-copied into their own columns, per
 	// the invariant above; the rest is serialised with those fields cleared so no secret
@@ -1283,7 +1297,8 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 
 	// Reconstruct Databricks config if fields are present
 	if k.DatabricksWorkspaceURL != nil || k.DatabricksClientID != nil || k.DatabricksClientSecret != nil ||
-		(k.DatabricksAPIFormat != nil && *k.DatabricksAPIFormat != "") || k.DatabricksForwardGatewayTags != nil {
+		(k.DatabricksAPIFormat != nil && *k.DatabricksAPIFormat != "") || k.DatabricksForwardGatewayTags != nil ||
+		(k.DatabricksScopes != nil && *k.DatabricksScopes != "") {
 		databricksConfig := &schemas.DatabricksKeyConfig{
 			ClientID:     k.DatabricksClientID,
 			ClientSecret: k.DatabricksClientSecret,
@@ -1296,6 +1311,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.DatabricksForwardGatewayTags != nil {
 			databricksConfig.ForwardGatewayTags = *k.DatabricksForwardGatewayTags
+		}
+		if k.DatabricksScopes != nil {
+			databricksConfig.Scopes = strings.Fields(*k.DatabricksScopes)
 		}
 		k.DatabricksKeyConfig = databricksConfig
 	} else {

@@ -173,3 +173,42 @@ func BenchmarkUIHandler_ServeShell(b *testing.B) {
 		})
 	}
 }
+
+func TestServeDashboardAPIPathsReturnJSONNotFound(t *testing.T) {
+	h := NewUIHandler(uiTestFS(), nil, "")
+
+	for _, path := range []string{"/api", "/api/logs", "/api/logs/stats", "/api/mcp-logs/anything"} {
+		ctx := serveUITest(h, path)
+
+		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), path)
+		assert.True(t, strings.HasPrefix(string(ctx.Response.Header.ContentType()), "application/json"), path)
+		assert.Contains(t, string(ctx.Response.Body()), "Route not found: "+path, path)
+	}
+}
+
+func TestServeDashboardKeepsNonAPIPathsOnTheSPAPath(t *testing.T) {
+	h := NewUIHandler(uiTestFS(), nil, "")
+
+	for _, path := range []string{"/apiary", "/dashboard/api-keys"} {
+		body := string(serveUITest(h, path).Response.Body())
+		assert.NotContains(t, body, "Route not found", path)
+	}
+}
+
+// TestServeDashboardMissingAssetBody pins the body the dashboard's chunk-failure probe
+// (ui/lib/utils/versionSkew.ts MISSING_ASSET_BODY_PREFIX, and the inline script in
+// ui/index.html) matches to tell a rollout apart from a proxy or extension blocking
+// the file. Changing this text makes every upgrade show the "couldn't load" message.
+func TestServeDashboardMissingAssetBody(t *testing.T) {
+	h := NewUIHandler(uiTestFS(), nil, "")
+
+	for _, path := range []string{"/assets/trending-up-CnicU8gss.js", "/assets/logs-A1.css"} {
+		ctx := serveUITest(h, path)
+		assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), path)
+		assert.True(t, strings.HasPrefix(string(ctx.Response.Body()), "404 - Static asset not found"), path)
+	}
+
+	// A chunk the build does have is served, so the probe classifies its failure as blocked.
+	ctx := serveUITest(h, "/assets/index-abc.js")
+	assert.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+}

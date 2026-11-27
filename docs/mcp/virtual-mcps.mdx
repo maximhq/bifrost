@@ -50,7 +50,7 @@ flowchart TD
     G --> H["Expose &lt;client&gt;-&lt;tool&gt; tools<br/>over streamable-HTTP or SSE"]
 ```
 
-Tools appear to the connected client as `<server>-<tool>`. A disabled vMCP, a slug the key isn't attached to, and a request with no valid key are all rejected. If a source MCP client is later removed, it silently contributes nothing and the rest of the vMCP keeps working.
+Tools appear to the connected client as `<server>-<tool>`. App-only tools of [MCP Apps](./apps) are never listed on a vMCP; connect to the server's own endpoint to use them. A disabled vMCP, a slug the key isn't attached to, and a request with no valid key are all rejected. If a source MCP client is later removed, it silently contributes nothing and the rest of the vMCP keeps working.
 
 ---
 

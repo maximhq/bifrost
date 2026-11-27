@@ -7,6 +7,8 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -16,7 +18,8 @@ import (
 // other call would panic, proving the gate short-circuits before store access.
 type sweepRecordingStore struct {
 	configstore.ConfigStore
-	calls int
+	calls       int
+	orphanGrace time.Duration
 }
 
 func (s *sweepRecordingStore) SweepExpiredOAuth2AuthorizeRequests(ctx context.Context) error {
@@ -31,7 +34,17 @@ func (s *sweepRecordingStore) SweepOAuth2RefreshTokens(ctx context.Context, revo
 
 func (s *sweepRecordingStore) SweepOrphanedOAuth2Clients(ctx context.Context, registeredOlderThan time.Duration) (int64, error) {
 	s.calls++
+	s.orphanGrace = registeredOlderThan
 	return 0, nil
+}
+
+// TestOAuth2SweepWorkerKeepsAbandonedClientsForADay pins that a client whose
+// first flow was abandoned survives long enough to retry: MCP clients cache their
+// client_id and never re-register, so sweeping it strands them on "unknown client_id".
+func TestOAuth2SweepWorkerKeepsAbandonedClientsForADay(t *testing.T) {
+	store := &sweepRecordingStore{}
+	newOAuth2SweepWorker(store, nil).sweep(context.Background())
+	assert.Equal(t, 24*time.Hour, store.orphanGrace)
 }
 
 func TestOAuth2SweepWorkerShouldSweepGate(t *testing.T) {
@@ -84,9 +97,9 @@ func TestOAuth2SweepWorkerGateReevaluatedPerPass(t *testing.T) {
 // staleOAuthRecorder records what dropStaleMCPOAuthState asks the server to drop; release, when set,
 // holds the token-cache drop until it is closed.
 type staleOAuthRecorder struct {
-	evicted, closed []string
-	closeErr        error
-	release         chan struct{}
+	evicted, closed, discoveriesEvicted []string
+	closeErr                            error
+	release                             chan struct{}
 }
 
 func (r *staleOAuthRecorder) EvictOauthTokenCacheByMCPClient(_ context.Context, mcpClientID string) {
@@ -94,6 +107,10 @@ func (r *staleOAuthRecorder) EvictOauthTokenCacheByMCPClient(_ context.Context, 
 		<-r.release
 	}
 	r.evicted = append(r.evicted, mcpClientID)
+}
+
+func (r *staleOAuthRecorder) EvictMCPPerUserDiscoveryCacheByMCPClient(_ context.Context, mcpClientID string) {
+	r.discoveriesEvicted = append(r.discoveriesEvicted, mcpClientID)
 }
 
 func (r *staleOAuthRecorder) CloseAndMarkNeedsReauth(_ context.Context, id string) error {
@@ -126,10 +143,24 @@ func TestDropStaleMCPOAuthState(t *testing.T) {
 	}
 	assert.Equal(t, []string{"linear"}, recorder.evicted)
 	assert.Equal(t, []string{"linear"}, recorder.closed)
+	// The rotation deleted every caller's discovery of the client with their tokens; the cached
+	// copies go too, so no caller is served the deleted tools until the store next reloads.
+	assert.Equal(t, []string{"linear"}, recorder.discoveriesEvicted)
 
 	// A per-user client has no shared connection to close.
 	perUser := &staleOAuthRecorder{closeErr: schemas.ErrMCPReconnectNotApplicable}
 	dropStaleMCPOAuthState(perUser)(context.Background(), "linear")
 	require.Equal(t, []string{"linear"}, perUser.evicted)
 	assert.Equal(t, []string{"linear"}, perUser.closed)
+}
+
+// TestStopOAuth2BackgroundStopsClientGatewaysWithoutSweepWorker pins that shutdown drains the
+// client gateways even without a config store, where no OAuth2 sweep worker is started.
+func TestStopOAuth2BackgroundStopsClientGatewaysWithoutSweepWorker(t *testing.T) {
+	gateways, err := handlers.NewClientGatewayHandler(&lib.Config{LiveStore: liveStoreForTest(t)}, nil, nil)
+	require.NoError(t, err)
+	s := &BifrostHTTPServer{ClientGateways: gateways}
+	s.stopOAuth2Background()
+	assert.True(t, gateways.Closed(), "client gateway telemetry must be stopped when no sweep worker runs")
+	assert.Nil(t, s.OAuth2SweepWorker)
 }

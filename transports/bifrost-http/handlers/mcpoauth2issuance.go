@@ -24,9 +24,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -117,6 +117,21 @@ func (e *oauth2ClientMetadataError) httpStatus() int {
 	return fasthttp.StatusBadRequest
 }
 
+// oauth2ClientGrantTypes are the grants a registered or CIMD client can hold: the token endpoint
+// only implements the authorization-code and refresh-token grants for them.
+var oauth2ClientGrantTypes = []string{"authorization_code", "refresh_token"}
+
+// offeredOAuth2GrantTypes keeps the requested grant types this server offers, in their original order.
+func offeredOAuth2GrantTypes(requested []string) []string {
+	offered := make([]string, 0, len(requested))
+	for _, gt := range requested {
+		if slices.Contains(oauth2ClientGrantTypes, gt) && !slices.Contains(offered, gt) {
+			offered = append(offered, gt)
+		}
+	}
+	return offered
+}
+
 // validateOAuth2ClientMetadata validates DCR or CIMD client metadata and returns its grant types,
 // response types and scope with defaults applied. Redirects must be https or loopback http
 // (RFC 9700 §4.1.3), unless administrator-approved.
@@ -152,9 +167,8 @@ func validateOAuth2ClientMetadata(store *lib.Config, req dcrRequest) (grantTypes
 	if len(grantTypes) == 0 {
 		grantTypes = []string{"authorization_code"}
 	}
-	// The token endpoint only implements the authorization-code and refresh-token grants.
 	for _, gt := range grantTypes {
-		if gt != "authorization_code" && gt != "refresh_token" {
+		if !slices.Contains(oauth2ClientGrantTypes, gt) {
 			return reject("invalid_client_metadata", "unsupported grant_type")
 		}
 	}
@@ -255,6 +269,13 @@ func (h *OAuth2IssuanceHandler) handleAuthorize(ctx *fasthttp.RequestCtx) {
 	// value is neither persisted nor echoed back in a Location header.
 	if len(state) > maxOAuth2StateLen || len(scope) > maxOAuth2ScopeLen || len(codeChallenge) > maxOAuth2CodeChallengeLen {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "state, scope or code_challenge exceeds the maximum length")
+		return
+	}
+
+	// Below 2025-11-25 metadata documents are not advertised, so a new sign-in with one is refused.
+	// Grants already issued to one keep refreshing.
+	if isClientMetadataDocumentID(clientID) && !clientMetadataDocumentsAllowed(h.store) {
+		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_client", "client ID metadata documents are not accepted; register the client instead")
 		return
 	}
 
@@ -402,6 +423,11 @@ func (h *OAuth2IssuanceHandler) handleToken(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusServiceUnavailable, "server_error", "config store unavailable")
 		return
 	}
+	// The token route is not traced, so give it a request ID the access log and the debug lines share.
+	if len(ctx.Request.Header.Peek("x-request-id")) == 0 {
+		ctx.Request.Header.Set("x-request-id", uuid.New().String())
+	}
+	defer logTokenResponse(ctx)
 
 	grantType := string(ctx.FormValue("grant_type"))
 	switch {
@@ -450,10 +476,12 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 	// started is no longer trusted: revoke its refresh tokens (the family id is
 	// the authorize request id). Fail closed when the revocation errors.
 	if req.Status == configtables.OAuth2AuthorizeRequestStatusCodeIssued {
-		if err := h.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, req.ID); err != nil {
+		revokedRows, err := h.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, req.ID)
+		if err != nil {
 			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to revoke tokens issued from the authorization code")
 			return
 		}
+		logTokenEvent(ctx, "family.revoked", "reason=code_replay family_id=%s revoked_rows=%d", req.ID, revokedRows)
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "authorization code not found or already used")
 		return
 	}
@@ -493,18 +521,22 @@ func (h *OAuth2IssuanceHandler) handleTokenAuthCode(ctx *fasthttp.RequestCtx) {
 	if err := h.store.ConfigStore.ConsumeOAuth2AuthorizeRequest(ctx, req.ID, refreshTokenObj); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			// The code was concurrently consumed or expired between lookup and consume.
+			logTokenEvent(ctx, "code.lost_race", "family_id=%s", req.ID)
 			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "authorization code not found or already used")
 			return
 		}
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to issue token")
 		return
 	}
+	logTokenEvent(ctx, "code.exchanged", "family_id=%s refresh_token_id=%s", req.ID, refreshTokenObj.ID)
 	sendTokenResponse(ctx, accessToken, refreshToken, req.Scope, oauth2ServerCfg(h.store).AccessTokenTTL)
 }
 
 // handleTokenRefresh rotates a refresh token for the client it was issued to,
-// after checking that the client registered the refresh_token grant and that the
-// grant's identity and resource are still valid.
+// after checking that the grant's identity and resource are still valid. The
+// client's registered grant_types are not consulted: RFC 7591 records
+// authorization_code alone for a registration that omits them, and the code
+// exchange issues a refresh token either way.
 func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 	refreshToken := string(ctx.FormValue("refresh_token"))
 	clientID := clientIDFromRequest(ctx)
@@ -514,7 +546,18 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_request", "refresh_token and client_id are required")
 		return
 	}
+	h.refreshGrant(ctx, refreshToken, clientID, resource, oauth2MCPResourceURL(ctx, h.store))
+}
 
+// refreshGrant runs the refresh-token grant for a token bound to clientID:
+// replay detection, identity liveness checks, the resource binding, and an
+// atomic rotation. It writes the token response or OAuth error to ctx. Shared by
+// /oauth2/token and the client gateway token endpoints, which pass their
+// built-in client ID because clients such as Claude Code send none.
+// servedResource is the resource the calling endpoint issues tokens for (/mcp or
+// a client gateway's base URL): a grant bound to any other resource cannot
+// refresh there.
+func (h *OAuth2IssuanceHandler) refreshGrant(ctx *fasthttp.RequestCtx, refreshToken, clientID, resource, servedResource string) {
 	tokenHash := hashSHA256Hex(refreshToken)
 	rt, err := h.store.ConfigStore.GetOAuth2RefreshTokenByHash(ctx, tokenHash)
 	if errors.Is(err, configstore.ErrNotFound) {
@@ -531,10 +574,16 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 			sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to verify refresh token revocation state")
 			return
 		case revoked != nil:
-			if revokeErr := h.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, revoked.FamilyID); revokeErr != nil {
+			logTokenEvent(ctx, "refresh.lookup", "outcome=previously_revoked refresh_token_id=%s family_id=%s stored_client_id=%q revoked_at=%s last_used_at=%s",
+				revoked.ID, revoked.FamilyID, revoked.ClientID, formatLogTime(revoked.RevokedAt), formatLogTime(revoked.LastUsedAt))
+			revokedRows, revokeErr := h.store.ConfigStore.RevokeOAuth2RefreshTokensByFamilyID(ctx, revoked.FamilyID)
+			if revokeErr != nil {
 				sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to revoke refresh token family")
 				return
 			}
+			logTokenEvent(ctx, "family.revoked", "reason=refresh_replay family_id=%s refresh_token_id=%s revoked_rows=%d", revoked.FamilyID, revoked.ID, revokedRows)
+		default:
+			logTokenEvent(ctx, "refresh.lookup", "outcome=unknown")
 		}
 		// Unknown token or a revoked one we just contained — either way the grant
 		// is not usable.
@@ -545,25 +594,10 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to look up refresh token")
 		return
 	}
+	logTokenEvent(ctx, "refresh.lookup", "outcome=active refresh_token_id=%s family_id=%s stored_client_id=%q last_used_at=%s",
+		rt.ID, rt.FamilyID, rt.ClientID, formatLogTime(rt.LastUsedAt))
 	if rt.ClientID != clientID {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "client_id mismatch")
-		return
-	}
-	// Only a client registered for the refresh_token grant may refresh (RFC 7591
-	// grant_types), whether it registered or is identified by a Client ID Metadata
-	// Document. Checked after the client_id match so a token presented by another
-	// client keeps reporting that mismatch.
-	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)
-	if metadataErr != nil {
-		sendOAuthError(ctx, metadataErr.httpStatus(), metadataErr.code, metadataErr.description)
-		return
-	}
-	if err != nil && !errors.Is(err, configstore.ErrNotFound) {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to look up client")
-		return
-	}
-	if client == nil || !slices.Contains(client.GrantTypes, "refresh_token") {
-		sendOAuthError(ctx, fasthttp.StatusBadRequest, "unauthorized_client", "client is not registered for the refresh_token grant")
 		return
 	}
 
@@ -632,10 +666,11 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "resource mismatch")
 		return
 	}
-	// The grant is bound to the /mcp resource as it was when it was authorized. A changed issuer_url
-	// moves that resource, and a token minted for the old one is refused by /mcp for its audience, so
-	// the grant cannot refresh; the client authorizes again against the server's current address.
-	if resource != oauth2MCPResourceURL(ctx, h.store) {
+	// The grant is bound to the served resource as it was when it was authorized. A changed issuer_url
+	// moves that resource, and a token minted for the old one is refused by the resource for its
+	// audience, so the grant cannot refresh; the client authorizes again against the server's current
+	// address. A grant for a different resource (a /gateway/claude-code grant at /oauth2/token) is refused too.
+	if resource != servedResource {
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "the grant was issued for a resource this server no longer serves; authorize again")
 		return
 	}
@@ -655,12 +690,14 @@ func (h *OAuth2IssuanceHandler) handleTokenRefresh(ctx *fasthttp.RequestCtx) {
 	if err := h.store.ConfigStore.RotateOAuth2RefreshToken(ctx, rt.ID, newRefreshTokenObj); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			// The token was concurrently rotated/revoked between lookup and rotate.
+			logTokenEvent(ctx, "refresh.lost_race", "refresh_token_id=%s family_id=%s", rt.ID, rt.FamilyID)
 			sendOAuthError(ctx, fasthttp.StatusBadRequest, "invalid_grant", "refresh token not found or revoked")
 			return
 		}
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to rotate token")
 		return
 	}
+	logTokenEvent(ctx, "refresh.rotated", "family_id=%s old_refresh_token_id=%s new_refresh_token_id=%s", rt.FamilyID, rt.ID, newRefreshTokenObj.ID)
 	sendTokenResponse(ctx, accessToken, newRefreshToken, rt.Scope, oauth2ServerCfg(h.store).AccessTokenTTL)
 }
 
@@ -712,7 +749,7 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 // consentedClientName is the name a metadata-document client was consented under, kept on its grant
 // because it has no client row to be listed by. Best effort: consent just resolved it, so this is cached.
 func (h *OAuth2IssuanceHandler) consentedClientName(ctx context.Context, clientID string) string {
-	if !oauth2.IsClientMetadataURL(clientID) {
+	if !isClientMetadataDocumentID(clientID) {
 		return ""
 	}
 	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, clientID)
@@ -934,6 +971,38 @@ func parseRSAPrivateKeyPEM(pemStr string) (*rsa.PrivateKey, error) {
 }
 
 // sendOAuthError writes an RFC 6749 §5.2 error response.
+// oauth2TokenLogPrefix tags the token endpoint's debug lines so operators can filter on them.
+const oauth2TokenLogPrefix = "[oauth2-token]"
+
+// logTokenEvent writes a token-endpoint debug line. Never pass a token, code or verifier.
+func logTokenEvent(ctx *fasthttp.RequestCtx, event, format string, args ...any) {
+	common := []any{event, time.Now().UTC().Format(time.RFC3339Nano), ctx.FormValue("grant_type"), clientIDFromRequest(ctx),
+		ctx.Request.Header.Peek("x-request-id"), ctx.UserAgent(), ctx.RemoteIP().String(), lib.ClientForwardedIP(ctx)}
+	logger.Debug(oauth2TokenLogPrefix+" event=%s at=%s grant_type=%q client_id=%q request_id=%q user_agent=%q remote_ip=%s forwarded_for=%q "+format,
+		append(common, args...)...)
+}
+
+// logTokenResponse logs the token endpoint's status, and the error fields for a failure.
+// A success body carries tokens, so only expires_in is read from it.
+func logTokenResponse(ctx *fasthttp.RequestCtx) {
+	status := ctx.Response.StatusCode()
+	body := ctx.Response.Body()
+	if status == fasthttp.StatusOK {
+		logTokenEvent(ctx, "token.response", "status=%d expires_in=%d", status, gjson.GetBytes(body, "expires_in").Int())
+		return
+	}
+	logTokenEvent(ctx, "token.response", "status=%d error=%s error_description=%q",
+		status, gjson.GetBytes(body, "error").String(), gjson.GetBytes(body, "error_description").String())
+}
+
+// formatLogTime renders an optional timestamp for a debug line.
+func formatLogTime(t *time.Time) string {
+	if t == nil {
+		return "-"
+	}
+	return t.UTC().Format(time.RFC3339Nano)
+}
+
 func sendOAuthError(ctx *fasthttp.RequestCtx, statusCode int, errCode, description string) {
 	ctx.SetStatusCode(statusCode)
 	ctx.SetContentType("application/json")

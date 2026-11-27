@@ -93,6 +93,7 @@ export default function MCPServersPage() {
 
 	const {
 		data: mcpClientsData,
+		currentData: currentMCPClientsData,
 		error,
 		isLoading,
 		refetch,
@@ -153,6 +154,7 @@ export default function MCPServersPage() {
 
 	const table = (
 		<MCPClientsTable
+			pageLoading={!currentMCPClientsData}
 			mcpClients={mcpClients}
 			totalCount={totalCount}
 			refetch={refetch}

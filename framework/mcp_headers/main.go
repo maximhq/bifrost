@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 	"github.com/maximhq/bifrost/framework/temptoken"
 )
 
@@ -62,18 +63,21 @@ type Provider struct {
 	onCredentialWritten atomic.Pointer[func(ctx context.Context, credentialID string)]
 }
 
-// NewProvider constructs a configstore-backed MCPHeadersProvider. Mirrors
-// oauth2.NewOAuth2Provider so the wiring in transports/bifrost-http stays
+// NewProvider constructs a configstore-backed MCPHeadersProvider, with its credential cache in live,
+// which is required. Mirrors oauth2.NewOAuth2Provider so the wiring in transports/bifrost-http stays
 // symmetric between the two per-user auth surfaces.
-func NewProvider(configStore configstore.ConfigStore, logger schemas.Logger) *Provider {
+func NewProvider(configStore configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*Provider, error) {
+	if live == nil {
+		return nil, fmt.Errorf("mcp headers: %w", livestore.ErrNoLiveStore)
+	}
 	if logger == nil {
 		logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 	}
-	return &Provider{
-		configStore: configStore,
-		logger:      logger,
-		credentials: newHeaderCredentialCache(defaultCredentialCacheCapacity),
+	credentials, err := newHeaderCredentialCache(live)
+	if err != nil {
+		return nil, err
 	}
+	return &Provider{configStore: configStore, logger: logger, credentials: credentials}, nil
 }
 
 // SetTempTokenService installs the temp-token service used by
@@ -226,6 +230,34 @@ func (p *Provider) UpsertCredential(ctx context.Context, cred *schemas.MCPHeader
 	// row.ID to the reused row's ID when one existed, so this evicts exactly
 	// the row that was written; the next lookup for this binding reads the
 	// new values. A fresh row has nothing cached and the evict is a no-op.
+	p.credentialWritten(ctx, row.ID)
+	return nil
+}
+
+// CompleteFlow is UpsertCredential for a submission flow: it stores cred only
+// while the flow row flowID still exists, consuming the row in the same write.
+// A flow that is gone (revoked, expired or already submitted) stores nothing
+// and returns an error wrapping configstore.ErrNotFound.
+func (p *Provider) CompleteFlow(ctx context.Context, flowID string, cred *schemas.MCPHeadersUserCredential) error {
+	if p.configStore == nil {
+		return schemas.ErrHeadersCredentialProviderNotAvailable
+	}
+	if cred == nil {
+		return errors.New("nil credential")
+	}
+	if strings.TrimSpace(cred.MCPClientID) == "" {
+		return errors.New("mcp_client_id is required")
+	}
+	row, err := credentialToRow(cred)
+	if err != nil {
+		return err
+	}
+	if err := p.configStore.CompleteMCPPerUserHeaderFlow(ctx, flowID, row); err != nil {
+		return fmt.Errorf("complete mcp per-user header flow: %w", err)
+	}
+	cred.ID = row.ID
+	cred.CreatedAt = row.CreatedAt
+	cred.UpdatedAt = row.UpdatedAt
 	p.credentialWritten(ctx, row.ID)
 	return nil
 }

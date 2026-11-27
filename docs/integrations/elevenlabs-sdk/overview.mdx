@@ -1,0 +1,260 @@
+---
+title: "Overview"
+description: "Point the ElevenLabs Python and JavaScript SDKs, or a raw HTTP or WebSocket client, at Bifrost for text to speech, Scribe realtime and the text to dialogue socket."
+icon: "book"
+---
+
+## Overview
+
+The `/elevenlabs` integration serves ElevenLabs' own API. An ElevenLabs SDK, or any HTTP or WebSocket client written for ElevenLabs, keeps its request and response shapes: Bifrost forwards each call to ElevenLabs as sent and returns what ElevenLabs answers, and adds virtual key authentication, governance, request logs and cost on the way.
+
+**Endpoint:** `/elevenlabs`
+
+### Supported routes
+
+| Route | Notes |
+|-------|-------|
+| `POST /elevenlabs/v1/text-to-speech/{voice_id}` | Text to speech |
+| `POST /elevenlabs/v1/text-to-speech/{voice_id}/with-timestamps` | Audio and alignment as JSON |
+| `POST /elevenlabs/v1/text-to-speech/{voice_id}/stream` | Streamed audio |
+| `GET /elevenlabs/v1/models` | Model list, limited to the models the virtual key allows |
+| `GET /elevenlabs/v1/speech-to-text/realtime` | WebSocket: Scribe realtime |
+| `GET /elevenlabs/v1/text-to-dialogue/stream-input` | WebSocket: text to dialogue |
+
+The rest of the ElevenLabs API, such as voices, history, the speech-to-text REST endpoints and the text-to-dialogue REST endpoints, is not served on `/elevenlabs`. It is on `/elevenlabs_passthrough`, which forwards the call as it is under the key's credential.
+
+---
+
+## Setup
+
+<Tabs group="elevenlabs-sdk">
+<Tab title="Python">
+
+```python {5,6}
+from elevenlabs.client import ElevenLabs
+
+# Configure the client to use Bifrost
+client = ElevenLabs(
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+    base_url="https://gateway.example.com/elevenlabs",
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript {5,6}
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+
+// Configure the client to use Bifrost
+const client = new ElevenLabsClient({
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+  baseUrl: "https://gateway.example.com/elevenlabs",
+});
+```
+
+</Tab>
+<Tab title="cURL">
+
+```bash
+curl -X POST "https://gateway.example.com/elevenlabs/v1/text-to-speech/<VOICE-ID>?output_format=mp3_44100_128" \
+  -H "xi-api-key: <YOUR-BIFROST-VIRTUAL-KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{"text": "Hello from Bifrost.", "model_id": "eleven_v4_turbo"}' \
+  --output speech.mp3
+```
+
+</Tab>
+</Tabs>
+
+## Authentication
+
+- The client sends a Bifrost virtual key in the `xi-api-key` header. It is the only credential header the ElevenLabs SDKs send; they send no `Authorization` header.
+- A value in `xi-api-key` is recognised as a virtual key only when it starts with `sk-bf-`.
+- The client's key is never forwarded to ElevenLabs. The gateway sends the ElevenLabs provider key it selects, as `xi-api-key`.
+- With `client.enforce_auth_on_inference` on, a request without a credential is refused with `401`. On a WebSocket the refusal is a `401` at the handshake.
+
+---
+
+## Text to speech
+
+<Tabs group="elevenlabs-sdk">
+<Tab title="Python">
+
+```python
+from elevenlabs.client import ElevenLabs
+
+client = ElevenLabs(
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+    base_url="https://gateway.example.com/elevenlabs",
+)
+
+# Text to speech
+audio = client.text_to_speech.convert(
+    voice_id="<VOICE-ID>",
+    text="Hello from Bifrost.",
+    model_id="eleven_v4_turbo",
+    output_format="mp3_44100_128",
+)
+with open("speech.mp3", "wb") as f:
+    for chunk in audio:
+        f.write(chunk)
+
+# Streamed text to speech
+for chunk in client.text_to_speech.stream(
+    voice_id="<VOICE-ID>",
+    text="Hello from Bifrost.",
+    model_id="eleven_v4_turbo",
+):
+    ...  # play or store the audio chunk
+
+# Model list
+for model in client.models.list():
+    print(model.model_id)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { writeFile } from "node:fs/promises";
+import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+
+const client = new ElevenLabsClient({
+  apiKey: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+  baseUrl: "https://gateway.example.com/elevenlabs",
+});
+
+// Text to speech
+const audio = await client.textToSpeech.convert("<VOICE-ID>", {
+  text: "Hello from Bifrost.",
+  modelId: "eleven_v4_turbo",
+  outputFormat: "mp3_44100_128",
+});
+const chunks = [];
+for await (const chunk of audio) chunks.push(chunk);
+await writeFile("speech.mp3", Buffer.concat(chunks));
+
+// Streamed text to speech
+const stream = await client.textToSpeech.stream("<VOICE-ID>", {
+  text: "Hello from Bifrost.",
+  modelId: "eleven_v4_turbo",
+});
+for await (const chunk of stream) {
+  // play or store the audio chunk
+}
+
+// Model list
+const models = await client.models.list();
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Scribe realtime
+
+Scribe realtime is `wss://<gateway>/elevenlabs/v1/speech-to-text/realtime`. The ElevenLabs SDKs open it with `speech_to_text.realtime.connect` (`speechToText.realtime.connect` in JavaScript).
+
+```python
+import asyncio
+import base64
+
+from elevenlabs.client import ElevenLabs
+from elevenlabs.realtime import AudioFormat, CommitStrategy
+
+client = ElevenLabs(
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+    base_url="https://gateway.example.com/elevenlabs",
+)
+
+
+async def transcribe(pcm_chunks):  # 16-bit mono PCM at 16 kHz, as bytes
+    committed = asyncio.Event()
+    conn = await client.speech_to_text.realtime.connect({
+        "model_id": "scribe_v3_live",
+        "audio_format": AudioFormat.PCM_16000,
+        "sample_rate": 16000,
+        "commit_strategy": CommitStrategy.MANUAL,
+        "language_code": "en",
+    })
+
+    def on_committed(data):
+        print(data["text"])
+        committed.set()
+
+    conn.on("committed_transcript", on_committed)
+    for chunk in pcm_chunks:
+        await conn.send({"audio_base_64": base64.b64encode(chunk).decode(), "sample_rate": 16000})
+        await asyncio.sleep(0.1)
+    committed.clear()  # Scribe also commits long audio by itself, so wait for the answer to this commit
+    await conn.commit()
+    await asyncio.wait_for(committed.wait(), timeout=10)  # close() cancels what is still arriving
+    await conn.close()
+```
+
+**What reaches Scribe.** `model_id` is required: a handshake without it is refused with `400`. The whole query reaches Scribe as sent, repeated keys such as `keyterms` included, except `token` and `xi-api-key`.
+
+**One request per segment.** A segment is the audio from one committed transcript to the next. Each segment is one request against the virtual key's limits and one logged `realtime.turn` row. Scribe reports no usage, so the segment is priced by the audio seconds the gateway counts from the `input_audio_chunk` frames: `pcm_N` is 16-bit mono, `ulaw` and `alaw` are 1 byte per sample, and `pcm_16000` applies when the query has no `audio_format`.
+
+**Refusals.** A refusal (a model the key may not use, a spent request limit or budget, an unknown virtual key) arrives as a Scribe error frame followed by a close, before the refused segment's audio goes upstream. Scribe's own error frames and closes reach the client as they are.
+
+| Status | Error frame `message_type` | Close code |
+|--------|----------------------------|------------|
+| 400 | `invalid_request` | 1007 |
+| 401, 403 | `auth_error` | 1008 |
+| 402 | `quota_exceeded` | 1011 |
+| 429 | `rate_limited` | 1013 |
+
+---
+
+## Text to dialogue WebSocket
+
+```python
+import asyncio
+import json
+
+import websockets
+
+
+async def main():
+    url = (
+        "wss://gateway.example.com/elevenlabs/v1/text-to-dialogue/stream-input"
+        "?model_id=eleven_v4_turbo&output_format=pcm_24000"
+    )
+    headers = {"xi-api-key": "<YOUR-BIFROST-VIRTUAL-KEY>"}  # Replace with your actual Bifrost virtual key.
+    async with websockets.connect(url, additional_headers=headers) as ws:
+        await ws.send(json.dumps({"voices": ["<VOICE-ID>"], "voice_settings": {"stability": 0.4}}))
+        await ws.send(json.dumps({
+            "inputs": [{"text": "Hello from a raw client.", "voice_id": "<VOICE-ID>", "new_turn": True}],
+        }))
+        await ws.send(json.dumps({"flush": True}))
+        while True:
+            frame = json.loads(await ws.recv())
+            if frame.get("is_final_audio_for_turn"):
+                break
+        await ws.send(json.dumps({"close_socket": True}))
+        try:
+            while True:
+                await ws.recv()
+        except websockets.ConnectionClosed:
+            pass
+
+
+asyncio.run(main())
+```
+
+The frames are ElevenLabs' own protocol and pass through unchanged. The gateway reads them only to count the text.
+
+- **One request per session.** The session is admitted when it opens: the model allowlist, budget and request limit are checked once. It is billed on close by the characters of text the client sent in `inputs[].text`.
+- **Refusals.** A refusal is a `{"error": "...", "code": ...}` frame followed by a close, as the socket itself reports errors, with the close code as `code`. A handshake without `model_id` is refused with `400`, and one without a credential with `401` while authentication on inference is enforced.
+- **Frame size.** A frame larger than 1 MiB from the client is refused by the connection limit.
+
+---
+
+## Next Steps
+
+- **[ElevenLabs provider](../../providers/supported-providers/elevenlabs)** - Provider configuration and the unified `/v1` audio endpoints
+- **[Virtual Keys](../../features/governance/virtual-keys)** - Model allowlists, budgets and rate limits
+- **[What is an integration?](../what-is-an-integration)** - How integrations work

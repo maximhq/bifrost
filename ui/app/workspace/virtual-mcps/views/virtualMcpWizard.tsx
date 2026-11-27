@@ -236,8 +236,6 @@ function ReviewStep({ name, endpointSlug, description, enabled, tools, assignedV
 	const previewSlug = slugify(endpointSlug.trim() || name);
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
 	const endpoint = `${getExternalBaseUrl(coreConfig?.client_config)}/mcp/${previewSlug}`;
-	const { data: clientsData } = useGetMCPClientsQuery({ limit: 1000 });
-	const nameById = new Map((clientsData?.clients ?? []).map((c) => [c.config.client_id, c.config.name]));
 	const { copy, copied } = useCopyToClipboard({ successMessage: t("common.endpointCopied") });
 	const rows: { label: string; value: React.ReactNode }[] = [
 		{ label: t("common.name"), value: name.trim() || <span className="text-muted-foreground">—</span> },
@@ -292,9 +290,7 @@ function ReviewStep({ name, endpointSlug, description, enabled, tools, assignedV
 							const all = spec.tool_names.includes("*");
 							return (
 								<div key={spec.mcp_client_id} className={`flex items-start gap-4 p-3 ${i > 0 ? "border-t" : ""}`}>
-									<span className="w-32 shrink-0 truncate text-sm" title={nameById.get(spec.mcp_client_id) ?? spec.mcp_client_id}>
-										{nameById.get(spec.mcp_client_id) ?? spec.mcp_client_id}
-									</span>
+									<MCPClientNameCell id={spec.mcp_client_id} />
 									<span className="text-muted-foreground min-w-0 flex-1 text-sm">
 										{all ? t("registry.sheet.allTools") : t("virtualMcps.wizard.toolsCount", { count: spec.tool_names.length })}
 									</span>
@@ -339,5 +335,17 @@ function ReviewStep({ name, endpointSlug, description, enabled, tools, assignedV
 				</div>
 			</InfoBox>
 		</div>
+	);
+}
+
+// One server's name, read by id: the clients list is paged server-side, so a server past its
+// first page would otherwise show as a raw id.
+function MCPClientNameCell({ id }: { id: string }) {
+	const { data } = useGetMCPClientsQuery({ server: id, limit: 1 });
+	const name = data?.clients?.[0]?.config.name || id;
+	return (
+		<span className="w-32 shrink-0 truncate text-sm" title={name}>
+			{name}
+		</span>
 	);
 }

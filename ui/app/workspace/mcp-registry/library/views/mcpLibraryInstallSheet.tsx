@@ -68,6 +68,7 @@ function buildInitialValues(server: MCPLibraryEntry): CreateMCPClientRequest {
 	return {
 		name: sanitizeServerName(server.name),
 		is_code_mode_client: false,
+		server_type_on_slug: "inherit",
 		is_ping_available: true,
 		connection_type: server.connection_type || "http",
 		connection_string: isStdio ? undefined : { value: server.connection_url || "", ref: "" },
@@ -110,6 +111,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 		oauthConfigId: string;
 		mcpClientId: string;
 		isPerUserOauth?: boolean;
+		perUserDiscovery?: boolean;
 	} | null>(null);
 	const [headersFlow, setHeadersFlow] = useState<{ payload: CreateMCPClientRequest } | null>(null);
 
@@ -201,6 +203,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					oauthConfigId: response.oauth_config_id,
 					mcpClientId: response.mcp_client_id,
 					isPerUserOauth: data.auth_type === "per_user_oauth",
+					perUserDiscovery: payload.per_user_discovery === true,
 				});
 				return;
 			}
@@ -225,7 +228,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 
 	return (
 		<Sheet open={open} onOpenChange={(sheetOpen) => !sheetOpen && !oauthFlow && !headersFlow && onClose()}>
-			<SheetContent className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4">
+			<SheetContent resizeKey="mcp-library-install" className="flex w-full flex-col gap-4 overflow-x-hidden p-0 pt-4">
 				<SheetHeader className="flex flex-col items-start px-0 py-4" headerClassName="mb-0 sticky px-4 md:px-8 -top-4 bg-card z-10">
 					<SheetTitle>{t("library.install.title")}</SheetTitle>
 					<SheetDescription>{t("library.install.description")}</SheetDescription>
@@ -373,6 +376,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 					oauthConfigId={oauthFlow.oauthConfigId}
 					mcpClientId={oauthFlow.mcpClientId}
 					isPerUserOauth={oauthFlow.isPerUserOauth}
+					perUserDiscovery={oauthFlow.perUserDiscovery}
 				/>
 			)}
 
@@ -394,6 +398,7 @@ export function MCPLibraryInstallSheet({ server, open, onClose, onInstalled }: M
 						setError("name", { message: error });
 					}}
 					perUserHeaderKeys={satellites.perUserHeaderKeys}
+					perUserDiscovery={headersFlow.payload.per_user_discovery === true}
 					submitHandler={async (values) => {
 						await createMCPClient({ ...headersFlow.payload, user_headers: values }).unwrap();
 					}}

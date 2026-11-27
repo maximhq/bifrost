@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -25,8 +26,29 @@ func SanitizeBifrostErrorForClient(err *schemas.BifrostError) *schemas.BifrostEr
 		}
 		sanitized.Error = &errorField
 	}
+	sanitized.ExtraFields.FallbackAttempts = sanitizeFallbackAttempts(err.ExtraFields.FallbackAttempts)
 
 	return &sanitized
+}
+
+// sanitizeFallbackAttempts applies the same check to each fallback's message, which an exhausted
+// chain copies onto the primary's error. The slice is copied only when a message has to be hidden,
+// so the original error, which logging may still hold, is never changed.
+func sanitizeFallbackAttempts(attempts []schemas.FallbackAttempt) []schemas.FallbackAttempt {
+	var out []schemas.FallbackAttempt
+	for i, attempt := range attempts {
+		if !containsStackTrace(attempt.Message) && !containsSQLDetails(attempt.Message) {
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(attempts)
+		}
+		out[i].Message = ClientSafeInternalErrorMessage
+	}
+	if out == nil {
+		return attempts
+	}
+	return out
 }
 
 func shouldHideErrorDetails(_ *schemas.BifrostError, field *schemas.ErrorField) bool {
