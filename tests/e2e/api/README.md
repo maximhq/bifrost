@@ -958,7 +958,7 @@ one (no providers, sqlite stores in a throwaway app dir) and stops it afterwards
 CI runs it this way from `.github/workflows/scripts/test-api-integrations.sh`.
 
 ```bash
-./runners/individual/run-newman-routing-wiring-tests.sh --binary /path/to/bifrost-http  # --port, default 8094
+./runners/individual/run-newman-routing-wiring-tests.sh --binary /path/to/bifrost-http  # --port, default 8094; --fixture-port, default 8795
 node runners/build-routing-wiring.mjs                                                  # regenerate after editing scenarios
 ```
 

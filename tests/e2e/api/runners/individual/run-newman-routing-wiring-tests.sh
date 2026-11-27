@@ -39,14 +39,17 @@ NC='\033[0m'
 
 BIFROST_BINARY=""
 PORT="8094"
+FIXTURE_PORT="8795"
 while [ $# -gt 0 ]; do
     case "$1" in
         --binary) BIFROST_BINARY="$2"; shift 2 ;;
         --port) PORT="$2"; shift 2 ;;
+        --fixture-port) FIXTURE_PORT="$2"; shift 2 ;;
         -h|--help)
             echo "Usage: $0 [--binary <bifrost-http> [--port <port>]]"
             echo "  --binary <path>   Boot a clean server from this binary for the run"
             echo "  --port <port>     Port for that server (default: 8094)"
+            echo "  --fixture-port <port>  Port for the scripted upstream, runners/provider-error-fixture.mjs (default: 8795)"
             exit 0 ;;
         *) echo -e "${RED}Unknown option: $1${NC}" >&2; exit 1 ;;
     esac
@@ -145,9 +148,34 @@ if [ "$ci_normalized" = "1" ] || [ "$ci_normalized" = "true" ]; then
     cmd+=(--reporter-cli-no-failures false)
 fi
 
+# Scenarios that need an upstream to fail or stall on cue (the request timeout ones) route to the
+# scripted upstream runners/provider-error-fixture.mjs, which answers by model name on loopback.
+if ! command -v node &> /dev/null; then
+    echo -e "${RED}Error: node is required to run the provider error fixture${NC}"
+    exit 1
+fi
+if (echo >/dev/tcp/127.0.0.1/"$FIXTURE_PORT") 2>/dev/null; then
+    echo -e "${RED}Error: port $FIXTURE_PORT is already in use; pass --fixture-port to use another${NC}" >&2
+    exit 1
+fi
+PROVIDER_ERROR_FIXTURE_PORT="$FIXTURE_PORT" node "$API_DIR/runners/provider-error-fixture.mjs" > /dev/null 2>&1 &
+FIXTURE_PID=$!
+fixture_waited=0
+until (echo >/dev/tcp/127.0.0.1/"$FIXTURE_PORT") 2>/dev/null; do
+    if ! kill -0 "$FIXTURE_PID" 2>/dev/null || [ "$fixture_waited" -ge 20 ]; then
+        echo -e "${RED}Error: the provider error fixture did not start on port $FIXTURE_PORT${NC}" >&2
+        exit 1
+    fi
+    sleep 0.5
+    fixture_waited=$((fixture_waited + 1))
+done
+cmd+=(--env-var "fixture_url=http://127.0.0.1:$FIXTURE_PORT")
+stop_fixture() { kill "$FIXTURE_PID" 2>/dev/null || true; }
+trap stop_fixture EXIT
+
 if [ -n "$BIFROST_BINARY" ]; then
     source "$SCRIPT_DIR/../lib/clean-bifrost.sh"
-    trap 'stop_clean_bifrost "$API_DIR/$REPORT_DIR"' EXIT
+    trap 'code=$?; stop_fixture; (exit $code); stop_clean_bifrost "$API_DIR/$REPORT_DIR"' EXIT
     boot_clean_bifrost "$BIFROST_BINARY" "$PORT" || exit 1
     BIFROST_BASE_URL="http://localhost:$PORT"
 fi

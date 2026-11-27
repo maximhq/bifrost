@@ -38,6 +38,13 @@ func serveStreamingResponseWithConfig(t *testing.T, config *lib.Config, chunks [
 // runs on the request context before the handler, e.g. to install a trace completer.
 func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup func(*fasthttp.RequestCtx), chunks []*schemas.BifrostStreamChunk) string {
 	t.Helper()
+	return serveStreamingResponseWithDeadline(t, config, setup, schemas.ChatCompletionStreamRequest, schemas.NoDeadline, chunks)
+}
+
+// serveStreamingResponseWithDeadline is serveStreamingResponseWithSetup for requestType with a
+// deadline on the request context, as x-bf-request-timeout sets.
+func serveStreamingResponseWithDeadline(t *testing.T, config *lib.Config, setup func(*fasthttp.RequestCtx), requestType schemas.RequestType, deadline time.Time, chunks []*schemas.BifrostStreamChunk) string {
+	t.Helper()
 
 	handler := func(reqCtx *fasthttp.RequestCtx) {
 		if setup != nil {
@@ -46,18 +53,27 @@ func serveStreamingResponseWithSetup(t *testing.T, config *lib.Config, setup fun
 		h := &CompletionHandler{config: config}
 
 		base, cancel := context.WithCancel(context.Background())
-		bifrostCtx := schemas.NewBifrostContext(base, schemas.NoDeadline)
+		bifrostCtx := schemas.NewBifrostContext(base, deadline)
 
 		getStream := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 			stream := make(chan *schemas.BifrostStreamChunk, len(chunks))
 			for _, chunk := range chunks {
 				stream <- chunk
 			}
-			close(stream)
+			if deadline.IsZero() {
+				close(stream)
+				return stream, nil
+			}
+			// As core's forwarding does when the deadline passes mid-stream: the channel
+			// closes without a timeout chunk once the context is done.
+			go func() {
+				<-bifrostCtx.Done()
+				close(stream)
+			}()
 			return stream, nil
 		}
 
-		h.handleStreamingResponse(reqCtx, bifrostCtx, schemas.ChatCompletionStreamRequest, getStream, cancel)
+		h.handleStreamingResponse(reqCtx, bifrostCtx, requestType, getStream, cancel)
 	}
 
 	serverConn, clientConn := net.Pipe()
@@ -167,6 +183,46 @@ func TestStreamingResponseSendsDoneOnCleanStream(t *testing.T) {
 
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Errorf("expected [DONE] to terminate a clean stream, got:\n%s", body)
+	}
+}
+
+// x-bf-request-timeout passing after the first chunk: core's forwarding stops on the done
+// context and closes the channel without the provider's timeout chunk. The client must get a
+// request_timed_out error frame, not [DONE], so partial output does not look complete.
+func TestStreamingResponseDeadlineAfterFirstChunkEndsWithTimeoutError(t *testing.T) {
+	body := serveStreamingResponseWithDeadline(t, &lib.Config{}, nil, schemas.ChatCompletionStreamRequest, time.Now().Add(100*time.Millisecond), []*schemas.BifrostStreamChunk{
+		contentChunk("partial answer"),
+	})
+
+	if !strings.Contains(body, "partial answer") {
+		t.Errorf("expected the chunk sent before the deadline to reach the client, got:\n%s", body)
+	}
+	if !strings.Contains(body, string(schemas.RequestTimedOut)) || !strings.Contains(body, lib.StreamDeadlineMessage) {
+		t.Errorf("expected a request_timed_out error frame after the deadline, got:\n%s", body)
+	}
+	if strings.Contains(body, "data: [DONE]") {
+		t.Errorf("[DONE] must not end a stream cut short by the deadline, got:\n%s", body)
+	}
+	if strings.Contains(body, "event: ") {
+		t.Errorf("a chat completion timeout frame must stay an untyped data frame, got:\n%s", body)
+	}
+}
+
+// An image stream whose deadline passes before its first chunk still ends with a typed
+// `event: error` frame, as every other image stream error does: includeEventType is only set
+// by a chunk, so the request type decides here.
+func TestStreamingResponseImageDeadlineBeforeFirstChunkEndsWithTypedTimeoutError(t *testing.T) {
+	for _, requestType := range []schemas.RequestType{schemas.ImageGenerationStreamRequest, schemas.ImageEditStreamRequest} {
+		t.Run(string(requestType), func(t *testing.T) {
+			body := serveStreamingResponseWithDeadline(t, &lib.Config{}, nil, requestType, time.Now().Add(100*time.Millisecond), nil)
+
+			if !strings.Contains(body, "event: error\ndata: ") || !strings.Contains(body, lib.StreamDeadlineMessage) {
+				t.Errorf("expected a typed event: error frame carrying request_timed_out, got:\n%s", body)
+			}
+			if strings.Contains(body, "data: [DONE]") {
+				t.Errorf("[DONE] must not end an image stream cut by the deadline, got:\n%s", body)
+			}
+		})
 	}
 }
 

@@ -96,6 +96,12 @@ const PROVIDERS = {
       bedrock_key_config: { access_key: "env.AWS_ACCESS_KEY_ID", secret_key: "env.AWS_SECRET_ACCESS_KEY", region: "env.AWS_REGION" },
     },
   },
+  // fixture: an OpenAI-shaped provider whose base_url is the runner's provider-error-fixture
+  // (runners/provider-error-fixture.mjs), which answers by model name: "upstream-503~<tag>" fails,
+  // "upstream-slow~<tag>" answers after 2s, "upstream-ok~<tag>" answers at once, and GET /__hits counts
+  // the requests per model. A key aliases a run-scoped model to one of those names. It accepts only
+  // the key test-key and calls nothing outside the machine.
+  fixture: { base: "openai", keyValue: "test-key", baseUrl: "{{fixture_url}}" },
 };
 const DEFAULT_PROVIDER = "openai";
 
@@ -123,6 +129,7 @@ function keyBody(k, name, prov) {
     // and capable of the model — only the credential is broken.
     out.value = "sk-deadbeef-invalid-000";
   } else if (prov.keyConfig) Object.assign(out, prov.keyConfig);
+  else if (prov.keyValue) out.value = prov.keyValue;
   else out.value = `env.${prov.env}`;
   if (k.blacklisted.length) out.blacklisted_models = [...k.blacklisted];
   // prov.aliasFor lets a provider expose a common model name (e.g. Bedrock maps
@@ -232,6 +239,13 @@ function routeAssertLines(sid, step, jsNameOf) {
   }
   if (step.expectErrorType) {
     lines.push(`if (body.type !== ${JSON.stringify(step.expectErrorType)}) { throw new Error('error type=' + body.type + ' expected ${step.expectErrorType}'); }`);
+  }
+  if (step.expectErrorFieldType) {
+    // The type inside the error object (error.type), such as request_timed_out.
+    lines.push(`if (!body.error || body.error.type !== ${JSON.stringify(step.expectErrorFieldType)}) { throw new Error('error.type=' + (body.error && body.error.type) + ' expected ${step.expectErrorFieldType}'); }`);
+  }
+  if (step.expectMaxMs) {
+    lines.push(`if (pm.response.responseTime >= ${step.expectMaxMs}) { throw new Error('the request took ' + pm.response.responseTime + 'ms, expected under ${step.expectMaxMs}ms'); }`);
   }
   return [...lines, ...routeHeaderLines(step, jsNameOf)];
 }
@@ -464,6 +478,10 @@ function expandScenario(sc) {
         if (!isStandard) {
           body.custom_provider_config = { base_provider_type: prov.base, is_key_less: false };
         }
+        // networkConfig sets the provider's retries and backoff; a provider with a baseUrl points at it.
+        if (prov.baseUrl || step.networkConfig) {
+          body.network_config = { ...(prov.baseUrl ? { base_url: prov.baseUrl } : {}), ...(step.networkConfig || {}) };
+        }
         const name = uniq("add provider" + plabel);
         items.push(item(nextId("add-provider"), name, request("POST", url(["api", "providers"]), body),
           events(null, mutationTest(name, [200, 201], cleanupTarget))));
@@ -505,6 +523,10 @@ function expandScenario(sc) {
         // needs a particular key rather than whichever the weighted pick lands on.
         if (step.pinKey) {
           headers.push({ key: "x-bf-api-key-id", value: keyId(step.pinKey) });
+        }
+        // requestTimeout caps the whole request, retries, backoff and fallbacks included (x-bf-request-timeout).
+        if (step.requestTimeout) {
+          headers.push({ key: "x-bf-request-timeout", value: step.requestTimeout });
         }
         const body = {
           // bareModel routes without a provider prefix so an upstream routing
@@ -742,6 +764,24 @@ function expandScenario(sc) {
         items.push(item(nextId("assert-trail"), trailName,
           request("GET", url(["api", "logs", `{{${logIdVar}}}`]), null),
           events(step.fromRequest ? pollPrerequest(step.waitSeconds) : null, pollTest(trailName, trailAssert, cleanupTarget))));
+        break;
+      }
+      case "fixtureHits": {
+        // The provider-error-fixture's request counts per upstream model: each entry of step.hits is
+        // { model, min, max } (max defaults to min), the model with its run-scoped "~tag".
+        const name = uniq(step.label);
+        const lines = [
+          "if (pm.response.code !== 200) { throw new Error('fixture hits status ' + pm.response.code); }",
+          "var hits = (((pm.response.json() || {}).data || [])[0] || {}).hits || {};",
+          `${JSON.stringify(step.hits)}.forEach(function (h) {`,
+          "  var model = pm.variables.replaceIn(h.model);",
+          "  var n = hits[model] || 0;",
+          "  var max = h.max === undefined ? h.min : h.max;",
+          "  if (n < h.min || n > max) { throw new Error('the fixture saw ' + n + ' requests for ' + model + ', expected ' + h.min + (max === h.min ? '' : ' to ' + max)); }",
+          "});",
+        ];
+        items.push(item(nextId("fixture-hits"), name, request("GET", { raw: "{{fixture_url}}/__hits", host: ["{{fixture_url}}"], path: ["__hits"] }, null),
+          events(null, singleTest(name, lines, cleanupTarget))));
         break;
       }
       case "cleanup":
@@ -1334,6 +1374,33 @@ const SCENARIOS = [
       { type: "cleanup" },
     ],
   },
+  {
+    id: "request-timeout-caps-retries",
+    title: "x-bf-request-timeout ends a request whose primary keeps failing before its retries and fallback run out",
+    description: "A answers 503 to every attempt and may retry 20 times (100 to 200ms backoff); B, the caller's fallback, would answer at once. Under a 1500ms x-bf-request-timeout the request ends with a 504 request_timed_out within the cap plus a 1000ms allowance: A was tried more than once, so retries ran under the deadline, and B was never called, so the deadline also stops the fallback chain. Without the cap the same request runs out A's retries and B serves (#10010).",
+    steps: [
+      { type: "addProvider", ref: "self", providerType: "fixture", networkConfig: { max_retries: 20, retry_backoff_initial: 100, retry_backoff_max: 200 }, keys: [key({ id: "ka", models: ["catwiring-rto1-{{run_id}}"], aliases: { "catwiring-rto1-{{run_id}}": "upstream-503~rto1-a-{{run_id}}" } })] },
+      { type: "addProvider", ref: "b", providerType: "fixture", networkConfig: { max_retries: 0 }, keys: [key({ id: "kb", models: ["catwiring-rto1-{{run_id}}"], aliases: { "catwiring-rto1-{{run_id}}": "upstream-ok~rto1-b-{{run_id}}" } })] },
+      { type: "route", model: "catwiring-rto1-{{run_id}}", routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: "catwiring-rto1-{{run_id}}" }], requestTimeout: "1500ms", expectStatus: 504, expectErrorFieldType: "request_timed_out", expectMaxMs: 2500, label: "a 1500ms cap ends the retries with a 504 request_timed_out" },
+      { type: "fixtureHits", hits: [{ model: "upstream-503~rto1-a-{{run_id}}", min: 2, max: 20 }, { model: "upstream-ok~rto1-b-{{run_id}}", min: 0 }], label: "A was retried under the deadline and B was never called" },
+      { type: "route", model: "catwiring-rto1-{{run_id}}", routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: "catwiring-rto1-{{run_id}}" }], requestTimeout: "60s", expectStatus: 200, expectProviderOneOf: ["b"], expectIsFallback: true, label: "under a 60s cap A's retries run out and B serves" },
+      { type: "cleanup" },
+    ],
+  },
+  {
+    id: "request-timeout-caps-fallback-chain",
+    title: "x-bf-request-timeout cancels the fallback in flight and starts no later fallback",
+    description: "A answers 503 with no retries, its first fallback B answers only after 2s, and its second fallback C would answer at once. Under a 1000ms x-bf-request-timeout the deadline passes while B is in flight: the request ends with a 504 request_timed_out within the cap plus a 1000ms allowance and C is never called. With a 60s cap the same chain is served by B (#10010).",
+    steps: [
+      { type: "addProvider", ref: "self", providerType: "fixture", networkConfig: { max_retries: 0 }, keys: [key({ id: "ka", models: ["catwiring-rto2-{{run_id}}"], aliases: { "catwiring-rto2-{{run_id}}": "upstream-503~rto2-a-{{run_id}}" } })] },
+      { type: "addProvider", ref: "b", providerType: "fixture", networkConfig: { max_retries: 0 }, keys: [key({ id: "kb", models: ["catwiring-rto2-{{run_id}}"], aliases: { "catwiring-rto2-{{run_id}}": "upstream-slow~rto2-b-{{run_id}}" } })] },
+      { type: "addProvider", ref: "c", providerType: "fixture", networkConfig: { max_retries: 0 }, keys: [key({ id: "kc", models: ["catwiring-rto2-{{run_id}}"], aliases: { "catwiring-rto2-{{run_id}}": "upstream-ok~rto2-c-{{run_id}}" } })] },
+      { type: "route", model: "catwiring-rto2-{{run_id}}", routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: "catwiring-rto2-{{run_id}}" }, { providerRef: "c", model: "catwiring-rto2-{{run_id}}" }], requestTimeout: "1000ms", expectStatus: 504, expectErrorFieldType: "request_timed_out", expectMaxMs: 2000, label: "a 1000ms cap ends the chain while B is in flight with a 504 request_timed_out" },
+      { type: "fixtureHits", hits: [{ model: "upstream-503~rto2-a-{{run_id}}", min: 1 }, { model: "upstream-slow~rto2-b-{{run_id}}", min: 1 }, { model: "upstream-ok~rto2-c-{{run_id}}", min: 0 }], label: "A and B were each called once and C never" },
+      { type: "route", model: "catwiring-rto2-{{run_id}}", routeRef: "self", useVk: false, fallbacks: [{ providerRef: "b", model: "catwiring-rto2-{{run_id}}" }, { providerRef: "c", model: "catwiring-rto2-{{run_id}}" }], requestTimeout: "60s", expectStatus: 200, expectProviderOneOf: ["b"], expectIsFallback: true, label: "under a 60s cap the slow B serves" },
+      { type: "cleanup" },
+    ],
+  },
 ];
 
 const collection = buildCollection({
@@ -1345,6 +1412,8 @@ const collection = buildCollection({
     "and asserts the route via extra_fields.routing_info (success), the error message (rejection), and " +
     "the stored log. Machine-generated by runners/build-routing-wiring.mjs — do not hand-edit.",
   expandedScenarios: SCENARIOS.map(expandScenario),
+  // The runner starts runners/provider-error-fixture.mjs and passes its URL as fixture_url.
+  extraVariables: [{ key: "fixture_url", value: "http://127.0.0.1:8795", type: "string" }],
   // OSS locks /api behind the setup token until an admin exists; the e2e profile sets one.
   setupToken: true,
 });

@@ -352257,6 +352257,84 @@
           }
         }
       ]
+    },
+    {
+      "name": "352. Total request timeout: x-bf-request-timeout caps retries and fallbacks (request timeout) (PR #10010)",
+      "description": "x-bf-request-timeout sets the deadline of the whole request. Its effect on retries and fallbacks is routing, covered by the routing harness (build-routing-wiring.mjs, request-timeout-caps-retries and request-timeout-caps-fallback-chain). This case pins the stream framing: a stream the deadline cuts after it started keeps its 200 and must end with a request_timed_out error frame instead of [DONE], so partial output does not read as complete.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini stream cut by x-bf-request-timeout after its first chunk ends with a request_timed_out error frame, not [DONE], via POST /v1/chat/completions - request timeout - #10010",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-request-timeout",
+                "value": "3s"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"stream\": true,\n  \"max_tokens\": 4000,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Count from 1 to 2000, one number per line, with no other text.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The answer takes far longer than the 3s cap, so the deadline cuts the stream: the response keeps",
+                  "// its 200 and must end with a request_timed_out error frame instead of [DONE], so the partial output",
+                  "// does not read as a complete answer. A slow upstream can send its first token after the deadline,",
+                  "// which leaves only the timeout frame: that is still correct, so content frames are not required,",
+                  "// and any content that did arrive must precede the timeout frame, which the last-frame check covers.",
+                  "var txt = pm.response.text() || '';",
+                  "var frames = [];",
+                  "txt.split('\\n').forEach(function (l) {",
+                  "  if (l.indexOf('data:') === 0) { frames.push(l.slice(5).replace(/^\\s+/, '')); }",
+                  "});",
+                  "var timeoutAt = -1, doneCount = 0;",
+                  "frames.forEach(function (p, i) {",
+                  "  if (p === '[DONE]') { doneCount++; return; }",
+                  "  var c = null;",
+                  "  try { c = JSON.parse(p); } catch (e) { return; }",
+                  "  if (c && c.error && c.error.type === 'request_timed_out' && timeoutAt === -1) { timeoutAt = i; }",
+                  "});",
+                  "pm.test('the response is an event stream', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'content-type: ' + txt.slice(0, 400)).to.include('text/event-stream');",
+                  "});",
+                  "pm.test('the stream ends with a request_timed_out error frame', function () {",
+                  "  pm.expect(timeoutAt, 'no request_timed_out frame: ' + txt.slice(-400)).to.not.equal(-1);",
+                  "  pm.expect(timeoutAt, 'frames after the timeout frame: ' + txt.slice(-400)).to.equal(frames.length - 1);",
+                  "});",
+                  "pm.test('no [DONE] marks the cut stream as complete', function () {",
+                  "  pm.expect(doneCount, '[DONE] frames: ' + txt.slice(-400)).to.equal(0);",
+                  "});",
+                  "// Same allowance as the 504 case above: a deadline honored late lands well beyond it.",
+                  "pm.test('the stream ends within the cap plus a 1000ms allowance', function () {",
+                  "  pm.expect(pm.response.responseTime, 'finished in ' + pm.response.responseTime + 'ms').to.be.below(3000 + 1000);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

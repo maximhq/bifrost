@@ -2619,6 +2619,30 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 		// once they see [DONE], so they'd be silently dropped.
 		runCompleter(true)
 
+		// A deadline that passed mid-stream closes the channel without the provider's
+		// timeout chunk reaching it; say so instead of ending the stream as complete.
+		if !sawErrorChunk {
+			if deadlineErr := lib.StreamDeadlineError(bifrostCtx, requestType); deadlineErr != nil {
+				sawErrorChunk = true
+				if errorJSON, err := sonic.Marshal(&schemas.BifrostStreamChunk{BifrostError: deadlineErr}); err == nil {
+					if stripExtraFields {
+						errorJSON = lib.StripExtraFields(errorJSON)
+					}
+					// Typed by request type as well: a stream cut before its first chunk never set includeEventType.
+					eventType := ""
+					switch {
+					case includeEventType,
+						requestType == schemas.ResponsesStreamRequest,
+						requestType == schemas.ResponsesRetrieveStreamRequest,
+						requestType == schemas.ImageGenerationStreamRequest,
+						requestType == schemas.ImageEditStreamRequest:
+						eventType = string(schemas.ResponsesStreamResponseTypeError)
+					}
+					reader.SendEvent(eventType, errorJSON)
+				}
+			}
+		}
+
 		// A stream that ended on an error frame is already terminated for the client;
 		// only a clean run gets the marker. Note this deliberately ignores an error
 		// from runCompleter above: that reports a post-processing/plugin failure, not

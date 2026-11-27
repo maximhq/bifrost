@@ -2,6 +2,7 @@ package lib
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"runtime/debug"
@@ -334,6 +335,30 @@ func StreamProducerPanicError() *schemas.BifrostError {
 			Type:    schemas.Ptr("server_error"),
 			Message: StreamProducerPanicMessage,
 		},
+	}
+}
+
+// StreamDeadlineMessage is the message of the error frame a stream ends with when the
+// request's deadline (x-bf-request-timeout) passed while it was streaming.
+const StreamDeadlineMessage = "request timed out: the x-bf-request-timeout deadline passed while the response was streaming"
+
+// StreamDeadlineError returns the error a stream producer frames for the client when the
+// stream channel closed because ctx's deadline passed, or nil when it did not. Once the
+// deadline passes, core's stream forwarding stops on the done context and closes the
+// channel without passing on the provider's own timeout chunk, so a producer that saw no
+// error frame must not end the stream as if it were complete.
+func StreamDeadlineError(ctx context.Context, requestType schemas.RequestType) *schemas.BifrostError {
+	if ctx == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil
+	}
+	return &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     schemas.Ptr(504),
+		Error: &schemas.ErrorField{
+			Type:    schemas.Ptr(schemas.RequestTimedOut),
+			Message: StreamDeadlineMessage,
+		},
+		ExtraFields: schemas.BifrostErrorExtraFields{RequestType: requestType},
 	}
 }
 
