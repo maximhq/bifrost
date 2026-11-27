@@ -1143,6 +1143,12 @@ export const networkConfigSchema = z
 			.min(1, msg("validation.keepAliveTimeoutMustBeAtLeast1Second"))
 			.max(3600, msg("validation.keepAliveTimeoutMustBeAtMost3600SecondsI"))
 			.optional(),
+		stream_read_buffer_size_kb: z
+			.number()
+			.int(msg("validation.streamReadBufferSizeMustBeAWholeNumber"))
+			.min(1, msg("validation.streamReadBufferSizeMustBeAtLeast1Kb"))
+			.max(16384, msg("validation.streamReadBufferSizeMustBeAtMost16384Kb"))
+			.optional(),
 		max_conns_per_host: z
 			.number()
 			.int(msg("validation.maxConnectionsMustBeAWholeNumber"))
@@ -1207,6 +1213,12 @@ export const networkFormConfigSchema = z
 			.int(msg("validation.keepAliveTimeoutMustBeAWholeNumberOfSeconds"))
 			.min(1, msg("validation.keepAliveTimeoutMustBeAtLeast1Second"))
 			.max(3600, msg("validation.keepAliveTimeoutMustBeAtMost3600SecondsI"))
+			.optional(),
+		stream_read_buffer_size_kb: z.coerce
+			.number(msg("validation.streamReadBufferSizeMustBeANumber"))
+			.int(msg("validation.streamReadBufferSizeMustBeAWholeNumber"))
+			.min(1, msg("validation.streamReadBufferSizeMustBeAtLeast1Kb"))
+			.max(16384, msg("validation.streamReadBufferSizeMustBeAtMost16384Kb"))
 			.optional(),
 		max_conns_per_host: z.coerce
 			.number(msg("validation.maxConnectionsMustBeANumber"))

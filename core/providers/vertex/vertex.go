@@ -1226,6 +1226,7 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 			nil,
 			provider.logger,
 			postHookSpanFinalizer,
+			provider.networkConfig.StreamReadBufferSize(),
 		)
 	} else {
 		var authHeader map[string]string
@@ -1783,6 +1784,7 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 			nil,
 			provider.logger,
 			postHookSpanFinalizer,
+			provider.networkConfig.StreamReadBufferSize(),
 		)
 	} else {
 		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
@@ -2410,6 +2412,7 @@ func (provider *VertexProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 		postHookRunner,
 		provider.logger,
 		postHookSpanFinalizer,
+		provider.networkConfig.StreamReadBufferSize(),
 	)
 }
 

@@ -54,6 +54,16 @@ test("a model that is not a string is an unknown model and the fixture keeps ser
   assert.equal(ok.status, 200, "a valid request after the malformed ones");
 });
 
+test("the Gemini oversized model streams one SSE line above the default 10 MB limit", async (t) => {
+  const post = await startFixture(t);
+  const res = await post({ contents: [] }, "/v1beta/models/upstream-oversized-line:streamGenerateContent");
+  assert.equal(res.status, 200);
+  const lines = (await res.text()).split("\n").filter(Boolean);
+  assert.equal(lines.length, 1);
+  assert.ok(lines[0].length > 10 * 1024 * 1024, `line is ${lines[0].length} bytes`);
+  assert.equal(JSON.parse(lines[0].slice("data: ".length)).candidates[0].finishReason, "STOP");
+});
+
 test("filtered Live create checks accounting events and unchanged command permissions", async (t) => {
   const post = await startFixture(t);
   const top = ["session.started", "session.updated", "session.closed", "session.usage.updated", "session.delegation.created", "session.input_transcript.delta", "session.output_transcript.delta", "error"];
