@@ -93,9 +93,9 @@ func TestMistralContentArray(t *testing.T) {
 		wantToolCall  bool
 	}{
 		{
-			name:      "ThinkingOnly",
-			deltas:    []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute "},{"type":"text","text":"17 times 23."}]}]}`},
-			wantError: true,
+			name:          "ThinkingOnly",
+			deltas:        []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute "},{"type":"text","text":"17 times 23."}]}]}`},
+			wantReasoning: "Compute 17 times 23.",
 		},
 		{
 			name:     "TextArray",
@@ -113,12 +113,28 @@ func TestMistralContentArray(t *testing.T) {
 				`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute "},{"type":"text","text":"17 times 23."}]}]}`,
 				`{"content":[{"type":"text","text":"The answer "},{"type":"text","text":"is 391."}]}`,
 			},
-			wantError: true,
+			wantText:      "The answer is 391.",
+			wantReasoning: "Compute 17 times 23.",
 		},
 		{
-			name:      "MixedThinkingBeforeText",
-			deltas:    []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute 17 times 23."}]},{"type":"text","text":"391"}]}`},
-			wantError: true,
+			name:          "MixedThinkingBeforeText",
+			deltas:        []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute 17 times 23."}]},{"type":"text","text":"391"}]}`},
+			wantText:      "391",
+			wantReasoning: "Compute 17 times 23.",
+		},
+		{
+			// zai-glm-5-3 shape: empty string deltas around closed thinking bursts, first answer text shares the last thinking frame.
+			name: "ClosedThinkingWithEmptyDeltas",
+			deltas: []string{
+				`{"role":"assistant","content":""}`,
+				`{"role":"assistant","index":0,"content":""}`,
+				`{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":"The user"}],"closed":true}]}`,
+				`{"index":0,"content":""}`,
+				`{"index":0,"content":[{"type":"thinking","thinking":[{"type":"text","text":" wants hello."}],"closed":true},{"type":"text","text":"hello"}]}`,
+				`{"index":0,"content":" there"}`,
+			},
+			wantText:      "hello there",
+			wantReasoning: "The user wants hello.",
 		},
 		{
 			name:      "MixedTextBeforeThinking",
@@ -127,7 +143,7 @@ func TestMistralContentArray(t *testing.T) {
 		},
 		{
 			name:      "InvalidSecondChoice",
-			choices:   `[{"index":0,"delta":{"content":[{"type":"text","text":"must not leak"}]},"finish_reason":null},{"index":1,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]},"finish_reason":null}]`,
+			choices:   `[{"index":0,"delta":{"content":[{"type":"text","text":"must not leak"}]},"finish_reason":null},{"index":1,"delta":{"content":[{"type":"future_chunk","payload":"not text"}]},"finish_reason":null}]`,
 			wantError: true,
 		},
 		{
@@ -163,10 +179,20 @@ func TestMistralContentArray(t *testing.T) {
 			customAlias: true,
 		},
 		{
-			name:        "ThinkingRawDisabled",
-			deltas:      []string{`{"content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]}`},
-			wantError:   true,
-			rawDisabled: true,
+			name:          "ThinkingRawDisabled",
+			deltas:        []string{`{"role":"assistant","content":[{"type":"thinking","thinking":[{"type":"text","text":"Compute."}]}]}`},
+			wantReasoning: "Compute.",
+			rawDisabled:   true,
+		},
+		{
+			name:      "MalformedThinkingBlock",
+			deltas:    []string{`{"content":[{"type":"thinking","thinking":"Compute."}]}`},
+			wantError: true,
+		},
+		{
+			name:      "NontextThinkingChunk",
+			deltas:    []string{`{"content":[{"type":"thinking","thinking":[{"type":"image_url","image_url":"https://example.invalid/image.png"}]}]}`},
+			wantError: true,
 		},
 		{
 			name:      "NontextArray",

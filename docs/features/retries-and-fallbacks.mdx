@@ -1,6 +1,6 @@
 ---
 title: "Retries & Fallbacks"
-description: "Automatic retry with exponential backoff and provider failover. Retries handle transient errors within a provider; fallbacks switch to a different provider when all retries are exhausted."
+description: "Automatic retry with exponential backoff and provider failover. Retries handle transient errors within a provider; fallbacks switch to a different provider when the primary fails."
 icon: "list-check"
 ---
 
@@ -9,7 +9,7 @@ icon: "list-check"
 Bifrost provides two complementary layers of resilience:
 
 - **Retries** - When a provider returns a transient server error (network issue, 5xx) or a per-key failure (a `429` rate limit, a rejected credential, an exhausted quota, a model this key cannot reach, a retired model), Bifrost automatically retries the same request against the same provider. Transient-server retries reuse the same key with exponential backoff; per-key failures rotate to a different API key from your pool. Backoff is skipped only when rotating away from a *permanent* per-key failure where waiting offers nothing; for `429` rotations a backoff is still applied to let account-level quota windows slide.
-- **Fallbacks** - When the primary provider fails after exhausting all retries, Bifrost moves on to the next provider in your fallback chain. Each fallback provider gets its own full retry budget.
+- **Fallbacks** - When the primary provider fails, after whatever retries it was given, Bifrost moves on to the next provider in your fallback chain. Each fallback provider gets its own full retry budget.
 
 Together, they let you build LLM-powered applications that stay up through rate limits, transient outages, and even full provider failures - with no changes required in your application code.
 
@@ -26,7 +26,7 @@ When a request fails with a retryable error, Bifrost:
     - **Permanent per-key failure** (rejected credential, exhausted quota, model this key cannot reach, retired model, region block): mark the key dead for the remainder of the request and rotate immediately with **no backoff**, since waiting changes nothing for that key. The failed attempt is not charged against `max_retries`: the budget bounds retries against a key that might recover, not the walk to the next key, so a pool is walked even at the default `max_retries: 0`.
     - **Rate limit** (`429`): mark the key as used-this-cycle and rotate, but **still apply backoff**, since providers often enforce account-level quotas shared across keys, so the new key may not have fresh capacity until the window slides.
 3. On **transient server failures** (`5xx`, DNS, connection refused): reuse the same key and wait using **exponential backoff with jitter** before the next attempt.
-4. Continues until the request succeeds, `max_retries` is exhausted, or every key is permanently dead. When any key was refused for the model (no access, no such deployment, retired) or for the request's location, that error is returned whichever key died last: a `404` for a model no key serves stays a `404`, and a region block comes back as the provider sent it. Otherwise every key was rejected for an account-level reason (credential, quota), and within the configured budget Bifrost returns `502 upstream_credentials_exhausted` rather than the raw `4xx`, to make it clear the caller's Bifrost API key is fine and the configured provider credentials are not; when the pool ran out on an attempt granted beyond the budget, the last upstream error is returned as is.
+4. Continues until the request succeeds, `max_retries` is exhausted, or every key is permanently dead. When any key was refused for the model (no access, no such deployment, retired) or for the request's location, that error is returned whichever key died last: a `404` for a model no key serves stays a `404`, and a region block comes back as the provider sent it. Otherwise every key was rejected for an account-level reason (credential, quota), and within the configured budget Bifrost returns `502 upstream_credentials_exhausted` rather than the raw `4xx`, to make it clear the caller's Bifrost API key is fine and the configured provider credentials are not; when the pool ran out on an attempt granted beyond the budget, the last upstream error is returned as is. A key the caller sent with the request ([`x-bf-direct-key`](/providers/request-options#direct-api-key)) is the exception: the refusal is about the caller's own key, so the provider's error is returned as sent, whatever `max_retries` is.
 
 ### How failures are classified
 
@@ -98,7 +98,7 @@ The same hint is recorded per attempt on the `attempt_trail` as `retry_after_ms`
 The hint is informational: Bifrost's own retries still wait according to the [backoff formula](#backoff-formula) below.
 
 <Note>
-In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing#how-long-a-key-is-held) uses the hint as how long to hold the refused key out of rotation for later requests, never less than 10 seconds.
+In Bifrost Enterprise, [Adaptive Routing](/enterprise/adaptive-routing/how-it-works#how-long-a-key-is-held) uses the hint as how long to hold the refused key out of rotation for later requests, never less than 10 seconds.
 </Note>
 
 ### Backoff formula
@@ -262,29 +262,29 @@ When you configure multiple API keys for a provider, Bifrost automatically rotat
 
 **Rate-limited keys** are tracked in a per-request `used` set. Once all keys in the pool have been tried, Bifrost resets that set and starts a fresh weighted round — a previously rate-limited key may have free quota by then. With 3 keys and `max_retries: 5`, Bifrost can cycle through all three keys twice before giving up.
 
-**Permanent per-key failures** (credential, quota, model access, retired model, region block) are different: the failing key is marked **permanently dead** for the remainder of the request and is never reset, and the attempt is granted back rather than charged against `max_retries`, so the walk to the next key happens even at `max_retries: 0`. If any key was refused for the model or for the request's location, that error is returned. If every configured key ends up permanently dead for an account-level reason (credential, quota) within the configured budget, Bifrost returns `502 upstream_credentials_exhausted` and skips any remaining retries; if the pool ran out on a granted attempt, the last upstream error is returned as is.
+**Permanent per-key failures** (credential, quota, model access, retired model, region block) are different: the failing key is marked **permanently dead** for the remainder of the request and is never reset, and the attempt is granted back rather than charged against `max_retries`, so the walk to the next key happens even at `max_retries: 0`. If any key was refused for the model or for the request's location, that error is returned. If every configured key ends up permanently dead for an account-level reason (credential, quota) within the configured budget, Bifrost returns `502 upstream_credentials_exhausted` and skips any remaining retries; if the pool ran out on a granted attempt, or the refused key is the caller's direct key, the last upstream error is returned as is.
 
 The walk has a cost worth knowing: a model no key can reach, including a typo in the model name, or a region block on the gateway's own address, now costs one upstream call per configured key before the error (or the fallback provider) is reached, instead of one.
 
 <Note>
-Rate-limit rotation only applies when `max_retries > 0` and more than one key is configured for the provider. Rotation past a permanent per-key failure applies whenever more than one key is configured, whatever `max_retries` is. With a single key, all retries reuse that key, and a permanent per-key failure ends the request with the provider's error (or `502` when the budget outlasts the key).
+Rate-limit rotation only applies when `max_retries > 0` and more than one key is configured for the provider. Rotation past a permanent per-key failure applies whenever more than one key is configured, whatever `max_retries` is. With a single key, all retries reuse that key, and a permanent per-key failure ends the request with the provider's error (or `502` when the budget outlasts the key, except for a caller's direct key, whose error is always returned as sent).
 </Note>
 
 ---
 
 ## Fallbacks
 
-Fallbacks provide automatic failover to a different provider when the primary fails after exhausting all its retries. Each fallback is tried in order until one succeeds.
+Fallbacks provide automatic failover to a different provider when the primary fails, after whatever retries it was given. Each fallback is tried in order until one succeeds.
 
 ### How fallbacks work
 
 1. **Primary attempt**: Tries your configured provider with its full retry budget
-2. **Fallback decision**: If the primary fails (and the error is retryable at the provider level), Bifrost moves to the first fallback
+2. **Fallback decision**: If the primary fails, Bifrost moves to the first fallback, whatever the error. It does not when the caller cancelled the request, when a plugin set `AllowFallbacks = false` on the error, or when the error is the request's own fault (`caller_fault`, see [how failures are classified](#how-failures-are-classified)) and the fallbacks were added by the model catalog for a bare model rather than named by the caller or a routing rule
 3. **Sequential fallbacks**: Each fallback provider also gets its own full retry budget
 4. **First success wins**: Returns the response from the first provider that succeeds
-5. **All fail**: Returns the original error from the primary provider. Exception: if a plugin on a fallback provider sets `AllowFallbacks = false` on the error (e.g. a security or compliance plugin that should halt the chain regardless of remaining fallbacks), Bifrost stops immediately and returns that fallback's error rather than continuing to the next provider or returning the primary error.
+5. **All fail**: Returns the original error from the primary provider, with the primary's provider response headers (its request ID and rate-limit headers), not the last fallback's. A fallback whose provider is not configured, or that cannot serve the request type, is skipped. A fallback the caller cancels stops the chain and its error is returned. Exception: if a plugin on a fallback provider sets `AllowFallbacks = false` on the error (e.g. a security or compliance plugin that should halt the chain regardless of remaining fallbacks), Bifrost stops immediately and returns that fallback's error rather than continuing to the next provider or returning the primary error.
 
-Each fallback is treated as a completely fresh request - all configured plugins (semantic caching, governance, logging) run again for the fallback provider.
+Each fallback runs the per-attempt plugins again (semantic caching, governance checks, logging); routing does not run again. See [Plugin execution](#plugin-execution) for what a fallback keeps and what it drops.
 
 ### Implementation
 
@@ -313,7 +313,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-The response `extra_fields.provider` tells you which provider actually served the request:
+The response's `extra_fields.routing_info` tells you which provider actually served the request, and whether it was a fallback. On the drop-in SDK routes, whose responses have no `extra_fields`, read the same facts from the [response headers](/providers/response-headers):
 
 ```json
 {
@@ -335,7 +335,13 @@ The response `extra_fields.provider` tells you which provider actually served th
     "total_tokens": 162
   },
   "extra_fields": {
-    "provider": "anthropic",
+    "routing_info": {
+      "provider": "anthropic",
+      "model": "claude-3-5-sonnet-20241022",
+      "is_fallback": true,
+      "primary_provider": "openai",
+      "primary_model": "gpt-4o-mini"
+    },
     "latency": 1.2
   }
 }
@@ -400,7 +406,7 @@ func chatWithFallbacks(client *bifrost.Bifrost) {
 
 ## How retries and fallbacks work together
 
-The two mechanisms form a nested resilience loop. Retries run inside each provider attempt; fallbacks run across providers once retries are exhausted.
+The two mechanisms form a nested resilience loop. Retries run inside each provider attempt; fallbacks run across providers once a provider attempt fails.
 
 ```mermaid
 sequenceDiagram
@@ -494,7 +500,7 @@ Primary: a premium model for quality. Fallback: a cost-effective alternative. Go
 
 **Scenario 5: Revoked credential**
 
-OpenAI key 1 was rotated out-of-band and now returns `401`. Bifrost marks key 1 permanently dead for this request and immediately rotates to key 2 (no backoff, and no `max_retries` needed), which succeeds. Future requests will retry key 1 again: the dead-key set is per-request, not persistent. In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing#held-keys) remembers the refusal instead: key 1 is held out of rotation on every node, and one request checks it again after a wait. If every configured key was revoked and the retry budget outlasted the pool, Bifrost would return `502 upstream_credentials_exhausted` instead of bubbling up the raw `401` (which would falsely suggest the *caller's* Bifrost API key is the problem).
+OpenAI key 1 was rotated out-of-band and now returns `401`. Bifrost marks key 1 permanently dead for this request and immediately rotates to key 2 (no backoff, and no `max_retries` needed), which succeeds. Future requests will retry key 1 again: the dead-key set is per-request, not persistent. In Bifrost Enterprise, [Adaptive Routing](/enterprise/adaptive-routing/how-it-works#held-keys) remembers the refusal instead: key 1 is held out of rotation on every node, and one request checks it again after a wait. If every configured key was revoked and the retry budget outlasted the pool, Bifrost would return `502 upstream_credentials_exhausted` instead of bubbling up the raw `401` (which would falsely suggest the *caller's* Bifrost API key is the problem).
 
 **Scenario 6: Deployment missing on one key**
 
@@ -504,12 +510,14 @@ Two Azure keys point at different resources; only the second has a `gpt-4o` depl
 
 ## Plugin execution
 
-When a fallback is triggered, the fallback request is treated as completely new:
+Routing runs once per request, before the primary attempt: routing rules, virtual key load balancing and the model catalog decide the chain, and fallbacks do not re-run them. Each fallback attempt then runs the per-attempt plugins again:
 
 - Semantic cache checks run again (the fallback provider may have a cached response)
-- Governance rules apply to the new provider
+- Governance checks the fallback provider and model against the virtual key, and applies its budgets and rate limits
 - Logging captures the fallback attempt separately
-- All configured plugins execute fresh for each provider in the chain
+- MCP tools are added to the request again
+
+A fallback also drops what belonged to the first attempt: the caller's key pin (`x-bf-api-key-id`, `x-bf-api-key`), a routing rule's key pin, and the caller's [direct key](/providers/request-options#direct-api-key), so it runs on the fallback provider's own keys, or the key the fallback entry names. Raw request passthrough is turned off when the fallback provider cannot take the caller's native body, for example a `/genai` request falling back to a provider other than Google.
 
 **Plugin fallback control:** Plugins can prevent fallbacks from being triggered for specific error types. For example, a security plugin might disable fallbacks for compliance reasons. When a plugin sets `AllowFallbacks = false` on the error, the fallback chain is skipped entirely and the original error is returned immediately.
 

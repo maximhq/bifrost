@@ -84,7 +84,7 @@ func TestLiveWebSocketURLHonorsAllowedRequests(t *testing.T) {
 func TestLiveHeaders(t *testing.T) {
 	t.Parallel()
 
-	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{ExtraHeaders: map[string]string{"X-Extra": "1"}}}
+	provider := &OpenAIProvider{networkConfig: schemas.NetworkConfig{ExtraHeaders: schemas.NewSecretVarMap(map[string]string{"X-Extra": "1"})}}
 	headers, err := provider.LiveHeaders(nil, schemas.Key{Value: *schemas.NewSecretVar("sk-test")})
 	if err != nil {
 		t.Fatalf("LiveHeaders() error = %v", err)

@@ -300,18 +300,41 @@ test("proxy teardown is skipped in the unauthenticated pass, which stored nothin
   assert.strictEqual(ctx.state.skipped, true, "expected skipRequest()");
 });
 
+test("proxy teardown is skipped when no snapshot was taken, since the folder made no writes", () => {
+  const ctx = run(disableProxyPrerequest, { variables: { admin_auth_header: "Bearer x" } });
+  assert.strictEqual(ctx.state.skipped, true, "expected skipRequest() without proxy_original_config");
+});
+
 test("proxy teardown runs in the authenticated pass and disables the proxy for every surface", () => {
-  for (const variables of [{ admin_auth_header: "Bearer x" }, { setup_token: "t" }]) {
+  const proxy_original_config = JSON.stringify({ enabled: false });
+  for (const variables of [{ admin_auth_header: "Bearer x", proxy_original_config }, { setup_token: "t", proxy_original_config }]) {
     const ctx = run(disableProxyPrerequest, { variables });
     assert.strictEqual(ctx.state.skipped, false, `unexpected skipRequest() for ${JSON.stringify(variables)}`);
   }
   const proxyFolder = collection.item.find((f) => f.name === "Proxy");
   const teardown = proxyFolder.item.find((i) => i.name === "Teardown - Disable Proxy Config");
-  assert.strictEqual(proxyFolder.item.at(-1), teardown, "teardown must be the folder's last request");
+  const writes = proxyFolder.item.filter((i) => i.request.method === "PUT");
+  assert.strictEqual(writes.at(-1).name, "Update Proxy Config (restore original)", "the restore must be the folder's last write");
   const body = JSON.parse(teardown.request.body.raw);
   assert.strictEqual(body.enabled, false);
   assert.strictEqual(body.enable_for_inference, false);
   assert.strictEqual(body.enable_for_api, false);
+});
+
+// GET answers "<redacted>" for a stored password, and PUT takes that marker as "keep the
+// stored password" while an absent one stores an empty password. The restore can only put
+// back the password if no earlier write in the folder replaced it.
+test("every proxy write in the authenticated pass keeps the stored password", () => {
+  const proxyFolder = collection.item.find((f) => f.name === "Proxy");
+  const snapshot = JSON.stringify({ enabled: true, type: "http", url: "http://corp:3128", username: "u", password: "<redacted>", timeout: 30, enable_for_scim: false, enable_for_inference: true, enable_for_api: true });
+  for (const item of proxyFolder.item.filter((i) => i.request.method === "PUT")) {
+    const ctx = sandbox({ variables: { admin_auth_header: "Bearer x", proxy_original_config: snapshot } });
+    ctx.pm.request.body.raw = item.request.body.raw;
+    const prerequest = (item.event || []).find((e) => e.listen === "prerequest");
+    if (prerequest) new Function("pm", prerequest.script.exec.join("\n"))(ctx.pm);
+    const body = JSON.parse(ctx.pm.request.body.raw.replace(/\{\{[^}]+\}\}/g, "x"));
+    assert.strictEqual(body.password, "<redacted>", `${item.name} does not keep the stored password: ${ctx.pm.request.body.raw}`);
+  }
 });
 
 // ── Governance - VK Allow All Providers / per-provider catalog counts ─────────
@@ -355,6 +378,25 @@ test("allow-all VK checks query one provider each", () => {
     assert.ok(item, `request not found: ${name}`);
     const q = Object.fromEntries(item.request.url.query.map((p) => [p.key, p.value]));
     assert.strictEqual(q.provider, provider, `${name} must filter by provider`);
+  }
+});
+
+// ── Request guards / cases the OSS setup lock must refuse ─────────────────────
+test("request-guard lock cases drop the setup token and expect the lock's 401", () => {
+  for (const name of [
+    "MCP client registration / A target host that does not resolve is refused without a setup token",
+    "MCP client registration / A loopback target is refused without a setup token",
+    "Provider endpoint changes / Changing the proxy URL is refused without a setup token",
+    "Provider endpoint changes / A custom provider with a base URL is refused without a setup token",
+    "Provider endpoint changes / A provider key carrying an endpoint is refused without a setup token",
+    "Webhook delivery test gate / A test delivery is refused without a setup token",
+    "Dashboard auth update / Re-enabling auth without a setup token is refused",
+    "Dashboard auth update / Re-enabling auth with a wrong current_password and no setup token is refused",
+  ]) {
+    const pre = guardsScriptFor(name, "prerequest");
+    assert.match(pre, /pm\.request\.headers\.remove\('X-Bifrost-Setup-Token'\)/, `${name} must send no setup token`);
+    const post = guardsScriptFor(name, "test");
+    assert.match(post, /to\.eql\(401\)/, `${name} must expect the lock's 401`);
   }
 });
 
@@ -805,13 +847,14 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
       const ref = redactionUrlFields.has(`${type}.${field}`) ? redactionUrlRef : redactionRef;
       assert.strictEqual(fixture.key[property][field], ref, `${type}.${field}`);
     }
-    if (structBody(type).includes("*BedrockEndpoints")) {
-      for (const field of secretFields("BedrockEndpoints")) {
-        assert.strictEqual(fixture.key[property].endpoints[field], redactionRef, `${type}.endpoints.${field}`);
+    const endpoints = structBody(type).match(/\*(\w+Endpoints)\s+`json:"endpoints[,"]/);
+    if (endpoints) {
+      for (const field of secretFields(endpoints[1])) {
+        assert.strictEqual(fixture.key[property].endpoints?.[field], redactionRef, `${type}.endpoints.${field}`);
       }
     }
   }
-  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"]]) {
+  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"], ["baseten", "BasetenAliasCfg"]]) {
     const fixture = redactionFixtures.find((f) => f.provider === provider);
     for (const field of secretFields(type)) assert.strictEqual(fixture.key.aliases.probe[field], redactionRef, `${type}.${field}`);
   }

@@ -10,7 +10,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -185,4 +185,26 @@ func Test_passthroughHeartbeatEligible(t *testing.T) {
 			assert.Equal(t, tc.want, passthroughHeartbeatEligible(tc.provider, tc.contentType))
 		})
 	}
+}
+
+// Raw audio has no comment syntax, so a heartbeat would be played as sound: the idle gap stays silent, and the client's
+// disconnect is found by the next write failing.
+func Test_handleStreamingRawAudioEmitsNoHeartbeat(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stream := make(chan *schemas.BifrostStreamChunk)
+		router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+		ctx := &fasthttp.RequestCtx{}
+		router.handleStreaming(ctx, nil, rawAudioConfig(), schemas.SpeechStreamRequest, stream, func() {})
+
+		readDone := make(chan []byte, 1)
+		go func() {
+			b, _ := io.ReadAll(ctx.Response.BodyStream())
+			readDone <- b
+		}()
+
+		time.Sleep(2*lib.DefaultSSEHeartbeatInterval + time.Millisecond)
+		close(stream)
+
+		assert.Empty(t, <-readDone, "an idle raw audio stream writes nothing")
+	})
 }

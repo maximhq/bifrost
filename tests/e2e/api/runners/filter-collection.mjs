@@ -15,7 +15,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readReport } from "./lib/read-report.mjs";
-import { buildHaystack } from "./lib/haystack.mjs";
+import { buildHaystack, declaredProviderOf } from "./lib/haystack.mjs";
 import { walkRequests, buildProducerIndex, chainedDependencies, scriptDependencies } from "./lib/chained-vars.mjs";
 import { retryableNames } from "./lib/rate-limit-retry.mjs";
 import {
@@ -161,7 +161,11 @@ const PROVIDER_KEYWORDS = {
   xai: ["xai", "grok"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
   runware: ["runware", "runware/"],
+  machgen: ["machgen", "machgen/"],
   typesafe: ["typesafe", "/typesafe", "jev-"],
+  // Not a provider: MCP management rows (OAuth discovery, client registration) name no model, so no
+  // provider fork selects them. PROVIDER=mcp runs them, together with FEATURE to narrow the set.
+  mcp: ["mcp"],
 };
 
 // Haystack = item JSON + ancestor folder names. Folder names encode the harness
@@ -294,12 +298,48 @@ const matchesKeyword = (item, ancestorNames, haystack, keyword) => {
   return aliases.some((alias) => haystack.includes(alias));
 };
 
+// sdkRouteProviderOf returns the provider a typed Interactions request on /genai, or a Responses
+// request on the OpenAI SDK route, names through a "<provider>/" prefix on its body's model or
+// agent, when the route's own family does not cover it. A typed Interactions request with no such
+// prefix returns the route's family (an array), so the caller keeps it out of every other partition.
+// Anything else returns undefined.
+// Scoped to the rows this rule was written for: the typed Interactions route, and Interactions rows
+// that reach Gemini through the OpenAI SDK's Responses route. Widening it re-partitions hundreds of
+// rows that other folders already rely on.
+const SDK_ROUTE_FAMILY = [
+  [/\/genai\/v1(beta1?)?\/(projects\/[^/]+\/locations\/[^/]+\/)?interactions/, ["gemini", "vertex"], false],
+  [/\/openai\/v1\/responses/, ["openai"], true],
+];
+const sdkRouteProviderOf = (item, ancestorNames) => {
+  const req = item.request || {};
+  const url = (typeof req.url === "string" ? req.url : req.url?.raw) || "";
+  const route = SDK_ROUTE_FAMILY.find(([re]) => re.test(url));
+  if (!route) return undefined;
+  if (route[2] && !(ancestorNames || []).some((n) => /interactions/i.test(n))) return undefined;
+  const m = (req.body?.raw || "").match(/"(?:model|agent)"\s*:\s*"([a-z_-]+)\//);
+  if (m && Object.hasOwn(PROVIDER_KEYWORDS, m[1]) && !route[1].includes(m[1])) return m[1];
+  // A typed Interactions row with no foreign prefix runs on the route's own family, whatever
+  // provider a fallback or the case name mentions.
+  return route[2] ? undefined : route[1];
+};
+
 // The `provider` override exists for --plan, which sizes every (provider, class) cell in one pass
 // and so must evaluate this predicate once per provider in the roster. Defaulting to the global
 // keeps every normal call site unchanged, and routing the collision rules through the parameter
 // rather than the global is what keeps the planner's cells identical to the shards' own selection.
 const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (!provider) return true;
+  // A request that names a known provider in a "provider" form field belongs to that provider
+  // only. Its URL can match another provider's route keyword (an Azure upload posts to
+  // /openai/v1/files), and that keyword must not pull it into the other partition.
+  const declared = declaredProviderOf(item);
+  if (declared && Object.hasOwn(PROVIDER_KEYWORDS, declared)) return declared === provider;
+  // A request on a provider SDK route (/genai, /openai) whose body names its model or agent with
+  // another provider's prefix runs on that provider: the route only picks the wire shape. The
+  // route keyword must not pull it into the route's own partition, and the prefix decides.
+  const routed = sdkRouteProviderOf(item, ancestorNames);
+  if (typeof routed === "string") return routed === provider;
+  if (routed && !routed.includes(provider)) return false;
   const keywords = PROVIDER_KEYWORDS[provider] || [provider];
   const haystack = buildHaystack(item, ancestorNames);
   // OpenRouter rows (model "openrouter/<vendor>/<model>") embed vendor substrings like
@@ -308,6 +348,12 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isOpenRouter = haystack.includes("openrouter");
   if (provider === "openrouter") return isOpenRouter;
   if (isOpenRouter) return false;
+  // GitHub Copilot rows (model "github-copilot/<model>") serve gpt-, claude- and gemini models,
+  // so they'd otherwise be claimed by those partitions and run without Copilot credentials.
+  // Route them exclusively to github-copilot, which is opt-in via PROVIDER=github-copilot.
+  const isCopilot = haystack.includes("github-copilot");
+  if (provider === "github-copilot") return isCopilot;
+  if (isCopilot) return false;
   // Bedrock Mantle rows (model "bedrock_mantle/...") contain the substring "bedrock", so they'd
   // otherwise be claimed by the bedrock partition too. Route them exclusively to bedrock_mantle.
   const isMantle = haystack.includes("bedrock_mantle") || haystack.includes("bedrock-mantle");
@@ -315,16 +361,21 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (isMantle) return false;
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
-  // Route them exclusively to vertex.
+  // Route them exclusively to vertex. Vertex Model Garden rows ("vertex/minimaxai/minimax-m2-maas")
+  // name the model vendor the same way, so minimax is excluded for the same reason.
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
-  if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
-  // Rows that send a Gemini, OpenAI or Azure model through the Anthropic Messages ingress
-  // (POST /anthropic/v1/messages with model "gemini/...", "openai/..." or "azure/...") contain
+  if (isVertex && (provider === "gemini" || provider === "anthropic" || provider === "minimax")) return false;
+  // Rows that send a Gemini, OpenAI, Azure or Baseten model through the Anthropic Messages ingress
+  // (POST /anthropic/v1/messages with model "gemini/...", "openai/...", "azure/..." or "baseten/...") contain
   // "anthropic" only because of the route or folder name, yet the upstream call goes to the
   // model's own provider - same collision class as vertex above. Keep them out of the anthropic
   // partition; they still match their own provider's keywords through the model prefix.
-  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure)\//.test(item.request?.body?.raw || "")) return false;
+  if (provider === "anthropic" && /"model"\s*:\s*"(gemini|openai|azure|baseten)\//.test(item.request?.body?.raw || "")) return false;
+  // A row that sends an OpenAI model on an OpenAI-shaped route can name Gemini in its folder or name, as one that
+  // replays Gemini's items does. It calls OpenAI, so a gemini run leaves it to the openai partition. A row on a
+  // Google SDK route stays: that is the ingress under test.
+  if (provider === "gemini" && /"model"\s*:\s*"openai\//.test(item.request?.body?.raw || "") && /\/v1\/(responses|chat\/completions)$/.test((item.request?.url?.raw || "").split("?")[0]) && !(item.request?.url?.raw || "").includes("/genai/")) return false;
   // Runware rows name the upstream vendor inside the AIR model id ("runware/anthropic:claude@...",
   // "runware/google:gemini@...", "runware/minimax:..."), so they'd otherwise be claimed by those
   // partitions too - same collision class as openrouter/bedrock_mantle/vertex above. Route them
@@ -332,6 +383,32 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   const isRunware = haystack.includes("runware");
   if (provider === "runware") return isRunware;
   if (isRunware) return false;
+  // MachGen model ids often carry the original vendor ("machgen/MiniMax-H3", "machgen/FLUX.2-dev"),
+  // so the minimax and replicate ("flux") partitions would claim them too. Route them exclusively
+  // to machgen, so those runs do not try to reach MachGen without its key.
+  const isMachGen = haystack.includes("machgen");
+  if (provider === "machgen") return isMachGen;
+  if (isMachGen) return false;
+
+  // Soniox rows on the OpenAI drop-in routes carry the openai keywords in their URL, so route them exclusively to soniox.
+  // A Soniox row is known by its model prefix, name, URL or folder; prose in a request body is not identity.
+  const isSoniox =
+    /"model"\s*:\s*"soniox\//.test(item.request?.body?.raw || "") ||
+    buildHaystack({ ...item, request: { ...item.request, body: undefined } }, ancestorNames).includes("soniox");
+  if (provider === "soniox") return isSoniox;
+  if (isSoniox) return false;
+  // Hugging Face's router reaches Baseten-hosted models ("huggingface/baseten/..."), so those rows
+  // contain "baseten" too. They call Hugging Face with a Hugging Face token, never the baseten
+  // provider, so keep them out of the baseten partition. A Hugging Face row is known by what it
+  // calls or is named: its model prefix, or its name, URL, description or folder. Prose in a
+  // request body is not identity, so a Baseten prompt that mentions Hugging Face stays a Baseten
+  // row, and the huggingface partition does not claim it either.
+  const bodyRaw = item.request?.body?.raw || "";
+  const isHuggingFace =
+    /"model"\s*:\s*"huggingface\//.test(bodyRaw) ||
+    buildHaystack({ ...item, request: { ...item.request, body: undefined } }, ancestorNames).includes("huggingface");
+  if (provider === "baseten" && isHuggingFace) return false;
+  if (provider === "huggingface" && !isHuggingFace && /"model"\s*:\s*"baseten\//.test(bodyRaw)) return false;
   // bedrock_openai rows (token-parity-matrix.mjs's "one more model per provider" addition -
   // gpt-oss-family models on Bedrock) contain "openai" in the backend key/model, so they'd
   // otherwise be claimed by the openai partition too - same collision class as above. Route
@@ -339,6 +416,11 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   // keyword with no extra logic needed for that direction).
   const isBedrockOpenai = haystack.includes("bedrock_openai");
   if (isBedrockOpenai && provider === "openai") return false;
+  // Azure GPT Live rows create sessions on Azure, named by the model ("azure/gpt-live-1") or by the
+  // Azure OpenAI SDK user agent, but their route and model name also match the openai keywords, so
+  // an openai run would bill a second Azure session. Route them exclusively to azure.
+  const isAzureLive = haystack.includes("/live/sessions") && (/"model"\s*:\s*"azure\//.test(item.request?.body?.raw || "") || haystack.includes("azureopenai"));
+  if (isAzureLive && provider === "openai") return false;
   return keywords.some((k) => haystack.includes(k));
 };
 
@@ -529,6 +611,19 @@ const expandWithProducers = (selected, entries) => {
       queue.push(dep);
       pulled.push(`${item.name} <- ${variable} <- ${producer}`);
     }
+  }
+  // An "interactions cleanup" step whose every producer already runs is kept too, although it comes
+  // later: producers are pulled in for any consumer, so a filtered run creates the stored run and
+  // would otherwise never delete it. It is added alone, never expanded, so it brings in no other
+  // request. Scoped to the Interactions folders; other suites keep their own cleanup arrangements.
+  for (const { item, ancestors } of entries) {
+    if (keep.has(item) || !/interactions cleanup:/i.test(item.name || "")) continue;
+    // An explicit exclusion still wins: the cleanup is added for its producers, not re-selected.
+    if (itemIsExcluded(item, ancestors)) continue;
+    const deps = depsOf(item);
+    if (!deps.length || !deps.every(({ producerItem }) => producerItem && keep.has(producerItem))) continue;
+    keep.add(item);
+    pulled.push(`${item.name} (cleanup of ${deps.map((d) => d.variable).join(", ")})`);
   }
   if (pulled.length) {
     console.error(`[filter-collection] pulled in ${pulled.length} prerequisite request(s) for chained variables:`);

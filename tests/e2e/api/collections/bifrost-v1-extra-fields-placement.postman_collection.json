@@ -1,0 +1,1161 @@
+{
+  "info": {
+    "name": "Bifrost V1 - Extra Fields Placement",
+    "description": "client.extra_fields_placement end to end, streaming and non-streaming. Body mode (the default) keeps the extra_fields object in JSON bodies and SSE chunks and adds no new headers. Headers mode removes extra_fields from every body, every SSE chunk and error bodies, and carries the routed identity and scalar fields as x-bifrost-* response headers: native /v1/chat/completions and /v1/responses, and the /openai integration, each unary and streaming, plus a provider error. Streams carry only what is known before the first chunk (routing identity, request type, cache lookup), so the stream checks assert those headers and not latency. A cross-origin request checks Access-Control-Expose-Headers lists the x-bifrost-* headers so browsers can read them. The routing identity headers that existed before this setting (x-bifrost-provider, original and resolved model, request type, fallback index and every x-bifrost-routing-info-*) are pinned so the setting cannot regress them: in body mode they must equal the matching extra_fields values, and the same unary, streaming and fallback requests must produce the same values in headers mode. Setup snapshots client_config and Teardown restores it verbatim. Known limit: a fresh install reads back log_retention_days 0, which PUT /api/config refuses, so the snapshot raises it to 30. Setup fails if placement is not body when the run starts (a killed earlier run can leave headers mode behind), and Teardown always restores body; the runner also restores the placement it found if newman stops early.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "provider",
+      "value": "openai",
+      "type": "string"
+    },
+    {
+      "key": "model",
+      "value": "gpt-4o-mini",
+      "type": "string"
+    },
+    {
+      "key": "client_config_snapshot",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "original_placement",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "routing_headers_body_unary",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "routing_headers_body_stream",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "routing_headers_body_fallback",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Setup",
+      "item": [
+        {
+          "name": "Snapshot client config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var code = pm.response.code;",
+                  "pm.test('Get config returns 200', function () { pm.expect(code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "if (code !== 200) { return; }",
+                  "var cc = pm.response.json().client_config;",
+                  "pm.test('client_config present', function () { pm.expect(cc, pm.response.text()).to.be.an('object'); });",
+                  "// Config PUTs replace the whole client_config, so every PUT here edits this snapshot",
+                  "// and Teardown restores it verbatim.",
+                  "var snap = cc || {};",
+                  "// A fresh install reports log_retention_days 0, which the PUT validator rejects (must be >= 1).",
+                  "if (!snap.log_retention_days || snap.log_retention_days < 1) { snap.log_retention_days = 30; }",
+                  "pm.collectionVariables.set('client_config_snapshot', JSON.stringify(snap));",
+                  "pm.collectionVariables.set('original_placement', snap.extra_fields_placement || 'body');",
+                  "pm.test('extra_fields_placement is body or headers', function () { pm.expect(['body', 'headers'], JSON.stringify(cc).slice(0, 400)).to.include(snap.extra_fields_placement || 'body'); });",
+                  "// A run killed before Teardown can leave headers mode behind; fail loudly instead of treating it as the original. Teardown always restores body.",
+                  "pm.test('extra_fields_placement starts at body (the default)', function () { pm.expect(snap.extra_fields_placement || 'body', 'client_config: ' + JSON.stringify(cc).slice(0, 400)).to.equal('body'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config?from_db=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Body Mode - extra_fields Stays In The Body",
+      "item": [
+        {
+          "name": "Set placement to body",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(pm.collectionVariables.get('client_config_snapshot') || '{}'); } catch (e) { snap = {}; }",
+                  "snap.extra_fields_placement = 'body';",
+                  "pm.request.body.raw = JSON.stringify({ client_config: snap });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set placement to body returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat non-streaming keeps extra_fields in the body",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat non-streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the completion is intact', function () { pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('extra_fields names the provider', function () { var ef = pm.response.json().extra_fields; pm.expect(ef, pm.response.text()).to.be.an('object'); pm.expect((ef.routing_info || {}).provider, pm.response.text()).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('body mode adds no x-bifrost-latency-ms header', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('routing headers match extra_fields in the body', function () {",
+                  "  var ef = pm.response.json().extra_fields || {}; var ri = ef.routing_info || {};",
+                  "  var h = function (n) { var v = pm.response.headers.get(n); return (v === undefined || v === null) ? undefined : String(v); };",
+                  "  pm.expect(h('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ef.provider);",
+                  "  pm.expect(h('x-bifrost-original-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ef.original_model_requested);",
+                  "  pm.expect(h('x-bifrost-resolved-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ef.resolved_model_used);",
+                  "  pm.expect(h('x-bifrost-request-type'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ef.request_type);",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.provider);",
+                  "  pm.expect(h('x-bifrost-routing-info-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.model);",
+                  "  pm.expect(h('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.requested_provider);",
+                  "  pm.expect(h('x-bifrost-routing-info-requested-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.requested_model);",
+                  "  pm.expect(h('x-bifrost-routing-info-key'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.key);",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback') === 'true', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.is_fallback === true);",
+                  "  if (ri.primary_provider !== undefined) { pm.expect(h('x-bifrost-routing-info-primary-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.primary_provider); }",
+                  "  if (ri.primary_model !== undefined) { pm.expect(h('x-bifrost-routing-info-primary-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.primary_model); }",
+                  "});",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "pm.test('x-bifrost-upstream-latency-ms is set', function () { pm.expect(pm.response.headers.get('x-bifrost-upstream-latency-ms') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+(\\.[0-9]+)?$/); });",
+                  "pm.test('no fallback fired, so no fallback headers', function () { pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });",
+                  "var ROUTING = ['x-bifrost-provider', 'x-bifrost-original-model', 'x-bifrost-resolved-model', 'x-bifrost-request-type', 'x-bifrost-fallback-index', 'x-bifrost-routing-info-provider', 'x-bifrost-routing-info-model', 'x-bifrost-routing-info-requested-provider', 'x-bifrost-routing-info-requested-model', 'x-bifrost-routing-info-is-fallback', 'x-bifrost-routing-info-primary-provider', 'x-bifrost-routing-info-primary-model', 'x-bifrost-routing-info-server-side-fallback-model', 'x-bifrost-routing-info-alias-model-id', 'x-bifrost-routing-info-alias-model-name', 'x-bifrost-routing-info-alias-model-family'];",
+                  "var routing = {}; ROUTING.forEach(function (h) { var v = pm.response.headers.get(h); routing[h] = (v === undefined || v === null) ? null : String(v); });",
+                  "pm.collectionVariables.set('routing_headers_body_unary', JSON.stringify(routing));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat streaming keeps extra_fields in the chunks",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the stream delivered SSE chunks', function () { var t = pm.response.text(); pm.expect(t, t).to.include('data: '); pm.expect(t, t).to.include('\"choices\"'); });",
+                  "pm.test('chunks carry extra_fields', function () { pm.expect(pm.response.text(), pm.response.text()).to.include('\"extra_fields\"'); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "pm.test('no fallback fired, so no fallback headers', function () { pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });",
+                  "var ROUTING = ['x-bifrost-provider', 'x-bifrost-original-model', 'x-bifrost-resolved-model', 'x-bifrost-request-type', 'x-bifrost-fallback-index', 'x-bifrost-routing-info-provider', 'x-bifrost-routing-info-model', 'x-bifrost-routing-info-requested-provider', 'x-bifrost-routing-info-requested-model', 'x-bifrost-routing-info-is-fallback', 'x-bifrost-routing-info-primary-provider', 'x-bifrost-routing-info-primary-model', 'x-bifrost-routing-info-server-side-fallback-model', 'x-bifrost-routing-info-alias-model-id', 'x-bifrost-routing-info-alias-model-name', 'x-bifrost-routing-info-alias-model-family'];",
+                  "var routing = {}; ROUTING.forEach(function (h) { var v = pm.response.headers.get(h); routing[h] = (v === undefined || v === null) ? null : String(v); });",
+                  "pm.collectionVariables.set('routing_headers_body_stream', JSON.stringify(routing));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Responses non-streaming keeps extra_fields in the body",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responses non-streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the response output is intact', function () { pm.expect(pm.response.json().output, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('extra_fields names the provider', function () { var ef = pm.response.json().extra_fields; pm.expect(ef, pm.response.text()).to.be.an('object'); pm.expect(ef.provider, pm.response.text()).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('the body carries exactly one extra_fields', function () { var t = pm.response.text(); pm.expect(t.split('\"extra_fields\"').length - 1, t).to.equal(1); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('body mode adds no x-bifrost-latency-ms header', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Responses streaming keeps one top-level extra_fields per event",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responses streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the stream delivered SSE chunks', function () { var t = pm.response.text(); pm.expect(t, t).to.include('data: '); pm.expect(t, t).to.include('response.completed'); });",
+                  "var events = pm.response.text().split('\\n').filter(function (l) { return l.indexOf('data: ') === 0 && l !== 'data: [DONE]'; }).map(function (l) { return JSON.parse(l.slice(6)); });",
+                  "pm.test('every event carries a top-level extra_fields', function () { pm.expect(events.length, pm.response.text()).to.be.above(0); events.forEach(function (e) { pm.expect(e.extra_fields, JSON.stringify(e)).to.be.an('object'); }); });",
+                  "pm.test('no lifecycle event nests extra_fields in its response', function () { var lifecycle = events.filter(function (e) { return e.response; }); pm.expect(lifecycle.length, pm.response.text()).to.be.above(0); lifecycle.forEach(function (e) { pm.expect(e.response, JSON.stringify(e)).to.not.have.property('extra_fields'); }); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('body mode adds no x-bifrost-latency-ms header', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat non-streaming fallback reports the fallback in headers and body",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Fallback chat returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the completion is intact', function () { pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('routing headers match extra_fields in the body', function () {",
+                  "  var ef = pm.response.json().extra_fields || {}; var ri = ef.routing_info || {};",
+                  "  var h = function (n) { var v = pm.response.headers.get(n); return (v === undefined || v === null) ? undefined : String(v); };",
+                  "  pm.expect(h('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ef.provider);",
+                  "  pm.expect(h('x-bifrost-original-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ef.original_model_requested);",
+                  "  pm.expect(h('x-bifrost-resolved-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ef.resolved_model_used);",
+                  "  pm.expect(h('x-bifrost-request-type'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ef.request_type);",
+                  "  pm.expect(h('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.provider);",
+                  "  pm.expect(h('x-bifrost-routing-info-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.model);",
+                  "  pm.expect(h('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.requested_provider);",
+                  "  pm.expect(h('x-bifrost-routing-info-requested-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.requested_model);",
+                  "  pm.expect(h('x-bifrost-routing-info-key'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.key);",
+                  "  pm.expect(h('x-bifrost-routing-info-is-fallback') === 'true', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.is_fallback === true);",
+                  "  if (ri.primary_provider !== undefined) { pm.expect(h('x-bifrost-routing-info-primary-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.primary_provider); }",
+                  "  if (ri.primary_model !== undefined) { pm.expect(h('x-bifrost-routing-info-primary-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(ri.primary_model); }",
+                  "});",
+                  "pm.test('the fallback is reported in the routing headers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('1');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-primary-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider'));",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-primary-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('bifrost-e2e-missing-model');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider'));",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.include(pm.variables.get('model'));",
+                  "});",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "var ROUTING = ['x-bifrost-provider', 'x-bifrost-original-model', 'x-bifrost-resolved-model', 'x-bifrost-request-type', 'x-bifrost-fallback-index', 'x-bifrost-routing-info-provider', 'x-bifrost-routing-info-model', 'x-bifrost-routing-info-requested-provider', 'x-bifrost-routing-info-requested-model', 'x-bifrost-routing-info-is-fallback', 'x-bifrost-routing-info-primary-provider', 'x-bifrost-routing-info-primary-model', 'x-bifrost-routing-info-server-side-fallback-model', 'x-bifrost-routing-info-alias-model-id', 'x-bifrost-routing-info-alias-model-name', 'x-bifrost-routing-info-alias-model-family'];",
+                  "var routing = {}; ROUTING.forEach(function (h) { var v = pm.response.headers.get(h); routing[h] = (v === undefined || v === null) ? null : String(v); });",
+                  "pm.collectionVariables.set('routing_headers_body_fallback', JSON.stringify(routing));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/bifrost-e2e-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"fallbacks\": [\n    \"{{provider}}/{{model}}\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Headers Mode - extra_fields Moves To Headers",
+      "item": [
+        {
+          "name": "Set placement to headers",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(pm.collectionVariables.get('client_config_snapshot') || '{}'); } catch (e) { snap = {}; }",
+                  "snap.extra_fields_placement = 'headers';",
+                  "pm.request.body.raw = JSON.stringify({ client_config: snap });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Set placement to headers returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Config reports placement headers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get config returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('extra_fields_placement is headers', function () { pm.expect((pm.response.json().client_config || {}).extra_fields_placement, pm.response.text()).to.equal('headers'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config?from_db=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat non-streaming moves extra_fields to headers",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat non-streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the completion is intact', function () { pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('The body carries no extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-request-type is set', function () { pm.expect(pm.response.headers.get('x-bifrost-request-type') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^chat_completion$/); });",
+                  "pm.test('x-bifrost-latency-ms carries the latency', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/); });",
+                  "pm.test('x-bifrost-routing-info-model names the model', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-model') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.include(pm.variables.get('model')); });",
+                  "pm.test('a browser origin can read the x-bifrost-* headers', function () { var exposed = (pm.response.headers.get('access-control-expose-headers') || '').split(', '); pm.expect(exposed, 'access-control-expose-headers: ' + exposed.join(', ')).to.include.members(['x-bifrost-provider', 'x-bifrost-request-type', 'x-bifrost-latency-ms']); });",
+                  "var ROUTING = ['x-bifrost-provider', 'x-bifrost-original-model', 'x-bifrost-resolved-model', 'x-bifrost-request-type', 'x-bifrost-fallback-index', 'x-bifrost-routing-info-provider', 'x-bifrost-routing-info-model', 'x-bifrost-routing-info-requested-provider', 'x-bifrost-routing-info-requested-model', 'x-bifrost-routing-info-is-fallback', 'x-bifrost-routing-info-primary-provider', 'x-bifrost-routing-info-primary-model', 'x-bifrost-routing-info-server-side-fallback-model', 'x-bifrost-routing-info-alias-model-id', 'x-bifrost-routing-info-alias-model-name', 'x-bifrost-routing-info-alias-model-family'];",
+                  "var routing = {}; ROUTING.forEach(function (h) { var v = pm.response.headers.get(h); routing[h] = (v === undefined || v === null) ? null : String(v); });",
+                  "pm.test('routing headers are the same as in body mode', function () {",
+                  "  var saved = pm.collectionVariables.get('routing_headers_body_unary');",
+                  "  pm.expect(saved, 'the body-mode request did not record its routing headers').to.be.a('string').and.not.empty;",
+                  "  pm.expect(routing, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql(JSON.parse(saved));",
+                  "});",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "pm.test('x-bifrost-upstream-latency-ms is set', function () { pm.expect(pm.response.headers.get('x-bifrost-upstream-latency-ms') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+(\\.[0-9]+)?$/); });",
+                  "pm.test('no fallback fired, so no fallback headers', function () { pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:3000"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat streaming drops extra_fields from every chunk",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Chat streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the stream delivered SSE chunks', function () { var t = pm.response.text(); pm.expect(t, t).to.include('data: '); pm.expect(t, t).to.include('\"choices\"'); });",
+                  "pm.test('No chunk carries extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-request-type is set', function () { pm.expect(pm.response.headers.get('x-bifrost-request-type') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^chat_completion/); });",
+                  "pm.test('x-bifrost-routing-info-model names the model', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-model') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.include(pm.variables.get('model')); });",
+                  "var ROUTING = ['x-bifrost-provider', 'x-bifrost-original-model', 'x-bifrost-resolved-model', 'x-bifrost-request-type', 'x-bifrost-fallback-index', 'x-bifrost-routing-info-provider', 'x-bifrost-routing-info-model', 'x-bifrost-routing-info-requested-provider', 'x-bifrost-routing-info-requested-model', 'x-bifrost-routing-info-is-fallback', 'x-bifrost-routing-info-primary-provider', 'x-bifrost-routing-info-primary-model', 'x-bifrost-routing-info-server-side-fallback-model', 'x-bifrost-routing-info-alias-model-id', 'x-bifrost-routing-info-alias-model-name', 'x-bifrost-routing-info-alias-model-family'];",
+                  "var routing = {}; ROUTING.forEach(function (h) { var v = pm.response.headers.get(h); routing[h] = (v === undefined || v === null) ? null : String(v); });",
+                  "pm.test('stream routing headers are the same as in body mode', function () {",
+                  "  var saved = pm.collectionVariables.get('routing_headers_body_stream');",
+                  "  pm.expect(saved, 'the body-mode request did not record its routing headers').to.be.a('string').and.not.empty;",
+                  "  pm.expect(routing, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql(JSON.parse(saved));",
+                  "});",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "pm.test('no fallback fired, so no fallback headers', function () { pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Chat non-streaming fallback keeps the same routing headers",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Fallback chat returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the completion is intact', function () { pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('The body carries no extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
+                  "pm.test('the fallback is reported in the routing headers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('1');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('true');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-primary-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider'));",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-primary-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal('bifrost-e2e-missing-model');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider'));",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.include(pm.variables.get('model'));",
+                  "});",
+                  "var ROUTING = ['x-bifrost-provider', 'x-bifrost-original-model', 'x-bifrost-resolved-model', 'x-bifrost-request-type', 'x-bifrost-fallback-index', 'x-bifrost-routing-info-provider', 'x-bifrost-routing-info-model', 'x-bifrost-routing-info-requested-provider', 'x-bifrost-routing-info-requested-model', 'x-bifrost-routing-info-is-fallback', 'x-bifrost-routing-info-primary-provider', 'x-bifrost-routing-info-primary-model', 'x-bifrost-routing-info-server-side-fallback-model', 'x-bifrost-routing-info-alias-model-id', 'x-bifrost-routing-info-alias-model-name', 'x-bifrost-routing-info-alias-model-family'];",
+                  "var routing = {}; ROUTING.forEach(function (h) { var v = pm.response.headers.get(h); routing[h] = (v === undefined || v === null) ? null : String(v); });",
+                  "pm.test('fallback routing headers are the same as in body mode', function () {",
+                  "  var saved = pm.collectionVariables.get('routing_headers_body_fallback');",
+                  "  pm.expect(saved, 'the body-mode request did not record its routing headers').to.be.a('string').and.not.empty;",
+                  "  pm.expect(routing, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql(JSON.parse(saved));",
+                  "});",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/bifrost-e2e-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"fallbacks\": [\n    \"{{provider}}/{{model}}\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Responses non-streaming moves extra_fields to headers",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responses non-streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the response output is intact', function () { pm.expect(pm.response.json().output, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('The body carries no extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-request-type is set', function () { pm.expect(pm.response.headers.get('x-bifrost-request-type') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^responses$/); });",
+                  "pm.test('x-bifrost-latency-ms carries the latency', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/); });",
+                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "pm.test('no fallback fired, so no fallback headers', function () { pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Responses streaming drops extra_fields from every event",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Responses streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the stream delivered SSE chunks', function () { var t = pm.response.text(); pm.expect(t, t).to.include('data: '); pm.expect(t, t).to.include('response.completed'); });",
+                  "pm.test('No event carries extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-request-type is set', function () { pm.expect(pm.response.headers.get('x-bifrost-request-type') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^responses/); });",
+                  "pm.test('x-bifrost-routing-info-model names the model', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-model') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.include(pm.variables.get('model')); });",
+                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "pm.test('no fallback fired, so no fallback headers', function () { pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/{{model}}\",\n  \"input\": \"Reply with the single word: ok\",\n  \"max_output_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/responses",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI integration non-streaming moves extra_fields to headers",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI integration non-streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the completion is intact', function () { pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty; });",
+                  "pm.test('The body carries no extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-latency-ms carries the latency', function () { pm.expect(pm.response.headers.get('x-bifrost-latency-ms') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/); });",
+                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('a bare model names no requested provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "pm.test('no fallback fired, so no fallback headers', function () { pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "OpenAI integration streaming drops extra_fields from every chunk",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('OpenAI integration streaming returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('the stream delivered SSE chunks', function () { var t = pm.response.text(); pm.expect(t, t).to.include('data: '); pm.expect(t, t).to.include('\"choices\"'); });",
+                  "pm.test('No chunk carries extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('a bare model names no requested provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});",
+                  "pm.test('no fallback fired, so no fallback headers', function () { pm.expect(pm.response.headers.get('x-bifrost-fallback-index'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); pm.expect(pm.response.headers.get('x-bifrost-routing-info-is-fallback'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.be.oneOf([undefined, null]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{model}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/openai/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Provider error drops extra_fields from the error body",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider rejects the unknown model with a 4xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(400, 499); });",
+                  "pm.test('the error body is intact', function () { pm.expect(pm.response.json().error, pm.response.text()).to.be.an('object'); });",
+                  "pm.test('The error body carries no extra_fields', function () { pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"'); });",
+                  "pm.test('x-bifrost-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-routing-info-provider names the provider', function () { pm.expect(pm.response.headers.get('x-bifrost-routing-info-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); pm.expect(pm.response.headers.get('x-bifrost-routing-info-requested-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.equal(pm.variables.get('provider')); });",
+                  "pm.test('x-bifrost-request-id and x-bifrost-trace-id are set', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-trace-id') || '', 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.not.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"{{provider}}/bifrost-e2e-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/v1/chat/completions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Teardown",
+      "item": [
+        {
+          "name": "Restore client config snapshot",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var missing = ['client_config_snapshot'].filter(function (k) { return !pm.collectionVariables.get(k); });",
+                  "if (missing.length && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) { pm.execution.skipRequest(); }",
+                  "var snap = {};",
+                  "try { snap = JSON.parse(pm.collectionVariables.get('client_config_snapshot') || '{}'); } catch (e) { snap = {}; }",
+                  "snap.extra_fields_placement = 'body';",
+                  "pm.request.body.raw = JSON.stringify({ client_config: snap });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Restore client config snapshot returns 2xx', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.be.within(200, 299); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Config reports placement body",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Get config returns 200', function () { pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200); });",
+                  "pm.test('extra_fields_placement is back to body', function () { pm.expect((pm.response.json().client_config || {}).extra_fields_placement || 'body', pm.response.text()).to.equal('body'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/config?from_db=true",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

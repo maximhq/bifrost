@@ -127,7 +127,7 @@ func ollamaUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInput
 }
 
 func ollamaTextPart(text string) schemas.DecisionInputPart {
-	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
 func ollamaImagePart(url string) schemas.DecisionInputPart {

@@ -753,6 +753,18 @@ This does not apply to Feature or Docs issues -- AGENTS.md scopes "red before gr
 fixes. For those, tests are added per the Test Plan after the implementation, and Step 5f is
 skipped.
 
+### 7a-branch. Branch Name
+
+Before the first commit, check `git branch --show-current`. Branch names are
+`fix/<area>-<noun>` for Bug issues and `feat/<area>-<noun>` for Feature issues (e.g.
+`fix/list-models-aggregate-pagination`): lowercase, hyphenated, describing the change.
+Never put a username or handle in the name (`akshaydeo/...`), and never an issue number
+or the issue title verbatim. Workspace tooling often creates the branch as
+`<user>/<issue-title-slug>`; if so, and no PR exists yet
+(`gh pr list --head "$(git branch --show-current)" --state open` is empty), rename it with
+`gt rename <type>/<area>-<noun>` (or `git branch -m` when the branch is not gt-tracked).
+If a PR already exists, keep the name: renaming strands it.
+
 ### 7b. Create a Todo List
 
 Create a todo item for each change in the plan. For Bug issues the regression test already

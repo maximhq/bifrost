@@ -183,9 +183,9 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	// Compute unsupported parameters to drop based on model catalog allowlist
 	if ((shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldDropParams) && p.modelCatalog != nil {
-		_, model, _ := modifiedReq.GetRequestFields()
+		provider, model, _ := modifiedReq.GetRequestFields()
 		if model != "" {
-			supportedParams := p.modelCatalog.GetSupportedParameters(model)
+			supportedParams := p.supportedParameters(provider, model)
 			if supportedParams == nil {
 				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no supported-parameter list for model %s, no params dropped", model))
 			} else {
@@ -284,24 +284,31 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // markDecisionForEmulation marks a decision request for emulation through the
 // Responses API unless the model catalog lists the model as a native decisions
 // model: its supports_decisions row, or without a row the decisions model
-// families the providers recognize by name (gpt-6-luna outside OpenRouter,
-// Typesafe's typesafe/ models, Clef on Cloudflare, deciders on Perplexity,
-// System One models on Ollama).
-// OpenRouter serves gpt-6-luna's decisions under its own id
-// (openai/gpt-6-luna-decisions, marked by its datasheet row), and rejects its
-// gpt-6-luna chat models on the decisions endpoint, so those are emulated.
-// Typesafe serves every model natively, so it is never marked. Custom
-// providers have no catalog rows, so one serving a decisions model under an
-// unrecognized name would be emulated; the docs ask users to leave the setting
-// off for them.
+// families the providers recognize by name (gpt-6-luna on OpenAI, Typesafe's
+// typesafe/ models, Clef on Cloudflare, deciders on Perplexity, System One
+// models on Ollama, Microsoft's decision models and gpt-6-luna on Azure,
+// ai_decide and System One models on Databricks, decision-models/ on Baseten,
+// Gemini Decision models on Gemini). gpt-6-luna is native by name only on OpenAI and
+// Azure (its /openai/v1/decisions route): another provider hosting it
+// (OpenRouter's gpt-6-luna chat models) serves it as a chat model, so it is
+// emulated unless that provider's datasheet row says otherwise (OpenRouter's
+// openai/gpt-6-luna-decisions).
+// Typesafe, vLLM and SGLang serve every model natively, so they are never marked. Custom
+// providers have no catalog rows and are matched by their own name, so one
+// serving a decisions model (on the Typesafe base, or gpt-6-luna on the OpenAI
+// base) would be emulated; the docs ask users to leave the setting off for them.
 func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) {
-	if provider == schemas.Typesafe {
+	if provider == schemas.Typesafe || provider == schemas.VLLM || provider == schemas.SGL {
 		return
 	}
-	fallback := (provider != schemas.OpenRouter && schemas.DefaultSupportsDecisions(model)) || schemas.IsTypesafeModel(model) ||
+	fallback := (provider == schemas.OpenAI && schemas.DefaultSupportsDecisions(model)) || schemas.IsTypesafeModel(model) ||
 		(provider == schemas.Cloudflare && schemas.IsClefModel(model)) ||
 		(provider == schemas.Perplexity && schemas.IsPerplexityDeciderModel(model)) ||
-		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model))
+		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model)) ||
+		(provider == schemas.Azure && (schemas.IsMicrosoftDecisionModel(model) || schemas.DefaultSupportsDecisions(model))) ||
+		(provider == schemas.Databricks && schemas.IsDatabricksDecisionModel(model)) ||
+		(provider == schemas.Baseten && schemas.IsBasetenDecisionModel(model)) ||
+		(provider == schemas.Gemini && schemas.IsGeminiDecisionModel(model))
 	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback) {
 		return
 	}
@@ -319,7 +326,7 @@ func (p *CompatPlugin) markReasoningWithToolsForResponses(ctx *schemas.BifrostCo
 		return
 	}
 	provider, model := req.ChatRequest.Provider, req.ChatRequest.Model
-	supported := p.modelCatalog.GetSupportedParameters(model)
+	supported := p.supportedParameters(provider, model)
 	// reasoning_with_tool_calls is listed unless the datasheet sets it explicitly false.
 	if supported == nil || !slices.Contains(supported, "reasoning") || slices.Contains(supported, "reasoning_with_tool_calls") {
 		return

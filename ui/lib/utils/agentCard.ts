@@ -1,4 +1,32 @@
+import i18n from "@/lib/i18n";
 import type { InspectAgentCardResponse } from "@/lib/types/agents";
+
+// agentEndpointOrigin matches runtime origin identity, including TLS for bare gRPC targets.
+export function agentEndpointOrigin(value: string, protocolBinding?: string): string | undefined {
+	try {
+		const target = protocolBinding === "GRPC" && !value.includes("://") ? `https://${value}` : value;
+		const url = new URL(target);
+		if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) return undefined;
+		return url.origin;
+	} catch {
+		return undefined;
+	}
+}
+
+// configuredAgentEndpointOrigin accepts origin-only entries without discarding invalid URL components.
+export function configuredAgentEndpointOrigin(value: string): string | undefined {
+	const trimmed = value.trim();
+	if (!/^https?:\/\/[^/?#\\\s]+$/i.test(trimmed)) return undefined;
+	return agentEndpointOrigin(trimmed);
+}
+
+// suggestedAgentEndpoints lists unique card-advertised origins that still need explicit approval.
+export function suggestedAgentEndpoints(cardURL: string, interfaces: InspectAgentCardResponse["interfaces"], allowed: string[]) {
+	const permitted = new Set([agentEndpointOrigin(cardURL), ...allowed.map(configuredAgentEndpointOrigin)]);
+	return [...new Set((interfaces ?? []).map((iface) => agentEndpointOrigin(iface.url, iface.protocol_binding)))].filter(
+		(origin): origin is string => origin !== undefined && !permitted.has(origin),
+	);
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
@@ -62,7 +90,7 @@ export function mapAgentCard(card: Record<string, unknown>): InspectAgentCardRes
 			return [
 				{
 					id: asString(skill.id) ?? "",
-					name: asString(skill.name) ?? "Unnamed skill",
+					name: asString(skill.name) ?? i18n.t("agentCard.unnamedSkill", { ns: "common" }),
 					description: asString(skill.description),
 					tags: strings(skill.tags),
 					examples: strings(skill.examples),
@@ -96,7 +124,7 @@ export function mapAgentCard(card: Record<string, unknown>): InspectAgentCardRes
 			return [
 				{
 					name,
-					type: asString(scheme.type) ?? variant?.[0]?.replace("SecurityScheme", "") ?? "Unknown",
+					type: asString(scheme.type) ?? variant?.[0]?.replace("SecurityScheme", "") ?? i18n.t("agentCard.unknown", { ns: "common" }),
 					description: asString(definition.description),
 					definition,
 				},

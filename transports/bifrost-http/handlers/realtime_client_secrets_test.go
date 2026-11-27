@@ -14,7 +14,7 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -633,6 +633,10 @@ func (m *mockRealtimeMintingGovernancePlugin) ResolveAccess(_ *schemas.BifrostCo
 
 func (m *mockRealtimeMintingGovernancePlugin) LoadBalanceProvider(_ *schemas.BifrostContext, _ *schemas.BifrostRequest) error {
 	return nil
+}
+
+func (m *mockRealtimeMintingGovernancePlugin) IsMCPAllowedForUser(_ context.Context, _, _ string) bool {
+	return false
 }
 
 func TestRealtimeClientSecretsEvaluateMintingGovernance_RequiresAccess(t *testing.T) {

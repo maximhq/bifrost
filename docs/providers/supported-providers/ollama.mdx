@@ -124,7 +124,7 @@ Bifrost calls Ollama's `/v1/systemone`, which uses TypeSafe's System One format,
 - **`keep_alive`** sets how long the model stays loaded after the request: a duration such as `"5m"`, or a number of seconds. `0` unloads it right away; a negative value keeps it loaded. It works without the passthrough header.
 - **No key needed** for a local server. If the key has a value, it is sent as a bearer token.
 
-A model that is not pulled, or cannot answer decisions, returns Ollama's own error. The [complexity router](/features/complexity-router#choosing-the-decision-model) lists the System One models you have pulled.
+A model that is not pulled, or cannot answer decisions, returns Ollama's own error. A [router](/features/routers#choosing-the-decision-model) lists the System One models you have pulled.
 
 ---
 

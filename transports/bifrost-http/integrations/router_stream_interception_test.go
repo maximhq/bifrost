@@ -12,7 +12,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -226,5 +226,77 @@ func Test_handleStreamingMissingSpeechConverterReturnsError(t *testing.T) {
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)
 	assert.Contains(t, string(body), lib.ClientSafeInternalErrorMessage)
+	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
+}
+
+// rawAudioConfig is a speech route that streams its audio as the response body, the way ElevenLabs' stream endpoint
+// does: no SSE framing, so a client plays the bytes it receives.
+func rawAudioConfig() RouteConfig {
+	return RouteConfig{
+		StreamConfig: &StreamConfig{
+			RawAudio: true,
+			SpeechStreamResponseConverter: func(_ *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
+				if len(resp.Audio) == 0 {
+					return "", nil, nil // the final chunk carries no audio
+				}
+				return "", resp.Audio, nil
+			},
+		},
+	}
+}
+
+func speechAudioChunk(audio string) *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: []byte(audio)}}
+}
+
+func speechDoneChunk() *schemas.BifrostStreamChunk {
+	return &schemas.BifrostStreamChunk{BifrostSpeechStreamResponse: &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone, Audio: []byte{}}}
+}
+
+// A raw audio stream is the audio and nothing else: no data lines, no [DONE] marker, and nothing for the final chunk.
+func Test_handleStreamingRawAudioWritesTheAudioAlone(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 3)
+	stream <- speechAudioChunk("audio-")
+	stream <- speechAudioChunk("bytes")
+	stream <- speechDoneChunk()
+	close(stream)
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+
+	router.handleStreaming(ctx, nil, rawAudioConfig(), schemas.SpeechStreamRequest, stream, func() {})
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	assert.Equal(t, "audio-bytes", string(body))
+}
+
+// Audio already on the wire cannot be followed by an error frame, which the client would play as sound, so a stream
+// that fails midway just ends.
+func Test_handleStreamingRawAudioErrorEndsTheStreamWithoutAFrame(t *testing.T) {
+	stream := make(chan *schemas.BifrostStreamChunk, 3)
+	stream <- speechAudioChunk("audio-")
+	stream <- &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "upstream reset"}}}
+	stream <- speechAudioChunk("never sent")
+	close(stream)
+	config := rawAudioConfig()
+	config.StreamConfig.ErrorConverter = func(*schemas.BifrostContext, *schemas.BifrostError) interface{} {
+		t.Error("a raw audio stream must not convert an error into a frame")
+		return nil
+	}
+	router := NewGenericRouter(nil, &mockHandlerStore{}, nil, nil, nil, bifrost.NewNoOpLogger())
+	ctx := &fasthttp.RequestCtx{}
+
+	router.handleStreaming(ctx, nil, config, schemas.SpeechStreamRequest, stream, func() {})
+
+	body, err := io.ReadAll(ctx.Response.BodyStream())
+	require.NoError(t, err)
+	assert.Equal(t, "audio-", string(body))
+}
+
+// A plugin that ends the stream does it the same way: no error event inside the audio.
+func Test_handleStreamingRawAudioInterceptionErrorWritesNoFrame(t *testing.T) {
+	body, rec := runHandleStreamingWithInterceptor(t, rawAudioConfig(), wrapInterceptionError(fmt.Errorf("plugin exploded")))
+
+	assert.Empty(t, body)
 	rec.requireCancelled(t, "handleStreaming must cancel the request context before returning")
 }

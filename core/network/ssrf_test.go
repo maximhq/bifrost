@@ -1115,3 +1115,103 @@ func TestPublicTargetCheck_UnresolvableTargetIsRefused(t *testing.T) {
 		t.Fatalf("expected a DNS failure, got %v", err)
 	}
 }
+
+// TestStrictGuardedClientRefusesUnresolvedProxiedDestinations: a strict client fetches URLs an
+// unauthenticated caller chose, so a destination the local resolver cannot answer is refused on
+// the proxied path (selector and redirect) instead of being left to the proxy to resolve.
+func TestStrictGuardedClientRefusesUnresolvedProxiedDestinations(t *testing.T) {
+	var proxied atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxied.Add(1)
+		_, _ = w.Write([]byte("via-proxy"))
+	}))
+	defer proxy.Close()
+	noDNS := &fakeResolver{err: errors.New("no such host")}
+	public := func(ip net.IP, host string) error {
+		if !IsPublicIP(ip) {
+			return fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
+		}
+		return nil
+	}
+
+	strict := newGuardedHTTPClientWithPolicy(5*time.Second, (&net.Dialer{}).DialContext, public, fixedProxy(t, proxy.URL), noDNS, false)
+	if _, err := strict.Get("http://internal-only.example/client.json"); err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("a strict client must refuse a destination it cannot resolve, got %v", err)
+	}
+	if proxied.Load() != 0 {
+		t.Fatal("nothing may reach the proxy unvetted")
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://internal-only.example/next", nil)
+	if err := strict.CheckRedirect(req, redirectVia()); err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("a strict client must refuse a redirect it cannot resolve, got %v", err)
+	}
+}
+
+// TestGuardedClientBoundsIdleConnections: every guarded transport caps and expires idle
+// connections, so fetching from many hosts cannot hold sockets open indefinitely.
+func TestGuardedClientBoundsIdleConnections(t *testing.T) {
+	client := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, fixedProxy(t, "http://proxy.internal:3128"), &fakeResolver{})
+	aware, ok := client.Transport.(*ProxyAwareTransport)
+	if !ok {
+		t.Fatalf("transport is %T", client.Transport)
+	}
+	for name, tr := range map[string]*http.Transport{"direct": aware.Direct, "via proxy": aware.ViaProxy} {
+		if tr.MaxIdleConns == 0 || tr.IdleConnTimeout == 0 {
+			t.Errorf("%s transport: MaxIdleConns=%d IdleConnTimeout=%v, want both bounded", name, tr.MaxIdleConns, tr.IdleConnTimeout)
+		}
+	}
+	direct, ok := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, nil, &fakeResolver{}).Transport.(*http.Transport)
+	if !ok || direct.MaxIdleConns == 0 || direct.IdleConnTimeout == 0 {
+		t.Errorf("unproxied transport must bound idle connections too")
+	}
+}
+
+// TestGuardedClientTrustsGlobalProxyTLS pins that the guarded clients (catalog, RSS,
+// datasheet, MCP spec fetches) apply the global proxy's TLS settings on the proxied
+// path, like the factory's own clients: skip_tls_verify covers only the https:// proxy's
+// certificate, and ca_cert_pem is trusted for the proxy and for targets re-signed by a
+// TLS-inspecting proxy. One client is built before the CA is saved, to pin that a later
+// proxy config reaches a client built earlier.
+func TestGuardedClientTrustsGlobalProxyTLS(t *testing.T) {
+	targetAddr, targetCA := tlsTarget(t)
+	proxyURL, proxyCA := tunnelingHTTPSProxy(t, targetAddr)
+	_, targetPort, _ := net.SplitHostPort(targetAddr)
+	targetURL := "https://upstream.test:" + targetPort + "/"
+
+	previous := DefaultHTTPClientFactory()
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(previous) })
+	factory := NewHTTPClientFactory(enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, proxyURL), noopTestLogger{})
+	SetDefaultHTTPClientFactory(factory)
+	builtEarly := NewPrivateNetworkHTTPClient(5 * time.Second)
+
+	for _, tc := range []struct {
+		name    string
+		skip    bool
+		caPEM   string
+		wantErr string
+	}{
+		{"no CA: the proxy hop is refused", false, "", "certificate"},
+		{"skip covers the proxy hop only, not the target", true, "", "certificate"},
+		{"skip for the hop, target verified by the proxy CA", true, targetCA, ""},
+		{"no skip: the CA verifies the proxy and the target", false, proxyCA + targetCA, ""},
+		{"no skip, CA for the target only: the proxy hop is verified and refused", false, targetCA, "certificate"},
+	} {
+		cfg := enabledFor(ClientPurposeAPI, GlobalProxyTypeHTTP, proxyURL)
+		cfg.SkipTLSVerify = tc.skip
+		cfg.CACertPEM = tc.caPEM
+		factory.UpdateProxyConfig(cfg)
+		for name, client := range map[string]*http.Client{
+			"built before the config": builtEarly,
+			"built after the config":  NewPrivateNetworkHTTPClient(5 * time.Second),
+		} {
+			t.Run(tc.name+"/"+name, func(t *testing.T) {
+				r, _ := http.NewRequestWithContext(t.Context(), http.MethodGet, targetURL, nil)
+				resp, err := client.Do(r)
+				if err == nil {
+					resp.Body.Close()
+				}
+				assertTLSOutcome(t, err, tc.wantErr)
+			})
+		}
+	}
+}

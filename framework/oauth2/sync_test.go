@@ -3,6 +3,7 @@ package oauth2
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,6 +48,7 @@ type testConfigStore struct {
 	oauthFlows   map[string]*tables.TableMCPOauthFlow
 	clientConfig *configstore.ClientConfig
 	mcpClients   map[string]*schemas.MCPClientConfig
+	locks        map[string]tables.TableDistributedLock
 }
 
 func newTestConfigStore() *testConfigStore {
@@ -53,7 +56,77 @@ func newTestConfigStore() *testConfigStore {
 		oauthConfigs: make(map[string]*tables.TableOauthConfig),
 		oauthTokens:  make(map[string]*tables.TableMCPOauthToken),
 		oauthFlows:   make(map[string]*tables.TableMCPOauthFlow),
+		locks:        make(map[string]tables.TableDistributedLock),
 	}
+}
+
+// TryAcquireLock and the methods below are the in-memory equivalent of the
+// real store's distributed_locks table, shared by every provider on the store.
+func (s *testConfigStore) TryAcquireLock(_ context.Context, lock *tables.TableDistributedLock) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, held := s.locks[lock.LockKey]; held {
+		return false, nil
+	}
+	s.locks[lock.LockKey] = *lock
+	return true, nil
+}
+
+func (s *testConfigStore) GetLock(_ context.Context, lockKey string) (*tables.TableDistributedLock, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, held := s.locks[lockKey]
+	if !held {
+		return nil, nil
+	}
+	return &lock, nil
+}
+
+func (s *testConfigStore) UpdateLockExpiry(_ context.Context, lockKey, holderID string, expiresAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, held := s.locks[lockKey]
+	if !held || lock.HolderID != holderID {
+		return configstore.ErrLockNotHeld
+	}
+	lock.ExpiresAt = expiresAt
+	s.locks[lockKey] = lock
+	return nil
+}
+
+func (s *testConfigStore) ReleaseLock(_ context.Context, lockKey, holderID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, held := s.locks[lockKey]
+	if !held || lock.HolderID != holderID {
+		return false, nil
+	}
+	delete(s.locks, lockKey)
+	return true, nil
+}
+
+func (s *testConfigStore) CleanupExpiredLocks(_ context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed int64
+	for key, lock := range s.locks {
+		if time.Now().After(lock.ExpiresAt) {
+			delete(s.locks, key)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func (s *testConfigStore) CleanupExpiredLockByKey(_ context.Context, lockKey string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lock, held := s.locks[lockKey]
+	if !held || !time.Now().After(lock.ExpiresAt) {
+		return false, nil
+	}
+	delete(s.locks, lockKey)
+	return true, nil
 }
 
 func (s *testConfigStore) GetOauthConfigByID(_ context.Context, id string) (*tables.TableOauthConfig, error) {
@@ -154,6 +227,34 @@ func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, t
 	token.Status = "needs_reauth"
 	token.StatusReason = reason
 	return nil
+}
+
+// MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged is the test-double equivalent of the real
+// store's conditional flip: only an active row still holding the redeemed refresh token.
+func (s *testConfigStore) MarkOauthTokenNeedsReauthIfRefreshTokenUnchanged(_ context.Context, tokenID, redeemedRefreshToken, reason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := s.oauthTokens[tokenID]
+	if token == nil || token.Status != "active" || token.RefreshToken != redeemedRefreshToken {
+		return false, nil
+	}
+	token.Status = "needs_reauth"
+	token.StatusReason = reason
+	return true, nil
+}
+
+// MarkOauthTokenNeedsReauthIfUnrenewable is the test-double equivalent of the real store's
+// conditional flip: only an active row with no refresh token and an expired access token.
+func (s *testConfigStore) MarkOauthTokenNeedsReauthIfUnrenewable(_ context.Context, tokenID string, reason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := s.oauthTokens[tokenID]
+	if token == nil || token.Status != "active" || token.RefreshToken != "" || token.ExpiresAt == nil || !time.Now().After(*token.ExpiresAt) {
+		return false, nil
+	}
+	token.Status = "needs_reauth"
+	token.StatusReason = reason
+	return true, nil
 }
 
 // MarkTokensNeedsReauthByConfigID is the test-double equivalent of the real
@@ -829,6 +930,154 @@ func TestRefreshAccessToken_CASLostToConcurrentActiveRefresh_ReturnsNilNotExpire
 	assert.Equal(t, "winner-refresh-token", token.RefreshToken)
 }
 
+// rotatingGrant stands in for an authorization server that rotates the refresh
+// token on every use and revokes the whole grant when a retired one comes back,
+// as Notion's MCP server does. The first redemption waits until every ready
+// channel is closed, then until a second request arrives or hold elapses, so
+// two unserialized refreshes overlap.
+type rotatingGrant struct {
+	mu       sync.Mutex
+	current  string
+	issued   int
+	revoked  bool
+	requests atomic.Int32
+	second   chan struct{}
+}
+
+func newRotatingGrantServer(t *testing.T, initialRefreshToken string, hold time.Duration, ready ...<-chan struct{}) (*httptest.Server, *rotatingGrant) {
+	t.Helper()
+	grant := &rotatingGrant{current: initialRefreshToken, second: make(chan struct{})}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch grant.requests.Add(1) {
+		case 1:
+			for _, read := range ready {
+				select {
+				case <-read:
+				case <-time.After(5 * time.Second):
+				}
+			}
+			select {
+			case <-grant.second:
+			case <-time.After(hold):
+			}
+		case 2:
+			close(grant.second)
+		}
+		require.NoError(t, r.ParseForm())
+		presented := r.PostForm.Get("refresh_token")
+		grant.mu.Lock()
+		defer grant.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if grant.revoked || presented != grant.current {
+			grant.revoked = true
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant", "error_description": "refresh token reused; grant revoked"})
+			return
+		}
+		grant.issued++
+		grant.current = fmt.Sprintf("rotated-refresh-%d", grant.issued)
+		json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  fmt.Sprintf("rotated-access-%d", grant.issued),
+			"refresh_token": grant.current,
+			"token_type":    "bearer",
+			"expires_in":    3600,
+		})
+	}))
+	t.Cleanup(server.Close)
+	return server, grant
+}
+
+// readSignalStore signals once when its replica first reads a token row.
+type readSignalStore struct {
+	*testConfigStore
+	once sync.Once
+	read chan struct{}
+}
+
+func (s *readSignalStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
+	s.once.Do(func() { close(s.read) })
+	return s.testConfigStore.GetOauthTokenByID(ctx, id)
+}
+
+// Two replicas sharing one store refresh the same token at once against an
+// upstream that revokes the grant on refresh-token reuse: only one may redeem it.
+// The upstream answers only after both replicas have read the row, so each saw
+// the refresh token before either could rotate it.
+func TestRefreshAccessToken_ReplicasSerializeRotatingRefresh(t *testing.T) {
+	store := newTestConfigStore()
+	views := []*readSignalStore{{testConfigStore: store, read: make(chan struct{})}, {testConfigStore: store, read: make(chan struct{})}}
+	server, grant := newRotatingGrantServer(t, "refresh-token", 300*time.Millisecond, views[0].read, views[1].read)
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	replicaA, replicaB := NewOAuth2Provider(views[0], logger), NewOAuth2Provider(views[1], logger)
+	replicaA.retryBaseDelay, replicaB.retryBaseDelay = time.Millisecond, time.Millisecond
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, replica := range []*OAuth2Provider{replicaA, replicaB} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = replica.RefreshAccessToken(context.Background(), tokenID)
+		}()
+	}
+	wg.Wait()
+
+	assert.NoError(t, errs[0])
+	assert.NoError(t, errs[1])
+	assert.Equal(t, int32(1), grant.requests.Load(), "only one replica may redeem the refresh token")
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", token.Status, "status_reason=%q", token.StatusReason)
+	assert.Equal(t, "rotated-refresh-1", token.RefreshToken)
+	assert.Equal(t, "rotated-access-1", token.AccessToken)
+	grant.mu.Lock()
+	defer grant.mu.Unlock()
+	assert.False(t, grant.revoked, "the upstream grant must not be revoked")
+}
+
+// A refresh rejected for a refresh token the row no longer holds must not mark
+// the row needs_reauth: whoever moved it on left it with working credentials.
+func TestRefreshAccessToken_RejectedAfterRowMovedOn_KeepsRowActive(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-unblock
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid_grant"})
+	}))
+	defer server.Close()
+
+	store := newTestConfigStore()
+	_, tokenID := seedFixtures(t, store, server.URL+"/token")
+	provider := newTestProvider(store)
+
+	var refreshErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		refreshErr = provider.RefreshAccessToken(context.Background(), tokenID)
+	}()
+	<-started
+	store.mu.Lock()
+	winner := *store.oauthTokens[tokenID]
+	winner.AccessToken = "winner-access-token"
+	winner.RefreshToken = "winner-refresh-token"
+	store.oauthTokens[tokenID] = &winner
+	store.mu.Unlock()
+	close(unblock)
+	<-done
+
+	assert.NoError(t, refreshErr)
+	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
+	require.NoError(t, err)
+	assert.Equal(t, "active", token.Status)
+	assert.Empty(t, token.StatusReason)
+	assert.Equal(t, "winner-refresh-token", token.RefreshToken)
+}
+
 func TestTokenRefreshWorker_ConnectionRefused_DoesNotMarkNeedsReauth(t *testing.T) {
 	// This is the exact failure mode that triggered this fix: the machine goes
 	// offline, DNS fails, and the token endpoint is unreachable. The transport
@@ -1095,7 +1344,7 @@ func TestInitiateUserOAuthFlow_AdminMode_CreatesFlowWithNoIdentity(t *testing.T)
 	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
-	initiation, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	initiation, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	require.NotEmpty(t, flowID)
 	require.NotNil(t, initiation)
@@ -1125,12 +1374,12 @@ func TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow(t *testing.T) {
 	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	ctx := context.Background()
 
-	_, flowID1, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	_, flowID1, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	require.Len(t, store.oauthFlows, 1, "exactly one flow row after first initiation")
 	firstState := store.oauthFlows[flowID1].State
 
-	_, flowID2, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	_, flowID2, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 
 	assert.Equal(t, flowID1, flowID2, "second initiation for the same binding while pending must reuse the same row")
@@ -1139,8 +1388,179 @@ func TestInitiateUserOAuthFlow_AdminMode_ReusesPendingRow(t *testing.T) {
 
 	// A different mcp_client_id is a different binding — it must get its own
 	// row, not reuse mcp-client-1's.
-	_, flowID3, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-2", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin)
+	_, flowID3, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-2", "http://localhost/api/oauth/callback", schemas.MCPAuthModeAdmin, "")
 	require.NoError(t, err)
 	assert.NotEqual(t, flowID1, flowID3, "a different mcp_client_id must not reuse another client's admin flow row")
 	assert.Len(t, store.oauthFlows, 2)
+}
+
+// TestInitiateUserOAuthFlow_RecordsTheOriginOfTheLatestSignIn pins that a sign-in records the
+// dashboard page it starts from, and that a pending flow reused by a later sign-in (a tool
+// call's sign-in link, say) takes that sign-in's origin, so its callback does not send the
+// caller to a page they never left.
+func TestInitiateUserOAuthFlow_RecordsTheOriginOfTheLatestSignIn(t *testing.T) {
+	store := newTestConfigStore()
+	oauthConfigID := "user-oauth-config"
+	seedAdminOauthConfig(store, oauthConfigID)
+	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyUserID, "alice")
+
+	_, flowID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeUser, tables.MCPOauthFlowOriginHome)
+	require.NoError(t, err)
+	assert.Equal(t, tables.MCPOauthFlowOriginHome, store.oauthFlows[flowID].Origin)
+
+	_, reusedID, err := provider.InitiateUserOAuthFlow(ctx, oauthConfigID, "mcp-client-1", "http://localhost/api/oauth/callback", schemas.MCPAuthModeUser, "")
+	require.NoError(t, err)
+
+	require.Equal(t, flowID, reusedID, "the pending row is reused")
+	assert.Empty(t, store.oauthFlows[reusedID].Origin)
+}
+
+// TestPerUserOAuthSweepWorker_SweepsAbandonedSharedInstall reproduces an
+// abandoned shared-OAuth install against a real SQLite config store: the UI
+// Create flow runs InitiateOAuthFlow, which writes a pending oauth_configs row
+// plus its admin flow row, and the user closes the authorize popup. Once the
+// flow has expired and the grace period has passed, the sweep must remove the
+// config row, not just the flow. A pending config still linked to an MCP
+// client (the config.json bootstrap shape) must survive, and so must that
+// client: config_mcp_clients.oauth_config_id cascades on delete.
+func TestPerUserOAuthSweepWorker_SweepsAbandonedSharedInstall(t *testing.T) {
+	ctx := context.Background()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: t.TempDir() + "/config.db"},
+	}, logger)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+
+	provider := NewOAuth2Provider(store, logger)
+	initiate := func() string {
+		initiation, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
+			ClientID:     schemas.NewSecretVar("client-id"),
+			AuthorizeURL: "https://auth.example.com/authorize",
+			TokenURL:     "https://auth.example.com/token",
+			RedirectURI:  "http://localhost/api/oauth/callback",
+			ServerURL:    "https://mcp.example.com",
+		})
+		require.NoError(t, err)
+		return initiation.OauthConfigID
+	}
+	abandonedID := initiate()
+	linkedID := initiate()
+	require.NoError(t, store.DB().WithContext(ctx).Create(&tables.TableMCPClient{
+		ClientID:       "linked-client",
+		Name:           "linked",
+		ConnectionType: "http",
+		AuthType:       "oauth",
+		OauthConfigID:  &linkedID,
+	}).Error)
+
+	// Age both installs past the flow expiry and the sweep's grace period.
+	past := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableOauthConfig{}).
+		Where("id IN ?", []string{abandonedID, linkedID}).Update("created_at", past).Error)
+	require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableMCPOauthFlow{}).
+		Where("oauth_config_id IN ?", []string{abandonedID, linkedID}).Update("expires_at", past).Error)
+
+	worker := NewPerUserOAuthSweepWorker(provider, 0, logger)
+	require.NotNil(t, worker)
+	worker.Start(ctx)
+	t.Cleanup(worker.Stop)
+
+	configExists := func(id string) bool {
+		var n int64
+		require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableOauthConfig{}).Where("id = ?", id).Count(&n).Error)
+		return n > 0
+	}
+	require.Eventually(t, func() bool { return !configExists(abandonedID) }, 3*time.Second, 50*time.Millisecond,
+		"abandoned pending oauth_configs row must be swept once its flow has expired")
+	assert.True(t, configExists(linkedID), "a pending oauth_configs row linked to an MCP client must not be swept")
+	var clients int64
+	require.NoError(t, store.DB().WithContext(ctx).Model(&tables.TableMCPClient{}).Where("client_id = ?", "linked-client").Count(&clients).Error)
+	assert.Equal(t, int64(1), clients, "sweeping must never cascade-delete an MCP client")
+}
+
+// sweepCountingStore counts the per-user OAuth sweep's deletes.
+type sweepCountingStore struct {
+	*testConfigStore
+	flowSweeps   atomic.Int32
+	configSweeps atomic.Int32
+	orphanSweeps atomic.Int32
+}
+
+func (s *sweepCountingStore) DeleteExpiredOauthUserSessions(context.Context) (int64, error) {
+	s.flowSweeps.Add(1)
+	return 0, nil
+}
+
+func (s *sweepCountingStore) DeleteAbandonedOauthConfigs(context.Context, time.Duration) (int64, error) {
+	s.configSweeps.Add(1)
+	return 0, nil
+}
+
+func (s *sweepCountingStore) DeleteOrphanedOauthUserTokens(context.Context, time.Duration) (int64, error) {
+	s.orphanSweeps.Add(1)
+	return 0, nil
+}
+
+// TestPerUserOAuthSweepWorker_GateDecidesEverySweep pins that the sweep gate is
+// consulted before every sweep (expired flows, abandoned OAuth configs and
+// orphaned tokens), the one run on start included: a closed gate deletes
+// nothing, an open one deletes, and clearing it sweeps unconditionally.
+func TestPerUserOAuthSweepWorker_GateDecidesEverySweep(t *testing.T) {
+	newWorker := func(t *testing.T) (*PerUserOAuthSweepWorker, *sweepCountingStore) {
+		t.Helper()
+		store := &sweepCountingStore{testConfigStore: newTestConfigStore()}
+		w := NewPerUserOAuthSweepWorker(NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError)), time.Hour, nil)
+		require.NotNil(t, w)
+		return w, store
+	}
+
+	t.Run("run on start", func(t *testing.T) {
+		w, store := newWorker(t)
+		consulted := make(chan struct{}, 2)
+		w.SetShouldSweepGate(func(context.Context) bool {
+			consulted <- struct{}{}
+			return false
+		})
+		w.Start(context.Background())
+		defer w.Stop()
+
+		<-consulted
+		<-consulted
+		assert.Zero(t, store.flowSweeps.Load())
+		assert.Zero(t, store.configSweeps.Load())
+		assert.Zero(t, store.orphanSweeps.Load())
+	})
+
+	t.Run("each sweep", func(t *testing.T) {
+		w, store := newWorker(t)
+		ctx := context.Background()
+		sweep := func() {
+			w.sweepExpiredFlows(ctx)
+			w.sweepOrphanedTokens(ctx)
+		}
+		var open atomic.Bool
+		w.SetShouldSweepGate(func(context.Context) bool { return open.Load() })
+
+		sweep()
+		assert.Zero(t, store.flowSweeps.Load(), "closed gate")
+		assert.Zero(t, store.configSweeps.Load(), "closed gate")
+		assert.Zero(t, store.orphanSweeps.Load(), "closed gate")
+
+		open.Store(true)
+		sweep()
+		assert.EqualValues(t, 1, store.flowSweeps.Load(), "open gate")
+		assert.EqualValues(t, 1, store.configSweeps.Load(), "open gate")
+		assert.EqualValues(t, 1, store.orphanSweeps.Load(), "open gate")
+
+		w.SetShouldSweepGate(nil)
+		sweep()
+		assert.EqualValues(t, 2, store.flowSweeps.Load(), "no gate")
+		assert.EqualValues(t, 2, store.configSweeps.Load(), "no gate")
+		assert.EqualValues(t, 2, store.orphanSweeps.Load(), "no gate")
+	})
 }

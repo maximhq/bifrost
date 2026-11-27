@@ -1,5 +1,6 @@
 import { customersApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { expectListLoadError } from '../../core/utils/test-helpers'
 import { createCustomerData, createTeamData } from './governance.data'
 
 const createdTeams: string[] = []
@@ -138,6 +139,10 @@ test.describe('Governance - Teams', () => {
     exists = await governancePage.teamExists(teamData.name)
     expect(exists).toBe(false)
   })
+
+  test('should show the load error instead of the empty state when teams fail to load', async ({ page }) => {
+    await expectListLoadError(page, '/api/governance/teams', 'teams-load-error', 'team-button-read-more')
+  })
 })
 
 test.describe('Governance - Customers', () => {
@@ -164,6 +169,10 @@ test.describe('Governance - Customers', () => {
     const createVisible = await governancePage.customersCreateBtn.isVisible().catch(() => false)
     const emptyCreateVisible = await governancePage.page.getByTestId('customer-button-create').isVisible().catch(() => false)
     expect(createVisible || emptyCreateVisible).toBe(true)
+  })
+
+  test('should show the load error instead of the empty state when customers fail to load', async ({ page }) => {
+    await expectListLoadError(page, '/api/governance/customers', 'customers-load-error', 'customer-button-read-more')
   })
 
   test('should not show a limit value as the rate limit placeholder', async ({ governancePage }) => {

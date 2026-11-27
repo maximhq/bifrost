@@ -1,0 +1,184 @@
+import { collectLogsInBatches } from "@/app/workspace/logs/utils/logsExport";
+import type { RelayLog } from "@/lib/types/relays";
+import { describe, expect, it, vi } from "vitest";
+import {
+	formatRelayActiveFiltersSummary,
+	normalizeRelayExportFilters,
+	RELAY_LOGS_CSV_HEADERS,
+	relayLogsToCSV,
+	relayLogToCSVRow,
+} from "./relayLogsExportDialog.utils";
+
+const sampleLog: RelayLog = {
+	id: "log-1",
+	timestamp: "2026-10-15T10:00:00Z",
+	relay_name: "voice",
+	kind: "call",
+	method: "POST",
+	path: "/v1/tts",
+	route_path: "/v1/tts",
+	status: "success",
+	status_code: 200,
+	streamed: false,
+	billable: true,
+	model: "eleven_v3",
+	latency: 120,
+	upstream_latency: 100,
+	overhead_latency: 20,
+	bytes_out: 2048,
+	cost: 0.0125,
+	cost_per_unit: 0.0001,
+	units: 125,
+	billed_units: 125,
+	user_agent: "curl/8.0",
+	client_ip: "10.0.0.5",
+	user_email: "ada@example.com",
+	virtual_key_id: "vk-1",
+	virtual_key_name: "prod",
+	team_id: "team-1",
+	session_id: "sess-1",
+	request_id: "0b1f7a6e-2b1c-4f8e-9d6a-1f2e3d4c5b6a",
+	request_headers: { authorization: "Bearer sk-secret" },
+	request_body: '{"text":"super secret prompt"}',
+	response_body: '{"audio":"confidential"}',
+	content_hidden: false,
+};
+
+describe("relayLogsToCSV", () => {
+	it("writes one cell per header, in header order", () => {
+		const row = relayLogToCSVRow(sampleLog);
+		// Same leading columns as the LLM logs export, so the two files line up side by side.
+		expect(RELAY_LOGS_CSV_HEADERS.slice(0, 3)).toEqual(["Time", "Request ID", "Status"]);
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Request ID")]).toBe(sampleLog.request_id);
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Cost ($)")]).toBe(0.0125);
+		expect(row).toHaveLength(RELAY_LOGS_CSV_HEADERS.length);
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Client IP")]).toBe("10.0.0.5");
+		expect(RELAY_LOGS_CSV_HEADERS).not.toContain("Forwarded For");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("User Email")]).toBe("ada@example.com");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Relay")]).toBe("voice");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Status")]).toBe("success");
+		// The HTTP code stays in the detail sheet; the export carries the status only, as the LLM export does.
+		expect(RELAY_LOGS_CSV_HEADERS).not.toContain("Status Code");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Billable")]).toBe("true");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Streamed")]).toBe("false");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Virtual Key")]).toBe("prod");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Session ID")]).toBe("sess-1");
+		// Falls back to the id when no name is on the row.
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Team")]).toBe("team-1");
+		// Absent optional numbers are empty cells, not "undefined".
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Input Tokens")]).toBe("");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Job ID")]).toBe("");
+	});
+
+	it("leaves the caller identity cells empty when the row has none", () => {
+		const row = relayLogToCSVRow({ ...sampleLog, user_email: undefined, client_ip: undefined });
+		expect(row).toHaveLength(RELAY_LOGS_CSV_HEADERS.length);
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("User Email")]).toBe("");
+		expect(row[RELAY_LOGS_CSV_HEADERS.indexOf("Client IP")]).toBe("");
+	});
+
+	it("starts with the header row and never includes bodies or headers", () => {
+		const csv = relayLogsToCSV([sampleLog]);
+		const [header, first] = csv.split("\n");
+		expect(header).toBe(RELAY_LOGS_CSV_HEADERS.map((h) => `"${h}"`).join(","));
+		expect(first).toContain('"voice"');
+		expect(first).toContain('"0b1f7a6e-2b1c-4f8e-9d6a-1f2e3d4c5b6a"');
+		expect(csv).not.toContain("sk-secret");
+		expect(csv).not.toContain("super secret prompt");
+		expect(csv).not.toContain("confidential");
+	});
+
+	it("batches relay rows with the shared collector and deduplicates across boundaries", async () => {
+		const fetchBatch = vi.fn().mockImplementation(async (offset: number) => {
+			if (offset === 0)
+				return [
+					{ ...sampleLog, id: "a" },
+					{ ...sampleLog, id: "b" },
+				];
+			if (offset === 2)
+				return [
+					{ ...sampleLog, id: "b" },
+					{ ...sampleLog, id: "c" },
+				];
+			return [];
+		});
+		const collected = await collectLogsInBatches<RelayLog>({ targetTotal: 3, batchSize: 2, fetchBatch });
+		expect(collected.map((l) => l.id)).toEqual(["a", "b", "c"]);
+	});
+});
+
+describe("formatRelayActiveFiltersSummary", () => {
+	it("names every filter in force", () => {
+		const summary = formatRelayActiveFiltersSummary({
+			request_id: "req-1",
+			search: "tts",
+			relay_names: ["voice", "search"],
+			status: ["error"],
+			billable: false,
+			min_cost: 0,
+			max_cost: 2,
+			period: "1h",
+		});
+		expect(summary).toEqual([
+			'request "req-1"',
+			'search "tts"',
+			"relays (2)",
+			"status: error",
+			"non-billable only",
+			"min cost 0",
+			"max cost 2",
+			"period 1h",
+		]);
+	});
+
+	it("is empty with no filters", () => {
+		expect(formatRelayActiveFiltersSummary({})).toEqual([]);
+	});
+});
+
+describe("normalizeRelayExportFilters", () => {
+	it("pins a relative period to an absolute window and leaves fixed windows alone", () => {
+		const pinned = normalizeRelayExportFilters({ period: "1h", relay_names: ["voice"] });
+		expect(pinned.period).toBeUndefined();
+		expect(pinned.relay_names).toEqual(["voice"]);
+		const span = new Date(pinned.end_time!).getTime() - new Date(pinned.start_time!).getTime();
+		expect(span).toBeCloseTo(3600_000, -3);
+
+		const fixed = { start_time: "2026-01-01T00:00:00Z", end_time: "2026-01-02T00:00:00Z" };
+		expect(normalizeRelayExportFilters(fixed)).toBe(fixed);
+	});
+});
+
+describe("job rows in the export", () => {
+	const base = {
+		id: "j",
+		request_id: "j",
+		timestamp: "2026-11-24T10:00:00Z",
+		relay_name: "r",
+		kind: "job",
+		method: "",
+		path: "",
+		status: "success",
+		status_code: 0,
+		billable: true,
+		streamed: false,
+		bytes_out: 0,
+		job_id: "job-1",
+		job_status: "IN_PROGRESS",
+	} as unknown as RelayLog;
+	const col = (log: RelayLog, name: (typeof RELAY_LOGS_CSV_HEADERS)[number]) => relayLogToCSVRow(log)[RELAY_LOGS_CSV_HEADERS.indexOf(name)];
+	it("carries how a job ended and why it was not priced", () => {
+		const unpriced = {
+			...base,
+			error_details: { error: { type: "relay_job_timeout", message: "job did not finish" } },
+			job_debug: { outcome: "unpriced", polls: 3, settled_at: "2026-11-24T11:00:00Z" },
+		} as unknown as RelayLog;
+		expect(col(unpriced, "Job Status")).toBe("IN_PROGRESS");
+		expect(col(unpriced, "Job Outcome")).toBe("unpriced");
+		expect(col(unpriced, "Job Settled At")).toBe("2026-11-24T11:00:00Z");
+		expect(col(unpriced, "Unpriced Reason")).toBe("Did not finish before its timeout");
+		// A row written before job_debug had an outcome is read off its cost.
+		expect(col({ ...base, cost: 0.2 } as RelayLog, "Job Outcome")).toBe("succeeded");
+		expect(col({ ...base, kind: "call" } as RelayLog, "Job Outcome")).toBe("");
+	});
+});

@@ -134,7 +134,7 @@ func EmbeddingContentToGeminiContent(content schemas.EmbeddingContent, allowedUR
 // individual requests[] entry of :batchEmbedContents. applyGeminiEmbeddingParams lifts
 // them onto the entry, and ToGeminiEmbeddingRequest strips them from the batch-level
 // extra params so they are never merged at the top level, where Gemini rejects them.
-var geminiPerEntryEmbeddingExtraKeys = []string{"taskType", "title", "embedContentConfig"}
+var geminiPerEntryEmbeddingExtraKeys = []string{"taskType", "title", "outputDimensionality", "embedContentConfig"}
 
 // ReadEmbedContentConfig returns the documentOcr / audioTrackExtraction a caller nested under
 // embedContentConfig, the only place Gemini and Vertex accept them.
@@ -156,7 +156,8 @@ func ReadEmbedContentConfig(extra map[string]interface{}) *GeminiEmbedContentCon
 // The first-class task_type/title fields win; the Gemini-native "taskType"/"title"
 // extra params are honoured as aliases so a request-level value fans out to every entry
 // (issue #7812).
-func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.EmbeddingParameters) {
+// outputDimensionality is read from extra params only under passthrough; Dimensions wins.
+func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.EmbeddingParameters, passthrough bool) {
 	if params == nil {
 		return
 	}
@@ -178,6 +179,9 @@ func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.Emb
 				req.Title = title
 			}
 		}
+		if req.OutputDimensionality == nil && passthrough {
+			req.OutputDimensionality, _ = schemas.SafeExtractIntPointer(params.ExtraParams["outputDimensionality"])
+		}
 		req.EmbedContentConfig = ReadEmbedContentConfig(req.ExtraParams)
 	}
 }
@@ -185,11 +189,12 @@ func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.Emb
 // ToGeminiEmbeddingRequest converts a Bifrost embedding request to Gemini request format.
 // Each element in Contents maps to one GeminiEmbeddingRequest (one output embedding).
 // Parts within a single content are aggregated into one embedding by Gemini.
-func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*GeminiBatchEmbeddingRequest, error) {
+func ToGeminiEmbeddingRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostEmbeddingRequest) (*GeminiBatchEmbeddingRequest, error) {
 	if bifrostReq == nil || len(bifrostReq.Input) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("bifrost request is nil or input is nil")
 	}
 
+	passthrough := ctx != nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true
 	batchRequest := &GeminiBatchEmbeddingRequest{
 		Requests: make([]GeminiEmbeddingRequest, 0, len(bifrostReq.Input)),
 	}
@@ -210,7 +215,7 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Gem
 			Model:   "models/" + bifrostReq.Model,
 			Content: content,
 		}
-		applyGeminiEmbeddingParams(&req, item.EffectiveParams(bifrostReq.Params))
+		applyGeminiEmbeddingParams(&req, item.EffectiveParams(bifrostReq.Params), passthrough)
 		batchRequest.Requests = append(batchRequest.Requests, req)
 	}
 	return batchRequest, nil
@@ -408,6 +413,9 @@ func geminiContentToEmbeddingContent(content *Content) (schemas.EmbeddingContent
 	}
 	result := make(schemas.EmbeddingContent, 0, len(content.Parts))
 	for _, part := range content.Parts {
+		if part == nil {
+			continue
+		}
 		converted, err := geminiPartToEmbeddingContentPart(part)
 		if err != nil {
 			return nil, err

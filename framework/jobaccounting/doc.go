@@ -101,6 +101,13 @@
 //     cache tokens — inclusive of the base input count or exclusive of it — are
 //     normalized apart in usageFromValue.
 //
+// # Kinds: relay
+//
+// RelaySettler polls with the route's configured request and prices with the route's
+// usage, so it brings its own LogsRecorder (the Relay Logs and the relay reporter) and its
+// own schedule (per-job interval, no attempt cap, ended by the job's timeout). Poll
+// holds no claim, so every ending is decided in Settle, where a written row wins.
+//
 // # Entry points
 //
 //   - AccountJob settles one job: claim → price via the Settler → write the

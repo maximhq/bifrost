@@ -12,11 +12,48 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// Cache the same completion usage fields sent to clients, so explicit zeros
+// survive without a separate metadata format. Encoding stays sonic.Marshal as
+// before the fix; only Chat/Text responses with an explicit zero are wrapped.
+func marshalCachedResponse(res *schemas.BifrostResponse) ([]byte, error) {
+	if res.ChatResponse != nil {
+		if view := res.ChatResponse.WithPreservedUsage(); view != res.ChatResponse {
+			return sonic.Marshal(&struct {
+				*schemas.BifrostResponse
+				ChatResponse any
+			}{res, view})
+		}
+	}
+	if res.TextCompletionResponse != nil {
+		if view := res.TextCompletionResponse.WithPreservedUsage(); view != res.TextCompletionResponse {
+			return sonic.Marshal(&struct {
+				*schemas.BifrostResponse
+				TextCompletionResponse any
+			}{res, view})
+		}
+	}
+	return sonic.Marshal(res)
+}
+
+func unmarshalCachedResponse(data []byte, res *schemas.BifrostResponse) error {
+	if err := json.Unmarshal(data, res); err != nil {
+		return err
+	}
+	if res.ChatResponse != nil {
+		res.ChatResponse.Usage.PreserveTokenCountZeros(data, "ChatResponse.usage.prompt_tokens", "ChatResponse.usage.completion_tokens")
+	}
+	if res.TextCompletionResponse != nil {
+		res.TextCompletionResponse.Usage.PreserveTokenCountZeros(data, "TextCompletionResponse.usage.prompt_tokens", "TextCompletionResponse.usage.completion_tokens")
+	}
+	return nil
+}
 
 // directCacheNamespace is a fixed namespace UUID for generating deterministic
 // UUID v5 cache IDs via uuid.NewSHA1, used by generateDirectCacheID. The
@@ -109,6 +146,29 @@ func putIfSet[T any](m map[string]any, key string, v *T) {
 	if v != nil {
 		m[key] = *v
 	}
+}
+
+// putPromptCacheOptions keys the prompt_cache_options fields that change the response.
+func putPromptCacheOptions(m map[string]any, opts *schemas.PromptCacheOptions) {
+	if opts == nil {
+		return
+	}
+	if opts.Prewarm != nil && *opts.Prewarm {
+		m["prompt_cache_options.prewarm"] = true
+	}
+	putIfSet(m, "prompt_cache_options.comparison_response_id", opts.ComparisonResponseID)
+}
+
+// isPrewarmRequest reports a prewarm, which must reach the provider to warm its cache.
+func isPrewarmRequest(req *schemas.BifrostRequest) bool {
+	var opts *schemas.PromptCacheOptions
+	switch {
+	case req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil:
+		opts = req.ResponsesRequest.Params.PromptCacheOptions
+	case req.ChatRequest != nil && req.ChatRequest.Params != nil:
+		opts = req.ChatRequest.Params.PromptCacheOptions
+	}
+	return opts != nil && opts.Prewarm != nil && *opts.Prewarm
 }
 
 // putSortedSetIfNonEmpty writes m[key] = sortedStringSet(values) when values
@@ -908,6 +968,7 @@ func (plugin *Plugin) extractChatParametersToMetadata(params *schemas.ChatParame
 	putIfSet(metadata, "logprobs", params.LogProbs)
 	putSortedSetIfNonEmpty(metadata, "modalities", params.Modalities)
 	putIfSet(metadata, "prompt_cache_key", params.PromptCacheKey)
+	putPromptCacheOptions(metadata, params.PromptCacheOptions)
 	if params.Reasoning != nil {
 		putIfSet(metadata, "reasoning_enabled", params.Reasoning.Enabled)
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
@@ -968,6 +1029,7 @@ func (plugin *Plugin) extractResponsesParametersToMetadata(params *schemas.Respo
 	putIfSet(metadata, "max_tool_calls", params.MaxToolCalls)
 	putIfSet(metadata, "previous_response_id", params.PreviousResponseID)
 	putIfSet(metadata, "prompt_cache_key", params.PromptCacheKey)
+	putPromptCacheOptions(metadata, params.PromptCacheOptions)
 	if params.Reasoning != nil {
 		putIfSet(metadata, "reasoning_effort", params.Reasoning.Effort)
 		putIfSet(metadata, "reasoning_max_tokens", params.Reasoning.MaxTokens)

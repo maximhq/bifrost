@@ -86,8 +86,28 @@ func JWTBearerMinter(cfg JWTBearerConfig, hc *http.Client) Minter[string] {
 		if bErr != nil {
 			return nil, bErr
 		}
-		return entryFor(token, expiry, margin), nil
+		return EntryFor(token, expiry, margin), nil
 	}
+}
+
+// SignAssertion signs an RFC 7523 assertion for cfg now. With Issuer and Subject
+// set to a client ID and Audience to a token endpoint it is also an RFC 7523
+// §2.2 client assertion (private_key_jwt client authentication).
+func SignAssertion(cfg JWTBearerConfig) (string, error) {
+	return signAssertion(cfg, time.Now())
+}
+
+// ValidatePrivateKey reports whether pemData parses as the key family alg (RS256
+// when empty) needs, the check SignAssertion runs, without signing anything.
+func ValidatePrivateKey(pemData, alg string) error {
+	if alg == "" {
+		alg = "RS256"
+	}
+	if jwt.GetSigningMethod(alg) == nil || !slices.Contains(schemas.OAuthSigningAlgorithms, alg) {
+		return fmt.Errorf("signing_algorithm %q is not supported", alg)
+	}
+	_, err := parsePrivateKey(NormalizePEM(pemData), alg)
+	return err
 }
 
 // signAssertion builds and signs the RFC 7523 §3 assertion: iss, sub, aud, exp, plus iat,
@@ -143,6 +163,11 @@ func parsePrivateKey(pemData, alg string) (crypto.PrivateKey, error) {
 		key, err := jwt.ParseECPrivateKeyFromPEM([]byte(pemData))
 		if err != nil {
 			return nil, fmt.Errorf("private_key could not be parsed as an EC PEM for %s: %w", alg, err)
+		}
+		// The signer refuses a curve that doesn't match the algorithm; catch it here so
+		// ValidatePrivateKey does too.
+		if m, ok := jwt.GetSigningMethod(alg).(*jwt.SigningMethodECDSA); ok && key.Curve.Params().BitSize != m.CurveBits {
+			return nil, fmt.Errorf("private_key is a %s key, which %s cannot sign with", key.Curve.Params().Name, alg)
 		}
 		return key, nil
 	default:

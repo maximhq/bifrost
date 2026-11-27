@@ -316,11 +316,29 @@ class TestTypesafeSDKFidelity:
 # request natively (primary) or as a fallback. Exercised through the official
 # TypeSafe SDK pointed at an LLM model - the /typesafe drop-in stays the client.
 LLM_DECISION_MODEL = "openai/gpt-4o-mini"
+EMULATION_COMPAT_HEADER = {"x-bf-compat": '["convert_decision_to_responses"]'}
+
+
+@pytest.fixture
+def emulating_typesafe_client():
+    """typesafe_client with decision emulation opted in, so a non-decisions model answers through its chat API."""
+    config = get_config()
+    headers = dict(EMULATION_COMPAT_HEADER)
+    vk = config.get_virtual_key() if config.is_virtual_key_configured() else ""
+    if vk:
+        headers["x-bf-vk"] = vk
+    client = TypeSafeClient(
+        base_url=f"{get_bifrost_base_url()}/typesafe",
+        api_key=vk or "dummy-key-bifrost-injects-the-real-one",
+        headers=headers,
+    )
+    yield client
+    client.close()
 
 
 class TestDecisionLLMEmulation:
-    def test_01_llm_primary_emulation(self, typesafe_client):
-        result = typesafe_client.system_one(
+    def test_01_llm_primary_emulation(self, emulating_typesafe_client):
+        result = emulating_typesafe_client.system_one(
             STATE,
             {
                 "is_frustrated": Noul(instructions="Is the customer frustrated?"),
@@ -346,7 +364,7 @@ class TestDecisionLLMEmulation:
         # LLM fallback which emulates the decision. /v1/decisions is Bifrost's
         # native format (no upstream SDK), so this uses the HTTP API directly.
         config = get_config()
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", **EMULATION_COMPAT_HEADER}
         if config.is_virtual_key_configured():
             headers["x-bf-vk"] = config.get_virtual_key()
         response = requests.post(
@@ -365,7 +383,7 @@ class TestDecisionLLMEmulation:
         assert answer["kind"] == "noul"
         assert 0.0 <= answer["value"] <= 1.0
 
-    def test_03_native_vs_emulated_comparison(self, typesafe_client):
+    def test_03_native_vs_emulated_comparison(self, emulating_typesafe_client):
         # Same decision answered by the native jev judgment model and by an LLM
         # emulation; report how the two differ. Both must return well-formed
         # answers of the right kinds - the values themselves may differ, which is
@@ -378,8 +396,8 @@ class TestDecisionLLMEmulation:
             ),
             "urgency": Score(instructions="Rate urgency", criteria=["low", "medium", "high"]),
         }
-        native = typesafe_client.system_one(STATE, questions, model="jev-1.13.0")
-        emulated = typesafe_client.system_one(STATE, questions, model=LLM_DECISION_MODEL)
+        native = emulating_typesafe_client.system_one(STATE, questions, model="jev-1.13.0")
+        emulated = emulating_typesafe_client.system_one(STATE, questions, model=LLM_DECISION_MODEL)
 
         print("\n=== Decision: native jev vs LLM emulation ===")
         print(f"{'question':<14} {'kind':<8} {'jev-1.13.0':<16} {'gpt-4o-mini':<16} match")
@@ -398,13 +416,13 @@ class TestDecisionLLMEmulation:
             assert native.answers[name].type == emulated.answers[name].type
         assert native.model.startswith("jev-")
 
-    def test_04_structured_criteria_reach_the_emulating_model(self, typesafe_client):
+    def test_04_structured_criteria_reach_the_emulating_model(self, emulating_typesafe_client):
         # The emulation encodes criteria into the forced tool schema. The choice
         # option names here are opaque codes; only the criteria descriptions
         # (object, string, null, and array shaped) carry meaning, so a correct
         # pick on a clearly-billing state proves the rubrics reached the LLM
         # rather than being dropped or rejected as non-string.
-        result = typesafe_client.system_one(
+        result = emulating_typesafe_client.system_one(
             STATE,
             {
                 "approve_review": Noul(
@@ -551,9 +569,11 @@ def _remaining(deadline, model_id):
 
 
 def _post_raw(model_id, questions, deadline):
-    """One POST to /v1/decisions for the given question set; returns (response, latency_ms)."""
+    """One POST to /v1/decisions for the given question set; returns (response, latency_ms).
+
+    Opts in to emulation so a chat model answers through it instead of being refused as unsupported."""
     config = get_config()
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", **EMULATION_COMPAT_HEADER}
     if config.is_virtual_key_configured():
         headers["x-bf-vk"] = config.get_virtual_key()
     start = time.perf_counter()

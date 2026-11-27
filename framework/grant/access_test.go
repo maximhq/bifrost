@@ -1,6 +1,8 @@
 package grant
 
 import (
+	"fmt"
+	"slices"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -55,7 +57,7 @@ func TestAccess_DegenerateCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			access := NewAccess(held(tt.base), tt.scoping, tt.mode, nil)
+			access := NewAccess(held(tt.base), "", tt.scoping, tt.mode, nil)
 
 			assert.Equal(t, tt.wantOpenAI, access.IsProviderAllowed("openai"), "openai provider")
 			assert.Equal(t, tt.wantOpenAI, access.IsModelAllowed("openai", "gpt-4o"), "openai model")
@@ -94,14 +96,14 @@ func TestAccess_NilReceiverPermitsNothing(t *testing.T) {
 func TestAccess_NoPermitIsNotAnEmptyPermit(t *testing.T) {
 	empty := newPermit(permitSpec{Type: PermitVirtualKey, ID: "vk1", Name: "Empty Key"})
 
-	withEmptyPermit := NewAccess(held(empty), nil, "", nil)
+	withEmptyPermit := NewAccess(held(empty), "", nil, "", nil)
 	assert.NotEmpty(t, withEmptyPermit.Bases(), "the caller holds a permit, which happens to permit nothing")
 	assert.False(t, withEmptyPermit.IsProviderAllowed("openai"))
 	denied := withEmptyPermit.DeniedPermitsForModel("openai", "")
 	require.Len(t, denied, 1)
 	assert.Equal(t, "Empty Key", denied[0].Name())
 
-	withNoPermit := NewAccess(nil, nil, "", nil)
+	withNoPermit := NewAccess(nil, "", nil, "", nil)
 	assert.Empty(t, withNoPermit.Bases(), "the caller holds nothing at all")
 	assert.False(t, withNoPermit.IsProviderAllowed("openai"))
 	assert.Nil(t, withNoPermit.DeniedPermitsForModel("openai", ""), "there is no permit to name")
@@ -111,8 +113,8 @@ func TestAccess_ProviderFold(t *testing.T) {
 	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai", "bedrock")
 	scoping := permitWithProviders("other", "o1", "Other", "openai", "anthropic")
 
-	unionAccess := NewAccess(held(base), scoping, Union, nil)
-	intersectAccess := NewAccess(held(base), scoping, Intersect, nil)
+	unionAccess := NewAccess(held(base), "", scoping, Union, nil)
+	intersectAccess := NewAccess(held(base), "", scoping, Intersect, nil)
 
 	// Held by both.
 	assert.True(t, unionAccess.IsProviderAllowed("openai"))
@@ -135,8 +137,8 @@ func TestAccess_ModelFold(t *testing.T) {
 	base := permitWithModels(PermitVirtualKey, "vk1", "Caller Key", "openai", "gpt-4o", "gpt-4o-mini")
 	scoping := permitWithModels("other", "o1", "Other", "openai", "gpt-4o", "o3")
 
-	unionAccess := NewAccess(held(base), scoping, Union, nil)
-	intersectAccess := NewAccess(held(base), scoping, Intersect, nil)
+	unionAccess := NewAccess(held(base), "", scoping, Union, nil)
+	intersectAccess := NewAccess(held(base), "", scoping, Intersect, nil)
 
 	assert.True(t, unionAccess.IsModelAllowed("openai", "gpt-4o"))
 	assert.True(t, intersectAccess.IsModelAllowed("openai", "gpt-4o"))
@@ -155,7 +157,7 @@ func TestAccess_ModelFold(t *testing.T) {
 // provider before it knows the model.
 func TestAccess_EmptyModelAsksAboutTheProvider(t *testing.T) {
 	base := permitWithModels(PermitVirtualKey, "vk1", "Caller Key", "openai", "gpt-4o")
-	access := NewAccess(held(base), nil, "", nil)
+	access := NewAccess(held(base), "", nil, "", nil)
 
 	assert.True(t, access.IsModelAllowed("openai", ""))
 	assert.False(t, access.IsModelAllowed("anthropic", ""))
@@ -173,7 +175,7 @@ func TestAccess_ProviderPermitsWithinAPermitAreAnyOf(t *testing.T) {
 			{Provider: "openai", AllowedModels: []string{"o3"}},
 		},
 	})
-	access := NewAccess(held(base), nil, "", nil)
+	access := NewAccess(held(base), "", nil, "", nil)
 
 	assert.True(t, access.IsModelAllowed("openai", "gpt-4o"))
 	assert.True(t, access.IsModelAllowed("openai", "o3"))
@@ -189,7 +191,7 @@ func TestAccess_BlacklistWins(t *testing.T) {
 			{Provider: "openai", AllowedModels: []string{"gpt-4o"}},
 		},
 	})
-	access := NewAccess(held(base), nil, "", nil)
+	access := NewAccess(held(base), "", nil, "", nil)
 
 	assert.True(t, access.IsProviderAllowed("openai"), "the provider itself stays permitted")
 	assert.False(t, access.IsModelAllowed("openai", "gpt-4o"), "blacklisted in one provider permit blocks the provider for that model")
@@ -203,7 +205,7 @@ func TestAccess_BlacklistWins(t *testing.T) {
 			{Provider: "anthropic", AllowedModels: []string{"*"}, BlacklistedModels: []string{"claude-opus-4"}},
 		},
 	})
-	unionAccess := NewAccess(held(base), scoping, Union, nil)
+	unionAccess := NewAccess(held(base), "", scoping, Union, nil)
 	assert.True(t, unionAccess.IsModelAllowed("anthropic", "claude-sonnet-4"))
 	assert.False(t, unionAccess.IsModelAllowed("anthropic", "claude-opus-4"))
 }
@@ -219,7 +221,7 @@ func TestAccess_AllowAllProviders(t *testing.T) {
 			// Restrictive, non-wildcard allowlist: allow-all must not open models it omits.
 			{Provider: "anthropic", AllowedModels: []string{"claude-3-5-sonnet"}},
 		}, nil, WithAllowAllProviders(true))
-	access := NewAccess(held(base), nil, "", nil)
+	access := NewAccess(held(base), "", nil, "", nil)
 
 	// A provider with no permit is allowed for any model, with no key restriction.
 	assert.True(t, access.IsProviderAllowed("cohere"), "allow-all grants an unlisted provider")
@@ -262,15 +264,15 @@ func TestAccess_AllowsEveryModel(t *testing.T) {
 	allowAll := NewPermit(PermitVirtualKey, "vk4", "Allow All", true, false,
 		[]schemas.ProviderPermit{{Provider: "anthropic", AllowedModels: []string{"claude-sonnet-4"}}}, nil, WithAllowAllProviders(true))
 
-	assert.True(t, NewAccess(held(wildcard), nil, "", nil).AllowsEveryModel("openai"))
-	assert.False(t, NewAccess(held(wildcard), nil, "", nil).AllowsEveryModel("anthropic"), "an unlisted provider is not granted at all")
-	assert.False(t, NewAccess(held(restricted), nil, "", nil).AllowsEveryModel("openai"), "an allowlist is a restriction")
-	assert.False(t, NewAccess(held(blacklisting), nil, "", nil).AllowsEveryModel("openai"), "a blacklist is a restriction even under a wildcard allowlist")
-	assert.True(t, NewAccess(held(allowAll), nil, "", nil).AllowsEveryModel("cohere"), "allow-all grants every model of an unlisted provider")
-	assert.False(t, NewAccess(held(allowAll), nil, "", nil).AllowsEveryModel("anthropic"), "a listed provider keeps its own allowlist under allow-all")
+	assert.True(t, NewAccess(held(wildcard), "", nil, "", nil).AllowsEveryModel("openai"))
+	assert.False(t, NewAccess(held(wildcard), "", nil, "", nil).AllowsEveryModel("anthropic"), "an unlisted provider is not granted at all")
+	assert.False(t, NewAccess(held(restricted), "", nil, "", nil).AllowsEveryModel("openai"), "an allowlist is a restriction")
+	assert.False(t, NewAccess(held(blacklisting), "", nil, "", nil).AllowsEveryModel("openai"), "a blacklist is a restriction even under a wildcard allowlist")
+	assert.True(t, NewAccess(held(allowAll), "", nil, "", nil).AllowsEveryModel("cohere"), "allow-all grants every model of an unlisted provider")
+	assert.False(t, NewAccess(held(allowAll), "", nil, "", nil).AllowsEveryModel("anthropic"), "a listed provider keeps its own allowlist under allow-all")
 
 	// Several caller permits are read as one: any of them allowing every model is enough.
-	assert.True(t, NewAccess(held(restricted, wildcard), nil, "", nil).AllowsEveryModel("openai"))
+	assert.True(t, NewAccess(held(restricted, wildcard), "", nil, "", nil).AllowsEveryModel("openai"))
 
 	// Within one permit, duplicate provider permits are a union too, as for IsModelAllowed: an
 	// unrestricted entry beside a restricted one still permits every model, unless any entry for
@@ -289,20 +291,20 @@ func TestAccess_AllowsEveryModel(t *testing.T) {
 			{Provider: "openai", AllowedModels: []string{"gpt-4"}, BlacklistedModels: []string{"gpt-4o"}},
 		},
 	})
-	assert.True(t, NewAccess(held(mixed), nil, "", nil).IsModelAllowed("openai", "o3"), "the union already permits every model")
-	assert.True(t, NewAccess(held(mixed), nil, "", nil).AllowsEveryModel("openai"), "an unrestricted entry beside a restricted one permits every model")
-	assert.False(t, NewAccess(held(mixedWithBlacklist), nil, "", nil).AllowsEveryModel("openai"), "a blacklist on any entry for the provider is decisive")
+	assert.True(t, NewAccess(held(mixed), "", nil, "", nil).IsModelAllowed("openai", "o3"), "the union already permits every model")
+	assert.True(t, NewAccess(held(mixed), "", nil, "", nil).AllowsEveryModel("openai"), "an unrestricted entry beside a restricted one permits every model")
+	assert.False(t, NewAccess(held(mixedWithBlacklist), "", nil, "", nil).AllowsEveryModel("openai"), "a blacklist on any entry for the provider is decisive")
 
 	// A scoping permit composes under the mode, as for IsModelAllowed.
-	assert.True(t, NewAccess(held(restricted), wildcard, Union, nil).AllowsEveryModel("openai"), "union widens by the scoping permit")
-	assert.False(t, NewAccess(held(wildcard), restricted, Intersect, nil).AllowsEveryModel("openai"), "intersect narrows by the scoping permit")
-	assert.True(t, NewAccess(held(wildcard), wildcard, Intersect, nil).AllowsEveryModel("openai"))
+	assert.True(t, NewAccess(held(restricted), "", wildcard, Union, nil).AllowsEveryModel("openai"), "union widens by the scoping permit")
+	assert.False(t, NewAccess(held(wildcard), "", restricted, Intersect, nil).AllowsEveryModel("openai"), "intersect narrows by the scoping permit")
+	assert.True(t, NewAccess(held(wildcard), "", wildcard, Intersect, nil).AllowsEveryModel("openai"))
 }
 
 // Without the flag, a provider the permit does not list is denied: allow-all is opt-in.
 func TestAccess_WithoutAllowAllProvidersUnlistedIsDenied(t *testing.T) {
 	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")
-	access := NewAccess(held(base), nil, "", nil)
+	access := NewAccess(held(base), "", nil, "", nil)
 
 	assert.False(t, access.IsProviderAllowed("cohere"))
 	assert.False(t, access.IsModelAllowed("cohere", "command-r-plus"))
@@ -312,7 +314,7 @@ func TestAccess_UnknownModeFailsClosed(t *testing.T) {
 	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")
 	scoping := permitWithProviders("other", "o1", "Other", "openai")
 
-	access := NewAccess(held(base), scoping, "something-new", nil)
+	access := NewAccess(held(base), "", scoping, "something-new", nil)
 
 	assert.False(t, access.IsProviderAllowed("openai"))
 	assert.False(t, access.IsModelAllowed("openai", "gpt-4o"))
@@ -326,7 +328,7 @@ func TestAccess_ModeIsInertWithoutAScopingPermit(t *testing.T) {
 	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")
 
 	for _, mode := range []CompositionMode{Intersect, Union, "something-new", ""} {
-		access := NewAccess(held(base), nil, mode, nil)
+		access := NewAccess(held(base), "", nil, mode, nil)
 		assert.True(t, access.IsProviderAllowed("openai"), "mode %q", mode)
 		assert.False(t, access.IsScoped(), "mode %q", mode)
 	}
@@ -340,17 +342,17 @@ func TestAccess_ModelNamesResolveThroughTheMatcher(t *testing.T) {
 	catalog := modelcatalog.NewTestCatalog(nil)
 	matcher := catalogMatcher(catalog, &fakeProviderConfigSource{})
 
-	byName := NewAccess(held(unrestricted), nil, "", nil)
+	byName := NewAccess(held(unrestricted), "", nil, "", nil)
 	assert.True(t, byName.IsModelAllowed("openai", "not-a-real-model"))
 
-	withCatalog := NewAccess(held(unrestricted), nil, "", matcher)
+	withCatalog := NewAccess(held(unrestricted), "", nil, "", matcher)
 	assert.False(t, withCatalog.IsModelAllowed("openai", "not-a-real-model"),
 		"the catalog does not place this model at this provider")
 
 	// A named entry still matches exactly, catalog or not.
 	named := permitWithModels(PermitVirtualKey, "vk2", "Caller Key", "openai", "gpt-4o")
-	assert.True(t, NewAccess(held(named), nil, "", matcher).IsModelAllowed("openai", "gpt-4o"))
-	assert.False(t, NewAccess(held(named), nil, "", matcher).IsModelAllowed("openai", "o3"))
+	assert.True(t, NewAccess(held(named), "", nil, "", matcher).IsModelAllowed("openai", "gpt-4o"))
+	assert.False(t, NewAccess(held(named), "", nil, "", matcher).IsModelAllowed("openai", "o3"))
 
 	// Blacklists never go through the matcher: they are name matches, and they win.
 	blacklisted := newPermit(permitSpec{
@@ -361,7 +363,7 @@ func TestAccess_ModelNamesResolveThroughTheMatcher(t *testing.T) {
 			BlacklistedModels: []string{"gpt-4o"},
 		}},
 	})
-	assert.False(t, NewAccess(held(blacklisted), nil, "", matcher).IsModelAllowed("openai", "gpt-4o"))
+	assert.False(t, NewAccess(held(blacklisted), "", nil, "", matcher).IsModelAllowed("openai", "gpt-4o"))
 
 	t.Run("the matcher is handed the provider permit's own list, past the blacklist only", func(t *testing.T) {
 		type call struct {
@@ -379,7 +381,7 @@ func TestAccess_ModelNamesResolveThroughTheMatcher(t *testing.T) {
 				Provider: "openai", AllowedModels: []string{"gpt-4o"}, BlacklistedModels: []string{"o3"},
 			}},
 		})
-		access := NewAccess(held(permit), nil, "", recording)
+		access := NewAccess(held(permit), "", nil, "", recording)
 
 		assert.False(t, access.IsModelAllowed("openai", "o3"))
 		assert.Empty(t, calls, "a blacklist wins before the matcher is consulted")
@@ -412,7 +414,7 @@ func TestAccess_KeysFor(t *testing.T) {
 		},
 	})
 
-	access := NewAccess(held(baseRestricted), scoping, Union, nil)
+	access := NewAccess(held(baseRestricted), "", scoping, Union, nil)
 
 	// Both sides hold openai and both authorize the model, so under a union the request may use
 	// either one's keys: the caller's two provider permits pooled, then the scope's. The assertion
@@ -459,14 +461,14 @@ func TestAccess_KeysForComposes(t *testing.T) {
 	// The reason keys have to compose at all: a scoping permit that narrows the request to two of
 	// the provider's keys means it, and the base permit must not reopen the ones it excluded.
 	t.Run("a scoping permit narrows the keys it excluded", func(t *testing.T) {
-		access := NewAccess(held(withKeys("base", "key-a", "key-b")), withKeys("scoping", "key-b", "key-c"), Intersect, nil)
+		access := NewAccess(held(withKeys("base", "key-a", "key-b")), "", withKeys("scoping", "key-b", "key-c"), Intersect, nil)
 		keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Equal(t, []string{"key-b"}, keyIDs, "key-a is the caller's but not the scope's")
 	})
 
 	t.Run("union widens", func(t *testing.T) {
-		access := NewAccess(held(withKeys("base", "key-a")), withKeys("scoping", "key-b"), Union, nil)
+		access := NewAccess(held(withKeys("base", "key-a")), "", withKeys("scoping", "key-b"), Union, nil)
 		keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Equal(t, []string{"key-a", "key-b"}, keyIDs)
@@ -475,7 +477,7 @@ func TestAccess_KeysForComposes(t *testing.T) {
 	// Disjoint sets under an intersection leave no key that may serve the provider, which is a
 	// restriction to nothing rather than the absence of one.
 	t.Run("disjoint under intersect allows no key", func(t *testing.T) {
-		access := NewAccess(held(withKeys("base", "key-a")), withKeys("scoping", "key-b"), Intersect, nil)
+		access := NewAccess(held(withKeys("base", "key-a")), "", withKeys("scoping", "key-b"), Intersect, nil)
 		keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.NotNil(t, keyIDs)
@@ -486,22 +488,22 @@ func TestAccess_KeysForComposes(t *testing.T) {
 	t.Run("the wildcard composes as every key", func(t *testing.T) {
 		unrestricted := withKeys("scoping", "*")
 
-		intersected := NewAccess(held(withKeys("base", "key-a")), unrestricted, Intersect, nil)
+		intersected := NewAccess(held(withKeys("base", "key-a")), "", unrestricted, Intersect, nil)
 		keyIDs, restricted := intersected.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Equal(t, []string{"key-a"}, keyIDs, "intersecting with every key is the other side")
 
-		narrowed := NewAccess(held(withKeys("base", "*")), withKeys("scoping", "key-b"), Intersect, nil)
+		narrowed := NewAccess(held(withKeys("base", "*")), "", withKeys("scoping", "key-b"), Intersect, nil)
 		keyIDs, restricted = narrowed.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Equal(t, []string{"key-b"}, keyIDs, "a scope may narrow a caller who held every key")
 
-		widened := NewAccess(held(withKeys("base", "key-a")), unrestricted, Union, nil)
+		widened := NewAccess(held(withKeys("base", "key-a")), "", unrestricted, Union, nil)
 		keyIDs, restricted = widened.KeysForModel("openai", "gpt-4o")
 		assert.False(t, restricted, "unioning with every key is no restriction at all")
 		assert.Nil(t, keyIDs)
 
-		bothOpen := NewAccess(held(withKeys("base", "*")), unrestricted, Intersect, nil)
+		bothOpen := NewAccess(held(withKeys("base", "*")), "", unrestricted, Intersect, nil)
 		keyIDs, restricted = bothOpen.KeysForModel("openai", "gpt-4o")
 		assert.False(t, restricted)
 		assert.Nil(t, keyIDs)
@@ -510,7 +512,7 @@ func TestAccess_KeysForComposes(t *testing.T) {
 	// An unrecognized mode admits nothing, and a request that cannot proceed has no key
 	// restriction to report: the refusal comes first, from IsModelAllowed.
 	t.Run("an unknown mode admits nothing, so there is nothing to restrict", func(t *testing.T) {
-		access := NewAccess(held(withKeys("base", "key-a")), withKeys("scoping", "key-a"), "something-new", nil)
+		access := NewAccess(held(withKeys("base", "key-a")), "", withKeys("scoping", "key-a"), "something-new", nil)
 		assert.False(t, access.IsModelAllowed("openai", "gpt-4o"))
 		keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
 		assert.False(t, restricted)
@@ -520,17 +522,17 @@ func TestAccess_KeysForComposes(t *testing.T) {
 	t.Run("only the admitting side holds the provider", func(t *testing.T) {
 		// Under a union the caller's permit admits the request on its own, and a scoping permit
 		// that does not authorize the provider has no say in its keys.
-		baseOnly := NewAccess(held(withKeys("base", "key-a")), permitWithProviders("scoping", "s", "S", "anthropic"), Union, nil)
+		baseOnly := NewAccess(held(withKeys("base", "key-a")), "", permitWithProviders("scoping", "s", "S", "anthropic"), Union, nil)
 		keyIDs, restricted := baseOnly.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Equal(t, []string{"key-a"}, keyIDs)
 
-		unscoped := NewAccess(held(withKeys("base", "key-a")), nil, Intersect, nil)
+		unscoped := NewAccess(held(withKeys("base", "key-a")), "", nil, Intersect, nil)
 		keyIDs, _ = unscoped.KeysForModel("openai", "gpt-4o")
 		assert.Equal(t, []string{"key-a"}, keyIDs)
 
 		// Under an intersection the same shape is a refusal, and a refused request has no keys.
-		refused := NewAccess(held(withKeys("base", "key-a")), permitWithProviders("scoping", "s", "S", "anthropic"), Intersect, nil)
+		refused := NewAccess(held(withKeys("base", "key-a")), "", permitWithProviders("scoping", "s", "S", "anthropic"), Intersect, nil)
 		assert.False(t, refused.IsModelAllowed("openai", "gpt-4o"))
 		keyIDs, restricted = refused.KeysForModel("openai", "gpt-4o")
 		assert.False(t, restricted)
@@ -546,7 +548,7 @@ func TestAccess_KeysForComposes(t *testing.T) {
 			Type: PermitVirtualKey, ID: "vk1", Name: "Caller Key",
 			ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"*"}}},
 		})
-		access := NewAccess(held(noKeys), nil, "", nil)
+		access := NewAccess(held(noKeys), "", nil, "", nil)
 
 		keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted, "a provider permit with no key list restricts to no key")
@@ -561,7 +563,7 @@ func TestAccess_KeysForComposes(t *testing.T) {
 	t.Run("key ids match exactly", func(t *testing.T) {
 		// Key IDs are opaque, so a case-folding comparison would intersect two different keys
 		// into one and hand the request a key neither side granted.
-		access := NewAccess(held(withKeys("base", "Key-A")), withKeys("scoping", "key-a"), Intersect, nil)
+		access := NewAccess(held(withKeys("base", "Key-A")), "", withKeys("scoping", "key-a"), Intersect, nil)
 		keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Empty(t, keyIDs)
@@ -577,11 +579,11 @@ func TestAccess_KeysForComposes(t *testing.T) {
 				{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"key-b", "key-a"}},
 			},
 		})
-		keyIDs, restricted := NewAccess(held(pooled), nil, "", nil).KeysForModel("openai", "gpt-4o")
+		keyIDs, restricted := NewAccess(held(pooled), "", nil, "", nil).KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Equal(t, []string{"key-a", "key-b"}, keyIDs, "the union, in order, without repeats")
 
-		keyIDs, restricted = NewAccess(held(pooled), withKeys("scoping", "key-b", "key-c"), Intersect, nil).KeysForModel("openai", "gpt-4o")
+		keyIDs, restricted = NewAccess(held(pooled), "", withKeys("scoping", "key-b", "key-c"), Intersect, nil).KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Equal(t, []string{"key-b"}, keyIDs, "the scope narrows the pooled list, not either provider permit's own")
 
@@ -592,9 +594,34 @@ func TestAccess_KeysForComposes(t *testing.T) {
 				{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}},
 			},
 		})
-		keyIDs, restricted = NewAccess(held(open), nil, "", nil).KeysForModel("openai", "gpt-4o")
+		keyIDs, restricted = NewAccess(held(open), "", nil, "", nil).KeysForModel("openai", "gpt-4o")
 		assert.False(t, restricted, "one of them allows every key, so the pool is every key")
 		assert.Nil(t, keyIDs)
+	})
+}
+
+// A client wildcard is allowed only when some tool of the client survives composition.
+func TestAccess_MCPWildcardFollowsTheEffectiveTools(t *testing.T) {
+	caller := permitWithTools(PermitAccessProfile, "ap1", "Member", "github", "read_file")
+	project := permitWithTools(PermitProject, "p1", "Project", "github", "list_issues")
+
+	t.Run("intersect with no tool in common", func(t *testing.T) {
+		access := NewAccess(held(caller), "", project, Intersect, nil)
+		assert.Empty(t, access.MCPToolIncludeList())
+		assert.False(t, access.IsMCPToolAllowed("github-*"))
+		assertPermitsAre(t, access.DeniedPermitsForMCPTool("github-*"), project)
+	})
+
+	t.Run("intersect with a tool in common", func(t *testing.T) {
+		wider := permitWithTools(PermitProject, "p2", "Project", "github", "read_file", "list_issues")
+		access := NewAccess(held(caller), "", wider, Intersect, nil)
+		assert.True(t, access.IsMCPToolAllowed("github-*"))
+		assert.Empty(t, access.DeniedPermitsForMCPTool("github-*"))
+	})
+
+	t.Run("union keeps both sides' tools", func(t *testing.T) {
+		access := NewAccess(held(caller), "", project, Union, nil)
+		assert.True(t, access.IsMCPToolAllowed("github-*"))
 	})
 }
 
@@ -605,7 +632,7 @@ func TestAccess_KeysForReturnsACopy(t *testing.T) {
 			{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"key-own"}},
 		},
 	})
-	access := NewAccess(held(base), nil, "", nil)
+	access := NewAccess(held(base), "", nil, "", nil)
 
 	keyIDs, _ := access.KeysForModel("openai", "gpt-4o")
 	require.NotEmpty(t, keyIDs)
@@ -630,7 +657,7 @@ func TestAccess_ProvidersForCandidateKeysAreACopy(t *testing.T) {
 
 	t.Run("the candidate's own keys", func(t *testing.T) {
 		base := newBase()
-		candidates := NewAccess(held(base), nil, "", nil).ProvidersForModel("gpt-4o")
+		candidates := NewAccess(held(base), "", nil, "", nil).ProvidersForModel("gpt-4o")
 		require.Len(t, candidates, 1)
 		require.NotEmpty(t, candidates[0].KeyIDs)
 		candidates[0].KeyIDs[0] = "mutated"
@@ -646,7 +673,7 @@ func TestAccess_ProvidersForCandidateKeysAreACopy(t *testing.T) {
 				{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}},
 			},
 		})
-		candidates := NewAccess(held(base), scoping, Intersect, nil).ProvidersForModel("gpt-4o")
+		candidates := NewAccess(held(base), "", scoping, Intersect, nil).ProvidersForModel("gpt-4o")
 		require.Len(t, candidates, 1)
 		require.NotEmpty(t, candidates[0].KeyIDs)
 		candidates[0].KeyIDs[0] = "mutated"
@@ -671,7 +698,7 @@ func TestAccess_WeightFollowsTheScopingPermit(t *testing.T) {
 		t.Run(string(mode), func(t *testing.T) {
 			base := weighted("base", ptr(0.7))
 			scoping := weighted("scoping", ptr(0.1))
-			access := NewAccess(held(base), scoping, mode, nil)
+			access := NewAccess(held(base), "", scoping, mode, nil)
 			candidates := access.ProvidersForModel("gpt-4o")
 			require.Len(t, candidates, 1)
 			assert.Equal(t, ptr(0.1), candidates[0].Weight)
@@ -681,14 +708,14 @@ func TestAccess_WeightFollowsTheScopingPermit(t *testing.T) {
 	}
 
 	t.Run("a scoping permit with no weight leaves the base weight alone", func(t *testing.T) {
-		access := NewAccess(held(weighted("base", ptr(0.7))), weighted("scoping", nil), Intersect, nil)
+		access := NewAccess(held(weighted("base", ptr(0.7))), "", weighted("scoping", nil), Intersect, nil)
 		candidates := access.ProvidersForModel("gpt-4o")
 		require.Len(t, candidates, 1)
 		assert.Equal(t, ptr(0.7), candidates[0].Weight)
 	})
 
 	t.Run("no scoping permit leaves the base weight alone", func(t *testing.T) {
-		access := NewAccess(held(weighted("base", ptr(0.7))), nil, "", nil)
+		access := NewAccess(held(weighted("base", ptr(0.7))), "", nil, "", nil)
 		candidates := access.ProvidersForModel("gpt-4o")
 		require.Len(t, candidates, 1)
 		assert.Equal(t, ptr(0.7), candidates[0].Weight)
@@ -727,7 +754,7 @@ func TestAccess_ProvidersFor(t *testing.T) {
 	})
 
 	t.Run("base permit only", func(t *testing.T) {
-		access := NewAccess(held(base), nil, "", nil)
+		access := NewAccess(held(base), "", nil, "", nil)
 		candidates := access.ProvidersForModel("gpt-4o")
 
 		require.Len(t, candidates, 2)
@@ -740,7 +767,7 @@ func TestAccess_ProvidersFor(t *testing.T) {
 	})
 
 	t.Run("union adds providers with the scoping permit's keys and weight", func(t *testing.T) {
-		access := NewAccess(held(base), scoping, Union, nil)
+		access := NewAccess(held(base), "", scoping, Union, nil)
 		candidates := access.ProvidersForModel("gpt-4o")
 
 		require.Len(t, candidates, 3)
@@ -760,7 +787,7 @@ func TestAccess_ProvidersFor(t *testing.T) {
 	})
 
 	t.Run("intersect never adds a provider", func(t *testing.T) {
-		access := NewAccess(held(base), scoping, Intersect, nil)
+		access := NewAccess(held(base), "", scoping, Intersect, nil)
 		candidates := access.ProvidersForModel("gpt-4o")
 
 		require.Len(t, candidates, 1)
@@ -774,7 +801,7 @@ func TestAccess_ProvidersFor(t *testing.T) {
 	})
 
 	t.Run("no model means no candidates", func(t *testing.T) {
-		access := NewAccess(held(base), nil, "", nil)
+		access := NewAccess(held(base), "", nil, "", nil)
 		assert.Empty(t, access.ProvidersForModel(""))
 	})
 }
@@ -789,7 +816,7 @@ func TestAccess_ProvidersForPerProviderPermitGranularity(t *testing.T) {
 			{Provider: "openai", AllowedModels: []string{"gpt-4o"}, Weight: ptr(0.8)},
 		},
 	})
-	access := NewAccess(held(base), nil, "", nil)
+	access := NewAccess(held(base), "", nil, "", nil)
 
 	candidates := access.ProvidersForModel("gpt-4o")
 	require.Len(t, candidates, 1)
@@ -802,7 +829,7 @@ func TestAccess_ProvidersForPerProviderPermitGranularity(t *testing.T) {
 			{Provider: "openai", AllowedModels: []string{"gpt-4o"}, Weight: ptr(0.8)},
 		},
 	})
-	assert.Empty(t, NewAccess(held(blacklisted), nil, "", nil).ProvidersForModel("gpt-4o"))
+	assert.Empty(t, NewAccess(held(blacklisted), "", nil, "", nil).ProvidersForModel("gpt-4o"))
 }
 
 // A union means either side can be the one authorizing a request, which makes "the access permits
@@ -827,7 +854,7 @@ func TestAccess_UnionServesFromThePermitThatPermits(t *testing.T) {
 			KeyIDs:        []string{"key-scoping"},
 		}},
 	})
-	access := NewAccess(held(base), scoping, Union, nil)
+	access := NewAccess(held(base), "", scoping, Union, nil)
 
 	require.True(t, access.IsModelAllowed("openai", "gpt-4o"), "the scoping permit permits it")
 	// And it alone is named: a permit that blacklists the model does not permit the pair.
@@ -876,31 +903,31 @@ func TestAccess_GrantedProvidersFor(t *testing.T) {
 	})
 
 	t.Run("base permit only", func(t *testing.T) {
-		access := NewAccess(held(base), nil, "", nil)
+		access := NewAccess(held(base), "", nil, "", nil)
 		assert.Equal(t, []string{"openai"}, access.GrantedProvidersForModel("gpt-4o"))
 		// No model to filter on keeps every granted provider.
 		assert.Equal(t, []string{"openai", "bedrock"}, access.GrantedProvidersForModel(""))
 	})
 
 	t.Run("union", func(t *testing.T) {
-		access := NewAccess(held(base), scoping, Union, nil)
+		access := NewAccess(held(base), "", scoping, Union, nil)
 		assert.Equal(t, []string{"openai", "anthropic"}, access.GrantedProvidersForModel("gpt-4o"))
 	})
 
 	t.Run("intersect", func(t *testing.T) {
-		access := NewAccess(held(base), scoping, Intersect, nil)
+		access := NewAccess(held(base), "", scoping, Intersect, nil)
 		assert.Equal(t, []string{"openai"}, access.GrantedProvidersForModel("gpt-4o"))
 
 		// A provider the caller holds but the scoping permit does not is dropped.
 		narrow := permitWithProviders("other", "o2", "Other", "anthropic")
-		narrowAccess := NewAccess(held(base), narrow, Intersect, nil)
+		narrowAccess := NewAccess(held(base), "", narrow, Intersect, nil)
 		assert.Empty(t, narrowAccess.GrantedProvidersForModel("gpt-4o"))
 	})
 
 	t.Run("empty is not nil", func(t *testing.T) {
 		// An empty allowlist means "no provider is permitted", which a consumer must be able to
 		// tell apart from "nothing was published".
-		access := NewAccess(nil, nil, "", nil)
+		access := NewAccess(nil, "", nil, "", nil)
 		providers := access.GrantedProvidersForModel("gpt-4o")
 		assert.NotNil(t, providers)
 		assert.Empty(t, providers)
@@ -919,7 +946,7 @@ func TestAccess_GrantedProvidersForDeduplicates(t *testing.T) {
 			{Provider: "anthropic", AllowedModels: []string{"*"}},
 		},
 	})
-	access := NewAccess(held(base), nil, "", nil)
+	access := NewAccess(held(base), "", nil, "", nil)
 
 	assert.Equal(t, []string{"openai", "anthropic"}, access.GrantedProvidersForModel("gpt-4o"),
 		"both openai provider permits permit it, and it is still one provider")
@@ -940,7 +967,7 @@ func TestAccess_GrantedProvidersForIgnoresTheMatcher(t *testing.T) {
 	catalog := modelcatalog.NewTestCatalog(nil)
 	matcher := catalogMatcher(catalog, &fakeProviderConfigSource{})
 
-	access := NewAccess(held(base), nil, "", matcher)
+	access := NewAccess(held(base), "", nil, "", matcher)
 	assert.Equal(t, []string{"openai"}, access.GrantedProvidersForModel("not-a-real-model"))
 	assert.False(t, access.IsModelAllowed("openai", "not-a-real-model"), "the exact check does resolve it")
 }
@@ -950,7 +977,7 @@ func TestAccess_IsMCPToolAllowed(t *testing.T) {
 	scoping := permitWithTools("other", "o1", "Other", "github", "read_file")
 
 	t.Run("base permit only", func(t *testing.T) {
-		access := NewAccess(held(base), nil, "", nil)
+		access := NewAccess(held(base), "", nil, "", nil)
 		assert.True(t, access.IsMCPToolAllowed("github-read_file"))
 		assert.True(t, access.IsMCPToolAllowed("github-list_issues"))
 		assert.False(t, access.IsMCPToolAllowed("github-delete_repo"))
@@ -960,14 +987,14 @@ func TestAccess_IsMCPToolAllowed(t *testing.T) {
 	})
 
 	t.Run("intersect", func(t *testing.T) {
-		access := NewAccess(held(base), scoping, Intersect, nil)
+		access := NewAccess(held(base), "", scoping, Intersect, nil)
 		assert.True(t, access.IsMCPToolAllowed("github-read_file"))
 		assert.False(t, access.IsMCPToolAllowed("github-list_issues"))
 	})
 
 	t.Run("union", func(t *testing.T) {
 		wider := permitWithTools("other", "o2", "Other", "slack", "post_message")
-		access := NewAccess(held(base), wider, Union, nil)
+		access := NewAccess(held(base), "", wider, Union, nil)
 		assert.True(t, access.IsMCPToolAllowed("github-list_issues"))
 		assert.True(t, access.IsMCPToolAllowed("slack-post_message"))
 		assert.False(t, access.IsMCPToolAllowed("slack-delete_channel"))
@@ -975,14 +1002,14 @@ func TestAccess_IsMCPToolAllowed(t *testing.T) {
 
 	t.Run("a client with no tools granted is not permitted", func(t *testing.T) {
 		empty := permitWithTools(PermitVirtualKey, "vk2", "Caller Key", "github")
-		access := NewAccess(held(empty), nil, "", nil)
+		access := NewAccess(held(empty), "", nil, "", nil)
 		assert.False(t, access.IsMCPToolAllowed("github-read_file"))
 		assert.False(t, access.IsMCPToolAllowed("github-*"))
 	})
 
 	t.Run("an unrestricted client permits every tool", func(t *testing.T) {
 		all := permitWithTools(PermitVirtualKey, "vk3", "Caller Key", "github", "*")
-		access := NewAccess(held(all), nil, "", nil)
+		access := NewAccess(held(all), "", nil, "", nil)
 		assert.True(t, access.IsMCPToolAllowed("github-anything"))
 		assert.True(t, access.IsMCPToolAllowed("github-*"))
 	})
@@ -995,7 +1022,7 @@ func TestAccess_IsMCPToolAllowed(t *testing.T) {
 				{Client: "github-id", ClientName: "github", Tools: []string{"*"}},
 			},
 		})
-		assert.False(t, NewAccess(held(single), nil, "", nil).IsMCPToolAllowed("github-delete_repo"))
+		assert.False(t, NewAccess(held(single), "", nil, "", nil).IsMCPToolAllowed("github-delete_repo"))
 	})
 }
 
@@ -1003,38 +1030,38 @@ func TestAccess_MCPIncludeList(t *testing.T) {
 	base := permitWithTools(PermitVirtualKey, "vk1", "Caller Key", "github", "read_file", "list_issues")
 
 	t.Run("base permit only", func(t *testing.T) {
-		access := NewAccess(held(base), nil, "", nil)
+		access := NewAccess(held(base), "", nil, "", nil)
 		assert.Equal(t, []string{"github-read_file", "github-list_issues"}, access.MCPToolIncludeList())
 	})
 
 	t.Run("an unrestricted client becomes a wildcard entry", func(t *testing.T) {
 		all := permitWithTools(PermitVirtualKey, "vk2", "Caller Key", "github", "*")
-		access := NewAccess(held(all), nil, "", nil)
+		access := NewAccess(held(all), "", nil, "", nil)
 		assert.Equal(t, []string{"github-*"}, access.MCPToolIncludeList())
 	})
 
 	t.Run("a client with no tools granted contributes nothing", func(t *testing.T) {
 		empty := permitWithTools(PermitVirtualKey, "vk3", "Caller Key", "github")
-		access := NewAccess(held(empty), nil, "", nil)
+		access := NewAccess(held(empty), "", nil, "", nil)
 		assert.Empty(t, access.MCPToolIncludeList())
 	})
 
 	t.Run("union merges both sides", func(t *testing.T) {
 		scoping := permitWithTools("other", "o1", "Other", "slack", "post_message")
-		access := NewAccess(held(base), scoping, Union, nil)
+		access := NewAccess(held(base), "", scoping, Union, nil)
 		assert.Equal(t, []string{"github-read_file", "github-list_issues", "slack-post_message"}, access.MCPToolIncludeList())
 	})
 
 	t.Run("intersect keeps what both sides permit", func(t *testing.T) {
 		scoping := permitWithTools("other", "o1", "Other", "github", "read_file")
-		access := NewAccess(held(base), scoping, Intersect, nil)
+		access := NewAccess(held(base), "", scoping, Intersect, nil)
 		assert.Equal(t, []string{"github-read_file"}, access.MCPToolIncludeList())
 	})
 
 	t.Run("intersect narrows a wildcard down to the other side's tools", func(t *testing.T) {
 		wildcardBase := permitWithTools(PermitVirtualKey, "vk4", "Caller Key", "github", "*")
 		scoping := permitWithTools("other", "o1", "Other", "github", "read_file")
-		access := NewAccess(held(wildcardBase), scoping, Intersect, nil)
+		access := NewAccess(held(wildcardBase), "", scoping, Intersect, nil)
 		assert.Equal(t, []string{"github-read_file"}, access.MCPToolIncludeList(),
 			"passing the wildcard through would read as every tool of the client")
 	})
@@ -1044,7 +1071,7 @@ func TestAccess_MCPIncludeList(t *testing.T) {
 	// that list contains "github-read_file" answers no for every tool the scope in fact permits.
 	t.Run("intersect keeps specific tools against an unrestricted scope", func(t *testing.T) {
 		scoping := permitWithTools("other", "o1", "Other", "github", "*")
-		access := NewAccess(held(base), scoping, Intersect, nil)
+		access := NewAccess(held(base), "", scoping, Intersect, nil)
 		assert.Equal(t, []string{"github-read_file", "github-list_issues"}, access.MCPToolIncludeList(),
 			"intersecting a specific list with every tool is the specific list")
 	})
@@ -1052,13 +1079,13 @@ func TestAccess_MCPIncludeList(t *testing.T) {
 	t.Run("intersect keeps a wildcard only when both sides are unrestricted", func(t *testing.T) {
 		wildcardBase := permitWithTools(PermitVirtualKey, "vk5", "Caller Key", "github", "*")
 		wildcardScoping := permitWithTools("other", "o1", "Other", "github", "*")
-		access := NewAccess(held(wildcardBase), wildcardScoping, Intersect, nil)
+		access := NewAccess(held(wildcardBase), "", wildcardScoping, Intersect, nil)
 		assert.Equal(t, []string{"github-*"}, access.MCPToolIncludeList())
 	})
 
 	t.Run("intersect drops clients the other side does not hold", func(t *testing.T) {
 		scoping := permitWithTools("other", "o1", "Other", "slack", "post_message")
-		access := NewAccess(held(base), scoping, Intersect, nil)
+		access := NewAccess(held(base), "", scoping, Intersect, nil)
 		assert.Empty(t, access.MCPToolIncludeList())
 	})
 }
@@ -1068,13 +1095,13 @@ func TestAccess_DeniedBy(t *testing.T) {
 	scoping := permitWithModels("other", "o1", "Other Name", "openai", "o3")
 
 	t.Run("allowed requests have no denying permit", func(t *testing.T) {
-		access := NewAccess(held(base), nil, "", nil)
+		access := NewAccess(held(base), "", nil, "", nil)
 		assert.Nil(t, access.DeniedPermitsForModel("openai", "gpt-4o"))
 		assert.Nil(t, access.DeniedPermitsForModel("openai", ""))
 	})
 
 	t.Run("the base permit is named when it denies", func(t *testing.T) {
-		access := NewAccess(held(base), nil, "", nil)
+		access := NewAccess(held(base), "", nil, "", nil)
 		denied := access.DeniedPermitsForModel("anthropic", "claude-sonnet-4")
 		require.Len(t, denied, 1)
 		assert.Equal(t, "Caller Key", denied[0].Name())
@@ -1084,7 +1111,7 @@ func TestAccess_DeniedBy(t *testing.T) {
 	// Under a union either side's permission would have changed the answer, so a refusal names
 	// both: the caller's permit first, then the scope.
 	t.Run("under a union both sides are named when both deny", func(t *testing.T) {
-		access := NewAccess(held(base), scoping, Union, nil)
+		access := NewAccess(held(base), "", scoping, Union, nil)
 		denied := access.DeniedPermitsForModel("anthropic", "claude-sonnet-4")
 		require.Len(t, denied, 2)
 		assert.Same(t, base, denied[0])
@@ -1092,7 +1119,7 @@ func TestAccess_DeniedBy(t *testing.T) {
 	})
 
 	t.Run("the scoping permit is named when it alone denies", func(t *testing.T) {
-		access := NewAccess(held(base), scoping, Intersect, nil)
+		access := NewAccess(held(base), "", scoping, Intersect, nil)
 		denied := access.DeniedPermitsForModel("openai", "gpt-4o")
 		require.Len(t, denied, 1)
 		assert.Equal(t, "Other Name", denied[0].Name())
@@ -1100,7 +1127,7 @@ func TestAccess_DeniedBy(t *testing.T) {
 
 		// Provider-level denials are attributed the same way.
 		narrow := permitWithProviders("other", "o2", "Narrow", "anthropic")
-		providerAccess := NewAccess(held(base), narrow, Intersect, nil)
+		providerAccess := NewAccess(held(base), "", narrow, Intersect, nil)
 		denied = providerAccess.DeniedPermitsForModel("openai", "")
 		require.Len(t, denied, 1)
 		assert.Equal(t, "Narrow", denied[0].Name())
@@ -1109,7 +1136,7 @@ func TestAccess_DeniedBy(t *testing.T) {
 	t.Run("under an intersection a refusing base is named without the scope", func(t *testing.T) {
 		// The scope did not stand in the way: with no base permitting, its own verdict changes
 		// nothing.
-		access := NewAccess(held(base), scoping, Intersect, nil)
+		access := NewAccess(held(base), "", scoping, Intersect, nil)
 		denied := access.DeniedPermitsForModel("openai", "o3")
 		require.Len(t, denied, 1)
 		assert.Same(t, base, denied[0])
@@ -1117,7 +1144,7 @@ func TestAccess_DeniedBy(t *testing.T) {
 
 	t.Run("a refused request always names a permit", func(t *testing.T) {
 		for _, mode := range []CompositionMode{Union, Intersect} {
-			access := NewAccess(held(base), scoping, mode, nil)
+			access := NewAccess(held(base), "", scoping, mode, nil)
 			for _, model := range []string{"gpt-4o", "o3", "gpt-4o-mini"} {
 				if access.IsModelAllowed("openai", model) {
 					continue
@@ -1128,13 +1155,13 @@ func TestAccess_DeniedBy(t *testing.T) {
 	})
 
 	t.Run("nothing is named when the caller holds no permit", func(t *testing.T) {
-		access := NewAccess(nil, scoping, Intersect, nil)
+		access := NewAccess(nil, "", scoping, Intersect, nil)
 		assert.False(t, access.IsModelAllowed("openai", "o3"))
 		assert.Nil(t, access.DeniedPermitsForModel("openai", "o3"), "the caller holds no permit to name")
 
 		// Under a union the scope was the only thing that could have permitted it, so a refusal
 		// still has it to name.
-		unionAccess := NewAccess(nil, scoping, Union, nil)
+		unionAccess := NewAccess(nil, "", scoping, Union, nil)
 		assert.False(t, unionAccess.IsModelAllowed("openai", "gpt-4o-mini"))
 		denied := unionAccess.DeniedPermitsForModel("openai", "gpt-4o-mini")
 		require.Len(t, denied, 1)
@@ -1145,7 +1172,7 @@ func TestAccess_DeniedBy(t *testing.T) {
 		baseTools := permitWithTools(PermitVirtualKey, "vk1", "Caller Key", "github", "read_file")
 		scopingTools := permitWithTools("other", "o1", "Other Name", "github", "list_issues")
 
-		access := NewAccess(held(baseTools), scopingTools, Intersect, nil)
+		access := NewAccess(held(baseTools), "", scopingTools, Intersect, nil)
 
 		denied := access.DeniedPermitsForMCPTool("github-read_file")
 		require.Len(t, denied, 1)
@@ -1155,7 +1182,9 @@ func TestAccess_DeniedBy(t *testing.T) {
 		require.Len(t, denied, 1)
 		assert.Equal(t, "Caller Key", denied[0].Name())
 
-		assert.Nil(t, access.DeniedPermitsForMCPTool("github-*"), "both sides grant the client some tool")
+		denied = access.DeniedPermitsForMCPTool("github-*")
+		require.Len(t, denied, 1, "each side grants some tool but none in common")
+		assert.Equal(t, "Other Name", denied[0].Name())
 	})
 }
 
@@ -1163,7 +1192,7 @@ func TestAccess_Accessors(t *testing.T) {
 	base := permitWithProviders(PermitVirtualKey, "vk1", "Caller Key", "openai")
 	scoping := permitWithProviders("other", "o1", "Other", "anthropic")
 
-	access := NewAccess(held(base), scoping, Union, nil)
+	access := NewAccess(held(base), "", scoping, Union, nil)
 	assert.Equal(t, string(Union), access.Mode())
 	assert.True(t, access.IsScoped())
 	bases := access.Bases()
@@ -1171,7 +1200,7 @@ func TestAccess_Accessors(t *testing.T) {
 	assert.Same(t, base, bases[0])
 	assert.Same(t, scoping, access.Scoping())
 
-	bare := NewAccess(held(base), nil, "", nil)
+	bare := NewAccess(held(base), "", nil, "", nil)
 	assert.False(t, bare.IsScoped())
 	assert.Nil(t, bare.Scoping())
 	assert.Equal(t, "", bare.Mode())
@@ -1191,7 +1220,7 @@ func TestAccess_NewAccessDropsWhatIsNotThere(t *testing.T) {
 
 	// A resolver that found nothing for one source does not have to say so twice: nil entries,
 	// bare or typed, are dropped, and a typed-nil scoping permit is no scoping permit.
-	access := NewAccess([]schemas.Permit{nil, first, (*Permit)(nil), second}, (*Permit)(nil), Intersect, nil)
+	access := NewAccess([]schemas.Permit{nil, first, (*Permit)(nil), second}, "", (*Permit)(nil), Intersect, nil)
 
 	bases := access.Bases()
 	require.Len(t, bases, 2)
@@ -1256,7 +1285,7 @@ func twoProfilesAndAProject() (first, second, project *Permit) {
 // The caller's permits are read as one: what any of them permits, the caller may reach.
 func TestAccess_SeveralBasesAreReadAsOne(t *testing.T) {
 	first, second, _ := twoProfilesAndAProject()
-	access := NewAccess(held(first, second), nil, "", nil)
+	access := NewAccess(held(first, second), "", nil, "", nil)
 
 	assert.True(t, access.IsModelAllowed("openai", "gpt-4o"), "the first permits it")
 	assert.True(t, access.IsModelAllowed("openai", "o3"), "only the second permits it")
@@ -1282,10 +1311,10 @@ func TestAccess_SeveralBasesAreReadAsOne(t *testing.T) {
 func TestAccess_PermitsForModelNamesEveryPermittingPermit(t *testing.T) {
 	first, second, project := twoProfilesAndAProject()
 
-	unscoped := NewAccess(held(first, second), nil, "", nil)
-	unionAccess := NewAccess(held(first, second), project, Union, nil)
-	intersectAccess := NewAccess(held(first, second), project, Intersect, nil)
-	projectAlone := NewAccess(nil, project, Union, nil)
+	unscoped := NewAccess(held(first, second), "", nil, "", nil)
+	unionAccess := NewAccess(held(first, second), "", project, Union, nil)
+	intersectAccess := NewAccess(held(first, second), "", project, Intersect, nil)
+	projectAlone := NewAccess(nil, "", project, Union, nil)
 
 	tests := []struct {
 		name     string
@@ -1344,7 +1373,7 @@ func TestAccess_KeysForPoolTheCallersPermits(t *testing.T) {
 	first, second, project := twoProfilesAndAProject()
 
 	t.Run("the union of every permitting base's keys", func(t *testing.T) {
-		access := NewAccess(held(first, second), nil, "", nil)
+		access := NewAccess(held(first, second), "", nil, "", nil)
 
 		keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
@@ -1364,7 +1393,7 @@ func TestAccess_KeysForPoolTheCallersPermits(t *testing.T) {
 	})
 
 	t.Run("composed with the scope only where the scope authorizes the pair", func(t *testing.T) {
-		unionAccess := NewAccess(held(first, second), project, Union, nil)
+		unionAccess := NewAccess(held(first, second), "", project, Union, nil)
 
 		keyIDs, _ := unionAccess.KeysForModel("openai", "gpt-4o")
 		assert.Equal(t, []string{"key-first", "key-second", "key-project"}, keyIDs, "both bases' keys unioned with the project's")
@@ -1378,7 +1407,7 @@ func TestAccess_KeysForPoolTheCallersPermits(t *testing.T) {
 		keyIDs, _ = unionAccess.KeysForModel("gemini", "gemini-pro")
 		assert.Equal(t, []string{"key-project"}, keyIDs, "gained through the project alone")
 
-		intersectAccess := NewAccess(held(first, second), project, Intersect, nil)
+		intersectAccess := NewAccess(held(first, second), "", project, Intersect, nil)
 
 		keyIDs, _ = intersectAccess.KeysForModel("openai", "gpt-4o")
 		assert.Equal(t, []string{"key-first"}, keyIDs, "of the pooled keys, only the one the project also allows")
@@ -1400,11 +1429,11 @@ func TestAccess_KeysForPoolTheCallersPermits(t *testing.T) {
 			},
 		})
 
-		keyIDs, restricted := NewAccess(held(first, everyKey), nil, "", nil).KeysForModel("openai", "gpt-4o")
+		keyIDs, restricted := NewAccess(held(first, everyKey), "", nil, "", nil).KeysForModel("openai", "gpt-4o")
 		assert.False(t, restricted, "one base allows every key, so the pool is every key")
 		assert.Nil(t, keyIDs)
 
-		keyIDs, restricted = NewAccess(held(first, everyKey), project, Intersect, nil).KeysForModel("openai", "gpt-4o")
+		keyIDs, restricted = NewAccess(held(first, everyKey), "", project, Intersect, nil).KeysForModel("openai", "gpt-4o")
 		assert.True(t, restricted)
 		assert.Equal(t, []string{"key-first", "key-project"}, keyIDs, "the scope still narrows an open pool")
 	})
@@ -1418,7 +1447,7 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 	first, second, project := twoProfilesAndAProject()
 
 	t.Run("a provider two bases serve is offered once per base", func(t *testing.T) {
-		access := NewAccess(held(first, second), project, Union, nil)
+		access := NewAccess(held(first, second), "", project, Union, nil)
 		candidates := access.ProvidersForModel("gpt-4o")
 
 		require.Len(t, candidates, 5, "the first's two providers, the second's two, then the project's own")
@@ -1448,7 +1477,7 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 	})
 
 	t.Run("a provider the first base holds but cannot serve is offered from the second", func(t *testing.T) {
-		access := NewAccess(held(first, second), project, Union, nil)
+		access := NewAccess(held(first, second), "", project, Union, nil)
 		candidates := access.ProvidersForModel("claude-opus-4")
 
 		require.Len(t, candidates, 3)
@@ -1464,7 +1493,7 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 	})
 
 	t.Run("evaluation order is base order, each base in full", func(t *testing.T) {
-		access := NewAccess(held(first, second), nil, "", nil)
+		access := NewAccess(held(first, second), "", nil, "", nil)
 		candidates := access.ProvidersForModel("o3")
 
 		require.Len(t, candidates, 3, "bedrock from the first, then openai and bedrock from the second")
@@ -1479,7 +1508,7 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 	})
 
 	t.Run("under an intersection each base's candidate composes with the scope on its own", func(t *testing.T) {
-		access := NewAccess(held(first, second), project, Intersect, nil)
+		access := NewAccess(held(first, second), "", project, Intersect, nil)
 		candidates := access.ProvidersForModel("gpt-4o")
 
 		require.Len(t, candidates, 2, "openai from each base: the project does not hold bedrock, and no base holds gemini")
@@ -1500,7 +1529,7 @@ func TestAccess_ProvidersForOffersEveryBaseInFull(t *testing.T) {
 				{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"key-b"}, Weight: ptr(0.8)},
 			},
 		})
-		access := NewAccess(held(first, twice), nil, "", nil)
+		access := NewAccess(held(first, twice), "", nil, "", nil)
 		candidates := access.ProvidersForModel("o3")
 
 		require.Len(t, candidates, 3, "bedrock from the first, then both openai provider permits of the second")
@@ -1517,7 +1546,7 @@ func TestAccess_GrantedProvidersForMergesBases(t *testing.T) {
 	first, second, project := twoProfilesAndAProject()
 
 	t.Run("deduplicated, in base order", func(t *testing.T) {
-		access := NewAccess(held(first, second), nil, "", nil)
+		access := NewAccess(held(first, second), "", nil, "", nil)
 		assert.Equal(t, []string{"openai", "bedrock", "anthropic"}, access.GrantedProvidersForModel(""))
 		assert.Equal(t, []string{"openai", "bedrock"}, access.GrantedProvidersForModel("gpt-4o"))
 		assert.Equal(t, []string{"bedrock", "openai"}, access.GrantedProvidersForModel("o3"),
@@ -1525,13 +1554,13 @@ func TestAccess_GrantedProvidersForMergesBases(t *testing.T) {
 	})
 
 	t.Run("under an intersection only what the scope also allows by name", func(t *testing.T) {
-		access := NewAccess(held(first, second), project, Intersect, nil)
+		access := NewAccess(held(first, second), "", project, Intersect, nil)
 		assert.Equal(t, []string{"openai"}, access.GrantedProvidersForModel("gpt-4o"))
 		assert.Equal(t, []string{"openai"}, access.GrantedProvidersForModel(""))
 	})
 
 	t.Run("under a union the scope's own providers follow", func(t *testing.T) {
-		access := NewAccess(held(first, second), project, Union, nil)
+		access := NewAccess(held(first, second), "", project, Union, nil)
 		assert.Equal(t, []string{"openai", "bedrock", "gemini"}, access.GrantedProvidersForModel("gpt-4o"))
 	})
 }
@@ -1540,20 +1569,20 @@ func TestAccess_MCPIncludeListMergesBases(t *testing.T) {
 	first, second, project := twoProfilesAndAProject()
 
 	t.Run("entries merge in base order", func(t *testing.T) {
-		access := NewAccess(held(first, second), nil, "", nil)
+		access := NewAccess(held(first, second), "", nil, "", nil)
 		assert.Equal(t, []string{"github-read_file", "slack-post_message", "github-list_issues"}, access.MCPToolIncludeList())
 	})
 
 	t.Run("then compose with the scope", func(t *testing.T) {
-		unionAccess := NewAccess(held(first, second), project, Union, nil)
+		unionAccess := NewAccess(held(first, second), "", project, Union, nil)
 		assert.Equal(t, []string{"github-read_file", "slack-post_message", "github-list_issues", "jira-*"}, unionAccess.MCPToolIncludeList())
 
-		intersectAccess := NewAccess(held(first, second), project, Intersect, nil)
+		intersectAccess := NewAccess(held(first, second), "", project, Intersect, nil)
 		assert.Empty(t, intersectAccess.MCPToolIncludeList(), "the project holds none of the caller's clients")
 	})
 
 	t.Run("a tool no base grants names every base", func(t *testing.T) {
-		access := NewAccess(held(first, second), nil, "", nil)
+		access := NewAccess(held(first, second), "", nil, "", nil)
 		denied := access.DeniedPermitsForMCPTool("jira-create_issue")
 		require.Len(t, denied, 2)
 		assert.Same(t, first, denied[0])
@@ -1567,7 +1596,7 @@ func TestAccess_DeniedByNamesEveryRefusingSide(t *testing.T) {
 	first, second, project := twoProfilesAndAProject()
 
 	t.Run("every base when none permits", func(t *testing.T) {
-		access := NewAccess(held(first, second), nil, "", nil)
+		access := NewAccess(held(first, second), "", nil, "", nil)
 		denied := access.DeniedPermitsForModel("anthropic", "claude-opus-4")
 		require.Len(t, denied, 2)
 		assert.Same(t, first, denied[0])
@@ -1575,7 +1604,7 @@ func TestAccess_DeniedByNamesEveryRefusingSide(t *testing.T) {
 	})
 
 	t.Run("under a union, the scope too when it refused", func(t *testing.T) {
-		access := NewAccess(held(first, second), project, Union, nil)
+		access := NewAccess(held(first, second), "", project, Union, nil)
 		denied := access.DeniedPermitsForModel("cohere", "command-r")
 		require.Len(t, denied, 3)
 		assert.Same(t, first, denied[0])
@@ -1586,7 +1615,7 @@ func TestAccess_DeniedByNamesEveryRefusingSide(t *testing.T) {
 	})
 
 	t.Run("under an intersection, only the scope when a base permits", func(t *testing.T) {
-		access := NewAccess(held(first, second), project, Intersect, nil)
+		access := NewAccess(held(first, second), "", project, Intersect, nil)
 		denied := access.DeniedPermitsForModel("bedrock", "claude-sonnet-4")
 		require.Len(t, denied, 1)
 		assert.Same(t, project, denied[0])
@@ -1603,35 +1632,35 @@ func TestAccess_NarrowMCPIncludeList(t *testing.T) {
 	everyTool := permitWithTools(PermitVirtualKey, "vk2", "Caller Key", "sentry", "*")
 
 	t.Run("a specific entry is kept when permitted and dropped when not", func(t *testing.T) {
-		access := NewAccess(held(specific), nil, "", nil)
+		access := NewAccess(held(specific), "", nil, "", nil)
 		assert.Equal(t, []string{"sentry-find_projects"}, access.NarrowMCPToolIncludeList([]string{"sentry-find_projects", "sentry-delete_project"}))
 	})
 
 	t.Run("a specific entry narrows within a client granted every tool", func(t *testing.T) {
-		access := NewAccess(held(everyTool), nil, "", nil)
+		access := NewAccess(held(everyTool), "", nil, "", nil)
 		assert.Equal(t, []string{"sentry-search_issues"}, access.NarrowMCPToolIncludeList([]string{"sentry-search_issues"}))
 	})
 
 	t.Run("a wildcard is kept only when the client is granted every tool", func(t *testing.T) {
-		assert.Equal(t, []string{"sentry-*"}, NewAccess(held(everyTool), nil, "", nil).NarrowMCPToolIncludeList([]string{"sentry-*"}))
+		assert.Equal(t, []string{"sentry-*"}, NewAccess(held(everyTool), "", nil, "", nil).NarrowMCPToolIncludeList([]string{"sentry-*"}))
 		assert.Equal(t, []string{"sentry-find_projects", "sentry-search_issues"},
-			NewAccess(held(specific), nil, "", nil).NarrowMCPToolIncludeList([]string{"sentry-*"}),
+			NewAccess(held(specific), "", nil, "", nil).NarrowMCPToolIncludeList([]string{"sentry-*"}),
 			"passing the wildcard through would read as every tool of the client")
 	})
 
 	t.Run("a wildcard for a client not granted at all yields nothing", func(t *testing.T) {
-		access := NewAccess(held(specific), nil, "", nil)
+		access := NewAccess(held(specific), "", nil, "", nil)
 		assert.Equal(t, []string{}, access.NarrowMCPToolIncludeList([]string{"github-*"}))
 	})
 
 	t.Run("empties are dropped and repeats collapse across a wildcard and a specific entry", func(t *testing.T) {
-		access := NewAccess(held(specific), nil, "", nil)
+		access := NewAccess(held(specific), "", nil, "", nil)
 		assert.Equal(t, []string{"sentry-find_projects", "sentry-search_issues"},
 			access.NarrowMCPToolIncludeList([]string{"", "sentry-*", "sentry-find_projects"}))
 	})
 
 	t.Run("an empty request permits nothing, and so does no request", func(t *testing.T) {
-		access := NewAccess(held(everyTool), nil, "", nil)
+		access := NewAccess(held(everyTool), "", nil, "", nil)
 		assert.Equal(t, []string{}, access.NarrowMCPToolIncludeList([]string{""}))
 		assert.Equal(t, []string{}, access.NarrowMCPToolIncludeList(nil))
 	})
@@ -1643,7 +1672,7 @@ func TestAccess_NarrowMCPIncludeList(t *testing.T) {
 
 	t.Run("narrowing answers for the composed access", func(t *testing.T) {
 		scoping := permitWithTools("other", "o1", "Other", "sentry", "find_projects")
-		access := NewAccess(held(everyTool), scoping, Intersect, nil)
+		access := NewAccess(held(everyTool), "", scoping, Intersect, nil)
 		assert.Equal(t, []string{"sentry-find_projects"}, access.NarrowMCPToolIncludeList([]string{"sentry-*", "sentry-search_issues"}),
 			"the wildcard narrows to what both sides permit, and a tool the scope withholds is dropped")
 	})
@@ -1666,12 +1695,12 @@ func TestAccess_CandidatesAreOfferedByPermitsForModel(t *testing.T) {
 		},
 	})
 	accesses := map[string]*Access{
-		"two bases, union with a project":     NewAccess(held(first, second), project, Union, nil),
-		"two bases, intersect with a project": NewAccess(held(first, second), project, Intersect, nil),
-		"two bases, unscoped":                 NewAccess(held(first, second), nil, "", nil),
-		"second base first":                   NewAccess(held(second, first), project, Union, nil),
-		"one base holding a provider twice":   NewAccess(held(first, twice), project, Union, nil),
-		"project alone":                       NewAccess(nil, project, Union, nil),
+		"two bases, union with a project":     NewAccess(held(first, second), "", project, Union, nil),
+		"two bases, intersect with a project": NewAccess(held(first, second), "", project, Intersect, nil),
+		"two bases, unscoped":                 NewAccess(held(first, second), "", nil, "", nil),
+		"second base first":                   NewAccess(held(second, first), "", project, Union, nil),
+		"one base holding a provider twice":   NewAccess(held(first, twice), "", project, Union, nil),
+		"project alone":                       NewAccess(nil, "", project, Union, nil),
 	}
 	models := []string{"gpt-4o", "o3", "claude-opus-4", "claude-sonnet-4", "gemini-pro", "nothing-permits-this"}
 
@@ -1683,7 +1712,7 @@ func TestAccess_CandidatesAreOfferedByPermitsForModel(t *testing.T) {
 		for _, model := range models {
 			var offers []offer
 			access.eachProviderPermit(func(owner schemas.Permit, pp *schemas.ProviderPermit, _ bool) bool {
-				if !access.IsModelAllowed(pp.Provider, model) || blacklistsModel(owner, pp.Provider, model) || !access.permitsModel(pp, model) {
+				if !access.IsModelAllowed(pp.Provider, model) || blacklistsModel(owner, pp.Provider, model) || !access.permitsModel(pp, model, pp.KeyIDs) {
 					return false
 				}
 				offers = append(offers, offer{provider: pp.Provider, owner: owner})
@@ -1721,4 +1750,956 @@ func assertPermitsAre(t *testing.T, got []schemas.Permit, want ...schemas.Permit
 	for i := range want {
 		assert.Same(t, want[i], got[i], "permit %d", i)
 	}
+}
+
+func TestIsRelayAllowed(t *testing.T) {
+	named := NewPermit(PermitVirtualKey, "vk-1", "named", true, false, nil, nil, WithRelayPermits([]string{"tavily"}))
+	// Relays have no allow-all on any holder, as agents have none: a wide permit names every relay.
+	all := NewPermit(PermitAccessProfile, "ap-2", "all", true, false, nil, nil, WithRelayPermits([]string{"tavily", "textract"}))
+	none := NewPermit(PermitVirtualKey, "vk-3", "none", true, false, nil, nil)
+
+	access := NewAccess(held(named), "", nil, "", nil)
+	if !access.IsRelayAllowed("tavily") || access.IsRelayAllowed("textract") {
+		t.Fatalf("a named grant allows exactly that endpoint")
+	}
+	if denied := access.DeniedPermitsForRelay("textract"); len(denied) != 1 || denied[0] != named {
+		t.Fatalf("the refusal names the permit that denied it, got %v", denied)
+	}
+	if !NewAccess(held(all), "", nil, "", nil).IsRelayAllowed("textract") {
+		t.Fatalf("a permit naming the endpoint grants it")
+	}
+	if NewAccess(held(none), "", nil, "", nil).IsRelayAllowed("tavily") {
+		t.Fatalf("no grant denies by default")
+	}
+	if NewAccess(held(all), "", none, Intersect, nil).IsRelayAllowed("tavily") {
+		t.Fatalf("an intersecting scope without the endpoint denies it")
+	}
+	if !NewAccess(held(none), "", named, Union, nil).IsRelayAllowed("tavily") {
+		t.Fatalf("a union scope with the endpoint allows it")
+	}
+}
+
+// A blacklist wins over a key alias: naming a blocked model through an alias does not get it past
+// the permit, whether the alias is admitted by a pattern or by its own name.
+func TestAccess_AliasTargetHeldToBlacklist(t *testing.T) {
+	allowAll := func(string, string, []string) bool { return true }
+	bestToOpus := func(provider, model string, _ []string, visit func(string)) {
+		if provider == "bedrock" && model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	otherTarget := func(provider, model string, _ []string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-sonnet-4-6")
+		}
+	}
+	regexPermit := func() *Permit {
+		return permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"regex:^claude-.*"}, "claude-opus-4-6")
+	}
+
+	t.Run("an alias of a blacklisted model is refused and the permit is named", func(t *testing.T) {
+		access := NewAccess(held(regexPermit()), "", nil, Intersect, allowAll).WithAliasTargets(bestToOpus)
+		assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
+		assert.Len(t, access.DeniedPermitsForModel("bedrock", "best-model"), 1)
+		assert.False(t, access.IsModelAllowed("bedrock", "claude-opus-4-6"), "the literal blacklist still holds")
+	})
+	t.Run("without a source, or with another target, the alias is admitted", func(t *testing.T) {
+		assert.True(t, NewAccess(held(regexPermit()), "", nil, Intersect, allowAll).IsModelAllowed("bedrock", "best-model"))
+		assert.True(t, NewAccess(held(regexPermit()), "", nil, Intersect, allowAll).WithAliasTargets(otherTarget).IsModelAllowed("bedrock", "best-model"))
+	})
+	t.Run("an alias allowed by its own name is refused when its target is blacklisted", func(t *testing.T) {
+		p := permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"best-model"}, "claude-opus-4-6")
+		access := NewAccess(held(p), "", nil, Intersect, nil).WithAliasTargets(bestToOpus)
+		assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
+	})
+	t.Run("a permit that blacklists nothing never consults the source", func(t *testing.T) {
+		calls := 0
+		counting := func(string, string, []string, func(string)) { calls++ }
+		access := NewAccess(held(permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "regex:^claude-.*")), "", nil, Intersect, allowAll).WithAliasTargets(counting)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+		assert.Zero(t, calls)
+	})
+	t.Run("a blacklist on an unrelated model admits the alias and consults the source once", func(t *testing.T) {
+		calls := 0
+		counting := func(provider, model string, _ []string, visit func(string)) {
+			calls++
+			bestToOpus(provider, model, nil, visit)
+		}
+		p := permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"regex:^claude-.*"}, "claude-haiku-4-5")
+		access := NewAccess(held(p), "", nil, Intersect, allowAll).WithAliasTargets(counting)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+		assert.Equal(t, 1, calls)
+	})
+	t.Run("two base permits, only one blacklisting the target: the other still admits (any base permitting)", func(t *testing.T) {
+		open := permitWithModels(PermitVirtualKey, "vk2", "Open", "bedrock", "regex:^claude-.*")
+		access := NewAccess(held(regexPermit(), open), "", nil, Intersect, allowAll).WithAliasTargets(bestToOpus)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+	})
+}
+
+// The key-scoped matcher and the alias-target source are told which keys the permit lets serve the
+// request, so a key the permit excludes neither vetoes an alias nor adds a target (#6620 review). A
+// permit holding several provider permits for one provider is served by all of their keys, so it
+// reports every key.
+func TestAccess_KeyScopedMatcherAndAliasTargetsSeeThePermitsKeys(t *testing.T) {
+	keyed := func(pps ...schemas.ProviderPermit) *Permit {
+		return NewPermit(PermitVirtualKey, "vk1", "VK", true, false, pps, nil)
+	}
+	var seen [][]string
+	matcher := func(_, model string, allowed, keyIDs []string) bool {
+		seen = append(seen, keyIDs)
+		return model == "best-model" && slices.Equal(keyIDs, []string{"aliased"})
+	}
+	t.Run("one provider permit: its own keys", func(t *testing.T) {
+		seen = nil
+		access := NewAccess(held(keyed(schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"aliased"}})), "", nil, Intersect, nil).WithKeyScopedMatcher(matcher)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+		require.NotEmpty(t, seen)
+		assert.Equal(t, []string{"aliased"}, seen[0])
+		for _, c := range access.ProvidersForModel("best-model") {
+			assert.ElementsMatch(t, []string{"aliased"}, c.KeyIDs)
+		}
+	})
+	t.Run("two provider permits for the provider: the union of their keys", func(t *testing.T) {
+		seen = nil
+		access := NewAccess(held(keyed(
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"aliased"}},
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"titan-*"}, KeyIDs: []string{"plain"}},
+		)), "", nil, Intersect, nil).WithKeyScopedMatcher(matcher)
+		assert.False(t, access.IsModelAllowed("bedrock", "best-model"), "the plain permit's key could serve the name as written")
+		require.NotEmpty(t, seen)
+		assert.ElementsMatch(t, []string{"aliased", "plain"}, seen[0])
+	})
+	t.Run("two restricted provider permits: a key neither allows does not veto the alias", func(t *testing.T) {
+		// Keys a and b map the alias to an allowed model; key c has no alias, but no permit lets it serve.
+		aliasedOnAB := func(_, model string, _, keyIDs []string) bool {
+			if model != "best-model" || len(keyIDs) == 0 {
+				return false
+			}
+			for _, id := range keyIDs {
+				if id != "a" && id != "b" {
+					return false
+				}
+			}
+			return true
+		}
+		access := NewAccess(held(keyed(
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"a"}},
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"b"}},
+		)), "", nil, Intersect, nil).WithKeyScopedMatcher(aliasedOnAB)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+		withC := NewAccess(held(keyed(
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"a"}},
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"b", "c"}},
+		)), "", nil, Intersect, nil).WithKeyScopedMatcher(aliasedOnAB)
+		assert.False(t, withC.IsModelAllowed("bedrock", "best-model"), "key c can serve the request and has no alias")
+	})
+	t.Run("an unrestricted provider permit among several: every key", func(t *testing.T) {
+		seen = nil
+		access := NewAccess(held(keyed(
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"aliased"}},
+			schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"titan-*"}, KeyIDs: []string{"*"}},
+		)), "", nil, Intersect, nil).WithKeyScopedMatcher(matcher)
+		assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
+		require.NotEmpty(t, seen)
+		assert.Equal(t, []string{"*"}, seen[0])
+	})
+	t.Run("the key-scoped matcher replaces the plain matcher", func(t *testing.T) {
+		never := func(string, string, []string) bool { return false }
+		access := NewAccess(held(keyed(schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"claude-sonnet-4-6"}, KeyIDs: []string{"aliased"}})), "", nil, Intersect, never).WithKeyScopedMatcher(matcher)
+		assert.True(t, access.IsModelAllowed("bedrock", "best-model"))
+	})
+	t.Run("the alias-target source is told the permit's keys", func(t *testing.T) {
+		var got []string
+		source := func(_, model string, keyIDs []string, visit func(string)) {
+			got = keyIDs
+			if slices.Contains(keyIDs, "*") || slices.Contains(keyIDs, "opus-key") {
+				visit("claude-opus-4-6")
+			}
+		}
+		pp := schemas.ProviderPermit{Provider: "bedrock", AllowedModels: []string{"regex:^claude-.*", "best-model"}, BlacklistedModels: []string{"claude-opus-4-6"}, KeyIDs: []string{"sonnet-key"}}
+		assert.True(t, NewAccess(held(keyed(pp)), "", nil, Intersect, nil).WithAliasTargets(source).IsModelAllowed("bedrock", "best-model"),
+			"the key mapping the name to the blacklisted model is not one the permit may use")
+		assert.Equal(t, []string{"sonnet-key"}, got)
+		pp.KeyIDs = []string{"*"}
+		assert.False(t, NewAccess(held(keyed(pp)), "", nil, Intersect, nil).WithAliasTargets(source).IsModelAllowed("bedrock", "best-model"))
+	})
+}
+
+func TestAccess_RestrictsKeys(t *testing.T) {
+	all := permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "*")
+	some := NewPermit(PermitVirtualKey, "vk2", "VK2", true, false, []schemas.ProviderPermit{{Provider: "bedrock", AllowedModels: []string{"*"}, KeyIDs: []string{"k1"}}}, nil)
+	none := NewPermit(PermitVirtualKey, "vk3", "VK3", true, false, []schemas.ProviderPermit{{Provider: "bedrock", AllowedModels: []string{"*"}, KeyIDs: []string{}}}, nil)
+	var nilAccess *Access
+	assert.False(t, nilAccess.RestrictsKeys("bedrock"))
+	assert.False(t, NewAccess(held(all), "", nil, "", nil).RestrictsKeys("bedrock"))
+	assert.False(t, NewAccess(held(some), "", nil, "", nil).RestrictsKeys("openai"), "another provider's restriction does not count")
+	assert.True(t, NewAccess(held(some), "", nil, "", nil).RestrictsKeys("bedrock"))
+	assert.True(t, NewAccess(held(none), "", nil, "", nil).RestrictsKeys("bedrock"), "allowing no key is a restriction")
+	assert.True(t, NewAccess(held(all), "", some, Intersect, nil).RestrictsKeys("bedrock"), "the scoping permit counts")
+	// Whenever it answers false, KeysForModel reports no restriction.
+	_, restricted := NewAccess(held(all), "", nil, "", nil).KeysForModel("bedrock", "any-model")
+	assert.False(t, restricted)
+}
+
+func BenchmarkAccess_IsModelAllowed_AliasTargets(b *testing.B) {
+	allowAll := func(string, string, []string) bool { return true }
+	source := func(provider, model string, _ []string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	plain := func() *Permit {
+		return permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "regex:^claude-.*")
+	}
+	blocking := func() *Permit {
+		return permitWithBlacklist(PermitVirtualKey, "vk1", "VK", "bedrock", []string{"regex:^claude-.*"}, "claude-haiku-4-5")
+	}
+	for _, bc := range []struct {
+		name   string
+		access *Access
+	}{
+		{"no_source", NewAccess(held(plain()), "", nil, Intersect, allowAll)},
+		{"source_no_blacklist", NewAccess(held(plain()), "", nil, Intersect, allowAll).WithAliasTargets(source)},
+		{"source_blacklist_alias", NewAccess(held(blocking()), "", nil, Intersect, allowAll).WithAliasTargets(source)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			if !bc.access.IsModelAllowed("bedrock", "best-model") {
+				b.Fatal("best-model should be allowed")
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				bc.access.IsModelAllowed("bedrock", "best-model")
+			}
+		})
+	}
+}
+
+// atLevel places a test permit at level, as a resolver does with WithLevel.
+func atLevel(p *Permit, level int) *Permit {
+	WithLevel(level)(p)
+	return p
+}
+
+// ---------------------------------------------------------------------------
+// Levels
+// ---------------------------------------------------------------------------
+
+// Under Intersect: own permits, then team/BU profiles, then customer profiles. The lowest level
+// present grants and each level above caps.
+
+func TestAccessLevels_UnionReadsEveryPermitAsOne(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-b"), 1)
+	customer := atLevel(permitWithModels(PermitCustomerAccessProfile, "c1", "Customer", "openai", "model-c"), 2)
+
+	for _, access := range []*Access{
+		NewAccess(held(caller, team, customer), "", nil, "", nil),
+		NewAccess(held(caller, team, customer), Union, nil, "", nil),
+	} {
+		for _, model := range []string{"model-a", "model-b", "model-c"} {
+			assert.True(t, access.IsModelAllowed("openai", model), "%s: every permit adds", model)
+		}
+		assertPermitsAre(t, access.Bases(), caller, team, customer)
+	}
+	assert.Equal(t, "", NewAccess(held(caller), "", nil, "", nil).LevelMode())
+	assert.Equal(t, "union", NewAccess(held(caller), Union, nil, "", nil).LevelMode())
+}
+
+func TestAccessLevels_AHigherLevelTakesAwayWhatTheCallerHolds(t *testing.T) {
+	// The caller holds models a and b; the level above allows only c. Nothing is left.
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-c"), 1)
+
+	access := NewAccess(held(caller, team), Intersect, nil, "", nil)
+
+	assert.False(t, access.IsModelAllowed("openai", "model-a"))
+	assert.False(t, access.IsModelAllowed("openai", "model-b"))
+	assert.False(t, access.IsModelAllowed("openai", "model-c"), "a capping level grants nothing of its own")
+	assert.Empty(t, access.ProvidersForModel("model-c"), "a capping level never offers a candidate")
+	assertPermitsAre(t, access.DeniedPermitsForModel("openai", "model-a"), team)
+	assertPermitsAre(t, access.DeniedPermitsForModel("openai", "model-c"), caller)
+}
+
+// WithModelMatcher swaps how names are matched and nothing else: the copy keeps every level, so a
+// literal-name check is capped exactly as the access it was made from. Rebuilding from Bases, which
+// is only the granting level, would drop the cap and allow more than the access does.
+func TestAccessLevels_WithModelMatcherKeepsTheLevels(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a"), 1)
+	byName := func(_, model string, allowed []string) bool { return schemas.WhiteList(allowed).IsAllowed(model) }
+
+	access := NewAccess(held(caller, team), Intersect, nil, "", byName)
+	literal := access.WithModelMatcher(byName)
+
+	for _, a := range []*Access{access, literal} {
+		assert.True(t, a.IsModelAllowed("openai", "model-a"))
+		assert.False(t, a.IsModelAllowed("openai", "model-b"), "the level above caps model-b")
+	}
+	assert.Equal(t, access.LevelMode(), literal.LevelMode())
+	assert.Len(t, literal.Bases(), len(access.Bases()))
+	assert.Nil(t, (*Access)(nil).WithModelMatcher(byName))
+}
+
+func TestAccessLevels_ALevelIsReadAsOne(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a"), 1)
+	unit := atLevel(permitWithModels(PermitBusinessUnitAccessProfile, "b1", "Unit", "openai", "model-b"), 1)
+
+	access := NewAccess(held(caller, team, unit), Intersect, nil, "", nil)
+
+	assert.True(t, access.IsModelAllowed("openai", "model-a"), "the team allows it")
+	assert.True(t, access.IsModelAllowed("openai", "model-b"), "the business unit allows it: teams and units share a level")
+	assertPermitsAre(t, access.PermitsForModel("openai", "model-a"), caller, team)
+}
+
+func TestAccessLevels_EveryLevelMustAllow(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a", "model-b"), 1)
+	customer := atLevel(permitWithModels(PermitCustomerAccessProfile, "c1", "Customer", "openai", "model-b"), 2)
+
+	access := NewAccess(held(caller, team, customer), Intersect, nil, "", nil)
+
+	assert.False(t, access.IsModelAllowed("openai", "model-a"))
+	assert.True(t, access.IsModelAllowed("openai", "model-b"))
+	assertPermitsAre(t, access.DeniedPermitsForModel("openai", "model-a"), customer)
+	assertPermitsAre(t, access.PermitsForModel("openai", "model-b"), caller, team, customer)
+}
+
+func TestAccessLevels_TheLowestLevelPresentGrants(t *testing.T) {
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a", "model-b"), 1)
+	customer := atLevel(permitWithModels(PermitCustomerAccessProfile, "c1", "Customer", "openai", "model-b", "model-c"), 2)
+
+	t.Run("a caller holding nothing of their own is granted by their teams and capped above", func(t *testing.T) {
+		access := NewAccess(held(team, customer), Intersect, nil, "", nil)
+		assert.False(t, access.IsModelAllowed("openai", "model-a"), "the customer caps it")
+		assert.True(t, access.IsModelAllowed("openai", "model-b"))
+		assert.False(t, access.IsModelAllowed("openai", "model-c"), "the customer grants nothing of its own")
+		assertPermitsAre(t, access.Bases(), team)
+	})
+
+	t.Run("a lone level grants", func(t *testing.T) {
+		access := NewAccess(held(customer), Intersect, nil, "", nil)
+		assert.True(t, access.IsModelAllowed("openai", "model-c"))
+		assertPermitsAre(t, access.Bases(), customer)
+	})
+
+	t.Run("a permit with no level is the caller's own", func(t *testing.T) {
+		other := permitWithModels(PermitType("something_else"), "x1", "Other", "openai", "model-a")
+		access := NewAccess(held(other, team), Intersect, nil, "", nil)
+		assertPermitsAre(t, access.Bases(), other)
+		assert.True(t, access.IsModelAllowed("openai", "model-a"))
+	})
+}
+
+func TestAccessLevels_TheOrderPermitsArriveInDoesNotMatter(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a", "model-b"), 1)
+	customer := atLevel(permitWithModels(PermitCustomerAccessProfile, "c1", "Customer", "openai", "model-b"), 2)
+
+	ordered := NewAccess(held(caller, team, customer), Intersect, nil, "", nil)
+	shuffled := NewAccess(held(customer, caller, team), Intersect, nil, "", nil)
+
+	for _, model := range []string{"model-a", "model-b"} {
+		assert.Equal(t, ordered.IsModelAllowed("openai", model), shuffled.IsModelAllowed("openai", model), model)
+		assert.Equal(t, permitIDs(ordered.PermitsForModel("openai", model)), permitIDs(shuffled.PermitsForModel("openai", model)), model)
+	}
+	assertPermitsAre(t, shuffled.Bases(), caller)
+}
+
+func TestAccessLevels_ProvidersAndBlacklists(t *testing.T) {
+	caller := permitWithProviders(PermitAccessProfile, "ap1", "Member", "openai", "anthropic")
+
+	t.Run("a provider the level does not permit is refused", func(t *testing.T) {
+		team := atLevel(permitWithProviders(PermitTeamAccessProfile, "t1", "Team", "anthropic"), 1)
+		access := NewAccess(held(caller, team), Intersect, nil, "", nil)
+		assert.False(t, access.IsProviderAllowed("openai"))
+		assert.True(t, access.IsProviderAllowed("anthropic"))
+		assert.False(t, access.AllowsEveryModel("openai"))
+		assert.True(t, access.AllowsEveryModel("anthropic"))
+		assert.Equal(t, []string{"anthropic"}, access.GrantedProvidersForModel("claude-sonnet-4"))
+	})
+
+	t.Run("a blacklist in the level blocks", func(t *testing.T) {
+		team := atLevel(newPermit(permitSpec{
+			Type: PermitTeamAccessProfile, ID: "t1", Name: "Team", IsActive: true,
+			ProviderPermits: []schemas.ProviderPermit{{
+				Provider: "openai", AllowedModels: []string{"*"}, BlacklistedModels: []string{"gpt-4o"},
+			}},
+		}), 1)
+		access := NewAccess(held(caller, team), Intersect, nil, "", nil)
+		assert.False(t, access.IsModelAllowed("openai", "gpt-4o"))
+		assert.True(t, access.IsModelAllowed("openai", "gpt-4o-mini"))
+		assert.Empty(t, access.GrantedProvidersForModel("gpt-4o"))
+	})
+
+	t.Run("a level that allows all providers caps nothing", func(t *testing.T) {
+		team := atLevel(NewPermit(PermitTeamAccessProfile, "t1", "Team", true, false, nil, nil, WithAllowAllProviders(true)), 1)
+		access := NewAccess(held(caller, team), Intersect, nil, "", nil)
+		assert.True(t, access.IsModelAllowed("openai", "gpt-4o"))
+		assert.ElementsMatch(t, []string{"openai", "anthropic"}, access.GrantedProvidersForModel(""))
+	})
+}
+
+func TestAccessLevels_KeysAreNarrowed(t *testing.T) {
+	caller := newPermit(permitSpec{
+		Type: PermitAccessProfile, ID: "ap1", Name: "Member", IsActive: true,
+		ProviderPermits: []schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"key-a", "key-b"}},
+			{Provider: "anthropic", AllowedModels: []string{"*"}, KeyIDs: []string{"*"}},
+		},
+	})
+	team := atLevel(newPermit(permitSpec{
+		Type: PermitTeamAccessProfile, ID: "t1", Name: "Team", IsActive: true,
+		ProviderPermits: []schemas.ProviderPermit{
+			{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"key-b", "key-c"}},
+			{Provider: "anthropic", AllowedModels: []string{"*"}, KeyIDs: []string{"key-team"}},
+		},
+	}), 1)
+	customer := atLevel(NewPermit(PermitCustomerAccessProfile, "c1", "Customer", true, false, nil, nil, WithAllowAllProviders(true)), 2)
+
+	access := NewAccess(held(caller, team, customer), Intersect, nil, "", nil)
+
+	keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
+	assert.True(t, restricted)
+	assert.Equal(t, []string{"key-b"}, keyIDs)
+
+	keyIDs, restricted = access.KeysForModel("anthropic", "claude-sonnet-4")
+	assert.True(t, restricted, "an unrestricted caller takes the level's restriction")
+	assert.Equal(t, []string{"key-team"}, keyIDs)
+
+	// Both providers are offered, each with its keys narrowed by the team's.
+	candidates := access.ProvidersForModel("gpt-4o")
+	require.Len(t, candidates, 2)
+	assert.Equal(t, schemas.ProviderCandidate{Provider: "openai", KeyIDs: []string{"key-b"}}, candidates[0])
+	assert.Equal(t, schemas.ProviderCandidate{Provider: "anthropic", KeyIDs: []string{"key-team"}}, candidates[1])
+}
+
+// The scope composes with the capped keys, and candidates agree with KeysForModel.
+func TestAccessLevels_CandidateKeysKeepTheCapUnderAScope(t *testing.T) {
+	caller := newPermit(permitSpec{
+		Type: PermitAccessProfile, ID: "ap1", Name: "Member", IsActive: true,
+		ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"k1", "k2"}}},
+	})
+	team := atLevel(newPermit(permitSpec{
+		Type: PermitTeamAccessProfile, ID: "t1", Name: "Team", IsActive: true,
+		ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: []string{"k1"}}},
+	}), 1)
+	scopeWith := func(keys ...string) *Permit {
+		return newPermit(permitSpec{
+			Type: PermitProject, ID: "p1", Name: "Project", IsActive: true,
+			ProviderPermits: []schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{"*"}, KeyIDs: keys}},
+		})
+	}
+
+	for _, tc := range []struct {
+		name  string
+		scope *Permit
+		mode  CompositionMode
+		want  []string
+	}{
+		{"intersect with every key keeps the cap", scopeWith("*"), Intersect, []string{"k1"}},
+		{"intersect with the capped-out key leaves none", scopeWith("k2"), Intersect, []string{}},
+		{"union adds the scope's keys to the capped ones", scopeWith("k3"), Union, []string{"k1", "k3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			access := NewAccess(held(caller, team), Intersect, tc.scope, tc.mode, nil)
+			candidates := access.ProvidersForModel("gpt-4o")
+			require.Len(t, candidates, 1)
+			assert.ElementsMatch(t, tc.want, candidates[0].KeyIDs, "candidate keys")
+			keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
+			assert.True(t, restricted)
+			assert.ElementsMatch(t, tc.want, keyIDs, "and KeysForModel agrees")
+		})
+	}
+}
+
+func TestAccessLevels_MCPTools(t *testing.T) {
+	caller := permitWithTools(PermitAccessProfile, "ap1", "Member", "github", "read_file", "list_issues", "create_issue")
+
+	t.Run("a specific level narrows a specific list", func(t *testing.T) {
+		teamX := atLevel(permitWithTools(PermitTeamAccessProfile, "t1", "Team X", "github", "read_file"), 1)
+		teamY := atLevel(permitWithTools(PermitTeamAccessProfile, "t2", "Team Y", "github", "list_issues"), 1)
+		access := NewAccess(held(caller, teamX, teamY), Intersect, nil, "", nil)
+		assert.Equal(t, []string{"github-read_file", "github-list_issues"}, access.MCPToolIncludeList())
+		assert.True(t, access.IsMCPToolAllowed("github-read_file"))
+		assert.False(t, access.IsMCPToolAllowed("github-create_issue"))
+		assert.Equal(t, []string{"github-read_file"}, access.NarrowMCPToolIncludeList([]string{"github-read_file", "github-create_issue"}))
+		assertPermitsAre(t, access.DeniedPermitsForMCPTool("github-create_issue"), teamX, teamY)
+	})
+
+	t.Run("an unrestricted level keeps the specific list", func(t *testing.T) {
+		team := atLevel(permitWithTools(PermitTeamAccessProfile, "t1", "Team", "github", "*"), 1)
+		access := NewAccess(held(caller, team), Intersect, nil, "", nil)
+		assert.Equal(t, []string{"github-read_file", "github-list_issues", "github-create_issue"}, access.MCPToolIncludeList())
+	})
+
+	t.Run("a wildcard caller is narrowed to the level's tools", func(t *testing.T) {
+		wildcard := permitWithTools(PermitAccessProfile, "ap2", "Member", "github", "*")
+		team := atLevel(permitWithTools(PermitTeamAccessProfile, "t1", "Team", "github", "read_file"), 1)
+		access := NewAccess(held(wildcard, team), Intersect, nil, "", nil)
+		assert.Equal(t, []string{"github-read_file"}, access.MCPToolIncludeList())
+	})
+
+	t.Run("a client the level does not hold is dropped", func(t *testing.T) {
+		team := atLevel(permitWithTools(PermitTeamAccessProfile, "t1", "Team", "slack", "post_message"), 1)
+		access := NewAccess(held(caller, team), Intersect, nil, "", nil)
+		assert.Empty(t, access.MCPToolIncludeList())
+	})
+
+	t.Run("a level with no tool in common refuses the client wildcard", func(t *testing.T) {
+		member := permitWithTools(PermitAccessProfile, "ap3", "Member", "github", "read_file")
+		team := atLevel(permitWithTools(PermitTeamAccessProfile, "t1", "Team", "github", "list_issues"), 1)
+		access := NewAccess(held(member, team), Intersect, nil, "", nil)
+		assert.False(t, access.IsMCPToolAllowed("github-*"))
+		assertPermitsAre(t, access.DeniedPermitsForMCPTool("github-*"), team)
+	})
+}
+
+// Relays are capped; agents are decided by the granting level alone.
+func TestAccessLevels_AgentsAndRelays(t *testing.T) {
+	caller := NewPermit(PermitAccessProfile, "ap1", "Member", true, false, nil, nil,
+		WithAgentPermits([]string{"agent-a", "agent-b"}), WithRelayPermits([]string{"relay-a", "relay-b"}))
+	team := atLevel(NewPermit(PermitTeamAccessProfile, "t1", "Team", true, false, nil, nil,
+		WithAgentPermits([]string{"agent-a"}), WithRelayPermits([]string{"relay-b"})), 1)
+
+	access := NewAccess(held(caller, team), Intersect, nil, "", nil)
+
+	assert.True(t, access.IsAgentAllowed("agent-a"))
+	assert.True(t, access.IsAgentAllowed("agent-b"), "the team does not vote on agents")
+	assert.False(t, access.IsAgentAllowed("agent-c"))
+	assertPermitsAre(t, access.DeniedPermitsForAgent("agent-c"), caller)
+	assert.False(t, access.IsRelayAllowed("relay-a"))
+	assert.True(t, access.IsRelayAllowed("relay-b"))
+	assertPermitsAre(t, access.DeniedPermitsForRelay("relay-a"), team)
+}
+
+func TestAccessLevels_ComposeWithAScope(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a", "model-b")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a"), 1)
+	project := permitWithModels(PermitProject, "p1", "Project", "openai", "model-a", "model-b", "model-c")
+
+	t.Run("intersect narrows the capped caller further", func(t *testing.T) {
+		narrow := permitWithModels(PermitProject, "p2", "Project", "openai", "model-b")
+		access := NewAccess(held(caller, team), Intersect, narrow, Intersect, nil)
+		assert.False(t, access.IsModelAllowed("openai", "model-a"), "the project refuses it")
+		assert.False(t, access.IsModelAllowed("openai", "model-b"), "the team refuses it")
+		assertPermitsAre(t, access.DeniedPermitsForModel("openai", "model-a"), narrow)
+		assertPermitsAre(t, access.DeniedPermitsForModel("openai", "model-b"), team)
+	})
+
+	t.Run("union lets the scope add to the capped caller", func(t *testing.T) {
+		access := NewAccess(held(caller, team), Intersect, project, Union, nil)
+		assert.True(t, access.IsModelAllowed("openai", "model-a"))
+		assert.True(t, access.IsModelAllowed("openai", "model-c"), "the project grants it")
+
+		// model-b is the caller's but capped out, so the scope alone serves it.
+		candidates := access.ProvidersForModel("model-b")
+		require.Len(t, candidates, 1)
+		assertPermitsAre(t, access.PermitsForModel("openai", "model-b"), project)
+	})
+
+	t.Run("a level above is not named for what only the scope admitted", func(t *testing.T) {
+		// Only the project lets model-c through, so only the project answers for it.
+		widerTeam := atLevel(permitWithModels(PermitTeamAccessProfile, "t2", "Team", "openai", "model-a", "model-c"), 1)
+		access := NewAccess(held(caller, widerTeam), Intersect, project, Union, nil)
+		assert.True(t, access.IsModelAllowed("openai", "model-c"))
+		assertPermitsAre(t, access.PermitsForModel("openai", "model-c"), project)
+	})
+}
+
+func TestAccessLevels_BasesAreTheGrantingLevel(t *testing.T) {
+	caller := permitWithModels(PermitAccessProfile, "ap1", "Member", "openai", "model-a")
+	team := atLevel(permitWithModels(PermitTeamAccessProfile, "t1", "Team", "openai", "model-a"), 1)
+	access := NewAccess(held(caller, team), Intersect, nil, "", nil)
+
+	assert.Equal(t, "intersect", access.LevelMode())
+	bases := access.Bases()
+	assertPermitsAre(t, bases, caller)
+	bases[0] = nil
+	assertPermitsAre(t, access.Bases(), caller)
+}
+
+// The matrix tries every shape with up to two own, two team and two customer permits and a scope
+// under either mode, and checks each answer against an oracle written from the rule alone.
+
+// matrixPermit is one permit of the matrix: whether it allows what is asked, and the keys it holds.
+type matrixPermit struct {
+	allows bool
+	keys   []string
+}
+
+// build turns a matrix permit into a real one. A refusing permit holds the provider but grants
+// something else.
+func (m matrixPermit) build(kind PermitType, level int, id string) *Permit {
+	model, agent, relay, tool := "other-model", "other-agent", "other-relay", "other_tool"
+	if m.allows {
+		model, agent, relay, tool = "gpt-4o", "agent-a", "relay-a", "read_file"
+	}
+	return NewPermit(kind, id, id, true, false,
+		[]schemas.ProviderPermit{{Provider: "openai", AllowedModels: []string{model}, KeyIDs: m.keys}},
+		[]schemas.MCPPermit{{Client: "github-id", ClientName: "github", Tools: []string{tool}}},
+		WithAgentPermits([]string{agent}), WithRelayPermits([]string{relay}), WithLevel(level))
+}
+
+// matrixLevelKinds is the permit kind at each matrix level.
+var matrixLevelKinds = []PermitType{PermitAccessProfile, PermitTeamAccessProfile, PermitCustomerAccessProfile}
+
+// matrixCase is one access shape: the permits at each level (some possibly empty) and the scope.
+type matrixCase struct {
+	levels  [3][]matrixPermit
+	scoping *matrixPermit
+	mode    CompositionMode
+}
+
+// permitID names the permit at position i of level l.
+func permitID(l, i int) string {
+	return fmt.Sprintf("l%d-%d", l, i)
+}
+
+// name labels a case so a failure says which shape broke.
+func (c matrixCase) name() string {
+	v := func(ps []matrixPermit) string {
+		out := ""
+		for _, p := range ps {
+			if p.allows {
+				out += "A"
+			} else {
+				out += "D"
+			}
+		}
+		if out == "" {
+			return "-"
+		}
+		return out
+	}
+	name := fmt.Sprintf("own=%s,team=%s,customer=%s", v(c.levels[0]), v(c.levels[1]), v(c.levels[2]))
+	if c.scoping != nil {
+		name += fmt.Sprintf(",scope=%s/%s", v([]matrixPermit{*c.scoping}), c.mode)
+	}
+	return name
+}
+
+// anyAllows reports whether any permit in ps allows what is asked.
+func anyAllows(ps []matrixPermit) bool {
+	return slices.ContainsFunc(ps, func(p matrixPermit) bool { return p.allows })
+}
+
+// present returns the levels that hold a permit, lowest first, with their indexes.
+func (c matrixCase) present() (indexes []int, levels [][]matrixPermit) {
+	for l, level := range c.levels {
+		if len(level) > 0 {
+			indexes = append(indexes, l)
+			levels = append(levels, level)
+		}
+	}
+	return indexes, levels
+}
+
+// compose applies the scope's mode to the caller's side, as the rule says.
+func (c matrixCase) compose(callerAllows bool) bool {
+	if c.scoping == nil {
+		return callerAllows
+	}
+	if c.mode == Union {
+		return callerAllows || c.scoping.allows
+	}
+	return callerAllows && c.scoping.allows
+}
+
+// oracle is the rule, written independently of the fold.
+func (c matrixCase) oracle() (callerAllows, allowed bool) {
+	_, levels := c.present()
+	callerAllows = len(levels) > 0
+	for _, level := range levels {
+		callerAllows = callerAllows && anyAllows(level)
+	}
+	return callerAllows, c.compose(callerAllows)
+}
+
+// oracleAgent is the rule for agents: the granting level alone, composed with the scope.
+func (c matrixCase) oracleAgent() bool {
+	_, levels := c.present()
+	return c.compose(len(levels) > 0 && anyAllows(levels[0]))
+}
+
+// oracleKeys is the expected key restriction: granting keys narrowed by each capping level, then the
+// scope's.
+func (c matrixCase) oracleKeys() []string {
+	callerAllows, allowed := c.oracle()
+	if !allowed {
+		return nil
+	}
+	allowingKeys := func(ps []matrixPermit) []string {
+		var keys []string
+		for _, p := range ps {
+			if !p.allows {
+				continue
+			}
+			for _, k := range p.keys {
+				if !slices.Contains(keys, k) {
+					keys = append(keys, k)
+				}
+			}
+		}
+		return keys
+	}
+	var caller []string
+	callerHolds := false
+	if callerAllows {
+		_, levels := c.present()
+		caller, callerHolds = allowingKeys(levels[0]), true
+		for _, level := range levels[1:] {
+			levelKeys := allowingKeys(level)
+			caller = slices.DeleteFunc(slices.Clone(caller), func(k string) bool { return !slices.Contains(levelKeys, k) })
+		}
+	}
+	scopeHolds := c.scoping != nil && c.scoping.allows
+	switch {
+	case callerHolds && scopeHolds:
+		if c.mode == Union {
+			for _, k := range c.scoping.keys {
+				if !slices.Contains(caller, k) {
+					caller = append(caller, k)
+				}
+			}
+			return caller
+		}
+		return slices.DeleteFunc(caller, func(k string) bool { return !slices.Contains(c.scoping.keys, k) })
+	case callerHolds:
+		return caller
+	default:
+		return slices.Clone(c.scoping.keys)
+	}
+}
+
+// oracleCandidateKeys is the expected keys of each candidate: one per allowing granting permit, or
+// the scope's own when none is offered.
+func (c matrixCase) oracleCandidateKeys() [][]string {
+	callerAllows, allowed := c.oracle()
+	if !allowed {
+		return nil
+	}
+	var candidates [][]string
+	if callerAllows {
+		_, levels := c.present()
+		for _, base := range levels[0] {
+			if !base.allows {
+				continue
+			}
+			keys := slices.Clone(base.keys)
+			for _, level := range levels[1:] {
+				var levelKeys []string
+				for _, p := range level {
+					if p.allows {
+						levelKeys = append(levelKeys, p.keys...)
+					}
+				}
+				keys = slices.DeleteFunc(keys, func(k string) bool { return !slices.Contains(levelKeys, k) })
+			}
+			if c.scoping != nil && c.scoping.allows {
+				if c.mode == Union {
+					for _, k := range c.scoping.keys {
+						if !slices.Contains(keys, k) {
+							keys = append(keys, k)
+						}
+					}
+				} else {
+					keys = slices.DeleteFunc(keys, func(k string) bool { return !slices.Contains(c.scoping.keys, k) })
+				}
+			}
+			candidates = append(candidates, keys)
+		}
+	}
+	if len(candidates) == 0 && c.scoping != nil && c.scoping.allows {
+		candidates = append(candidates, slices.Clone(c.scoping.keys))
+	}
+	return candidates
+}
+
+// matrixCases enumerates every shape.
+func matrixCases() []matrixCase {
+	a, d := matrixPermit{allows: true}, matrixPermit{}
+	ownSets := [][]matrixPermit{{}, {a}, {d}, {a, a}, {a, d}, {d, d}}
+	levelSets := [][]matrixPermit{{a}, {d}, {a, d}, {d, d}}
+	// The levels above the caller: none, teams only, or teams and customers.
+	var aboveSets [][2][]matrixPermit
+	aboveSets = append(aboveSets, [2][]matrixPermit{})
+	for _, teams := range levelSets {
+		aboveSets = append(aboveSets, [2][]matrixPermit{teams, nil})
+		for _, customers := range levelSets {
+			aboveSets = append(aboveSets, [2][]matrixPermit{teams, customers})
+		}
+	}
+	type scope struct {
+		permit *matrixPermit
+		mode   CompositionMode
+	}
+	scopes := []scope{{nil, ""}, {&a, Intersect}, {&d, Intersect}, {&a, Union}, {&d, Union}}
+
+	var cases []matrixCase
+	for _, own := range ownSets {
+		for _, above := range aboveSets {
+			for _, sc := range scopes {
+				c := matrixCase{mode: sc.mode}
+				// Keys overlap across levels, so narrowing keeps some and drops others.
+				for l, level := range [3][]matrixPermit{own, above[0], above[1]} {
+					for i, p := range level {
+						p.keys = []string{permitID(0, i), permitID(l, i)}
+						c.levels[l] = append(c.levels[l], p)
+					}
+				}
+				if sc.permit != nil {
+					p := *sc.permit
+					p.keys = []string{permitID(0, 0), "scope"}
+					c.scoping = &p
+				}
+				cases = append(cases, c)
+			}
+		}
+	}
+	return cases
+}
+
+// TestAccessLevelsMatrix checks every verdict of every shape against the oracle.
+func TestAccessLevelsMatrix(t *testing.T) {
+	cases := matrixCases()
+	require.Len(t, cases, 6*21*5)
+	for _, c := range cases {
+		t.Run(c.name(), func(t *testing.T) {
+			var permits []schemas.Permit
+			for l, level := range c.levels {
+				for i, p := range level {
+					permits = append(permits, p.build(matrixLevelKinds[l], l, permitID(l, i)))
+				}
+			}
+			var scoping schemas.Permit
+			if c.scoping != nil {
+				scoping = c.scoping.build(PermitProject, 0, "scope")
+			}
+			access := NewAccess(permits, Intersect, scoping, c.mode, nil)
+			callerAllows, want := c.oracle()
+			indexes, levels := c.present()
+
+			// Every capped dimension answers to the same rule; agents answer to the granting level.
+			assert.Equal(t, want, access.IsModelAllowed("openai", "gpt-4o"), "model")
+			assert.Equal(t, c.oracleAgent(), access.IsAgentAllowed("agent-a"), "agent")
+			assert.Equal(t, want, access.IsRelayAllowed("relay-a"), "relay")
+			assert.Equal(t, want, access.IsMCPToolAllowed("github-read_file"), "tool")
+			assert.Equal(t, want, slices.Contains(access.MCPToolIncludeList(), "github-read_file"), "tool include list")
+
+			// The granting level is the lowest one present.
+			granting := []string{}
+			if len(levels) > 0 {
+				for i := range levels[0] {
+					granting = append(granting, permitID(indexes[0], i))
+				}
+			}
+			assert.Equal(t, granting, permitIDs(access.Bases()), "bases")
+
+			// A refusal names someone exactly when it's refused and someone holds a permit.
+			denied := access.DeniedPermitsForModel("openai", "gpt-4o")
+			namesSomeone := len(permits) > 0 || (c.scoping != nil && c.mode == Union)
+			assert.Equal(t, !want && namesSomeone, len(denied) > 0, "denied permits named: %v", permitIDs(denied))
+			// A capping level that refused is named instead of the granting level.
+			if !want && len(levels) > 0 && anyAllows(levels[0]) && !callerAllows && (c.scoping == nil || c.scoping.allows) {
+				var refusing []string
+				for li, level := range levels[1:] {
+					if !anyAllows(level) {
+						for i := range level {
+							refusing = append(refusing, permitID(indexes[li+1], i))
+						}
+					}
+				}
+				assert.Equal(t, refusing, permitIDs(denied), "the refusing levels are named")
+			}
+
+			// Attribution and candidates follow the verdict.
+			attributed := access.PermitsForModel("openai", "gpt-4o")
+			assert.Equal(t, want, len(attributed) > 0, "permits for the model")
+			if want && callerAllows {
+				for i, p := range levels[0] {
+					assert.Equal(t, p.allows, slices.Contains(permitIDs(attributed), permitID(indexes[0], i)), "granting permit %d attributed", i)
+				}
+			}
+			if want && !callerAllows {
+				assert.Equal(t, []string{"scope"}, permitIDs(attributed), "a request only the scope admitted is the scope's alone")
+			}
+			candidates := access.ProvidersForModel("gpt-4o")
+			assert.Equal(t, want, len(candidates) > 0, "provider candidates")
+			wantCandidates := c.oracleCandidateKeys()
+			if assert.Len(t, candidates, len(wantCandidates), "one candidate per offering permit") {
+				for i := range wantCandidates {
+					assert.ElementsMatch(t, wantCandidates[i], candidates[i].KeyIDs, "candidate %d keys", i)
+				}
+			}
+			granted := access.GrantedProvidersForModel("gpt-4o")
+			assert.Equal(t, want, slices.Contains(granted, "openai"), "granted providers")
+
+			// The key restriction is the rule's.
+			keyIDs, restricted := access.KeysForModel("openai", "gpt-4o")
+			wantKeys := c.oracleKeys()
+			if want {
+				assert.True(t, restricted, "every permit restricts keys")
+				assert.ElementsMatch(t, wantKeys, keyIDs, "keys")
+			} else {
+				assert.False(t, restricted)
+				assert.Nil(t, keyIDs)
+			}
+		})
+	}
+}
+
+// Under a union the scoping permit may admit a model the base permit blacklists; the base permit must
+// then not serve it, whether named literally or through an alias whose target it blacklists.
+func TestAccess_UnionCandidateHeldToBaseBlacklistOfAliasTarget(t *testing.T) {
+	allowAll := func(string, string, []string) bool { return true }
+	bestToOpus := func(_, model string, _ []string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	base := NewPermit(PermitVirtualKey, "vk1", "VK", true, false, []schemas.ProviderPermit{{
+		Provider: "bedrock", AllowedModels: []string{"regex:^claude-.*"}, BlacklistedModels: []string{"claude-opus-4-6"}, KeyIDs: []string{"base-key"},
+	}}, nil)
+	scoping := NewPermit("other", "o1", "Other", true, false, []schemas.ProviderPermit{{
+		Provider: "bedrock", AllowedModels: []string{"*"}, KeyIDs: []string{"scope-key"},
+	}}, nil)
+	access := NewAccess(held(base), "", scoping, Union, allowAll).WithAliasTargets(bestToOpus)
+	for _, model := range []string{"best-model", "claude-opus-4-6"} {
+		assert.True(t, access.IsModelAllowed("bedrock", model), model)
+		for _, c := range access.ProvidersForModel(model) {
+			assert.NotContains(t, c.KeyIDs, "base-key", "%s must not be served through the base permit that blacklists it", model)
+		}
+	}
+}
+
+// A scoping permit that blacklists the alias's target refuses the alias under an intersection.
+func TestAccess_IntersectScopingBlacklistHoldsAliasTarget(t *testing.T) {
+	allowAll := func(string, string, []string) bool { return true }
+	bestToOpus := func(_, model string, _ []string, visit func(string)) {
+		if model == "best-model" {
+			visit("claude-opus-4-6")
+		}
+	}
+	base := permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "*")
+	scoping := permitWithBlacklist("other", "o1", "Other", "bedrock", []string{"regex:^claude-.*"}, "claude-opus-4-6")
+	access := NewAccess(held(base), "", scoping, Intersect, allowAll).WithAliasTargets(bestToOpus)
+	assert.False(t, access.IsModelAllowed("bedrock", "best-model"))
+	assert.False(t, access.IsModelAllowed("bedrock", "claude-opus-4-6"))
+	assert.True(t, NewAccess(held(base), "", scoping, Intersect, allowAll).IsModelAllowed("bedrock", "best-model"), "no source, no alias target")
+}
+
+func TestAccess_RestrictsKeysAllocatesNothing(t *testing.T) {
+	access := NewAccess(held(permitWithModels(PermitVirtualKey, "vk1", "VK", "bedrock", "*")), "", nil, "", nil)
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _ = access.RestrictsKeys("bedrock") }))
+}
+
+// permitIDs lists permit ids, in order.
+func permitIDs(permits []schemas.Permit) []string {
+	ids := make([]string, 0, len(permits))
+	for _, p := range permits {
+		ids = append(ids, p.ID())
+	}
+	return ids
 }

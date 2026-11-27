@@ -16,7 +16,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/temptoken"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -45,6 +45,20 @@ type OAuth2IdentityResolver interface {
 	IsUserActive(ctx context.Context, userID string) (active bool, err error)
 }
 
+// OAuth2UserAccessChecker is optionally implemented by an OAuth2IdentityResolver
+// that can tell whether a user holds any access (enterprise access profiles).
+// The consent page asks it on client gateway sign-ins in user mode: a user with
+// no access would otherwise get a session whose every request is refused, with
+// an error that sends the client back to sign in again.
+type OAuth2UserAccessChecker interface {
+	// UserHasAccess reports whether anything grants userID access. An error is
+	// reserved for transient lookup failures that should be retried.
+	UserHasAccess(ctx context.Context, userID string) (bool, error)
+}
+
+// clientGatewayNoAccessMessage is the consent refusal for a user with no access.
+const clientGatewayNoAccessMessage = "your account has no access configured in Bifrost yet. Ask an administrator to assign you an access profile, then sign in again"
+
 // OAuth2ConsentHandler serves the two consent flow APIs:
 //
 //   - GET  /api/oauth2/consent/flows/{id} — flow detail + available modes
@@ -56,8 +70,9 @@ type OAuth2IdentityResolver interface {
 // to how the existing per-user upstream OAuth consent pages work.
 type OAuth2ConsentHandler struct {
 	store            *lib.Config
-	tempTokens       *temptoken.Service     // used to invalidate the token after consent
-	identityResolver OAuth2IdentityResolver // optional; nil = vk + session modes only
+	tempTokens       *temptoken.Service            // used to invalidate the token after consent
+	identityResolver OAuth2IdentityResolver        // optional; nil = vk + session modes only
+	clientMetadata   *oauth2ClientMetadataResolver // resolves CIMD client_ids
 }
 
 // NewOAuth2ConsentHandler creates a new consent handler. identityResolver may
@@ -67,6 +82,7 @@ func NewOAuth2ConsentHandler(store *lib.Config, tempTokens *temptoken.Service, i
 		store:            store,
 		tempTokens:       tempTokens,
 		identityResolver: identityResolver,
+		clientMetadata:   defaultClientMetadataResolver,
 	}
 }
 
@@ -79,7 +95,10 @@ func (h *OAuth2ConsentHandler) RegisterRoutes(r *router.Router, middlewares ...s
 // consentFlowDetailResponse is the wire shape for GET /api/oauth2/consent/flows/{id}.
 type consentFlowDetailResponse struct {
 	RedirectURI    string            `json:"redirect_uri"`
+	RedirectHost   string            `json:"redirect_host"`
 	ClientName     string            `json:"client_name"`
+	ClientHost     string            `json:"client_host,omitempty"` // CIMD clients only
+	LocalhostOnly  bool              `json:"localhost_only_redirect,omitempty"`
 	AvailableModes []consentFlowMode `json:"available_modes"`
 	LoggedInUser   *loggedInUser     `json:"logged_in_user,omitempty"` // non-nil when a valid session is present
 	ExpiresAt      string            `json:"expires_at"`
@@ -106,7 +125,16 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	client, err := h.store.ConfigStore.GetOAuth2ClientByClientID(ctx, req.ClientID)
+	client, metadataErr, err := lookupOAuth2Client(ctx, h.store, h.clientMetadata, req.ClientID)
+	if metadataErr != nil {
+		SendError(ctx, metadataErr.httpStatus(), metadataErr.description)
+		return
+	}
+	if gw := clientGatewayProfileByClientID(req.ClientID); gw != nil && errors.Is(err, configstore.ErrNotFound) {
+		// The orphaned-client sweep may remove a client gateway's built-in client
+		// while a sign-in is in flight; it needs no registration to be named.
+		client, err = &configtables.TableOAuth2Client{ClientID: gw.ClientID(), ClientName: gw.DisplayName()}, nil
+	}
 	if err != nil || client == nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusInternalServerError, "client registration not found")
@@ -119,9 +147,14 @@ func (h *OAuth2ConsentHandler) flowDetail(ctx *fasthttp.RequestCtx) {
 
 	resp := consentFlowDetailResponse{
 		RedirectURI:    req.RedirectURI,
+		RedirectHost:   urlHost(req.RedirectURI),
 		ClientName:     client.ClientName,
+		LocalhostOnly:  allLoopbackRedirects(client.RedirectURIs),
 		AvailableModes: h.availableModes(ctx),
 		ExpiresAt:      req.ExpiresAt.UTC().Format(time.RFC3339),
+	}
+	if isClientMetadataDocumentID(client.ClientID) {
+		resp.ClientHost = urlHost(client.ClientID)
 	}
 
 	// If a valid session is present, surface the user so the consent page can
@@ -145,8 +178,11 @@ const (
 
 // consentFlowSubmitRequest is the wire shape for PUT /api/oauth2/consent/flows/{id}.
 type consentFlowSubmitRequest struct {
-	Mode  consentFlowMode `json:"mode"`  // "vk" | "session" | "user"
-	Value string          `json:"value"` // VK plaintext value for mode=vk; empty for session/user
+	Mode  consentFlowMode `json:"mode"`           // "vk" | "session" | "user"
+	Value string          `json:"value"`          // VK plaintext value for mode=vk; empty for session/user
+	Deny  bool            `json:"deny,omitempty"` // refuse the sign-in instead of approving it (device sign-ins only)
+	// UserCode is the code shown in the terminal; approving a device sign-in needs it.
+	UserCode string `json:"user_code,omitempty"`
 }
 
 // consentFlowSubmitResponse is returned after successful consent. The frontend
@@ -174,6 +210,17 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 	var body consentFlowSubmitRequest
 	if err := sonic.Unmarshal(ctx.PostBody(), &body); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid request body")
+		return
+	}
+	if body.Deny {
+		h.denyFlow(ctx, req)
+		return
+	}
+	// The consent link alone must not approve a device sign-in: whoever typed the code gets
+	// it and could send it on to someone else to click. The code from the terminal proves
+	// the person approving is the one signing in.
+	if req.DeviceCodeHash != nil && !deviceUserCodeMatches(req, body.UserCode) {
+		SendError(ctx, fasthttp.StatusBadRequest, deviceUserCodeMismatchMessage)
 		return
 	}
 
@@ -207,19 +254,40 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Mint the authorization code. Only the SHA256 hash is stored — the
-	// plaintext travels to the client via the redirect URI and is never
-	// persisted anywhere (RFC 6749 §4.1.2).
-	code, err := generateSecureToken(32)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to generate authorization code")
-		return
+	// A device-grant flow (client gateway sign-in) has no redirect to carry
+	// an authorization code: consent alone completes it, and the device's next
+	// token poll consumes the row. Every other flow mints a code.
+	isDeviceFlow := req.DeviceCodeHash != nil
+	if isDeviceFlow && bfMode == schemas.MCPAuthModeUser {
+		if checker, ok := h.identityResolver.(OAuth2UserAccessChecker); ok {
+			hasAccess, err := checker.UserHasAccess(ctx, bfSub)
+			if err != nil {
+				logger.Error("consent: failed to check access for user %s: %v", bfSub, err)
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "failed to check your access; try again")
+				return
+			}
+			if !hasAccess {
+				SendError(ctx, fasthttp.StatusForbidden, clientGatewayNoAccessMessage)
+				return
+			}
+		}
+	}
+	var code string
+	if !isDeviceFlow {
+		// Mint the authorization code. Only the SHA256 hash is stored — the
+		// plaintext travels to the client via the redirect URI and is never
+		// persisted anywhere (RFC 6749 §4.1.2).
+		code, err = generateSecureToken(32)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, "failed to generate authorization code")
+			return
+		}
+		hash := hashSHA256Hex(code)
+		req.CodeHash = &hash
 	}
 
 	req.BfMode = string(bfMode)
 	req.BfSub = bfSub
-	hash := hashSHA256Hex(code)
-	req.CodeHash = &hash
 	req.Status = configtables.OAuth2AuthorizeRequestStatusConsented
 	req.UpdatedAt = time.Now()
 
@@ -240,17 +308,29 @@ func (h *OAuth2ConsentHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		_, _ = h.tempTokens.DeleteByResourceID(ctx, temptoken.OAuth2ConsentScopeName, flowID)
 	}
 
-	issuer := oauth2IssuerURL(ctx, h.store)
+	consent := map[string]any{"client_id": req.ClientID, "scope": req.Scope, "mode": body.Mode, "bf_mode": req.BfMode}
+	// A session-mode subject is the server-minted session token, so it is never recorded.
+	if bfMode != schemas.MCPAuthModeSession {
+		consent["bf_sub"] = req.BfSub
+	}
+
+	if isDeviceFlow {
+		consent["grant"] = "device_code"
+		lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
+		SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceApprovedURL(oauth2BrowserBaseURL(ctx, h.store))})
+		return
+	}
 	redirectURL, err := buildRedirectURL(req.RedirectURI, map[string]string{
 		"code":  code,
 		"state": req.State,
-		"iss":   issuer, // RFC 9207: include issuer so client can validate
+		"iss":   oauth2IssuerForResource(ctx, h.store, req.Resource), // RFC 9207: the grant's issuer, never the browser's host
 	})
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to build redirect URL: %v", err))
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "oauth2_consent.granted", "oauth2_consent", flowID, req.ClientID, nil, consent)
 	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: redirectURL})
 }
 
@@ -275,8 +355,15 @@ func (h *OAuth2ConsentHandler) loadPendingFlow(ctx *fasthttp.RequestCtx, flowID 
 		SendError(ctx, fasthttp.StatusGone, "authorization flow has expired")
 		return nil
 	}
-	if !oauth2RedirectAllowed(h.store, req.RedirectURI) {
+	// Device-grant rows (client gateway sign-in) carry no redirect_uri: consent
+	// sends the browser to Bifrost's own /oauth/device page, so there is nothing to approve.
+	if req.DeviceCodeHash == nil && !oauth2RedirectAllowed(h.store, req.RedirectURI) {
 		SendError(ctx, fasthttp.StatusBadRequest, "redirect_uri is no longer approved")
+		return nil
+	}
+	// A flow started before /mcp was capped below metadata documents cannot finish with one.
+	if isClientMetadataDocumentID(req.ClientID) && !clientMetadataDocumentsAllowed(h.store) {
+		SendError(ctx, fasthttp.StatusBadRequest, "client ID metadata documents are no longer accepted")
 		return nil
 	}
 	return req
@@ -347,6 +434,45 @@ func (h *OAuth2ConsentHandler) availableModes(ctx *fasthttp.RequestCtx) []consen
 // (500 — crypto or DB error). resolveIdentity mixes both kinds; without the
 // status every failure would be reported as a 400, mislabeling a broken server
 // as a bad request and leaking the cause to the client.
+const deviceUserCodeMismatchMessage = "enter the code shown in your terminal to approve this sign-in"
+
+// deviceUserCodeMatches reports whether code is the user code this device sign-in was started with.
+func deviceUserCodeMatches(req *configtables.TableOAuth2AuthorizeRequest, code string) bool {
+	if req.UserCodeHash == nil {
+		return false
+	}
+	got := hashSHA256Hex(normalizeGatewayUserCode(code))
+	return subtle.ConstantTimeCompare([]byte(got), []byte(*req.UserCodeHash)) == 1
+}
+
+// denyFlow refuses a device sign-in (a client gateway's /login) from the consent
+// page: the request moves to revoked, so the device's next poll is answered
+// access_denied (RFC 8628 §3.5) instead of polling until the code expires, and
+// the browser is sent to the device page's denied state. Refusing needs no
+// identity, so whoever holds the consent link can do it. An authorization-code
+// flow would answer a refusal by redirecting to its client with
+// error=access_denied, which this endpoint does not do, so it is rejected there.
+func (h *OAuth2ConsentHandler) denyFlow(ctx *fasthttp.RequestCtx, req *configtables.TableOAuth2AuthorizeRequest) {
+	if req.DeviceCodeHash == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "only a device sign-in can be denied here")
+		return
+	}
+	if err := h.store.ConfigStore.DenyOAuth2AuthorizeRequest(ctx, req.ID); err != nil {
+		if errors.Is(err, configstore.ErrNotFound) {
+			SendError(ctx, fasthttp.StatusConflict, "authorization flow has already been completed")
+			return
+		}
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to record the refusal")
+		return
+	}
+	if h.tempTokens != nil {
+		_, _ = h.tempTokens.DeleteByResourceID(ctx, temptoken.OAuth2ConsentScopeName, req.ID)
+	}
+	lib.RecordAuditChange(ctx, "oauth2_consent.denied", "oauth2_consent", req.ID, req.ClientID, nil,
+		map[string]any{"client_id": req.ClientID, "grant": "device_code"})
+	SendJSON(ctx, consentFlowSubmitResponse{RedirectURL: clientGatewayDeviceDeniedURL(oauth2BrowserBaseURL(ctx, h.store))})
+}
+
 type consentError struct {
 	status  int
 	message string
@@ -419,6 +545,10 @@ func (h *OAuth2ConsentHandler) resolveVKIdentity(ctx *fasthttp.RequestCtx, vkVal
 	}
 	if !vk.IsActiveValue() {
 		return "", "", clientConsentError("virtual key is inactive")
+	}
+	// An expired key is refused everywhere else; a grant minted from it would outlive the expiry.
+	if vk.IsExpiredAt(time.Now()) {
+		return "", "", clientConsentError("virtual key has expired")
 	}
 	// During a rotation cooldown the lookup also resolves the key's previous value, so
 	// direct calls keep working while clients switch over. Consent mints a new grant

@@ -70,6 +70,10 @@ type MetricsExporter struct {
 
 	// A2A (Agent Gateway) metrics
 	a2aClientOperationDuration *syncFloat64Histogram
+	relayOperationDuration     *syncFloat64Histogram
+	relayUpstreamDuration      *syncFloat64Histogram
+	relayOverheadLatency       *syncFloat64Histogram
+	relayCostTotal             *syncFloat64Counter
 
 	// HTTP metrics
 	httpRequestsTotal     *syncInt64Counter
@@ -475,6 +479,40 @@ func (m *MetricsExporter) initMetrics() {
 		boundaries: mcpOperationDurationBuckets,
 	}
 
+	// Relay calls use the LLM latency buckets, as a passthrough call's metrics do, so a long stream
+	// is not folded into a 300s top bucket.
+	m.relayOperationDuration = &syncFloat64Histogram{
+		name:       "bifrost.relay.operation.duration",
+		desc:       "Duration of a relay call to a non-LLM upstream API as observed by Bifrost, from the gateway to the end of the reply",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
+	}
+	// The part of a relay call spent blocked on the upstream socket (the upstream half of the
+	// overhead split), so a slow API is told apart from Bifrost's own time.
+	m.relayUpstreamDuration = &syncFloat64Histogram{
+		name:       "bifrost.relay.upstream_socket.duration",
+		desc:       "Time a relay call spent blocked on its upstream API's socket",
+		unit:       "s",
+		meter:      m.meter,
+		boundaries: upstreamLatencyBuckets,
+	}
+	// Bifrost's own time on a relay call, as bifrost_overhead_latency_microseconds measures it for
+	// LLM calls.
+	m.relayOverheadLatency = &syncFloat64Histogram{
+		name:       "bifrost.relay.overhead_latency",
+		desc:       "Latency Bifrost added to a relay call, in microseconds: total call time minus time blocked on the upstream",
+		unit:       "us",
+		meter:      m.meter,
+		boundaries: overheadLatencyBuckets,
+	}
+	m.relayCostTotal = &syncFloat64Counter{
+		name:  "bifrost.relay.cost",
+		desc:  "USD charged for relay calls",
+		unit:  "{USD}",
+		meter: m.meter,
+	}
+
 	// HTTP metrics
 	m.httpRequestsTotal = &syncInt64Counter{
 		name:  "http_requests_total",
@@ -615,6 +653,26 @@ func (m *MetricsExporter) RecordA2AOperationDuration(ctx context.Context, durati
 	m.a2aClientOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
 }
 
+// RecordRelayOperationDuration records the duration of one relay call.
+func (m *MetricsExporter) RecordRelayOperationDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.relayOperationDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayUpstreamDuration records the upstream time of one relay call.
+func (m *MetricsExporter) RecordRelayUpstreamDuration(ctx context.Context, durationSeconds float64, attrs ...attribute.KeyValue) {
+	m.relayUpstreamDuration.Record(ctx, durationSeconds, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayOverheadLatency records Bifrost's own time on one relay call, in microseconds.
+func (m *MetricsExporter) RecordRelayOverheadLatency(ctx context.Context, micros float64, attrs ...attribute.KeyValue) {
+	m.relayOverheadLatency.Record(ctx, micros, metric.WithAttributes(attrs...))
+}
+
+// RecordRelayCost adds the USD charged for one relay call.
+func (m *MetricsExporter) RecordRelayCost(ctx context.Context, cost float64, attrs ...attribute.KeyValue) {
+	m.relayCostTotal.Add(ctx, cost, metric.WithAttributes(attrs...))
+}
+
 // RecordHTTPRequest records an HTTP request metric
 func (m *MetricsExporter) RecordHTTPRequest(ctx context.Context, attrs ...attribute.KeyValue) {
 	m.httpRequestsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -655,27 +713,61 @@ func resolveServiceInstanceID() string {
 	return fmt.Sprintf("bifrost-%d", time.Now().UnixNano())
 }
 
-// team/customer/businessUnit args are canonical comma-joined sets; label names stay
-// singular (team_id, ...) for dashboard compatibility. A request is scoped to at most
-// one project, so projectID/projectName are plain scalars.
-func BuildBifrostAttributes(provider, model, method, virtualKeyID, virtualKeyName, selectedKeyID, selectedKeyName string, fallbackIndex int, teamIDs, teamNames, customerIDs, customerNames, businessUnitIDs, businessUnitNames, projectID, projectName string) []attribute.KeyValue {
+// BifrostMetricLabels holds the metric-safe dimensions of schemas.EnrichmentDims.
+// Team/customer/business-unit values are canonical comma-joined sets under the
+// singular label names, for dashboard compatibility.
+type BifrostMetricLabels struct {
+	Provider            string
+	Model               string
+	Method              string
+	Alias               string
+	App                 string
+	RoutingEngineUsed   string
+	VirtualKeyID        string
+	VirtualKeyName      string
+	SelectedKeyID       string
+	SelectedKeyName     string
+	RoutingRuleID       string
+	RoutingRuleName     string
+	ComplexityTier      string
+	ComplexityMechanism string
+	TeamIDs             string
+	TeamNames           string
+	CustomerIDs         string
+	CustomerNames       string
+	BusinessUnitIDs     string
+	BusinessUnitNames   string
+	ProjectID           string
+	ProjectName         string
+	FallbackIndex       int
+}
+
+// BuildBifrostAttributes returns the labels in registry order, plus the replica id.
+func BuildBifrostAttributes(l BifrostMetricLabels) []attribute.KeyValue {
 	return []attribute.KeyValue{
-		attribute.String("provider", provider),
-		attribute.String("model", model),
-		attribute.String("method", method),
-		attribute.String("virtual_key_id", virtualKeyID),
-		attribute.String("virtual_key_name", virtualKeyName),
-		attribute.String("selected_key_id", selectedKeyID),
-		attribute.String("selected_key_name", selectedKeyName),
-		attribute.Int("fallback_index", fallbackIndex),
-		attribute.String("team_id", teamIDs),
-		attribute.String("team_name", teamNames),
-		attribute.String("customer_id", customerIDs),
-		attribute.String("customer_name", customerNames),
-		attribute.String("business_unit_id", businessUnitIDs),
-		attribute.String("business_unit_name", businessUnitNames),
-		attribute.String("project_id", projectID),
-		attribute.String("project_name", projectName),
+		attribute.String("provider", l.Provider),
+		attribute.String("model", l.Model),
+		attribute.String("method", l.Method),
+		attribute.String("alias", l.Alias),
+		attribute.String("app", l.App),
+		attribute.String("routing_engine_used", l.RoutingEngineUsed),
+		attribute.String("virtual_key_id", l.VirtualKeyID),
+		attribute.String("virtual_key_name", l.VirtualKeyName),
+		attribute.String("selected_key_id", l.SelectedKeyID),
+		attribute.String("selected_key_name", l.SelectedKeyName),
+		attribute.String("routing_rule_id", l.RoutingRuleID),
+		attribute.String("routing_rule_name", l.RoutingRuleName),
+		attribute.String("complexity_tier", l.ComplexityTier),
+		attribute.String("complexity_mechanism", l.ComplexityMechanism),
+		attribute.String("team_id", l.TeamIDs),
+		attribute.String("team_name", l.TeamNames),
+		attribute.String("customer_id", l.CustomerIDs),
+		attribute.String("customer_name", l.CustomerNames),
+		attribute.String("business_unit_id", l.BusinessUnitIDs),
+		attribute.String("business_unit_name", l.BusinessUnitNames),
+		attribute.String("project_id", l.ProjectID),
+		attribute.String("project_name", l.ProjectName),
+		attribute.Int("fallback_index", l.FallbackIndex),
 		attribute.String("bifrost_instance_id", serviceInstanceID),
 	}
 }

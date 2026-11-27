@@ -118,6 +118,9 @@ type SpanEnrichment struct {
 	BusinessUnitName string
 	ProjectID        string
 	ProjectName      string
+	PromptID         string
+	PromptName       string
+	PromptVersion    string
 	UserID           string
 	UserName         string
 	UserEmail        string

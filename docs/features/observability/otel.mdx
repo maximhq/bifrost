@@ -48,6 +48,7 @@ The plugin supports multiple trace formats to match your observability platform:
 | `excluded_attributes` | `string[]` | ❌ No | Span attribute names to leave out of exported spans (default: none). See [Excluding Attributes](#excluding-attributes) |
 | `export_raw_payloads` | `boolean` | ❌ No | Attach raw provider request/response bodies to LLM spans (default: `false`). See [Raw Provider Payloads](#raw-provider-payloads) |
 | `disable_root_span_content` | `boolean` | ❌ No | Drop content from the **root span only**, keeping it on child spans (default: `false`). Overridden by `disable_content_logging`, which drops content from every span. See [Controlling Exported Content](#controlling-exported-content) |
+| `apply_trace_dimensions_to_child_spans` | `boolean` | ❌ No | Merge `x-bf-dim-*` request dimensions onto child spans as well as the root (default: `false`). Span-level attributes win on conflict. `path`, `method` and keys in reserved attribute namespaces (`gen_ai.`, `llm.`, `bifrost.`, `http.`, `url.`, `session.`, `service.`, `k8s.`, `langfuse.`, `openinference.`, `otel.`) are skipped. Each dimension is added to every exported span, so high-cardinality values raise ingestion cost |
 | `request_headers` | `string[]` | ❌ No | Request-header name patterns whose values are attached to the root span as `http.request.header.*` attributes. Supports exact names and wildcards (`x-custom-*`, `*`) |
 
 ### Environment Variable Substitution
@@ -1192,6 +1193,7 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
 | `bifrost_request_retries` | Histogram | Retries used per request (observed once per request) |
 | `mcp.client.operation.duration` | Histogram | MCP request duration observed by the client (see [Metrics Push](#metrics-push-cluster-mode) for dimensions) |
+| `a2a.client.operation.duration` | Histogram | Agent Gateway operation duration in seconds; see [Agent Gateway](#agent-gateway) for dimensions. |
 | `http_requests_total` | Counter | Total HTTP requests |
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
 | `http_request_size_bytes` | Histogram | HTTP request body size |
@@ -1415,6 +1417,20 @@ Use the [Maxim Plugin](./maxim) for:
 - Team collaboration and governance
 - Production monitoring with alerts
 - Dataset management and curation
+
+---
+
+## Agent Gateway
+
+Agent Gateway operations are exported through the same OTel profiles as LLM and MCP calls. Each A2A operation becomes a client span with `bifrost.a2a.operation.name`, the agent name, status, timing, and available task and conversation IDs. Protocol methods also carry `a2a.method.name`; gateway-owned operations such as `push_delivery` use the Bifrost operation name. Streaming status and artifact updates appear as span events.
+
+Structured request and response content uses `gen_ai.input.messages` and `gen_ai.output.messages`. Returned tasks, artifacts, and accumulated streaming output are represented in that content. Profile-level `disable_content_logging`, virtual-key or project content suppression, `disable_root_span_content`, and `excluded_attributes` apply to A2A exports too. Disabling content leaves operation metadata available.
+
+Raw HTTP bodies require both Agent Gateway raw capture and the profile's `export_raw_payloads`. Enabling capture alone does not export raw bodies. gRPC operations retain structured content but do not have raw HTTP capture.
+
+When metrics are enabled, `a2a.client.operation.duration` records one duration in seconds per operation. Dimensions include `bifrost.a2a.operation.name`, the available method and upstream transport, governance attribution, and `error.type` on failures. Task, message, and session IDs are not metric dimensions.
+
+See [Agent Gateway observability](/features/agent-gateway/observability#export-to-observability-connectors) for operation coverage and correlation.
 
 ---
 

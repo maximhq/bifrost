@@ -1,4 +1,5 @@
-import { mapAgentCard } from "@/lib/utils/agentCard";
+import { configuredAgentEndpointOrigin, mapAgentCard, suggestedAgentEndpoints } from "@/lib/utils/agentCard";
+import { Badge } from "@/components/ui/badge";
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { SectionHeader } from "@/app/workspace/mcp-registry/views/sectionHeader";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
@@ -20,16 +21,19 @@ import type { AgentRegistrationView, AgentSecurityScheme, AgentUpstreamAuth, Ins
 import AgentAccessProfiles from "@enterprise/components/agent-gateway/agentAccessProfiles";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { AlertTriangle, ChevronDown, FileSearch, Info, Plus, RefreshCw, Trash2 } from "lucide-react";
+import type { TFunction } from "i18next";
 import { useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { AuthFields, TLSFields, authSummary, emptyAuth, emptySecret, hasTLS, normalizeAuth } from "./agentAuthFields";
 import { AgentCardPreview } from "@/components/agents/agentCardPreview";
 import { AgentEndpoints } from "./agentEndpoints";
+import { withBasePath } from "@/lib/utils/basePath";
 
 const AGENT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-function validateAgentName(name: string): string | null {
-	if (name.length < 1 || name.length > 255) return "Name must be 1-255 characters.";
-	if (!AGENT_NAME_PATTERN.test(name)) return "Use lowercase letters, digits, and hyphens; no leading, trailing, or consecutive hyphens.";
+function validateAgentName(name: string, t: TFunction<"observability">): string | null {
+	if (name.length < 1 || name.length > 255) return t("agentGateway.sheet.nameLength");
+	if (!AGENT_NAME_PATTERN.test(name)) return t("agentGateway.sheet.namePattern");
 	return null;
 }
 
@@ -82,20 +86,20 @@ function authForRequirement(result: InspectAgentCardResponse, index: number): Ag
 	};
 }
 
-function requirementGap(result: InspectAgentCardResponse, index: number): string | null {
+function requirementGap(result: InspectAgentCardResponse, index: number, t: TFunction<"observability">): string | null {
 	const names = result.security_requirements[index] ?? [];
 	const schemes = names.map((name) => result.security_schemes.find((scheme) => scheme.name === name));
-	if (schemes.some((scheme) => !scheme)) return "The card references a missing security scheme.";
+	if (schemes.some((scheme) => !scheme)) return t("agentGateway.sheet.gapMissingScheme");
 	const oauthCount = schemes.filter((scheme) => scheme?.type === "oauth2" || scheme?.type === "openIdConnect").length;
 	const headerCount = schemes.filter((scheme) => scheme && headerName(scheme)).length;
-	if (oauthCount > 1) return "The gateway supports one OAuth client per upstream.";
-	if (oauthCount && headerCount) return "The gateway cannot combine OAuth with static header credentials.";
+	if (oauthCount > 1) return t("agentGateway.sheet.gapOneOauth");
+	if (oauthCount && headerCount) return t("agentGateway.sheet.gapOauthHeaders");
 	const headers = schemes.flatMap((scheme) => {
 		const header = scheme ? headerName(scheme) : null;
 		return header ? [header] : [];
 	});
-	if (new Set(headers).size !== headers.length) return "The gateway cannot store separate credentials for the same HTTP header.";
-	return "The gateway does not support this query, cookie, or HTTP credential.";
+	if (new Set(headers).size !== headers.length) return t("agentGateway.sheet.gapDuplicateHeader");
+	return t("agentGateway.sheet.gapUnsupported");
 }
 
 function SettingRow({
@@ -130,6 +134,7 @@ function SettingRow({
 // Collapsed by default; the trigger carries a one-line summary so the closed state still says what is configured.
 function OptionGroup({
 	title,
+	indicator,
 	tooltip,
 	summary,
 	open,
@@ -138,6 +143,7 @@ function OptionGroup({
 	children,
 }: {
 	title: string;
+	indicator?: React.ReactNode;
 	tooltip?: string;
 	summary: string;
 	open: boolean;
@@ -148,8 +154,9 @@ function OptionGroup({
 	return (
 		<Collapsible open={open} onOpenChange={onOpenChange} className="rounded-sm border">
 			<CollapsibleTrigger className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left" data-testid={testId}>
-				<span className="flex items-center gap-2 text-sm font-medium">
+				<span className="flex min-h-6 items-center gap-2 text-sm font-medium">
 					{title}
+					{indicator}
 					{tooltip && (
 						<TooltipProvider>
 							<Tooltip>
@@ -177,7 +184,10 @@ interface AgentSheetProps {
 	onSaved: () => void;
 }
 
+/** Sheet for registering a new agent, or editing `agent` when one is given. */
 export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps) {
+	const { t } = useTranslation("observability");
+	const { t: tCommon } = useTranslation("common");
 	const isEditing = !!agent;
 	const canSave = useRbac(RbacResource.AgentGateway, isEditing ? RbacOperation.Update : RbacOperation.Create);
 	const [createAgent, { isLoading: isCreating }] = useCreateAgentMutation();
@@ -207,13 +217,30 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 		agent?.forward_accepted_credential_overrides_auth ?? false,
 	);
 	const [virtualKeyIds, setVirtualKeyIds] = useState(agent?.virtual_key_ids ?? []);
-	const [tenant, setTenant] = useState(agent?.tenant ?? "");
-	const [extensionUris, setExtensionUris] = useState(agent?.extension_uris ?? []);
-	const [advancedOpen, setAdvancedOpen] = useState(!!agent?.tenant || (agent?.extension_uris?.length ?? 0) > 0);
+	const [credentialOrigins, setCredentialOrigins] = useState(() => (agent?.credential_origins ?? []).map((value, id) => ({ id, value })));
+	let cardOrigin = "";
+	try {
+		const parsedCardURL = new URL(agentCardUrl);
+		if (parsedCardURL.protocol === "http:" || parsedCardURL.protocol === "https:") cardOrigin = parsedCardURL.origin;
+	} catch {
+		// An incomplete card URL has no allowed origin to display yet.
+	}
+	const nextCredentialOriginId = useRef(credentialOrigins.length);
+	const additionalEndpointCount = credentialOrigins.filter((origin) => origin.value.trim()).length;
+	const allowedEndpointOrigins = new Set(credentialOrigins.map((origin) => configuredAgentEndpointOrigin(origin.value)));
+	const advertisedEndpoints = suggestedAgentEndpoints(agentCardUrl, inspection?.interfaces, []).sort(
+		(left, right) => Number(allowedEndpointOrigins.has(left)) - Number(allowedEndpointOrigins.has(right)),
+	);
+	const suggestedEndpoints = suggestedAgentEndpoints(
+		agentCardUrl,
+		inspection?.interfaces,
+		credentialOrigins.map((origin) => origin.value.trim()),
+	);
+	const [credentialOriginsOpen, setCredentialOriginsOpen] = useState((agent?.credential_origins?.length ?? 0) > 0);
 	const { data: vksData } = useGetVirtualKeysQuery({ limit: 1000 });
 	const vkById = new Map((vksData?.virtual_keys ?? []).map((virtualKey) => [virtualKey.id, virtualKey]));
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
-	const baseUrl = getExternalBaseUrl(coreConfig?.client_config);
+	const baseUrl = getExternalBaseUrl(coreConfig?.client_config, "a2a_external_client_url");
 	const grpc = coreConfig?.agent_gateway
 		? {
 				baseDomain: coreConfig.agent_gateway.grpc_base_domain,
@@ -245,7 +272,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 
 	const handleInspect = async () => {
 		if (!isHttpUrl(agentCardUrl)) {
-			setAgentCardUrlError("Enter a valid http(s) URL.");
+			setAgentCardUrlError(t("agentGateway.sheet.invalidUrl"));
 			scrollTo(connectionRef);
 			return;
 		}
@@ -269,7 +296,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 		.map((scheme) => (scheme ? headerName(scheme) : null))
 		.filter((name): name is string => !!name);
 	const unsupportedRequirement = !!inspection && !selectedAuth;
-	const unsupportedReason = inspection && unsupportedRequirement ? requirementGap(inspection, selectedRequirement) : null;
+	const unsupportedReason = inspection && unsupportedRequirement ? requirementGap(inspection, selectedRequirement, t) : null;
 	const expectedSchemes = selectedAuth?.security_schemes ?? [];
 	const authMismatch =
 		!!inspection &&
@@ -278,21 +305,16 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 			expectedSchemes.some((name) => !runtimeAuth.security_schemes?.includes(name)));
 	const isBlocked = !manualMode && ((!isEditing && !inspection) || unsupportedRequirement);
 	const authLocked = isEditing && !inspection && !manualMode;
-	const extensionCount = extensionUris.filter((uri) => uri.trim()).length;
-	const advancedSummary =
-		[tenant.trim() && `Tenant ${tenant.trim()}`, extensionCount && `${extensionCount} extension${extensionCount === 1 ? "" : "s"}`]
-			.filter(Boolean)
-			.join(" · ") || "Not set";
 
 	const handleSave = async () => {
-		const validation = validateAgentName(name);
+		const validation = validateAgentName(name, t);
 		if (validation) {
 			setNameError(validation);
 			scrollTo(connectionRef);
 			return;
 		}
 		if (!isHttpUrl(agentCardUrl)) {
-			setAgentCardUrlError("Enter a valid http(s) URL.");
+			setAgentCardUrlError(t("agentGateway.sheet.invalidUrl"));
 			scrollTo(connectionRef);
 			return;
 		}
@@ -300,21 +322,20 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 			if (unsupportedRequirement) {
 				scrollTo(authRef);
 			} else {
-				setInspectionError("Fetch the agent card first, or configure authentication manually.");
+				setInspectionError(t("agentGateway.sheet.fetchFirst"));
 				scrollTo(connectionRef);
 			}
 			return;
 		}
 		const payload = {
 			agent_card_url: agentCardUrl.trim(),
-			tenant: tenant.trim() || undefined,
 			allow_by_default: allowByDefault,
 			forward_accepted_credential: forwardAcceptedCredential,
 			forward_accepted_credential_overrides_auth: forwardAcceptedCredentialOverridesAuth,
 			discovery_auth: normalizeAuth(cardAuth),
 			runtime_auth: normalizeAuth({ ...runtimeAuth, advanced: manualMode }),
 			virtual_key_ids: virtualKeyIds,
-			extension_uris: extensionUris.map((uri) => uri.trim()).filter(Boolean),
+			credential_origins: credentialOrigins.map((origin) => origin.value.trim()).filter(Boolean),
 		};
 		try {
 			if (agent)
@@ -324,13 +345,13 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 				}).unwrap();
 			else await createAgent({ name, enabled: true, ...payload }).unwrap();
 			toast({
-				title: "Success",
-				description: agent ? "Agent updated successfully" : "Agent registered successfully",
+				title: t("labels.success"),
+				description: agent ? t("agentGateway.sheet.updated") : t("agentGateway.sheet.registered"),
 			});
 			onSaved();
 		} catch (error) {
 			toast({
-				title: "Unable to save agent",
+				title: t("agentGateway.sheet.saveFailed"),
 				description: getErrorMessage(error),
 				variant: "destructive",
 			});
@@ -360,15 +381,13 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 				onEscapeKeyDown={onClose}
 			>
 				<SheetHeader className="w-full flex-col items-start gap-1 p-0 py-4" headerClassName="mb-0 bg-card sticky -top-4 z-10 px-4 md:px-8">
-					<SheetTitle className="font-medium">{agent ? name.trim() : "New agent"}</SheetTitle>
-					<SheetDescription className="line-clamp-2">
-						{inspection?.description || "Register an A2A agent and configure how Bifrost connects to it."}
-					</SheetDescription>
+					<SheetTitle className="font-medium">{agent ? name.trim() : t("agentGateway.sheet.newAgent")}</SheetTitle>
+					<SheetDescription className="line-clamp-2">{inspection?.description || t("agentGateway.sheet.subtitle")}</SheetDescription>
 				</SheetHeader>
 				<div className="space-y-8 px-4 pb-8 md:px-8">
 					<section ref={connectionRef} className="scroll-mt-4 space-y-4">
 						<div className="flex flex-col gap-2">
-							<Label>Name</Label>
+							<Label>{t("agentGateway.sheet.name")}</Label>
 							<Input
 								value={name}
 								placeholder="accounting-agent"
@@ -376,20 +395,20 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 								data-testid="agent-name-input"
 								onChange={(event) => {
 									setName(event.target.value);
-									setNameError(event.target.value ? validateAgentName(event.target.value) : null);
+									setNameError(event.target.value ? validateAgentName(event.target.value, t) : null);
 								}}
 							/>
 							{nameError && <p className="text-destructive text-xs">{nameError}</p>}
 							{grpc && name.length > 63 && (
 								<Alert variant="warning" data-testid="agent-grpc-name-length-warning">
 									<AlertTriangle className="h-4 w-4" />
-									<AlertTitle>gRPC is unavailable for this name</AlertTitle>
-									<AlertDescription>gRPC routes by DNS label, which caps at 63 characters. JSON-RPC and REST still work.</AlertDescription>
+									<AlertTitle>{t("agentGateway.sheet.grpcUnavailableTitle")}</AlertTitle>
+									<AlertDescription>{t("agentGateway.sheet.grpcUnavailableBody")}</AlertDescription>
 								</Alert>
 							)}
 						</div>
 						<div className="flex flex-col gap-2">
-							<Label>Agent card URL</Label>
+							<Label>{t("agentGateway.sheet.cardUrl")}</Label>
 							<div className="flex gap-2">
 								<Input
 									value={agentCardUrl}
@@ -401,14 +420,14 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 										setInspection(null);
 									}}
 								/>
-								{fetchButton(inspection ? "Refetch" : "Fetch")}
+								{fetchButton(inspection ? t("agentGateway.sheet.refetch") : t("agentGateway.sheet.fetch"))}
 							</div>
 							{agentCardUrlError && <p className="text-destructive text-xs">{agentCardUrlError}</p>}
 						</div>
 						<OptionGroup
-							title="Card fetch options"
-							tooltip="Only used to fetch the card. Never sent with agent requests."
-							summary={authSummary(cardAuth)}
+							title={t("agentGateway.sheet.cardFetchOptions")}
+							tooltip={t("agentGateway.sheet.cardFetchOptionsHelp")}
+							summary={authSummary(cardAuth, t)}
 							open={cardOptionsOpen}
 							onOpenChange={setCardOptionsOpen}
 							testId="agent-card-options-toggle"
@@ -421,7 +440,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 								}}
 							/>
 							<div className="flex flex-col gap-2 border-t pt-4">
-								<Label>TLS</Label>
+								<Label>{t("agentGateway.sheet.tls")}</Label>
 								<TLSFields
 									value={cardAuth.tls ?? {}}
 									onChange={(tls) => {
@@ -434,7 +453,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						{inspectionError && (
 							<Alert variant="destructive" data-testid="agent-card-fetch-error">
 								<AlertTriangle className="h-4 w-4" />
-								<AlertTitle>Could not fetch the card</AlertTitle>
+								<AlertTitle>{t("agentGateway.sheet.fetchErrorTitle")}</AlertTitle>
 								<AlertDescription>{inspectionError}</AlertDescription>
 							</Alert>
 						)}
@@ -445,10 +464,10 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 								<div className="text-muted-foreground flex flex-col items-center gap-2 rounded-sm border border-dashed p-6 text-center text-sm">
 									<FileSearch className="size-5" />
 									{isInspecting
-										? "Fetching the agent card…"
+										? t("agentGateway.sheet.fetching")
 										: isEditing
-											? "Refetch the card to preview it and edit request authentication."
-											: "Fetch the card to preview its skills and authentication."}
+											? t("agentGateway.sheet.refetchToPreview")
+											: t("agentGateway.sheet.fetchToPreview")}
 								</div>
 							)
 						)}
@@ -457,37 +476,34 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 					<DottedSeparator />
 
 					<section ref={authRef} className="scroll-mt-4 space-y-4">
-						<SectionHeader
-							title="Request authentication"
-							description="How Bifrost authenticates when it forwards requests to this agent."
-						/>
+						<SectionHeader title={t("agentGateway.sheet.requestAuth")} description={t("agentGateway.sheet.requestAuthDescription")} />
 						{unsupportedReason && !manualMode && (
 							<Alert variant="destructive">
 								<AlertTriangle className="h-4 w-4" />
-								<AlertTitle>This requirement cannot be used</AlertTitle>
-								<AlertDescription>{unsupportedReason} Pick another requirement or configure manually.</AlertDescription>
+								<AlertTitle>{t("agentGateway.sheet.requirementUnusable")}</AlertTitle>
+								<AlertDescription>{t("agentGateway.sheet.requirementUnusableBody", { reason: unsupportedReason })}</AlertDescription>
 							</Alert>
 						)}
 						{authMismatch && !manualMode && (
 							<Alert variant="warning">
 								<AlertTriangle className="h-4 w-4" />
-								<AlertDescription>Saved authentication no longer matches the selected card requirement.</AlertDescription>
+								<AlertDescription>{t("agentGateway.sheet.authMismatch")}</AlertDescription>
 							</Alert>
 						)}
 						{authLocked && (
 							<div className="flex items-center justify-between gap-3 rounded-sm border border-dashed p-3">
-								<p className="text-muted-foreground text-xs">Refetch the card to edit, or configure manually below.</p>
-								{fetchButton("Refetch card")}
+								<p className="text-muted-foreground text-xs">{t("agentGateway.sheet.refetchToEdit")}</p>
+								{fetchButton(t("agentGateway.sheet.refetchCard"))}
 							</div>
 						)}
 						{!inspection && !manualMode && !isEditing && (
 							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-								Fetch the agent card above. Its advertised requirements fill this in.
+								{t("agentGateway.sheet.fetchAbove")}
 							</div>
 						)}
 						{inspection && inspection.security_requirements.length > 1 && !manualMode && (
 							<div className="flex flex-col gap-2">
-								<Label>Card requirement</Label>
+								<Label>{t("agentGateway.sheet.cardRequirement")}</Label>
 								<Select value={String(selectedRequirement)} onValueChange={(value) => applyRequirement(inspection, Number(value))}>
 									<SelectTrigger className="w-full">
 										<SelectValue />
@@ -495,12 +511,12 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 									<SelectContent>
 										{inspection.security_requirements.map((requirement, index) => (
 											<SelectItem key={index} value={String(index)}>
-												{requirement.length ? requirement.join(" + ") : "None"}
+												{requirement.length ? requirement.join(" + ") : t("agentGateway.sheet.none")}
 											</SelectItem>
 										))}
 									</SelectContent>
 								</Select>
-								<p className="text-muted-foreground text-xs">The card offers alternatives. Schemes joined with + are sent together.</p>
+								<p className="text-muted-foreground text-xs">{t("agentGateway.sheet.requirementHelp")}</p>
 							</div>
 						)}
 						{(selectedAuth || manualMode || isEditing) && (
@@ -513,24 +529,165 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							/>
 						)}
 						<OptionGroup
-							title="TLS and certificates"
-							summary={runtimeAuth.tls?.insecure_skip_verify ? "Verification off" : hasTLS(runtimeAuth.tls) ? "Custom" : "Default"}
+							title={t("agentGateway.sheet.tlsAndCerts")}
+							summary={
+								runtimeAuth.tls?.insecure_skip_verify
+									? t("agentGateway.sheet.tlsVerificationOff")
+									: hasTLS(runtimeAuth.tls)
+										? t("agentGateway.sheet.tlsCustom")
+										: t("agentGateway.sheet.tlsDefault")
+							}
 							open={runtimeTLSOpen}
 							onOpenChange={setRuntimeTLSOpen}
 							testId="agent-runtime-tls-toggle"
 						>
 							<TLSFields value={runtimeAuth.tls ?? {}} onChange={(tls) => setRuntimeAuth({ ...runtimeAuth, tls })} />
 						</OptionGroup>
+						<OptionGroup
+							title={t("agentGateway.sheet.additionalEndpoints")}
+							indicator={
+								suggestedEndpoints.length > 0 && (
+									<Badge variant="destructive" data-testid="agent-endpoints-approval-needed">
+										{t("agentGateway.sheet.needsApproval", { count: suggestedEndpoints.length })}
+									</Badge>
+								)
+							}
+							tooltip={t("agentGateway.sheet.additionalEndpointsHelp")}
+							summary={
+								additionalEndpointCount
+									? t("agentGateway.sheet.endpointsAdded", { count: additionalEndpointCount })
+									: t("agentGateway.sheet.noneAdded")
+							}
+							open={credentialOriginsOpen}
+							onOpenChange={setCredentialOriginsOpen}
+							testId="agent-credential-origins-toggle"
+						>
+							<p className="text-muted-foreground text-xs">
+								<Trans
+									t={t}
+									i18nKey="agentGateway.sheet.additionalEndpointsIntro"
+									components={{
+										settings: (
+											<a href={withBasePath("/workspace/config/agent-gateway")} className="text-primary underline underline-offset-2" />
+										),
+									}}
+								/>
+							</p>
+							{cardOrigin && (
+								<div className="bg-muted/30 space-y-1 rounded-sm px-3 py-2">
+									<p className="text-muted-foreground text-xs">{t("agentGateway.sheet.allowedFromCard")}</p>
+									<p className="font-mono text-xs break-all" data-testid="agent-card-allowed-origin">
+										{cardOrigin}
+									</p>
+								</div>
+							)}
+							<div className="space-y-2">
+								{advertisedEndpoints.length > 0 && (
+									<div className="space-y-2" data-testid="agent-suggested-endpoints">
+										<p className="text-muted-foreground text-xs">{t("agentGateway.sheet.advertisedEndpoints")}</p>
+										{advertisedEndpoints.map((endpoint) => {
+											const allowed = allowedEndpointOrigins.has(endpoint);
+											return (
+												<div key={endpoint} className="flex items-center gap-2">
+													{allowed ? (
+														<span
+															className="bg-muted flex h-9 min-w-0 flex-1 items-center rounded-md border px-3 text-sm"
+															data-testid="agent-approved-endpoint"
+														>
+															<span className="truncate">{endpoint}</span>
+														</span>
+													) : (
+														<Input
+															value={endpoint}
+															readOnly
+															aria-label={t("agentGateway.sheet.suggestedEndpointAria")}
+															className="bg-muted h-9"
+														/>
+													)}
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														className={allowed ? "text-destructive hover:text-destructive h-9 w-16 shrink-0" : "h-9 w-16 shrink-0"}
+														disabled={!allowed && credentialOrigins.length >= 32}
+														aria-label={
+															allowed
+																? t("agentGateway.sheet.removeEndpointAria", { endpoint })
+																: t("agentGateway.sheet.allowEndpointAria", { endpoint })
+														}
+														onClick={() => {
+															if (allowed) {
+																setCredentialOrigins((current) =>
+																	current.filter((origin) => configuredAgentEndpointOrigin(origin.value) !== endpoint),
+																);
+															} else {
+																const id = nextCredentialOriginId.current++;
+																setCredentialOrigins((current) => [...current, { id, value: endpoint }]);
+															}
+														}}
+													>
+														{allowed ? <Trash2 className="h-4 w-4" /> : t("agentGateway.sheet.allow")}
+													</Button>
+												</div>
+											);
+										})}
+									</div>
+								)}
+								{credentialOrigins.map((origin, index) =>
+									advertisedEndpoints.includes(configuredAgentEndpointOrigin(origin.value) ?? "") ? null : (
+										<div key={origin.id} className="flex items-center gap-2">
+											<Input
+												value={origin.value}
+												className="h-9"
+												placeholder="https://research.example.com:9000"
+												aria-label={t("agentGateway.sheet.additionalEndpointAria")}
+												data-testid={`agent-credential-origin-${index}`}
+												onChange={(event) =>
+													setCredentialOrigins((current) =>
+														current.map((item) => (item.id === origin.id ? { ...item, value: event.target.value } : item)),
+													)
+												}
+											/>
+											<Button
+												type="button"
+												variant="outline"
+												size="icon"
+												className="text-destructive hover:text-destructive h-9 w-16 shrink-0"
+												aria-label={t("agentGateway.sheet.removeAgentEndpointAria")}
+												onClick={() => setCredentialOrigins((current) => current.filter((item) => item.id !== origin.id))}
+											>
+												<Trash2 className="h-4 w-4" />
+											</Button>
+										</div>
+									),
+								)}
+							</div>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								data-testid="agent-add-credential-origin"
+								disabled={credentialOrigins.length >= 32}
+								onClick={() => {
+									const id = nextCredentialOriginId.current++;
+									setCredentialOrigins((current) => [...current, { id, value: "" }]);
+								}}
+							>
+								<Plus className="h-4 w-4" />
+								{t("agentGateway.sheet.addEndpoint")}
+							</Button>
+						</OptionGroup>
+
 						<SettingRow
-							label="Forward Bifrost authentication"
-							description="Turn this on for agents that use Bifrost for LLM or MCP calls. You will need to configure the server to send this authentication with those calls so access and usage can stay attributed to the requester."
+							label={t("agentGateway.sheet.forwardAuth")}
+							description={t("agentGateway.sheet.forwardAuthHelp")}
 							checked={forwardAcceptedCredential}
 							onCheckedChange={setForwardAcceptedCredential}
 							testId="agent-forward-credential-switch"
 						>
 							{forwardAcceptedCredential && (
 								<>
-									<Label>If both use the same header</Label>
+									<Label>{t("agentGateway.sheet.sameHeader")}</Label>
 									<Select
 										value={forwardAcceptedCredentialOverridesAuth ? "incoming" : "configured"}
 										onValueChange={(value) => setForwardAcceptedCredentialOverridesAuth(value === "incoming")}
@@ -538,27 +695,21 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 										<SelectTrigger className="w-full">
 											<SelectValue>
 												{forwardAcceptedCredentialOverridesAuth
-													? "Use the incoming Bifrost authentication"
-													: "Keep the configured agent authentication"}
+													? t("agentGateway.sheet.useIncoming")
+													: t("agentGateway.sheet.keepConfigured")}
 											</SelectValue>
 										</SelectTrigger>
 										<SelectContent>
-											<SelectItem value="configured" className="py-2" textValue="Keep the configured agent authentication">
+											<SelectItem value="configured" className="py-2" textValue={t("agentGateway.sheet.keepConfigured")}>
 												<div className="space-y-1 whitespace-normal">
-													<p>Keep the configured agent authentication</p>
-													<p className="text-muted-foreground text-xs">
-														If both use the same header, keep the agent’s configured credential. Forward the incoming Bifrost authentication
-														on other headers.
-													</p>
+													<p>{t("agentGateway.sheet.keepConfigured")}</p>
+													<p className="text-muted-foreground text-xs">{t("agentGateway.sheet.keepConfiguredHelp")}</p>
 												</div>
 											</SelectItem>
-											<SelectItem value="incoming" className="py-2" textValue="Use the incoming Bifrost authentication">
+											<SelectItem value="incoming" className="py-2" textValue={t("agentGateway.sheet.useIncoming")}>
 												<div className="space-y-1 whitespace-normal">
-													<p>Use the incoming Bifrost authentication</p>
-													<p className="text-muted-foreground text-xs">
-														If both use the same header, replace the configured credential with the incoming Bifrost authentication. For
-														agents that call Bifrost for LLM or MCP traffic, this keeps usage attributed to the original caller.
-													</p>
+													<p>{t("agentGateway.sheet.useIncoming")}</p>
+													<p className="text-muted-foreground text-xs">{t("agentGateway.sheet.useIncomingHelp")}</p>
 												</div>
 											</SelectItem>
 										</SelectContent>
@@ -567,8 +718,8 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							)}
 						</SettingRow>
 						<SettingRow
-							label="Configure manually"
-							description="Ignore the card's advertised requirements and set authentication yourself."
+							label={t("agentGateway.sheet.manual")}
+							description={t("agentGateway.sheet.manualHelp")}
 							checked={manualMode}
 							onCheckedChange={(checked) => {
 								setManualMode(checked);
@@ -582,8 +733,8 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 
 					<section className="space-y-4">
 						<SectionHeader
-							title="Access"
-							description="Which virtual keys can reach this agent through the gateway."
+							title={t("agentGateway.sheet.access")}
+							description={t("agentGateway.sheet.accessDescription")}
 							action={
 								<VirtualKeySelector
 									mode="add"
@@ -592,22 +743,22 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 									trigger={
 										<Button type="button" variant="outline" size="sm" disabled={allowByDefault} data-testid="agent-add-virtual-key-button">
 											<Plus className="h-4 w-4" />
-											Add key
+											{t("agentGateway.sheet.addKey")}
 										</Button>
 									}
 								/>
 							}
 						/>
 						<SettingRow
-							label="Allow any virtual key"
-							description="Every valid virtual key can reach this agent, granted or not."
+							label={t("agentGateway.sheet.allowAny")}
+							description={t("agentGateway.sheet.allowAnyHelp")}
 							checked={allowByDefault}
 							onCheckedChange={setAllowByDefault}
 							testId="agent-allow-by-default-switch"
 						/>
 						{allowByDefault || virtualKeyIds.length === 0 ? (
 							<div className="text-muted-foreground rounded-sm border border-dashed p-5 text-center text-sm">
-								{allowByDefault ? "Any valid key can reach this agent." : "No keys granted yet."}
+								{allowByDefault ? t("agentGateway.sheet.anyKeyCanReach") : t("agentGateway.sheet.noKeysYet")}
 							</div>
 						) : (
 							<div className="divide-y rounded-sm border">
@@ -618,59 +769,13 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 										secret={vkById.get(id)?.value}
 										fallbackLabel={id}
 										onRemove={() => setVirtualKeyIds((current) => current.filter((value) => value !== id))}
-										removeAriaLabel="Revoke virtual key grant"
+										removeAriaLabel={t("agentGateway.sheet.revokeGrantAria")}
 									/>
 								))}
 							</div>
 						)}
 						{agent && <AgentAccessProfiles agentName={agent.name} active />}
 					</section>
-
-					<OptionGroup
-						title="Advanced"
-						summary={advancedSummary}
-						open={advancedOpen}
-						onOpenChange={setAdvancedOpen}
-						testId="agent-advanced-toggle"
-					>
-						<div className="flex flex-col gap-2">
-							<Label>Tenant</Label>
-							<Input value={tenant} placeholder="tenant-a" onChange={(event) => setTenant(event.target.value)} />
-							<p className="text-muted-foreground text-xs">Advertised on the agent card Bifrost serves.</p>
-						</div>
-						<div className="space-y-3 border-t pt-4">
-							<div className="flex items-center justify-between gap-4">
-								<div className="space-y-0.5">
-									<Label>Extension URIs</Label>
-									<p className="text-muted-foreground text-xs">A2A extensions this agent may advertise and activate.</p>
-								</div>
-								<Button type="button" variant="outline" size="sm" onClick={() => setExtensionUris((current) => [...current, ""])}>
-									<Plus className="h-4 w-4" />
-									Add URI
-								</Button>
-							</div>
-							{extensionUris.map((uri, index) => (
-								<div key={index} className="flex gap-2">
-									<Input
-										value={uri}
-										placeholder="https://example.com/a2a/extensions/audit"
-										onChange={(event) =>
-											setExtensionUris((current) => current.map((value, itemIndex) => (itemIndex === index ? event.target.value : value)))
-										}
-									/>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon"
-										aria-label="Remove extension URI"
-										onClick={() => setExtensionUris((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-									>
-										<Trash2 className="h-4 w-4" />
-									</Button>
-								</div>
-							))}
-						</div>
-					</OptionGroup>
 
 					{agent && (
 						<>
@@ -680,10 +785,12 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 					)}
 				</div>
 				<div className="bg-card sticky bottom-0 flex items-center justify-between gap-3 border-t px-4 py-4 md:px-8">
-					<p className="text-muted-foreground text-xs">{isBlocked && !unsupportedRequirement ? "Fetch the agent card to continue." : ""}</p>
+					<p className="text-muted-foreground text-xs">
+						{isBlocked && !unsupportedRequirement ? t("agentGateway.sheet.fetchToContinue") : ""}
+					</p>
 					<div className="flex gap-2">
 						<Button type="button" variant="outline" onClick={onClose}>
-							Cancel
+							{tCommon("cancel")}
 						</Button>
 						<Button
 							type="button"
@@ -692,7 +799,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 							isLoading={isCreating || isUpdating}
 							data-testid="agent-save-button"
 						>
-							{agent ? "Save changes" : "Create"}
+							{agent ? t("agentGateway.sheet.saveChanges") : tCommon("create")}
 						</Button>
 					</div>
 				</div>

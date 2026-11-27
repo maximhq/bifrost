@@ -46,12 +46,14 @@ type CredStore struct {
 func NewCredStore(oauth2Provider schemas.OAuth2Provider, headersProvider schemas.MCPHeadersProvider, logger schemas.Logger) *CredStore {
 	return &CredStore{
 		resolvers: map[schemas.MCPAuthType]resolver{
-			schemas.MCPAuthTypeNone:           &noneResolver{},
-			schemas.MCPAuthTypeHeaders:        &sharedHeadersResolver{},
-			schemas.MCPAuthTypeOauth:          &sharedOAuthResolver{provider: oauth2Provider},
-			schemas.MCPAuthTypePerUserOauth:   &perUserOAuthResolver{provider: oauth2Provider},
-			schemas.MCPAuthTypePerUserHeaders: &perUserHeadersResolver{provider: headersProvider},
-			schemas.MCPAuthTypeTokenExchange:  &tokenExchangeResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypeNone:              &noneResolver{},
+			schemas.MCPAuthTypeHeaders:           &sharedHeadersResolver{},
+			schemas.MCPAuthTypeOauth:             &sharedOAuthResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypePerUserOauth:      &perUserOAuthResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypePerUserHeaders:    &perUserHeadersResolver{provider: headersProvider},
+			schemas.MCPAuthTypeTokenExchange:     &tokenExchangeResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypeClientCredentials: &clientCredentialsResolver{provider: oauth2Provider},
+			schemas.MCPAuthTypeAWSSigV4:          &awsSigV4Resolver{},
 		},
 		logger: logger,
 	}
@@ -93,6 +95,13 @@ func (s *CredStore) RequestHeaders(ctx *schemas.BifrostContext, config *schemas.
 // ignore the flag — see needsSessionStickiness's doc comment.
 func (s *CredStore) RequiresPerCallConnection(config *schemas.MCPClientConfig) bool {
 	if config == nil {
+		return false
+	}
+	// An openapi client's "connection" is an in-process server synthesized from
+	// its spec: there is no remote transport to dial per call, so it is always
+	// sticky regardless of auth type. Per-user credentials are resolved inside
+	// the synthesized tool handler from the call's own context instead.
+	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
 		return false
 	}
 	r, ok := s.resolvers[config.AuthType]

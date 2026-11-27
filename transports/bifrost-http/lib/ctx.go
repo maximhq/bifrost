@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -30,6 +30,9 @@ const (
 	FastHTTPUserValueBifrostContext = "__bifrost_context"
 	// FastHTTPUserValueBifrostCancel stores the cancel func for the active shared Bifrost context.
 	FastHTTPUserValueBifrostCancel = "__bifrost_context_cancel"
+	// FastHTTPUserValueExtraFieldsInHeaders marks requests whose responses carry extra_fields as
+	// x-bifrost-* headers instead of in the body (client.extra_fields_placement = "headers").
+	FastHTTPUserValueExtraFieldsInHeaders = "__bifrost_extra_fields_in_headers"
 	// FastHTTPUserValueLargeResponseMode marks requests that streamed a large response body.
 	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
@@ -210,6 +213,16 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 	return ResolveSessionIDFromHeaders(headers)
 }
 
+// ExtraFieldsInHeaders reports whether this request's responses carry extra_fields as headers
+// instead of in the body. ConvertToBifrostContext marks the request from client config.
+func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
+	if ctx == nil {
+		return false
+	}
+	inHeaders, _ := ctx.UserValue(FastHTTPUserValueExtraFieldsInHeaders).(bool)
+	return inHeaders
+}
+
 // ConvertToBifrostContext converts a FastHTTP RequestCtx to a Bifrost context,
 // preserving important header values for monitoring and tracing purposes.
 //
@@ -287,6 +300,18 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 //	// Maxim tracing data, MCP filters, governance keys, API keys, cache settings,
 //	// session stickiness, and extra headers
 
+// ClientForwardedIP returns the leftmost X-Forwarded-For entry, else X-Real-IP, else "".
+// Both headers are caller-controlled and not verified unless a trusted proxy overwrites them.
+func ClientForwardedIP(ctx *fasthttp.RequestCtx) string {
+	if xff := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-For"))); xff != "" {
+		if first, _, found := strings.Cut(xff, ","); found {
+			return strings.TrimSpace(first)
+		}
+		return xff
+	}
+	return strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP")))
+}
+
 func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*schemas.BifrostContext, context.CancelFunc) {
 	// "transport-context" overhead phase: building the request-scoped BifrostContext —
 	// child-context alloc, request-id resolution, and the full request-header iteration
@@ -309,6 +334,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
 		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
 		allowPerRequestRawOverride = store.ShouldAllowPerRequestRawOverride()
+		if store.ShouldSendExtraFieldsInHeaders() {
+			ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		}
 	}
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext
@@ -400,6 +428,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		// prevent auth/key overrides via x-bf-eh-*
 		"x-api-key":       true,
 		"x-goog-api-key":  true,
+		"xi-api-key":      true,
 		"x-bf-api-key":    true,
 		"x-bf-api-key-id": true,
 		"x-bf-vk":         true,
@@ -501,7 +530,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
-		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key, api-key headers)
+		// Handle virtual key header (x-bf-vk, authorization, x-api-key, x-goog-api-key, api-key, xi-api-key headers)
 		if keyStr == string(schemas.BifrostContextKeyVirtualKey) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
@@ -526,6 +555,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			return true
 		}
 		if keyStr == "api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
+			return true
+		}
+		if keyStr == "xi-api-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
+			return true
+		}
+		// Azure AI Speech clients send their key as Ocp-Apim-Subscription-Key.
+		if keyStr == "ocp-apim-subscription-key" && strings.HasPrefix(strings.ToLower(string(value)), governance.VirtualKeyPrefix) {
 			bifrostCtx.SetValue(schemas.BifrostContextKeyVirtualKey, string(value))
 			return true
 		}
@@ -831,6 +869,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	})
 	bifrostCtx.SetValue(schemas.BifrostContextKeyRequestHeaders, allHeaders)
 
+	// Same order as enterprise audit logs: the forwarding headers first, then the TCP peer.
+	if store != nil && store.ShouldCaptureClientIP() {
+		if clientIP := ClientForwardedIP(ctx); clientIP != "" {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, clientIP)
+		} else if ip := ctx.RemoteIP(); ip != nil && !ip.IsUnspecified() {
+			bifrostCtx.SetValue(schemas.BifrostContextKeyClientIP, ip.String())
+		}
+	}
+
 	// Session stickiness: an explicit x-bf-session-id wins, otherwise the
 	// harness's own session header applies, so Claude Code / Codex CLI /
 	// OpenCode traffic gets key stickiness without the caller renaming anything.
@@ -892,53 +939,54 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	return bifrostCtx, cancel
 }
 
-// ValidateBaseURL checks that a URL is parseable with both scheme and host —
-// the same gate BuildBaseURL applies before honoring an override. Empty values
-// are accepted (caller decides whether absence is allowed). Logging is the
-// caller's responsibility. The error intentionally omits the offending value:
-// callers may pass URLs resolved from env vars (e.g. `env.MY_SECRET_URL`), so
-// echoing the value back in API responses or logs would let an attacker probe
-// process env state by feeding malformed env-var references.
-func ValidateBaseURL(val string) error {
-	if val == "" {
-		return nil
-	}
-	parsed, err := url.Parse(val)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("must be a fully-qualified URL with scheme and host (e.g. https://proxy.example.com)")
-	}
-	return nil
-}
-
 // BuildBaseURL returns the effective base URL for OAuth callbacks and metadata discovery.
 // When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
 // deployments behind a reverse proxy advertise the proxy's public URL rather than the
 // internal Host header seen by Bifrost.
+// Otherwise it is derived from the request's scheme and Host, plus server.base_path,
+// since the browser reached Bifrost under that prefix even when the proxy strips it.
 func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
-		if parsed, err := url.Parse(override); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if configstore.ValidatePublicBaseURL(override) == nil {
 			return override
 		}
 	}
 	scheme := "http"
-	xfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-Proto"))))
-	if comma := strings.IndexByte(xfProto, ','); comma >= 0 {
-		xfProto = strings.TrimSpace(xfProto[:comma])
-	}
-	// x-bf-forwarded-proto is honored for setups where a managed LB overwrites the
-	// standard X-Forwarded-Proto (e.g. AWS L4 NLB -> ALB hops); the edge injects it.
-	xbfProto := strings.ToLower(strings.TrimSpace(string(ctx.Request.Header.Peek("x-bf-forwarded-proto"))))
-	if comma := strings.IndexByte(xbfProto, ','); comma >= 0 {
-		xbfProto = strings.TrimSpace(xbfProto[:comma])
-	}
-	if ctx.IsTLS() || xfProto == "https" || xbfProto == "https" {
+	if RequestIsHTTPS(ctx) {
 		scheme = "https"
 	}
 	host := string(ctx.Host())
 	if host == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s://%s", scheme, host)
+	return scheme + "://" + host + BasePath()
+}
+
+// RequestIsHTTPS reports whether the client reached Bifrost over HTTPS: directly
+// over TLS, or through a proxy that says so in a forwarded-proto header (first
+// value of a comma-separated chain). x-bf-forwarded-proto exists for setups where
+// a managed LB overwrites the standard header (e.g. AWS L4 NLB -> ALB hops); the
+// edge injects it with the scheme the client really used, so when it is present
+// it decides, and X-Forwarded-Proto is only consulted without it. Every
+// scheme-dependent decision (public URLs, HSTS, cookie Secure, trace attributes)
+// goes through here so they cannot disagree.
+func RequestIsHTTPS(ctx *fasthttp.RequestCtx) bool {
+	if ctx.IsTLS() {
+		return true
+	}
+	if edge := ctx.Request.Header.Peek("x-bf-forwarded-proto"); len(edge) > 0 {
+		return forwardedProtoIsHTTPS(edge)
+	}
+	return forwardedProtoIsHTTPS(ctx.Request.Header.Peek("X-Forwarded-Proto"))
+}
+
+// forwardedProtoIsHTTPS reports whether the first value of a forwarded-proto header is https.
+func forwardedProtoIsHTTPS(value []byte) bool {
+	proto := strings.TrimSpace(string(value))
+	if comma := strings.IndexByte(proto, ','); comma >= 0 {
+		proto = strings.TrimSpace(proto[:comma])
+	}
+	return strings.EqualFold(proto, "https")
 }
 
 // BuildHTTPRequestFromFastHTTP creates an HTTPRequest from fasthttp context for streaming handlers.
@@ -947,7 +995,7 @@ func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 func BuildHTTPRequestFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.HTTPRequest {
 	req := schemas.AcquireHTTPRequest()
 	req.Method = string(ctx.Method())
-	req.Path = string(ctx.Path())
+	req.Path = string(ctx.Request.URI().PathOriginal())
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {

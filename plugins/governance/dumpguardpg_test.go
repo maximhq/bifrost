@@ -115,4 +115,32 @@ func TestDumpBatchSQLSkipsUnchangedRowsOnPostgres(t *testing.T) {
 	require.NoError(t, gs.writeBudgetBatch(ctx, db, []budgetDumpRow{stale}, "<="))
 	require.NoError(t, db.First(&gotB, "id = ?", b.ID).Error)
 	require.Equal(t, 13.0, gotB.CurrentUsage)
+
+	// The same holds for each rate-limit counter, and a stale-only row is not
+	// written at all.
+	rlVersion = rowVersion(t, db, "governance_rate_limits", rl.ID)
+	staleRL := rlRow
+	staleRL.TokenCurrentUsage, staleRL.TokenLastReset = 99, now.Add(-time.Hour)
+	require.NoError(t, gs.dumpRateLimitBatch(ctx, db, []rateLimitDumpRow{staleRL}))
+	require.Equal(t, rlVersion, rowVersion(t, db, "governance_rate_limits", rl.ID), "a stale token pair alone must not write the row")
+	staleRL = rlRow
+	staleRL.RequestCurrentUsage, staleRL.RequestLastReset = 99, now.Add(-time.Hour)
+	require.NoError(t, gs.dumpRateLimitBatch(ctx, db, []rateLimitDumpRow{staleRL}))
+	require.Equal(t, rlVersion, rowVersion(t, db, "governance_rate_limits", rl.ID), "a stale request pair alone must not write the row")
+	require.NoError(t, db.First(&gotRL, "id = ?", rl.ID).Error)
+	require.Equal(t, int64(10), gotRL.TokenCurrentUsage)
+	require.Equal(t, int64(2), gotRL.RequestCurrentUsage)
+	require.True(t, gotRL.TokenLastReset.Equal(now))
+	require.True(t, gotRL.RequestLastReset.Equal(now))
+
+	// A stale pair blocks only itself: the other counter's change still lands.
+	staleRL = rlRow
+	staleRL.TokenCurrentUsage, staleRL.TokenLastReset = 99, now.Add(-time.Hour)
+	staleRL.RequestCurrentUsage = 7
+	require.NoError(t, gs.dumpRateLimitBatch(ctx, db, []rateLimitDumpRow{staleRL}))
+	require.NoError(t, db.First(&gotRL, "id = ?", rl.ID).Error)
+	require.Equal(t, int64(10), gotRL.TokenCurrentUsage)
+	require.True(t, gotRL.TokenLastReset.Equal(now))
+	require.Equal(t, int64(7), gotRL.RequestCurrentUsage, "a stale token boundary dropped the request write")
+	require.True(t, gotRL.RequestLastReset.Equal(now))
 }

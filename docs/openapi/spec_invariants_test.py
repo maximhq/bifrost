@@ -32,9 +32,7 @@ REF_RE = re.compile(r"\./paths/management/([\w.-]+)\.yaml#/([\w~/{}.-]+)")
 
 # Fragments that are genuinely unmounted and predate this work. Listed rather than skipped
 # so they stay visible; removing one is a separate change from keeping the catalogue honest.
-KNOWN_ORPHANS = {
-    "infrastructure.yaml": {"websocket-responses"},
-}
+KNOWN_ORPHANS: dict = {}
 
 passed = 0
 failed = 0
@@ -128,7 +126,7 @@ def test_no_orphaned_fragments():
             text = other.read_text(encoding="utf-8")
             for frag in defined:
                 cross_file = f"{stem}.yaml#/{frag}/" in text
-                same_file = other == source and f"'#/{frag}/" in text
+                same_file = other == source and any(f"{q}#/{frag}/" in text for q in "'\"")
                 if cross_file or same_file:
                     composed.add(frag)
         unused = sorted(defined - referenced - composed - KNOWN_ORPHANS.get(source.name, set()))
@@ -320,13 +318,96 @@ def test_virtual_key_request_contract_is_current():
     assert not problems, "Virtual Key request contract drift:\n    " + "\n    ".join(problems)
 
 
+def test_project_content_logging_descriptions_state_the_contract():
+    """Every project disable_content_logging description, in the modular source and in each copy
+    the bundle inlines, states the three rules a request body alone does not decide: the
+    per-request header still wins for the log store, a project never loosens a connector's own
+    flag, and object-storage retention keeps a content-disabled payload as hidden content."""
+    import json
+
+    required = {
+        "x-bf-disable-content-logging": "the per-request header rule",
+        "own disable_content_logging": "the connector's own flag",
+        "retain_content_in_object_storage": "the object-storage retention exception",
+    }
+    source = load(HERE / "schemas" / "management" / "projects.yaml")
+    described = [
+        (f"schemas/management/projects.yaml {name}", source[name]["properties"]["disable_content_logging"])
+        for name in ("Project", "CreateProjectRequest", "UpdateProjectRequest")
+    ]
+
+    def walk(node, where):
+        if isinstance(node, dict):
+            properties = node.get("properties")
+            if isinstance(properties, dict) and "disable_content_logging" in properties and "access_rule" in properties:
+                described.append((f"openapi.json {where}", properties["disable_content_logging"]))
+            for key, value in node.items():
+                walk(value, f"{where}/{key}")
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{where}/{index}")
+
+    walk(json.loads((HERE / "openapi.json").read_text(encoding="utf-8")), "")
+    assert len(described) > 3, "the bundle carries no project schema with disable_content_logging"
+
+    problems = []
+    for where, schema in described:
+        description = " ".join(str(schema.get("description", "")).split())
+        for phrase, rule in required.items():
+            if phrase not in description:
+                problems.append(f"{where}: does not state {rule} ({phrase!r})")
+    assert not problems, "Project content-logging description drift:\n    " + "\n    ".join(problems)
+
+
+def test_virtual_key_metadata_contract():
+    """Virtual key metadata: update accepts null (leave unchanged), create and update exclude
+    the reserved keys (isAsyncRequest, bifrost_alb_*) the same way config.schema.json does,
+    and the list endpoint does not declare a literal `metadata_<key>` query parameter."""
+    import json
+
+    source = load(HERE / "schemas" / "management" / "governance.yaml")
+    bundle_doc = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    bundle = bundle_doc["components"]["schemas"]
+    config_schema = json.loads((REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8"))
+    config_metadata = config_schema["properties"]["governance"]["properties"]["virtual_keys"]["items"][
+        "properties"
+    ]["metadata"]
+    problems = []
+
+    for schema_name in ("CreateVirtualKeyRequest", "UpdateVirtualKeyRequest"):
+        for where, schema in (
+            ("schemas/management/governance.yaml", source[schema_name]),
+            ("openapi.json", bundle[schema_name]),
+        ):
+            metadata = schema["properties"]["metadata"]
+            if metadata.get("propertyNames") != config_metadata["propertyNames"]:
+                problems.append(f"{where} {schema_name}.metadata: propertyNames differ from config.schema.json")
+            types = metadata.get("type")
+            types = types if isinstance(types, list) else [types]
+            want_null = schema_name == "UpdateVirtualKeyRequest"
+            if ("null" in types) != want_null:
+                problems.append(f"{where} {schema_name}.metadata: null allowed={'null' in types}, want {want_null}")
+
+    source_list = load(PATHS_DIR / "governance.yaml")["virtual-keys"]["get"]
+    bundle_list = bundle_doc["paths"]["/api/governance/virtual-keys"]["get"]
+    for where, operation in (("paths/management/governance.yaml", source_list), ("openapi.json", bundle_list)):
+        names = [p.get("name", "") for p in operation.get("parameters", [])]
+        if any("<" in name for name in names):
+            problems.append(f"{where} listVirtualKeys: templated query parameter name in {names}")
+        if "metadata_<key>" not in operation.get("description", ""):
+            problems.append(f"{where} listVirtualKeys: description does not document metadata_<key> filters")
+
+    assert not problems, "Virtual Key metadata contract drift:\n    " + "\n    ".join(problems)
+
+
 
 def test_warp_credential_contract_is_current():
     """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
     There is no write-only `api_key` and no `api_key_set` presence flag, so no redaction
-    step and no omitted-versus-empty rule. `base_url` overrides the provider's default
-    endpoint; it does not default to this Bifrost's own origin. Guard the modular source
-    and the published bundle against prose that still describes the abandoned design."""
+    step and no omitted-versus-empty rule. `base_url` is retired with them: Warp calls the
+    gateway in-process, so nothing may describe an endpoint it defaults to. Guard the
+    modular source and the published bundle against prose that still describes the
+    abandoned design."""
     import json
 
     schema_source = load(HERE / "schemas" / "management" / "warp.yaml")
@@ -443,11 +524,15 @@ def test_warp_chat_response_contract_is_current():
     # a constant that stops being emitted must not linger in the published enum.
     agent = (REPO_ROOT / "framework" / "warp" / "agent.go").read_text(encoding="utf-8")
     constants = dict(re.findall(r'(Err[A-Za-z]+)\s+=\s+"([a-z_]+)"', agent))
-    emitted = sorted({
-        constants[name]
-        for name in re.findall(r"Code:\s+(Err[A-Za-z]+)", agent)
-        if name in constants
-    })
+    names = set(re.findall(r"Code:\s+(Err[A-Za-z]+)", agent))
+    # Governance refusals are emitted as Code: code, the value governanceRefusal returns,
+    # so the constants it returns or assigns are emitted too.
+    refusal = re.search(r"func governanceRefusal\(.*?\n}\n", agent, re.S)
+    if refusal:
+        names |= set(re.findall(r"(?:return|code =)\s+(Err[A-Za-z]+)", refusal.group(0)))
+    else:
+        problems.append("could not find governanceRefusal in framework/warp/agent.go")
+    emitted = sorted({constants[name] for name in names if name in constants})
     if not emitted:
         problems.append("could not read any emitted error codes from framework/warp/agent.go")
 
@@ -592,6 +677,33 @@ def test_warp_config_input_models_the_embedding_contract():
 
     assert not problems, "Warp config input contract:\n    " + "\n    ".join(problems)
 
+def test_oss_bundle_is_the_full_bundle_without_enterprise_operations():
+    """openapi-oss.json is what the OSS gateway's /v1/mcp builds its tools from: the
+    full bundle with the enterprise-only operations removed, written by the same
+    bundle.py run. A spec change bundled without it, or an OSS file left behind by
+    a later bundle, fails here."""
+    import copy
+
+    sys.path.insert(0, str(HERE))
+    from bundle import filter_oss_edition, is_enterprise_operation
+
+    oss_path = HERE / "openapi-oss.json"
+    assert oss_path.exists(), "openapi-oss.json is missing; run bundle.py, which writes it beside openapi.json"
+    full = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    oss = json.loads(oss_path.read_text(encoding="utf-8"))
+    expected = copy.deepcopy(full)
+    removed = filter_oss_edition(expected)
+    assert removed > 0, "openapi.json has no enterprise-only operation to remove"
+    assert oss == expected, "openapi-oss.json is not openapi.json without its enterprise-only operations; run bundle.py"
+    leaked = [
+        f"{method.upper()} {path}"
+        for path, item in oss.get("paths", {}).items()
+        for method, op in item.items()
+        if isinstance(op, dict) and is_enterprise_operation(op)
+    ]
+    assert not leaked, f"enterprise-only operations in openapi-oss.json: {leaked[:5]}"
+
+
 check("no path key has a null Path Item", test_no_null_path_items)
 check("no two paths collide after parameter normalization", test_no_duplicate_path_templates)
 check("every fragment openapi.yaml mounts exists", test_every_mounted_fragment_exists)
@@ -629,36 +741,12 @@ def test_warp_config_input_models_the_enabled_contract():
             if not constraint.get("pattern"):
                 problems.append(f"{source}: an enabled `{field}` has no non-whitespace pattern")
 
-        # base_url is optional, but a non-empty one must be an absolute http(s)
-        # URL with no userinfo - the same rule ValidateConfigInput applies.
-        #
-        # Checked by behaviour, not just by presence: a pattern that exists but
-        # admits whitespace in the authority, or a dropped `format`, is exactly
-        # the drift a non-empty check cannot see.
-        base_url = (schema.get("properties") or {}).get("base_url") or {}
-        pattern = base_url.get("pattern")
-        if not pattern:
-            problems.append(f"{source}: base_url has no pattern constraining it to an absolute http(s) URL without userinfo")
-        else:
-            accepted = ("", "https://api.example.com", "http://localhost:8080", "https://a.com/v1")
-            rejected = (
-                "https://host name",  # whitespace in the authority
-                "https://tok@a.com",  # userinfo
-                "https://u:p@a.com",
-                "api.example.com",  # not absolute
-                "https://",  # scheme only
-                "ftp://a.com",  # wrong scheme
-            )
-            for value in accepted:
-                if not re.match(pattern, value):
-                    problems.append(f"{source}: base_url pattern rejects {value!r}, which the server accepts")
-            for value in rejected:
-                if re.match(pattern, value):
-                    problems.append(f"{source}: base_url pattern accepts {value!r}, which the server rejects")
-        # url.Parse also rejects a malformed percent escape such as "https://%",
-        # which a character-class pattern cannot express - format carries that.
-        if base_url.get("format") != "uri-reference":
-            problems.append(f"{source}: base_url has no `format: uri-reference`")
+        # base_url is retired. Warp calls the gateway in-process, so there is no
+        # endpoint to override and the server has no such field. A schema that
+        # still offers one documents a setting that does nothing, and a client
+        # generated from it sends a value that is silently dropped.
+        if "base_url" in (schema.get("properties") or {}):
+            problems.append(f"{source}: WarpConfigInput still documents the retired `base_url`")
 
     assert not problems, "Warp enabled-config contract:\n    " + "\n    ".join(problems)
 
@@ -927,6 +1015,134 @@ def test_oauth_key_config_contract_matches_server_validation():
     assert not problems, "OAuthKeyConfig drifts from server validation:\n    " + "\n    ".join(problems)
 
 
+def test_mcp_client_credentials_contract_matches_server_validation():
+    """MCPClientCredentialsConfig.Validate (core/schemas/mcp.go) requires a client_secret or a
+    private_key set but not both, ties auth_method to the secret and the assertion settings to the
+    key, takes one scope per item, and create defaults an omitted auth_type to headers, which refuses a
+    client_credentials block. The published OpenAPI schema must say the same."""
+    import copy
+
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    mcp = load(HERE / "schemas" / "management" / "mcp.yaml")
+    common = load(HERE / "schemas" / "management" / "common.yaml")
+
+    def inline(node):
+        # Replaces the EnvVar and same-file refs the block uses with their definitions.
+        if isinstance(node, dict):
+            ref = node.get("$ref", "")
+            if ref.endswith("common.yaml#/EnvVar"):
+                return inline(copy.deepcopy(common["EnvVar"]))
+            if ref.startswith("#/"):
+                return inline(copy.deepcopy(mcp[ref[2:]]))
+            return {key: inline(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [inline(value) for value in node]
+        return node
+
+    block = inline(mcp["MCPClientCredentialsConfig"])
+    masked_secret = {"value": "****", "type": "plain_text"}
+    masked_key = {"value": "****", "ref": "env.CC_KEY", "type": "env"}
+    # The create body's client_credentials rules, which reference nothing outside themselves.
+    rules = [r for r in mcp["MCPClientCreateRequestBase"]["allOf"] if "client_credentials" in json.dumps(r)]
+    cases = [
+        (block, "no credential", {"client_id": "id"}, False),
+        (block, "both credentials", {"client_id": "id", "client_secret": "s", "private_key": "pem"}, False),
+        (block, "secret only", {"client_id": "id", "client_secret": "s"}, True),
+        (block, "key only", {"client_id": "id", "private_key": "pem"}, True),
+        (block, "secret with signing_algorithm", {"client_id": "id", "client_secret": "s", "signing_algorithm": "RS256"}, False),
+        (block, "secret with key_id", {"client_id": "id", "client_secret": "s", "key_id": "k1"}, False),
+        (block, "key with auth_method", {"client_id": "id", "private_key": "pem", "auth_method": "client_secret_post"}, False),
+        (block, "secret with auth_method", {"client_id": "id", "client_secret": "s", "auth_method": "client_secret_post"}, True),
+        (block, "key with signing_algorithm and key_id", {"client_id": "id", "private_key": "pem", "signing_algorithm": "ES256", "key_id": "k1"}, True),
+        (block, "secret with an empty signing_algorithm", {"client_id": "id", "client_secret": "s", "signing_algorithm": ""}, True),
+        (block, "key with an empty auth_method", {"client_id": "id", "private_key": "pem", "auth_method": ""}, True),
+        # Credentials are secret values: a bare string in, a {value, ref, type} object out, and
+        # "set" means a non-empty value or ref, as SecretVar.IsSet does.
+        (block, "a read secret sent back", {"client_id": {"value": "****", "type": "plain_text"}, "client_secret": masked_secret}, True),
+        (block, "a read key reference sent back", {"client_id": "id", "private_key": masked_key, "signing_algorithm": "ES256"}, True),
+        (block, "an empty secret", {"client_id": "id", "client_secret": ""}, False),
+        (block, "an empty secret object", {"client_id": "id", "client_secret": {"value": ""}}, False),
+        (block, "an empty secret and a key", {"client_id": "id", "client_secret": "", "private_key": "pem"}, True),
+        (block, "a secret and an empty key object", {"client_id": "id", "client_secret": masked_secret, "private_key": {"value": ""}}, True),
+        (block, "an empty key with signing_algorithm", {"client_id": "id", "client_secret": "s", "private_key": "", "signing_algorithm": "RS256"}, False),
+        (block, "auth_method with an empty secret", {"client_id": "id", "client_secret": "", "private_key": "pem", "auth_method": "client_secret_post"}, False),
+        # An object is a reference only with its type (SecretVar.UnmarshalJSON), and a
+        # plain_text value is set by its value alone, whatever ref it carries.
+        (block, "a ref-only client_id", {"client_id": {"ref": "env.MCP_CLIENT_ID"}, "client_secret": "s"}, False),
+        (block, "a ref-only secret", {"client_id": "id", "client_secret": {"ref": "env.CC_SECRET"}}, False),
+        (block, "a plain_text secret with only a ref", {"client_id": "id", "client_secret": {"type": "plain_text", "value": "", "ref": "env.CC_SECRET"}}, False),
+        (block, "a typed env secret", {"client_id": "id", "client_secret": {"type": "env", "ref": "env.CC_SECRET"}}, True),
+        (block, "an untyped value", {"client_id": {"value": "id"}, "client_secret": {"value": "s"}}, True),
+        # Validate takes each scope as one non-empty scope.
+        (block, "separate scopes", {"client_id": "id", "client_secret": "s", "scopes": ["read", "write"]}, True),
+        (block, "no scopes", {"client_id": "id", "client_secret": "s", "scopes": []}, True),
+        (block, "an empty scope", {"client_id": "id", "client_secret": "s", "scopes": [""]}, False),
+        (block, "two scopes in one item", {"client_id": "id", "client_secret": "s", "scopes": ["read write"]}, False),
+        ({"allOf": rules}, "block without auth_type", {"client_credentials": {"client_id": "id"}}, False),
+        ({"allOf": rules}, "neither auth_type nor block", {}, True),
+        ({"allOf": rules}, "block with auth_type client_credentials", {"auth_type": "client_credentials", "client_credentials": {"client_id": "id"}}, True),
+        ({"allOf": rules}, "block with auth_type headers", {"auth_type": "headers", "client_credentials": {"client_id": "id"}}, False),
+        ({"allOf": rules}, "auth_type client_credentials without the block", {"auth_type": "client_credentials"}, False),
+    ]
+    problems = [
+        f"{name}: OpenAPI says {'valid' if jsonschema.Draft202012Validator(schema).is_valid(body) else 'invalid'}, server says {'valid' if want else 'invalid'}"
+        for schema, name, body, want in cases
+        if jsonschema.Draft202012Validator(schema).is_valid(body) != want
+    ]
+    assert not problems, "MCP client_credentials drifts from server validation:\n    " + "\n    ".join(problems)
+
+
+
+def test_mcp_aws_sigv4_contract_matches_server_validation():
+    """MCPAWSSigV4Config.Validate (core/schemas/mcp.go) refuses an external_id or session_name
+    that is set without a role_arn that is set. The published OpenAPI schema must say the same."""
+    import copy
+
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise AssertionError("needs the jsonschema package: pip install jsonschema") from exc
+
+    mcp = load(HERE / "schemas" / "management" / "mcp.yaml")
+    common = load(HERE / "schemas" / "management" / "common.yaml")
+
+    def inline(node):
+        if isinstance(node, dict):
+            ref = node.get("$ref", "")
+            if ref.endswith("common.yaml#/EnvVar"):
+                return inline(copy.deepcopy(common["EnvVar"]))
+            if ref.startswith("#/"):
+                return inline(copy.deepcopy(mcp[ref[2:]]))
+            return {key: inline(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [inline(value) for value in node]
+        return node
+
+    block = inline(mcp["MCPAWSSigV4Config"])
+    role = "arn:aws:iam::123456789012:role/gateway"
+    cases = [
+        ("region only", {"region": "us-east-1"}, True),
+        ("region with a role", {"region": "us-east-1", "role_arn": role}, True),
+        ("a role with external_id and session_name", {"region": "us-east-1", "role_arn": role, "external_id": "ext", "session_name": "bifrost"}, True),
+        ("external_id without a role", {"region": "us-east-1", "external_id": "ext"}, False),
+        ("session_name without a role", {"region": "us-east-1", "session_name": "bifrost"}, False),
+        ("an empty external_id without a role", {"region": "us-east-1", "external_id": ""}, True),
+        ("external_id with an empty role", {"region": "us-east-1", "role_arn": "", "external_id": "ext"}, False),
+        ("a read external_id sent back with a role", {"region": "us-east-1", "role_arn": role, "external_id": {"value": "***", "type": "plain_text"}}, True),
+        ("a session_name reference without a role", {"region": "us-east-1", "session_name": {"type": "env", "ref": "env.SESSION"}}, False),
+    ]
+    validator = jsonschema.Draft202012Validator(block)
+    problems = [
+        f"{name}: OpenAPI says {'valid' if validator.is_valid(body) else 'invalid'}, server says {'valid' if want else 'invalid'}"
+        for name, body, want in cases
+        if validator.is_valid(body) != want
+    ]
+    assert not problems, "MCP aws_sigv4 drifts from server validation:\n    " + "\n    ".join(problems)
+
 
 def test_oauth_token_url_descriptions_state_the_server_rules():
     """OAuthKeyConfig.Validate accepts plain http for loopback hosts only and rejects a token_url
@@ -947,12 +1163,230 @@ def test_oauth_token_url_descriptions_state_the_server_rules():
     assert not problems, "token_url descriptions drift from OAuthKeyConfig.Validate:\n    " + "\n    ".join(problems)
 
 
+def test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response():
+    """The enterprise handler wraps /api/load-balancer-config outside its middleware chain, so every
+    response from the alias, an auth refusal or a validation error included, carries the Link to
+    /api/adaptive-routing/config and the Warning 299. A response that only $refs a shared error
+    response, or omits either header, documents a reply without the pointer to the successor."""
+    fragments = load(PATHS_DIR / "adaptiverouting.yaml") or {}
+    assert "adaptive-routing-config-legacy" in fragments, "adaptive-routing-config-legacy fragment is missing"
+    legacy = fragments["adaptive-routing-config-legacy"]
+    problems = []
+    for method, operation in legacy.items():
+        if not isinstance(operation, dict):
+            continue
+        if "responses" not in operation:
+            problems.append(f"{method.upper()}: missing responses")
+            continue
+        for status, response in operation["responses"].items():
+            headers = (response or {}).get("headers") or {}
+            missing = [name for name in ("Link", "Warning") if name not in headers]
+            if missing:
+                problems.append(f"{method.upper()} {status}: missing {missing}")
+    assert not problems, "legacy adaptive routing responses without deprecation headers:\n    " + "\n    ".join(problems)
+
+
+def test_adaptive_routing_put_descriptions_state_the_empty_reroute_target():
+    """The enterprise settings handler accepts an omitted or empty reroute_target and stores it as
+    pool, and refuses only other values. Every description of the PUT and of the field must say so,
+    or a caller reads that anything but pool or fallbacks earns a 400."""
+    paths = load(PATHS_DIR / "adaptiverouting.yaml") or {}
+    schemas = load(HERE / "schemas" / "management" / "adaptiverouting.yaml") or {}
+    sources = {
+        "PUT /api/adaptive-routing/config": ((paths.get("adaptive-routing-config") or {}).get("put") or {}).get("description", ""),
+        "PUT /api/load-balancer-config": ((paths.get("adaptive-routing-config-legacy") or {}).get("put") or {}).get("description", ""),
+    }
+    sources.update({
+        f"{name}.reroute_target": ((schema.get("properties") or {}).get("reroute_target") or {}).get("description", "")
+        for name, schema in schemas.items()
+        if isinstance(schema, dict) and "reroute_target" in (schema.get("properties") or {})
+    })
+    problems = []
+    for where, description in sources.items():
+        text = " ".join(description.lower().split())
+        for needle in ("omitted or empty", "stored as `pool`"):
+            if needle not in text:
+                problems.append(f"{where}: description does not mention {needle!r}")
+    assert not problems, "reroute_target descriptions drift from the settings handler:\n    " + "\n    ".join(problems)
+
+
+HANDLERS_DIR = REPO_ROOT / "transports" / "bifrost-http" / "handlers"
+
+# Every list handler that calls ClampPaginationParams, mapped to the fragment that documents
+# its GET. The clamp turns limit <= 0 into 25 and anything above 100 into 100 without an error,
+# so a spec that leaves out the bound reads like `?limit=1000` returns 1000 rows.
+CLAMPED_LIST_HANDLERS = {
+    "getVirtualKeys": ("governance.yaml", "virtual-keys"),
+    "getTeams": ("governance.yaml", "teams"),
+    "getCustomers": ("governance.yaml", "customers"),
+    "getModelConfigs": ("governance.yaml", "model-configs"),
+    "getPricingOverrides": ("governance.yaml", "pricing-overrides"),
+    "getRoutingRules": ("routing.yaml", "rules"),
+    "getMCPClientsPaginated": ("mcp.yaml", "clients"),
+    "listVirtualMCPs": ("virtualmcps.yaml", "virtual-mcps"),
+    "listPushConfigs": ("agents.yaml", "agent-push-configs"),
+    "listWebhookEndpoints": ("webhooks.yaml", "webhooks"),
+    "listWebhookDeliveries": ("webhooks.yaml", "webhooks-deliveries"),
+    "searchWebhookDeliveries": ("webhooks.yaml", "webhooks-deliveries-search"),
+}
+
+# Clamped handlers whose route has no operation in the spec yet. Listed so the gap stays visible.
+UNDOCUMENTED_CLAMPED_HANDLERS = {
+    "getMCPLibrary",  # GET /api/mcp/library
+}
+
+GO_FUNC_RE = re.compile(r"^func (?:\([^)]*\) )?(\w+)\(")
+
+
+def clamped_handler_names() -> set[str]:
+    names = set()
+    for path in sorted(HANDLERS_DIR.glob("*.go")):
+        if path.name.endswith("_test.go"):
+            continue
+        current = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            match = GO_FUNC_RE.match(line)
+            if match:
+                current = match.group(1)
+            elif current and current != "ClampPaginationParams" and "ClampPaginationParams(" in line:
+                names.add(current)
+    return names
+
+
+def test_clamped_list_endpoints_document_the_page_bounds():
+    """Each handler that clamps limit must document maximum 100 and default 25 on that limit.
+    A new clamped handler fails here until it is added to CLAMPED_LIST_HANDLERS."""
+    found = clamped_handler_names()
+    known = set(CLAMPED_LIST_HANDLERS) | UNDOCUMENTED_CLAMPED_HANDLERS
+    problems = []
+    for name in sorted(found - known):
+        problems.append(f"{name}: calls ClampPaginationParams but is not in CLAMPED_LIST_HANDLERS")
+    for name in sorted(known - found):
+        problems.append(f"{name}: listed but no longer calls ClampPaginationParams")
+    for name, (filename, key) in sorted(CLAMPED_LIST_HANDLERS.items()):
+        operation = ((load(PATHS_DIR / filename) or {}).get(key) or {}).get("get") or {}
+        params = {p.get("name"): p for p in operation.get("parameters") or [] if isinstance(p, dict)}
+        schema = (params.get("limit") or {}).get("schema") or {}
+        if not schema:
+            problems.append(f"{name} ({filename}#/{key}): no limit parameter")
+            continue
+        if schema.get("maximum") != 100 or schema.get("default") != 25:
+            problems.append(
+                f"{name} ({filename}#/{key}): limit schema {schema} lacks maximum: 100 and default: 25"
+            )
+        if "offset" not in params:
+            problems.append(f"{name} ({filename}#/{key}): no offset parameter")
+    assert not problems, "clamped list endpoints drift from ClampPaginationParams:\n    " + "\n    ".join(problems)
+
+
+def test_pricing_patch_above_12hr_fields():
+    """The eight OpenAI 12h cache-creation rates on PricingPatch are non-negative numbers,
+    identical in governance.yaml and the bundled openapi.json."""
+    import json
+
+    keys = [
+        "cache_creation_input_token_cost_above_12hr",
+        "cache_creation_input_token_cost_above_12hr_above_272k_tokens",
+        "cache_creation_input_token_cost_above_12hr_priority",
+        "cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority",
+        "cache_creation_input_token_cost_above_12hr_flex",
+        "cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex",
+        "cache_creation_input_token_cost_above_12hr_ultrafast",
+        "cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast",
+    ]
+    source = load(HERE / "schemas" / "management" / "governance.yaml")["PricingPatch"]["properties"]
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))["components"]["schemas"][
+        "PricingPatch"
+    ]["properties"]
+    problems = []
+    for key in keys:
+        src, out = source.get(key), bundle.get(key)
+        if src is None or out is None:
+            problems.append(f"{key}: missing (governance.yaml={src is not None}, openapi.json={out is not None})")
+            continue
+        if src.get("type") != "number" or src.get("minimum") != 0:
+            problems.append(f"{key}: governance.yaml has type={src.get('type')} minimum={src.get('minimum')}")
+        if out != src:
+            problems.append(f"{key}: openapi.json {out} != governance.yaml {src}")
+    assert not problems, "PricingPatch 1hr+ tier drift:\n    " + "\n    ".join(problems)
+
+
+def test_genai_interactions_input_types_match_the_decoder():
+    """GeminiInteractionsInput.UnmarshalJSON accepts a string, an object, an array or null and
+    refuses anything else, and an array holds objects. The create schema has to say the same, in the
+    source and the bundle, or a validator accepts `"input": 42` or `["hi"]` that the route rejects."""
+    import jsonschema
+
+    source = load(HERE / "paths" / "integrations" / "genai" / "interactions.yaml")
+    schemas = [("interactions.yaml", source["collection"]["post"]["requestBody"]["content"]["application/json"]["schema"])]
+    bundle = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    for path, item in bundle.get("paths", {}).items():
+        if path.startswith("/genai/") and path.endswith("/interactions") and "post" in item:
+            schemas.append((f"openapi.json {path}", item["post"]["requestBody"]["content"]["application/json"]["schema"]))
+    problems = []
+    for name, schema in schemas:
+        validator = jsonschema.Draft202012Validator(schema)
+        for value in ("hi", {"type": "text", "text": "hi"}, [{"type": "text", "text": "hi"}], None):
+            if not validator.is_valid({"model": "gemini-3-flash-preview", "input": value}):
+                problems.append(f"{name}: rejects input {value!r}, which the route accepts")
+        if not validator.is_valid({"model": "gemini-3-flash-preview"}):
+            problems.append(f"{name}: rejects an omitted input")
+        for value in (42, True, ["hi"], [42], [[{"type": "text", "text": "hi"}]]):
+            if validator.is_valid({"model": "gemini-3-flash-preview", "input": value}):
+                problems.append(f"{name}: accepts input {value!r}, which the route rejects")
+    assert len(schemas) > 1, "no /genai interactions create operation found in openapi.json"
+    assert not problems, "GenAI Interactions input contract:\n    " + "\n    ".join(problems)
+
+
+def test_access_programs_contract():
+    """OpenAI's access_programs (Daybreak): cyber takes exactly the three documented
+    programs, members Bifrost does not model are allowed and forwarded so OpenAI can
+    reject them, and every Responses body that carries the field references the one
+    component, in the YAML sources and in both bundles."""
+    programs = ["standard", "daybreak_blue", "daybreak_red"]
+    inference = load(HERE / "schemas" / "inference" / "responses.yaml")
+    integration = load(HERE / "schemas" / "integrations" / "openai" / "responses.yaml")
+    problems = []
+
+    component = inference.get("AccessPrograms") or {}
+    if component.get("properties", {}).get("cyber", {}).get("enum") != programs:
+        problems.append(f"responses.yaml AccessPrograms.cyber enum is {component.get('properties', {}).get('cyber', {}).get('enum')}, want {programs}")
+    if component.get("additionalProperties") is not True:
+        problems.append("responses.yaml AccessPrograms must set additionalProperties: true (unknown members are forwarded to OpenAI)")
+    if "forward" not in (component.get("description") or ""):
+        problems.append("responses.yaml AccessPrograms description must say unknown members are forwarded")
+
+    source_refs = [
+        ("responses.yaml ResponsesRequest", inference.get("ResponsesRequest"), "#/AccessPrograms"),
+        ("responses.yaml ResponsesResponse", inference.get("ResponsesResponse"), "#/AccessPrograms"),
+        ("integrations/openai/responses.yaml OpenAIResponsesRequest", integration.get("OpenAIResponsesRequest"), "../../inference/responses.yaml#/AccessPrograms"),
+    ]
+    for name, schema, want in source_refs:
+        got = ((schema or {}).get("properties") or {}).get("access_programs", {}).get("$ref")
+        if got != want:
+            problems.append(f"{name}.access_programs $ref is {got}, want {want}")
+
+    for bundle_name in ("openapi.json", "openapi-oss.json"):
+        schemas = json.loads((HERE / bundle_name).read_text(encoding="utf-8"))["components"]["schemas"]
+        bundled = schemas.get("AccessPrograms") or {}
+        if bundled.get("properties", {}).get("cyber", {}).get("enum") != programs or bundled.get("additionalProperties") is not True:
+            problems.append(f"{bundle_name} AccessPrograms drifted from responses.yaml: {bundled}")
+        for owner in ("ResponsesRequest", "ResponsesResponse", "OpenAIResponsesRequest"):
+            got = ((schemas.get(owner) or {}).get("properties") or {}).get("access_programs", {}).get("$ref")
+            if got != "#/components/schemas/AccessPrograms":
+                problems.append(f"{bundle_name} {owner}.access_programs $ref is {got}")
+    assert not problems, "access_programs contract drift:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
+check("virtual key metadata contract: nullable update, reserved keys, no templated filter param", test_virtual_key_metadata_contract)
+check("openapi-oss.json is openapi.json without its enterprise-only operations", test_oss_bundle_is_the_full_bundle_without_enterprise_operations)
+check("project content-logging descriptions state the header, connector and retention rules", test_project_content_logging_descriptions_state_the_contract)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
 check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
@@ -961,7 +1395,15 @@ check("warp config input models its enabled-state contract", test_warp_config_in
 check("every operation declares its own security", test_every_operation_declares_security)
 check("injected_tools schemas match config.schema.json", test_injected_tools_contract_matches_config_schema)
 check("oauth_key_config grant rules match server validation", test_oauth_key_config_contract_matches_server_validation)
+check("mcp client_credentials rules match server validation", test_mcp_client_credentials_contract_matches_server_validation)
+check("mcp aws_sigv4 rules match server validation", test_mcp_aws_sigv4_contract_matches_server_validation)
 check("oauth token_url descriptions state the loopback and URL-part rules", test_oauth_token_url_descriptions_state_the_server_rules)
+check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
+check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)
 
+check("pricing patch OpenAI 12h cache-creation rates are non-negative numbers in source and bundle", test_pricing_patch_above_12hr_fields)
+check("clamped list endpoints document limit maximum 100 and default 25", test_clamped_list_endpoints_document_the_page_bounds)
+check("genai interactions input types match the decoder", test_genai_interactions_input_types_match_the_decoder)
+check("access_programs schema: cyber programs, forwarded unknown members, one component on every Responses body", test_access_programs_contract)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

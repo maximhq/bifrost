@@ -1,0 +1,385 @@
+package relay
+
+import (
+	"cmp"
+	"context"
+	"errors"
+	"fmt"
+	"net/url"
+	"strings"
+
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+)
+
+// UsagePreviewInput is one hypothetical relayed call: what the caller would send and what the
+// upstream would answer. Bodies are the operator's own samples, never fetched from anywhere.
+type UsagePreviewInput struct {
+	Method              string            `json:"method"`
+	Path                string            `json:"path"`              // request path; a query string may follow, as in /jobs/1?stream=true
+	Headers             map[string]string `json:"headers,omitempty"` // request headers, for routes that match on one
+	Accept              string            `json:"accept,omitempty"`  // the Accept header; read from headers when empty
+	RequestContentType  string            `json:"request_content_type,omitempty"`
+	RequestBody         string            `json:"request_body,omitempty"`
+	StatusCode          int               `json:"status_code,omitempty"` // default 200
+	ResponseContentType string            `json:"response_content_type,omitempty"`
+	ResponseBody        string            `json:"response_body,omitempty"`
+}
+
+// UsagePreview is what the relay would record for that call: the route it matched, whether it
+// counts, what it read from each body, and the cost those numbers add up to.
+type UsagePreview struct {
+	RouteIndex     *int                      `json:"route_index"`   // index into routes[], null when none matched
+	RouteAllowed   bool                      `json:"route_allowed"` // false when no route matches and skip_route_check is off
+	StatusCheck    bool                      `json:"status_check"`  // a caller's status check for one of the relay's jobs: relayed free
+	Billable       bool                      `json:"billable"`      // the route's or the method default
+	Streams        bool                      `json:"streams"`       // served by the streaming relay
+	Counted        bool                      `json:"counted"`       // reports usage: billable and a 2xx status
+	ModelPath      string                    `json:"model_path"`    // where the model is read from, "" for none
+	ModelSource    schemas.RelayModelSource  `json:"model_source"`  // body or query
+	Model          string                    `json:"model"`         // what that path yielded from the request body
+	UnitsSource    schemas.RelayUnitsSource  `json:"units_source"`
+	UnitsMeasure   schemas.RelayUnitsMeasure `json:"units_measure"`
+	UnitsPath      string                    `json:"units_path"`
+	Units          *float64                  `json:"units"`        // quantity read, null when none
+	UnitsBilled    *float64                  `json:"units_billed"` // after block rounding and the minimum, null when none
+	UnitsBlockSize float64                   `json:"units_block_size"`
+	UnitsMinimum   float64                   `json:"units_minimum"`
+	CostPerUnit    float64                   `json:"cost_per_unit"`
+	CostPerRequest float64                   `json:"cost_per_request"`
+	ExtractedCost  *float64                  `json:"extracted_cost"` // cost_path or usage.cost, null when none
+	Tokens         *PreviewTokens            `json:"tokens"`         // token paths, null when none
+	Cost           float64                   `json:"cost"`           // what the log row and budgets would carry
+	Notes          []string                  `json:"notes"`          // why a field came out empty
+}
+
+// PreviewTokens are the token counts the mapping read; logged, never priced.
+type PreviewTokens struct {
+	Input  int `json:"input"`
+	Output int `json:"output"`
+	Total  int `json:"total"`
+}
+
+// gatewayDroppedExtraHeaders are the x-bf-eh-* names the HTTP transport always refuses (its
+// security denylist in transports/bifrost-http/lib/ctx.go), so the preview drops them too.
+var gatewayDroppedExtraHeaders = map[string]struct{}{
+	"proxy-authorization": {}, "cookie": {}, "host": {}, "content-length": {}, "connection": {}, "transfer-encoding": {},
+	"x-api-key": {}, "x-goog-api-key": {}, "xi-api-key": {}, "x-bf-api-key": {}, "x-bf-api-key-id": {}, "x-bf-vk": {}, "x-bf-direct-key": {},
+}
+
+// PreviewUsage runs one hypothetical call through the same route matching and usage mapping the
+// relay applies, so an operator can check a mapping against a sample before saving it. It builds
+// no client and sends nothing. Config-time only, never on the request path. cfg may be unsaved;
+// its extra_headers take part in route matching and its ignore_upstream_cost in pricing, as on
+// the relay.
+func PreviewUsage(cfg *schemas.RelayConfig, in UsagePreviewInput) (*UsagePreview, error) {
+	if cfg == nil {
+		cfg = &schemas.RelayConfig{}
+	} else {
+		cfg = cfg.Clone()
+	}
+	if cfg.Auth.Type == "" {
+		cfg.Auth.Type = schemas.RelayAuthBearer
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	method := strings.ToUpper(strings.TrimSpace(in.Method))
+	if method == "" {
+		method = "POST"
+	}
+	// The query rides along in the path field the way an operator types it; it is split off here
+	// so the routes see the path alone and a GET's ?stream=true counts as the relay counts it.
+	path, rawQuery, _ := strings.Cut(in.Path, "?")
+	if _, err := url.PathUnescape(path); err != nil {
+		return nil, fmt.Errorf("path: %w", err)
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	// The transport resolves . and .. on the whole /relay/<name><path> before it reads the relay
+	// name, so a sample that climbs out of the relay is sent elsewhere or refused, never to it.
+	prefix := "/relay/" + cmp.Or(cfg.Name, "preview")
+	full := transportPath(prefix + path)
+	if full != prefix && !strings.HasPrefix(full, prefix+"/") {
+		return &UsagePreview{Notes: []string{"the path climbs out of the relay with .. segments, so the gateway never sends it to this relay: another relay's route takes it, or it is refused with 404"}}, nil
+	}
+	path = cmp.Or(strings.TrimPrefix(full, prefix), "/")
+	status := in.StatusCode
+	if status == 0 {
+		status = 200
+	}
+	if in.ResponseContentType == "" && in.ResponseBody != "" && !validJSON([]byte(in.ResponseBody)) {
+		return nil, errors.New("response_content_type is required when the response body is not JSON")
+	}
+
+	ignoreCost := cfg.IgnoreUpstreamCost
+	usage := resolveUsage(cfg.Usage, nil)
+	usage.ignoreUpstreamCost = ignoreCost
+	usage.eventPaths = usage.collectEventPaths()
+	routes := compileRoutesWithCostPolicy(cfg, ignoreCost)
+	for i := range routes {
+		routes[i].usage.ignoreUpstreamCost = ignoreCost
+		routes[i].usage.eventPaths = routes[i].usage.collectEventPaths()
+	}
+	e := &endpoint{cfg: cfg, usage: usage, routes: routes, streamGlobs: compileStreamGlobs(cfg), operatorHeaders: lowerHeaderValues(cfg.ExtraHeaders), operatorLogHeaders: loggableHeaderValues(cfg.ExtraHeaders)}
+	e.indexRoutes()
+	headers := make(map[string]string, len(in.Headers))
+	var extra map[string][]string
+	for name, value := range in.Headers {
+		name = strings.ToLower(strings.TrimSpace(name))
+		// A sample x-bf-eh-* header reaches the upstream without its prefix, as on a live call.
+		if stripped, ok := strings.CutPrefix(name, "x-bf-eh-"); ok {
+			// The gateway never forwards these, so they cannot select a route on a live call either.
+			if _, dropped := gatewayDroppedExtraHeaders[stripped]; stripped != "" && !dropped {
+				if extra == nil {
+					extra = map[string][]string{}
+				}
+				extra[stripped] = append(extra[stripped], value)
+			}
+			continue
+		}
+		headers[name] = value
+	}
+	// The sample's own content-type and Accept fields are request headers too, as on the wire.
+	if _, set := headers["content-type"]; !set && in.RequestContentType != "" {
+		headers["content-type"] = in.RequestContentType
+	}
+	if _, set := headers["accept"]; !set && in.Accept != "" {
+		headers["accept"] = in.Accept
+	}
+	// One content type for the whole preview, the one the upstream receives: the sample's, else the
+	// operator's, as a passthrough call's caller header replaces the extra header.
+	// As in Serve, a header the upstream never receives (a caller's x-amz-* under SigV4) selects no route.
+	headers = e.routeHeaders(headers, extra)
+	contentType, _ := headerValue("content-type", headers, e.operatorHeaders)
+	route := e.selectRoute(method, path, headers)
+	usage, billable, forced := e.usage, billableByDefault(method, nil), compileBodyOverrides(cfg.BodyOverrides)
+	out := &UsagePreview{RouteAllowed: (cfg.SkipRouteCheck || route != nil) && (route == nil || !route.disabled)}
+	// As in plan: a dot segment never reaches the relay-any-path fallback.
+	dotSegment := route == nil && out.RouteAllowed && hasDotSegment(path)
+	if dotSegment {
+		out.RouteAllowed = false
+	}
+	if route != nil {
+		usage, billable, forced = route.usage, route.billable, route.bodyOverrides
+		out.RouteIndex = schemas.Ptr(route.configIndex)
+	}
+	reqBody, respBody := []byte(in.RequestBody), []byte(in.ResponseBody)
+	out.Billable = billable
+	// As on the wire: a forced route streams, and otherwise the reply's content type decides.
+	mode := e.streamMode(route, path)
+	out.Streams = mode == streamOn || (mode == streamAuto && isEventStream(in.ResponseContentType))
+	out.ModelPath = usage.effectiveModelPath()
+	out.ModelSource = usage.modelSource
+	if out.ModelSource == "" {
+		out.ModelSource = schemas.RelayModelFromBody
+	}
+	out.UnitsSource, out.UnitsMeasure, out.UnitsPath = usage.unitsSource, usage.unitsMeasure, usage.unitsPath
+	out.CostPerUnit, out.CostPerRequest = usage.costPerUnit, usage.costPerRequest
+	out.UnitsBlockSize, out.UnitsMinimum = usage.unitsBlockSize, usage.unitsMinimum
+	out.Notes = []string{}
+
+	// As in Serve: a call matching a job's status check is relayed free whatever route it reaches (a
+	// disabled one aside), provided Bifrost started that job, which a preview cannot know.
+	if e.hasJobs && !hasDotSegment(path) && (route == nil || !route.disabled) {
+		probeBody, created, err := applyBodyOverrides(forced, method, contentType, reqBody)
+		// As in Serve, a created body under the relay's non-JSON Content-Type is refused before the
+		// status check is looked at: with a 400 on a route, or as no route (below).
+		_, relayTypeSet := e.operatorHeaders["content-type"]
+		if err == nil && !(created && !isJSONBodyType(contentType) && relayTypeSet) {
+			probeHeaders := headers
+			if created && !isJSONBodyType(contentType) {
+				probeHeaders = withJSONContentType(headers)
+			}
+			probe := &schemas.BifrostRelayRequest{Method: method, Path: path, RawQuery: rawQuery, Headers: probeHeaders, Body: probeBody}
+			// Serve checks the call as sent against disabled routes again, created Content-Type
+			// included, so a status check that lands on one is refused there with 404.
+			if disabled := e.selectRoute(method, path, probeHeaders); e.hasDisabled && disabled != nil && disabled.disabled {
+				out.RouteAllowed = false
+				out.Notes = append(out.Notes, "the matching route is disabled: the call is refused with 404")
+				return out, nil
+			}
+			if len(e.statusCheckCandidates(context.Background(), probe)) > 0 {
+				// Serve still reads the model after matching a status check, and refuses a request it
+				// cannot read one from (a model sent twice in the query), so that refusal wins here too.
+				probeType := contentType
+				if created && !isJSONBodyType(contentType) {
+					probeType = "application/json"
+				}
+				model, err := ReadRequestModel(usage.modelSource, probeBody, probeType, rawQuery, usage.effectiveModelPath())
+				if err != nil {
+					// Admitted as a status check, then refused, so the UI shows the 400, not "no route".
+					out.RouteAllowed = true
+					out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+					return out, nil
+				}
+				out.Model = model
+				out.StatusCheck, out.RouteAllowed, out.Billable = true, true, false
+				out.Notes = append(out.Notes, "this is a caller's status check for one of the relay's jobs: if Bifrost started that job, the call is relayed free and the job is charged once, when it finishes")
+				return out, nil
+			}
+		}
+	}
+
+	if !out.RouteAllowed {
+		if route != nil && route.disabled {
+			out.Notes = append(out.Notes, "the matching route is disabled: the call is refused with 404")
+		} else if dotSegment {
+			out.Notes = append(out.Notes, "the path has a . or .. segment, which the relay never forwards: the call is refused with 404")
+		} else {
+			out.Notes = append(out.Notes, "no route matches and skip_route_check is off: the call is refused with 404")
+		}
+		return out, nil
+	}
+	// Forced fields go in first, as in Serve, so the model and request-side units are read off the sent body.
+	reqBody, created, err := applyBodyOverrides(forced, method, contentType, reqBody)
+	if err != nil {
+		out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+		return out, nil
+	}
+	if created && !isJSONBodyType(contentType) {
+		// As in Serve: the relay's own non-JSON Content-Type would win on the wire, so it is refused.
+		if relayType, set := e.operatorHeaders["content-type"]; set {
+			out.Notes = append(out.Notes, fmt.Sprintf("the relay refuses this request with 400: this route creates a JSON body for its forced fields, but the relay's extra headers set Content-Type to %q", relayType))
+			return out, nil
+		}
+		contentType = "application/json"
+	}
+	// The model is read the way the transport reads it, so a body the relay refuses is reported.
+	if out.ModelPath != "" && out.ModelSource == schemas.RelayModelFromQuery {
+		model, err := ReadRequestModel(out.ModelSource, reqBody, contentType, rawQuery, out.ModelPath)
+		switch {
+		case err != nil:
+			out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+			return out, nil
+		case model != "":
+			out.Model = model
+		default:
+			out.Notes = append(out.Notes, "no "+out.ModelPath+" parameter in the request query")
+		}
+	} else if out.ModelPath != "" && len(reqBody) > 0 {
+		model, err := ReadModel(reqBody, contentType, out.ModelPath)
+		switch {
+		case err != nil:
+			out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+			return out, nil
+		case model != "":
+			out.Model = model
+		case looksJSON(contentType, reqBody):
+			out.Notes = append(out.Notes, "no string at model path "+out.ModelPath+" in the request body")
+		default:
+			out.Notes = append(out.Notes, "the request body is not JSON, so no model is read")
+		}
+	}
+	if !billable {
+		out.Notes = append(out.Notes, "the route is not billable: the call is relayed but neither counted nor charged")
+		return out, nil
+	}
+	// The relay refuses an unmeasurable body before contacting the upstream, so whatever the
+	// sample's status, that refusal is what happens.
+	if err := usage.requestBodyError(reqBody); err != nil {
+		out.Notes = append(out.Notes, "the relay refuses this request with 400: "+err.Error())
+		return out, nil
+	}
+	if status < 200 || status >= 300 {
+		out.Notes = append(out.Notes, "a non-2xx response reports nothing: not counted, not charged")
+		return out, nil
+	}
+	out.Counted = true
+
+	fields := usage.requestUnits(reqBody)
+	if usage.billsUnits() && usage.unitsSource == schemas.RelayUnitsFromRequest && !fields.hasUnits {
+		out.Notes = append(out.Notes, "no quantity could be read from the request body with measure "+string(usage.unitsMeasure)+noPath(usage))
+	}
+	// A reply priced by its size is counted as the relay forwards it, so a stream bills what the
+	// buffered relay would bill for the same bytes; the preview measures the whole sample body.
+	streamSize := func() {
+		if !usage.wholeBodyResponse() {
+			return
+		}
+		units, _ := usage.measureUnits(in.ResponseContentType, respBody)
+		fields.merge(usageFields{units: units, hasUnits: true})
+		out.Notes = append(out.Notes, fmt.Sprintf("the streamed reply is billed by its size: %s counted as it is forwarded", string(usage.unitsMeasure)))
+	}
+	if out.Streams && !isEventStream(in.ResponseContentType) {
+		out.Notes = append(out.Notes, "a non-SSE stream is forwarded unread: nothing is taken from the response body but its size")
+		streamSize()
+	} else if out.Streams && isEventStream(in.ResponseContentType) {
+		// The relay frames an SSE reply and reads only the events that carry a mapped field, each
+		// field keeping the last value reported; the preview reads the sample the same way.
+		events := providerUtils.SplitSSEPayloads(respBody)
+		carried := 0
+		for _, event := range events {
+			if !usage.hasUsageEvent(event) {
+				continue
+			}
+			if f := usage.eventFields(event); f.any() {
+				carried++
+				fields.merge(f)
+			}
+		}
+		out.Notes = append(out.Notes, fmt.Sprintf("SSE response: %d events, %d carried a mapped usage field; each field keeps the last value reported", len(events), carried))
+		streamSize()
+		if usage.ignoreUpstreamCost && usage.costPath != "" {
+			out.Notes = append(out.Notes, "the upstream-reported cost is ignored: ignore_upstream_cost is on for this endpoint")
+		}
+	} else {
+		parsed := usage.parse(in.ResponseContentType, respBody)
+		fields.merge(parsed)
+		if usage.billsUnits() && usage.unitsSource == schemas.RelayUnitsFromResponse && !parsed.hasUnits {
+			out.Notes = append(out.Notes, "no quantity could be read from the response body with measure "+string(usage.unitsMeasure)+noPath(usage))
+		}
+		if len(respBody) > 0 && !looksJSON(in.ResponseContentType, respBody) && usage.unitsMeasure != schemas.RelayUnitsBodyBytes && usage.unitsMeasure != schemas.RelayUnitsBodyChars {
+			out.Notes = append(out.Notes, "the response body is not JSON, so token and cost paths are not read")
+		}
+		if !parsed.hasInput && !parsed.hasOutput && !parsed.hasTotal && len(respBody) > 0 && usage.tokensConfigured() {
+			out.Notes = append(out.Notes, "no token counts found in the response body")
+		}
+		switch {
+		case usage.ignoreUpstreamCost && (usage.costPath != "" || providerUtils.GetJSONField(respBody, "usage.cost").Exists()):
+			out.Notes = append(out.Notes, "the upstream-reported cost is ignored: ignore_upstream_cost is on for this endpoint")
+		case !parsed.hasCost && usage.costPath != "":
+			out.Notes = append(out.Notes, "nothing at cost path "+usage.costPath+" in the response body")
+		}
+	}
+	built := usage.build(fields)
+	if fields.hasUnits {
+		out.Units = schemas.Ptr(fields.units)
+		// The same guarded figure the live relay bills, so an overflowing quantity previews as
+		// unbilled instead of as a value JSON cannot carry.
+		out.UnitsBilled = built.BilledUnits
+	}
+	if fields.hasCost {
+		out.ExtractedCost = schemas.Ptr(fields.cost)
+	}
+	if built.TotalTokens > 0 {
+		out.Tokens = &PreviewTokens{Input: built.InputTokens, Output: built.OutputTokens, Total: built.TotalTokens}
+	}
+	out.Cost = built.Cost
+	switch {
+	case out.Tokens != nil:
+		// Token counts are logged on the row, never priced: an endpoint call costs its mapping alone.
+		out.Notes = append(out.Notes, "token counts are logged, not priced; the cost is the mapping's (fee, units, reported cost)")
+	case out.Cost == 0:
+		out.Notes = append(out.Notes, "cost is 0: the call counts one request against rate limits but charges no budget")
+	}
+	return out, nil
+}
+
+func noPath(u resolvedUsage) string {
+	if u.unitsPath == "" {
+		return " and no units path"
+	}
+	return " at path " + u.unitsPath
+}
+
+// transportPath is the path as the HTTP transport hands it to the relay: fasthttp decodes it and
+// resolves . and .. segments, so a sample of /w/a/../x is matched as /w/x, as a live call is.
+func transportPath(path string) string {
+	u := fasthttp.AcquireURI()
+	defer fasthttp.ReleaseURI(u)
+	u.SetPath(path)
+	return string(u.Path())
+}

@@ -6,6 +6,10 @@ import { SecretVar } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
 import { Trash } from "lucide-react";
 import React, { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+
+// A key name a plain object cannot hold as an own entry (see handleKeyChange).
+const UNSUPPORTED_KEY = "__proto__";
 
 // Support both plain string values and SecretVar objects
 type HeaderValue = string | SecretVar;
@@ -20,7 +24,8 @@ export interface CellRenderParams {
 
 interface HeadersTableProps<T extends HeaderValue> {
 	value: Record<string, T>;
-	onChange: (value: Record<string, T>) => void;
+	/** `order` is the on-screen row order, which an object cannot keep for integer-like names. */
+	onChange: (value: Record<string, T>, order: readonly string[]) => void;
 	keyPlaceholder?: string;
 	valuePlaceholder?: string;
 	label?: string;
@@ -37,6 +42,68 @@ interface HeadersTableProps<T extends HeaderValue> {
 	renderKeyInput?: (params: CellRenderParams) => React.ReactNode;
 	/** Optional custom renderer for the value cell input */
 	renderValueInput?: (params: CellRenderParams) => React.ReactNode;
+	/** When set, the built-in inputs get `<prefix>-name-<row>` and `<prefix>-value-<row>` test ids. */
+	testIdPrefix?: string;
+	/**
+	 * Keep a row whose name is cleared, under an empty name, instead of removing it with its value.
+	 * For callers that validate the result (an empty name with a value is an error there), so a
+	 * rename in progress cannot silently drop the entry.
+	 */
+	keepClearedNames?: boolean;
+	/**
+	 * Called with the rows the table holds as conflicts (row index -> the name typed there) whenever they
+	 * change, and with the headers those indices refer to (after a delete, the remaining rows). The table
+	 * keeps such a row's last valid name in `value`; a caller that validates names can use this to block
+	 * saving until the conflict is resolved. With keepClearedNames, deleting a conflicted row removes it.
+	 * `order` is the row order the indices count in.
+	 */
+	onConflictsChange?: (conflicts: ReadonlyMap<number, string>, headers: Record<string, T>, order: readonly string[]) => void;
+}
+
+/**
+ * Whether the table shows its empty add row. With keepClearedNames a cleared row keeps its value under
+ * the empty name, which is also the add row's key, so the add row is hidden until that row is named or
+ * removed; otherwise typing into it would overwrite the cleared row's value.
+ */
+export function showsAddRow(value: Record<string, unknown>, keepClearedNames: boolean): boolean {
+	return !(keepClearedNames && Object.hasOwn(value, ""));
+}
+
+/**
+ * The headers after row `rowIndex` is renamed to `newKey`, for keepClearedNames: the row keeps its
+ * position and value, and a cleared name stays as an "" entry. A plain object holds one "" key, so a
+ * second cleared row cannot be kept and undefined is returned; the caller holds it as a row conflict.
+ */
+export function renameHeaderKeepingCleared<T>(
+	value: Record<string, T>,
+	rowIndex: number,
+	newKey: string,
+	currentValue: T,
+	order: string[] = Object.keys(value),
+): Record<string, T> | undefined {
+	const entries = order.map((k): [string, T] => [k, value[k]]);
+	if (rowIndex >= entries.length) return newKey === "" ? value : { ...value, [newKey]: currentValue };
+	if (newKey === "" && entries.some(([k], i) => k === "" && i !== rowIndex)) return undefined;
+	return Object.fromEntries(entries.map(([k, v], i) => (i === rowIndex ? [newKey, currentValue] : [k, v])));
+}
+
+/**
+ * The headers and conflicts after row `rowIndex` is deleted, for keepClearedNames: the row goes even when
+ * it holds a conflict (its message offers to remove it), and conflicts below it move up with their rows.
+ * A row past the headers (the add row) only loses its conflict.
+ */
+export function deleteHeaderRow<T>(
+	value: Record<string, T>,
+	conflicts: ReadonlyMap<number, string>,
+	rowIndex: number,
+	order: string[] = Object.keys(value),
+): { value: Record<string, T>; conflicts: Map<number, string> } {
+	const shifted = new Map<number, string>();
+	conflicts.forEach((name, i) => {
+		if (i < rowIndex) shifted.set(i, name);
+		else if (i > rowIndex) shifted.set(i - 1, name);
+	});
+	return { value: Object.fromEntries(order.filter((_, i) => i !== rowIndex).map((k) => [k, value[k]])), conflicts: shifted };
 }
 
 // Empty SecretVar for new rows
@@ -63,23 +130,62 @@ const isValueEmpty = (val: HeaderValue): boolean => {
 	return !val;
 };
 
+/** A row's value input in the same table: a form can show several tables with the same row numbers. */
+export function valueInputInTable(from: HTMLElement, rowIndex: number): HTMLInputElement | null {
+	return from.closest("table")?.querySelector<HTMLInputElement>(`input[data-row="${rowIndex}"][data-column="value"]`) ?? null;
+}
+
+/**
+ * The row order for `value`: `previous` with removed names dropped and new ones appended. A plain
+ * object lists integer-like names ("3") first, so without this a row renamed to one would jump above
+ * the rows before it while the user is still typing.
+ */
+export function rowOrder(value: Record<string, unknown>, previous: readonly string[]): string[] {
+	const order = previous.filter((k) => Object.hasOwn(value, k));
+	for (const k of Object.keys(value)) if (!order.includes(k)) order.push(k);
+	return order;
+}
+
+/** `order` with the name at `index` replaced, or appended for the trailing add row. */
+const renameAt = (order: readonly string[], index: number, name: string) =>
+	index < order.length ? order.map((k, i) => (i === index ? name : k)) : [...order, name];
+
 export function HeadersTable<T extends HeaderValue>({
 	value,
 	onChange,
-	keyPlaceholder = "Header name",
-	valuePlaceholder = "Header value",
-	label = "Headers",
+	keyPlaceholder: keyPlaceholderProp,
+	valuePlaceholder: valuePlaceholderProp,
+	label: labelProp,
 	disabled = false,
 	useSecretVarInput,
 	fixedKeys,
 	renderKeyInput,
 	renderValueInput,
+	testIdPrefix,
+	keepClearedNames = false,
+	onConflictsChange,
 }: HeadersTableProps<T>) {
+	const { t } = useTranslation("common");
+	const keyPlaceholder = keyPlaceholderProp ?? t("headersTable.headerName");
+	const valuePlaceholder = valuePlaceholderProp ?? t("headersTable.headerValue");
+	const label = labelProp ?? t("headersTable.headers");
 	// Use explicit prop if provided, otherwise detect from existing values
 	const isSecretVarMode = useSecretVarInput ?? Object.values(value || {}).some((v) => isSecretVar(v));
 
 	// Track duplicate key conflicts: maps rowIndex -> attempted duplicate key
 	const [duplicateConflicts, setDuplicateConflicts] = useState<Map<number, string>>(new Map());
+	// Every conflict change goes through here, so onConflictsChange hears it before the matching onChange.
+	// Without that callback this is the plain functional update the table has always used.
+	// `headers` is what the indices refer to: the current value, or the remaining rows after a delete.
+	const updateConflicts = (update: (prev: Map<number, string>) => Map<number, string>, headers: Record<string, T> = value) => {
+		if (!onConflictsChange) {
+			setDuplicateConflicts(update);
+			return;
+		}
+		const next = update(duplicateConflicts);
+		setDuplicateConflicts(next);
+		onConflictsChange(next, headers, rowOrder(headers, keyOrder.current));
+	};
 	// Track which row to highlight (for scroll-to-existing behavior)
 	const [highlightedRow, setHighlightedRow] = useState<number | null>(null);
 	// Refs for each table row to enable scrolling
@@ -95,32 +201,50 @@ export function HeadersTable<T extends HeaderValue>({
 
 	const isFixedKeys = Array.isArray(fixedKeys);
 
-	// Convert headers object to array format for table display
-	// Filter out any empty string keys from stored headers
-	const headerEntries = Object.entries(value || {});
+	// Rows keep the order they were typed in (see rowOrder); every index below refers to it.
+	const keyOrder = useRef<string[]>([]);
+	keyOrder.current = rowOrder(value || {}, keyOrder.current);
+	const headerEntries = keyOrder.current.map((k): [string, T] => [k, value[k]]);
 	// In fixed-keys mode the rows are exactly the supplied keys (read-only,
-	// no trailing add-row). Otherwise always show one empty row at the bottom.
+	// no trailing add-row). Otherwise show one empty row at the bottom, unless a
+	// cleared row already holds the empty name (see showsAddRow).
 	const rows: [string, T][] = fixedKeys
 		? fixedKeys.map((key) => [key, value?.[key] ?? getEmptyValue()] as [string, T])
-		: [...headerEntries, ["", getEmptyValue()]];
+		: showsAddRow(value || {}, keepClearedNames)
+			? [...headerEntries, ["", getEmptyValue()]]
+			: headerEntries;
 
 	const handleKeyChange = (oldKey: string, newKey: string, currentValue: T, rowIndex: number) => {
 		// Check if newKey already exists (and it's not the current row's original key)
-		const isDuplicate = newKey !== "" && newKey !== oldKey && newKey in value;
+		// Own keys only: `in` also sees inherited names such as constructor or toString.
+		const isDuplicate = newKey !== "" && newKey !== oldKey && Object.hasOwn(value, newKey);
+		// "__proto__" can't be stored as a key of a plain object: assigning it sets the prototype
+		// instead, so the row would vanish and the key would silently never be saved. Hold it as a
+		// row conflict, like a duplicate, so the row stays visible with an explanation.
+		const isUnsupported = newKey === UNSUPPORTED_KEY;
 
-		if (isDuplicate) {
+		if (isDuplicate || isUnsupported) {
 			// Duplicate detected - store conflict key locally, let user continue typing
 			// Don't update parent value (would overwrite existing entry)
-			setDuplicateConflicts((prev) => new Map(prev).set(rowIndex, newKey));
+			updateConflicts((prev) => new Map(prev).set(rowIndex, newKey));
 			return;
 		}
 
 		// Key is unique - clear any previous conflict for this row
-		setDuplicateConflicts((prev) => {
+		updateConflicts((prev) => {
 			const next = new Map(prev);
 			next.delete(rowIndex);
 			return next;
 		});
+
+		if (keepClearedNames) {
+			const next = renameHeaderKeepingCleared(value, rowIndex, newKey, currentValue, keyOrder.current);
+			if (next) {
+				keyOrder.current = renameAt(keyOrder.current, rowIndex, newKey);
+				onChange(next, keyOrder.current);
+			} else updateConflicts((prev) => new Map(prev).set(rowIndex, ""));
+			return;
+		}
 
 		// Rebuild the object preserving key order so the row doesn't jump to the end
 		const newHeaders: Record<string, T> = {};
@@ -140,7 +264,8 @@ export function HeadersTable<T extends HeaderValue>({
 			newHeaders[newKey] = currentValue;
 		}
 
-		onChange(newHeaders);
+		if (newKey !== "") keyOrder.current = renameAt(keyOrder.current, rowIndex, newKey);
+		onChange(newHeaders, rowOrder(newHeaders, keyOrder.current));
 	};
 
 	const handleValueChange = (currentKey: string, newValue: string | SecretVar, rowIndex: number) => {
@@ -158,13 +283,21 @@ export function HeadersTable<T extends HeaderValue>({
 			newHeaders[currentKey] = (typeof newValue === "string" ? newValue : newValue.value) as T;
 		}
 
-		onChange(newHeaders);
+		onChange(newHeaders, keyOrder.current);
 	};
 
 	const handleDelete = (key: string, rowIndex: number) => {
+		if (keepClearedNames) {
+			const next = deleteHeaderRow(value, duplicateConflicts, rowIndex, keyOrder.current);
+			keyOrder.current = keyOrder.current.filter((_, i) => i !== rowIndex);
+			updateConflicts(() => next.conflicts, next.value);
+			onChange(next.value, keyOrder.current);
+			return;
+		}
+
 		// If this row has a conflict, just clear the conflict (don't modify value)
 		if (duplicateConflicts.has(rowIndex)) {
-			setDuplicateConflicts((prev) => {
+			updateConflicts((prev) => {
 				const next = new Map(prev);
 				next.delete(rowIndex);
 				return next;
@@ -177,7 +310,7 @@ export function HeadersTable<T extends HeaderValue>({
 		delete newHeaders[key];
 
 		// Shift down conflict indices for rows after the deleted one
-		setDuplicateConflicts((prev) => {
+		updateConflicts((prev) => {
 			const next = new Map<number, string>();
 			prev.forEach((conflictKey, conflictRowIndex) => {
 				if (conflictRowIndex > rowIndex) {
@@ -190,15 +323,14 @@ export function HeadersTable<T extends HeaderValue>({
 			return next;
 		});
 
-		onChange(newHeaders);
+		onChange(newHeaders, rowOrder(newHeaders, keyOrder.current));
 	};
 
 	const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, rowIndex: number, column: "key" | "value") => {
 		if (e.key === "Tab" && !e.shiftKey) {
 			if (column === "key") {
 				e.preventDefault();
-				const valueInput = document.querySelector(`input[data-row="${rowIndex}"][data-column="value"]`) as HTMLInputElement;
-				valueInput?.focus();
+				valueInputInTable(e.currentTarget, rowIndex)?.focus();
 			}
 		}
 	};
@@ -214,11 +346,11 @@ export function HeadersTable<T extends HeaderValue>({
 				<Table className="table-fixed">
 					<TableHeader>
 						<TableRow>
-							<TableHead className="w-[40%] px-4 py-2">Name</TableHead>
-							<TableHead className="px-4 py-2">Value</TableHead>
+							<TableHead className="w-[40%] px-4 py-2">{t("headersTable.name")}</TableHead>
+							<TableHead className="px-4 py-2">{t("headersTable.value")}</TableHead>
 							{!isFixedKeys && (
 								<TableHead className="w-10 p-0">
-									<span className="sr-only">Actions</span>
+									<span className="sr-only">{t("actions")}</span>
 								</TableHead>
 							)}
 						</TableRow>
@@ -266,13 +398,22 @@ export function HeadersTable<T extends HeaderValue>({
 													value={hasConflict ? conflictKey : key}
 													data-row={index}
 													data-column="key"
+													data-testid={testIdPrefix ? `${testIdPrefix}-name-${index}` : undefined}
 													onChange={(e) => handleKeyChange(key, e.target.value, headerValue, index)}
 													onKeyDown={(e) => handleKeyDown(e, index, "key")}
 													className={cn("border-0 focus-visible:ring-0 focus-visible:ring-offset-0", hasConflict && "text-destructive")}
 													disabled={disabled}
 												/>
 											)}
-											{hasConflict && <span className="text-destructive px-3 text-xs">Duplicate key</span>}
+											{hasConflict && (
+												<span className="text-destructive px-3 text-xs">
+													{conflictKey === UNSUPPORTED_KEY
+														? t("headersTable.unsupportedKey")
+														: conflictKey === ""
+															? t("headersTable.emptyKey")
+															: t("headersTable.duplicateKey")}
+												</span>
+											)}
 										</div>
 									</TableCell>
 									<TableCell className="p-2">
@@ -290,6 +431,7 @@ export function HeadersTable<T extends HeaderValue>({
 												value={headerValue as SecretVar}
 												data-row={index}
 												data-column="value"
+												data-testid={testIdPrefix ? `${testIdPrefix}-value-${index}` : undefined}
 												onChange={(secretVar) => handleValueChange(key, secretVar, index)}
 												onKeyDown={(e) => handleKeyDown(e, index, "value")}
 												className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
@@ -301,6 +443,7 @@ export function HeadersTable<T extends HeaderValue>({
 												value={getDisplayValue(headerValue)}
 												data-row={index}
 												data-column="value"
+												data-testid={testIdPrefix ? `${testIdPrefix}-value-${index}` : undefined}
 												onChange={(e) => handleValueChange(key, e.target.value, index)}
 												onKeyDown={(e) => handleKeyDown(e, index, "value")}
 												className="border-0 focus-visible:ring-0 focus-visible:ring-offset-0"

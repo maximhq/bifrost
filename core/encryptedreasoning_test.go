@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -2338,6 +2339,197 @@ func TestStripUnverifiableReasoning_RawContentBlockCarriers(t *testing.T) {
 	})
 }
 
+// codexSubagentTask is the task text of a Codex multi_agent v1 agent_message, as recorded
+// in a subagent's rollout.
+const codexSubagentTask = "Message Type: NEW_TASK\nTask: count the primes below 3000 with a python one-liner."
+
+// newCodexSubagentRequest replays a Codex multi_agent v1 subagent thread: a reasoning item
+// minted elsewhere plus the parent's agent_message, whose content[1] is a block of type
+// "encrypted_content" that holds nothing but that field. This is the shape behind the
+// customer's "Missing required parameter: 'input[N].content[1].encrypted_content'".
+func newCodexSubagentRequest() *schemas.BifrostRequest {
+	req := newEncryptedReasoningRequest("gAAAAABqc9R3ciphertext")
+	req.ResponsesRequest.Provider = schemas.Azure
+	req.ResponsesRequest.Model = "gpt-6.1-sol"
+	req.ResponsesRequest.Input = append(req.ResponsesRequest.Input, schemas.ResponsesMessage{
+		ID:        new("amsg_01a1b1cb-5066-7ae0-84b2-c089317668d9"),
+		Type:      new(schemas.ResponsesMessageType("agent_message")),
+		Author:    []byte(`"/root"`),
+		Recipient: []byte(`"/root/count_primes"`),
+		Content: &schemas.ResponsesMessageContent{
+			ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: new(codexSubagentTask)},
+				{Type: schemas.ResponsesMessageContentBlockType("encrypted_content"), EncryptedContent: new("gAAAAABq7gb9jLud3Rg2")},
+			},
+		},
+	})
+	return req
+}
+
+func missingBlockEncryptedContentError(itemIdx, blockIdx int) *schemas.BifrostError {
+	param := "input[" + strconv.Itoa(itemIdx) + "].content[" + strconv.Itoa(blockIdx) + "].encrypted_content"
+	return &schemas.BifrostError{
+		StatusCode: new(400),
+		Error: &schemas.ErrorField{
+			Type:    new("invalid_request_error"),
+			Code:    new("missing_required_parameter"),
+			Message: "Missing required parameter: '" + param + "'.",
+			Param:   param,
+		},
+	}
+}
+
+// TestExecuteRequestWithRetries_CodexSubagentEncryptedContentBlock reproduces ticket 11340
+// end to end. Turn N ran on Azure East and turn N+1 on Azure West, so West refuses East's
+// ciphertext and the fail-soft strip retries. The strip used to blank encrypted_content on
+// the agent_message's "encrypted_content" block, which is nothing but that field, and Azure
+// answered the retry with missing_required_parameter -- the error the client saw. The block
+// must be dropped whole instead; it carries no text, so nothing visible is lost.
+func TestExecuteRequestWithRetries_CodexSubagentEncryptedContentBlock(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := newCodexSubagentRequest()
+
+	callCount := 0
+	var retryInput []schemas.ResponsesMessage
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", encryptedContentError()
+		}
+		retryInput = req.ResponsesRequest.Input
+		// Mirror Azure's validation: an "encrypted_content" block must carry the field.
+		for i, item := range retryInput {
+			if item.Content == nil {
+				continue
+			}
+			for j, block := range item.Content.ContentBlocks {
+				if block.Type == "encrypted_content" && block.EncryptedContent == nil {
+					return "", missingBlockEncryptedContentError(i, j)
+				}
+			}
+		}
+		return "success", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesRequest, schemas.Azure, "gpt-6.1-sol", req, logger)
+
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %q", err.Error.Message)
+	}
+	if result != "success" || callCount != 2 {
+		t.Fatalf("expected success on attempt 2, got %q after %d attempts", result, callCount)
+	}
+	if len(retryInput) != 3 {
+		t.Fatalf("expected the user, reasoning and agent_message items to survive, got %d", len(retryInput))
+	}
+	agent := retryInput[2]
+	blocks := agent.Content.ContentBlocks
+	if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != codexSubagentTask {
+		t.Fatalf("expected only the task text block to survive, got %+v", blocks)
+	}
+	if string(agent.Author) != `"/root"` || string(agent.Recipient) != `"/root/count_primes"` {
+		t.Errorf("expected author and recipient to survive, got %s / %s", agent.Author, agent.Recipient)
+	}
+}
+
+// TestStripUnverifiableReasoning_EncryptedContentBlockOnly pins the scope of the drop: only a
+// block of type "encrypted_content" goes whole. Any other block keeps its text and loses the
+// field, as before, so no visible history is removed.
+func TestStripUnverifiableReasoning_EncryptedContentBlockOnly(t *testing.T) {
+	t.Run("drops the encrypted_content block and keeps its sibling", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		blocks := req.ResponsesRequest.Input[2].Content.ContentBlocks
+		if len(blocks) != 1 || blocks[0].Type != schemas.ResponsesInputMessageContentBlockTypeText {
+			t.Fatalf("expected only the input_text block to survive, got %+v", blocks)
+		}
+	})
+
+	t.Run("drops an item left with no blocks", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		item := &req.ResponsesRequest.Input[2]
+		item.Content.ContentBlocks = item.Content.ContentBlocks[1:]
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		if got := len(req.ResponsesRequest.Input); got != 2 {
+			t.Fatalf("expected the emptied agent_message to be dropped, got %d items", got)
+		}
+	})
+
+	t.Run("keeps a text block that carries encrypted_content", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		blocks := req.ResponsesRequest.Input[2].Content.ContentBlocks
+		blocks[0].EncryptedContent = new("gAAAAABtextblock")
+		if !stripUnverifiableReasoning(nil, req) {
+			t.Fatal("expected the strip to report a change")
+		}
+		got := req.ResponsesRequest.Input[2].Content.ContentBlocks
+		if len(got) != 1 || got[0].Text == nil || *got[0].Text != codexSubagentTask {
+			t.Fatalf("expected the text block to survive, got %+v", got)
+		}
+		if got[0].EncryptedContent != nil {
+			t.Errorf("expected encrypted_content to be cleared from the text block, got %q", *got[0].EncryptedContent)
+		}
+	})
+}
+
+// TestStripUnverifiableReasoning_RawEncryptedContentBlock is the passthrough half (Codex on
+// /openai/v1/responses with the raw body forwarded).
+func TestStripUnverifiableReasoning_RawEncryptedContentBlock(t *testing.T) {
+	rawCtx := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		return ctx
+	}
+	agentMessage := func(content string) string {
+		return `{"type":"agent_message","id":"amsg_1","author":"/root","recipient":"/root/count_primes",` +
+			`"content":[` + content + `],"internal_chat_message_metadata_passthrough":{"turn_id":"t1"}}`
+	}
+	taskBlock := `{"type":"input_text","text":"count the primes"}`
+	cipherBlock := `{"type":"encrypted_content","encrypted_content":"gAAAAABq7gb9"}`
+
+	t.Run("drops the block and keeps its sibling and unmodeled fields", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-6.1-sol","input":[` +
+			`{"type":"message","role":"user","content":"run the tests"},` + agentMessage(taskBlock+","+cipherBlock) +
+			`],"store":false}`)
+
+		if !stripResponsesEncryptedContent(rawCtx(), req) {
+			t.Fatal("expected the raw strip to report a change")
+		}
+		body := req.ResponsesRequest.RawRequestBody
+		content := gjson.GetBytes(body, "input.1.content")
+		if len(content.Array()) != 1 || content.Get("0.type").Str != "input_text" {
+			t.Errorf("expected only the input_text block to survive, got %s", content.Raw)
+		}
+		if gjson.GetBytes(body, "input.1.author").Str != "/root" || !gjson.GetBytes(body, "input.1.internal_chat_message_metadata_passthrough").Exists() {
+			t.Errorf("expected author and unmodeled fields to survive, got %s", body)
+		}
+	})
+
+	t.Run("drops an item left with no blocks", func(t *testing.T) {
+		req := newCodexSubagentRequest()
+		req.ResponsesRequest.RawRequestBody = []byte(`{"model":"gpt-6.1-sol","input":[` +
+			`{"type":"message","role":"user","content":"run the tests"},` + agentMessage(cipherBlock) +
+			`],"store":false}`)
+
+		if !stripResponsesEncryptedContent(rawCtx(), req) {
+			t.Fatal("expected the raw strip to report a change")
+		}
+		if n := len(gjson.GetBytes(req.ResponsesRequest.RawRequestBody, "input").Array()); n != 1 {
+			t.Errorf("expected the emptied agent_message to be dropped, got %d items: %s", n, req.ResponsesRequest.RawRequestBody)
+		}
+	})
+}
+
 // TestStripChatUnverifiableReasoning_AnthropicRawBody covers the raw-passthrough half of
 // the chat shape. /v1/messages is the drop-in route a signature-replaying router most
 // often arrives on, and it sets BifrostContextKeyUseRawRequestBody -- so the typed strip
@@ -2625,6 +2817,71 @@ func TestExecuteRequestWithRetries_HealsThinkingSignatureOnRawAnthropicChat(t *t
 	}
 	if !strings.Contains(secondAttemptBody, `"On it."`) {
 		t.Errorf("expected the turn's own reply to survive into the retry, got %s", secondAttemptBody)
+	}
+}
+
+// TestExecuteRequestWithRetries_HealsRedactedThinkingOnRawAnthropicResponses pins the Claude
+// Code passthrough route: /anthropic/v1/messages is typed as a Responses request but its raw
+// body is an Anthropic messages array, which the Responses `input` stripper never finds.
+func TestExecuteRequestWithRetries_HealsRedactedThinkingOnRawAnthropicResponses(t *testing.T) {
+	config := createTestConfig(0, time.Millisecond, time.Millisecond)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, &schemas.NoOpTracer{})
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	ctx.SetValue(schemas.BifrostContextKeyIntegrationType, "anthropic")
+	logger := NewDefaultLogger(schemas.LogLevelError)
+
+	req := &schemas.BifrostRequest{
+		ResponsesRequest: &schemas.BifrostResponsesRequest{
+			Provider: schemas.Anthropic,
+			Model:    "claude-sonnet-5-5",
+			Input: []schemas.ResponsesMessage{{
+				Role:    new(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: new("continue")},
+			}},
+		},
+	}
+	req.ResponsesRequest.RawRequestBody = []byte(`{"model":"claude-sonnet-5-5","messages":[` +
+		`{"role":"user","content":"run the tests"},` +
+		`{"role":"assistant","content":[` +
+		`{"type":"redacted_thinking","data":"brid_rs_abc|gAAAAABforeign"},` +
+		`{"type":"text","text":"On it."}` +
+		`]},` +
+		`{"role":"user","content":"continue"}` +
+		`],"max_tokens":1024,"stream":true}`)
+
+	status := 400
+	callCount := 0
+	var secondAttemptBody string
+	handler := func(_ schemas.Key) (string, *schemas.BifrostError) {
+		callCount++
+		if callCount == 1 {
+			return "", &schemas.BifrostError{
+				StatusCode: &status,
+				Error:      &schemas.ErrorField{Message: "messages.1.content.0: Invalid `data` in `redacted_thinking` block"},
+			}
+		}
+		secondAttemptBody = string(req.ResponsesRequest.RawRequestBody)
+		return "success", nil
+	}
+
+	result, err := executeRequestWithRetries(ctx, config, handler, nil,
+		schemas.ResponsesStreamRequest, schemas.Anthropic, "claude-sonnet-5-5", req, logger)
+
+	if err != nil {
+		t.Fatalf("expected the stripped retry to succeed, got %v", err)
+	}
+	if result != "success" {
+		t.Fatalf("expected 'success', got %q", result)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 attempts (original + stripped retry), got %d", callCount)
+	}
+	if strings.Contains(secondAttemptBody, "redacted_thinking") || strings.Contains(secondAttemptBody, "gAAAAABforeign") {
+		t.Errorf("the retry still carried the refused redacted_thinking block: %s", secondAttemptBody)
+	}
+	if !strings.Contains(secondAttemptBody, `"On it."`) || !strings.Contains(secondAttemptBody, `"stream":true`) {
+		t.Errorf("expected the rest of the body to survive into the retry, got %s", secondAttemptBody)
 	}
 }
 
@@ -3192,5 +3449,49 @@ func TestStripUnverifiableReasoning_ChatShape_GeminiToolCallIDSignature(t *testi
 	// A second call finds nothing left and must not buy another upstream attempt.
 	if stripUnverifiableReasoning(nil, req) {
 		t.Error("expected no change once the ids are bare")
+	}
+}
+
+// TestStripResponsesEncryptedContentKeepsToolSearchItems pins that the fail-soft strip takes the signature
+// off a Google tool search item and keeps the item: the search and the definitions it loaded are history
+// the next turn needs, not reasoning.
+func TestStripResponsesEncryptedContentKeepsToolSearchItems(t *testing.T) {
+	var input []schemas.ResponsesMessage
+	for _, itemJSON := range []string{
+		`{"type":"message","role":"user","content":"convert"}`,
+		`{"type":"tool_search_call","call_id":"ts_1","execution":"server","status":"completed","arguments":{"function_names":["f"]},"encrypted_content":"c2ln"}`,
+		`{"type":"tool_search_output","call_id":"ts_1","execution":"server","status":"completed","tools":[{"type":"function","name":"f"}],"encrypted_content":"c2ln"}`,
+		`{"type":"reasoning","summary":[],"encrypted_content":"c2ln"}`,
+		`{"type":"function_call","call_id":"fc_1","name":"f","arguments":"{}"}`,
+	} {
+		var item schemas.ResponsesMessage
+		if err := schemas.Unmarshal([]byte(itemJSON), &item); err != nil {
+			t.Fatal(err)
+		}
+		input = append(input, item)
+	}
+	req := &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-6-sol", Input: input}}
+	if !stripResponsesEncryptedContent(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req) {
+		t.Fatal("nothing was stripped")
+	}
+	var types []string
+	for _, m := range req.ResponsesRequest.Input {
+		types = append(types, string(*m.Type))
+		raw, err := schemas.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "c2ln") {
+			t.Errorf("a signature survived: %s", raw)
+		}
+		if m.IsVerbatimItem() {
+			t.Errorf("%s is still held as the caller's bytes, so no converter can rebuild it", *m.Type)
+		}
+	}
+	if want := []string{"message", "tool_search_call", "tool_search_output", "function_call"}; !slices.Equal(types, want) {
+		t.Errorf("items = %v, want %v", types, want)
+	}
+	if tools := string(req.ResponsesRequest.Input[2].ToolSearchOutputTools); !strings.Contains(tools, `"f"`) {
+		t.Errorf("the loaded definitions are kept, got %s", tools)
 	}
 }

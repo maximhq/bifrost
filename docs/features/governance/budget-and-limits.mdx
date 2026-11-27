@@ -173,7 +173,7 @@ Budgets and rate limits support flexible reset durations:
 
 By default, a budget **rolls**: after `reset_duration` elapses since `last_reset`, usage resets. With **`calendar_aligned`: `true`**, the budget resets at the **start of each calendar period in UTC** instead (same instant for every customer of that configuration).
 
-**Supported `reset_duration` suffixes:** only day (`d`), week (`w`), month (`M`), quarter (`Q`), and year (`Y`). Examples: `1d` → midnight UTC each day; `1w` → Monday 00:00 UTC each week; `1M` → first day of each month; `1Q` → first day of the fiscal quarter; `1Y` → January 1 each year. Sub-day durations (for example `1h`, `30m`) have no calendar boundary to snap to. Setting `calendar_aligned` alongside one is **accepted rather than rejected**, and simply has no effect: that window keeps resetting on its rolling schedule.
+**Supported `reset_duration` suffixes:** only day (`d`), week (`w`), month (`M`), quarter (`Q`), and year (`Y`). Examples: `1d` → midnight UTC each day; `1w` → Monday 00:00 UTC each week; `1M` → first day of each month; `1Q` → first day of the fiscal quarter; `1Y` → January 1 each year. Only single-unit durations (`1d`, `1w`, `1M`, `1Q`, `1Y`) use calendar alignment. Multi-unit durations such as `7d`, `2w`, `3M`, `2Q`, and `2Y` keep their full rolling duration, even when `calendar_aligned` is enabled. Sub-day durations (for example `1h`, `30m`) have no calendar boundary to snap to. Setting `calendar_aligned` alongside one is **accepted rather than rejected**, and simply has no effect: that window keeps resetting on its rolling schedule.
 
 Calendar alignment applies to budgets on **customers**, **teams**, **virtual keys**, and **per-provider-config** budgets. `calendar_aligned` is an **owner-level** field, not a per-budget one: send it at the top level of the customer, team, virtual key, or provider-governance request body, on both `POST` (create) and `PUT` (update). Omitting it on a `PUT` leaves the current setting unchanged.
 
@@ -289,7 +289,7 @@ curl -X POST https://your-bifrost-gateway/api/governance/budget-requests/{reques
 | `add_keep_lifetime` | Adds to the active override and keeps its lifetime. |
 | anything else | Returns `400`. |
 
-Each request in the API response includes a budget snapshot with `override_cycles_remaining`, which is `0` for an override that lasts until removed. If the override is removed before approval, the approval also returns `409`.
+Each request in the API response includes a budget snapshot with `override_cycles_remaining`, the active override's remaining cycles. It is omitted when the override lasts until removed or there is no active override. If the override is removed before approval, the approval also returns `409`.
 
 ---
 

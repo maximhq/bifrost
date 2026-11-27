@@ -164,6 +164,9 @@ type UsageReport struct {
 	UserID       string
 	VirtualKeyID string
 	ModelUsage   []ModelUsage
+	// SkipRequestCount reports tokens and cost without a request: the job's create already
+	// counted as one (an interaction run), so its settlement must not count a second.
+	SkipRequestCount bool
 }
 
 // ModelUsage is one model's share of a settled job.
@@ -176,6 +179,7 @@ type ModelUsage struct {
 type PricingManager interface {
 	CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage, provider schemas.ModelProvider, model string, requestType schemas.RequestType, scopes *modelcatalog.PricingLookupScopes) modelcatalog.BatchCostDetails
 	CalculateVideoCostDetails(dims modelcatalog.VideoPricingDimensions, provider schemas.ModelProvider, scopes *modelcatalog.PricingLookupScopes) modelcatalog.VideoCostDetails
+	CalculateCostBreakdown(result *schemas.BifrostResponse, scopes *modelcatalog.PricingLookupScopes) *schemas.BifrostCost
 }
 
 // Settler supplies everything about a job kind that the engine does not know: how
@@ -215,6 +219,37 @@ type Settler interface {
 	// every settled job to nothing. Each kind reprices from its own debug blob
 	// instead, using the same rules it settled with.
 	RepriceFromLog(entry *logstore.Log, pricing PricingManager) (*RepricedCost, error)
+}
+
+// PollScheduler is an optional Settler hook for a kind that sets its own poll schedule. Its jobs get
+// no jitter and no MaxPollAttempts cap, so the kind must end them itself, and it counts the polls it
+// sends itself, so a reschedule does not add one.
+type PollScheduler interface {
+	NextPollAt(job *cstables.TableProviderJob, now time.Time) time.Time
+}
+
+// LogsRecorder is where a kind's settled job is logged and billed.
+type LogsRecorder interface {
+	// Ready reports whether the recorder has what it needs to settle jobs.
+	Ready() bool
+	// SourceLog loads the row of the request that created the job, or nil.
+	SourceLog(ctx context.Context, job *cstables.TableProviderJob, baseLog *logstore.Log) *logstore.Log
+	// MirrorSettled copies an already-written price onto a caller that lost the claim.
+	MirrorSettled(ctx context.Context, settler Settler, out *Outcome)
+	// Entry builds the log row for one settlement.
+	Entry(req JobRequest, settlement *Settlement, out *Outcome, now time.Time, userAgent string) LogsRecord
+}
+
+// LogsRecord is one settled job's log row: it writes the row, emits it and charges its cost.
+type LogsRecord interface {
+	// ClearCost records the cost as unknown rather than zero.
+	ClearCost()
+	// Write stores the record idempotently.
+	Write(ctx context.Context) error
+	Emit(ctx context.Context)
+	// CanReport is false when nothing bills this record, which leaves the job's reported marker unset.
+	CanReport() bool
+	Report(ctx context.Context) error
 }
 
 // ErrPricingInputsUnavailable marks a row that could not be priced because no rate
@@ -310,6 +345,10 @@ type Settlement struct {
 	UnpricedCount int
 	FailedCount   int
 	UnpricedModel string
+
+	// SkipRequestCount carries onto the usage report: the job's create already counted against
+	// the request limits, so the settlement charges only tokens and cost.
+	SkipRequestCount bool
 }
 
 // JobRequest is one settlement attempt.

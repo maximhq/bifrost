@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // BedrockResponsesStreamState tracks state during streaming conversion for responses API
@@ -38,6 +40,8 @@ type BedrockResponsesStreamState struct {
 	MessageID                 *string                                                        // Message ID (generated)
 	Model                     *string                                                        // Model name
 	StopReason                *string                                                        // Stop reason for the message
+	NativeStopReason          string                                                         // Converse stopReason when it does not survive the Bifrost mapping
+	ModelResponseFields       json.RawMessage                                                // messageStop additionalModelResponseFields, verbatim
 	CreatedAt                 int                                                            // Timestamp for created_at consistency
 	HasEmittedCreated         bool                                                           // Whether we've emitted response.created
 	HasEmittedInProgress      bool                                                           // Whether we've emitted response.in_progress
@@ -157,6 +161,8 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	state.MessageID = nil
 	state.Model = nil
 	state.StopReason = nil
+	state.NativeStopReason = ""
+	state.ModelResponseFields = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
@@ -259,6 +265,8 @@ func (state *BedrockResponsesStreamState) flush() {
 	state.MessageID = nil
 	state.Model = nil
 	state.StopReason = nil
+	state.NativeStopReason = ""
+	state.ModelResponseFields = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedInProgress = false
@@ -677,18 +685,6 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 					})
 
 					if accumulatedArgs != "" {
-						var doneItem *schemas.ResponsesMessage
-						if prevToolCallID != "" || prevToolName != "" {
-							doneItem = &schemas.ResponsesMessage{
-								ResponsesToolMessage: &schemas.ResponsesToolMessage{},
-							}
-							if prevToolCallID != "" {
-								doneItem.ResponsesToolMessage.CallID = &prevToolCallID
-							}
-							if prevToolName != "" {
-								doneItem.ResponsesToolMessage.Name = &prevToolName
-							}
-						}
 						argsDoneResponse := &schemas.BifrostResponsesStreamResponse{
 							Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 							SequenceNumber: sequenceNumber + len(responses),
@@ -697,9 +693,6 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 						}
 						if prevItemID != "" {
 							argsDoneResponse.ItemID = &prevItemID
-						}
-						if doneItem != nil {
-							argsDoneResponse.Item = doneItem
 						}
 						responses = append(responses, argsDoneResponse)
 					}
@@ -1238,6 +1231,13 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 		// Stop reason - track it for the final response
 		stopReason := convertBedrockStopReason(*chunk.StopReason)
 		state.StopReason = &stopReason
+		if bedrockStopReasonIsLossy(*chunk.StopReason) {
+			state.NativeStopReason = *chunk.StopReason
+		}
+		// The event payload buffer is reused by the stream decoder, so the fields are copied.
+		if fields := nonNullRawJSON(chunk.AdditionalModelResponseFields); fields != nil {
+			state.ModelResponseFields = bytes.Clone(fields)
+		}
 		// Items should be closed explicitly when content blocks end
 		return nil, nil, false
 	}
@@ -1427,18 +1427,6 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				})
 
 				if accumulatedArgs != "" {
-					var doneItem *schemas.ResponsesMessage
-					if toolCallID != "" || toolName != "" {
-						doneItem = &schemas.ResponsesMessage{
-							ResponsesToolMessage: &schemas.ResponsesToolMessage{},
-						}
-						if toolCallID != "" {
-							doneItem.ResponsesToolMessage.CallID = &toolCallID
-						}
-						if toolName != "" {
-							doneItem.ResponsesToolMessage.Name = &toolName
-						}
-					}
 					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 						SequenceNumber: sequenceNumber + len(responses),
@@ -1447,9 +1435,6 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 					}
 					if itemID != "" {
 						response.ItemID = &itemID
-					}
-					if doneItem != nil {
-						response.Item = doneItem
 					}
 					responses = append(responses, response)
 				}
@@ -1673,6 +1658,10 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 		response.ProviderExtraFields = map[string]interface{}{
 			"trace": trace,
 		}
+	}
+	response.ProviderExtraFields = withBedrockNativeStopFields(response.ProviderExtraFields, state.NativeStopReason, state.ModelResponseFields)
+	if state.NativeStopReason != "" {
+		response.StopSequence = bedrockMatchedStopSequence(state.ModelResponseFields)
 	}
 
 	if state.Model != nil {
@@ -2012,6 +2001,8 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 			} else if bifrostResp.Response.StopReason != nil {
 				stopReason = convertBifrostToBedrockStopReason(*bifrostResp.Response.StopReason)
 			}
+			stopReason = restoreBedrockNativeStopReason(stopReason, bifrostResp.Response)
+			event.AdditionalModelResponseFields = extractBedrockAdditionalModelResponseFields(bifrostResp.Response.ProviderExtraFields)
 		}
 		event.StopReason = &stopReason
 
@@ -2138,7 +2129,8 @@ func (event *BedrockStreamEvent) ToEncodedEvents() []BedrockEncodedEvent {
 		events = append(events, BedrockEncodedEvent{
 			EventType: "messageStop",
 			Payload: BedrockMessageStopEvent{
-				StopReason: *event.StopReason,
+				StopReason:                    *event.StopReason,
+				AdditionalModelResponseFields: event.AdditionalModelResponseFields,
 			},
 		})
 	}
@@ -2174,6 +2166,9 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 	}
 
 	// Convert messages using the new conversion method
+	if err := validateBedrockToolResultContent(request.Messages); err != nil {
+		return nil, err
+	}
 	convertedMessages := ConvertBedrockMessagesToBifrostMessages(ctx, request.Messages, request.System, false)
 	bifrostReq.Input = convertedMessages
 
@@ -2206,7 +2201,7 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 					Description:           tool.ToolSpec.Description,
 					DeferLoading:          tool.ToolSpec.DeferLoading,
 					EagerInputStreaming:   tool.ToolSpec.EagerInputStreaming,
-					ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Strict: tool.ToolSpec.Strict},
 				}
 
 				// Handle different types for InputSchema.JSON
@@ -2435,6 +2430,39 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				bifrostReq.Params.Store = &storeBool
 			}
 		}
+
+		// ConverseInput has no prompt_cache_options field either. Since #8334 a gpt-5.6
+		// target stays in implicit mode, so this is the only way a /bedrock caller can ask
+		// for breakpoint-only caching, or turn caching off with no cachePoint (#8554).
+		if raw, ok := request.AdditionalModelRequestFields.Get("prompt_cache_options"); ok {
+			if om, ok := schemas.SafeExtractOrderedMap(raw); ok && om != nil {
+				var options schemas.PromptCacheOptions
+				if mode, ok := om.Get("mode"); ok {
+					if s, ok := schemas.SafeExtractString(mode); ok {
+						options.Mode = new(s)
+					}
+				}
+				if ttl, ok := om.Get("ttl"); ok {
+					if s, ok := schemas.SafeExtractString(ttl); ok {
+						options.TTL = new(s)
+					}
+				}
+				if options.Mode != nil || options.TTL != nil {
+					bifrostReq.Params.PromptCacheOptions = &options
+				}
+			}
+		}
+
+		// The Converse spelling of parallel_tool_calls for Claude; egress re-synthesizes it per target.
+		if choice, ok := request.AdditionalModelRequestFields.Get("tool_choice"); ok {
+			if om, ok := choice.(*schemas.OrderedMap); ok && om.Len() == 1 {
+				if disable, ok := om.Get("disable_parallel_tool_use"); ok {
+					if disableBool, ok := disable.(bool); ok {
+						bifrostReq.Params.ParallelToolCalls = new(!disableBool)
+					}
+				}
+			}
+		}
 	}
 
 	if include, ok := extraParamStringSlice(request.ExtraParams["include"]); ok {
@@ -2485,6 +2513,16 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		bifrostReq.Params.ExtraParams["requestMetadata"] = request.RequestMetadata
 	}
 
+	// An Anthropic-dialect InvokeModel body may carry a top-level cache_control (automatic
+	// caching). Converse has no such field, so it rides ExtraParams to the egress converter,
+	// which turns it into a trailing cachePoint (or restores it on an Anthropic fallback).
+	if cc, ok := request.ExtraParams["cache_control"]; ok && cc != nil {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["cache_control"] = cc
+	}
+
 	// Convert additional model request fields to extra params
 	if request.AdditionalModelRequestFields.Len() > 0 {
 		fieldsToForward := request.AdditionalModelRequestFields
@@ -2492,11 +2530,16 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		// egress; forwarding them verbatim too puts two copies on the wire and Bedrock
 		// rejects the collision (e.g. reasoning_config expands to thinking, clashing
 		// with the emitted thinking). output_config is left in place — egress deep-merges it.
-		if bifrostReq.Params.Reasoning != nil {
+		if bifrostReq.Params.Reasoning != nil || bifrostReq.Params.ParallelToolCalls != nil {
 			fieldsToForward = request.AdditionalModelRequestFields.Clone()
-			fieldsToForward.Delete("thinking")
-			fieldsToForward.Delete("reasoning_config")
-			fieldsToForward.Delete("reasoningConfig")
+			if bifrostReq.Params.Reasoning != nil {
+				fieldsToForward.Delete("thinking")
+				fieldsToForward.Delete("reasoning_config")
+				fieldsToForward.Delete("reasoningConfig")
+			}
+			if bifrostReq.Params.ParallelToolCalls != nil {
+				fieldsToForward.Delete("tool_choice")
+			}
 		}
 		if fieldsToForward.Len() > 0 {
 			if bifrostReq.Params.ExtraParams == nil {
@@ -2546,7 +2589,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	// map bifrost messages to bedrock messages using the new conversion method
 	if bifrostReq.Input != nil {
-		input := bifrostReq.Input
+		input := providerUtils.ResponsesBreakpointsAsCacheControl(bifrostReq.Input, bifrostReq.Params, BedrockMaxCachePoints)
 		if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) &&
 			!caps.SupportsAssistantPrefill(ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) != false) {
 			trimmed := len(input)
@@ -2569,6 +2612,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		bedrockReq.Messages = messages
 		if len(systemMessages) > 0 {
+			// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+			if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
+				systemMessages = append([]BedrockSystemMessage{{Text: bifrostReq.Params.Instructions}}, systemMessages...)
+			}
 			bedrockReq.System = systemMessages
 		} else {
 			if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil {
@@ -2798,12 +2845,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.Text != nil {
-			if bifrostReq.Params.Text.Format != nil {
-				// Bedrock structured output goes through the synthetic `bf_so_*`
-				// tool path for all models, including Anthropic. We capture the
-				// tool here and defer injection until after normal tool/tool_choice
-				// conversion so the forced structured-output tool choice is not
-				// overwritten.
+			if outputConfig := responsesNativeOutputConfig(ctx, caps, bifrostReq.Model, bifrostReq.Params, bedrockReq.Messages); outputConfig != nil {
+				bedrockReq.OutputConfig = outputConfig
+			} else if bifrostReq.Params.Text.Format != nil {
+				// Otherwise the synthetic `bf_so_*` tool is captured here and injected after
+				// the normal tool/tool_choice conversion so its forced choice is not overwritten.
 				responseFormatTool, _, err := convertTextFormatToTool(ctx, bifrostReq.Model, bifrostReq.Params.Text)
 				if err != nil {
 					return nil, err
@@ -2814,11 +2860,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.ExtraParams != nil {
-			bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+			bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(bedrockReq.ExtraParams, "stop")
-				// GLM models on Bedrock reject the stopSequences field.
-				if !caps.FieldUnsupported(schemas.FieldStop, schemas.IsGLMModel(capModel)) {
+				if !caps.FieldUnsupported(schemas.FieldStop, !converseAcceptsStopSequences(capModel)) {
 					inferenceConfig.StopSequences = stop
 				}
 			}
@@ -2828,6 +2873,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			if len(bedrockReq.ExtraParams) == 0 {
 				bedrockReq.ExtraParams = nil
 			}
+		}
+		if bedrockReq.OutputConfig != nil {
+			setNativeStructuredOutputStrict(ctx, bifrostReq.Model, bedrockReq)
 		}
 
 		bedrockReq.InferenceConfig = inferenceConfig
@@ -2840,6 +2888,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	if len(keepTools) > 0 {
 		var bedrockTools []BedrockTool
 		isNova2 := schemas.IsNova2Model(capModel)
+		strictGate := bedrockStrictGate{ctx: ctx, model: bifrostReq.Model}
 		for _, tool := range keepTools {
 			if tool.Type == schemas.ResponsesToolTypeWebSearch || tool.Type == schemas.ResponsesToolTypeWebSearchPreview || tool.Type == schemas.ResponsesToolTypeCodeInterpreter {
 				// web_search and web_search_preview are both kept for Bedrock by
@@ -2866,6 +2915,11 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
 							return nil, err
 						}
+					} else {
+						// Nova answers 424 and Kimi K2.5 invents arguments for a root union that carries
+						// every parameter; a schema with root properties is sent as declared.
+						parameters = schemas.FlattenRootCompositionIf(parameters, parameters.Properties.Len() == 0 &&
+							!caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(capModel)))
 					}
 					schemaObject = parameters
 				} else {
@@ -2899,6 +2953,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						InputSchema: BedrockToolInputSchema{
 							JSON: json.RawMessage(schemaObjectBytes),
 						},
+						Strict: strictGate.forward(tool.ResponsesToolFunction.Strict),
 					},
 				}
 				bedrockTools = append(bedrockTools, bedrockTool)
@@ -3015,8 +3070,25 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	// Ensure tool config is present when tool content exists (similar to Chat Completions)
 	ensureResponsesToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
+	// After the history rebuild, so the flag also covers tools rebuilt from it.
+	if bifrostReq.Params != nil && bifrostReq.Params.ParallelToolCalls != nil && !*bifrostReq.Params.ParallelToolCalls &&
+		schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		tc := bifrostReq.Params.ToolChoice
+		none := tc != nil && ((tc.ResponsesToolChoiceStr != nil && *tc.ResponsesToolChoiceStr == string(schemas.ResponsesToolChoiceTypeNone)) ||
+			(tc.ResponsesToolChoiceStruct != nil && tc.ResponsesToolChoiceStruct.Type == schemas.ResponsesToolChoiceTypeNone))
+		if !none {
+			applyBedrockParallelToolUse(bedrockReq)
+		}
+	}
+
 	if !caps.SupportsConverseToolResultImages(schemas.BedrockModelSupportsToolResultImages(capModel)) {
 		hoistToolResultImages(bedrockReq)
+	}
+
+	if bifrostReq.Params != nil {
+		if err := applyBedrockAutomaticCachePoint(bedrockReq, bedrockTopLevelCacheControl(bifrostReq.Params.ExtraParams)); err != nil {
+			return nil, err
+		}
 	}
 
 	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {
@@ -3024,6 +3096,9 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 	} else {
 		if !caps.SupportsExtendedCacheTTL(schemas.BedrockModelSupportsExtendedCacheTTL(capModel)) {
 			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+		}
+		if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
+			stripNonTextCachePoints(bedrockReq)
 		}
 		// Bedrock rejects a request carrying more than BedrockMaxCachePoints markers outright,
 		// so trim the earliest rather than let the whole call fail. Runs last, after every
@@ -3144,6 +3219,14 @@ func (response *BedrockConverseResponse) ToBifrostResponsesResponse(ctx *schemas
 			"trace": response.Trace,
 		}
 	}
+	fields := nonNullRawJSON(response.AdditionalModelResponseFields)
+	if fields != nil {
+		fields = bytes.Clone(fields)
+	}
+	bifrostResp.ProviderExtraFields = withBedrockNativeStopFields(bifrostResp.ProviderExtraFields, response.StopReason, fields)
+	if bedrockStopReasonIsLossy(response.StopReason) {
+		bifrostResp.StopSequence = bedrockMatchedStopSequence(fields)
+	}
 
 	return bifrostResp, nil
 }
@@ -3214,7 +3297,8 @@ func ToBedrockConverseResponseWithContext(bifrostCtx *schemas.BifrostContext, bi
 	} else if hasToolUse {
 		stopReason = "tool_use"
 	}
-	bedrockResp.StopReason = stopReason
+	bedrockResp.StopReason = restoreBedrockNativeStopReason(stopReason, bifrostResp)
+	bedrockResp.AdditionalModelResponseFields = extractBedrockAdditionalModelResponseFields(bifrostResp.ProviderExtraFields)
 
 	// Convert usage stats
 	if bedrockUsage := buildBedrockTokenUsage(bifrostResp.Usage); bedrockUsage != nil {
@@ -3235,6 +3319,96 @@ func ToBedrockConverseResponseWithContext(bifrostCtx *schemas.BifrostContext, bi
 }
 
 // Helper functions
+
+// ProviderExtraFields keys under which a Converse response keeps the native fields the
+// Bifrost schema folds or has no slot for, so the /bedrock converse egress can return them.
+const (
+	bedrockNativeStopReasonKey              = "stopReason"
+	bedrockAdditionalModelResponseFieldsKey = "additionalModelResponseFields"
+)
+
+// bedrockStopReasonIsLossy reports whether a Converse stopReason does not survive the
+// Bedrock -> Bifrost -> Bedrock mapping (stop_sequence folds into "stop", which maps back to end_turn).
+func bedrockStopReasonIsLossy(native string) bool {
+	return native != "" && convertBifrostToBedrockStopReason(convertBedrockStopReason(native)) != native
+}
+
+// nonNullRawJSON returns raw unless it is empty or the JSON literal null.
+func nonNullRawJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	return raw
+}
+
+// withBedrockNativeStopFields records a lossy native stopReason and the additionalModelResponseFields
+// on extra, allocating the map only when there is something to keep.
+func withBedrockNativeStopFields(extra map[string]interface{}, nativeStopReason string, fields json.RawMessage) map[string]interface{} {
+	lossy := bedrockStopReasonIsLossy(nativeStopReason)
+	if !lossy && fields == nil {
+		return extra
+	}
+	if extra == nil {
+		extra = make(map[string]interface{}, 2)
+	}
+	if lossy {
+		extra[bedrockNativeStopReasonKey] = nativeStopReason
+	}
+	if fields != nil {
+		extra[bedrockAdditionalModelResponseFieldsKey] = fields
+	}
+	return extra
+}
+
+// bedrockMatchedStopSequence reads the sequence Anthropic models report at
+// additionalModelResponseFields.stop_sequence when the request asked for it.
+func bedrockMatchedStopSequence(fields json.RawMessage) *string {
+	if fields == nil {
+		return nil
+	}
+	if v := providerUtils.GetJSONField(fields, "stop_sequence"); v.Type == gjson.String {
+		return schemas.Ptr(v.String())
+	}
+	return nil
+}
+
+// restoreBedrockNativeStopReason returns the Converse stopReason for a response whose Bifrost
+// stop reason maps to end_turn. A native reason kept by a Bedrock upstream wins when it still
+// maps to the same Bifrost reason (so a plugin rewrite is not overridden); otherwise a matched
+// stop sequence (Anthropic upstream) yields stop_sequence.
+func restoreBedrockNativeStopReason(stopReason string, resp *schemas.BifrostResponsesResponse) string {
+	if stopReason != "end_turn" || resp == nil {
+		return stopReason
+	}
+	if native, ok := resp.ProviderExtraFields[bedrockNativeStopReasonKey].(string); ok && native != "" {
+		if convertBifrostToBedrockStopReason(convertBedrockStopReason(native)) == stopReason {
+			return native
+		}
+	}
+	if resp.StopSequence != nil {
+		return "stop_sequence"
+	}
+	return stopReason
+}
+
+// extractBedrockAdditionalModelResponseFields recovers the additionalModelResponseFields kept on
+// ProviderExtraFields, from the in-memory raw JSON or a JSON-decoded value.
+func extractBedrockAdditionalModelResponseFields(extra map[string]interface{}) json.RawMessage {
+	switch v := extra[bedrockAdditionalModelResponseFieldsKey].(type) {
+	case nil:
+		return nil
+	case json.RawMessage:
+		return nonNullRawJSON(v)
+	case []byte:
+		return nonNullRawJSON(v)
+	default:
+		b, err := providerUtils.MarshalSorted(v)
+		if err != nil {
+			return nil
+		}
+		return nonNullRawJSON(b)
+	}
+}
 
 // extractBedrockTrace recovers a *BedrockConverseTrace from ProviderExtraFields["trace"].
 // It handles two cases:
@@ -3672,6 +3846,8 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 
 	// Set once the leading system prompt ends (first non-system message); gates inlineSystemReminders.
 	seenNonSystemMessage := false
+	// A reminder joining a user turn trims the breakpoint text it follows, on models that strip it.
+	trimInlineJoin := schemas.ResolveModelCaps(schemas.Bedrock, model).StripsUserTurnTrailingWhitespace(anthropic.DefaultStripsUserTurnTrailingWhitespace(model))
 
 	// Initialize the state manager for tracking tool calls and results
 	stateManager := NewToolCallStateManager()
@@ -3894,9 +4070,12 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 						}
 					} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
 						// Handle structured output blocks
+						hadToolReference := false
 						for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
 							if block.Text != nil {
 								resultContent = append(resultContent, tryParseJSONIntoContentBlock(*block.Text))
+							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+								hadToolReference = true
 							} else if block.Type == schemas.ResponsesInputMessageContentBlockTypeImage &&
 								block.ResponsesInputMessageContentBlockImage != nil &&
 								block.ResponsesInputMessageContentBlockImage.ImageURL != nil {
@@ -3941,6 +4120,9 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 									resultContent = append(resultContent, BedrockContentBlock{Document: document})
 								}
 							}
+						}
+						if hadToolReference && len(resultContent) == 0 {
+							resultContent = append(resultContent, BedrockContentBlock{Text: schemas.Ptr("")})
 						}
 					}
 				}
@@ -4110,6 +4292,10 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 				// Mid-conversation reminder: inline in place instead of hoisting (see inlineSystemReminders).
 				bedrockMsg := convertBifrostSystemReminderToBedrockUserMessage(&msg)
 				if bedrockMsg != nil {
+					// The user turn it follows absorbs it at the same-role merge below.
+					if n := len(bedrockMessages); n > 0 && bedrockMessages[n-1].Role == BedrockMessageRoleUser && trimInlineJoin {
+						trimUserTurnTail(bedrockMessages[n-1].Content)
+					}
 					bedrockMessages = append(bedrockMessages, *bedrockMsg)
 				}
 			} else {
@@ -4152,7 +4338,7 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 				reasoningBlocks = convertBifrostReasoningToConverseResponseReasoning(&msg, isConverseForeignReasoning(ctx), embedsConverseReasoningItemID(ctx))
 			} else {
 				requireSigned := converseRequiresSignedReasoning(model)
-				reasoningBlocks = convertBifrostReasoningToBedrockReasoning(&msg, converseReasoningShape(model), requireSigned, !requireSigned)
+				reasoningBlocks = dropNonBlobRedactedContent(convertBifrostReasoningToBedrockReasoning(&msg, converseReasoningShape(model), requireSigned, !requireSigned))
 			}
 			if len(reasoningBlocks) > 0 {
 				pendingReasoningContentBlocks = append(pendingReasoningContentBlocks, reasoningBlocks...)
@@ -4276,9 +4462,13 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 			lastMsg := &bedrockMessages[len(bedrockMessages)-1]
 			lastMsg.Content = append(pendingReasoningContentBlocks, lastMsg.Content...)
 			pendingReasoningContentBlocks = nil
+		} else if isConverseResponseRendering(ctx) {
+			// A response cut off mid-reasoning holds only reasoning; render it as returned.
+			bedrockMessages = append(bedrockMessages, BedrockMessage{Role: BedrockMessageRoleAssistant, Content: pendingReasoningContentBlocks})
+			pendingReasoningContentBlocks = nil
 		}
-		// If no assistant message to merge into, discard the reasoning blocks
-		// (they cannot exist alone in Bedrock without violating the constraint)
+		// A request has no assistant message to merge into, so the reasoning is discarded
+		// (it cannot exist alone in Bedrock without violating the constraint)
 	}
 
 	// Merge consecutive messages with the same role
@@ -4333,6 +4523,61 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 	}
 
 	return bedrockMessages, systemMessages, nil
+}
+
+// bedrockToolResultNeedsBlocks reports whether a tool result must be carried as structured
+// output blocks. A lone text or json member stays a plain string, so the common case costs
+// nothing extra; cache points are markers, not members.
+func bedrockToolResultNeedsBlocks(content []BedrockContentBlock) bool {
+	members := 0
+	for _, c := range content {
+		if c.CachePoint != nil {
+			continue
+		}
+		if c.AnthropicToolReference != nil || c.Document != nil || c.Image != nil {
+			return true
+		}
+		members++
+	}
+	return members > 1
+}
+
+// validateBedrockToolResultContent refuses a tool_result member the ingress cannot forward,
+// so the caller gets a 400 instead of a 200 whose result silently lacks the member. A result
+// holding a searchResult or video is carried whole by the envelope and is not checked.
+func validateBedrockToolResultContent(messages []BedrockMessage) error {
+	for mi := range messages {
+		for _, block := range messages[mi].Content {
+			if block.ToolResult == nil {
+				continue
+			}
+			if slices.ContainsFunc(block.ToolResult.Content, func(c BedrockContentBlock) bool {
+				return c.SearchResult != nil || c.Video != nil
+			}) {
+				continue
+			}
+			for ci, c := range block.ToolResult.Content {
+				var problem string
+				switch {
+				case c.Text != nil, c.JSON != nil, c.CachePoint != nil, c.AnthropicToolReference != nil:
+				case c.Image != nil:
+					if c.Image.Source.Bytes == nil {
+						problem = "an image must carry inline bytes"
+					}
+				case c.Document != nil:
+					if src := c.Document.Source; src == nil || (src.Bytes == nil && src.Text == nil && src.URL == nil) {
+						problem = "a document must carry inline bytes, text or a url"
+					}
+				default:
+					problem = "only text, json, image and document blocks are supported"
+				}
+				if problem != "" {
+					return providerUtils.InvalidRequestErrorf("messages[%d] tool_result content[%d]: %s", mi, ci, problem)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // ConvertBedrockMessagesToBifrostMessages converts an array of Bedrock messages to Bifrost ResponsesMessage format
@@ -4393,7 +4638,8 @@ func convertBifrostMessageToBedrockSystemMessages(msg *schemas.ResponsesMessage)
 
 // convertBifrostSystemReminderToBedrockUserMessage renders a mid-conversation role=system reminder
 // as a user message (Bedrock has no message-level system role), wrapping each text block in the
-// same <system-reminder>\n...\n</system-reminder>\n envelope Claude Code uses for pre-wrapped ones.
+// <system-reminder>\n...\n</system-reminder> envelope. No trailing newline: a cached block ending in
+// whitespace stops matching once the content after it in the same turn changes.
 // Returns nil for content that yields no text, so the caller skips the append.
 func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMessage) *BedrockMessage {
 	if msg.Content == nil {
@@ -4402,15 +4648,16 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 
 	var contentBlocks []BedrockContentBlock
 	wrap := func(text string) {
-		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>\n"
+		wrapped := "<system-reminder>\n" + text + "\n</system-reminder>"
 		contentBlocks = append(contentBlocks, BedrockContentBlock{Text: &wrapped})
 	}
-	// Only the LAST breakpoint in a reminder is emitted. Within a single message an intermediate
-	// cachePoint buys nothing — a marker at the end already closes over every preceding block, and
-	// the message is atomic so no later request can diverge in its middle — while still consuming
-	// one of the four checkpoints Bedrock allows per request. Collapsing to one keeps a
-	// pathological reminder from crowding out the system and tool-result anchors.
+	// Only the LAST breakpoint in a reminder is emitted: an earlier cachePoint in the same message
+	// closes over nothing the last one does not, while still consuming one of the four checkpoints
+	// Bedrock allows per request. It closes over the block the caller marked, not the end of the
+	// message: Claude Code drops a reminder trailing its breakpoint on the next turn, so a
+	// cachePoint after that trailer writes a prefix no later request matches.
 	var lastCacheControl *schemas.CacheControl
+	marked := -1
 
 	// Text-only by design: reminders never carry images.
 	//
@@ -4440,7 +4687,7 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 			if block.Text != nil {
 				wrap(*block.Text)
 				if block.CacheControl != nil {
-					lastCacheControl = block.CacheControl
+					lastCacheControl, marked = block.CacheControl, len(contentBlocks)-1
 				}
 			}
 		}
@@ -4453,8 +4700,8 @@ func convertBifrostSystemReminderToBedrockUserMessage(msg *schemas.ResponsesMess
 	// Per Converse semantics a cachePoint element terminates the cacheable prefix rather than
 	// opening one, so it follows the text it closes over — the same ordering every sibling call
 	// site in this file already uses for tool_use and tool_result blocks.
-	if lastCacheControl != nil {
-		contentBlocks = append(contentBlocks, BedrockContentBlock{
+	if marked >= 0 {
+		contentBlocks = slices.Insert(contentBlocks, marked+1, BedrockContentBlock{
 			CachePoint: newBedrockCachePoint(lastCacheControl.TTL),
 		})
 	}
@@ -4819,7 +5066,6 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					}
 				}
 			}
-
 		} else if block.ReasoningContent != nil {
 			// Reasoning content - collected into reasoning messages, one per upstream item
 			if block.ReasoningContent.ReasoningText != nil {
@@ -5036,59 +5282,7 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			// Document content
 			role := convertBedrockRoleToBifrostRole(msg.Role)
 
-			// Convert document to file block
-			fileBlock := schemas.ResponsesMessageContentBlock{
-				Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
-				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
-			}
-
-			// Set filename from document name
-			if block.Document.Name != "" {
-				fileBlock.ResponsesInputMessageContentBlockFile.Filename = &block.Document.Name
-			}
-
-			fileType := "application/pdf"
-			// Set file type based on format
-			if block.Document.Format != "" {
-				switch block.Document.Format {
-				case "pdf":
-					fileType = "application/pdf"
-				case "txt":
-					fileType = "text/plain"
-				case "md":
-					fileType = "text/markdown"
-				case "html":
-					fileType = "text/html"
-				case "csv":
-					fileType = "text/csv"
-				case "doc":
-					fileType = "application/msword"
-				case "docx":
-					fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-				case "xls":
-					fileType = "application/vnd.ms-excel"
-				case "xlsx":
-					fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-				default:
-					fileType = "application/pdf" // Default to PDF
-				}
-				fileBlock.ResponsesInputMessageContentBlockFile.FileType = &fileType
-			}
-
-			// Convert document source data
-			if block.Document.Source != nil {
-				if block.Document.Source.Text != nil {
-					// Plain text content
-					fileBlock.ResponsesInputMessageContentBlockFile.FileData = block.Document.Source.Text
-				} else if block.Document.Source.Bytes != nil {
-					// Base64 encoded bytes (PDF)
-					fileDataURL := *block.Document.Source.Bytes
-					if !strings.HasPrefix(fileDataURL, "data:") {
-						fileDataURL = fmt.Sprintf("data:%s;base64,%s", fileType, fileDataURL)
-					}
-					fileBlock.ResponsesInputMessageContentBlockFile.FileData = &fileDataURL
-				}
-			}
+			fileBlock := bedrockDocumentToFileBlock(block.Document)
 
 			bifrostMsg := schemas.ResponsesMessage{
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
@@ -5140,6 +5334,44 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 				}
 			}
 
+			// A result with more than one member, or with an image, document or tool_reference,
+			// cannot be flattened to a string without silently dropping what the model was meant
+			// to see, so it is carried member by member. A tool_reference comes only from the
+			// InvokeModel ingress, whose UnmarshalJSON yields just text, image, document, tool_use
+			// and tool_reference inside a tool_result. The envelope above is no fallback here: it
+			// drops the json:"-" reference and only the Converse egress decodes it. A member this
+			// loop cannot map was already refused by validateBedrockToolResultContent on the
+			// request path; a response never reaches that check, so it is skipped here.
+			var outputBlocks []schemas.ResponsesMessageContentBlock
+			if !hasUnrepresentableBlock && bedrockToolResultNeedsBlocks(block.ToolResult.Content) {
+				for _, c := range block.ToolResult.Content {
+					if c.Document != nil {
+						outputBlocks = append(outputBlocks, bedrockDocumentToFileBlock(c.Document))
+					} else if c.AnthropicToolReference != nil {
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+							ToolName: c.AnthropicToolReference,
+						})
+					} else if c.Text != nil {
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: c.Text,
+						})
+					} else if c.JSON != nil {
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type: schemas.ResponsesInputMessageContentBlockTypeText,
+							Text: schemas.Ptr(string(c.JSON)),
+						})
+					} else if c.Image != nil && c.Image.Source.Bytes != nil {
+						dataURL := bedrockImageDataURL(c.Image.Format, *c.Image.Source.Bytes)
+						outputBlocks = append(outputBlocks, schemas.ResponsesMessageContentBlock{
+							Type:                                   schemas.ResponsesInputMessageContentBlockTypeImage,
+							ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: &dataURL},
+						})
+					}
+				}
+			}
+
 			// Create a copy of the value to avoid range loop variable capture
 			toolResultID := block.ToolResult.ToolUseID
 
@@ -5169,6 +5401,10 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 						ResponsesToolCallOutputStr: &resultContent,
 					},
 				},
+			}
+			if outputBlocks != nil {
+				resultMsg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr = nil
+				resultMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = outputBlocks
 			}
 			// Anthropic's tool_result.is_error normalizes to Status "error" in invoke.go's
 			// UnmarshalJSON; surface it the same way the native Anthropic provider does
@@ -5417,21 +5653,51 @@ func reasoningMessageHasText(msg *schemas.ResponsesMessage) bool {
 	return false
 }
 
+// dropNonBlobRedactedContent removes upstream-bound redactedContent blocks whose token
+// is not a Converse blob (see isConverseBlob). It filters in place only when one is found.
+func dropNonBlobRedactedContent(blocks []BedrockContentBlock) []BedrockContentBlock {
+	for i, block := range blocks {
+		if block.ReasoningContent == nil || block.ReasoningContent.RedactedContent == nil || isConverseBlob(*block.ReasoningContent.RedactedContent) {
+			continue
+		}
+		kept := blocks[:i:i]
+		for _, rest := range blocks[i+1:] {
+			if rest.ReasoningContent != nil && rest.ReasoningContent.RedactedContent != nil && !isConverseBlob(*rest.ReasoningContent.RedactedContent) {
+				continue
+			}
+			kept = append(kept, rest)
+		}
+		return kept
+	}
+	return blocks
+}
+
 func convertBifrostReasoningToBedrockReasoning(msg *schemas.ResponsesMessage, shape schemas.BedrockReasoningShape, requireSigned, stripBlockSignatures bool) []BedrockContentBlock {
 	if shape == schemas.BedrockReasoningShapeRedacted {
-		// These models reject reasoningText in every form -- with a signature,
-		// without one, empty or not -- with an opaque 500. Only the blob carried
-		// on EncryptedContent is replayable; emitting nothing beats emitting a
-		// shape the model cannot accept.
-		if msg.ResponsesReasoning == nil || msg.ResponsesReasoning.EncryptedContent == nil ||
-			*msg.ResponsesReasoning.EncryptedContent == "" {
-			return nil
+		var encrypted *string
+		if msg.ResponsesReasoning != nil && msg.ResponsesReasoning.EncryptedContent != nil && *msg.ResponsesReasoning.EncryptedContent != "" {
+			encrypted = msg.ResponsesReasoning.EncryptedContent
 		}
-		return []BedrockContentBlock{{
-			ReasoningContent: &BedrockReasoningContent{
-				RedactedContent: msg.ResponsesReasoning.EncryptedContent,
-			},
-		}}
+		isBlob := encrypted != nil && isConverseBlob(*encrypted)
+		var reasoningBlocks []BedrockContentBlock
+		if requireSigned {
+			// A model that also verifies signatures (Grok) answers with signed reasoningText,
+			// on Content or, when streamed, as Summary plus the signature in EncryptedContent.
+			// The text path replays it verbatim; a blob on the same item is not a signature.
+			textMsg := *msg
+			if isBlob {
+				textMsg.ResponsesReasoning = nil
+			}
+			reasoningBlocks = convertBifrostReasoningToBedrockReasoning(&textMsg, schemas.BedrockReasoningShapeText, true, false)
+		}
+		// Unsigned text carries nothing these models can use. The blob replays as
+		// redactedContent; a non-blob token too, unless it was read as a signature above.
+		if encrypted != nil && (isBlob || !requireSigned) {
+			reasoningBlocks = append(reasoningBlocks, BedrockContentBlock{
+				ReasoningContent: &BedrockReasoningContent{RedactedContent: encrypted},
+			})
+		}
+		return reasoningBlocks
 	}
 
 	var reasoningBlocks []BedrockContentBlock
@@ -5572,9 +5838,11 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 					}
 				}
 			case schemas.ResponsesOutputMessageContentTypeReasoning:
-				// Redacted-shape models carry their blob on the reasoning message,
-				// never on a content block, so there is nothing here to replay.
-				if !isConverseResponseRendering(ctx) && converseReasoningShape(model) == schemas.BedrockReasoningShapeRedacted {
+				// Redacted-shape models carry their blob on the reasoning message, so a
+				// content block replays only to one that also verifies signatures (Grok),
+				// through the signed-text handling below.
+				if !isConverseResponseRendering(ctx) && converseReasoningShape(model) == schemas.BedrockReasoningShapeRedacted &&
+					!converseRequiresSignedReasoning(model) {
 					continue
 				}
 				if block.Text != nil {
@@ -5680,4 +5948,65 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 	}
 
 	return blocks, nil
+}
+
+// bedrockDocumentToFileBlock converts a Converse document block into the neutral file content
+// block. It is shared by top-level documents and documents nested in a tool_result.
+func bedrockDocumentToFileBlock(doc *BedrockDocumentSource) schemas.ResponsesMessageContentBlock {
+	fileBlock := schemas.ResponsesMessageContentBlock{
+		Type:                                  schemas.ResponsesInputMessageContentBlockTypeFile,
+		ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{},
+	}
+
+	// Set filename from document name
+	if doc.Name != "" {
+		fileBlock.ResponsesInputMessageContentBlockFile.Filename = &doc.Name
+	}
+
+	fileType := "application/pdf"
+	// Set file type based on format
+	if doc.Format != "" {
+		switch doc.Format {
+		case "pdf":
+			fileType = "application/pdf"
+		case "txt":
+			fileType = "text/plain"
+		case "md":
+			fileType = "text/markdown"
+		case "html":
+			fileType = "text/html"
+		case "csv":
+			fileType = "text/csv"
+		case "doc":
+			fileType = "application/msword"
+		case "docx":
+			fileType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+		case "xls":
+			fileType = "application/vnd.ms-excel"
+		case "xlsx":
+			fileType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+		default:
+			fileType = "application/pdf" // Default to PDF
+		}
+		fileBlock.ResponsesInputMessageContentBlockFile.FileType = &fileType
+	}
+
+	// Convert document source data
+	if doc.Source != nil {
+		if doc.Source.URL != nil {
+			// An Anthropic url source from the invoke ingress; the Converse egress fetches it.
+			fileBlock.ResponsesInputMessageContentBlockFile.FileURL = doc.Source.URL
+		} else if doc.Source.Text != nil {
+			// Plain text content
+			fileBlock.ResponsesInputMessageContentBlockFile.FileData = doc.Source.Text
+		} else if doc.Source.Bytes != nil {
+			// Base64 encoded bytes (PDF)
+			fileDataURL := *doc.Source.Bytes
+			if !strings.HasPrefix(fileDataURL, "data:") {
+				fileDataURL = fmt.Sprintf("data:%s;base64,%s", fileType, fileDataURL)
+			}
+			fileBlock.ResponsesInputMessageContentBlockFile.FileData = &fileDataURL
+		}
+	}
+	return fileBlock
 }

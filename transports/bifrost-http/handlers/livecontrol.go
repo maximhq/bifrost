@@ -7,8 +7,8 @@ import (
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -44,7 +44,7 @@ func (h *LiveControlHandler) handleContent(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	defer req.cancel()
-	bifrostCtx, cancel := h.gateway.sessionContext(req.auth, req.preReqCtx, req.middlewareValues, req.path)
+	bifrostCtx, cancel := h.gateway.sessionContext(req.setupHeaders, req.preReqCtx, req.middlewareValues, req.path)
 	serveLiveContent(ctx, bifrostCtx, h.gateway.client, req.providerKey, req.sessionID, cancel)
 }
 

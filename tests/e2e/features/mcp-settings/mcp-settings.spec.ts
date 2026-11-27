@@ -15,6 +15,23 @@ test.describe('MCP Settings', () => {
     await expect(mcpSettingsPage.page.getByLabel('Tool Execution Timeout (seconds)')).toBeVisible()
   })
 
+  test('should keep every row input the same width however long its description is', async ({ mcpSettingsPage }) => {
+    const widths: number[] = []
+    for (const testId of [
+      'mcp-agent-depth-input',
+      'mcp-tool-timeout-input',
+      'mcp-tool-sync-interval-input',
+      'mcp-max-instructions-per-client-input',
+      'mcp-max-instructions-total-input',
+    ]) {
+      const input = mcpSettingsPage.page.getByTestId(testId)
+      await expect(input).toBeVisible()
+      widths.push((await input.boundingBox())?.width ?? 0)
+    }
+    expect(widths[0]).toBeGreaterThan(0)
+    expect(widths).toEqual(widths.map(() => widths[0]))
+  })
+
   test('should have save button disabled when no changes', async ({ mcpSettingsPage }) => {
     await expect(mcpSettingsPage.saveBtn).toBeVisible()
     await expect(mcpSettingsPage.saveBtn).toBeDisabled()
@@ -33,8 +50,19 @@ test.describe('MCP Settings', () => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: originalLimits ?? {} })
     })
 
+    test('should keep code mode settings collapsed until opened', async ({ mcpSettingsPage }) => {
+      await expect(mcpSettingsPage.codeModeTrigger).toBeVisible()
+      await expect(mcpSettingsPage.codeModeTrigger).toHaveAttribute('aria-expanded', 'false')
+      await expect(mcpSettingsPage.codeModeLimits).toBeHidden()
+      await expect(mcpSettingsPage.page.getByTestId('mcp-binding-level')).toBeHidden()
+
+      await mcpSettingsPage.openCodeModeSettings()
+      await expect(mcpSettingsPage.codeModeTrigger).toHaveAttribute('aria-expanded', 'true')
+      await expect(mcpSettingsPage.page.getByTestId('mcp-binding-level')).toBeVisible()
+    })
+
     test('should show every limit with its default as the placeholder', async ({ mcpSettingsPage }) => {
-      await expect(mcpSettingsPage.codeModeLimits).toBeVisible()
+      await mcpSettingsPage.openCodeModeSettings()
       const defaults: [string, string][] = [
         ['max_source_bytes', '65536'],
         ['max_steps', '1000000'],
@@ -52,6 +80,7 @@ test.describe('MCP Settings', () => {
     test('should save a limit and keep empty fields on their defaults', async ({ mcpSettingsPage, request }) => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: {} })
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
 
       await mcpSettingsPage.codeModeLimitInput('max_tool_calls').fill('200')
       await expect(mcpSettingsPage.saveBtn).toBeEnabled()
@@ -63,6 +92,7 @@ test.describe('MCP Settings', () => {
       expect(saved.max_steps ?? 0).toBe(0)
 
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
       await expect(mcpSettingsPage.codeModeLimitInput('max_tool_calls')).toHaveValue('200')
       await expect(mcpSettingsPage.codeModeLimitInput('max_steps')).toHaveValue('')
       await expect(mcpSettingsPage.saveBtn).toBeDisabled()
@@ -71,6 +101,7 @@ test.describe('MCP Settings', () => {
     test('should reject a value size below the minimum without saving', async ({ mcpSettingsPage, request }) => {
       await coreConfigApi.updateClientConfig(request, { mcp_code_mode_limits: {} })
       await mcpSettingsPage.goto()
+      await mcpSettingsPage.openCodeModeSettings()
 
       await mcpSettingsPage.codeModeLimitInput('max_value_bytes').fill('10')
       await mcpSettingsPage.saveBtn.click()
@@ -124,6 +155,339 @@ test.describe('MCP Settings', () => {
 
       const saved = (await coreConfigApi.get(request)).client_config.mcp_oauth_private_allowlist as string[] | undefined
       expect(saved ?? []).toEqual(originalAllowlist)
+    })
+  })
+
+  test.describe('OAuth Allowed Redirect URIs', () => {
+    // Every test here rewrites the shared auth mode and oauth2_server_config, so they must not interleave.
+    test.describe.configure({ mode: 'serial' })
+    let originalAuthMode: unknown
+    let originalOAuth2Config: Record<string, unknown> | undefined
+
+    test.beforeEach(async ({ request }) => {
+      const client = (await coreConfigApi.get(request)).client_config
+      originalAuthMode = client.mcp_server_auth_mode
+      originalOAuth2Config = client.oauth2_server_config as Record<string, unknown> | undefined
+      // The field is only shown when OAuth discovery is on, which requires an issuer URL.
+      await coreConfigApi.updateClientConfig(request, {
+        mcp_server_auth_mode: 'both',
+        oauth2_server_config: {
+          issuer_url: 'https://bifrost.e2e.test',
+          auth_code_ttl: 300,
+          access_token_ttl: 600,
+          allowed_redirect_uris: [],
+        },
+      })
+    })
+
+    test.afterEach(async ({ request }) => {
+      await coreConfigApi.updateClientConfig(request, {
+        mcp_server_auth_mode: originalAuthMode ?? 'headers',
+        oauth2_server_config: originalOAuth2Config,
+      })
+    })
+
+    test('should add an allowed redirect URI and persist it', async ({ mcpSettingsPage, request }) => {
+      const uri = 'https://www.cursor.com/agents/mcp/oauth/callback'
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await mcpSettingsPage.allowedRedirectUrisInput.fill(uri)
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await expect(mcpSettingsPage.allowedRedirectUriEntry(uri)).toBeVisible()
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
+      expect(saved?.allowed_redirect_uris).toEqual([uri])
+
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await expect(mcpSettingsPage.allowedRedirectUriEntry(uri)).toBeVisible()
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
+    })
+
+    test('should save a bare wildcard and warn about it', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await expect(mcpSettingsPage.allowedRedirectUrisWildcardWarning).toBeHidden()
+
+      await mcpSettingsPage.allowedRedirectUrisInput.fill('*')
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await expect(mcpSettingsPage.allowedRedirectUrisWildcardWarning).toBeVisible()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
+      expect(saved?.allowed_redirect_uris).toEqual(['*'])
+    })
+
+    test('should reject a partial wildcard without saving', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await mcpSettingsPage.allowedRedirectUrisInput.fill('https://*.e2e.test/callback')
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await mcpSettingsPage.saveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/allowed_redirect_uris supports only a bare "\*" wildcard/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
+      expect(saved?.allowed_redirect_uris ?? []).toEqual([])
+    })
+
+    test('should show the issuer read-only with a link to Security', async ({ mcpSettingsPage, page }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await expect(mcpSettingsPage.issuerUrlValue).toHaveText('https://bifrost.e2e.test')
+      await mcpSettingsPage.issuerUrlSecurityLink.click()
+      await expect(page).toHaveURL(/\/workspace\/config\/security/)
+      await expect(mcpSettingsPage.securityIssuerUrlInput).toBeVisible()
+    })
+
+    test('should show an env issuer with its reference beside the resolved URL', async ({ mcpSettingsPage }) => {
+      await mcpSettingsPage.serveIssuer({ value: 'https://bifrost.e2e.test', ref: 'env.BIFROST_ISSUER', type: 'env' })
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await expect(mcpSettingsPage.issuerUrlValue).toHaveText('https://bifrost.e2e.test')
+      await expect(mcpSettingsPage.issuerUrlRef).toHaveText('env.BIFROST_ISSUER')
+      await expect(mcpSettingsPage.issuerUrlUnresolved).toBeHidden()
+    })
+
+    test('should show an unresolved env issuer as not resolved rather than unset', async ({ mcpSettingsPage }) => {
+      await mcpSettingsPage.serveIssuer({ value: '', ref: 'env.BIFROST_ISSUER', type: 'env' })
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await expect(mcpSettingsPage.issuerUrlUnresolved).toBeVisible()
+      await expect(mcpSettingsPage.issuerUrlRef).toHaveText('env.BIFROST_ISSUER')
+      await expect(mcpSettingsPage.issuerUrlValue).toBeHidden()
+    })
+
+    test('should show a plain issuer without a reference', async ({ mcpSettingsPage }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await expect(mcpSettingsPage.issuerUrlValue).toHaveText('https://bifrost.e2e.test')
+      await expect(mcpSettingsPage.issuerUrlRef).toBeHidden()
+    })
+
+    test('should refuse to clear the issuer under Security while OAuth mode is on', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      await mcpSettingsPage.securityIssuerUrlInput.fill('')
+      await expect(mcpSettingsPage.securitySaveBtn).toBeEnabled()
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/Issuer URL is required while MCP auth mode is OAuth or Both/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { issuer_url?: unknown } | undefined
+      expect(JSON.stringify(saved?.issuer_url)).toContain('https://bifrost.e2e.test')
+    })
+
+    test('should warn and save a changed issuer under Security', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      await mcpSettingsPage.securityIssuerUrlInput.fill('https://gateway.e2e.test')
+      await expect(mcpSettingsPage.securityIssuerUrlChangeWarning).toBeVisible()
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('success')).toBeVisible()
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { issuer_url?: unknown } | undefined
+      expect(JSON.stringify(saved?.issuer_url)).toContain('https://gateway.e2e.test')
+    })
+
+    test('should save a browser URL under Security and keep it when MCP settings save', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      await mcpSettingsPage.securityBrowserBaseUrlInput.fill('https://bifrost.corp.e2e.test')
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('success')).toBeVisible()
+      type Saved = { issuer_url?: unknown; browser_base_url?: unknown } | undefined
+      let saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as Saved
+      expect(JSON.stringify(saved?.browser_base_url)).toContain('https://bifrost.corp.e2e.test')
+      expect(JSON.stringify(saved?.issuer_url)).toContain('https://bifrost.e2e.test')
+
+      // MCP settings rewrite oauth2_server_config, which the server replaces whole.
+      const uri = 'https://www.cursor.com/agents/mcp/oauth/callback'
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await mcpSettingsPage.allowedRedirectUrisInput.fill(uri)
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as Saved
+      expect(JSON.stringify(saved?.browser_base_url)).toContain('https://bifrost.corp.e2e.test')
+
+      await mcpSettingsPage.gotoSecurity()
+      await expect(mcpSettingsPage.securityBrowserBaseUrlInput).toHaveValue('https://bifrost.corp.e2e.test')
+    })
+
+    test('should reject a malformed browser URL under Security without saving', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      await mcpSettingsPage.securityBrowserBaseUrlInput.fill('bifrost.corp.e2e.test')
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/browser_base_url must be an absolute HTTP or HTTPS URL/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { browser_base_url?: unknown } | undefined
+      expect(JSON.stringify(saved?.browser_base_url ?? '')).not.toContain('bifrost.corp.e2e.test')
+    })
+
+    test('should add, remove and save additional issuer URLs under Security', async ({ mcpSettingsPage, page, request }) => {
+      await mcpSettingsPage.gotoSecurity()
+
+      for (let i = 0; i < 3; i++) await mcpSettingsPage.securityAdditionalIssuerAddBtn.click()
+      await mcpSettingsPage.securityAdditionalIssuerInputs.nth(0).fill('https://bifrost-tunnel-a.e2e.test')
+      await mcpSettingsPage.securityAdditionalIssuerInputs.nth(1).fill('https://bifrost-tunnel-b.e2e.test')
+      // The third row stays blank and is dropped on save.
+      await mcpSettingsPage.securityAdditionalIssuerRemoveBtns.nth(0).click()
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs).toHaveCount(2)
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs.nth(0)).toHaveValue('https://bifrost-tunnel-b.e2e.test')
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('success')).toBeVisible()
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { additional_issuer_urls?: unknown[] } | undefined
+      expect(saved?.additional_issuer_urls ?? []).toHaveLength(1)
+      expect(JSON.stringify(saved?.additional_issuer_urls)).toContain('https://bifrost-tunnel-b.e2e.test')
+
+      await page.reload()
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs).toHaveCount(1)
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs.nth(0)).toHaveValue('https://bifrost-tunnel-b.e2e.test')
+
+      // Saving only a blank row stores nothing new, and the editor still drops the row.
+      await mcpSettingsPage.securityAdditionalIssuerAddBtn.click()
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('success')).toBeVisible()
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs).toHaveCount(1)
+      await expect(mcpSettingsPage.securitySaveBtn).toBeDisabled()
+
+      // An edit made while a save is in flight survives it.
+      let release!: () => void
+      const released = new Promise<void>(resolve => { release = resolve })
+      await page.route('**/api/config*', async route => {
+        if (route.request().method() !== 'PUT') return route.fallback()
+        await released
+        await route.fallback()
+      })
+      await mcpSettingsPage.securityAdditionalIssuerAddBtn.click()
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.securitySaveBtn).toBeDisabled()
+      await mcpSettingsPage.securityAdditionalIssuerInputs.nth(0).fill('https://bifrost-tunnel-c.e2e.test')
+      release()
+      // Save stays disabled while the request runs, so enabled means it finished with the edit kept.
+      await expect(mcpSettingsPage.securitySaveBtn).toBeEnabled()
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs.nth(0)).toHaveValue('https://bifrost-tunnel-c.e2e.test')
+      await page.unroute('**/api/config*')
+    })
+
+    test('should warn on removing a saved additional issuer and reject one on the primary hostname', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, {
+        mcp_server_auth_mode: 'both',
+        oauth2_server_config: {
+          issuer_url: 'https://bifrost.e2e.test',
+          additional_issuer_urls: ['https://bifrost-tunnel.e2e.test'],
+          auth_code_ttl: 300,
+          access_token_ttl: 600,
+          allowed_redirect_uris: [],
+        },
+      })
+      const before = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { additional_issuer_urls?: unknown[] } | undefined
+      expect(JSON.stringify(before?.additional_issuer_urls)).toContain('https://bifrost-tunnel.e2e.test')
+      await mcpSettingsPage.gotoSecurity()
+
+      await expect(mcpSettingsPage.securityAdditionalIssuerInputs.nth(0)).toHaveValue('https://bifrost-tunnel.e2e.test')
+      await expect(mcpSettingsPage.securityAdditionalIssuerRemovedWarning).toBeHidden()
+      await mcpSettingsPage.securityAdditionalIssuerRemoveBtns.nth(0).click()
+      await expect(mcpSettingsPage.securityAdditionalIssuerRemovedWarning).toBeVisible()
+
+      await mcpSettingsPage.securityAdditionalIssuerAddBtn.click()
+      await mcpSettingsPage.securityAdditionalIssuerInputs.nth(0).fill('https://bifrost.e2e.test/other')
+      await mcpSettingsPage.securitySaveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/repeats the hostname of another issuer/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { additional_issuer_urls?: unknown[] } | undefined
+      expect(saved?.additional_issuer_urls).toEqual(before?.additional_issuer_urls)
+    })
+
+    test('should reject a non-https remote redirect URI without saving', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await mcpSettingsPage.allowedRedirectUrisInput.fill('http://app.e2e.test/callback')
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await mcpSettingsPage.saveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/allowed_redirect_uris contains an invalid callback URI/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
+      expect(saved?.allowed_redirect_uris ?? []).toEqual([])
+    })
+  })
+
+  test.describe('Max protocol version', () => {
+    // Both tests rewrite the shared global cap, so they must not interleave.
+    test.describe.configure({ mode: 'serial' })
+    let original: string
+    let originalServer: string
+
+    test.beforeEach(async ({ request }) => {
+      const clientConfig = (await coreConfigApi.get(request)).client_config
+      original = (clientConfig.mcp_max_protocol_version as string | undefined) || 'auto'
+      originalServer = (clientConfig.mcp_server_max_protocol_version as string | undefined) || 'auto'
+    })
+
+    test.afterEach(async ({ request }) => {
+      await coreConfigApi.updateClientConfig(request, {
+        mcp_max_protocol_version: original,
+        mcp_server_max_protocol_version: originalServer,
+      })
+    })
+
+    test('should save the Bifrost MCP server cap separately from the upstream cap', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: '2025-11-25', mcp_server_max_protocol_version: 'auto' })
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await expect(mcpSettingsPage.serverMaxProtocolVersionSelect).toContainText('Auto (latest)')
+
+      await mcpSettingsPage.selectServerMaxProtocolVersion('2025-06-18')
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      const saved = (await coreConfigApi.get(request)).client_config
+      expect(saved.mcp_server_max_protocol_version).toBe('2025-06-18')
+      expect(saved.mcp_max_protocol_version).toBe('2025-11-25')
+
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await expect(mcpSettingsPage.serverMaxProtocolVersionSelect).toContainText('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
+    })
+
+    test('should save a global max protocol version and show it after reload', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: 'auto' })
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.maxProtocolVersionSelect).toContainText('Auto (latest)')
+
+      await mcpSettingsPage.selectMaxProtocolVersion('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      expect((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version).toBe('2025-06-18')
+
+      await mcpSettingsPage.goto()
+      await expect(mcpSettingsPage.maxProtocolVersionSelect).toContainText('2025-06-18')
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
+    })
+
+    test('should keep the global cap when another setting is saved', async ({ mcpSettingsPage, request }) => {
+      await coreConfigApi.updateClientConfig(request, { mcp_max_protocol_version: '2025-11-25' })
+      await mcpSettingsPage.goto()
+      const depth = await mcpSettingsPage.maxAgentDepthInput.inputValue()
+      await mcpSettingsPage.maxAgentDepthInput.fill(String(Number(depth) + 1))
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+      expect((await coreConfigApi.get(request)).client_config.mcp_max_protocol_version).toBe('2025-11-25')
+      await coreConfigApi.updateClientConfig(request, { mcp_agent_depth: Number(depth) })
     })
   })
 })

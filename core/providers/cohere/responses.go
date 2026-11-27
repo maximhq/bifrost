@@ -1543,6 +1543,10 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 
 	// Prepend system messages if any
 	if len(systemContent) > 0 {
+		// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+		if params != nil && params.Instructions != nil && *params.Instructions != "" {
+			systemContent = append([]string{*params.Instructions}, systemContent...)
+		}
 		systemMsg := CohereMessage{
 			Role:    "system",
 			Content: NewStringContent(strings.Join(systemContent, "\n")),
@@ -1826,7 +1830,8 @@ func convertBifrostFunctionCallOutputToCohereMessage(msg *schemas.ResponsesMessa
 			if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
 				content.ContentStr = msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
 			} else if msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
-				content.ContentBlocks = msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+				// Cohere tool messages take text only; media becomes a placeholder.
+				content.ContentBlocks, _ = schemas.FlattenResponsesToolResultMedia(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
 			}
 		}
 

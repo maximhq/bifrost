@@ -114,7 +114,7 @@ Sources:
 - [x] **Prompt caching persistent / 1-hour** (`cache_control: { type: "ephemeral", ttl: "1h" }`) - folder 64.1 asserts `"ttl":"1h"` reaching the Anthropic, Vertex Claude and Bedrock wires (and being dropped where the dialect cannot carry it) for an **injected** breakpoint via `prompt_cache.ttl`. A client-sent `cache_control.ttl` on the request itself is still uncovered. — audited: covered (weak: status/shape assertions only)
 - [x] **Web fetch tool** (`web_fetch_20250910`, `web_fetch_20260209`, `web_fetch_20260309`) — built: folder 145.6 (web_fetch_20260209) / 155.19 (20250910 + beta header) / 155.20 (20260309), all [PREVIEW]
 - [x] **Memory tool** (`memory_20250818`) — audited: covered (weak: status/shape assertions only)
-- [x] **Tool search** (`tool_search_tool_bm25`, `tool_search_tool_regex`) - Anthropic accept-path in folder 12; Bedrock InvokeModel routing (tool_search + defer_loading) pinned in folder 71
+- [x] **Tool search** (`tool_search_tool_bm25`, `tool_search_tool_regex`) - Anthropic accept-path in folder 12; Bedrock InvokeModel routing (tool_search + defer_loading) pinned in folder 71; Gemini Interactions tool retrieval (server and client tool_search, deferred tools, signed replay) in folder 383
 - [x] **MCP toolset** (`mcp_toolset` server reference) — gated: folder 145.7 [PREVIEW]
 - [x] **Code execution v2** (`code_execution_20250825`) — audited: covered
 - [x] **Code execution programmatic** (`code_execution_20260120`) - folder 177 (responses-tool-vocabulary): 177.5 pins that a version-less `code_interpreter` plus a programmatic-restricted tool is RAISED to `code_execution_20260120` on the wire, since 20250825 has no programmatic tool calling; 177.7 pins that a dropped mcp caller does not raise it

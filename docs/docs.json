@@ -151,6 +151,8 @@
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
+                  "providers/supported-providers/baseten",
+                  "providers/supported-providers/byteplus",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
@@ -162,6 +164,9 @@
                   "providers/supported-providers/github-copilot",
                   "providers/supported-providers/groq",
                   "providers/supported-providers/huggingface",
+                  "providers/supported-providers/kimchi",
+                  "providers/supported-providers/machgen",
+                  "providers/supported-providers/minimax",
                   "providers/supported-providers/mistral",
                   "providers/supported-providers/nebius",
                   "providers/supported-providers/ollama",
@@ -173,8 +178,10 @@
                   "providers/supported-providers/replicate",
                   "providers/supported-providers/runware",
                   "providers/supported-providers/runway",
+                  "providers/supported-providers/sagemaker",
                   "providers/supported-providers/sarvam",
                   "providers/supported-providers/sgl",
+                  "providers/supported-providers/soniox",
                   "providers/supported-providers/typesafe",
                   "providers/supported-providers/vertex",
                   "providers/supported-providers/vllm",
@@ -191,7 +198,9 @@
               "providers/custom-providers",
               "providers/self-hosted-decision-models",
               "providers/custom-pricing",
+              "providers/datasheet-editor",
               "providers/request-options",
+              "providers/response-headers",
               "providers/test-harness-coverage"
             ]
           },
@@ -201,6 +210,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/openapi-servers",
               "mcp/connections",
               "mcp/virtual-mcps",
               {
@@ -213,11 +223,18 @@
                   "mcp/auth/per-user-headers",
                   "mcp/auth/oauth",
                   "mcp/auth/per-user-oauth",
-                  "mcp/auth/token-exchange"
+                  "mcp/auth/client-credentials",
+                  "mcp/auth/aws-sigv4",
+                  "mcp/auth/token-exchange",
+                  "mcp/auth/cross-app-access"
                 ]
               },
+              "mcp/per-caller-discovery",
               "mcp/sessions",
               "mcp/tool-execution",
+              "mcp/resources-and-prompts",
+              "mcp/apps",
+              "mcp/multi-round-trip-requests",
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway-auth",
@@ -244,6 +261,18 @@
             ]
           },
           {
+            "group": "Relays",
+            "icon": "/media/relays-icon.svg",
+            "pages": [
+              "relays/overview",
+              "relays/configuration",
+              "relays/routes",
+              "relays/pricing",
+              "relays/async-jobs",
+              "relays/troubleshooting"
+            ]
+          },
+          {
             "group": "Custom plugins",
             "icon": "puzzle-piece",
             "pages": [
@@ -267,12 +296,15 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/routers",
               "features/complexity-router",
               "features/warp",
+              "features/bifrost-mcp-server",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
               "features/webhooks",
+              "features/news-feeds",
               {
                 "group": "Governance",
                 "icon": "user-lock",
@@ -359,6 +391,8 @@
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
+              "enterprise/view-as-user",
+              "enterprise/workload-identity/overview",
               "enterprise/virtual-mcps",
               "enterprise/projects",
               "enterprise/prompt-deployments",
@@ -386,6 +420,7 @@
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
                       "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/noma-security",
                       "integrations/guardrails/a10"
                     ]
                   }
@@ -405,7 +440,15 @@
               "enterprise/secret-management",
               "enterprise/log-exports",
               "enterprise/clustering",
-              "enterprise/adaptive-load-balancing",
+              {
+                "group": "Adaptive Routing",
+                "icon": "brain",
+                "pages": [
+                  "enterprise/adaptive-routing/overview",
+                  "enterprise/adaptive-routing/how-it-works",
+                  "enterprise/adaptive-routing/incidents-and-monitoring"
+                ]
+              },
               "enterprise/circuit-breaker",
               "enterprise/invpc-deployments"
             ]
@@ -540,13 +583,24 @@
                 "group": "GenAI SDK",
                 "icon": "diamond",
                 "pages": [
-                  "integrations/genai-sdk/overview"
+                  "integrations/genai-sdk/overview",
+                  "integrations/genai-sdk/files-and-batch",
+                  "integrations/genai-sdk/interactions"
                 ]
               },
               {
                 "group": "Cohere SDK",
                 "icon": "c",
-                "pages": ["integrations/cohere-sdk/overview"]
+                "pages": [
+                  "integrations/cohere-sdk/overview"
+                ]
+              },
+              {
+                "group": "ElevenLabs SDK",
+                "icon": "microphone",
+                "pages": [
+                  "integrations/elevenlabs-sdk/overview"
+                ]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -573,7 +627,8 @@
                 "icon": "microsoft",
                 "collapsed": true,
                 "pages": [
-                  "enterprise/setting-up-entra/oidc"
+                  "enterprise/setting-up-entra/oidc",
+                  "enterprise/setting-up-entra/scim"
                 ]
               },
               {
@@ -597,7 +652,8 @@
                 "icon": "google",
                 "collapsed": true,
                 "pages": [
-                  "enterprise/setting-up-google-workspace"
+                  "enterprise/setting-up-google-workspace/oidc",
+                  "enterprise/setting-up-google-workspace/scim"
                 ]
               },
               {
@@ -647,6 +703,7 @@
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
               "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/noma-security",
               "integrations/guardrails/a10"
             ]
           },
@@ -1260,7 +1317,12 @@
                   "GET /api/models",
                   "GET /api/models/details",
                   "GET /api/models/parameters",
-                  "GET /api/models/base"
+                  "GET /api/models/base",
+                  "GET /api/models/newest",
+                  "GET /api/models/datasheet",
+                  "GET /api/models/datasheet/entry",
+                  "PUT /api/models/datasheet/overrides",
+                  "DELETE /api/models/datasheet/overrides/{id}"
                 ]
               },
               {
@@ -1293,8 +1355,10 @@
                   "POST /api/mcp/client/{id}/verify-headers",
                   "POST /api/mcp/client/{id}/verify-exchange",
                   "GET /api/mcp/sessions",
+                  "POST /api/mcp/sessions/connect",
                   "DELETE /api/mcp/sessions/{id}",
                   "POST /api/mcp/sessions/{id}/reauth",
+                  "POST /api/mcp/sessions/{id}/refresh",
                   "GET /api/mcp/per-user-headers/flows/{id}",
                   "PUT /api/mcp/per-user-headers/flows/{id}",
                   "DELETE /api/mcp/per-user-headers/credential/{id}"
@@ -1360,6 +1424,33 @@
                 ]
               },
               {
+                "group": "Relays",
+                "expanded": false,
+                "pages": [
+                  "GET /api/relays",
+                  "POST /api/relays",
+                  "GET /api/relays/{name}",
+                  "PUT /api/relays/{name}",
+                  "DELETE /api/relays/{name}",
+                  "POST /api/relays/usage-preview",
+                  "POST /api/relays/openapi-spec",
+                  "GET /api/relays/{name}/access-profiles",
+                  "GET /api/relay-logs",
+                  "DELETE /api/relay-logs",
+                  "GET /api/relay-logs/{id}",
+                  "GET /api/relay-logs/stats",
+                  "GET /api/relay-logs/filterdata",
+                  "GET /api/relay-logs/histogram",
+                  "GET /api/relay-logs/top-endpoints",
+                  "GET /relay/{endpoint}/{path}",
+                  "POST /relay/{endpoint}/{path}",
+                  "PUT /relay/{endpoint}/{path}",
+                  "PATCH /relay/{endpoint}/{path}",
+                  "DELETE /relay/{endpoint}/{path}",
+                  "HEAD /relay/{endpoint}/{path}"
+                ]
+              },
+              {
                 "group": "OAuth",
                 "expanded": false,
                 "pages": [
@@ -1371,23 +1462,14 @@
                 ]
               },
               {
-                "group": "Circuit Breaker",
-                "expanded": false,
-                "pages": [
-                  "GET /api/circuit-breaker/policies",
-                  "POST /api/circuit-breaker/policies",
-                  "PUT /api/circuit-breaker/policies/{name}",
-                  "DELETE /api/circuit-breaker/policies/{name}",
-                  "GET /api/circuit-breaker/state"
-                ]
-              },
-              {
                 "group": "Logging",
                 "expanded": false,
                 "pages": [
                   "GET /api/logs",
                   "DELETE /api/logs",
+                  "GET /api/logs/search",
                   "GET /api/logs/{id}",
+                  "GET /api/logs/{id}/trace",
                   "GET /api/logs/sessions/{session_id}",
                   "GET /api/logs/sessions/{session_id}/summary",
                   "GET /api/logs/stats",
@@ -1420,6 +1502,7 @@
                   "GET /api/mcp-logs/filterdata",
                   "GET /api/mcp-logs/histogram",
                   "GET /api/mcp-logs/histogram/cost",
+                  "GET /api/mcp-logs/histogram/latency",
                   "GET /api/mcp-logs/histogram/top-tools"
                 ]
               },
@@ -1494,6 +1577,8 @@
                   "GET /ws",
                   "GET /mcp",
                   "POST /mcp",
+                  "GET /v1/mcp",
+                  "POST /v1/mcp",
                   "GET /metrics",
                   "POST /inspect"
                 ]
@@ -1534,6 +1619,19 @@
                 ]
               },
               {
+                "group": "News Feeds",
+                "expanded": false,
+                "pages": [
+                  "GET /api/rss/feeds",
+                  "POST /api/rss/feeds",
+                  "PUT /api/rss/feeds/{id}",
+                  "DELETE /api/rss/feeds/{id}",
+                  "GET /api/rss/items",
+                  "GET /api/rss/settings",
+                  "PUT /api/rss/settings"
+                ]
+              },
+              {
                 "group": "Warp",
                 "expanded": false,
                 "pages": [
@@ -1542,6 +1640,9 @@
                   "POST /api/warp/log-index/backfill",
                   "GET /api/warp/log-index/backfill/status",
                   "POST /api/warp/log-index/backfill/cancel",
+                  "POST /api/warp/log-index/topics",
+                  "GET /api/warp/log-index/topics/status",
+                  "POST /api/warp/log-index/topics/cancel",
                   "POST /api/warp/chat",
                   "GET /api/warp/log-index/status",
                   "GET /api/warp/conversations",
@@ -1618,10 +1719,7 @@
                   "GET /api/governance/users/email/{email}",
                   "GET /api/governance/users/me/permissions",
                   "GET /api/governance/users/me/vk-creation-policy",
-                  "PUT /api/governance/users/{user_id}/role",
-                  "POST /api/governance/users/{user_id}/governance",
-                  "PUT /api/governance/users/{user_id}/governance",
-                  "DELETE /api/governance/users/{user_id}/governance"
+                  "PUT /api/governance/users/{user_id}/role"
                 ]
               },
               {
@@ -1720,7 +1818,8 @@
                 "expanded": false,
                 "pages": [
                   "GET /api/governance/budgets",
-                  "GET /api/governance/rate-limits"
+                  "GET /api/governance/rate-limits",
+                  "POST /api/governance/budget-requests/{request_id}/approve"
                 ]
               },
               {
@@ -1770,7 +1869,41 @@
                 ]
               },
               {
-                "group": "Complexity Analyzer",
+                "group": "Routers",
+                "expanded": false,
+                "pages": [
+                  "GET /api/routing/model-routers",
+                  "POST /api/routing/model-routers",
+                  "GET /api/routing/model-routers/defaults",
+                  "GET /api/routing/model-routers/{router_id}",
+                  "PUT /api/routing/model-routers/{router_id}",
+                  "DELETE /api/routing/model-routers/{router_id}",
+                  "POST /api/routing/model-routers/{router_id}/reset",
+                  "PUT /api/routing/model-routers/{router_id}/targets",
+                  "PUT /api/routing/model-routers/{router_id}/routing",
+                  "GET /api/routing/model-routers/{router_id}/status",
+                  "POST /api/routing/model-routers/{router_id}/status/retry",
+                  "POST /api/routing/model-routers/{router_id}/classify"
+                ]
+              },
+              {
+                "group": "Phrase Suggestions",
+                "expanded": false,
+                "pages": [
+                  "GET /api/routing/model-routers/{router_id}/suggestions",
+                  "GET /api/routing/model-routers/{router_id}/suggestions/{suggestion_id}",
+                  "PUT /api/routing/model-routers/{router_id}/suggestions/{suggestion_id}/status",
+                  "GET /api/routing/model-routers/{router_id}/suggestions/runs",
+                  "POST /api/routing/model-routers/{router_id}/suggestions/runs",
+                  "GET /api/routing/model-routers/{router_id}/suggestions/runs/estimate",
+                  "POST /api/routing/model-routers/{router_id}/suggestions/runs/{run_id}/cancel",
+                  "POST /api/routing/model-routers/{router_id}/suggestions/test",
+                  "POST /api/routing/model-routers/{router_id}/suggestions/impact",
+                  "POST /api/routing/model-routers/{router_id}/phrases"
+                ]
+              },
+              {
+                "group": "Complexity Analyzer (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/routing/complexity-analyzer-config",
@@ -1778,6 +1911,25 @@
                   "POST /api/routing/complexity-analyzer-config/reset",
                   "GET /api/routing/complexity-analyzer-status",
                   "POST /api/routing/complexity-analyzer-status/retry"
+                ]
+              },
+              {
+                "group": "Adaptive Routing",
+                "expanded": false,
+                "pages": [
+                  "GET /api/adaptive-routing/config",
+                  "PUT /api/adaptive-routing/config"
+                ]
+              },
+              {
+                "group": "Circuit Breaker",
+                "expanded": false,
+                "pages": [
+                  "GET /api/circuit-breaker/policies",
+                  "POST /api/circuit-breaker/policies",
+                  "PUT /api/circuit-breaker/policies/{name}",
+                  "DELETE /api/circuit-breaker/policies/{name}",
+                  "GET /api/circuit-breaker/state"
                 ]
               }
             ]
@@ -1894,6 +2046,14 @@
                   "GET /api/audit-logs/{id}",
                   "GET /api/audit-logs/{id}/verify"
                 ]
+              },
+              {
+                "group": "Adaptive Routing",
+                "expanded": false,
+                "pages": [
+                  "GET /api/load-balancer-config",
+                  "PUT /api/load-balancer-config"
+                ]
               }
             ]
           }
@@ -1959,9 +2119,20 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
-              "changelogs/v2.3.0",
-              "changelogs/v2.2.6",
-              "changelogs/v2.2.5",
+              "changelogs/v2.6.0",
+              "changelogs/v2.5.1",
+              "changelogs/v2.5.0",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/v2.4.0",
+                  "changelogs/v2.3.2",
+                  "changelogs/v2.3.1",
+                  "changelogs/v2.3.0",
+                  "changelogs/v2.2.6",
+                  "changelogs/v2.2.5"
+                ]
+              },
               {
                 "group": "September 2026",
                 "pages": [
@@ -2191,9 +2362,21 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
-              "changelogs/ent-v2.3.0",
-              "changelogs/ent-v2.2.6",
-              "changelogs/ent-v2.2.5",
+              "changelogs/ent-v2.6.0",
+              "changelogs/ent-v2.5.2",
+              "changelogs/ent-v2.5.1",
+              "changelogs/ent-v2.5.0",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/ent-v2.4.0",
+                  "changelogs/ent-v2.3.2",
+                  "changelogs/ent-v2.3.1",
+                  "changelogs/ent-v2.3.0",
+                  "changelogs/ent-v2.2.6",
+                  "changelogs/ent-v2.2.5"
+                ]
+              },
               {
                 "group": "September 2026",
                 "pages": [
@@ -2297,8 +2480,17 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
-              "changelogs/edge-v0.9.3",
-              "changelogs/edge-v0.9.2",
+              "changelogs/edge-v1.0.2",
+              "changelogs/edge-v1.0.1",
+              {
+                "group": "October 2026",
+                "pages": [
+                  "changelogs/edge-v1.0.0",
+                  "changelogs/edge-v0.9.4",
+                  "changelogs/edge-v0.9.3",
+                  "changelogs/edge-v0.9.2"
+                ]
+              },
               {
                 "group": "September 2026",
                 "pages": [
@@ -2359,6 +2551,12 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.50",
+              "changelogs/helm-v2.1.49",
+              "changelogs/helm-v2.1.48",
+              "changelogs/helm-v2.1.47",
+              "changelogs/helm-v2.1.46",
+              "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",
@@ -2462,6 +2660,18 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/relays/access",
+      "destination": "/features/governance/virtual-keys#relay-access"
+    },
+    {
+      "source": "/relays/logs",
+      "destination": "/relays/overview#see-every-call"
+    },
+    {
+      "source": "/relays/streaming",
+      "destination": "/relays/routes#streaming"
+    },
     {
       "source": "/features/governance/complexity-router",
       "destination": "/features/complexity-router"
@@ -2592,7 +2802,11 @@
     },
     {
       "source": "/enterprise/intelligent-load-balancing",
-      "destination": "/enterprise/adaptive-load-balancing"
+      "destination": "/enterprise/adaptive-routing/overview"
+    },
+    {
+      "source": "/enterprise/adaptive-load-balancing",
+      "destination": "/enterprise/adaptive-routing/overview"
     },
     {
       "source": "/enterprise/setting-up-okta",
@@ -2601,6 +2815,26 @@
     {
       "source": "/enterprise/setting-up-entra",
       "destination": "/enterprise/setting-up-entra/oidc"
+    },
+    {
+      "source": "/enterprise/workload-identity/entra",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/azure",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/aws",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/oidc",
+      "destination": "/enterprise/workload-identity/overview"
+    },
+    {
+      "source": "/enterprise/workload-identity/trusted-issuers",
+      "destination": "/enterprise/workload-identity/overview"
     },
     {
       "source": "/enterprise/setting-up-zitadel",

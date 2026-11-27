@@ -54,6 +54,15 @@ func TestRedactSensitiveHeaders_VirtualKeyHeader(t *testing.T) {
 	}
 }
 
+// Ocp-Apim-Subscription-Key carries an Azure AI Speech key or a virtual key, and no generic pattern names it.
+func TestIsSensitiveHeader_AzureSpeechKeyHeader(t *testing.T) {
+	for _, name := range []string{"ocp-apim-subscription-key", "Ocp-Apim-Subscription-Key"} {
+		if !IsSensitiveHeader(name) {
+			t.Errorf("IsSensitiveHeader(%q) = false, want true", name)
+		}
+	}
+}
+
 // BenchmarkIsSensitiveHeader measures the redaction check run on every captured header when a
 // trace is exported, over a typical request's header names.
 func BenchmarkIsSensitiveHeader(b *testing.B) {
@@ -62,6 +71,23 @@ func BenchmarkIsSensitiveHeader(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		for _, name := range names {
 			_ = IsSensitiveHeader(name)
+		}
+	}
+}
+
+// Relay job validation and Relay Logs redaction share this check, so they agree on every name.
+func TestIsCredentialQueryParam(t *testing.T) {
+	for _, name := range []string{"api_key", "API-KEY", "apikey", "key", "token", "access_token", "refresh_token", "client_secret",
+		"password", "pwd", "sig", "Signature", "X-Amz-Signature", "x-amz-credential", "X-Amz-Security-Token", "x-goog-api-key", " auth_token ",
+		"subscription-key", "subscription_key", "x-functions-key"} {
+		if !IsCredentialQueryParam(name) {
+			t.Errorf("IsCredentialQueryParam(%q) = false, want true", name)
+		}
+	}
+	// Generic words that status APIs use for ordinary values are not credentials.
+	for _, name := range []string{"code", "auth", "id", "page", "q", "status", "job_id"} {
+		if IsCredentialQueryParam(name) {
+			t.Errorf("IsCredentialQueryParam(%q) = true, want false", name)
 		}
 	}
 }

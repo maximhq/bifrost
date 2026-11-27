@@ -13,6 +13,7 @@ const (
 	TypesafeQuestionTypeNoul   = "noul"
 	TypesafeQuestionTypeChoice = "choice"
 	TypesafeQuestionTypeScore  = "score"
+	TypesafeQuestionTypeBox    = "box"
 )
 
 // TypesafeQuestion is one named question in a systemone request.
@@ -46,8 +47,19 @@ type TypesafeDecisionRequest struct {
 	State       interface{}                 `json:"state"`
 	Model       string                      `json:"model"`
 	Questions   map[string]TypesafeQuestion `json:"questions"`
-	ExtraParams map[string]interface{}      `json:"-"` // native extensions (e.g. images), merged onto the wire by the provider
+	Assets      map[string]TypesafeAsset    `json:"assets,omitempty"` // images keyed by the reference written where each belongs
+	ExtraParams map[string]interface{}      `json:"-"`                // native extensions, merged onto the wire by the provider
 	stateSet    bool                        // "state" key present on decode; keeps an explicit null distinct from absent
+}
+
+// TypesafeAsset is one image of a systemone request: base64 in DataBase64, or,
+// in a multipart request, the file part named by Part.
+type TypesafeAsset struct {
+	Type       string `json:"type,omitempty"` // "image" when sent
+	Format     string `json:"format,omitempty"`
+	DataBase64 string `json:"data_base64,omitempty"`
+	Part       string `json:"part,omitempty"`
+	Data       []byte `json:"-"` // bytes of the multipart file part named by Part
 }
 
 // typesafeDecisionRequestKnownFields are the modelled top-level keys; anything
@@ -56,6 +68,7 @@ var typesafeDecisionRequestKnownFields = map[string]bool{
 	"state":     true,
 	"model":     true,
 	"questions": true,
+	"assets":    true,
 }
 
 // UnmarshalJSON decodes the modelled fields, records whether "state" was
@@ -98,7 +111,7 @@ func (r *TypesafeDecisionRequest) GetExtraParams() map[string]interface{} {
 }
 
 // TypesafeAnswer is one answer in a systemone response. Exactly one of Noul,
-// Choice, or Score is set, matching Type.
+// Choice, Score, or Box is set, matching Type.
 type TypesafeAnswer struct {
 	Type          string             `json:"type"`
 	Noul          *float64           `json:"noul,omitempty"`
@@ -109,6 +122,7 @@ type TypesafeAnswer struct {
 	// or array), keyed by level number.
 	Legend     map[string]any `json:"legend,omitempty"`
 	Confidence *float64       `json:"confidence,omitempty"`
+	Box        *TypesafeBox   `json:"box,omitempty"`
 
 	// Laya-specific fields
 	AnswerConfidence    *float64        `json:"answer_confidence,omitempty"`
@@ -116,6 +130,15 @@ type TypesafeAnswer struct {
 	Abstention          *string         `json:"abstention,omitempty"`
 	AbstentionThreshold *float64        `json:"abstention_threshold,omitempty"`
 	LowConfidence       *bool           `json:"low_confidence,omitempty"`
+}
+
+// TypesafeBox is a box answer's edges, each a fraction from 0 to 1 of the
+// image's height (top, bottom) or width (left, right), from the top-left.
+type TypesafeBox struct {
+	Top    float64 `json:"top"`
+	Bottom float64 `json:"bottom"`
+	Left   float64 `json:"left"`
+	Right  float64 `json:"right"`
 }
 
 // TypesafeUsage reports token consumption. Typesafe bills input tokens only.

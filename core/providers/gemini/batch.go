@@ -430,6 +430,9 @@ func geminiGenerateContentToBatchResultBody(resp *GenerateContentResponse) map[s
 		if candidate.Content != nil && len(candidate.Content.Parts) > 0 {
 			var textParts []string
 			for _, part := range candidate.Content.Parts {
+				if part == nil {
+					continue
+				}
 				if part.Text != "" {
 					textParts = append(textParts, part.Text)
 				}
@@ -441,10 +444,16 @@ func geminiGenerateContentToBatchResultBody(resp *GenerateContentResponse) map[s
 		body["finish_reason"] = string(candidate.FinishReason)
 	}
 	if resp.UsageMetadata != nil {
+		completionTokens := resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount
 		usage := map[string]interface{}{
 			"prompt_tokens":     resp.UsageMetadata.PromptTokenCount,
-			"completion_tokens": resp.UsageMetadata.CandidatesTokenCount,
+			"completion_tokens": completionTokens,
 			"total_tokens":      resp.UsageMetadata.TotalTokenCount,
+		}
+		if resp.UsageMetadata.ThoughtsTokenCount > 0 {
+			usage["completion_tokens_details"] = map[string]interface{}{
+				"reasoning_tokens": resp.UsageMetadata.ThoughtsTokenCount,
+			}
 		}
 		// Surface cached input tokens in OpenAI's shape so batch accounting can
 		// apply the cache-read discount. Like OpenAI's prompt_tokens, Gemini's

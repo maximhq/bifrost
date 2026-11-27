@@ -14,18 +14,16 @@ import (
 // It lives in the external test package because llmtests imports core, and core imports
 // this provider. An internal test would close that cycle.
 //
-// Copilot has no free tier and no anonymous access, so this needs a real GitHub App with
-// the Copilot Requests permission installed on an organization that allows Copilot
-// requests from App installations. Without those the test skips, matching how every other
-// live provider suite in this repo is gated.
+// Copilot has no free tier and no anonymous access, so this needs GITHUB_COPILOT_API_KEY: a
+// fine-grained PAT with the Copilot Requests permission from an account with a Copilot seat,
+// or a Copilot API token together with GITHUB_COPILOT_API_URL. Without it the test skips,
+// matching how every other live provider suite in this repo is gated.
 func TestGithubCopilot(t *testing.T) {
 	t.Parallel()
 
-	if !hasCopilotCredentials(os.Getenv) {
-		t.Skip("Skipping GitHub Copilot tests: set GITHUB_COPILOT_APP_ID (with " +
-			"GITHUB_COPILOT_INSTALLATION_ID, GITHUB_COPILOT_REPOSITORY_ID and " +
-			"GITHUB_COPILOT_PRIVATE_KEY) for server-to-server auth, or GITHUB_COPILOT_API_KEY " +
-			"for a direct Copilot API token")
+	if strings.TrimSpace(os.Getenv("GITHUB_COPILOT_API_KEY")) == "" {
+		t.Skip("Skipping GitHub Copilot tests: set GITHUB_COPILOT_API_KEY to a fine-grained PAT " +
+			"with the Copilot Requests permission, or to a Copilot API token with GITHUB_COPILOT_API_URL")
 	}
 
 	client, ctx, cancel, err := llmtests.SetupTest()
@@ -51,7 +49,7 @@ func TestGithubCopilot(t *testing.T) {
 			{Provider: schemas.GithubCopilot, Model: "gpt-5.4-mini"},
 		},
 		TextModel:      "gpt-5.5",
-		EmbeddingModel: "", // exposed by Copilot, but not wired through this provider yet
+		EmbeddingModel: "text-embedding-3-small",
 		ReasoningModel: "gpt-5.5",
 		VisionModel:    "gpt-5.5",
 		Scenarios: llmtests.TestScenarios{
@@ -72,7 +70,7 @@ func TestGithubCopilot(t *testing.T) {
 			ImageBase64:     true,
 			MultipleImages:  true,
 			CompleteEnd2End: true,
-			Embedding:       false,
+			Embedding:       true,
 			ListModels:      true,
 			Reasoning:       false,
 		},
@@ -81,27 +79,24 @@ func TestGithubCopilot(t *testing.T) {
 	t.Run("GithubCopilotTests", func(t *testing.T) {
 		llmtests.RunAllComprehensiveTests(t, client, ctx, testConfig)
 	})
-}
 
-// hasCopilotCredentials reports whether enough credentials are present to run the live
-// suite: either a direct Copilot API token, or the complete GitHub App bundle.
-//
-// Completeness matters. A partial bundle does not fail fast, it reaches SetupTest with empty
-// installation, repository or private-key values and fails deep inside the provider, where
-// the error reads like a Bifrost bug rather than a missing secret.
-func hasCopilotCredentials(getenv func(string) string) bool {
-	if strings.TrimSpace(getenv("GITHUB_COPILOT_API_KEY")) != "" {
-		return true
+	// Claude models route to Copilot's /v1/messages endpoint rather than /chat/completions,
+	// so they get their own run. Copilot ids use dots ("claude-sonnet-4.6"), not dashes.
+	claudeConfig := llmtests.ComprehensiveTestConfig{
+		Provider:    schemas.GithubCopilot,
+		ChatModel:   "claude-sonnet-4.6",
+		VisionModel: "claude-sonnet-4.6",
+		Scenarios: llmtests.TestScenarios{
+			SimpleChat:            true,
+			CompletionStream:      true,
+			MultiTurnConversation: true,
+			ToolCalls:             true,
+			ToolCallsStreaming:    true,
+			End2EndToolCalling:    true,
+			ImageBase64:           true,
+		},
 	}
-	for _, name := range []string{
-		"GITHUB_COPILOT_APP_ID",
-		"GITHUB_COPILOT_INSTALLATION_ID",
-		"GITHUB_COPILOT_REPOSITORY_ID",
-		"GITHUB_COPILOT_PRIVATE_KEY",
-	} {
-		if strings.TrimSpace(getenv(name)) == "" {
-			return false
-		}
-	}
-	return true
+	t.Run("GithubCopilotClaudeTests", func(t *testing.T) {
+		llmtests.RunAllComprehensiveTests(t, client, ctx, claudeConfig)
+	})
 }

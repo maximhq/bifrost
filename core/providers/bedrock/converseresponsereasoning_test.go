@@ -91,6 +91,34 @@ func TestConverseResponseRendersUpstreamReasoning(t *testing.T) {
 		require.Nil(t, content[0].ReasoningContent.ReasoningText, "reasoningText must never accompany a redacted block")
 	})
 
+	// An answer cut off mid-reasoning carries only the reasoning item; the Converse
+	// client must get it as Bedrock returned it, not an empty message.
+	for _, model := range []string{"us.xai.grok-4.7", "global.anthropic.claude-sonnet-4-6"} {
+		t.Run("reasoning-only output stopped at max tokens is kept/"+model, func(t *testing.T) {
+			output := []schemas.ResponsesMessage{{
+				Type: new(schemas.ResponsesMessageTypeReasoning),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: new("two trains close at 133mph"), Signature: new("rsn_sig")},
+				}},
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+			}}
+			resp, err := ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{Model: model, Output: output, StopReason: new("length")})
+			require.NoError(t, err)
+			require.Equal(t, "max_tokens", resp.StopReason)
+			content := resp.Output.Message.Content
+			require.Len(t, content, 1, "the reasoning block must reach the client, got %+v", content)
+			require.NotNil(t, content[0].ReasoningContent)
+			require.NotNil(t, content[0].ReasoningContent.ReasoningText)
+			require.Equal(t, "two trains close at 133mph", *content[0].ReasoningContent.ReasoningText.Text)
+			require.Equal(t, "rsn_sig", *content[0].ReasoningContent.ReasoningText.Signature)
+
+			// A replay to Bedrock still cannot send a reasoning-only assistant turn.
+			msgs, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), model, output, false)
+			require.NoError(t, err)
+			require.Empty(t, msgs, "the request direction must not send lone reasoning to Bedrock")
+		})
+	}
+
 	t.Run("request direction still drops unsigned Grok text", func(t *testing.T) {
 		blocks := convertBifrostReasoningToBedrockReasoning(&schemas.ResponsesMessage{
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),

@@ -458,6 +458,7 @@ export interface ToolCall {
 	type?: string;
 	id?: string;
 	function: FunctionCall;
+	custom?: { name?: string; input?: string };
 }
 
 // Model parameters types
@@ -614,11 +615,41 @@ export interface GuardrailJudgeCall {
 	prompt_tokens?: number;
 	completion_tokens?: number;
 	total_tokens?: number;
+	// External guardrail service calls report vendor usage units instead of
+	// tokens, plus their USD cost at the vendor's list price. The cost is
+	// display-only: it is never part of the request cost or budgets.
+	usage_units?: Record<string, number>;
+	estimated_cost?: number;
 }
+
+// GuardrailMatch is one rule match recorded in guardrail_debug: a detect-only
+// flag (detections) or a block (interventions). Assessments are sanitized
+// policy categories, never matched text.
+export interface GuardrailMatch {
+	phase?: string;
+	rule_id?: number;
+	rule_name?: string;
+	guardrail_name?: string;
+	guardrail_provider?: string;
+	reason?: string;
+	assessments?: string[];
+	// Detections only: what the guardrail did (detect, block, redact,
+	// transform), and enforced=false when an output-monitor rule recorded the
+	// match without acting on it.
+	action?: GuardrailDetectionAction;
+	enforced?: boolean;
+}
+
+export type GuardrailDetectionAction = "detect" | "block" | "redact" | "transform";
 
 export interface GuardrailMetadata {
 	judge_calls?: GuardrailJudgeCall[];
+	detections?: GuardrailMatch[];
+	interventions?: GuardrailMatch[];
 }
+
+// GuardrailOutcome values accepted by the logs API's guardrail_outcomes filter.
+export type GuardrailOutcome = "blocked" | "detected";
 
 export interface RoutingCall {
 	request_type?: string;
@@ -718,9 +749,24 @@ export interface OverheadBucket {
 	duration_us: number;
 }
 
+// Params of a passthrough row (object "passthrough" / "passthrough_stream"). parsed_type,
+// base_provider and model_params are present only when the gateway parsed the raw bodies.
+export interface PassthroughLogParams {
+	method?: string;
+	path?: string;
+	raw_query?: string;
+	status_code?: number;
+	model?: string;
+	parsed_type?: string; // typed request kind the bodies were parsed as, e.g. "chat_completion"
+	base_provider?: string; // wire format of a custom provider, when it differs from the row's provider
+	model_params?: ModelParameters; // model parameters parsed from the request body
+	multipart_summary?: boolean; // request body is a summary of the form fields and file sizes, not the raw upload
+}
+
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
+	is_passthrough?: boolean; // came through a passthrough route; object is the inferred type, or passthrough when none is known
 	parent_request_id?: string;
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
@@ -756,11 +802,14 @@ export interface LogEntry {
 	project_name?: string;
 	user_id?: string;
 	user_name?: string;
+	user_email?: string;
 	virtual_key_id?: string;
 	virtual_key_name?: string;
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_rule_name?: string;
+	model_router_id?: string; // The model router that took the request after the routing rules
+	model_router_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
 	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
@@ -831,6 +880,7 @@ export interface LogEntry {
 	metadata?: Record<string, string>; // JSON metadata (e.g., isAsyncRequest)
 	redaction_mapping?: RedactionMapping; // Phase-scoped placeholder-to-original mappings, present only when caller has Logs:Reveal
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	client_ip?: string; // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	app?: string; // Backend-detected client app
 	// Aggregates over this log's fallback children (rows whose parent_request_id
 	// equals this log's id). Present only on roots_only list responses.
@@ -872,10 +922,12 @@ export interface LogFilters {
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];
+	model_router_ids?: string[]; // Requests a model router took
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
+	guardrail_outcomes?: GuardrailOutcome[]; // Requests a guardrail blocked and/or flagged (detect-only)
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs
@@ -884,7 +936,7 @@ export interface LogFilters {
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
-	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
+	period?: string; // "1h","6h","24h","7d","30d","today","this_week","this_month"; resolved server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
 	min_cost?: number;
@@ -894,12 +946,13 @@ export interface LogFilters {
 	missing_cost_only?: boolean;
 	cache_hit_types?: string[]; // For filtering by local-cache hit type ("direct", "semantic")
 	content_search?: string;
-	metadata_filters?: Record<string, string>; // key=metadataKey, value=metadataValue for filtering by metadata
+	metadata_filters?: Record<string, string[]>; // metadata key to accepted values: any value per key, every key
 	user_ids?: string[];
 	team_ids?: string[];
 	customer_ids?: string[];
 	business_unit_ids?: string[];
 	project_ids?: string[];
+	topic_ids?: string[]; // Warp topics the request was filed under
 	apps?: string[]; // Backend-detected client apps
 	user_agents?: string[]; // Raw User-Agent strings; kept for backward compatibility/debug filtering
 }
@@ -1429,6 +1482,7 @@ export interface MCPToolLogEntry {
 	request_id?: string;
 	user_id?: string | null;
 	user_name?: string | null;
+	user_email?: string | null;
 	team_id?: string | null;
 	team_name?: string | null;
 	customer_id?: string | null;
@@ -1453,9 +1507,11 @@ export interface MCPToolLogEntry {
 	id: string;
 	llm_request_id?: string; // Links to the LLM request that triggered this tool call
 	session_id?: string;
+	round_trip_id?: string; // Shared by every round of one gateway tool call that asked its caller for input
 	timestamp: string; // ISO string format
 	tool_name: string;
 	server_label?: string; // MCP server that provided the tool
+	method?: string; // "prompts/get" or "resources/read" for a prompt or resource read (tool_name holds the prompt or URI); absent for a tool call
 	virtual_key_id?: string;
 	virtual_key_name?: string;
 	arguments?: Record<string, unknown> | string; // JSON parsed tool arguments
@@ -1463,13 +1519,14 @@ export interface MCPToolLogEntry {
 	error_details?: BifrostError;
 	latency?: number; // Execution time in milliseconds
 	cost?: number; // Cost in dollars (per execution cost)
-	status: string; // "processing", "success", or "error"
-	metadata?: Record<string, string>;
+	status: string; // "processing", "success", "error", or "input_required" (the server asked the caller for input)
+	metadata?: Record<string, unknown>;
 	plugin_logs?: string; // JSON string of plugin execution logs grouped by plugin name
 	redaction_mapping?: RedactionMapping; // Present on detail responses only when the caller has Logs:Reveal
 	created_at: string; // ISO string format
 	virtual_key?: VirtualKey;
 	user_agent?: string; // Raw HTTP User-Agent of the calling client
+	client_ip?: string; // Caller IP: leftmost X-Forwarded-For, else X-Real-IP, else the TCP peer
 	app?: string; // Backend-detected client app
 }
 
@@ -1490,9 +1547,10 @@ export interface MCPToolLogFilters {
 	agent_names?: string[];
 	session_id?: string;
 	agent_correlation_id?: string;
+	round_trip_id?: string;
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
-	period?: string; // relative period ("1h","6h","24h","7d","30d"); computed server-side, takes precedence over start_time/end_time
+	period?: string; // "1h","6h","24h","7d","30d","today","this_week","this_month"; resolved server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
 	content_search?: string;
@@ -1503,9 +1561,19 @@ export interface MCPToolLogFilters {
 // MCP Tool Log Statistics
 export interface MCPToolLogStats {
 	total_executions: number;
+	success_count: number;
+	error_count: number;
+	cancelled_count: number;
+	/** Over finished calls, cancelled ones counted, as the LLM logs stats measure it. */
 	success_rate: number;
 	average_latency: number;
 	total_cost: number; // Total cost in dollars
+}
+
+/** GET /api/mcp-logs/stats with compare_to_previous=true: the window's stats plus the preceding window's. */
+export interface MCPToolLogStatsResponse extends MCPToolLogStats {
+	previous?: MCPToolLogStats;
+	has_previous_period?: boolean;
 }
 
 // MCP Tool Log Search Response
@@ -1516,12 +1584,23 @@ export interface MCPToolLogsResponse {
 }
 
 // MCP Tool Log Filter Data Response
+// An id and its display name, as an MCP log filter dimension offers it.
+export interface MCPToolLogFilterEntity {
+	id: string;
+	name: string;
+}
+
 export interface MCPToolLogFilterData {
 	tool_names: string[];
 	server_labels: string[];
 	apps: string[];
 	user_agents: string[];
 	virtual_keys: VirtualKey[];
+	users: MCPToolLogFilterEntity[];
+	teams: MCPToolLogFilterEntity[];
+	customers: MCPToolLogFilterEntity[];
+	business_units: MCPToolLogFilterEntity[];
+	projects: MCPToolLogFilterEntity[];
 }
 
 // WebSocket message types for MCP tool logs
@@ -1613,7 +1692,17 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
-export type RankingDimension = "team" | "customer" | "business_unit" | "project" | "user" | "app" | "user_agent" | "virtual_key";
+export type RankingDimension =
+	| "team"
+	| "customer"
+	| "business_unit"
+	| "project"
+	| "user"
+	| "app"
+	| "user_agent"
+	| "virtual_key"
+	| "model_router"
+	| "complexity_tier";
 
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;

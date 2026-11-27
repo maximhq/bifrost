@@ -89,7 +89,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	serverName, toolName, isToolLevel := parseVFSFilePath(fileName)
 
 	// Get available tools per client
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	// Find matching client
 	var matchedClientName string
@@ -102,7 +102,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
-		if !client.ExecutionConfig.IsCodeModeClient || len(tools) == 0 {
+		if !client.ExecutionConfig.CodeModeFor(ctx) || len(tools) == 0 {
 			continue
 		}
 
@@ -169,7 +169,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 				availableFiles = append(availableFiles, fmt.Sprintf("servers/%s.pyi", name))
 			} else {
 				client := s.clientManager.GetClientByName(name)
-				if client != nil && client.ExecutionConfig.IsCodeModeClient {
+				if client != nil && client.ExecutionConfig.CodeModeFor(ctx) {
 					if tools, ok := availableToolsPerClient[name]; ok {
 						for _, tool := range tools {
 							if tool.Function != nil {
@@ -189,7 +189,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(matchedClientName))
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(ctx, matchedClientName), !s.jsonModuleShadowed(ctx, availableToolsPerClient))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
@@ -282,7 +282,8 @@ func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel
 }
 
 // generateCompactSignatures generates compact Python function signatures for tools.
-func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string) string {
+// jsonModuleAvailable says whether the sandbox's json module is reachable (see generateTypeDefinitions).
+func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
 	var sb strings.Builder
 
 	// Minimal header
@@ -295,6 +296,11 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 	sb.WriteString(fmt.Sprintf("# Usage: %s.tool_name(param=value)\n", clientName))
 	sb.WriteString("# The def names below are the exact callable names to use in executeToolCode.\n")
 	sb.WriteString("# Read this file before executeToolCode to confirm parameters and return shape.\n")
+	sb.WriteString("# Results: the decoded JSON when the server sends JSON (a dict or list, or a number, bool or None), otherwise a str.\n")
+	if jsonModuleAvailable {
+		sb.WriteString("# json.decode(s) parses a str that holds JSON; plain text raises.\n")
+	}
+	sb.WriteString("# A call that fails returns an error value: check hasattr(r, \"error\"); r.error holds the message, and fail(r.error) stops the run.\n")
 	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
 	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
 	if instructions != "" {
@@ -311,7 +317,7 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 		toolName := getCanonicalToolName(clientName, tool.Function.Name)
 
 		// Format inline parameters in Python style
-		params := formatPythonParams(tool.Function.Parameters)
+		params := formatPythonParams(stubParameters(tool.Function.Parameters))
 
 		// Get description (truncate if too long)
 		desc := ""
@@ -334,115 +340,4 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 	}
 
 	return sb.String()
-}
-
-// formatPythonParams formats tool parameters as Python function parameters.
-func formatPythonParams(params *schemas.ToolFunctionParameters) string {
-	if params == nil || params.Properties == nil || params.Properties.Len() == 0 {
-		return ""
-	}
-
-	props := params.Properties
-	required := make(map[string]bool)
-	if params.Required != nil {
-		for _, req := range params.Required {
-			required[req] = true
-		}
-	}
-
-	// Sort properties: required first, then optional, alphabetically within each group
-	requiredNames := make([]string, 0)
-	optionalNames := make([]string, 0)
-	props.Range(func(name string, _ interface{}) bool {
-		if required[name] {
-			requiredNames = append(requiredNames, name)
-		} else {
-			optionalNames = append(optionalNames, name)
-		}
-		return true
-	})
-	// Simple alphabetical sort for each group
-	for i := 0; i < len(requiredNames)-1; i++ {
-		for j := i + 1; j < len(requiredNames); j++ {
-			if requiredNames[i] > requiredNames[j] {
-				requiredNames[i], requiredNames[j] = requiredNames[j], requiredNames[i]
-			}
-		}
-	}
-	for i := 0; i < len(optionalNames)-1; i++ {
-		for j := i + 1; j < len(optionalNames); j++ {
-			if optionalNames[i] > optionalNames[j] {
-				optionalNames[i], optionalNames[j] = optionalNames[j], optionalNames[i]
-			}
-		}
-	}
-
-	parts := make([]string, 0, props.Len())
-
-	// Add required params first
-	for _, propName := range requiredNames {
-		prop, _ := props.Get(propName)
-		propMap, ok := prop.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		pyType := jsonSchemaToPython(propMap)
-		parts = append(parts, fmt.Sprintf("%s: %s", propName, pyType))
-	}
-
-	// Add optional params with default None
-	for _, propName := range optionalNames {
-		prop, _ := props.Get(propName)
-		propMap, ok := prop.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		pyType := jsonSchemaToPython(propMap)
-		parts = append(parts, fmt.Sprintf("%s: %s = None", propName, pyType))
-	}
-
-	return strings.Join(parts, ", ")
-}
-
-// jsonSchemaToPython converts a JSON Schema type definition to a Python type string.
-func jsonSchemaToPython(prop map[string]interface{}) string {
-	// Check for enum first - takes precedence over type to show allowed values
-	if enum, ok := prop["enum"].([]interface{}); ok && len(enum) > 0 {
-		enumStrs := make([]string, 0, len(enum))
-		for _, e := range enum {
-			enumStrs = append(enumStrs, fmt.Sprintf("%q", e))
-		}
-		return "Literal[" + strings.Join(enumStrs, ", ") + "]"
-	}
-
-	// Check for const (single fixed value)
-	if constVal, ok := prop["const"]; ok {
-		return fmt.Sprintf("Literal[%q]", constVal)
-	}
-
-	// Fall back to type-based conversion
-	if typeVal, ok := prop["type"].(string); ok {
-		switch typeVal {
-		case "string":
-			return "str"
-		case "number":
-			return "float"
-		case "integer":
-			return "int"
-		case "boolean":
-			return "bool"
-		case "array":
-			itemsType := "Any"
-			if items, ok := prop["items"].(map[string]interface{}); ok {
-				itemsType = jsonSchemaToPython(items)
-			}
-			return fmt.Sprintf("list[%s]", itemsType)
-		case "object":
-			return "dict"
-		case "null":
-			return "None"
-		}
-	}
-
-	return "Any"
 }

@@ -159,7 +159,7 @@ func TestUpsertBudgetConfigDoesNotResurrectOverrideCycles(t *testing.T) {
 	require.Equal(t, 2, reset.OverrideCyclesRemaining, "one window closed, so one cycle should be spent")
 
 	// Now the reload lands, carrying the stale pre-reset override state.
-	store.UpsertBudgetConfig(ctx, budget.ID, stale)
+	store.UpsertBudgetConfig(ctx, budget.ID, stale, false)
 
 	got := store.LoadBudget(ctx, budget.ID)
 	require.NotNil(t, got)
@@ -196,7 +196,7 @@ func TestBudgetCycleSurvivesInterleavedConfigReload(t *testing.T) {
 		}
 		// A config reload lands mid window, carrying the pristine grant.
 		reloaded := pristine
-		store.UpsertBudgetConfig(ctx, budget.ID, &reloaded)
+		store.UpsertBudgetConfig(ctx, budget.ID, &reloaded, false)
 	}
 
 	got := store.LoadBudget(ctx, budget.ID)
@@ -355,9 +355,11 @@ func TestResetExpiredRateLimitsPersistsLastResetUnderTraffic(t *testing.T) {
 	// A request lands between the in-memory reset and the database write, which
 	// is the normal case for any rate limit that is actually carrying traffic.
 	raced := *reset
+	snapshot := *reset.TableRateLimit
+	raced.TableRateLimit = &snapshot
 	raced.TokenCurrentUsage = 5
 	raced.RequestCurrentUsage = 1
-	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*configstoreTables.TableRateLimit{&raced}))
+	require.NoError(t, store.ResetExpiredRateLimits(ctx, []*RateLimitReset{&raced}))
 
 	persisted, err := configStore.GetRateLimit(ctx, rateLimit.ID)
 	require.NoError(t, err)
@@ -439,7 +441,7 @@ func TestUpsertBudgetConfigDoesNotAliasOrMutateCallerConfig(t *testing.T) {
 			testCase.seed(store, caller.ID)
 
 			before := *caller
-			store.UpsertBudgetConfig(ctx, caller.ID, caller)
+			store.UpsertBudgetConfig(ctx, caller.ID, caller, false)
 
 			assert.Equal(t, before.OverrideCyclesRemaining, caller.OverrideCyclesRemaining,
 				"UpsertBudgetConfig rewrote the caller's remaining count in place")

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -167,16 +169,20 @@ type OpenAIDecisionRequest struct {
 	SafetyIdentifier *string                  `json:"safety_identifier,omitempty"`
 	Fallbacks        []string                 `json:"fallbacks,omitempty"` // Bifrost routing only; never sent upstream
 	ExtraParams      map[string]interface{}   `json:"-"`                   // native extensions, merged onto the wire under the passthrough flag
+
+	PromptCacheKey     *string                     `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions *schemas.PromptCacheOptions `json:"prompt_cache_options,omitempty"`
 }
 
-// OpenAIDecisionQuestion is one question of OpenAI's decisions request: text
-// instructions and, by type, choices or levels described in text. Unlike the
-// shared question it has no criteria and no structured values, so
-// ToOpenAIDecisionRequest renders both as text.
+// OpenAIDecisionQuestion is one question of OpenAI's decisions request:
+// instructions as text or as a list of text, image, and JSON parts, and, by
+// type, choices or levels described in text. Unlike the shared question it
+// has no criteria and no other structured values, so ToOpenAIDecisionRequest
+// renders both as text.
 type OpenAIDecisionQuestion struct {
 	Type         schemas.DecisionType   `json:"type"`
 	Name         *string                `json:"name,omitempty"`
-	Instructions string                 `json:"instructions"`
+	Instructions *schemas.DecisionText  `json:"instructions"`
 	Choices      []OpenAIDecisionChoice `json:"choices,omitempty"`
 	Levels       []OpenAIDecisionLevel  `json:"levels,omitempty"`
 
@@ -256,6 +262,9 @@ var openAIDecisionRequestKnownFields = map[string]bool{
 	"questions":         true,
 	"safety_identifier": true,
 	"fallbacks":         true,
+
+	"prompt_cache_key":     true,
+	"prompt_cache_options": true,
 }
 
 // UnmarshalJSON decodes the modelled fields and keeps every other top-level
@@ -476,6 +485,11 @@ type OpenAIMessage struct {
 	Role    schemas.ChatMessageRole     `json:"role,omitempty"`
 	Content *schemas.ChatMessageContent `json:"content,omitempty"`
 
+	// CacheControl is a breakpoint set on the message object itself, the shape
+	// OpenAI-compatible SDKs send. Read on ingress only; outgoing messages carry
+	// their markers on content blocks.
+	CacheControl *schemas.CacheControl `json:"cache_control,omitempty"`
+
 	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
 	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
 	*schemas.ChatToolMessage
@@ -490,10 +504,10 @@ type OpenAIChatAssistantMessage struct {
 	// ReasoningAlias and ReasoningDetails capture the other two spellings callers use to
 	// replay assistant reasoning: OpenRouter-style "reasoning" and "reasoning_details".
 	//
-	// These are inbound-only. ConvertBifrostMessagesToOpenAIMessages is the sole
-	// construction site on the outbound path and never populates them, so they stay nil
-	// there and omitempty keeps them off the wire for every provider. Read them via
-	// ConvertOpenAIMessagesToBifrostMessages, which folds them into the Bifrost schema.
+	// ConvertBifrostMessagesToOpenAIMessages never populates them, so omitempty keeps them
+	// off the wire; the one exception is ToOpenAIChatRequest setting signed or encrypted
+	// ReasoningDetails for OpenRouter, which replays them upstream. Read them via ConvertOpenAIMessagesToBifrostMessages,
+	// which folds them into the Bifrost schema.
 	ReasoningAlias   *string                        `json:"reasoning,omitempty"`
 	ReasoningDetails []schemas.ChatReasoningDetails `json:"reasoning_details,omitempty"`
 
@@ -541,7 +555,9 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Copy message
 			processedMessages[i] = msg
 
-			// Strip the Bifrost-extension citation text from assistant annotations
+			// Strip the Bifrost-extension citation text from assistant annotations and
+			// the Anthropic cache_control marker from tool_calls entries (kept for OpenRouter,
+			// like the block and tool markers above).
 			if msg.OpenAIChatAssistantMessage != nil {
 				needsAnnotationStrip := false
 				for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
@@ -550,13 +566,30 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						break
 					}
 				}
-				if needsAnnotationStrip {
+				needsToolCallStrip := false
+				if !keepCacheControl {
+					for _, toolCall := range msg.OpenAIChatAssistantMessage.ToolCalls {
+						if toolCall.CacheControl != nil {
+							needsToolCallStrip = true
+							break
+						}
+					}
+				}
+				if needsAnnotationStrip || needsToolCallStrip {
 					assistantCopy := *msg.OpenAIChatAssistantMessage
-					assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
-					for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
-						annotationCopy := annotation
-						annotationCopy.URLCitation.Text = nil
-						assistantCopy.Annotations[j] = annotationCopy
+					if needsAnnotationStrip {
+						assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
+						for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+							annotationCopy := annotation
+							annotationCopy.URLCitation.Text = nil
+							assistantCopy.Annotations[j] = annotationCopy
+						}
+					}
+					if needsToolCallStrip {
+						assistantCopy.ToolCalls = slices.Clone(msg.OpenAIChatAssistantMessage.ToolCalls)
+						for j := range assistantCopy.ToolCalls {
+							assistantCopy.ToolCalls[j].CacheControl = nil
+						}
 					}
 					processedMessages[i].OpenAIChatAssistantMessage = &assistantCopy
 				}
@@ -565,10 +598,14 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Strip CacheControl and FileType from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
-				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
-				for j, block := range msg.Content.ContentBlocks {
+				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, 0, len(msg.Content.ContentBlocks))
+				dropEmptyTextFiles := chatEmptyTextFilesToDrop(msg.Content.ContentBlocks)
+				for _, block := range msg.Content.ContentBlocks {
+					if dropEmptyTextFiles && isEmptyChatTextFile(block.File) {
+						continue
+					}
 					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
-					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileType != nil || block.File.FileURL != nil || fileDataNeedsDataURL(block.File.FileData)))
+					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileURL != nil || fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType)))
 					if needsBlockCopy {
 						blockCopy := block
 						if stripBlockCacheControl {
@@ -583,18 +620,16 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						// name, and any OpenAI-compatible endpoint that does accept one
 						// keeps working without a Bifrost change.
 						// Fold it into file_data first: the wire has nowhere else to carry
-						// the media type, and bare base64 is rejected (fileDataAsDataURL).
-						if blockCopy.File != nil && (blockCopy.File.FileType != nil || fileDataNeedsDataURL(blockCopy.File.FileData)) {
+						// the media type, and bare base64 or a nameless inline file is rejected (openAIWireFile).
+						if blockCopy.File != nil && fileNeedsWireRewrite(blockCopy.File.FileData, blockCopy.File.Filename, blockCopy.File.FileType) {
 							fileCopy := *blockCopy.File
-							if fileCopy.FileData != nil {
-								fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
-							}
+							fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 							fileCopy.FileType = nil
 							blockCopy.File = &fileCopy
 						}
-						contentCopy.ContentBlocks[j] = blockCopy
+						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, blockCopy)
 					} else {
-						contentCopy.ContentBlocks[j] = block
+						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, block)
 					}
 				}
 				processedMessages[i].Content = &contentCopy
@@ -729,6 +764,104 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// openAIChatRequestKnownFields are the top-level keys OpenAIChatRequest decodes,
+// read from its JSON tags so a field added to the type is never taken for an
+// unknown one, plus the reasoning_* shorthands ChatParameters accepts and
+// Bifrost's own extra_params wrapper.
+var openAIChatRequestKnownFields = func() map[string]bool {
+	known := map[string]bool{
+		"reasoning_effort":     true,
+		"reasoning_max_tokens": true,
+		"reasoning_display":    true,
+		"extra_params":         true,
+	}
+	addJSONFieldNames(reflect.TypeOf(OpenAIChatRequest{}), known)
+	return known
+}()
+
+// openAIChatRequestKnownFieldsFolded holds the known names lowercased. sonic, like
+// encoding/json, matches a key to a field case-insensitively, so "Messages" is decoded
+// and must not also be forwarded as an unknown field.
+var openAIChatRequestKnownFieldsFolded = func() map[string]bool {
+	folded := make(map[string]bool, len(openAIChatRequestKnownFields))
+	for name := range openAIChatRequestKnownFields {
+		folded[strings.ToLower(name)] = true
+	}
+	return folded
+}()
+
+// isKnownOpenAIChatRequestField reports whether the decoder takes name: an exact match,
+// else an ASCII case-folded one, lowered into a stack buffer so the lookup does not allocate.
+func isKnownOpenAIChatRequestField(name string) bool {
+	if openAIChatRequestKnownFields[name] {
+		return true
+	}
+	var buf [64]byte
+	if len(name) > len(buf) {
+		return openAIChatRequestKnownFieldsFolded[strings.ToLower(name)]
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	return openAIChatRequestKnownFieldsFolded[string(buf[:len(name)])]
+}
+
+// addJSONFieldNames adds the JSON names of t's fields to names, descending
+// into untagged embedded structs as encoding/json does.
+func addJSONFieldNames(t reflect.Type, names map[string]bool) {
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		tag := field.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if field.Anonymous && name == "" && field.Type.Kind() == reflect.Struct {
+			addJSONFieldNames(field.Type, names)
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		names[name] = true
+	}
+}
+
+// OpenAIChatRequestUnknownFields returns the top-level fields of a chat body
+// that OpenAIChatRequest does not decode, each compacted, or nil when there are
+// none. A body with only known fields costs a scan and no allocation: the body
+// is read in place and only the fields kept are copied out of it.
+func OpenAIChatRequestUnknownFields(data []byte) map[string]interface{} {
+	if len(data) == 0 {
+		return nil
+	}
+	var unknown map[string]interface{}
+	gjson.Parse(unsafe.String(unsafe.SliceData(data), len(data))).ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if isKnownOpenAIChatRequestField(name) {
+			return true
+		}
+		if unknown == nil {
+			unknown = make(map[string]interface{})
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(value.Raw)); err == nil {
+			unknown[strings.Clone(name)] = json.RawMessage(compact.Bytes())
+		} else {
+			unknown[strings.Clone(name)] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
+	return unknown
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (req *OpenAIChatRequest) IsStreamingRequested() bool {
 	return req.Stream != nil && *req.Stream
@@ -800,14 +933,20 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, 0, len(msg.Content.ContentBlocks))
 				hasContentModification := false
+				dropEmptyTextFiles := responsesEmptyTextFilesToDrop(msg.Content.ContentBlocks)
 				for _, block := range msg.Content.ContentBlocks {
 					// Skip rendered_content blocks entirely - OpenAI doesn't support them
 					if block.Type == schemas.ResponsesOutputMessageContentTypeRenderedContent {
 						hasContentModification = true
 						continue
 					}
+					// An empty text document has nothing to send, and its empty data URL is rejected.
+					if dropEmptyTextFiles && isEmptyResponsesTextFile(&block) {
+						hasContentModification = true
+						continue
+					}
 
-					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData))) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
+					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
 					if needsBlockCopy {
 						hasContentModification = true
 						blockCopy := block
@@ -831,12 +970,10 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 						// Strip FileType from file block
 						// Fold it into file_data first: the wire has nowhere else to carry
-						// the media type, and bare base64 is rejected (fileDataAsDataURL).
-						if blockCopy.ResponsesInputMessageContentBlockFile != nil && (blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(blockCopy.ResponsesInputMessageContentBlockFile.FileData)) {
+						// the media type, and bare base64 or a nameless inline file is rejected (openAIWireFile).
+						if blockCopy.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(blockCopy.ResponsesInputMessageContentBlockFile.FileData, blockCopy.ResponsesInputMessageContentBlockFile.Filename, blockCopy.ResponsesInputMessageContentBlockFile.FileType) {
 							fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
-							if fileCopy.FileData != nil {
-								fileCopy.FileData = schemas.Ptr(fileDataAsDataURL(*fileCopy.FileData, fileCopy.FileType))
-							}
+							fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 							fileCopy.FileType = nil
 							blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 						}
@@ -895,20 +1032,31 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				// as an array of content blocks and has to be flattened here.
 				// Strict upstream implementations (e.g. Ollama Cloud) return a
 				// 400 otherwise.
-				if msg.ResponsesToolMessage.Output != nil &&
-					msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil &&
-					isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
-					flattened := flattenFunctionCallOutputBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				// tool_reference is Anthropic-only; OpenAI has no block for it.
+				var outputBlocks []schemas.ResponsesMessageContentBlock
+				hadToolReferences := false
+				if msg.ResponsesToolMessage.Output != nil {
+					outputBlocks, hadToolReferences = withoutToolReferenceBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				}
+				if hadToolReferences && len(outputBlocks) == 0 {
+					empty := ""
+					outputCopy := *msg.ResponsesToolMessage.Output
+					outputCopy.ResponsesToolCallOutputStr = &empty
+					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
+					toolMsgCopy.Output = &outputCopy
+					toolMsgModified = true
+				} else if outputBlocks != nil && isFunctionCallOutputBlocksFlattenable(outputBlocks) {
+					flattened := flattenFunctionCallOutputBlocks(outputBlocks)
 					outputCopy := *msg.ResponsesToolMessage.Output
 					outputCopy.ResponsesToolCallOutputStr = &flattened
 					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
 					toolMsgCopy.Output = &outputCopy
 					toolMsgModified = true
-				} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+				} else if outputBlocks != nil {
 					// Strip CacheControl and FileType from tool message output blocks if needed
-					hasToolModification := false
-					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
+					hasToolModification := hadToolReferences
+					for _, block := range outputBlocks {
+						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) {
 							hasToolModification = true
 							break
 						}
@@ -916,17 +1064,19 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 					if hasToolModification {
 						outputCopy := *msg.ResponsesToolMessage.Output
-						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
-						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
-							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
+						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(outputBlocks))
+						for j, block := range outputBlocks {
+							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType))
 							if needsBlockCopy {
 								blockCopy := block
 								blockCopy.CacheControl = nil
 								blockCopy.Citations = nil
 								blockCopy.MediaResolution = nil
-								// Strip FileType from file block
-								if blockCopy.ResponsesInputMessageContentBlockFile != nil && blockCopy.ResponsesInputMessageContentBlockFile.FileType != nil {
+								// Strip FileType from file block, folding it into file_data first as for input
+								// messages: bare base64 or a nameless inline file is rejected (openAIWireFile).
+								if blockCopy.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(blockCopy.ResponsesInputMessageContentBlockFile.FileData, blockCopy.ResponsesInputMessageContentBlockFile.Filename, blockCopy.ResponsesInputMessageContentBlockFile.FileType) {
 									fileCopy := *blockCopy.ResponsesInputMessageContentBlockFile
+									fileCopy.FileData, fileCopy.Filename = openAIWireFile(fileCopy.FileData, fileCopy.Filename, fileCopy.FileType)
 									fileCopy.FileType = nil
 									blockCopy.ResponsesInputMessageContentBlockFile = &fileCopy
 								}
@@ -1036,6 +1186,7 @@ func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool, keepDeferLoadin
 		len(t.InputExamples) > 0 ||
 		t.EagerInputStreaming != nil ||
 		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil) ||
+		(t.ResponsesToolWebSearch != nil && t.ResponsesToolWebSearch.Version != nil) ||
 		hasAnthropicMCPToolsetConfig(t)
 }
 
@@ -1127,15 +1278,26 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if block.Citations != nil {
 				return true
 			}
-			if block.File != nil && (block.File.FileType != nil || fileDataNeedsDataURL(block.File.FileData)) {
+			if block.File != nil && fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType) {
 				return true
 			}
+		}
+		// An empty text document needs no wire rewrite of its own, but is dropped beside other content.
+		if chatEmptyTextFilesToDrop(msg.Content.ContentBlocks) {
+			return true
 		}
 	}
 	if msg.OpenAIChatAssistantMessage != nil {
 		for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
 			if annotation.URLCitation.Text != nil {
 				return true
+			}
+		}
+		if !keepCacheControl {
+			for _, toolCall := range msg.OpenAIChatAssistantMessage.ToolCalls {
+				if toolCall.CacheControl != nil {
+					return true
+				}
 			}
 		}
 	}
@@ -1160,7 +1322,7 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.MediaResolution != nil {
 				return true
 			}
-			if block.ResponsesInputMessageContentBlockFile != nil && (block.ResponsesInputMessageContentBlockFile.FileType != nil || fileDataNeedsDataURL(block.ResponsesInputMessageContentBlockFile.FileData)) {
+			if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
 				return true
 			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
@@ -1170,6 +1332,10 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeRenderedContent {
 				return true
 			}
+		}
+		// An empty text document needs no wire rewrite of its own, but is dropped beside other content.
+		if responsesEmptyTextFilesToDrop(msg.Content.ContentBlocks) {
+			return true
 		}
 	}
 	if msg.ResponsesToolMessage != nil {
@@ -1190,6 +1356,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 				return true
 			}
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+				if block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+					return true
+				}
 				if block.CacheControl != nil {
 					return true
 				}
@@ -1202,7 +1371,7 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 				if block.MediaResolution != nil {
 					return true
 				}
-				if block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil {
+				if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
 					return true
 				}
 			}
@@ -1233,6 +1402,23 @@ func isFunctionCallOutputBlocksFlattenable(blocks []schemas.ResponsesMessageCont
 		}
 	}
 	return true
+}
+
+// withoutToolReferenceBlocks returns blocks minus any tool_reference blocks and
+// whether any were removed. The input slice is returned unchanged when none are.
+func withoutToolReferenceBlocks(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
+	if !slices.ContainsFunc(blocks, func(b schemas.ResponsesMessageContentBlock) bool {
+		return b.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference
+	}) {
+		return blocks, false
+	}
+	filtered := make([]schemas.ResponsesMessageContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesInputMessageContentBlockTypeToolReference {
+			filtered = append(filtered, block)
+		}
+	}
+	return filtered, true
 }
 
 // flattenFunctionCallOutputBlocks concatenates the text of every block in the
@@ -1376,6 +1562,11 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 					ciCopy.Version = nil
 					toolCopy.ResponsesToolCodeInterpreter = &ciCopy
 				}
+				if toolCopy.ResponsesToolWebSearch != nil && toolCopy.ResponsesToolWebSearch.Version != nil {
+					searchCopy := *toolCopy.ResponsesToolWebSearch
+					searchCopy.Version = nil
+					toolCopy.ResponsesToolWebSearch = &searchCopy
+				}
 				processedTools = append(processedTools, toolCopy)
 			}
 		} else {
@@ -1416,7 +1607,13 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	return providerUtils.MarshalSorted(aux)
+	data, err := providerUtils.MarshalSorted(aux)
+	if err != nil || resp.Provider != schemas.BytePlus || resp.Reasoning == nil {
+		return data, err
+	}
+	// Ark's Responses decoder rejects reasoning.summary as an unknown field, even when it is null,
+	// and Summary has no omitempty, so the key is removed from the encoded body instead.
+	return providerUtils.DeleteJSONField(data, "reasoning.summary")
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
@@ -1591,6 +1788,37 @@ func (r *OpenAIImageEditRequest) GetExtraParams() map[string]interface{} {
 func (r *OpenAIImageEditRequest) SetExtraParams(params map[string]interface{}) {
 	r.ExtraParams = params
 	r.ImageEditParameters.ExtraParams = params
+}
+
+// OpenAIImageReference is one image or mask in the application/json form of /v1/images/edits.
+type OpenAIImageReference struct {
+	ImageURL string `json:"image_url,omitempty"` // http(s) URL or base64 data URL
+	FileID   string `json:"file_id,omitempty"`
+}
+
+// OpenAIImageEditJSONRequest is the application/json body of /v1/images/edits, the only form that takes image URLs.
+type OpenAIImageEditJSONRequest struct {
+	Model             string                 `json:"model"`
+	Prompt            string                 `json:"prompt"`
+	Images            []OpenAIImageReference `json:"images"`
+	Mask              *OpenAIImageReference  `json:"mask,omitempty"`
+	Stream            *bool                  `json:"stream,omitempty"`
+	N                 *int                   `json:"n,omitempty"`
+	Size              *string                `json:"size,omitempty"`
+	ResponseFormat    *string                `json:"response_format,omitempty"`
+	Quality           *string                `json:"quality,omitempty"`
+	Background        *string                `json:"background,omitempty"`
+	InputFidelity     *string                `json:"input_fidelity,omitempty"`
+	PartialImages     *int                   `json:"partial_images,omitempty"`
+	OutputFormat      *string                `json:"output_format,omitempty"`
+	OutputCompression *int                   `json:"output_compression,omitempty"`
+	User              *string                `json:"user,omitempty"`
+	Fallbacks         []string               `json:"fallbacks,omitempty"`
+	ExtraParams       map[string]interface{} `json:"-"`
+}
+
+func (r *OpenAIImageEditJSONRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
 }
 
 // OpenAIImageVariationRequest is the struct for Image Variation requests in OpenAI format.

@@ -1,8 +1,13 @@
 package oauth2
 
-import "github.com/maximhq/bifrost/core/schemas"
+import (
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/schemas"
+)
 
-var logger schemas.Logger
+// logger defaults to the standard logger so discovery that runs before
+// NewOAuth2Provider (config.json load) can log.
+var logger schemas.Logger = bifrost.NewDefaultLogger(schemas.LogLevelInfo)
 
 func SetLogger(l schemas.Logger) {
 	logger = l

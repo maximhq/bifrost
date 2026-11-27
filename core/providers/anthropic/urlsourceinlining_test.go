@@ -43,6 +43,74 @@ func TestCollectURLSourceRefs(t *testing.T) {
 	}
 }
 
+// A tool_result carries its own content array, so url sources inside it are collected
+// with their nested path. Without this, AWS-hosted Claude receives the url source unfetched.
+func TestCollectURLSourceRefs_NestedInToolResult(t *testing.T) {
+	body := []byte(`{"messages":[` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+		`{"role":"user","content":[{"type":"text","text":"here"},{"type":"tool_result","tool_use_id":"toolu_01","content":[` +
+		`{"type":"text","text":"ok"},` +
+		`{"type":"document","source":{"type":"url","url":"https://x.invalid/a.pdf"}},` +
+		`{"type":"image","source":{"type":"url","url":"https://x.invalid/b.png"}}]},` +
+		`{"type":"tool_result","tool_use_id":"toolu_02","content":"plain string"}]}]}`)
+
+	refs := collectURLSourceRefs(body)
+	if len(refs) != 2 {
+		t.Fatalf("expected 2 nested url sources, got %d: %+v", len(refs), refs)
+	}
+	if refs[0].path != "messages.1.content.1.content.1.source" || refs[0].blockType != "document" ||
+		refs[0].url != "https://x.invalid/a.pdf" {
+		t.Errorf("unexpected document ref: %+v", refs[0])
+	}
+	if refs[1].path != "messages.1.content.1.content.2.source" || refs[1].blockType != "image" ||
+		refs[1].url != "https://x.invalid/b.png" {
+		t.Errorf("unexpected image ref: %+v", refs[1])
+	}
+
+	out, err := applyInlinedSource(body, refs[0], "application/pdf", base64.StdEncoding.EncodeToString([]byte("%PDF-1.4")))
+	if err != nil {
+		t.Fatalf("applyInlinedSource: %v", err)
+	}
+	if got := gjson.GetBytes(out, "messages.1.content.1.content.1.source.type").String(); got != "base64" {
+		t.Errorf("nested document not inlined in place, source.type=%q: %s", got, out)
+	}
+}
+
+// JSON may spell any letter as a \uXXXX escape, and gjson decodes escaped keys and values,
+// so a url source with no literal "url" in the body must still be collected (a raw request
+// body is forwarded as the client wrote it).
+func TestCollectURLSourceRefs_EscapedSourceIsCollected(t *testing.T) {
+	const u = `\u0075` // the JSON escape for 'u'
+	cases := map[string]struct {
+		body string
+		path string
+	}{
+		"escaped type and url key": {
+			`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"` + u + `rl","` + u + `rl":"https://x.invalid/a.pdf"}}]}]}`,
+			"messages.0.content.0.source",
+		},
+		"escaped source key": {
+			`{"messages":[{"role":"user","content":[{"type":"document","so` + u + `rce":{"type":"` + u + `rl","` + u + `rl":"https://x.invalid/a.pdf"}}]}]}`,
+			"messages.0.content.0.source",
+		},
+		"escaped inside a tool_result": {
+			`{"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":[{"type":"document","source":{"type":"` + u + `rl","` + u + `rl":"https://x.invalid/a.pdf"}}]}]}]}`,
+			"messages.0.content.0.content.0.source",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if strings.Contains(tc.body, `"url"`) {
+				t.Fatalf("fixture must not hold a literal \"url\": %s", tc.body)
+			}
+			refs := collectURLSourceRefs([]byte(tc.body))
+			if len(refs) != 1 || refs[0].path != tc.path || refs[0].url != "https://x.invalid/a.pdf" {
+				t.Fatalf("escaped url source not collected, got %+v", refs)
+			}
+		})
+	}
+}
+
 func TestCollectURLSourceRefs_IgnoresAlreadyInlinedAndMalformed(t *testing.T) {
 	cases := map[string]string{
 		"base64 source":     `{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"base64","media_type":"application/pdf","data":"AAAA"}}]}]}`,
@@ -246,6 +314,29 @@ func TestInlineURLContentSourcesForwardsUnfetchableSchemes(t *testing.T) {
 			}
 			if got := gjson.GetBytes(out, "messages.0.content.0.source.type").String(); got != "url" {
 				t.Errorf("source.type = %q, want it to stay url", got)
+			}
+		})
+	}
+}
+
+func BenchmarkCollectURLSourceRefs(b *testing.B) {
+	bodies := []struct{ name, body string }{
+		{"no url sources with tool_result", `{"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"Read the report."}]},` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"ok"}]}]}]}`},
+		{"nested url source", `{"messages":[` +
+			`{"role":"user","content":[{"type":"text","text":"Read the report."}]},` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[` +
+			`{"type":"document","source":{"type":"url","url":"https://x.invalid/a.pdf"}}]}]}]}`},
+	}
+	for _, bc := range bodies {
+		body := []byte(bc.body)
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = collectURLSourceRefs(body)
 			}
 		})
 	}

@@ -1,0 +1,261 @@
+# x-bifrost-* response headers on inference responses. Each header is registered in
+# openapi.yaml components/headers; the *Headers maps are header sets an operation's response
+# points at, which bundle.py inlines. Reference: docs/providers/response-headers.mdx.
+
+BifrostRequestId:
+  description: "The x-request-id the caller sent, or a UUID Bifrost generated. It is also the ID of the request's log entry."
+  schema: {type: string}
+
+BifrostTraceId:
+  description: "Trace ID, inherited from an incoming W3C traceparent or generated."
+  schema: {type: string}
+
+RequestIdLegacy:
+  deprecated: true
+  description: "Same value as x-bifrost-request-id, unless the provider answers with its own x-request-id (OpenAI does), which then replaces it. Read x-bifrost-request-id instead."
+  schema: {type: string}
+
+BifrostRoutingInfoProvider:
+  description: "Provider that ran the attempt."
+  schema: {type: string}
+
+BifrostRoutingInfoModel:
+  description: "Model sent to that provider."
+  schema: {type: string}
+
+BifrostRoutingInfoKey:
+  description: "Name of the stored key used, never its ID or secret. Absent when no stored key was used."
+  schema: {type: string}
+
+BifrostRoutingInfoRequestedProvider:
+  description: "Provider the caller asked for, before routing rules, load balancing or session affinity changed it. Sent only when the caller sent provider/model."
+  schema: {type: string}
+
+BifrostRoutingInfoRequestedModel:
+  description: "Model the caller asked for, before anything changed it."
+  schema: {type: string}
+
+BifrostRoutingInfoIsFallback:
+  description: "Sent only when a fallback served the request or returned the error."
+  schema: {type: string, enum: ['true']}
+
+BifrostRoutingInfoPrimaryProvider:
+  description: "The primary attempt's provider. Sent with x-bifrost-routing-info-is-fallback."
+  schema: {type: string}
+
+BifrostRoutingInfoPrimaryModel:
+  description: "The primary attempt's model. Sent with x-bifrost-routing-info-is-fallback."
+  schema: {type: string}
+
+BifrostRoutingInfoAliasModelId:
+  description: "Model ID sent to the provider, when a model alias on the key matched."
+  schema: {type: string}
+
+BifrostRoutingInfoAliasModelName:
+  description: "The matched alias's canonical model name, when it has one."
+  schema: {type: string}
+
+BifrostRoutingInfoAliasModelFamily:
+  description: "The matched alias's model family, when it sets one."
+  schema: {type: string}
+
+BifrostRoutingInfoServerSideFallbackModel:
+  description: "Model that answered when Anthropic switched models inside one call. Never sent on streams."
+  schema: {type: string}
+
+BifrostRequestType:
+  description: "Request type, for example chat_completion or chat_completion_stream."
+  schema: {type: string}
+
+BifrostProvider:
+  deprecated: true
+  description: "Mirrors the deprecated extra_fields.provider. Use x-bifrost-routing-info-provider."
+  schema: {type: string}
+
+BifrostOriginalModel:
+  deprecated: true
+  description: "Mirrors the deprecated extra_fields.original_model_requested. Use x-bifrost-routing-info-requested-model or x-bifrost-routing-info-primary-model."
+  schema: {type: string}
+
+BifrostResolvedModel:
+  deprecated: true
+  description: "Mirrors the deprecated extra_fields.resolved_model_used. Use x-bifrost-routing-info-alias-model-id or x-bifrost-routing-info-model."
+  schema: {type: string}
+
+BifrostFallbackIndex:
+  description: "Which fallback served the request, counting from 1. Absent when the primary served."
+  schema: {type: integer, minimum: 1}
+
+BifrostUpstreamLatencyMs:
+  description: "Milliseconds spent waiting on the provider, with three decimals, summed over every attempt, retry and fallback. On a stream it covers only the time until the stream opened."
+  schema: {type: number, format: double}
+
+BifrostCacheHit:
+  description: "Whether the semantic cache served the response. Sent whenever the cache ran a lookup."
+  schema: {type: string, enum: ['true', 'false']}
+
+BifrostCacheId:
+  description: "Cache entry ID. Sent when the cache ran a lookup."
+  schema: {type: string}
+
+BifrostCacheHitType:
+  description: "Hit type. Sent on a hit."
+  schema: {type: string, enum: [direct, semantic]}
+
+BifrostCacheHitLatencyMs:
+  description: "Milliseconds spent serving the hit. Sent on a hit."
+  schema: {type: integer}
+
+BifrostCacheRequestedProvider:
+  description: "Provider of the cached entry. Sent on a hit."
+  schema: {type: string}
+
+BifrostCacheRequestedModel:
+  description: "Model of the cached entry. Sent on a hit."
+  schema: {type: string}
+
+BifrostCacheSimilarity:
+  description: "Similarity score. Sent on a semantic hit."
+  schema: {type: number}
+
+BifrostCacheThreshold:
+  description: "Similarity threshold. Sent on a semantic hit."
+  schema: {type: number}
+
+BifrostCacheProviderUsed:
+  description: "Embedding provider. Sent when a semantic search ran."
+  schema: {type: string}
+
+BifrostCacheModelUsed:
+  description: "Embedding model. Sent when a semantic search ran."
+  schema: {type: string}
+
+BifrostCacheInputTokens:
+  description: "Embedding input tokens. Sent when a semantic search ran."
+  schema: {type: integer}
+
+# Sent on errors. /v1 error responses never carry x-bifrost-fallback-index or
+# x-bifrost-upstream-latency-ms, and no error carries cache headers.
+InferenceErrorHeaders:
+  x-bifrost-request-id:
+    $ref: '#/BifrostRequestId'
+  x-bifrost-trace-id:
+    $ref: '#/BifrostTraceId'
+  x-request-id:
+    $ref: '#/RequestIdLegacy'
+  x-bifrost-routing-info-provider:
+    $ref: '#/BifrostRoutingInfoProvider'
+  x-bifrost-routing-info-model:
+    $ref: '#/BifrostRoutingInfoModel'
+  x-bifrost-routing-info-key:
+    $ref: '#/BifrostRoutingInfoKey'
+  x-bifrost-routing-info-requested-provider:
+    $ref: '#/BifrostRoutingInfoRequestedProvider'
+  x-bifrost-routing-info-requested-model:
+    $ref: '#/BifrostRoutingInfoRequestedModel'
+  x-bifrost-routing-info-is-fallback:
+    $ref: '#/BifrostRoutingInfoIsFallback'
+  x-bifrost-routing-info-primary-provider:
+    $ref: '#/BifrostRoutingInfoPrimaryProvider'
+  x-bifrost-routing-info-primary-model:
+    $ref: '#/BifrostRoutingInfoPrimaryModel'
+  x-bifrost-routing-info-alias-model-id:
+    $ref: '#/BifrostRoutingInfoAliasModelId'
+  x-bifrost-routing-info-alias-model-name:
+    $ref: '#/BifrostRoutingInfoAliasModelName'
+  x-bifrost-routing-info-alias-model-family:
+    $ref: '#/BifrostRoutingInfoAliasModelFamily'
+  x-bifrost-routing-info-server-side-fallback-model:
+    $ref: '#/BifrostRoutingInfoServerSideFallbackModel'
+  x-bifrost-request-type:
+    $ref: '#/BifrostRequestType'
+  x-bifrost-provider:
+    $ref: '#/BifrostProvider'
+  x-bifrost-original-model:
+    $ref: '#/BifrostOriginalModel'
+  x-bifrost-resolved-model:
+    $ref: '#/BifrostResolvedModel'
+
+InferenceSuccessHeaders:
+  x-bifrost-request-id:
+    $ref: '#/BifrostRequestId'
+  x-bifrost-trace-id:
+    $ref: '#/BifrostTraceId'
+  x-request-id:
+    $ref: '#/RequestIdLegacy'
+  x-bifrost-routing-info-provider:
+    $ref: '#/BifrostRoutingInfoProvider'
+  x-bifrost-routing-info-model:
+    $ref: '#/BifrostRoutingInfoModel'
+  x-bifrost-routing-info-key:
+    $ref: '#/BifrostRoutingInfoKey'
+  x-bifrost-routing-info-requested-provider:
+    $ref: '#/BifrostRoutingInfoRequestedProvider'
+  x-bifrost-routing-info-requested-model:
+    $ref: '#/BifrostRoutingInfoRequestedModel'
+  x-bifrost-routing-info-is-fallback:
+    $ref: '#/BifrostRoutingInfoIsFallback'
+  x-bifrost-routing-info-primary-provider:
+    $ref: '#/BifrostRoutingInfoPrimaryProvider'
+  x-bifrost-routing-info-primary-model:
+    $ref: '#/BifrostRoutingInfoPrimaryModel'
+  x-bifrost-routing-info-alias-model-id:
+    $ref: '#/BifrostRoutingInfoAliasModelId'
+  x-bifrost-routing-info-alias-model-name:
+    $ref: '#/BifrostRoutingInfoAliasModelName'
+  x-bifrost-routing-info-alias-model-family:
+    $ref: '#/BifrostRoutingInfoAliasModelFamily'
+  x-bifrost-routing-info-server-side-fallback-model:
+    $ref: '#/BifrostRoutingInfoServerSideFallbackModel'
+  x-bifrost-request-type:
+    $ref: '#/BifrostRequestType'
+  x-bifrost-provider:
+    $ref: '#/BifrostProvider'
+  x-bifrost-original-model:
+    $ref: '#/BifrostOriginalModel'
+  x-bifrost-resolved-model:
+    $ref: '#/BifrostResolvedModel'
+  x-bifrost-fallback-index:
+    $ref: '#/BifrostFallbackIndex'
+  x-bifrost-upstream-latency-ms:
+    $ref: '#/BifrostUpstreamLatencyMs'
+  x-bifrost-cache-hit:
+    $ref: '#/BifrostCacheHit'
+  x-bifrost-cache-id:
+    $ref: '#/BifrostCacheId'
+  x-bifrost-cache-hit-type:
+    $ref: '#/BifrostCacheHitType'
+  x-bifrost-cache-hit-latency-ms:
+    $ref: '#/BifrostCacheHitLatencyMs'
+  x-bifrost-cache-requested-provider:
+    $ref: '#/BifrostCacheRequestedProvider'
+  x-bifrost-cache-requested-model:
+    $ref: '#/BifrostCacheRequestedModel'
+  x-bifrost-cache-similarity:
+    $ref: '#/BifrostCacheSimilarity'
+  x-bifrost-cache-threshold:
+    $ref: '#/BifrostCacheThreshold'
+  x-bifrost-cache-provider-used:
+    $ref: '#/BifrostCacheProviderUsed'
+  x-bifrost-cache-model-used:
+    $ref: '#/BifrostCacheModelUsed'
+  x-bifrost-cache-input-tokens:
+    $ref: '#/BifrostCacheInputTokens'
+
+InferenceBadRequest:
+  description: Bad request
+  headers:
+    $ref: '#/InferenceErrorHeaders'
+  content:
+    application/json:
+      schema:
+        $ref: './common.yaml#/BifrostError'
+
+InferenceInternalError:
+  description: Internal server error
+  headers:
+    $ref: '#/InferenceErrorHeaders'
+  content:
+    application/json:
+      schema:
+        $ref: './common.yaml#/BifrostError'

@@ -2,6 +2,8 @@ package openai
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -37,15 +39,47 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return nil
 	}
 
+	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
+	caps := schemas.ResolveModelCaps(schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel)
+
 	openaiReq := &OpenAIChatRequest{
 		Model:    bifrostReq.Model,
 		Messages: ConvertBifrostMessagesToOpenAIMessages(bifrostReq.Input),
 		Provider: bifrostReq.Provider,
 	}
 
-	// Canonical model for capability gating only; wire model (openaiReq.Model) is untouched.
-	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
-	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
+	// OpenRouter replays reasoning_details (signed thinking, redacted blocks) to the underlying
+	// model; without it Claude re-reasons every tool-call turn. A message whose details are all
+	// unsigned text adds nothing reasoning_content lacks and can become an unsigned Claude
+	// thinking block, so details are sent only for messages where one carries a signature or
+	// encrypted data, and then whole: OpenRouter needs the model's sequence unmodified.
+	// Messages map 1:1 with Input here.
+	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter {
+		for i := range openaiReq.Messages {
+			assistantMessage := openaiReq.Messages[i].OpenAIChatAssistantMessage
+			if assistantMessage == nil {
+				continue
+			}
+			details := bifrostReq.Input[i].ChatAssistantMessage.ReasoningDetails
+			if slices.ContainsFunc(details, func(d schemas.ChatReasoningDetails) bool {
+				return (d.Signature != nil && *d.Signature != "") || (d.Data != nil && *d.Data != "")
+			}) {
+				assistantMessage.ReasoningDetails = details
+			}
+		}
+	}
+
+	if !caps.SupportsDeveloperRole(true) {
+		for i := range openaiReq.Messages {
+			if openaiReq.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
+				openaiReq.Messages[i].Role = schemas.ChatMessageRoleSystem
+			}
+		}
+	}
+
+	if !caps.SupportsMidConversationSystem(true) {
+		openaiReq.Messages = inlineChatMidConversationSystem(openaiReq.Messages)
+	}
 
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
@@ -75,25 +109,19 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
-		// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'",
-		// so each one is sent as a function tool. Chat has no custom tool call shape,
-		// so the model's call reaches the client as a function call.
-		customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
-		if customToolsAsFunctions {
-			openaiReq.ChatParameters.ToolChoice = chatCustomToolChoiceAsFunction(openaiReq.ChatParameters.ToolChoice)
-		}
-
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
 		if len(openaiReq.ChatParameters.Tools) > 0 {
+			// OpenAI and Azure Chat Completions reject a root composition on every model; only
+			// their Responses API takes one, so the model's capability does not apply here.
+			baseProvider := schemas.ResolveBaseProvider(ctx, bifrostReq.Provider)
+			flattenRoot := baseProvider == schemas.OpenAI || baseProvider == schemas.Azure ||
+				!caps.SupportsRootSchemaComposition(schemas.ModelSupportsRootSchemaComposition(capModel))
 			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
 			for i, tool := range openaiReq.ChatParameters.Tools {
-				if customToolsAsFunctions && tool.Type == schemas.ChatToolTypeCustom {
-					tool = chatCustomToolAsFunction(tool)
-				}
 				normalizedTools[i] = tool
 				if tool.Function != nil && tool.Function.Parameters != nil {
 					funcCopy := *tool.Function
-					funcCopy.Parameters = tool.Function.Parameters.Normalized()
+					funcCopy.Parameters = schemas.FlattenRootCompositionIf(tool.Function.Parameters, flattenRoot).Normalized()
 					normalizedTools[i].Function = &funcCopy
 					// The by-value copy carried over any precomputed serialized cache
 					// (shared MCP tools cache it at the source). Drop it so MarshalJSON
@@ -102,6 +130,14 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 				}
 			}
 			openaiReq.ChatParameters.Tools = normalizedTools
+		}
+	}
+
+	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
+		openaiReq.Store = new(false)
+		if _, ok := openaiReq.ExtraParams["store"]; ok {
+			openaiReq.ExtraParams = maps.Clone(openaiReq.ExtraParams)
+			openaiReq.ExtraParams["store"] = false
 		}
 	}
 
@@ -115,6 +151,24 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	if chatUsesPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
 		ceiling := promptCacheBreakpointCeiling(ctx, true, openaiReq.ChatParameters.PromptCacheOptions, openaiReq.ExtraParams)
 		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages, ceiling)
+		openaiReq.Messages = stripChatCacheBreakpointTTL(openaiReq.Messages)
+		if opts := openaiReq.ChatParameters.PromptCacheOptions; opts != nil && opts.TTL != nil && *opts.TTL != "30m" {
+			optsCopy := *opts
+			optsCopy.TTL = nil
+			openaiReq.ChatParameters.PromptCacheOptions = &optsCopy
+		}
+	}
+
+	// OpenRouter forwards cache_control verbatim to Claude, which rejects more than four
+	// markers outright, so clamp the same way the direct Anthropic path does.
+	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) {
+		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
+	}
+
+	// prompt_cache_options is a gpt-5.6+ model field, valid on any host serving one.
+	if !caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(capModel)) ||
+		caps.FieldUnsupported(schemas.FieldPromptCacheOptions, false) {
+		openaiReq.ChatParameters.PromptCacheOptions = nil
 	}
 
 	switch bifrostReq.Provider {
@@ -125,6 +179,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// still have to be resolved before the request goes out - but that is a network fetch that
 		// can fail, and this function has no way to report a failure. Callers invoke
 		// ResolveChatFileURLs after conversion, where the error can propagate; see its doc comment.
+		return openaiReq
+	case schemas.BedrockMantle, schemas.Bedrock:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		if !isGPTOSS(capModel) {
+			openaiReq.stripUnsupportedSamplingParams(caps)
+		}
 		return openaiReq
 	case schemas.DeepSeek:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -156,12 +216,34 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return openaiReq
 	case schemas.Mistral:
 		openaiReq.filterOpenAISpecificParameters(caps)
-		openaiReq.applyMistralCompatibility()
+		openaiReq.applyMistralCompatibility(caps)
+		return openaiReq
+	case schemas.MiniMax:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyMiniMaxCompatibility(capModel)
+		return openaiReq
+	case schemas.BytePlus:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyBytePlusCompatibility()
+		return openaiReq
+	case schemas.Baseten:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyBasetenCompatibility()
 		return openaiReq
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// OpenCode's chat-completions endpoints still use the legacy max_tokens
 		// field and ignore max_completion_tokens.
+		if openaiReq.MaxCompletionTokens != nil {
+			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
+			openaiReq.MaxCompletionTokens = nil
+		}
+		return openaiReq
+	case schemas.Databricks:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		// Llama, gpt-oss and Qwen endpoints reject max_completion_tokens with a 400
+		// ("unknown field"). Every chat endpoint checked on a live workspace accepts
+		// max_tokens, on both Model Serving and the Unity AI Gateway.
 		if openaiReq.MaxCompletionTokens != nil {
 			openaiReq.MaxTokens = openaiReq.MaxCompletionTokens
 			openaiReq.MaxCompletionTokens = nil
@@ -178,10 +260,15 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		return openaiReq
 	case schemas.Vertex:
 		openaiReq.filterOpenAISpecificParameters(caps)
+		// A custom container's OpenAI contract is independent of the model name.
+		// Publisher-specific Mistral/MaaS rewrites do not apply to these endpoints.
+		if schemas.GetVertexEndpoint(ctx) != nil {
+			return openaiReq
+		}
 
 		// Apply Mistral-specific transformations for Vertex Mistral models
 		if schemas.IsMistralModel(bifrostReq.Model) {
-			openaiReq.applyMistralCompatibility()
+			openaiReq.applyMistralCompatibility(caps)
 		} else if openaiReq.Reasoning != nil && openaiReq.Reasoning.Effort != nil &&
 			*openaiReq.Reasoning.Effort == "none" {
 			// Vertex Model Garden MaaS models (gpt-oss, Qwen3, kimi-k2-thinking,
@@ -257,9 +344,6 @@ func (req *OpenAIChatRequest) filterOpenAISpecificParameters(caps schemas.ModelC
 	if caps.FieldUnsupported(schemas.FieldPromptCacheRetention, true) {
 		req.ChatParameters.PromptCacheRetention = nil
 	}
-	if caps.FieldUnsupported(schemas.FieldPromptCacheOptions, true) {
-		req.ChatParameters.PromptCacheOptions = nil
-	}
 	if caps.FieldUnsupported(schemas.FieldVerbosity, true) {
 		req.ChatParameters.Verbosity = nil
 	}
@@ -278,7 +362,7 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
 			effort := *req.ChatParameters.Reasoning.Effort
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model())))
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
@@ -296,7 +380,7 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 		// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
 		if e := req.ChatParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
 			!caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(caps.Model())))
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(req.Provider, caps.Model())))
 		}
 	}
 }
@@ -322,8 +406,14 @@ func (req *OpenAIChatRequest) stripUnsupportedSamplingParams(caps schemas.ModelC
 	}
 }
 
-// applyMistralCompatibility applies Mistral-specific transformations to the request
-func (req *OpenAIChatRequest) applyMistralCompatibility() {
+// mistralLegacyEffortControl is the ladder used when the datasheet publishes none for a
+// Mistral model: older Mistral reasoning models accept only "none" and "high".
+var mistralLegacyEffortControl = &schemas.EffortControl{Levels: []string{schemas.ReasoningEffortNone, schemas.ReasoningEffortHigh}}
+
+// applyMistralCompatibility applies Mistral-specific transformations to the request.
+// Reasoning effort follows the model's datasheet ladder (per-model on Mistral today, e.g.
+// low/high/max on GLM 5.3), falling back to the legacy none/high clamp without one.
+func (req *OpenAIChatRequest) applyMistralCompatibility(caps schemas.ModelCaps) {
 	// Mistral uses max_tokens instead of max_completion_tokens
 	if req.MaxCompletionTokens != nil {
 		req.MaxTokens = req.MaxCompletionTokens
@@ -336,12 +426,116 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 		req.ToolChoice.ChatToolChoiceStruct = nil
 	}
 
-	// Mistral only support reasoning effort "none" and "high"
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
-		if *req.Reasoning.Effort != "none" && *req.Reasoning.Effort != "high" {
-			req.Reasoning.Effort = schemas.Ptr("high")
+		req.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(*req.Reasoning.Effort, mistralLegacyEffortControl))
+	}
+
+	// Mistral rejects unknown assistant fields with 422 extra_forbidden, reasoning_content included
+	for i := range req.Messages {
+		if assistantMessage := req.Messages[i].OpenAIChatAssistantMessage; assistantMessage != nil {
+			assistantMessage.Reasoning = nil
 		}
 	}
+}
+
+// applyMiniMaxCompatibility turns reasoning effort "none", which MiniMax rejects, into thinking:disabled.
+// M3.1 always thinks and rejects disabled too, so there the effort is only dropped.
+func (req *OpenAIChatRequest) applyMiniMaxCompatibility(model string) {
+	if req.Reasoning == nil || req.Reasoning.Effort == nil || *req.Reasoning.Effort != schemas.ReasoningEffortNone {
+		return
+	}
+	req.Reasoning = nil
+	if strings.Contains(strings.ToLower(model), "m3.1") {
+		return
+	}
+	if _, ok := req.ExtraParams["thinking"]; !ok {
+		extraParams := make(map[string]interface{}, len(req.ExtraParams)+1)
+		maps.Copy(extraParams, req.ExtraParams)
+		extraParams["thinking"] = map[string]interface{}{"type": "disabled"}
+		req.ExtraParams = extraParams
+	}
+}
+
+// applyBytePlusCompatibility maps reasoning effort onto Ark's thinking switch. Ark rejects effort
+// "none" and returns 400 when reasoning_effort is sent alongside thinking:disabled, so "none"
+// becomes thinking:disabled, any effort is dropped once thinking is disabled, and "none" is dropped
+// without touching a thinking type the caller already set. The params map
+// is copied only when thinking is added, so requests without reasoning pay nothing.
+func (req *OpenAIChatRequest) applyBytePlusCompatibility() {
+	if req.Reasoning == nil || req.Reasoning.Effort == nil {
+		return
+	}
+	if thinking, ok := req.ExtraParams["thinking"].(map[string]interface{}); ok {
+		if thinking["type"] == "disabled" || *req.Reasoning.Effort == schemas.ReasoningEffortNone {
+			req.Reasoning = nil
+		}
+		return
+	}
+	if *req.Reasoning.Effort != schemas.ReasoningEffortNone {
+		return
+	}
+	req.Reasoning = nil
+	extraParams := make(map[string]interface{}, len(req.ExtraParams)+1)
+	maps.Copy(extraParams, req.ExtraParams)
+	extraParams["thinking"] = map[string]interface{}{"type": "disabled"}
+	req.ExtraParams = extraParams
+}
+
+// applyBasetenCompatibility fits the request to Baseten's chat schema, which sets
+// additionalProperties:false, so any key it does not define is a 400. It defines
+// max_tokens but not max_completion_tokens, so the limit moves there. The OpenAI-
+// and Anthropic-only fields below are not in the schema and are dropped. Its
+// message roles are system, user, assistant and tool, so developer becomes system.
+// Baseten-native fields (min_p, chat_template_args, ...) still reach the wire as
+// extra params.
+func (req *OpenAIChatRequest) applyBasetenCompatibility() {
+	if req.MaxCompletionTokens != nil {
+		req.MaxTokens = req.MaxCompletionTokens
+		req.MaxCompletionTokens = nil
+	}
+	p := &req.ChatParameters
+	p.ServiceTier = nil
+	p.Audio = nil
+	p.Metadata = nil
+	p.Modalities = nil
+	p.SafetyIdentifier = nil
+	p.Prediction = nil
+	p.PromptCacheKey = nil
+	p.PromptCacheRetention = nil
+	p.PromptCacheOptions = nil
+	p.Store = nil
+	p.Verbosity = nil
+	p.WebSearchOptions = nil
+	p.Speed = nil
+	p.InferenceGeo = nil
+	p.MCPServers = nil
+	p.Container = nil
+	p.CacheControl = nil
+	p.TaskBudget = nil
+	p.ContextManagement = nil
+	p.IncludeServerSideToolInvocations = nil
+	req.PromptCacheIsolationKey = nil
+	for i := range req.Messages {
+		if req.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
+			req.Messages[i].Role = schemas.ChatMessageRoleSystem
+		}
+	}
+}
+
+// clampBasetenResponsesEffort fits an effort to the minimal..high range Baseten's
+// /v1/responses accepts: none becomes minimal, its lowest level, and xhigh or max
+// become high.
+func clampBasetenResponsesEffort(effort *string) *string {
+	if effort == nil {
+		return nil
+	}
+	switch *effort {
+	case schemas.ReasoningEffortNone:
+		return schemas.Ptr(schemas.ReasoningEffortMinimal)
+	case schemas.ReasoningEffortXHigh, schemas.ReasoningEffortMax:
+		return schemas.Ptr(schemas.ReasoningEffortHigh)
+	}
+	return effort
 }
 
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that
@@ -490,6 +684,115 @@ func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.Mod
 	default:
 		return false
 	}
+}
+
+type openRouterCacheRef struct {
+	tool, msg, block, toolCall int
+}
+
+// clampOpenRouterCacheControl drops the earliest surplus markers so at most n remain
+// (same trade-off as clampAnthropicCacheBreakpoints).
+func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
+	if req == nil {
+		return
+	}
+	var buf [8]openRouterCacheRef // stays on the stack for the usual marker counts
+	refs := buf[:0]
+	for i := range req.ChatParameters.Tools {
+		if req.ChatParameters.Tools[i].CacheControl != nil {
+			refs = append(refs, openRouterCacheRef{tool: i, msg: -1, block: -1, toolCall: -1})
+		}
+	}
+	for i := range req.Messages {
+		msg := &req.Messages[i]
+		if msg.Content != nil {
+			for j := range msg.Content.ContentBlocks {
+				if msg.Content.ContentBlocks[j].CacheControl != nil {
+					refs = append(refs, openRouterCacheRef{tool: -1, msg: i, block: j, toolCall: -1})
+				}
+			}
+		}
+		if msg.OpenAIChatAssistantMessage != nil {
+			for j := range msg.OpenAIChatAssistantMessage.ToolCalls {
+				if msg.OpenAIChatAssistantMessage.ToolCalls[j].CacheControl != nil {
+					refs = append(refs, openRouterCacheRef{tool: -1, msg: i, block: -1, toolCall: j})
+				}
+			}
+		}
+	}
+	excess := len(refs) - n
+	if excess <= 0 {
+		return
+	}
+
+	toolsCopied := false
+	contentCopied := map[int]bool{}
+	assistantCopied := map[int]bool{}
+	for _, ref := range refs[:excess] {
+		switch {
+		case ref.tool >= 0:
+			if !toolsCopied {
+				req.ChatParameters.Tools = slices.Clone(req.ChatParameters.Tools)
+				toolsCopied = true
+			}
+			req.ChatParameters.Tools[ref.tool].CacheControl = nil
+			req.ChatParameters.Tools[ref.tool].InvalidateSerialized()
+		case ref.block >= 0:
+			msg := &req.Messages[ref.msg]
+			if !contentCopied[ref.msg] {
+				contentCopy := *msg.Content
+				contentCopy.ContentBlocks = slices.Clone(msg.Content.ContentBlocks)
+				msg.Content = &contentCopy
+				contentCopied[ref.msg] = true
+			}
+			msg.Content.ContentBlocks[ref.block].CacheControl = nil
+		case ref.toolCall >= 0:
+			msg := &req.Messages[ref.msg]
+			if !assistantCopied[ref.msg] {
+				assistantCopy := *msg.OpenAIChatAssistantMessage
+				assistantCopy.ToolCalls = slices.Clone(msg.OpenAIChatAssistantMessage.ToolCalls)
+				msg.OpenAIChatAssistantMessage = &assistantCopy
+				assistantCopied[ref.msg] = true
+			}
+			msg.OpenAIChatAssistantMessage.ToolCalls[ref.toolCall].CacheControl = nil
+		}
+	}
+}
+
+// stripChatCacheBreakpointTTL drops breakpoint ttl, which Chat Completions rejects (Responses-only).
+// Copies only the touched messages, since they alias bifrostReq.Input.
+func stripChatCacheBreakpointTTL(messages []OpenAIMessage) []OpenAIMessage {
+	var out []OpenAIMessage
+	for i := range messages {
+		if messages[i].Content == nil {
+			continue
+		}
+		var blocks []schemas.ChatContentBlock
+		for j, block := range messages[i].Content.ContentBlocks {
+			if block.PromptCacheBreakpoint == nil || block.PromptCacheBreakpoint.TTL == nil {
+				continue
+			}
+			if blocks == nil {
+				blocks = append([]schemas.ChatContentBlock(nil), messages[i].Content.ContentBlocks...)
+			}
+			bp := *block.PromptCacheBreakpoint
+			bp.TTL = nil
+			blocks[j].PromptCacheBreakpoint = &bp
+		}
+		if blocks == nil {
+			continue
+		}
+		if out == nil {
+			out = append([]OpenAIMessage(nil), messages...)
+		}
+		content := *out[i].Content
+		content.ContentBlocks = blocks
+		out[i].Content = &content
+	}
+	if out == nil {
+		return messages
+	}
+	return out
 }
 
 // applyChatCacheBreakpoints rewrites ephemeral cache_control markers on text parts

@@ -3,6 +3,7 @@ package governance
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -10,9 +11,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tidwall/gjson"
 	"sync"
 	"time"
+	"unsafe"
+
+	"github.com/tidwall/gjson"
 
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
@@ -41,8 +44,8 @@ const (
 // team and customer update handlers, and the config reconcile that applies governance.budgets from
 // config.json. In the OSS build nothing is registered, so nothing is refused.
 const (
-	// The kinds of entity that can hold budgets and a rate limit of their own. A team or customer may
-	// hold several budgets; a business unit holds at most one.
+	// The kinds of entity that can hold budgets and a rate limit of their own. Each may hold several
+	// budgets, one per reset window, and one rate limit.
 	LegacyLimitHolderTeam         = "team"
 	LegacyLimitHolderCustomer     = "customer"
 	LegacyLimitHolderBusinessUnit = "business_unit"
@@ -87,6 +90,13 @@ type Config struct {
 	ObjectOwnershipEnforced func() bool `json:"-"`
 }
 
+// InMemoryStore is the deployment's live configuration as governance reads it.
+//
+// A provider configuration it hands out is published, not lent: its Keys slice, and each key's
+// Aliases map, are never written after they are returned. A change publishes a new Keys slice (and a
+// new map for any key whose aliases change). The key-alias rules depend on this: the alias-name index
+// (modelcatalog.MayBeKeyAlias) is reused while the slice and its maps are the same, and only detects
+// in-place edits that change a map's length.
 type InMemoryStore interface {
 	GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig
 	GetConfiguredProviderNames() []string
@@ -149,6 +159,9 @@ type BaseGovernancePlugin interface {
 	GetBudgetAndRateLimitStatus(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgetBaselines map[string]float64, tokenBaselines map[string]int64, requestBaselines map[string]int64) *BudgetAndRateLimitStatus
 	PublishRoutingAllowlist(ctx *schemas.BifrostContext, modelStr string)
 	LoadBalanceProvider(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error
+	// IsMCPAllowedForUser reports whether the user may call the MCP client named mcpClientName,
+	// so a dashboard surface can offer to connect their own credential to it.
+	IsMCPAllowedForUser(ctx context.Context, mcpClientName, userID string) bool
 }
 
 // AttributeRoutingEmbeddingCostPlugin is an optional capability for governance
@@ -762,7 +775,26 @@ func (p *GovernancePlugin) Evaluate(ctx *schemas.BifrostContext, evaluationReque
 	// A settling error is held rather than refused on the spot: the ordering below puts identity
 	// refusals first, and a caller whose credential is dead must be told that before anything about
 	// how the request would have been funded.
-	limits, limitsErr := resolveLimits(ctx, p.store, evaluationRequest.Provider, evaluationRequest.Model)
+	//
+	// A model that runs as written (a literal batch item, a direct key, skip key selection) was admitted
+	// by the literal access, so its limits are gathered from that access too: the alias-aware one
+	// drops a permit whose blacklist names an alias target, and that permit's limits with it.
+	limits, limitsErr := func() (schemas.Limits, error) {
+		if evaluationRequest.LiteralModel {
+			prev, _ := ctx.Value(literalLimitsContextKey).(bool)
+			ctx.SetValue(literalLimitsContextKey, true)
+			defer ctx.SetValue(literalLimitsContextKey, prev)
+		}
+		g := ctx.Grant()
+		if g == nil {
+			return nil, nil
+		}
+		access := g.Access()
+		if access != nil && runsAsWritten(ctx) {
+			access = literalAccessFor(access, p.modelCatalog, p.inMemoryStore)
+		}
+		return resolveLimitsWith(ctx, p.store, access, evaluationRequest.Provider, evaluationRequest.Model)
+	}()
 
 	// The order of everything below is load bearing:
 	//
@@ -1041,31 +1073,101 @@ func (p *GovernancePlugin) ResolveAccess(ctx *schemas.BifrostContext) (schemas.A
 	if access := g.Access(); access != nil {
 		return access, nil
 	}
-	bases, scoping, mode := p.store.ResolvePermits(ctx)
+	bases, levelMode, scoping, mode := p.store.ResolvePermits(ctx)
 	if len(bases) == 0 && scoping == nil {
 		return nil, nil
 	}
-	access := grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+	access := p.newAccess(ctx, bases, levelMode, scoping, mode)
 	g.SetAccess(access)
 	return access, nil
+}
+
+// newAccess folds the permits into an access whose model checks resolve key aliases the way key
+// selection will for this request: through the model catalog, over the keys that can serve it.
+func (p *GovernancePlugin) newAccess(ctx *schemas.BifrostContext, bases []schemas.Permit, levelMode grant.CompositionMode, scoping schemas.Permit, mode grant.CompositionMode) *grant.Access {
+	return grant.NewAccess(bases, levelMode, scoping, mode, nil).
+		WithKeyScopedMatcher(p.modelMatcher(ctx)).
+		WithAliasTargets(p.aliasTargets(ctx))
 }
 
 // modelMatcher is how an access resolves a model name against a provider's allowed-models list:
 // through the model catalog, with the provider's own configuration, so cross-provider naming and
 // provider-prefixed entries resolve exactly as they do everywhere else. Without a catalog, names
-// are matched as written.
-func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
+// are matched as written. A name that only a key alias makes allowed is judged over the keys that
+// can serve this request (see allowedThroughKeys).
+func (p *GovernancePlugin) modelMatcher(ctx *schemas.BifrostContext) grant.KeyScopedModelMatcher {
 	if p.modelCatalog == nil {
 		return nil
 	}
-	return func(provider, model string, allowed []string) bool {
+	return func(provider, model string, allowed, keyIDs []string) bool {
 		var providerConfig *configstore.ProviderConfig
 		if p.inMemoryStore != nil {
 			if config, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider)); ok {
 				providerConfig = &config
 			}
 		}
-		return p.modelCatalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, providerConfig, schemas.WhiteList(allowed))
+		return allowedThroughKeys(contextOf(ctx), p.modelCatalog, schemas.ModelProvider(provider), model, providerConfig, allowed, keyIDs)
+	}
+}
+
+// contextOf is ctx as a context.Context, nil when ctx is. The access closures hold the concrete
+// pointer, a word smaller than the interface, since they are built for every request.
+func contextOf(ctx *schemas.BifrostContext) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return ctx
+}
+
+// allowedThroughKeys is IsModelAllowedForProvider with the key-alias rule held to the keys key
+// selection can pick for this request: only keys the permit's key restriction allows, and the pinned
+// key when the request pins one. providerConfig must be the caller's own copy.
+//
+// The pin is consulted only when the unpinned keys refuse the alias. Narrowing a set of keys that
+// all map the name to an allowed model can only turn the answer into a refusal where the pin names
+// no key that can serve the name, and core refuses that request at key selection anyway; so the
+// common alias request reads nothing from the context. A request that runs as written (a direct key,
+// skip key selection) never has an alias resolved, but is admitted on the literal access (see
+// literalAccessFor), so this access only widens what such a request may be told it reaches.
+func allowedThroughKeys(ctx context.Context, catalog *modelcatalog.ModelCatalog, provider schemas.ModelProvider, model string, providerConfig *configstore.ProviderConfig, allowed, keyIDs []string) bool {
+	if providerConfig == nil || !modelcatalog.HasKeyAliases(providerConfig.Keys) {
+		return catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed))
+	}
+	keys := providerConfig.Keys
+	providerConfig.Keys = nil // the direct match only; the alias rule runs below over the servable keys
+	if catalog.IsModelAllowedForProvider(provider, model, providerConfig, schemas.WhiteList(allowed)) {
+		return true
+	}
+	if !modelcatalog.MayBeKeyAlias(provider, model, keys) {
+		return false
+	}
+	if catalog.KeyAliasesResolveToAllowed(provider, model, keys, schemas.WhiteList(keyIDs), schemas.WhiteList(allowed)) {
+		return true
+	}
+	pinned, ok := pinnedKeys(ctx, keys)
+	if !ok || len(pinned) == len(keys) || runsAsWritten(ctx) {
+		return false
+	}
+	return catalog.KeyAliasesResolveToAllowed(provider, model, pinned, schemas.WhiteList(keyIDs), schemas.WhiteList(allowed))
+}
+
+// aliasTargets is how an access learns which models a requested name can become through the
+// provider's key aliases, resolved only at key selection: over the pinned key when the request pins
+// one, and over the keys the permit allows. A request that runs as written becomes nothing else.
+func (p *GovernancePlugin) aliasTargets(ctx *schemas.BifrostContext) grant.AliasTargets {
+	return func(provider, model string, keyIDs []string, visit func(target string)) {
+		if p.inMemoryStore == nil {
+			return
+		}
+		cfg, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider))
+		if !ok || !modelcatalog.HasKeyAliases(cfg.Keys) || !modelcatalog.MayBeKeyAlias(schemas.ModelProvider(provider), model, cfg.Keys) || runsAsWritten(contextOf(ctx)) {
+			return
+		}
+		keys, ok := pinnedKeys(contextOf(ctx), cfg.Keys)
+		if !ok {
+			return
+		}
+		modelcatalog.KeyAliasTargets(model, keys, schemas.WhiteList(keyIDs), visit)
 	}
 }
 
@@ -1094,7 +1196,18 @@ func resolveLimits(ctx *schemas.BifrostContext, store GovernanceStore, provider 
 	if g == nil {
 		return nil, nil
 	}
-	budgets, rateLimits, err := store.GatherLimits(ctx, g.Access(), provider, model)
+	return resolveLimitsWith(ctx, store, g.Access(), provider, model)
+}
+
+// resolveLimitsWith is resolveLimits over a given access rather than the grant's own, for a request
+// whose model check used a different one (see literalAccessFor). The grant is still where the
+// settled limits are recorded.
+func resolveLimitsWith(ctx *schemas.BifrostContext, store GovernanceStore, access schemas.Access, provider schemas.ModelProvider, model string) (schemas.Limits, error) {
+	g := ctx.Grant()
+	if g == nil {
+		return nil, nil
+	}
+	budgets, rateLimits, err := store.GatherLimits(ctx, access, provider, model)
 	if err != nil {
 		return nil, err
 	}
@@ -1194,10 +1307,25 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// no model anywhere is marked so the model gate can refuse it under a restricted access. The
 	// limits each body model settles are kept: usage is charged against the request's own pass,
 	// so a body model's limit that pass does not settle would be checked and never charged.
+	//
+	// A server tool that names a model of its own (Anthropic's advisor) has the provider run that
+	// model on the key's behalf within the same request, so it is a body model just the same.
 	var bodyModelLimits map[string]string // limit id -> the body model that settled it
-	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
-		bodyModels := passthroughBodyModels(req)
-		evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+	isPassthrough := req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest
+	toolModels := serverToolModels(req)
+	if isPassthrough || len(toolModels) > 0 {
+		var bodyModels []string
+		if isPassthrough {
+			if p.bodyNamesModels(provider) {
+				bodyModels = passthroughBodyModels(req)
+			}
+			evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+		}
+		for _, toolModel := range toolModels {
+			if !slices.Contains(bodyModels, toolModel) {
+				bodyModels = append(bodyModels, toolModel)
+			}
+		}
 		resourceNamed := p.namesModelsAsResources(provider)
 		for _, bodyModel := range bodyModels {
 			if resourceNamed {
@@ -1232,9 +1360,11 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 	// pass, last, leaves the access as it would be without the extra passes. Nothing
 	// reached from here charges usage, so the passes cannot double-count it.
 	if req.RequestType == schemas.BatchCreateRequest && req.BatchCreateRequest != nil && len(req.BatchCreateRequest.Requests) > 0 {
+		itemModels := BatchItemModels(req)
 		for _, batchModel := range BatchCreateModels(req, model) {
 			batchEvaluationRequest := *evaluationRequest
 			batchEvaluationRequest.Model = batchModel
+			batchEvaluationRequest.LiteralModel = slices.Contains(itemModels, batchModel)
 			_, bifrostError := p.Evaluate(ctx, &batchEvaluationRequest)
 			if bifrostError != nil {
 				return req, &schemas.LLMPluginShortCircuit{
@@ -1296,6 +1426,143 @@ func refuseUnchargedBodyModelLimits(ctx *schemas.BifrostContext, bodyModelLimits
 	}}
 }
 
+// serverToolModels returns every distinct model the request's server tools name: the "model" of an
+// advisor tool (Anthropic Messages, /v1/responses and the Go SDK all arrive as Responses requests).
+// Every place a tool can ride to the provider is read, not only the parsed tools: ExtraParams
+// "tools" (merged onto the wire when extra-params passthrough is on), a raw request body (sent
+// verbatim when raw forwarding is on, and only set then), a passthrough body, and inline batch
+// items. JSON is walked key by key so a duplicated or escaped "tools", "type" or "model" key names
+// every model a provider's parser could pick. A provider prefix ("anthropic/<id>") is dropped the
+// way the provider drops it before forwarding. A request without such a tool allocates nothing.
+func serverToolModels(req *schemas.BifrostRequest) []string {
+	var models []string
+	add := func(m string) {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			return
+		}
+		if prefixProvider, bare := schemas.ParseModelString(m, ""); prefixProvider != "" {
+			m = bare
+		}
+		if !slices.Contains(models, m) {
+			// m may view a request body read without a copy (see jsonView); keep a copy of its own.
+			models = append(models, strings.Clone(m))
+		}
+	}
+	if rr := req.ResponsesRequest; rr != nil {
+		if rr.Params != nil {
+			for i := range rr.Params.Tools {
+				if advisor := rr.Params.Tools[i].ResponsesToolAdvisor; advisor != nil {
+					add(advisor.Model)
+				}
+			}
+			addToolsValueModels(rr.Params.ExtraParams["tools"], add)
+		}
+		addBodyToolModels(rr.RawRequestBody, add)
+	}
+	if cr := req.ChatRequest; cr != nil {
+		if cr.Params != nil {
+			addToolsValueModels(cr.Params.ExtraParams["tools"], add)
+		}
+		addBodyToolModels(cr.RawRequestBody, add)
+	}
+	if req.PassthroughRequest != nil {
+		addBodyToolModels(req.PassthroughRequest.Body, add)
+	}
+	if br := req.BatchCreateRequest; br != nil {
+		for i := range br.Requests {
+			addToolsValueModels(br.Requests[i].Body["tools"], add)
+			addToolsValueModels(br.Requests[i].Params["tools"], add)
+		}
+		if len(br.RawRequestBody) > 0 {
+			forEachKey(gjson.Parse(jsonView(br.RawRequestBody)), "requests", func(items gjson.Result) {
+				items.ForEach(func(_, item gjson.Result) bool {
+					forEachKey(item, "params", func(params gjson.Result) { addToolArrayModels(params, add) })
+					forEachKey(item, "body", func(body gjson.Result) { addToolArrayModels(body, add) })
+					return true
+				})
+			})
+		}
+	}
+	return models
+}
+
+// addToolsValueModels adds the advisor models of a decoded "tools" value (ExtraParams, a batch
+// item), whatever Go shape it arrived in, by reading the JSON it will be sent as.
+func addToolsValueModels(tools any, add func(string)) {
+	var raw []byte
+	switch v := tools.(type) {
+	case nil:
+		return
+	case json.RawMessage:
+		raw = v
+	case []byte:
+		raw = v
+	case string:
+		raw = []byte(v)
+	default:
+		var err error
+		if raw, err = schemas.Marshal(v); err != nil {
+			return
+		}
+	}
+	addToolListModels(gjson.Parse(jsonView(raw)), add)
+}
+
+// addBodyToolModels adds the advisor models of a JSON request body's "tools" arrays.
+func addBodyToolModels(body []byte, add func(string)) {
+	if len(body) > 0 {
+		addToolArrayModels(gjson.Parse(jsonView(body)), add)
+	}
+}
+
+// jsonView returns body as a string without copying it, for a read-only gjson scan that finishes
+// before the hook returns; any string kept from the scan is cloned.
+func jsonView(body []byte) string {
+	return unsafe.String(unsafe.SliceData(body), len(body))
+}
+
+// addToolArrayModels adds the advisor models of every "tools" array of object.
+func addToolArrayModels(object gjson.Result, add func(string)) {
+	forEachKey(object, "tools", func(tools gjson.Result) { addToolListModels(tools, add) })
+}
+
+// addToolListModels adds the models of each advisor tool in a tools array.
+func addToolListModels(tools gjson.Result, add func(string)) {
+	if !tools.IsArray() {
+		return
+	}
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		isAdvisor := false
+		forEachKey(tool, "type", func(t gjson.Result) {
+			if t.Type == gjson.String && strings.HasPrefix(t.Str, "advisor") {
+				isAdvisor = true
+			}
+		})
+		if isAdvisor {
+			forEachKey(tool, "model", func(m gjson.Result) {
+				if m.Type == gjson.String {
+					add(m.Str)
+				}
+			})
+		}
+		return true
+	})
+}
+
+// forEachKey calls fn with the value of every member of object named name, duplicates included.
+func forEachKey(object gjson.Result, name string, fn func(gjson.Result)) {
+	if !object.IsObject() {
+		return
+	}
+	object.ForEach(func(key, value gjson.Result) bool {
+		if key.Str == name {
+			fn(value)
+		}
+		return true
+	})
+}
+
 // passthroughBodyModels returns every distinct model a passthrough body names: the "model" of a
 // JSON object body, or of each task in a JSON array body (Runware). The router has already
 // refused malformed model keys, so a model that is not a string is simply not one here.
@@ -1329,6 +1596,12 @@ func passthroughBodyModels(req *schemas.BifrostRequest) []string {
 		})
 	}
 	return models
+}
+
+// bodyNamesModels reports whether a passthrough body's "model" is a Bifrost model. SageMaker's is the
+// container's own served name: the endpoint in the path is the model, and the router already set it.
+func (p *GovernancePlugin) bodyNamesModels(provider schemas.ModelProvider) bool {
+	return configuredBaseProvider(p.inMemoryStore, provider) != schemas.SageMaker
 }
 
 // namesModelsAsResources reports whether a provider name reaches Gemini or Vertex, whose bodies
@@ -1376,6 +1649,35 @@ func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
 	return batch.InputFileID != "" || (batch.InputBlob != nil && strings.TrimSpace(*batch.InputBlob) != "")
 }
 
+// BatchItemModels returns the distinct models the inline items of a batch create name. They reach
+// the provider as written, unlike the request's own model, so governance holds them to the literal
+// name.
+func BatchItemModels(req *schemas.BifrostRequest) []string {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil {
+		return nil
+	}
+	var models []string
+	for _, item := range req.BatchCreateRequest.Requests {
+		forEachItemModel(item, func(m string) {
+			if !slices.Contains(models, m) {
+				models = append(models, m)
+			}
+		})
+	}
+	return models
+}
+
+// forEachItemModel calls fn with every non-empty string "model" an inline batch item names, Body
+// first and then Params. Providers disagree on which map they send (Anthropic sends Params and
+// falls back to Body), so every model an item could run is visited rather than the first found.
+func forEachItemModel(item schemas.BatchRequestItem, fn func(model string)) {
+	for _, body := range [2]map[string]any{item.Body, item.Params} {
+		if m, ok := body["model"].(string); ok && m != "" {
+			fn(m)
+		}
+	}
+}
+
 // BatchCreateModels returns every distinct model an inline batch create will run,
 // starting with the request's own model.
 func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
@@ -1396,13 +1698,7 @@ func BatchCreateModels(req *schemas.BifrostRequest, model string) []string {
 	}
 	add(model)
 	for _, item := range req.BatchCreateRequest.Requests {
-		// Body is the OpenAI shape, Params the Anthropic one; an item carries one.
-		for _, body := range []map[string]any{item.Body, item.Params} {
-			if m, ok := body["model"].(string); ok {
-				add(m)
-				break
-			}
-		}
+		forEachItemModel(item, add)
 	}
 	if len(models) == 0 {
 		// No item named a model: fall back to the model-less evaluation so the
@@ -1469,6 +1765,10 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
 		result.ListModelsResponse.Data = p.filterModelsForAccess(access, result.ListModelsResponse.Data)
 	}
+	if requestType == schemas.PassthroughRequest && result != nil && result.PassthroughResponse != nil &&
+		((presentedGrantBearingCredential(ctx) && !ungrantedUserAdmitted(ctx)) || access != nil) {
+		p.filterPassthroughModelList(ctx, access, string(provider), result.PassthroughResponse)
+	}
 
 	// Build pricing scopes from context using the governance VK ID (not the raw VK token)
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))
@@ -1502,6 +1802,7 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		if limits := ctx.Grant().Limits(); limits != nil {
 			accountedBudgets, accountedRateLimits = limits.Budgets(), limits.RateLimits()
 		}
+		accountedBudgets, accountedRateLimits = p.limitsForKeyThatRan(ctx, provider, requestedModel, accountedBudgets, accountedRateLimits)
 		if skipHolderUsage {
 			// The holder's usage is not being counted, so nothing it funds is billed or recorded. What
 			// the deployment and the user fund still is: those are owed whatever granted the request,
@@ -1557,18 +1858,9 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
 	toolName := req.GetToolName()
 
-	// Skip for non tool execution requests
-	if !req.RequestType.IsExecuteTool() {
-		return req, nil, nil
-	}
-
-	// Codemode meta-tools are not governed as tool executions, but their
-	// discovery side (listToolFiles, readToolFile, getToolDocs) enumerates tools
-	// through GetToolPerClient(ctx), which only sees what ctx carries. Stamp the
-	// access's tool allow-list first so that enumeration is scoped to the grant,
-	// exactly as the LLM path and /mcp do, then skip evaluation as before.
-	if bifrost.IsCodemodeTool(toolName) {
-		p.stampMCPToolAccessForCodemode(ctx)
+	// Skip everything but tool executions and prompt or resource reads
+	isRead := req.RequestType.IsPromptOrResourceRead()
+	if !req.RequestType.IsExecuteTool() && !isRead {
 		return req, nil, nil
 	}
 
@@ -1592,6 +1884,26 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 		}, nil
 	}
 
+	// A read has no tool to check: it may reach only the servers the access grants. Stamp the access's
+	// tool list, as /mcp does before core; core checks the server it picked against it after the hooks,
+	// so a direct Go caller is held to the grant too.
+	if isRead {
+		p.stampMCPToolAccessForCodemode(ctx)
+		return req, nil, nil
+	}
+
+	// Codemode meta-tools are evaluated like any tool call, so a caller who may not
+	// use tools at all is refused them too. They are in no grant's tool list, so
+	// the per-tool check below does not apply; instead their discovery side
+	// (listToolFiles, readToolFile, getToolDocs) enumerates tools through
+	// GetToolPerClient(ctx), which only sees what ctx carries, so the access's tool
+	// allow-list is stamped to scope that enumeration to the grant, exactly as the
+	// LLM path and /mcp do.
+	if bifrost.IsCodemodeTool(toolName) {
+		p.stampMCPToolAccessForCodemode(ctx)
+		return req, nil, nil
+	}
+
 	// The one question evaluation cannot answer: this specific tool. Evaluation checks the tools already
 	// injected into the request, which is not the tool being executed now, so the execution-time
 	// allow-list is enforced here.
@@ -1602,7 +1914,7 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 	// disagree. What is left is a question about the tool, which the access answers whatever granted it.
 	// A request carrying no access is unrestricted and may execute any tool, as it always could.
 	access := ctx.Grant().Access()
-	if access != nil && !access.IsMCPToolAllowed(toolName) && !hasMCPExecutionAuthorization(ctx, req) {
+	if access != nil && !mcpToolCallAllowed(ctx, req, access) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.MCPPluginShortCircuit{Error: &schemas.BifrostError{
 			Type:       bifrost.Ptr(string(DecisionMCPToolBlocked)),
@@ -1622,8 +1934,8 @@ func (p *GovernancePlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.
 // itself is stamped. A request carrying no access is unrestricted and is left
 // untouched, as it is everywhere else. A credential that resolves to nothing,
 // or a context access cannot be resolved for at all (no grant installed), gets
-// an empty list: evaluation will refuse their tool calls, so discovery shows
-// them nothing either. An ungranted user the caller asked to have admitted is
+// an empty list; evaluation refuses both before this runs, so that list only
+// fails closed should it ever be reached. An ungranted user the caller asked to have admitted is
 // the exception on both sides, served and shown everything, as a key-less
 // request is.
 func (p *GovernancePlugin) stampMCPToolAccessForCodemode(ctx *schemas.BifrostContext) {
@@ -1672,7 +1984,7 @@ func (p *GovernancePlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schema
 	} else if bifrostErr != nil {
 		mcpReqType = bifrostErr.ExtraFields.MCPRequestType
 	}
-	if !mcpReqType.IsExecuteTool() {
+	if !mcpReqType.IsExecuteTool() && !mcpReqType.IsPromptOrResourceRead() {
 		return resp, bifrostErr, nil
 	}
 
@@ -1765,20 +2077,24 @@ func (p *GovernancePlugin) defaultAgentPermit(identity schemas.Identity) schemas
 // PreA2AHook is the Agent Gateway governance decision point. It authorizes each decoded operation
 // from the request's settled grant before any upstream effect. Anonymous requests pass through;
 // identified requests resolve access through the same path as every other governed request.
+// Identified is the test inference applies: a presented credential or a known user. An
+// authenticating layer can name the user without recording what it verified, and that user is
+// governed rather than passed through as anonymous.
 func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
 	if req == nil {
 		return req, nil, nil
 	}
-	if ctx == nil || ctx.Grant() == nil || ctx.Grant().Identity() == nil || !ctx.Grant().Identity().Presented() {
+	if ctx == nil || !presentedGrantBearingCredential(ctx) {
 		return req, nil, nil
 	}
 
 	deny := func(decision Decision, message string) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.A2APluginShortCircuit{Error: &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(decision)),
-			StatusCode: bifrost.Ptr(403),
-			Error:      &schemas.ErrorField{Message: message},
+			IsBifrostError: true,
+			Type:           bifrost.Ptr(string(decision)),
+			StatusCode:     bifrost.Ptr(403),
+			Error:          &schemas.ErrorField{Message: message},
 		}}, nil
 	}
 
@@ -1799,11 +2115,12 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 		var scoping schemas.Permit
 		var mode grant.CompositionMode
 		if access != nil {
+			// Only the granting permits decide agents (see grant.Access), so they're all this needs.
 			bases = append(access.Bases(), defaultPermit)
 			scoping = access.Scoping()
 			mode = grant.CompositionMode(access.Mode())
 		}
-		access = grant.NewAccess(bases, scoping, mode, p.modelMatcher())
+		access = p.newAccess(ctx, bases, "", scoping, mode)
 	}
 	if refusal := unusablePermit(access); refusal != nil {
 		return deny(refusal.Decision, refusal.Reason)
@@ -1860,7 +2177,14 @@ func (p *GovernancePlugin) PreMCPConnectionHook(ctx *schemas.BifrostContext, req
 	}
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, vk.ID)
 	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyName, vk.Name)
-	stampVirtualKeyContentLogging(ctx, vk)
+	// A tool call opens its connection after the request's access was resolved, and a decision
+	// already on the context came from that resolution, which may have applied a project that
+	// overrides the key's. Stamping the key's own decision again would put it back over the
+	// project's, on the context and on the root span.
+	if _, resolved := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); !resolved {
+		stampVirtualKeyContentLogging(ctx, vk)
+	}
+	stampVirtualKeyMetadata(ctx, vk)
 	if vk.Team != nil {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamID, vk.Team.ID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceTeamName, vk.Team.Name)
@@ -1903,6 +2227,35 @@ func (p *GovernancePlugin) Cleanup() error {
 	return cleanupErr
 }
 
+// responseSucceeded reports whether result counts as a successful request. A passthrough call
+// relays the upstream's error status as a response rather than an error, so it is judged by that
+// status: a call the provider refused does not count against request limits, the same as a refused
+// inference request. Only the request count reads this; tokens and cost a refused call reported
+// are still charged.
+func responseSucceeded(result *schemas.BifrostResponse) bool {
+	if result == nil {
+		return false
+	}
+	if pt := result.PassthroughResponse; pt != nil && pt.StatusCode >= 400 {
+		return false
+	}
+	return true
+}
+
+// readsStoredRun reports whether a request only read or cancelled a stored run that job accounting
+// settles. Every such response repeats the run's full usage; its tokens are charged once, when the
+// run settles.
+func readsStoredRun(requestType schemas.RequestType, result *schemas.BifrostResponse) bool {
+	switch requestType {
+	case schemas.ResponsesRetrieveRequest, schemas.ResponsesCancelRequest:
+		return result.ResponsesResponse != nil && result.ResponsesResponse.ProviderJob != nil
+	case schemas.ResponsesRetrieveStreamRequest:
+		stream := result.ResponsesStreamResponse
+		return stream != nil && stream.Response != nil && stream.Response.ProviderJob != nil
+	}
+	return false
+}
+
 // postHookWorker is a worker function that processes the response and updates usage tracking
 // It is used to avoid blocking the main thread when updating usage tracking
 // Handles both cases: with virtual key and without virtual key (empty string)
@@ -1921,8 +2274,7 @@ func (p *GovernancePlugin) Cleanup() error {
 //   - skipRequestCount: Whether this is a session continuation that must not count as a request
 //   - pricingScopes: Prebuilt pricing lookup scopes using governance VK ID (nil if not applicable)
 func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError, provider schemas.ModelProvider, model string, requestType schemas.RequestType, requestID string, billingNonce string, isFinalChunk bool, attemptNumber int, fallbackIndex int, skipRequestCount bool, pricingScopes *modelcatalog.PricingLookupScopes, budgets, rateLimits []schemas.Limit, routingMetadata *schemas.BifrostRoutingMetadata) {
-	// Determine if request was successful
-	success := (result != nil)
+	success := responseSucceeded(result)
 	billedReason := "success"
 
 	// Streaming detection
@@ -1969,6 +2321,9 @@ func (p *GovernancePlugin) postHookWorker(result *schemas.BifrostResponse, bifro
 				if su := result.PassthroughResponse.PassthroughUsage; su != nil && su.LLMUsage != nil {
 					tokensUsed = su.LLMUsage.TotalTokens
 				}
+			}
+			if readsStoredRun(requestType, result) {
+				tokensUsed = 0
 			}
 		}
 		// A successful response normally carries routing metadata and CalculateCost
@@ -2042,8 +2397,9 @@ func (p *GovernancePlugin) ReportUsage(ctx context.Context, usage jobaccounting.
 		// after it was created, so its window may well have rolled over in the
 		// meantime; without the reset the usage lands on the stale window and is
 		// then wiped by the reset worker. It adds tokensUsed and one request,
-		// which is exactly what a settled batch contributes.
-		if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, usage.TokensUsed, true, true); err != nil {
+		// which is exactly what a settled batch contributes. A job whose create
+		// already counted as a request (an interaction run) adds tokens only.
+		if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, usage.TokensUsed, true, !usage.SkipRequestCount); err != nil {
 			p.tracker.releaseBatchBilling(billingKey)
 			errs = append(errs, err)
 		}
@@ -2085,6 +2441,8 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 	}
 
 	var errs []error
+	// Every model here is one a result row actually ran, as written, so no alias target is charged.
+	ctx = context.WithValue(ctx, literalLimitsContextKey, true)
 	for _, modelUsage := range usage.ModelUsage {
 		budgetIDs, rateLimitIDs := p.store.CollectModelScopedGovernanceIDs(ctx, usage.VirtualKeyID, usage.UserID, usage.Provider, modelUsage.Model)
 		if modelUsage.Cost > 0 {
@@ -2111,13 +2469,73 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 			if usage.RequestID != "" && !p.tracker.tryClaimBatchBilling(billingKey) {
 				continue
 			}
-			if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, modelUsage.TokensUsed, true, true); err != nil {
+			if err := p.store.BumpRateLimitUsage(ctx, rateLimitID, modelUsage.TokensUsed, true, !usage.SkipRequestCount); err != nil {
 				p.tracker.releaseBatchBilling(billingKey)
 				errs = append(errs, err)
 			}
 		}
 	}
 	return errs
+}
+
+// limitsForKeyThatRan narrows the limits settled for an alias to the target of the key that ran.
+//
+// The check runs before key selection, so it answers to the limits of every model the eligible keys
+// map the alias to. Only one of them ran, so charging the rest would spend limits of models that
+// never ran. When the settled limits carried alias targets for this (provider, model) and core
+// reports the key that ran (see keyThatRan), the limits are gathered again with that key's targets alone, and the
+// settled list is kept only where the two agree: nothing is charged that was not checked. Without
+// alias targets, or without a reported key, the settled list is returned as is. A request naming no
+// alias pays one context read.
+func (p *GovernancePlugin) limitsForKeyThatRan(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, budgets, rateLimits []schemas.Limit) ([]schemas.Limit, []schemas.Limit) {
+	settled, _ := ctx.Value(aliasLimitTargetsContext).(settledAliasTargets)
+	if len(settled.targets) == 0 || settled.provider != provider || settled.model != model {
+		return budgets, rateLimits
+	}
+	// The usual case: every eligible key maps the alias to one model, and the key that ran did.
+	if ra := schemas.GetResolvedAlias(ctx); len(settled.targets) == 1 && ra != nil && ra.Config != nil && ra.Config.ModelID == settled.targets[0] {
+		return budgets, rateLimits
+	}
+	keyID := keyThatRan(ctx)
+	g := ctx.Grant()
+	if keyID == "" || g == nil {
+		return budgets, rateLimits
+	}
+	ctx.SetValue(chargedKeyContext, keyID)
+	ranBudgets, ranRateLimits, err := p.store.GatherLimits(ctx, g.Access(), provider, model)
+	ctx.ClearValue(chargedKeyContext)
+	if err != nil {
+		return budgets, rateLimits
+	}
+	return limitsAlsoIn(budgets, ranBudgets), limitsAlsoIn(rateLimits, ranRateLimits)
+}
+
+// keyThatRan is the key of the attempt being charged: the selected key, or, once core has cleared it
+// after a final error (which can still carry billed usage), the key the attempt trail's last record
+// names. Empty when neither says.
+func keyThatRan(ctx *schemas.BifrostContext) string {
+	if keyID, _ := ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string); keyID != "" {
+		return keyID
+	}
+	if trail, _ := ctx.Value(schemas.BifrostContextKeyAttemptTrail).([]schemas.KeyAttemptRecord); len(trail) > 0 {
+		return trail[len(trail)-1].KeyID
+	}
+	return ""
+}
+
+// limitsAlsoIn is the limits of settled whose IDs ran also names, in settled's order.
+func limitsAlsoIn(settled, ran []schemas.Limit) []schemas.Limit {
+	keep := make(map[string]bool, len(ran))
+	for _, limit := range ran {
+		keep[limit.ID] = true
+	}
+	out := make([]schemas.Limit, 0, len(settled))
+	for _, limit := range settled {
+		if keep[limit.ID] {
+			out = append(out, limit)
+		}
+	}
+	return out
 }
 
 // GenerateVirtualKey is a helper function

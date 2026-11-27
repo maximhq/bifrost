@@ -239,6 +239,24 @@ func TestIsClefModel(t *testing.T) {
 	}
 }
 
+func TestIsBasetenDecisionModel(t *testing.T) {
+	for _, model := range []string{"decision-models/baseten-joey-2b-latest", "decision-models/baseten-elephant-9b-latest", "Decision-Models/baseten-mammoth-27b-latest"} {
+		assert.True(t, IsBasetenDecisionModel(model), model)
+	}
+	for _, model := range []string{"zai-org/GLM-5.3", "baseten/decision-models/baseten-joey-2b-latest", "decision-models", ""} {
+		assert.False(t, IsBasetenDecisionModel(model), model)
+	}
+}
+
+func TestIsGeminiDecisionModel(t *testing.T) {
+	for _, model := range []string{"gemini-decision-1", "models/gemini-decision-1", "Gemini-Decision-2-preview"} {
+		assert.True(t, IsGeminiDecisionModel(model), model)
+	}
+	for _, model := range []string{"gemini-3-flash", "gemini-2.5-flash-lite", "gemini/gemini-decision-1", "gemini-decision", ""} {
+		assert.False(t, IsGeminiDecisionModel(model), model)
+	}
+}
+
 func TestIsPerplexityDeciderModel(t *testing.T) {
 	for _, model := range []string{"pplx-decider-v1-27b", "pplx-decider-v1.1-27b", "pplx-decider-v1.1-27b-20261006", "PPLX-Decider-v1.1-27b"} {
 		assert.True(t, IsPerplexityDeciderModel(model), model)
@@ -248,11 +266,86 @@ func TestIsPerplexityDeciderModel(t *testing.T) {
 	}
 }
 
+func TestIsMicrosoftDecisionModel(t *testing.T) {
+	for _, model := range []string{"Microsoft-Decision-1", "microsoft-decision-1", "Microsoft-Decision-2"} {
+		assert.True(t, IsMicrosoftDecisionModel(model), model)
+	}
+	for _, model := range []string{"Decision-1", "azure/Microsoft-Decision-1", "gpt-6-luna", "decision", ""} {
+		assert.False(t, IsMicrosoftDecisionModel(model), model)
+	}
+}
+
+func TestIsDatabricksDecisionModel(t *testing.T) {
+	for _, model := range []string{"ai_decide", "AI_DECIDE", "system.ai.openjev-qwen35-4b", "system.ai.typesafeai-jev-1-14-0"} {
+		assert.True(t, IsDatabricksDecisionModel(model), model)
+	}
+	for _, model := range []string{"databricks/ai_decide", "ai-decide", "ai_decide_v2", "ai_classify", "databricks-claude-sonnet-4", ""} {
+		assert.False(t, IsDatabricksDecisionModel(model), model)
+	}
+}
+
+func TestIsDatabricksSystemOneModel(t *testing.T) {
+	for _, model := range []string{
+		"system.ai.openjev-qwen35-4b", "System.AI.OpenJev-Qwen35-4B",
+		"system.ai.typesafeai-jev-1-14-0", "system.ai.typesafeai-jev-1-15-0",
+	} {
+		assert.True(t, IsDatabricksSystemOneModel(model), model)
+	}
+	// Serving endpoint names and bare names are not Unity Catalog model services, the only
+	// names the systemone endpoint takes.
+	for _, model := range []string{
+		"databricks-openjev-qwen35-4b", "databricks-typesafeai-jev-1-14-0", "openjev-qwen35-4b",
+		"main.default.openjev-qwen35-4b", "system.ai.claude-sonnet-4-5",
+		"ai_decide", "databricks-claude-sonnet-4", "jev-1.13", "typesafe/jev-latest", "",
+	} {
+		assert.False(t, IsDatabricksSystemOneModel(model), model)
+	}
+}
+
 func TestIsOllamaDecisionModel(t *testing.T) {
 	for _, model := range []string{"nimble", "nimble:latest", "nimble-2", "tev1:0.8b", "tev1-mini", "clef", "clef-flash", "clef-omni", "Clef-Flash:9b", "laya", "laya-multilingual"} {
 		assert.True(t, IsOllamaDecisionModel(model), model)
 	}
 	for _, model := range []string{"llama3.1:latest", "ollama/nimble", "", ":nimble", "tev2"} {
 		assert.False(t, IsOllamaDecisionModel(model), model)
+	}
+}
+
+// Deep copies feed prompt-cache injection and provider converters; a dropped ttl
+// silently turns a 12h breakpoint into 30m.
+func TestDeepCopy_PromptCacheBreakpointTTL(t *testing.T) {
+	bp := func() *PromptCacheBreakpoint { return &PromptCacheBreakpoint{Mode: Ptr("explicit"), TTL: Ptr("12h")} }
+
+	chat := ChatMessage{Role: ChatMessageRoleSystem, Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
+		{Type: ChatContentBlockTypeText, Text: Ptr("p"), PromptCacheBreakpoint: bp()},
+	}}}
+	chatCopy := DeepCopyChatMessage(chat)
+	got := chatCopy.Content.ContentBlocks[0].PromptCacheBreakpoint
+	require.NotNil(t, got.TTL)
+	assert.Equal(t, "12h", *got.TTL)
+	assert.NotSame(t, chat.Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, got.TTL)
+
+	resp := ResponsesMessage{Role: Ptr(ResponsesInputMessageRoleDeveloper), Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+		{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("p"), PromptCacheBreakpoint: bp()},
+	}}}
+	respCopy := DeepCopyResponsesMessage(resp)
+	gotResp := respCopy.Content.ContentBlocks[0].PromptCacheBreakpoint
+	require.NotNil(t, gotResp.TTL)
+	assert.Equal(t, "12h", *gotResp.TTL)
+	assert.NotSame(t, resp.Content.ContentBlocks[0].PromptCacheBreakpoint.TTL, gotResp.TTL)
+}
+
+// TestModelSupportsRootSchemaComposition pins the name-based cutoff probed on OpenAI,
+// Azure and OpenRouter 2026-11-27: gpt-5 and later take a root oneOf in function
+// parameters, gpt-4.x, gpt-4o and o3 answer 400, and every other model falls back to
+// flattening.
+func TestModelSupportsRootSchemaComposition(t *testing.T) {
+	for _, model := range []string{"gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.1", "gpt-5.2", "gpt-5.3-codex", "gpt-5.4-mini",
+		"gpt-5.6-luna", "openai.gpt-5.6-luna", "us.openai.gpt-5.6-luna", "azure/gpt-5.4", "openai/gpt-5", "databricks-gpt-5", "gpt-6-luna"} {
+		assert.True(t, ModelSupportsRootSchemaComposition(model), model)
+	}
+	for _, model := range []string{"gpt-4o-mini", "gpt-4o", "gpt-4.1", "gpt-4.1-mini", "gpt-35-turbo", "chatgpt-4o-latest", "o3", "o4-mini",
+		"gpt-oss-20b", "openai/gpt-oss-120b", "claude-sonnet-4-6", "gemini-2.5-flash", ""} {
+		assert.False(t, ModelSupportsRootSchemaComposition(model), model)
 	}
 }

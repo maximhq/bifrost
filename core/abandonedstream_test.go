@@ -36,7 +36,7 @@ func TestDrainAbandonedStream_UnblocksProducer(t *testing.T) {
 		}
 	}()
 
-	drainAbandonedStream(stream)
+	(&Bifrost{}).drainAbandonedStream(nil, stream)
 
 	select {
 	case <-finished:
@@ -50,7 +50,7 @@ func TestDrainAbandonedStream_UnblocksProducer(t *testing.T) {
 // the abandonment branches with no stream to drain.
 func TestDrainAbandonedStream_NilIsSafe(t *testing.T) {
 	t.Parallel()
-	drainAbandonedStream(nil)
+	(&Bifrost{}).drainAbandonedStream(nil, nil)
 }
 
 // abandonedUpstreamProvider is a schemas.Provider whose ChatCompletion ignores the
@@ -96,6 +96,7 @@ func (p *abandonedUpstreamProvider) ChatCompletion(_ *schemas.BifrostContext, _ 
 // was: the worker's shutdown drain also bills abandoned messages, and a test that
 // only counts could be satisfied by that path instead of the one under test.
 type terminalHookCounter struct {
+	pre     atomic.Int64
 	results atomic.Int64
 	errors  atomic.Int64
 
@@ -116,6 +117,7 @@ func (c *terminalHookCounter) PreRequestHook(_ *schemas.BifrostContext, _ *schem
 	return nil
 }
 func (c *terminalHookCounter) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	c.pre.Add(1)
 	return req, nil, nil
 }
 func (c *terminalHookCounter) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
@@ -562,4 +564,323 @@ func TestRequestWorkerCompletesEveryAbandonedTrace(t *testing.T) {
 	if got := tracer.cleared.Load(); got != n {
 		t.Errorf("deferral marker cleared %d of %d times; leftovers would strand later traces", got, n)
 	}
+}
+
+// TestDroppedRequestRunsPostHooks pins that a request rejected before it reaches a worker
+// (dropExcessRequests on a full queue) still runs the post-hooks its pre-hooks paired with.
+// Without them, plugin state opened in PreLLMHook (e.g. bifrost_active_requests) leaks per drop.
+func TestDroppedRequestRunsPostHooks(t *testing.T) {
+	counter := &terminalHookCounter{}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+	}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{counter}, DropExcessRequests: true,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+
+	// Swap in a full queue with no worker so every enqueue hits the drop branch.
+	realPq, err := client.getProviderQueue(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("getProviderQueue: %v", err)
+	}
+	full := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+	full.queue <- &ChannelMessage{}
+	client.requestQueues.Store(schemas.OpenAI, full)
+	t.Cleanup(func() { client.requestQueues.Store(schemas.OpenAI, realPq) })
+
+	newReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}}
+	}
+	assertDropped := func(t *testing.T, bifrostErr *schemas.BifrostError) {
+		t.Helper()
+		if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 503 {
+			t.Fatalf("want 503 queue-full error, got %+v", bifrostErr)
+		}
+	}
+
+	const n = 5
+	for range n {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		_, bifrostErr := client.ChatCompletionRequest(ctx, newReq())
+		assertDropped(t, bifrostErr)
+	}
+	for range n {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, newReq())
+		if stream != nil {
+			t.Fatal("dropped stream request returned a stream")
+		}
+		assertDropped(t, bifrostErr)
+	}
+
+	if pre, post := counter.pre.Load(), counter.errors.Load()+counter.results.Load(); pre != 2*n || post != pre {
+		t.Fatalf("PreLLMHook ran %d times, PostLLMHook %d; every dropped request must run its post-hooks", pre, post)
+	}
+	for _, msg := range counter.errorMessages() {
+		if !strings.Contains(msg, "queue is full") {
+			t.Fatalf("PostLLMHook saw %q, want the queue-full error", msg)
+		}
+	}
+}
+
+// slowFirstByteStreamProvider parks each stream call until the test releases it, modelling
+// an upstream that has not sent its headers when the client disconnects. It then fails the
+// call (fail) or opens a stream whose goroutine ends the request for plugins once drained.
+type slowFirstByteStreamProvider struct {
+	schemas.Provider
+	started chan struct{}
+	release chan struct{}
+	fail    bool
+}
+
+func (p *slowFirstByteStreamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return p.stream(ctx, postHookRunner, postHookSpanFinalizer)
+}
+
+func (p *slowFirstByteStreamProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), _ schemas.Key, _ *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	return p.stream(ctx, postHookRunner, postHookSpanFinalizer)
+}
+
+func (p *slowFirstByteStreamProvider) stream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.started <- struct{}{}
+	<-p.release
+	if p.fail {
+		return nil, &schemas.BifrostError{StatusCode: new(499), Error: &schemas.ErrorField{Message: "upstream cancelled before headers"}}
+	}
+	stream := make(chan *schemas.BifrostStreamChunk)
+	go func() {
+		defer postHookSpanFinalizer(ctx)
+		defer close(stream)
+		stream <- &schemas.BifrostStreamChunk{} // blocks until someone reads the stream
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		postHookRunner(ctx, nil, &schemas.BifrostError{StatusCode: new(499), Error: &schemas.ErrorField{Message: "stream cancelled"}})
+	}()
+	return stream, nil
+}
+
+// TestStreamCancelledBeforeFirstByteRunsPostHooks pins that a stream whose client leaves
+// before the upstream answers still runs the post-hooks its pre-hooks paired with, whether
+// the upstream then fails or opens a stream. Without them, state opened in PreLLMHook
+// (bifrost_active_requests, pending log rows) leaks once per disconnect.
+func TestStreamCancelledBeforeFirstByteRunsPostHooks(t *testing.T) {
+	chatReq := func() *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}}
+	}
+	responsesReq := func() *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+			Input: []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}}}
+	}
+	for _, tc := range []struct {
+		name string
+		fail bool
+		call func(*Bifrost, *schemas.BifrostContext) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
+	}{
+		{"chat_upstream_fails", true, func(c *Bifrost, ctx *schemas.BifrostContext) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return c.ChatCompletionStreamRequest(ctx, chatReq())
+		}},
+		{"responses_upstream_fails", true, func(c *Bifrost, ctx *schemas.BifrostContext) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return c.ResponsesStreamRequest(ctx, responsesReq())
+		}},
+		// The *_upstream_streams cases also pass on the old code; they guard the new claim-or-drain handoff.
+		{"chat_upstream_streams", false, func(c *Bifrost, ctx *schemas.BifrostContext) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return c.ChatCompletionStreamRequest(ctx, chatReq())
+		}},
+		{"responses_upstream_streams", false, func(c *Bifrost, ctx *schemas.BifrostContext) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+			return c.ResponsesStreamRequest(ctx, responsesReq())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const n = 16
+			counter := &terminalHookCounter{}
+			account := NewMockAccount()
+			account.AddProvider(schemas.OpenAI, 1, 1)
+			account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+				ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+			}})
+			client, err := Init(context.Background(), schemas.BifrostConfig{
+				Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{counter},
+			})
+			if err != nil {
+				t.Fatalf("Init failed: %v", err)
+			}
+			t.Cleanup(client.Shutdown)
+			cfg, _ := account.GetConfigForProvider(schemas.OpenAI)
+			cfg.NetworkConfig.MaxRetries = 0
+			upstream := &slowFirstByteStreamProvider{
+				Provider: openai.NewOpenAIProvider(cfg, NewNoOpLogger()),
+				started:  make(chan struct{}), release: make(chan struct{}), fail: tc.fail,
+			}
+			// Route the public API through a worker serving the parked provider.
+			realPq, err := client.getProviderQueue(schemas.OpenAI)
+			if err != nil {
+				t.Fatalf("getProviderQueue: %v", err)
+			}
+			pq := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+			client.requestQueues.Store(schemas.OpenAI, pq)
+			t.Cleanup(func() { client.requestQueues.Store(schemas.OpenAI, realPq) })
+			var wg sync.WaitGroup
+			wg.Add(1)
+			go client.requestWorker(upstream, cfg, pq, &wg)
+
+			for i := range n {
+				ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				returned := make(chan *schemas.BifrostError, 1)
+				go func() {
+					stream, bifrostErr := tc.call(client, ctx)
+					if stream != nil {
+						t.Errorf("iteration %d: a cancelled caller got a stream", i)
+					}
+					returned <- bifrostErr
+				}()
+				select {
+				case <-upstream.started:
+				case <-time.After(5 * time.Second):
+					t.Fatalf("iteration %d: worker never reached the provider", i)
+				}
+				cancel() // the client disconnects before the first byte
+				select {
+				case bifrostErr := <-returned:
+					if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 499 {
+						t.Fatalf("iteration %d: want a 499 for the cancelled caller, got %+v", i, bifrostErr)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatalf("iteration %d: caller did not return on cancel", i)
+				}
+				upstream.release <- struct{}{} // the upstream answers after the caller left
+			}
+
+			deadline := time.Now().Add(5 * time.Second)
+			for counter.errors.Load()+counter.results.Load() < n && time.Now().Before(deadline) {
+				time.Sleep(time.Millisecond)
+			}
+			pq.signalClosing()
+			wg.Wait()
+			if pre, post := counter.pre.Load(), counter.errors.Load()+counter.results.Load(); pre != n || post != n {
+				t.Fatalf("PreLLMHook ran %d times, PostLLMHook %d; want %d each", pre, post, n)
+			}
+		})
+	}
+}
+
+// billedStartupErrorStreamProvider opens a stream whose goroutine ends the request for
+// plugins with a billed startup error, then sends that error as the first chunk. A billed
+// error is not held back, so the provider goroutine runs the terminal post-hooks itself.
+type billedStartupErrorStreamProvider struct{ schemas.Provider }
+
+func (p *billedStartupErrorStreamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	stream := make(chan *schemas.BifrostStreamChunk, 1)
+	go func() {
+		defer postHookSpanFinalizer(ctx)
+		defer close(stream)
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		bifrostErr := &schemas.BifrostError{StatusCode: new(500), Error: &schemas.ErrorField{Message: "failed after billing input"}}
+		bifrostErr.ExtraFields.BilledUsage = &schemas.BifrostLLMUsage{PromptTokens: 5, TotalTokens: 5}
+		_, bifrostErr = postHookRunner(ctx, nil, bifrostErr)
+		stream <- &schemas.BifrostStreamChunk{BifrostError: bifrostErr}
+	}()
+	return stream, nil
+}
+
+// TestClaimedStreamErrorAlreadyEndedRunsPostHooksOnce pins that a stream error the provider
+// goroutine already ended for plugins is not ended again by the caller when the worker wins
+// the handoff claim and delivers it.
+func TestClaimedStreamErrorAlreadyEndedRunsPostHooksOnce(t *testing.T) {
+	counter := &terminalHookCounter{}
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100,
+	}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{
+		Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{counter},
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	t.Cleanup(client.Shutdown)
+	cfg, _ := account.GetConfigForProvider(schemas.OpenAI)
+	cfg.NetworkConfig.MaxRetries = 0
+	realPq, err := client.getProviderQueue(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("getProviderQueue: %v", err)
+	}
+	pq := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+	client.requestQueues.Store(schemas.OpenAI, pq)
+	t.Cleanup(func() { client.requestQueues.Store(schemas.OpenAI, realPq) })
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go client.requestWorker(&billedStartupErrorStreamProvider{Provider: openai.NewOpenAIProvider(cfg, NewNoOpLogger())}, cfg, pq, &wg)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	stream, bifrostErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}})
+	if stream != nil || bifrostErr == nil {
+		t.Fatalf("want the billed startup error, got stream=%v err=%+v", stream, bifrostErr)
+	}
+	pq.signalClosing()
+	wg.Wait()
+	if pre, post := counter.pre.Load(), counter.errors.Load()+counter.results.Load(); pre != 1 || post != 1 {
+		t.Fatalf("PreLLMHook ran %d times, PostLLMHook %d; want 1 each", pre, post)
+	}
+}
+
+// instantStreamProvider answers ChatCompletionStream with an already-closed
+// stream, so a benchmark measures the worker's per-attempt setup and nothing else.
+type instantStreamProvider struct{ schemas.Provider }
+
+func (p *instantStreamProvider) ChatCompletionStream(ctx *schemas.BifrostContext, _ schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), _ schemas.Key, _ *schemas.BifrostChatRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	stream := make(chan *schemas.BifrostStreamChunk)
+	close(stream)
+	// A completed provider stream releases the attempt's plugin pipeline through this.
+	postHookSpanFinalizer(ctx)
+	return stream, nil
+}
+
+// BenchmarkRequestWorkerStreamAttempt drives one stream attempt through the real
+// requestWorker: dequeue, key selection, post-hook runner setup and stream handoff.
+func BenchmarkRequestWorkerStreamAttempt(b *testing.B) {
+	account := NewMockAccount()
+	account.AddProvider(schemas.OpenAI, 1, 1)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{ID: "k", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+	client, err := Init(context.Background(), schemas.BifrostConfig{Account: account, Logger: NewNoOpLogger()})
+	if err != nil {
+		b.Fatalf("Init failed: %v", err)
+	}
+	b.Cleanup(client.Shutdown)
+	cfg, _ := account.GetConfigForProvider(schemas.OpenAI)
+	cfg.NetworkConfig.MaxRetries = 0
+	upstream := &instantStreamProvider{Provider: openai.NewOpenAIProvider(cfg, NewNoOpLogger())}
+	pq := &ProviderQueue{queue: make(chan *ChannelMessage, 1), done: make(chan struct{})}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go client.requestWorker(upstream, cfg, pq, &wg)
+	request := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}}}
+	tracer := client.getTracer()
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		msg := client.getChannelMessage(schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: request})
+		msg.Context = ctx
+		pq.queue <- msg
+		select {
+		case stream := <-msg.ResponseStream:
+			for range stream {
+			}
+		case e := <-msg.Err:
+			b.Fatalf("stream attempt failed: %+v", e.Error)
+		}
+		client.releaseChannelMessage(msg)
+	}
+	pq.signalClosing()
+	wg.Wait()
 }

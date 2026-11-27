@@ -3,26 +3,33 @@ package datasheet
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/stretchr/testify/require"
 )
 
+// TestModelParameterCandidates checks alias precedence and deterministic suffix matching.
 func TestModelParameterCandidates(t *testing.T) {
 	s := NewTestStore(map[string]string{
 		"gpt-4o-2024-08-06": "gpt-4o",
 	})
 	s.mu.Lock()
-	s.supportedParams = map[string][]string{
-		"gpt-5.5":                          {"temperature"},
-		"openrouter/moonshotai/kimi-k2.5":  {"temperature"},
-		"openrouter/openai/gpt-5.5":        {"temperature"},
-		"openrouter/moonshotai/kimi-k2.7":  {"temperature"},
-		"openrouter/moonshotai2/kimi-k2.5": {"temperature"},
+	s.modelParameterKeys = []string{
+		"gpt-5.5",
+		"openrouter/moonshotai/kimi-k2.5",
+		"openrouter/openai/gpt-5.5",
+		"openrouter/moonshotai/kimi-k2.7",
+		"openrouter/moonshotai2/kimi-k2.5",
 	}
 	s.mu.Unlock()
 
@@ -177,7 +184,7 @@ func TestLoadModelCapabilities_MatchesBedrockMantleRows(t *testing.T) {
 	}
 	s := NewTestStore(nil)
 	s.configStore = paramsOnlyConfigStore{rows: rows}
-	s.SetSupportedParamsForTest(map[string][]string{"bedrock_mantle/" + model: {"temperature"}})
+	s.modelParameterKeys = []string{"bedrock_mantle/" + model}
 
 	caps, err := s.LoadModelCapabilities(context.Background(), schemas.BedrockMantle, model)
 	if err != nil {
@@ -213,7 +220,7 @@ func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
 	s.configStore = paramsOnlyConfigStore{rows: map[string]string{
 		"deepseek/deepseek-v4-flash": `{"provider":"deepseek","mode":"chat","base_model":"deepseek-v4-flash","server_side_model":"deepseek-flash"}`,
 	}}
-	s.SetSupportedParamsForTest(map[string][]string{"deepseek/deepseek-v4-flash": {"temperature"}})
+	s.modelParameterKeys = []string{"deepseek/deepseek-v4-flash"}
 
 	caps, err := s.LoadModelCapabilities(context.Background(), schemas.DeepSeek, "deepseek-v4-flash")
 	if err != nil {
@@ -221,5 +228,282 @@ func TestLoadModelCapabilities_CarriesServerSideModel(t *testing.T) {
 	}
 	if caps == nil || caps.ServerSideModel == nil || *caps.ServerSideModel != "deepseek-flash" {
 		t.Fatalf("ServerSideModel = %+v, want deepseek-flash", caps)
+	}
+}
+
+// A URL sync must retain provider-qualified rows that exist only in the DB.
+func TestSyncModelParamsFromURL_PreservesDBOnlyRows(t *testing.T) {
+	ctx := t.Context()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewNoOpLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+
+	const model = "custom-params-model"
+	const customKey = "custom-anthropic/" + model
+	const customData = `{"provider":"custom-anthropic","max_output_tokens":32000}`
+	const emptyKey = "custom-anthropic/empty-feed-model"
+	const dbOnlyKey = "custom-anthropic/db-only-model"
+	if err := cs.UpsertModelParametersBatch(ctx, []configstoreTables.TableModelParameters{
+		{Model: customKey, Data: customData},
+		{Model: emptyKey, Data: customData},
+		{Model: dbOnlyKey, Data: customData},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	feedPath := filepath.Join(t.TempDir(), "params.json")
+	if err := os.WriteFile(feedPath, []byte(`{
+		"custom-params-model":{"provider":"anthropic","max_output_tokens":16000},
+		"custom-anthropic/custom-params-model":{"max_output_tokens":"invalid"},
+		"custom-anthropic/empty-feed-model":{"supported_endpoints":[]}
+	}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(cs, nil, Config{ModelParametersURL: "file://" + feedPath})
+	if _, err := s.LoadModelParamsFromDB(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SyncModelParamsFromURL(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{model, "empty-feed-model", "db-only-model"} {
+		caps, err := s.LoadModelCapabilities(ctx, "custom-anthropic", name)
+		if err != nil || caps == nil || caps.MaxOutputTokens == nil || *caps.MaxOutputTokens != 32000 {
+			t.Fatalf("stored capabilities for %s after sync = %+v, err = %v; want max_output_tokens 32000", name, caps, err)
+		}
+	}
+	row, err := cs.GetModelParametersByModel(ctx, customKey)
+	if err != nil || row == nil || row.Data != customData {
+		t.Fatalf("DB-only row after sync = %+v, err = %v", row, err)
+	}
+	emptyRow, err := cs.GetModelParametersByModel(ctx, emptyKey)
+	if err != nil || emptyRow == nil || emptyRow.Data != customData {
+		t.Fatalf("row shadowed by empty feed data = %+v, err = %v", emptyRow, err)
+	}
+}
+
+// TestSyncModelParamsFromURL_ProviderCollisions checks both persistence and lookup
+// after sync and reload, including legitimate updates beside rejected records.
+func TestSyncModelParamsFromURL_ProviderCollisions(t *testing.T) {
+	ctx := t.Context()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true, Type: configstore.ConfigStoreTypeSQLite,
+		Config: &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+
+	const stored = `{"provider":"custom-anthropic","max_output_tokens":32000,"supported_endpoints":["/v1/chat/completions"]}`
+	const providerless = `{"max_output_tokens":16000,"supported_endpoints":["/v1/responses"]}`
+	const explicitValues = `{"provider":"custom-anthropic","max_output_tokens":0,"supports_reasoning":false,"synthetic_structured_output_tool_prefix":"","supported_endpoints":["/v1/responses"]}`
+	const replacement = `{"provider":"other-provider","max_output_tokens":16000,"supported_endpoints":["/v1/responses"]}`
+	for i, tc := range []struct {
+		name, existing, incoming, want string
+	}{
+		{"missing provider", stored, providerless, stored},
+		{"missing provider with explicit zero", stored, `{"max_output_tokens":0}`, stored},
+		{"empty provider", stored, `{"provider":"","max_output_tokens":0}`, stored},
+		{"null provider", stored, `{"provider":null,"max_output_tokens":0}`, stored},
+		{"blank provider", stored, `{"provider":" \t","max_output_tokens":0}`, stored},
+		{"numeric provider", stored, `{"provider":123,"max_output_tokens":0}`, stored},
+		{"boolean provider", stored, `{"provider":false,"max_output_tokens":0}`, stored},
+		{"array provider", stored, `{"provider":["custom-anthropic"],"max_output_tokens":0}`, stored},
+		{"object provider", stored, `{"provider":{"name":"custom-anthropic"},"max_output_tokens":0}`, stored},
+		{"null record", stored, `null`, stored},
+		{"malformed capability", stored, `{"provider":"custom-anthropic","max_output_tokens":"bad"}`, stored},
+		{"empty nested capabilities", stored, `{"provider":"custom-anthropic","reasoning_budget":{},"model_parameters":[{}]}`, stored},
+		{"declared empty parameters", stored, `{"provider":"custom-anthropic","model_parameters":[]}`, `{"provider":"custom-anthropic","model_parameters":[]}`},
+		{"new declared empty parameters", "", `{"provider":"custom-anthropic","model_parameters":[]}`, `{"provider":"custom-anthropic","model_parameters":[]}`},
+		{"providerless empty parameters collision", stored, `{"model_parameters":[]}`, stored},
+		{"new providerless empty parameters", "", `{"model_parameters":[]}`, `{"model_parameters":[]}`},
+		{"null parameters", stored, `{"provider":"custom-anthropic","model_parameters":null}`, stored},
+		{"absent parameters", stored, `{"provider":"custom-anthropic"}`, stored},
+		{"explicit values with provider", stored, explicitValues, explicitValues},
+		{"explicit provider change", stored, replacement, replacement},
+		{"new providerless record", "", providerless, providerless},
+		{"providerless update", `{"max_output_tokens":32000}`, providerless, providerless},
+		{"provider added", providerless, stored, stored},
+		{"new provider record", "", stored, stored},
+		{"empty stored provider", `{"provider":"","max_output_tokens":32000}`, providerless, providerless},
+		{"null stored provider", `{"provider":null,"max_output_tokens":32000}`, providerless, providerless},
+		{"blank stored provider", `{"provider":" ","max_output_tokens":32000}`, providerless, providerless},
+		{"malformed stored provider", `{"provider":123,"max_output_tokens":32000}`, providerless, providerless},
+	} {
+		for _, mixed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/mixed=%t", tc.name, mixed), func(t *testing.T) {
+				model := fmt.Sprintf("collision-model-%d-%t", i, mixed)
+				key := "custom-anthropic/" + model
+				if tc.existing != "" {
+					require.NoError(t, cs.UpsertModelParametersBatch(ctx, []configstoreTables.TableModelParameters{{Model: key, Data: tc.existing}}))
+				}
+				path := filepath.Join(t.TempDir(), "params.json")
+				// A healthy sibling must still be applied when the colliding row is rejected.
+				siblingKey := "healthy-" + model
+				feed := fmt.Sprintf(`{%q:%s}`, key, tc.incoming)
+				if mixed {
+					feed = fmt.Sprintf(`{%q:%s,%q:%s}`, key, tc.incoming, siblingKey, providerless)
+				}
+				require.NoError(t, os.WriteFile(path, []byte(feed), 0o600))
+				s := New(cs, nil, Config{ModelParametersURL: "file://" + path})
+				_, err := s.LoadModelParamsFromDB(ctx)
+				require.NoError(t, err)
+				require.NoError(t, s.SyncModelParamsFromURL(ctx))
+				row, err := cs.GetModelParametersByModel(ctx, key)
+				require.NoError(t, err)
+				require.JSONEq(t, tc.want, row.Data)
+				if mixed {
+					sibling, err := cs.GetModelParametersByModel(ctx, siblingKey)
+					require.NoError(t, err)
+					require.JSONEq(t, providerless, sibling.Data)
+				}
+
+				var want struct {
+					Provider string
+					schemas.ModelCapabilities
+				}
+				require.NoError(t, json.Unmarshal([]byte(tc.want), &want))
+				for _, reload := range []bool{false, true} {
+					if reload {
+						s = New(cs, nil, Config{})
+						_, err := s.LoadModelParamsFromDB(ctx)
+						require.NoError(t, err)
+					}
+					caps, err := s.LoadModelCapabilities(ctx, schemas.ModelProvider(want.Provider), model)
+					require.NoError(t, err)
+					if want.Provider == "" {
+						require.Nil(t, caps)
+					} else {
+						require.Equal(t, &want.ModelCapabilities, caps)
+					}
+					require.Equal(t, slices.Contains(want.SupportedEndpoints, "/v1/chat/completions"), s.IsRequestTypeSupported(key, schemas.ChatCompletionRequest))
+					require.Equal(t, slices.Contains(want.SupportedEndpoints, "/v1/responses"), s.IsRequestTypeSupported(key, schemas.ResponsesRequest))
+					if want.ModelParameters == nil {
+						require.Contains(t, s.GetSupportedParameters(key), "max_tokens")
+					} else {
+						require.Empty(t, want.ModelParameters)
+						for _, param := range []string{"temperature", "top_p", "stop", "max_tokens", "max_completion_tokens", "max_output_tokens"} {
+							require.NotContains(t, s.GetSupportedParameters(key), param, "explicit empty list must clear the previous sampling/token allowlist")
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+// Model identity must survive an empty derived parameter allowlist. In
+// particular, a bare model name must still find a provider-qualified DB row.
+func TestModelParameters_EmptySupportedParams(t *testing.T) {
+	ctx := t.Context()
+	cs, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "config.db")},
+	}, bifrost.NewNoOpLogger())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = cs.Close(context.Background()) })
+
+	rows := []configstoreTables.TableModelParameters{
+		{Model: "custom-anthropic/empty-params", Data: `{"provider":"custom-anthropic","max_output_tokens":32000,"model_parameters":[]`},
+		{Model: "openrouter/vendor/ignored-params", Data: `{"provider":"openrouter","max_output_tokens":16000,"supported_endpoints":["/v1/chat/completions"],"model_parameters":[{"id":"stream"},{"id":"promptTools"},{"id":"image_detail"}]`},
+		{Model: "bedrock_mantle/false-flags", Data: `{"provider":"bedrock_mantle","model_parameters":[]`},
+	}
+	for i := range rows {
+		rows[i].Data += `,"supports_reasoning_with_tool_calls":false,"supports_reasoning_summary_detailed":false,"supports_reasoning_summary_concise":false,"supports_reasoning_summary_auto":false}`
+	}
+	require.NoError(t, cs.UpsertModelParametersBatch(ctx, rows))
+	feedPath := filepath.Join(t.TempDir(), "params.json")
+	require.NoError(t, os.WriteFile(feedPath, []byte(`{}`), 0o600))
+	cfg := Config{ModelParametersURL: "file://" + feedPath}
+	s := New(cs, nil, cfg)
+	loaded, err := s.LoadModelParamsFromDB(ctx)
+	require.NoError(t, err)
+	require.Equal(t, len(rows), loaded)
+
+	check := func(t *testing.T) {
+		t.Helper()
+		for _, row := range rows {
+			t.Run(row.Model, func(t *testing.T) {
+				var want schemas.ModelCapabilities
+				require.NoError(t, json.Unmarshal([]byte(row.Data), &want))
+				require.Nil(t, s.GetSupportedParameters(row.Model), "retain compat's existing no-allowlist behavior")
+				provider, model, _ := strings.Cut(row.Model, "/")
+				aliases := []string{row.Model, model}
+				if _, bare, nested := strings.Cut(model, "/"); nested {
+					aliases = append(aliases, bare)
+				}
+				for _, alias := range aliases {
+					t.Run(alias, func(t *testing.T) {
+						caps, err := s.LoadModelCapabilities(ctx, schemas.ModelProvider(provider), alias)
+						require.NoError(t, err)
+						require.NotNil(t, caps, "existing model must resolve despite an empty parameter allowlist")
+						require.Equal(t, &want, caps)
+						resolved, err := s.ResolveModelParameters(ctx, alias)
+						require.NoError(t, err)
+						require.Equal(t, row.Model, resolved.Model)
+						require.JSONEq(t, row.Data, resolved.Data)
+						other, err := s.LoadModelCapabilities(ctx, schemas.OpenAI, alias)
+						require.NoError(t, err)
+						require.Nil(t, other, "must not return another provider's capabilities")
+					})
+				}
+			})
+		}
+		unknown, err := s.LoadModelCapabilities(ctx, schemas.OpenAI, "unknown-model")
+		require.NoError(t, err)
+		require.Nil(t, unknown)
+	}
+	t.Run("DB load", check)
+	require.NoError(t, s.SyncModelParamsFromURL(ctx))
+	t.Run("empty feed preserves snapshot", check)
+	require.NoError(t, os.WriteFile(feedPath, []byte(`{"unrelated":{"provider":"openai","max_output_tokens":1000}}`), 0o600))
+	require.NoError(t, s.SyncModelParamsFromURL(ctx))
+	t.Run("sync preserves DB-only rows", check)
+	s = New(cs, nil, cfg)
+	loaded, err = s.LoadModelParamsFromDB(ctx)
+	require.NoError(t, err)
+	require.Equal(t, len(rows)+1, loaded)
+	t.Run("restart", check)
+}
+
+// BenchmarkModelParameterCandidates measures alias lookup across a 1002-row snapshot.
+func BenchmarkModelParameterCandidates(b *testing.B) {
+	rows := make(map[string]json.RawMessage, 1002)
+	for i := range 1000 {
+		rows[fmt.Sprintf("provider/model-%d", i)] = json.RawMessage(`{"max_output_tokens":32000}`)
+	}
+	rows["openai/target"] = json.RawMessage(`{"max_output_tokens":32000}`)
+	rows["openrouter/openai/target"] = json.RawMessage(`{"max_output_tokens":32000}`)
+	s := NewTestStore(nil)
+	s.applyModelParameters(rows)
+	for _, model := range []string{"target", "openai/target", "openrouter/openai/target", "missing"} {
+		b.Run(model, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				s.modelParameterCandidates(model)
+			}
+		})
+	}
+}
+
+// The text_completion backfill checks pricingData for a completion-mode row,
+// which must match when the pricing row is spelled in another casing.
+func TestApplyModelParameters_TextCompletionBackfillMatchesAnyCase(t *testing.T) {
+	s := NewTestStore(nil)
+	s.SetPricingRowsForTest([]configstoreTables.TableModelPricing{
+		{Model: "GPT-3.5-Turbo-Instruct", Provider: "openai", Mode: "completion"},
+	})
+	s.applyModelParameters(map[string]json.RawMessage{
+		"gpt-3.5-turbo-instruct": json.RawMessage(`{"provider":"openai","mode":"chat"}`),
+	})
+	if !s.IsRequestTypeSupported("gpt-3.5-turbo-instruct", schemas.TextCompletionRequest) {
+		t.Fatal("expected text_completion to be backfilled from the GPT-3.5-Turbo-Instruct pricing row")
 	}
 }

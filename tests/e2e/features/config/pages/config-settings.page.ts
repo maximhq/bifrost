@@ -18,6 +18,8 @@ export class ConfigSettingsPage extends BasePage {
   readonly dropExcessRequestsSwitch: Locator
   readonly disableDBPingsSwitch: Locator
   readonly asyncJobResultTtlInput: Locator
+  readonly extraFieldsPlacementSelect: Locator
+  readonly extraFieldsPlacementDroppedNote: Locator
 
   // Logging Settings
   readonly enableLoggingSwitch: Locator
@@ -30,6 +32,8 @@ export class ConfigSettingsPage extends BasePage {
   readonly rateLimitingSection: Locator
   readonly enforceAuthOnInferenceSwitch: Locator
   readonly enforceVKObjectOwnershipSwitch: Locator
+  readonly skipAccessProfileUserVirtualKeyCreationSwitch: Locator
+  readonly skipAccessProfileUserVirtualKeyDeletionSwitch: Locator
   readonly requiredHeadersTextarea: Locator
   readonly vkRotationCooldownInput: Locator
   readonly dashboardAuthSwitch: Locator
@@ -54,6 +58,17 @@ export class ConfigSettingsPage extends BasePage {
   // Compatibility Settings
   readonly compatConvertDecisionToResponsesSwitch: Locator
 
+  // Proxy Config
+  readonly proxyEnabledSwitch: Locator
+  readonly proxyTypeSelect: Locator
+  readonly proxyUrlInput: Locator
+  readonly proxyUsernameInput: Locator
+  readonly proxyPasswordInput: Locator
+  readonly proxyCaCertInput: Locator
+  readonly proxyEnableInferenceSwitch: Locator
+  readonly proxyEnableApiSwitch: Locator
+  readonly proxySaveBtn: Locator
+
   constructor(page: Page) {
     super(page)
     this.saveBtn = page.getByRole('button', { name: /Save/i })
@@ -62,6 +77,8 @@ export class ConfigSettingsPage extends BasePage {
     this.dropExcessRequestsSwitch = page.locator('#drop-excess-requests')
     this.disableDBPingsSwitch = page.locator('#disable-db-pings-in-health')
     this.asyncJobResultTtlInput = page.getByTestId('client-settings-async-job-result-ttl-input')
+    this.extraFieldsPlacementSelect = page.getByTestId('client-settings-extra-fields-placement-select')
+    this.extraFieldsPlacementDroppedNote = page.getByTestId('client-settings-extra-fields-placement-dropped-note')
 
     // Logging Settings locators
     this.enableLoggingSwitch = page.locator('#enable-logging')
@@ -76,6 +93,8 @@ export class ConfigSettingsPage extends BasePage {
     this.rateLimitingSection = page.locator('text=Rate Limiting').locator('..')
     this.enforceAuthOnInferenceSwitch = page.getByTestId('enforce-auth-on-inference-switch')
     this.enforceVKObjectOwnershipSwitch = page.getByTestId('security-enforce-vk-object-ownership-switch')
+    this.skipAccessProfileUserVirtualKeyCreationSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-creation-switch')
+    this.skipAccessProfileUserVirtualKeyDeletionSwitch = page.getByTestId('security-skip-access-profile-user-virtual-key-deletion-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
     this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
     this.dashboardAuthSwitch = page.locator('#auth-enabled')
@@ -87,6 +106,17 @@ export class ConfigSettingsPage extends BasePage {
     // Performance Tuning locators
     this.workerPoolSizeInput = page.getByLabel(/Worker Pool Size/i)
     this.maxRequestBodySizeInput = page.getByLabel(/Max Request Body Size/i)
+
+    // Proxy Config locators
+    this.proxyEnabledSwitch = page.getByTestId('proxy-enabled-switch')
+    this.proxyTypeSelect = page.getByTestId('proxy-type-select')
+    this.proxyUrlInput = page.getByTestId('proxy-url-input')
+    this.proxyUsernameInput = page.getByTestId('proxy-username-input')
+    this.proxyPasswordInput = page.getByTestId('proxy-password-input')
+    this.proxyCaCertInput = page.getByTestId('proxy-ca-cert-input')
+    this.proxyEnableInferenceSwitch = page.getByTestId('proxy-enable-inference-switch')
+    this.proxyEnableApiSwitch = page.getByTestId('proxy-enable-api-switch')
+    this.proxySaveBtn = page.getByTestId('proxy-save-button')
 
     // Observability locators
     this.observabilityToggles = page.locator('button[role="switch"]')
@@ -104,6 +134,14 @@ export class ConfigSettingsPage extends BasePage {
   async goto(path: string): Promise<void> {
     await this.page.goto(`/workspace/config/${path}`)
     await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Pick a value in the Extra Fields Placement select
+   */
+  async selectExtraFieldsPlacement(value: 'body' | 'headers'): Promise<void> {
+    await this.extraFieldsPlacementSelect.click()
+    await this.page.getByTestId(`client-settings-extra-fields-placement-option-${value}`).click()
   }
 
   async saveSettings(): Promise<void> {
@@ -198,6 +236,24 @@ export class ConfigSettingsPage extends BasePage {
   /**
    * Capture current settings state for a config page
    */
+  /**
+   * Pick a global proxy type from the Radix select
+   */
+  async selectProxyType(type: 'http' | 'socks5' | 'tcp'): Promise<void> {
+    await this.proxyTypeSelect.click()
+    await this.page.getByTestId(`proxy-type-option-${type}`).click()
+  }
+
+  /**
+   * Turn a switch on, leaving it alone when it already is
+   */
+  async ensureSwitchOn(switchLocator: Locator): Promise<void> {
+    if (!(await this.getSwitchState(switchLocator))) {
+      await switchLocator.click()
+    }
+    await expect(switchLocator).toHaveAttribute('data-state', 'checked')
+  }
+
   async getCurrentSettings(configPath: string): Promise<ConfigSettingsState> {
     const state: ConfigSettingsState = {
       toggleStates: {},

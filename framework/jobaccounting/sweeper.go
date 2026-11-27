@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strconv"
@@ -36,7 +37,7 @@ type SweeperConfig struct {
 
 type Sweeper struct {
 	store         SweepStore
-	logStore      AggregateLogStore
+	recorder      LogsRecorder
 	pricing       PricingManager
 	settler       Settler
 	emitter       AggregateLogEmitter
@@ -45,6 +46,10 @@ type Sweeper struct {
 }
 
 func NewSweeper(store SweepStore, logStore AggregateLogStore, pricing PricingManager, settler Settler, emitter AggregateLogEmitter, usageReporter UsageReporter, config SweeperConfig) *Sweeper {
+	return newSweeper(store, llmLogsRecorder{logStore: logStore, pricing: pricing}, pricing, settler, emitter, usageReporter, config)
+}
+
+func newSweeper(store SweepStore, recorder LogsRecorder, pricing PricingManager, settler Settler, emitter AggregateLogEmitter, usageReporter UsageReporter, config SweeperConfig) *Sweeper {
 	if config.Interval <= 0 {
 		config.Interval = defaultSweepInterval
 	}
@@ -64,7 +69,7 @@ func NewSweeper(store SweepStore, logStore AggregateLogStore, pricing PricingMan
 	}
 	return &Sweeper{
 		store:         store,
-		logStore:      logStore,
+		recorder:      recorder,
 		pricing:       pricing,
 		settler:       settler,
 		emitter:       emitter,
@@ -77,6 +82,19 @@ func NewSweeper(store SweepStore, logStore AggregateLogStore, pricing PricingMan
 // sharing the same database. Random rather than PID-based: sweepers on different
 // hosts can share a PID, and this value is what keeps their claims apart. Exported
 // so a kind can build its own runner-id prefix.
+// processID tells this process apart when no cluster node id is set: stable across reloads, new on
+// a restart, whose claims are recovered through the staleness path.
+var processID = newInstanceID()
+
+// RunnerID is a worker's claim identity: prefix plus the cluster node id, or this process's id. Every
+// job kind's workers use it, so claims name the kind and stay apart across replicas.
+func RunnerID(prefix, nodeID string) string {
+	if nodeID != "" {
+		return prefix + ":" + nodeID
+	}
+	return prefix + ":" + processID
+}
+
 func newInstanceID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -103,7 +121,7 @@ func (s *Sweeper) Run(ctx context.Context) {
 }
 
 func (s *Sweeper) SweepOnce(ctx context.Context) {
-	if s == nil || s.store == nil || s.logStore == nil || s.pricing == nil || s.settler == nil {
+	if s == nil || s.store == nil || s.recorder == nil || !s.recorder.Ready() || s.settler == nil {
 		return
 	}
 	now := time.Now().UTC()
@@ -170,7 +188,7 @@ func (s *Sweeper) sweepJob(ctx context.Context, job *cstables.TableProviderJob, 
 }
 
 func (s *Sweeper) settle(ctx context.Context, job *cstables.TableProviderJob, poll *PollResult, now time.Time) {
-	if _, err := AccountJob(ctx, s.store, s.logStore, s.pricing, s.settler, JobRequest{
+	if _, err := accountJob(ctx, s.store, s.recorder, s.pricing, s.settler, JobRequest{
 		Provider:      schemas.ModelProvider(job.Provider),
 		ProviderJobID: job.JobID,
 		FallbackModel: job.Model,
@@ -182,7 +200,10 @@ func (s *Sweeper) settle(ctx context.Context, job *cstables.TableProviderJob, po
 		Scopes:        s.config.Scopes,
 		Now:           now,
 	}); err != nil {
-		s.warn("%s accounting sweeper accounting failed provider=%s job=%s job_id=%s: %v", s.settler.Kind(), job.Provider, job.JobID, job.ID, err)
+		// A relay job waiting for its start call's log row is expected, not a failure.
+		if !errors.Is(err, ErrRelayStartRowPending) {
+			s.warn("%s accounting sweeper accounting failed provider=%s job=%s job_id=%s: %v", s.settler.Kind(), job.Provider, job.JobID, job.ID, err)
+		}
 		// Settlement failures were the one retry path with no budget: next_check_at
 		// stayed in the past and poll_attempts never moved, so every sweep re-did the
 		// entire settlement and re-failed, forever. Reschedule like any other retry so
@@ -192,8 +213,11 @@ func (s *Sweeper) settle(ctx context.Context, job *cstables.TableProviderJob, po
 }
 
 func (s *Sweeper) reschedule(ctx context.Context, job *cstables.TableProviderJob, now time.Time) {
-	job.PollAttempts++
-	if job.PollAttempts >= MaxPollAttempts {
+	_, ownSchedule := s.settler.(PollScheduler)
+	if !ownSchedule {
+		job.PollAttempts++
+	}
+	if !ownSchedule && job.PollAttempts >= MaxPollAttempts {
 		s.markTerminalAsUnpriceable(ctx, job, UnpriceableReasonMaxPollAttempts)
 		return
 	}
@@ -252,6 +276,9 @@ func (s *Sweeper) pollLeaseKey(job *cstables.TableProviderJob) string {
 }
 
 func (s *Sweeper) nextCheckAt(job *cstables.TableProviderJob, now time.Time) time.Time {
+	if scheduler, ok := s.settler.(PollScheduler); ok {
+		return scheduler.NextPollAt(job, time.Now().UTC())
+	}
 	delay := s.settler.Backoff(job.PollAttempts, s.config.Interval)
 	if delay < s.config.Interval {
 		delay = s.config.Interval

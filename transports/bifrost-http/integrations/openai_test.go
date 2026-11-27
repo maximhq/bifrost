@@ -1,20 +1,29 @@
 package integrations
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"sync"
 	"testing"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -283,9 +292,10 @@ func TestOpenAIDecisionsRouteRegisteredOnEveryPath(t *testing.T) {
 
 // TestOpenAIDecisionsRouteConvertsRequest pins the route's request handling:
 // an SDK body becomes the normalized request, questions keep their order and
-// an unnamed question stays unnamed, a model without a prefix is OpenAI's, an
-// unknown future field is marked to reach the provider wire, and fallbacks are
-// kept for routing. The payload is synthetic.
+// an unnamed question stays unnamed, a model without a prefix is left for
+// routing to resolve, an unknown future field is marked to reach the provider
+// wire, the prompt-cache key is a typed field rather than an extension, and
+// fallbacks are kept for routing. The payload is synthetic.
 func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 	route := findOpenAIRoute("/openai", "/openai/v1/decisions")
 	if route == nil {
@@ -301,6 +311,7 @@ func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 			{"type": "score", "instructions": "How severe is the damage?", "levels": [{"label": "Cosmetic"}, {"label": "Blocked"}]}
 		],
 		"fallbacks": ["typesafe/jev-1.13.0"],
+		"prompt_cache_key": "tenant-1",
 		"future_option": {"mode": "strict"}
 	}`)
 	if err := parseJSONRequestBody(body, incoming); err != nil {
@@ -313,8 +324,8 @@ func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 		t.Fatalf("convert: %v", err)
 	}
 	decision := converted.DecisionRequest
-	if decision.Provider != schemas.OpenAI || decision.Model != "gpt-6-luna" {
-		t.Errorf("got provider %q model %q, want openai gpt-6-luna", decision.Provider, decision.Model)
+	if decision.Provider != "" || decision.Model != "gpt-6-luna" {
+		t.Errorf("got provider %q model %q, want unresolved provider and gpt-6-luna", decision.Provider, decision.Model)
 	}
 	if decision.Input.NonTextPartType() != schemas.DecisionInputPartTypeImage {
 		t.Error("input messages, with the image, were not kept")
@@ -330,6 +341,9 @@ func TestOpenAIDecisionsRouteConvertsRequest(t *testing.T) {
 	}
 	if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !passthrough {
 		t.Error("unknown fields present but passthrough not requested; they would be dropped on the wire")
+	}
+	if _, ok := decision.ExtraParams["prompt_cache_key"]; ok || decision.PromptCacheKey == nil || *decision.PromptCacheKey != "tenant-1" {
+		t.Errorf("prompt_cache_key must be a typed field, got %v and extra params %v", decision.PromptCacheKey, decision.ExtraParams)
 	}
 
 	router := &GenericRouter{}
@@ -565,6 +579,370 @@ func TestOpenAISpeechRoutesReturnRawAudio(t *testing.T) {
 	}
 }
 
+// fileUploadUpstream is a fake OpenAI/Azure Files API that streams the uploaded file into a hash,
+// so the upstream itself allocates almost nothing and does not distort allocation counts.
+type fileUploadUpstream struct {
+	mu            sync.Mutex
+	path          string
+	contentLength int64
+	fields        map[string]string
+	fieldTypes    map[string]string // Content-Type of each part without a filename
+	filename      string
+	fileSize      int64
+	fileSum       [sha256.Size]byte
+}
+
+func (u *fileUploadUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.path = r.URL.Path
+	u.contentLength = r.ContentLength
+	u.fields = map[string]string{}
+	u.fieldTypes = map[string]string{}
+	mr, err := r.MultipartReader()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if part.FileName() == "" {
+			v, _ := io.ReadAll(part)
+			u.fields[part.FormName()] = string(v)
+			u.fieldTypes[part.FormName()] = part.Header.Get("Content-Type")
+			continue
+		}
+		h := sha256.New()
+		u.filename = part.FileName()
+		u.fileSize, _ = io.Copy(h, part)
+		copy(u.fileSum[:], h.Sum(nil))
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"id":"file-abc","object":"file","bytes":%d,"created_at":1,"filename":%q,"purpose":"batch","status":"processed"}`, u.fileSize, u.filename)
+}
+
+// fileUploadTestAccount is speechTestAccount with its keys enabled for the batch and files APIs.
+type fileUploadTestAccount struct {
+	speechTestAccount
+}
+
+func (a fileUploadTestAccount) GetKeysForProvider(ctx context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	keys, err := a.speechTestAccount.GetKeysForProvider(ctx, p)
+	for i := range keys {
+		keys[i].UseForBatchAPI = schemas.Ptr(true)
+	}
+	return keys, err
+}
+
+// TestOpenAIFileUploadRouteStreamsFile pins the Files API upload path for OpenAI and Azure: the
+// upstream receives the exact file and form fields with a Content-Length, and the gateway never
+// holds the file in memory. A 17 MB upload (over fasthttp's 16 MB in-memory limit, so the server
+// keeps it in a temp file) must allocate less than the file's size end to end. Before the fix
+// the route read the file into a []byte and the provider rebuilt the multipart body in a buffer
+// and copied it into the request, allocating ~5x the file.
+func TestOpenAIFileUploadRouteStreamsFile(t *testing.T) {
+	const fileSize = 17 << 20
+	file := bytes.Repeat([]byte(`{"custom_id":"r","method":"POST"}`+"\n"), fileSize/34+1)[:fileSize]
+	wantSum := sha256.Sum256(file)
+
+	upstream := &fileUploadUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: fileUploadTestAccount{speechTestAccount{baseURL: server.URL}},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	for _, tc := range []struct {
+		provider   string
+		fields     map[string]string
+		wantPath   string
+		wantFields map[string]string
+	}{
+		{
+			provider:   "openai",
+			fields:     map[string]string{"purpose": "batch", "expires_after[anchor]": "created_at", "expires_after[seconds]": "3600"},
+			wantPath:   "/v1/files",
+			wantFields: map[string]string{"purpose": "batch", "expires_after[anchor]": "created_at", "expires_after[seconds]": "3600"},
+		},
+		{
+			provider:   "azure",
+			fields:     map[string]string{"purpose": "batch", "provider": "azure"},
+			wantPath:   "/openai/v1/files",
+			wantFields: map[string]string{"purpose": "batch"},
+		},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			var body bytes.Buffer
+			w := multipart.NewWriter(&body)
+			for k, v := range tc.fields {
+				require.NoError(t, w.WriteField(k, v))
+			}
+			part, err := w.CreateFormFile("file", "batch.jsonl")
+			require.NoError(t, err)
+			_, err = part.Write(file)
+			require.NoError(t, err)
+			require.NoError(t, w.Close())
+			raw := append([]byte(fmt.Sprintf("POST /openai/files HTTP/1.1\r\nHost: bifrost\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", w.FormDataContentType(), body.Len())), body.Bytes()...)
+			body.Reset()
+
+			// Read the request the way the server does: the form is parsed while reading
+			// and the file lands in a temp file.
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Init(&fasthttp.Request{}, nil, nil)
+			require.NoError(t, ctx.Request.Read(bufio.NewReader(bytes.NewReader(raw))))
+			raw = nil
+			defer ctx.Request.Reset()
+
+			runtime.GC()
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			r.Handler(ctx)
+			runtime.ReadMemStats(&after)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			assert.Equal(t, "file-abc", gjson.GetBytes(ctx.Response.Body(), "id").String())
+			upstream.mu.Lock()
+			defer upstream.mu.Unlock()
+			assert.Equal(t, tc.wantPath, upstream.path)
+			assert.Greater(t, upstream.contentLength, int64(fileSize), "upstream must get a Content-Length, not a chunked body")
+			for k, v := range tc.wantFields {
+				assert.Equal(t, v, upstream.fields[k], "form field %s", k)
+			}
+			assert.Equal(t, "batch.jsonl", upstream.filename)
+			assert.Equal(t, int64(fileSize), upstream.fileSize)
+			assert.Equal(t, wantSum, upstream.fileSum, "upstream file content differs from the upload")
+			allocated := after.TotalAlloc - before.TotalAlloc
+			t.Logf("%d-byte upload allocated %d bytes in the gateway", fileSize, allocated)
+			assert.Less(t, allocated, uint64(fileSize), "a %d-byte upload allocated %d bytes in the gateway; the file must be streamed, not held in memory", fileSize, allocated)
+		})
+	}
+}
+
+// TestOpenAISpeechRoutesCarryVertexChirp pins that every SDK prefix reusing the OpenAI speech route
+// hands a Chirp 3 HD request to the Vertex provider with its voice, format and speed intact.
+func TestOpenAISpeechRoutesCarryVertexChirp(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
+		for _, path := range []string{"/v1/audio/speech", "/audio/speech"} {
+			t.Run(prefix+path, func(t *testing.T) {
+				route := findOpenAIRoute(prefix, prefix+path)
+				require.NotNil(t, route, "POST %s%s not registered", prefix, path)
+
+				req := &openai.OpenAISpeechRequest{}
+				require.NoError(t, json.Unmarshal([]byte(`{"model":"vertex/chirp-3-hd","input":"नमस्ते","voice":"hi-IN-Chirp3-HD-Erinome","response_format":"wav","speed":1.2}`), req))
+				converted, err := route.RequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+				require.NoError(t, err)
+				require.NotNil(t, converted.SpeechRequest)
+				assert.Equal(t, schemas.Vertex, converted.SpeechRequest.Provider)
+				assert.Equal(t, "chirp-3-hd", converted.SpeechRequest.Model)
+
+				request, err := vertex.ToVertexSpeechRequest(converted.SpeechRequest)
+				require.NoError(t, err)
+				assert.Equal(t, "hi-IN", request.Voice.LanguageCode)
+				assert.Equal(t, "hi-IN-Chirp3-HD-Erinome", request.Voice.Name)
+				assert.Equal(t, "LINEAR16", request.AudioConfig.AudioEncoding)
+				require.NotNil(t, request.AudioConfig.SpeakingRate)
+				assert.Equal(t, 1.2, *request.AudioConfig.SpeakingRate)
+			})
+		}
+	}
+}
+
+// azureDataSourcesJSON is an Azure "On Your Data" data_sources value, the
+// extension the Azure OpenAI SDK sends at the top level of a chat body.
+const azureDataSourcesJSON = `[{"type":"azure_search","parameters":{"endpoint":"https://unreachable.search.windows.net","index_name":"idx","authentication":{"type":"api_key","key":"k"}}}]`
+
+// chatUpstream records the last chat body the provider sent and answers it,
+// as SSE when the body asked to stream.
+type chatUpstream struct {
+	mu    sync.Mutex
+	path  string
+	query string
+	body  []byte
+}
+
+func (u *chatUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	u.mu.Lock()
+	u.path, u.query, u.body = r.URL.Path, r.URL.RawQuery, body
+	u.mu.Unlock()
+	var probe struct {
+		Stream bool `json:"stream"`
+	}
+	_ = json.Unmarshal(body, &probe)
+	if probe.Stream {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"id":"c1","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+}
+
+func (u *chatUpstream) last() (string, []byte) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.path, u.body
+}
+
+// TestAzureDeploymentChatForwardsUnknownTopLevelFields pins that the Azure
+// OpenAI SDK route /openai/deployments/{deployment}/chat/completions forwards
+// top-level fields Bifrost does not model, such as On Your Data data_sources,
+// to the Azure deployment, unary and streaming. They used to be dropped at
+// decode, so Azure answered 200 for a body it should have rejected. The plain
+// chat routes and a provider-prefixed deployment path keep dropping them.
+func TestAzureDeploymentChatForwardsUnknownTopLevelFields(t *testing.T) {
+	upstream := &chatUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: speechTestAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	const deploymentURI = "/openai/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21"
+	cases := []struct {
+		name        string
+		uri         string
+		body        string
+		headers     map[string]string
+		wantPath    string
+		wantQuery   string
+		wantFields  map[string]string
+		wantMissing []string
+	}{
+		{
+			name:       "azure deployment unary",
+			uri:        deploymentURI,
+			body:       `{"messages":[{"role":"user","content":"hi"}],"temperature":0.2,"data_sources":` + azureDataSourcesJSON + `,"x_future_field":{"a":1}}`,
+			wantPath:   "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:  "api-version=2024-10-21", // the caller's version, not Bifrost's default
+			wantFields: map[string]string{"data_sources": azureDataSourcesJSON, "x_future_field": `{"a":1}`, "temperature": "0.2"},
+		},
+		{
+			name:       "azure deployment stream",
+			uri:        deploymentURI,
+			body:       `{"messages":[{"role":"user","content":"hi"}],"stream":true,"data_sources":` + azureDataSourcesJSON + `}`,
+			wantPath:   "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:  "api-version=2024-10-21", // the caller's version, not Bifrost's default
+			wantFields: map[string]string{"data_sources": azureDataSourcesJSON, "stream": "true"},
+		},
+		{
+			name:        "azure deployment nested extra_params wins on conflict",
+			uri:         deploymentURI,
+			body:        `{"messages":[{"role":"user","content":"hi"}],"data_sources":` + azureDataSourcesJSON + `,"x_dup":"top","extra_params":{"x_dup":"nested"}}`,
+			headers:     map[string]string{"x-bf-passthrough-extra-params": "true"},
+			wantPath:    "/openai/deployments/gpt-4o/chat/completions",
+			wantQuery:   "api-version=2024-10-21", // the caller's version, not Bifrost's default
+			wantFields:  map[string]string{"data_sources": azureDataSourcesJSON, "x_dup": `"nested"`},
+			wantMissing: []string{"extra_params"},
+		},
+		{
+			name:        "azure deployment without unknown fields",
+			uri:         deploymentURI,
+			body:        `{"messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low","fallbacks":["openai/gpt-4o"]}`,
+			wantPath:    "/openai/v1/chat/completions",
+			wantMissing: []string{"fallbacks", "extra_params"},
+		},
+		{
+			name:        "plain chat route keeps dropping unknown fields",
+			uri:         "/openai/v1/chat/completions",
+			body:        `{"model":"azure/gpt-4o","messages":[{"role":"user","content":"hi"}],"data_sources":` + azureDataSourcesJSON + `}`,
+			wantPath:    "/openai/v1/chat/completions",
+			wantMissing: []string{"data_sources"},
+		},
+		{
+			name:        "provider-prefixed deployment path does not forward Azure fields",
+			uri:         "/openai/openai/deployments/openai/gpt-4o/chat/completions?api-version=2024-10-21",
+			body:        `{"messages":[{"role":"user","content":"hi"}],"data_sources":` + azureDataSourcesJSON + `}`,
+			wantPath:    "/v1/chat/completions",
+			wantMissing: []string{"data_sources"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(tc.uri)
+			ctx.Request.Header.SetContentType("application/json")
+			for k, v := range tc.headers {
+				ctx.Request.Header.Set(k, v)
+			}
+			ctx.Request.SetBodyString(tc.body)
+
+			r.Handler(&ctx)
+			respBody := string(ctx.Response.Body())
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", respBody)
+
+			path, sent := upstream.last()
+			require.Equal(t, tc.wantPath, path, "upstream body: %s", sent)
+			if tc.wantQuery != "" {
+				upstream.mu.Lock()
+				query := upstream.query
+				upstream.mu.Unlock()
+				require.Equal(t, tc.wantQuery, query, "upstream query for %s", tc.uri)
+			}
+			for field, want := range tc.wantFields {
+				got := gjson.GetBytes(sent, field)
+				require.True(t, got.Exists(), "%s missing from the provider body: %s", field, sent)
+				require.JSONEq(t, want, got.Raw, "%s in provider body: %s", field, sent)
+			}
+			for _, field := range tc.wantMissing {
+				require.False(t, gjson.GetBytes(sent, field).Exists(), "%s must not reach the provider: %s", field, sent)
+			}
+		})
+	}
+}
+
+// BenchmarkAzureEndpointPreHookChat measures the Azure deployments pre-hook on
+// a chat body with no unknown fields (the common case) and with data_sources.
+func BenchmarkAzureEndpointPreHookChat(b *testing.B) {
+	hook := AzureEndpointPreHook(&mockHandlerStore{})
+	bodies := map[string]string{
+		"known-only":   `{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}],"temperature":0.2,"max_tokens":64,"stream":true,"stream_options":{"include_usage":true}}`,
+		"data-sources": `{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}],"temperature":0.2,"max_tokens":64,"data_sources":` + azureDataSourcesJSON + `}`,
+	}
+	for _, name := range []string{"known-only", "data-sources"} {
+		body := []byte(bodies[name])
+		b.Run(name, func(b *testing.B) {
+			var ctx fasthttp.RequestCtx
+			// The Azure SDK always sends api-version on this route.
+			ctx.Request.SetRequestURI("/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21")
+			ctx.Request.SetBody(body)
+			ctx.SetUserValue("deploymentPath", "gpt-4o/chat/completions")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				req := &openai.OpenAIChatRequest{}
+				if err := hook(&ctx, bctx, req); err != nil {
+					b.Fatal(err)
+				}
+				bctx.Cancel()
+			}
+		})
+	}
+}
+
 // A request Bifrost converted to another API (chat served through Responses, text
 // through chat, Responses through chat) carries that API's raw upstream bytes. The
 // OpenAI raw passthrough must not echo them: a chat client reading
@@ -627,4 +1005,354 @@ func TestOpenAIRawPassthroughSkipsConvertedRequests(t *testing.T) {
 		}
 	}
 	require.Positive(t, checked, "no OpenAI chat/text/responses converters found")
+}
+
+// assertRawPaths checks that each path in redacted carries the replacement instead of the literal, and that each path
+// in untouched still holds its original value. Payloads here are synthetic.
+func assertRawPaths(t *testing.T, got []byte, redacted []string, untouched map[string]string) {
+	t.Helper()
+	for _, path := range redacted {
+		value := gjson.GetBytes(got, path).String()
+		require.NotContains(t, value, "alice@example.com", "%s must be redacted", path)
+		require.Contains(t, value, "[EMAIL]", "%s must carry the replacement", path)
+	}
+	for path, want := range untouched {
+		require.Equal(t, want, gjson.GetBytes(got, path).String(), "%s must stay untouched", path)
+	}
+}
+
+// TestRewriteOpenAIChatRawRequestBodyRedactsOnlyContentFields verifies passthrough chat redaction covers message text,
+// refusal parts, and tool-call arguments, and leaves names, images, tool definitions, metadata, and unknown fields alone.
+func TestRewriteOpenAIChatRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
+	rawBody := []byte(`{
+		"model":"gpt-4o",
+		"messages":[
+			{"role":"system","content":"system alice@example.com"},
+			{"role":"user","name":"alice@example.com","content":[
+				{"type":"text","text":"first alice@example.com"},
+				{"type":"image_url","image_url":{"url":"https://example.com/alice@example.com.png"}}
+			]},
+			{"role":"assistant","content":[{"type":"refusal","refusal":"refused alice@example.com"}],
+			 "tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"email\":\"alice@example.com\"}"}}]},
+			{"role":"tool","tool_call_id":"call_1","content":"tool alice@example.com"}
+		],
+		"tools":[{"type":"function","function":{"name":"lookup","description":"alice@example.com"}}],
+		"metadata":{"user":"alice@example.com"},
+		"future_field":{"note":"alice@example.com"}
+	}`)
+
+	got, err := openAIRawRequestBodyRewriter(schemas.ChatCompletionRequest)(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	assertRawPaths(t, got,
+		[]string{
+			"messages.0.content",
+			"messages.1.content.0.text",
+			"messages.2.content.0.refusal",
+			"messages.2.tool_calls.0.function.arguments",
+			"messages.3.content",
+		},
+		map[string]string{
+			"messages.1.name":                    "alice@example.com",
+			"messages.1.content.1.image_url.url": "https://example.com/alice@example.com.png",
+			"tools.0.function.description":       "alice@example.com",
+			"metadata.user":                      "alice@example.com",
+			"future_field.note":                  "alice@example.com",
+		},
+	)
+}
+
+// TestRewriteOpenAIResponsesRawRequestBodyRedactsOnlyContentFields verifies passthrough Responses redaction (the Codex
+// shape) covers instructions, message parts, tool-call arguments, custom-tool input, and tool outputs, and leaves
+// reasoning, item IDs, tool definitions, and unknown future items alone.
+func TestRewriteOpenAIResponsesRawRequestBodyRedactsOnlyContentFields(t *testing.T) {
+	rawBody := []byte(`{
+		"model":"gpt-5",
+		"instructions":"instructions alice@example.com",
+		"input":[
+			{"role":"user","content":"first alice@example.com"},
+			{"type":"message","role":"user","content":[
+				{"type":"input_text","text":"second alice@example.com"},
+				{"type":"input_image","image_url":"https://example.com/alice@example.com.png"}
+			]},
+			{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"plan alice@example.com"}],"encrypted_content":"alice@example.com"},
+			{"type":"message","role":"assistant","id":"alice@example.com","content":[
+				{"type":"output_text","text":"answer alice@example.com"},
+				{"type":"refusal","refusal":"refused alice@example.com"}
+			]},
+			{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"email\":\"alice@example.com\"}"},
+			{"type":"function_call_output","call_id":"call_1","output":"result alice@example.com"},
+			{"type":"custom_tool_call","call_id":"call_2","name":"shell","input":"grep alice@example.com"},
+			{"type":"custom_tool_call_output","call_id":"call_2","output":[{"type":"input_text","text":"match alice@example.com"}]},
+			{"type":"future_item","text":"alice@example.com"}
+		],
+		"tools":[{"type":"function","name":"lookup","description":"alice@example.com"}]
+	}`)
+
+	got, err := openAIRawRequestBodyRewriter(schemas.ResponsesRequest)(rawBody, map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	assertRawPaths(t, got,
+		[]string{
+			"instructions",
+			"input.0.content",
+			"input.1.content.0.text",
+			"input.3.content.0.text",
+			"input.3.content.1.refusal",
+			"input.4.arguments",
+			"input.5.output",
+			"input.6.input",
+			"input.7.output.0.text",
+		},
+		map[string]string{
+			"input.1.content.1.image_url": "https://example.com/alice@example.com.png",
+			"input.2.summary.0.text":      "plan alice@example.com",
+			"input.2.encrypted_content":   "alice@example.com",
+			"input.3.id":                  "alice@example.com",
+			"input.8.text":                "alice@example.com",
+			"tools.0.description":         "alice@example.com",
+		},
+	)
+
+	got, err = openAIRawRequestBodyRewriter(schemas.ResponsesRequest)([]byte(`{"model":"gpt-5","input":"say alice@example.com"}`), map[string]string{"alice@example.com": "[EMAIL]"})
+	require.NoError(t, err)
+	assertRawPaths(t, got, []string{"input"}, nil)
+}
+
+// TestRewriteOpenAIFlatRawRequestBodies verifies the legacy completions prompt (string or string array, skipping token
+// arrays), speech input and instructions, and the image prompt are rewritten, and that kinds with no JSON text, such as
+// multipart uploads and embeddings, get no rewriter.
+func TestRewriteOpenAIFlatRawRequestBodies(t *testing.T) {
+	replacements := map[string]string{"alice@example.com": "[EMAIL]"}
+	cases := []struct {
+		name        string
+		requestType schemas.RequestType
+		body        string
+		redacted    []string
+		untouched   map[string]string
+	}{
+		{"text prompt", schemas.TextCompletionRequest, `{"model":"m","prompt":"hi alice@example.com"}`, []string{"prompt"}, nil},
+		{"text prompt array", schemas.TextCompletionRequest, `{"model":"m","prompt":["a alice@example.com",[1,2],"b alice@example.com"]}`, []string{"prompt.0", "prompt.2"}, map[string]string{"prompt.1": "[1,2]"}},
+		{"speech", schemas.SpeechRequest, `{"model":"m","input":"say alice@example.com","instructions":"calm alice@example.com","voice":"alice@example.com"}`, []string{"input", "instructions"}, map[string]string{"voice": "alice@example.com"}},
+		{"image generation", schemas.ImageGenerationRequest, `{"model":"m","prompt":"draw alice@example.com","user":"alice@example.com"}`, []string{"prompt"}, map[string]string{"user": "alice@example.com"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := openAIRawRequestBodyRewriter(tc.requestType)([]byte(tc.body), replacements)
+			require.NoError(t, err)
+			assertRawPaths(t, got, tc.redacted, tc.untouched)
+		})
+	}
+
+	for _, requestType := range []schemas.RequestType{schemas.TranscriptionRequest, schemas.ImageEditRequest, schemas.EmbeddingRequest, ""} {
+		require.Nil(t, openAIRawRequestBodyRewriter(requestType), "%q has no JSON text to rewrite", requestType)
+	}
+}
+
+// TestRewriteOpenAIRawRequestBodyRejectsUnmappedLiteral verifies a value found only outside the mutable fields fails the
+// rewrite, so the caller refuses the request instead of forwarding the original bytes.
+func TestRewriteOpenAIRawRequestBodyRejectsUnmappedLiteral(t *testing.T) {
+	_, err := openAIRawRequestBodyRewriter(schemas.ChatCompletionRequest)(
+		[]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}],"metadata":{"user":"alice@example.com"}}`),
+		map[string]string{"alice@example.com": "[EMAIL]"},
+	)
+	require.Error(t, err)
+}
+
+// TestOpenAISpeechRoutesCarryVertexGeminiTTS pins that every SDK prefix reusing the OpenAI speech route
+// hands a Gemini TTS request for Vertex to the provider with its voice and wav format intact.
+func TestOpenAISpeechRoutesCarryVertexGeminiTTS(t *testing.T) {
+	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
+		for _, path := range []string{"/v1/audio/speech", "/audio/speech"} {
+			t.Run(prefix+path, func(t *testing.T) {
+				route := findOpenAIRoute(prefix, prefix+path)
+				require.NotNil(t, route, "POST %s%s not registered", prefix, path)
+
+				req := &openai.OpenAISpeechRequest{}
+				require.NoError(t, json.Unmarshal([]byte(`{"model":"vertex/gemini-2.5-flash-tts","input":"hello","voice":"Kore","response_format":"wav"}`), req))
+				converted, err := route.RequestConverter(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+				require.NoError(t, err)
+				require.NotNil(t, converted.SpeechRequest)
+				assert.Equal(t, schemas.Vertex, converted.SpeechRequest.Provider)
+				assert.Equal(t, "gemini-2.5-flash-tts", converted.SpeechRequest.Model)
+				assert.Equal(t, "wav", converted.SpeechRequest.Params.ResponseFormat)
+
+				request, err := gemini.ToGeminiSpeechRequest(converted.SpeechRequest)
+				require.NoError(t, err)
+				require.NotNil(t, request.GenerationConfig.SpeechConfig)
+				assert.Equal(t, "Kore", request.GenerationConfig.SpeechConfig.VoiceConfig.PrebuiltVoiceConfig.VoiceName)
+			})
+		}
+	}
+}
+
+// speechCaptureUpstream records the body of the last request and answers with audio.
+type speechCaptureUpstream struct {
+	mu   sync.Mutex
+	body []byte
+}
+
+func (u *speechCaptureUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	u.mu.Lock()
+	u.body = body
+	u.mu.Unlock()
+	w.Header().Set("Content-Type", "audio/mpeg")
+	_, _ = w.Write([]byte("ID3-audio"))
+}
+
+func (u *speechCaptureUpstream) last() []byte {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.body
+}
+
+type openAISpeechTestAccount struct{ baseURL string }
+
+func (a openAISpeechTestAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+func (a openAISpeechTestAccount) GetKeysForProvider(_ context.Context, p schemas.ModelProvider) ([]schemas.Key, error) {
+	if p != schemas.OpenAI {
+		return nil, nil
+	}
+	return []schemas.Key{{ID: "openai-speech-test-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 1.0}}, nil
+}
+
+func (a openAISpeechTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	if p != schemas.OpenAI {
+		return nil, fmt.Errorf("unsupported provider %s", p)
+	}
+	network := schemas.DefaultNetworkConfig
+	network.BaseURL = a.baseURL
+	return &schemas.ProviderConfig{NetworkConfig: network, ConcurrencyAndBufferSize: schemas.DefaultConcurrencyAndBufferSize}, nil
+}
+
+// TestOpenAISpeechRouteForwardsExtraParamsOnlyWhenNestedAndOptedIn pins how a provider-specific speech
+// field (a Cloud TTS volume_gain_db) reaches the provider on the OpenAI-compatible route: nested under
+// extra_params with x-bf-passthrough-extra-params: true, the same opt-in chat completions use.
+func TestOpenAISpeechRouteForwardsExtraParamsOnlyWhenNestedAndOptedIn(t *testing.T) {
+	upstream := &speechCaptureUpstream{}
+	server := httptest.NewServer(upstream)
+	defer server.Close()
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: openAISpeechTestAccount{baseURL: server.URL},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	r := router.New()
+	NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+
+	send := func(optIn bool, body string) []byte {
+		var ctx fasthttp.RequestCtx
+		ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+		ctx.Request.SetRequestURI("/openai/v1/audio/speech")
+		ctx.Request.Header.SetContentType("application/json")
+		if optIn {
+			ctx.Request.Header.Set("x-bf-passthrough-extra-params", "true")
+		}
+		ctx.Request.SetBodyString(body)
+		r.Handler(&ctx)
+		require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+		return upstream.last()
+	}
+
+	t.Run("nested under extra_params with the header reaches the provider", func(t *testing.T) {
+		sent := send(true, `{"model":"openai/tts-1","input":"hello","voice":"alloy","extra_params":{"volume_gain_db":3}}`)
+		assert.Equal(t, float64(3), gjson.GetBytes(sent, "volume_gain_db").Num, "sent: %s", sent)
+		assert.False(t, gjson.GetBytes(sent, "extra_params").Exists(), "the wrapper itself must not reach the provider: %s", sent)
+	})
+	t.Run("nested without the header stays out", func(t *testing.T) {
+		sent := send(false, `{"model":"openai/tts-1","input":"hello","voice":"alloy","extra_params":{"volume_gain_db":3}}`)
+		assert.False(t, gjson.GetBytes(sent, "volume_gain_db").Exists(), "sent: %s", sent)
+	})
+}
+
+// speechAudioUpstream answers every request with fixed audio bytes.
+type speechAudioUpstream struct{ audio []byte }
+
+func (u speechAudioUpstream) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	_, _ = w.Write(u.audio)
+}
+
+// TestOpenAISpeechRouteLabelsTheAudioItReturns pins that the Content-Type and the attachment filename
+// follow the audio, not a fixed mp3 label.
+func TestOpenAISpeechRouteLabelsTheAudioItReturns(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		format      string
+		audio       []byte
+		contentType string
+		filename    string
+	}{
+		{"wav", "wav", []byte("RIFF\x24\x00\x00\x00WAVEfmt "), "audio/wav", "speech.wav"},
+		{"ogg opus", "opus", []byte("OggS\x00\x02opus-frames"), "audio/ogg", "speech.opus"},
+		{"flac", "flac", []byte("fLaC\x00\x00\x00\x22flac-frames"), "audio/flac", "speech.flac"},
+		{"mp3", "mp3", []byte("ID3\x04\x00mp3-frames"), "audio/mpeg", "speech.mp3"},
+		{"no format", "", []byte("ID3\x04\x00mp3-frames"), "audio/mpeg", "speech.mp3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(speechAudioUpstream{audio: tc.audio})
+			defer server.Close()
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+				Account: openAISpeechTestAccount{baseURL: server.URL},
+				Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			t.Cleanup(client.Shutdown)
+			r := router.New()
+			NewOpenAIRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next })
+
+			body := `{"model":"openai/tts-1","input":"hello","voice":"alloy"`
+			if tc.format != "" {
+				body += `,"response_format":"` + tc.format + `"`
+			}
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI("/openai/v1/audio/speech")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(body + "}")
+			r.Handler(&ctx)
+
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), "body: %s", ctx.Response.Body())
+			assert.Equal(t, tc.audio, ctx.Response.Body())
+			assert.Equal(t, tc.contentType, string(ctx.Response.Header.ContentType()))
+			assert.Equal(t, "attachment; filename="+tc.filename, string(ctx.Response.Header.Peek("Content-Disposition")))
+		})
+	}
+}
+
+// OpenAI's /v1/images/edits also takes application/json with images referenced by image_url, so
+// the native route must read that form instead of failing multipart parsing.
+func TestParseOpenAIImageEditRequest_JSONImageURL(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"model":"gpt-image-2","prompt":"make it frosted","size":"1024x1024","stream":true,` +
+		`"images":[{"image_url":"https://example.com/scones.jpg"},{"image_url":"data:image/png;base64,aGk="}],` +
+		`"mask":{"image_url":"data:image/png;base64,bWFzaw=="}}`)
+
+	req := &openai.OpenAIImageEditRequest{}
+	require.NoError(t, parseOpenAIImageEditMultipartRequest(ctx, req))
+	assert.Equal(t, "gpt-image-2", req.Model)
+	require.NotNil(t, req.Input)
+	assert.Equal(t, "make it frosted", req.Input.Prompt)
+	require.Len(t, req.Input.Images, 2)
+	assert.Equal(t, "https://example.com/scones.jpg", req.Input.Images[0].URL)
+	assert.Equal(t, "data:image/png;base64,aGk=", req.Input.Images[1].URL)
+	assert.Equal(t, []byte("mask"), req.Mask)
+	require.NotNil(t, req.Size)
+	assert.Equal(t, "1024x1024", *req.Size)
+	require.NotNil(t, req.Stream)
+	assert.True(t, *req.Stream)
+}
+
+// A file_id reference cannot be carried through Bifrost, so it is refused rather than dropped.
+func TestParseOpenAIImageEditRequest_JSONFileIDRefused(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(`{"model":"gpt-image-2","prompt":"p","images":[{"file_id":"file-abc"}]}`)
+	err := parseOpenAIImageEditMultipartRequest(ctx, &openai.OpenAIImageEditRequest{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "file_id")
 }

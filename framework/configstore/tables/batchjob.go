@@ -11,6 +11,12 @@ import (
 const (
 	ProviderJobKindBatch = "batch"
 	ProviderJobKindVideo = "video"
+	// ProviderJobKindRelay is an async job a relay route started. Its
+	// Provider column holds the endpoint name.
+	ProviderJobKindRelay = "relay"
+	// ProviderJobKindInteraction is a stored run the provider reports on every read, such as a
+	// Gemini Interaction reached through passthrough.
+	ProviderJobKindInteraction = "interaction"
 )
 
 // Accounting lifecycle states for a TableProviderJob.
@@ -48,7 +54,7 @@ type TableProviderJob struct {
 	// for no gain.
 	JobID    string `gorm:"column:batch_id;type:varchar(255);uniqueIndex:idx_batch_jobs_identity_v2,priority:3;not null" json:"batch_id"`
 	Model    string `gorm:"type:varchar(255)" json:"model,omitempty"`
-	Endpoint string `gorm:"type:varchar(255)" json:"endpoint,omitempty"`
+	Endpoint string `gorm:"type:text" json:"endpoint,omitempty"` // a relay job's route glob, which has no length cap
 
 	// Params is the kind's JSON-encoded request dimensions, captured at submission.
 	// It is load-bearing for video: a provider's retrieve response usually reports
@@ -56,7 +62,7 @@ type TableProviderJob struct {
 	// on exist nowhere else by the time settlement runs.
 	Params *string `gorm:"type:text" json:"params,omitempty"`
 
-	ProviderStatus string  `gorm:"type:varchar(50)" json:"provider_status,omitempty"`
+	ProviderStatus string  `gorm:"type:text" json:"provider_status,omitempty"` // a relay job's status is any field the admin picks, so no length cap
 	InputFileID    string  `gorm:"type:varchar(255);index:idx_batch_jobs_input_file_id" json:"input_file_id,omitempty"`
 	OutputFileID   *string `gorm:"type:varchar(255);index:idx_batch_jobs_output_file_id" json:"output_file_id,omitempty"`
 	ErrorFileID    *string `gorm:"type:varchar(255);index:idx_batch_jobs_error_file_id" json:"error_file_id,omitempty"`

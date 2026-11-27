@@ -27,6 +27,19 @@ export type MCPSessionStatus = "active" | "orphaned" | "pending" | "needs_reauth
 export interface MCPClientSummary {
 	client_id: string;
 	name: string;
+	// per_user_discovery: session rows only. Each caller keeps their own
+	// discovery on this server; absent when the server keeps one shared one.
+	per_user_discovery?: boolean;
+}
+
+// MCPSessionDiscovery is what Bifrost discovered with a credential row's
+// binding on a server with per_user_discovery on.
+export interface MCPSessionDiscovery {
+	discovered_at: string;
+	tool_count: number;
+	prompt_count: number;
+	// resource_count counts resources and resource templates together.
+	resource_count: number;
 }
 
 export interface VirtualKeySummary {
@@ -79,6 +92,16 @@ export interface MCPSessionRow {
 	// kind === "flow" rows — those are completed via /api/oauth/per-user/
 	// flows/{id}/start, not /reauth, and the UI's flow branch ignores this field.
 	can_reauth: boolean;
+	// can_refresh mirrors what POST /refresh accepts for this row: an active token or header
+	// credential of a user or virtual-key caller on a server with per_user_discovery on, refreshable
+	// by the same callers as can_reauth. The UI offers Refresh tools only when true.
+	can_refresh?: boolean;
+	// owned_by_caller: the row is bound to the calling user's own identity (user mode, their user
+	// ID), which they manage end to end.
+	owned_by_caller?: boolean;
+	// discovery: token and header rows of user and virtual-key callers on a
+	// server with per_user_discovery on, when the binding holds one.
+	discovery?: MCPSessionDiscovery | null;
 }
 
 export interface MCPSessionsListResponse {
@@ -126,6 +149,14 @@ export interface MCPSessionReauthResponse {
 	kind?: "oauth" | "headers";
 }
 
+// MCPSessionRefreshResponse is what POST /refresh found with the row's stored credential.
+export interface MCPSessionRefreshResponse {
+	status: string;
+	tool_count: number;
+	prompt_count: number;
+	resource_count: number; // resources plus resource templates
+}
+
 export interface MCPFlowDetail {
 	id: string;
 	flow_mode: AuthMode;
@@ -147,3 +178,17 @@ export interface MCPFlowDetail {
 export interface MCPFlowStartResponse {
 	authorize_url: string;
 }
+
+// The page a sign-in starts from, which the OAuth callback returns a signed-in caller to.
+export type MCPSessionConnectOrigin = "home";
+
+export interface MCPSessionConnectRequest {
+	mcp_client_id: string;
+	origin?: MCPSessionConnectOrigin;
+}
+
+// POST /mcp/sessions/connect: an OAuth sign-in answers the provider's authorize URL to open;
+// a header submission answers the flow to submit to and the header names it needs.
+export type MCPSessionConnectResponse =
+	| { kind: "oauth"; flow_id: string; authorize_url: string }
+	| { kind: "headers"; flow_id: string; required_header_keys: string[]; missing_header_keys: string[] };

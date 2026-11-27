@@ -6,11 +6,13 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1444,6 +1446,203 @@ func TestUsesAnthropicInvokePath_ToolSearch(t *testing.T) {
 	})
 }
 
+// Converse drops Claude's computer tools, so a Claude Responses request that
+// carries one must take InvokeModel. Nova has no computer tool and stays on Converse.
+func TestUsesAnthropicInvokePath_ComputerTools(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	for _, toolType := range []schemas.ResponsesToolType{schemas.ResponsesToolTypeComputer, schemas.ResponsesToolTypeComputerUsePreview} {
+		t.Run(string(toolType)+" on claude routes to invoke", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: "us.anthropic.claude-opus-5-5", Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			}}
+			require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+		})
+		t.Run(string(toolType)+" on nova stays on converse", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: "amazon.nova-pro-v1:0", Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{Type: toolType}},
+			}}
+			require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+		})
+	}
+}
+
+// Converse has no content block for tool_addition / tool_removal, so a request carrying
+// them (or a replayed compaction with tool_changes) must reach InvokeModel to keep them.
+func TestResponsesUsesAnthropicInvokePath_ToolChanges(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	model := "us.anthropic.claude-opus-5-5"
+	user := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(text)}}
+	}
+	system := func(blocks ...schemas.ResponsesMessageContentBlock) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem), Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+	}
+	developer := func(blocks ...schemas.ResponsesMessageContentBlock) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper), Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+	}
+	text := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("reminder")}
+	removal := schemas.ResponsesMessageContentBlock{
+		Type:       schemas.ResponsesInputMessageContentBlockTypeToolRemoval,
+		ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather")},
+	}
+	addition := schemas.ResponsesMessageContentBlock{
+		Type:       schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+		ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather")},
+	}
+	compaction := schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Content: &schemas.ResponsesMessageContent{
+		ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:                                    schemas.ResponsesOutputMessageContentTypeCompaction,
+			ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{Summary: "s", ToolChanges: []schemas.ResponsesMessageContentBlock{addition}},
+		}},
+	}}
+
+	for _, tc := range []struct {
+		name  string
+		model string
+		input []schemas.ResponsesMessage
+		want  bool
+	}{
+		{"tool_removal on a system message routes to invoke", model, []schemas.ResponsesMessage{user("hi"), system(text, removal)}, true},
+		{"tool_addition on a system message routes to invoke", model, []schemas.ResponsesMessage{user("hi"), system(addition)}, true},
+		{"tool_addition on a developer message routes to invoke", model, []schemas.ResponsesMessage{user("hi"), developer(addition)}, true},
+		{"compaction tool_changes route to invoke", model, []schemas.ResponsesMessage{user("hi"), compaction, user("go on")}, true},
+		{"plain system message stays on converse", model, []schemas.ResponsesMessage{user("hi"), system(text)}, false},
+		{"non-Claude model stays on converse", "amazon.nova-pro-v1:0", []schemas.ResponsesMessage{user("hi"), system(removal)}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{Model: tc.model, Input: tc.input, Params: &schemas.ResponsesParameters{}}
+			require.Equal(t, tc.want, responsesUsesAnthropicInvokePath(ctx, req))
+		})
+	}
+	t.Run("nil params still routes on input", func(t *testing.T) {
+		req := &schemas.BifrostResponsesRequest{Model: model, Input: []schemas.ResponsesMessage{user("hi"), system(removal)}}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+}
+
+// BenchmarkResponsesUsesAnthropicInvokePath measures the Converse-vs-InvokeModel decision on a
+// 400-turn Claude Code input: the common case (no tool-change blocks, full walk) and one with a
+// tool_removal block near the end.
+func BenchmarkResponsesUsesAnthropicInvokePath(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	build := func(withToolChange bool) *schemas.BifrostResponsesRequest {
+		input := make([]schemas.ResponsesMessage, 0, 401)
+		for i := range 400 {
+			role := schemas.ResponsesInputMessageRoleUser
+			if i%2 == 1 {
+				role = schemas.ResponsesInputMessageRoleAssistant
+			}
+			input = append(input, schemas.ResponsesMessage{Role: schemas.Ptr(role), Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("x")}},
+			}})
+		}
+		if withToolChange {
+			input = append(input, schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem), Content: &schemas.ResponsesMessageContent{
+				ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type:       schemas.ResponsesInputMessageContentBlockTypeToolRemoval,
+					ToolChange: &schemas.ResponsesToolChangeTarget{Type: schemas.ResponsesToolChangeTargetTypeToolReference, Name: schemas.Ptr("Old")},
+				}},
+			}})
+		}
+		return &schemas.BifrostResponsesRequest{
+			Model: "us.anthropic.claude-opus-5-5", Input: input,
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather")}}},
+		}
+	}
+	for _, bc := range []struct {
+		name string
+		req  *schemas.BifrostResponsesRequest
+	}{
+		{"no tool-change blocks", build(false)},
+		{"one tool_removal block", build(true)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = responsesUsesAnthropicInvokePath(ctx, bc.req)
+			}
+		})
+	}
+}
+
+// Bedrock rejects a toolset pair tagged on one half only. The InvokeModel body
+// must carry the toolset bare and toolset_name on both the tool_use and its tool_result.
+func TestInvokeAnthropicBody_ComputerToolsetReplayKeepsToolsetName(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	provider := &BedrockProvider{}
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Click the red square."},
+		{"type":"function_call","id":"fc_1","call_id":"toolu_bdrk_01","name":"screenshot","arguments":"{}","toolset_name":"computer","status":"completed"},
+		{"type":"function_call_output","call_id":"toolu_bdrk_01","output":"captured","toolset_name":"computer"}
+	]`), &input))
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-opus-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeComputer}}},
+	}
+	require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	tools := gjson.GetBytes(body, "tools").Array()
+	require.Len(t, tools, 1, "body=%s", body)
+	assert.Equal(t, "computer_toolset_20260801", tools[0].Get("type").String(), "body=%s", body)
+	assert.False(t, tools[0].Get("name").Exists(), "a toolset entry rejects name: %s", body)
+	assert.False(t, gjson.GetBytes(body, "anthropic_beta").Exists(), "the toolset needs no beta on InvokeModel: %s", body)
+	call := gjson.GetBytes(body, "messages.1.content.0")
+	assert.Equal(t, "tool_use", call.Get("type").String(), "body=%s", body)
+	assert.Equal(t, "screenshot", call.Get("name").String())
+	assert.Equal(t, "computer", call.Get("toolset_name").String(), "body=%s", body)
+	result := gjson.GetBytes(body, "messages.2.content.0")
+	assert.Equal(t, "tool_result", result.Get("type").String(), "body=%s", body)
+	assert.Equal(t, "computer", result.Get("toolset_name").String(), "body=%s", body)
+}
+
+// A /v1/responses client replays Claude's tool search as the JSON tool_search_call
+// Bifrost returned. The InvokeModel body must carry it back as the server_tool_use +
+// tool_search_tool_result pair (references nested in content), not drop it.
+func TestInvokeAnthropicBody_ToolSearchReplayKeepsServerBlocks(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	provider := &BedrockProvider{}
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"Summarize source 1"},
+		{"id":"srvtoolu_bdrk_01","arguments":{"query":"summarize_source_1"},"call_id":"srvtoolu_bdrk_01","status":"completed","type":"tool_search_call","name":"tool_search_tool_bm25","tool_references":["summarize_source_1"]},
+		{"type":"function_call","id":"fc_1","call_id":"toolu_bdrk_01","name":"summarize_source_1","arguments":"{\"request\":\"summarize\"}","status":"completed"},
+		{"type":"function_call_output","call_id":"toolu_bdrk_01","output":"Harry James Potter was born 31 July 1980."}
+	]`), &input))
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-opus-4-6-v1",
+		Input:    input,
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolTypeToolSearch, Name: new("tool_search_tool_bm25")},
+			{
+				Type: schemas.ResponsesToolTypeFunction, Name: new("summarize_source_1"), DeferLoading: new(true),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+			},
+		}},
+	}
+	require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	assistant := gjson.GetBytes(body, "messages.1")
+	require.Equal(t, "assistant", assistant.Get("role").String(), "body=%s", body)
+	assert.Equal(t, "server_tool_use", assistant.Get("content.0.type").String(), "body=%s", body)
+	assert.Equal(t, "srvtoolu_bdrk_01", assistant.Get("content.0.id").String())
+	assert.Equal(t, "tool_search_tool_bm25", assistant.Get("content.0.name").String())
+	assert.Equal(t, "summarize_source_1", assistant.Get("content.0.input.query").String())
+	assert.Equal(t, "tool_search_tool_result", assistant.Get("content.1.type").String(), "body=%s", body)
+	assert.Equal(t, "srvtoolu_bdrk_01", assistant.Get("content.1.tool_use_id").String())
+	assert.Equal(t, "tool_search_tool_search_result", assistant.Get("content.1.content.type").String(), "body=%s", body)
+	assert.Equal(t, "summarize_source_1", assistant.Get("content.1.content.tool_references.0.tool_name").String())
+	assert.Equal(t, "tool_use", assistant.Get("content.2.type").String())
+	assert.Equal(t, "toolu_bdrk_01", assistant.Get("content.2.id").String())
+}
+
 // CountTokens stays on the Converse count-tokens envelope for ordinary
 // requests, but a request that is routed to InvokeModel must be counted with
 // the same body it will be sent with. AWS's CountTokens input is a union of
@@ -1919,6 +2118,282 @@ func TestToBedrockConverseRequest_InvokeToolSearchReplay(t *testing.T) {
 	assert.Equal(t, "server_tool_use", roundTripped[0].Get("type").String())
 	assert.Equal(t, "weather", roundTripped[0].Get("input.pattern").String(),
 		"the replayed block lost its search query on the way back out: %s", string(encoded))
+}
+
+const toolReferenceInvokeBody = `{
+	"anthropic_version": "bedrock-2023-05-31",
+	"anthropic_beta": ["tool-search-tool-2025-10-19"],
+	"max_tokens": 400,
+	"tools": [
+		{"name": "tool_search", "description": "Load deferred tool definitions by name.",
+		 "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+		{"name": "fetch_weather_report", "description": "Get weather.", "defer_loading": true,
+		 "input_schema": {"type": "object", "properties": {"zq_city_code_v7": {"type": "string", "description": "IATA city code"}}, "required": ["zq_city_code_v7"]}}
+	],
+	"messages": [
+		{"role": "user", "content": "Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it."},
+		{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "tool_search", "input": {"query": "select:fetch_weather_report"}}]},
+		{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": %s}]}
+	]
+}`
+
+const (
+	toolReferenceOnlyContent     = `[{"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+	toolReferenceAndTextContent  = `[{"type": "text", "text": "Found 1 tool"}, {"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+	toolReferenceAndImageContent = `[{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}}, {"type": "tool_reference", "tool_name": "fetch_weather_report"}]`
+)
+
+func toolReferenceResponsesRequest(tb testing.TB, ctx *schemas.BifrostContext, toolResultContent string) *schemas.BifrostResponsesRequest {
+	tb.Helper()
+	var req BedrockInvokeRequest
+	require.NoError(tb, sonic.Unmarshal([]byte(fmt.Sprintf(toolReferenceInvokeBody, toolResultContent)), &req))
+	req.ModelID = "us.anthropic.claude-sonnet-5-5"
+	bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(tb, err)
+	return bifrostReq
+}
+
+func toolReferenceFunctionCallOutput(t *testing.T, req *schemas.BifrostResponsesRequest) *schemas.ResponsesToolMessageOutputStruct {
+	t.Helper()
+	for i := range req.Input {
+		m := &req.Input[i]
+		if m.Type != nil && *m.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+			m.ResponsesToolMessage != nil && m.ResponsesToolMessage.CallID != nil && *m.ResponsesToolMessage.CallID == "toolu_01" {
+			require.NotNil(t, m.ResponsesToolMessage.Output)
+			return m.ResponsesToolMessage.Output
+		}
+	}
+	t.Fatalf("no function_call_output for toolu_01 in %+v", req.Input)
+	return nil
+}
+
+func TestToBedrockConverseRequest_InvokeToolResultKeepsToolReference(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("reference only", func(t *testing.T) {
+		req := toolReferenceResponsesRequest(t, ctx, toolReferenceOnlyContent)
+		assert.True(t, responsesUsesAnthropicInvokePath(ctx, req), "a defer_loading request must route to InvokeModel")
+		out := toolReferenceFunctionCallOutput(t, req)
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 1, "tool_reference dropped at the invoke ingress: %+v", out)
+		block := out.ResponsesFunctionToolCallOutputBlocks[0]
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeToolReference, block.Type)
+		require.NotNil(t, block.ToolName)
+		assert.Equal(t, "fetch_weather_report", *block.ToolName)
+	})
+
+	t.Run("text and reference keep their order", func(t *testing.T) {
+		out := toolReferenceFunctionCallOutput(t, toolReferenceResponsesRequest(t, ctx, toolReferenceAndTextContent))
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 2, "got %+v", out)
+		text, ref := out.ResponsesFunctionToolCallOutputBlocks[0], out.ResponsesFunctionToolCallOutputBlocks[1]
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeText, text.Type)
+		require.NotNil(t, text.Text)
+		assert.Equal(t, "Found 1 tool", *text.Text)
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeToolReference, ref.Type)
+		require.NotNil(t, ref.ToolName)
+		assert.Equal(t, "fetch_weather_report", *ref.ToolName)
+	})
+
+	t.Run("image and reference keep their order", func(t *testing.T) {
+		out := toolReferenceFunctionCallOutput(t, toolReferenceResponsesRequest(t, ctx, toolReferenceAndImageContent))
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 2, "got %+v", out)
+		image, ref := out.ResponsesFunctionToolCallOutputBlocks[0], out.ResponsesFunctionToolCallOutputBlocks[1]
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeImage, image.Type)
+		require.NotNil(t, image.ResponsesInputMessageContentBlockImage)
+		require.NotNil(t, image.ResponsesInputMessageContentBlockImage.ImageURL)
+		assert.Equal(t, "data:image/png;base64,iVBORw0KGgo=", *image.ResponsesInputMessageContentBlockImage.ImageURL)
+		assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeToolReference, ref.Type)
+	})
+
+	t.Run("plain string result stays a string", func(t *testing.T) {
+		out := toolReferenceFunctionCallOutput(t, toolReferenceResponsesRequest(t, ctx, `"no tools found"`))
+		require.NotNil(t, out.ResponsesToolCallOutputStr)
+		assert.Equal(t, "no tools found", *out.ResponsesToolCallOutputStr)
+		assert.Nil(t, out.ResponsesFunctionToolCallOutputBlocks)
+	})
+}
+
+func TestInvokeAnthropicBody_ToolResultKeepsToolReference(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := &BedrockProvider{}
+	req := toolReferenceResponsesRequest(t, ctx, toolReferenceOnlyContent)
+	req.Provider = schemas.Bedrock
+
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	result := gjson.GetBytes(body, "messages.2.content.0")
+	require.Equal(t, "tool_result", result.Get("type").String(), "body=%s", body)
+	assert.Equal(t, "toolu_01", result.Get("tool_use_id").String())
+	require.Len(t, result.Get("content").Array(), 1, "body=%s", body)
+	assert.Equal(t, "tool_reference", result.Get("content.0.type").String(), "body=%s", body)
+	assert.Equal(t, "fetch_weather_report", result.Get("content.0.tool_name").String(), "body=%s", body)
+}
+
+func TestToBedrockResponsesRequest_ToolReferenceResultOnConverse(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	toolResultContent := func(t *testing.T, content string) []BedrockContentBlock {
+		converseReq, err := ToBedrockResponsesRequest(ctx, toolReferenceResponsesRequest(t, ctx, content))
+		require.NoError(t, err)
+		for _, msg := range converseReq.Messages {
+			for _, block := range msg.Content {
+				if block.ToolResult != nil && block.ToolResult.ToolUseID == "toolu_01" {
+					return block.ToolResult.Content
+				}
+			}
+		}
+		t.Fatalf("no toolResult for toolu_01 in %+v", converseReq.Messages)
+		return nil
+	}
+
+	t.Run("reference only", func(t *testing.T) {
+		content := toolResultContent(t, toolReferenceOnlyContent)
+		require.Len(t, content, 1)
+		require.NotNil(t, content[0].Text)
+		assert.Empty(t, *content[0].Text)
+	})
+	t.Run("text and reference", func(t *testing.T) {
+		content := toolResultContent(t, toolReferenceAndTextContent)
+		require.Len(t, content, 1)
+		require.NotNil(t, content[0].Text)
+		assert.Equal(t, "Found 1 tool", *content[0].Text)
+	})
+}
+
+func TestResponsesUsesAnthropicInvokePath_ToolReferenceResult(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	withoutTools := func(t *testing.T, content string) *schemas.BifrostResponsesRequest {
+		req := toolReferenceResponsesRequest(t, ctx, content)
+		req.Params.Tools = nil
+		return req
+	}
+
+	t.Run("reference in a tool result routes to invoke", func(t *testing.T) {
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, toolReferenceOnlyContent)))
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, toolReferenceAndTextContent)))
+	})
+	t.Run("plain tool result stays on converse", func(t *testing.T) {
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, withoutTools(t, `"no tools found"`)))
+	})
+	t.Run("non-anthropic model stays on converse", func(t *testing.T) {
+		req := withoutTools(t, toolReferenceOnlyContent)
+		req.Model = "amazon.nova-pro-v1:0"
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("reference with nil params routes to invoke", func(t *testing.T) {
+		req := withoutTools(t, toolReferenceOnlyContent)
+		req.Params = nil
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+	t.Run("plain tool result with nil params stays on converse", func(t *testing.T) {
+		req := withoutTools(t, `"no tools found"`)
+		req.Params = nil
+		require.False(t, responsesUsesAnthropicInvokePath(ctx, req))
+	})
+}
+
+func TestResponsesIngress_ToolReferenceResultReachesInvokeModel(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var input []schemas.ResponsesMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`[
+		{"type": "message", "role": "user", "content": "Use fetch_weather_report for Tokyo."},
+		{"type": "function_call", "call_id": "toolu_01", "name": "tool_search", "arguments": "{\"query\":\"select:fetch_weather_report\"}"},
+		{"type": "function_call_output", "call_id": "toolu_01", "output": [{"type": "tool_reference", "tool_name": "fetch_weather_report"}]}
+	]`), &input))
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(400)},
+	}
+	require.True(t, responsesUsesAnthropicInvokePath(ctx, req))
+
+	provider := &BedrockProvider{}
+	body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, provider.invokeBuildConfig(req.Model, false, true, nil))
+	require.Nil(t, bifrostErr)
+	result := gjson.GetBytes(body, `messages.#(role=="user")#.content.#(type=="tool_result")`).Array()
+	require.NotEmpty(t, result, "body=%s", body)
+	assert.Equal(t, "tool_reference", result[len(result)-1].Get("content.0.type").String(), "body=%s", body)
+	assert.Equal(t, "fetch_weather_report", result[len(result)-1].Get("content.0.tool_name").String(), "body=%s", body)
+}
+
+func BenchmarkResponsesUsesAnthropicInvokePath_ToolResult(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	for _, bc := range []struct{ name, content string }{
+		{"string_content", `"no tools found"`},
+		{"tool_reference", toolReferenceOnlyContent},
+	} {
+		var req BedrockInvokeRequest
+		if err := sonic.Unmarshal([]byte(fmt.Sprintf(toolReferenceInvokeBody, bc.content)), &req); err != nil {
+			b.Fatal(err)
+		}
+		req.ModelID = "us.anthropic.claude-sonnet-5-5"
+		responsesReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		responsesReq.Params.Tools = nil
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				responsesUsesAnthropicInvokePath(ctx, responsesReq)
+			}
+		})
+	}
+}
+
+// BenchmarkResponsesUsesAnthropicInvokePath_LongConversation pins the per-request cost of
+// the tool_reference input scan on a long agent conversation with no reference in it.
+func BenchmarkResponsesUsesAnthropicInvokePath_LongConversation(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	input := make([]schemas.ResponsesMessage, 0, 200)
+	for i := 0; i < 100; i++ {
+		callID := fmt.Sprintf("call_%d", i)
+		output := strings.Repeat("x", 64)
+		input = append(input,
+			schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: schemas.Ptr("lookup")},
+			},
+			schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: &callID,
+					Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: &output},
+				},
+			},
+		)
+	}
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-5-5",
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(400)},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		responsesUsesAnthropicInvokePath(ctx, req)
+	}
+}
+
+func BenchmarkInvokeIngress_ToolResult(b *testing.B) {
+	for _, bc := range []struct{ name, content string }{
+		{"string_content", `"no tools found"`},
+		{"tool_reference", toolReferenceOnlyContent},
+	} {
+		raw := []byte(fmt.Sprintf(toolReferenceInvokeBody, bc.content))
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				var req BedrockInvokeRequest
+				if err := sonic.Unmarshal(raw, &req); err != nil {
+					b.Fatal(err)
+				}
+				if _, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }
 
 // --- Regression tests for #7649: the /invoke egress dropped the extended-thinking token
@@ -2423,13 +2898,13 @@ func TestBedrockInvokeRequest_ApplyGuardrailHeaders(t *testing.T) {
 // identifier or version, or no config at all, adds nothing.
 func TestInvokeGuardrailHeaders(t *testing.T) {
 	extra := map[string]any{"guardrailConfig": map[string]any{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "trace": "enabled_full"}}
-	static := map[string]string{"X-Custom": "kept"}
+	static := schemas.NewSecretVarMap(map[string]string{"X-Custom": "kept"})
 
 	got := invokeGuardrailHeaders(static, extra)
-	assert.Equal(t, "gr-1", got[guardrailIdentifierHeader])
-	assert.Equal(t, "3", got[guardrailVersionHeader])
-	assert.Equal(t, "ENABLED_FULL", got[guardrailTraceHeader])
-	assert.Equal(t, "kept", got["X-Custom"])
+	assert.Equal(t, "gr-1", got[guardrailIdentifierHeader].Val)
+	assert.Equal(t, "3", got[guardrailVersionHeader].Val)
+	assert.Equal(t, "ENABLED_FULL", got[guardrailTraceHeader].Val)
+	assert.Equal(t, "kept", got["X-Custom"].Val)
 	assert.NotContains(t, static, guardrailIdentifierHeader, "the shared provider headers are not mutated")
 
 	assert.Equal(t, static, invokeGuardrailHeaders(static, nil))
@@ -2444,22 +2919,22 @@ func TestInvokeGuardrailHeaders(t *testing.T) {
 	// The stream headers carry the guardrail alongside identity encoding.
 	provider := &BedrockProvider{}
 	stream := provider.invokeStreamHeaders(extra)
-	assert.Equal(t, "identity", stream["Accept-Encoding"])
-	assert.Equal(t, "gr-1", stream[guardrailIdentifierHeader])
+	assert.Equal(t, "identity", stream["Accept-Encoding"].Val)
+	assert.Equal(t, "gr-1", stream[guardrailIdentifierHeader].Val)
 }
 
 // TestInvokeGuardrailHeaders_DoesNotMutateSharedHeaders: with no per-request guardrail config
 // the provider's static headers are returned as-is, and a configured trace header must not be
 // rewritten in place (that map is shared by every concurrent request).
 func TestInvokeGuardrailHeaders_DoesNotMutateSharedHeaders(t *testing.T) {
-	static := map[string]string{guardrailTraceHeader: "enabled", "X-Custom": "kept"}
+	static := schemas.NewSecretVarMap(map[string]string{guardrailTraceHeader: "enabled", "X-Custom": "kept"})
 	_ = invokeGuardrailHeaders(static, nil)
-	assert.Equal(t, "enabled", static[guardrailTraceHeader])
+	assert.Equal(t, "enabled", static[guardrailTraceHeader].Val)
 
 	withConfig := map[string]any{"guardrailConfig": map[string]any{"guardrailIdentifier": "gr-1", "guardrailVersion": "3", "trace": "enabled"}}
 	got := invokeGuardrailHeaders(static, withConfig)
-	assert.Equal(t, "ENABLED", got[guardrailTraceHeader])
-	assert.Equal(t, "enabled", static[guardrailTraceHeader])
+	assert.Equal(t, "ENABLED", got[guardrailTraceHeader].Val)
+	assert.Equal(t, "enabled", static[guardrailTraceHeader].Val)
 	assert.NotContains(t, static, guardrailIdentifierHeader)
 }
 
@@ -2648,8 +3123,10 @@ func TestInvokeChatGuardTagging_RendersMarkersAsInlineTags(t *testing.T) {
 	assert.False(t, gjson.GetBytes(body, "guardrailConfig").Exists(), "%s", body)
 	assert.Contains(t, string(body), queryOpen+"What is the capital of France?"+queryClosing)
 
-	plain := &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
-		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}}}}
+	plain := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello")}}},
+	}
 	same, none, err := invokeChatGuardTagging(plain)
 	require.NoError(t, err)
 	assert.Same(t, plain, same)
@@ -2709,12 +3186,16 @@ func TestGuardTagSuffixValidation_InvokePath(t *testing.T) {
 	userRole := schemas.ResponsesInputMessageRoleUser
 	build := func(suffix string) (*schemas.BifrostResponsesRequest, *schemas.BifrostChatRequest) {
 		extra := map[string]any{"guardrailConfig": map[string]any{"guardrailIdentifier": "gr", "guardrailVersion": "1", "tagSuffix": suffix}}
-		responses := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
+		responses := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
 			Input:  []schemas.ResponsesMessage{{Role: &userRole, Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
-			Params: &schemas.ResponsesParameters{ExtraParams: extra}}
-		chat := &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
+			Params: &schemas.ResponsesParameters{ExtraParams: extra},
+		}
+		chat := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock, Model: "us.anthropic.claude-sonnet-4-6",
 			Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}},
-			Params: &schemas.ChatParameters{ExtraParams: extra}}
+			Params: &schemas.ChatParameters{ExtraParams: extra},
+		}
 		return responses, chat
 	}
 	for _, bad := range []string{"xy>z", "with space", "toolongtoolongtoolong", "ünïcode", "a-b"} {
@@ -2995,6 +3476,652 @@ func TestInvokeIngressCarriesEagerInputStreaming(t *testing.T) {
 			}
 			wantBeta := tc.wantEager != nil && *tc.wantEager
 			assert.Equal(t, wantBeta, slices.Contains(betas, anthropic.AnthropicEagerInputStreamingBetaHeader), "anthropic_beta = %v", betas)
+		})
+	}
+}
+
+// An InvokeModel body is where AWS documents disable_parallel_tool_use for Claude; converting
+// it to Converse must keep the instruction instead of dropping it with the rest of tool_choice.
+func TestToBedrockConverseRequest_InvokeDisableParallelToolUse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		choice map[string]interface{}
+		want   *bool
+	}{
+		{"disable true", map[string]interface{}{"type": "auto", "disable_parallel_tool_use": true}, schemas.Ptr(false)},
+		{"disable false", map[string]interface{}{"type": "any", "disable_parallel_tool_use": false}, schemas.Ptr(true)},
+		{"absent", map[string]interface{}{"type": "auto"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &BedrockInvokeRequest{
+				ModelID: "global.anthropic.claude-sonnet-4-6",
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("Weather in Tokyo, Paris and Lima?")}}},
+				},
+				Tools:      []interface{}{anthropicToolMap("get_weather", nil)},
+				ToolChoice: tc.choice,
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, bifrostReq.Params.ParallelToolCalls)
+		})
+	}
+}
+
+// TestInvokeIngressTopLevelCacheControlBecomesCachePoint covers the /bedrock/model/{id}/invoke
+// ingress for issue #8541: an Anthropic-dialect invoke body with a top-level cache_control is
+// served over Converse, so the automatic breakpoint must survive invoke -> Converse -> Bifrost
+// -> Converse and land as a trailing cachePoint on the last message.
+func TestInvokeIngressTopLevelCacheControlBecomesCachePoint(t *testing.T) {
+	body := []byte(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":64,` +
+		`"cache_control":{"type":"ephemeral","ttl":"1h"},` +
+		`"system":"You are a helpful assistant.",` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"Say OK."}]}]}`)
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal(body, &req))
+	req.ModelID = "eu.anthropic.claude-sonnet-5-5"
+
+	converseReq := req.ToBedrockConverseRequest()
+	require.NotNil(t, converseReq)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotEmpty(t, out.Messages)
+	last := out.Messages[len(out.Messages)-1].Content
+	require.GreaterOrEqual(t, len(last), 2, "last message content: %+v", last)
+	cp := last[len(last)-1].CachePoint
+	require.NotNil(t, cp, "top-level cache_control on the invoke body must become a trailing cachePoint: %+v", last)
+	require.NotNil(t, cp.TTL)
+	assert.Equal(t, "1h", *cp.TTL)
+}
+
+// invokeStreamMessageDeltaStopReason replays a ConverseStream turn through the production
+// converters behind /invoke-with-response-stream and returns message_delta.delta.stop_reason.
+func invokeStreamMessageDeltaStopReason(t *testing.T, events []*BedrockStreamEvent) string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	state := NewBedrockResponsesStreamState()
+
+	var stream []*schemas.BifrostResponsesStreamResponse
+	for i, event := range events {
+		out, bifrostErr, _ := event.ToBifrostResponsesStream(i, state)
+		require.Nil(t, bifrostErr)
+		stream = append(stream, out...)
+	}
+	stream = append(stream, FinalizeBedrockStream(state, len(events),
+		&schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}, nil)...)
+
+	stopReason := ""
+	for _, resp := range stream {
+		_, out, err := ToBedrockInvokeMessagesStreamResponse(ctx, resp)
+		require.NoError(t, err)
+		event, ok := out.(*BedrockStreamEvent)
+		if !ok || event == nil {
+			continue
+		}
+		for _, raw := range event.InvokeModelRawChunks {
+			if gjson.GetBytes(raw, "type").String() == "message_delta" {
+				stopReason = gjson.GetBytes(raw, "delta.stop_reason").String()
+			}
+		}
+	}
+	return stopReason
+}
+
+// TestToAnthropicInvokeStreamBytes_MessageDeltaStopReason is the regression test for #8550:
+// a Converse turn that ends in a tool call closed the invoke stream with stop_reason
+// "end_turn", so Anthropic-dialect clients treated it as finished and never ran the tool.
+// The non-streaming invoke converter already reports tool_use for the same turn.
+func TestToAnthropicInvokeStreamBytes_MessageDeltaStopReason(t *testing.T) {
+	idx := 0
+	textTurn := func(stopReason string) []*BedrockStreamEvent {
+		return []*BedrockStreamEvent{
+			{Role: schemas.Ptr("assistant")},
+			{ContentBlockIndex: &idx, Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("Hello")}},
+			{ContentBlockIndex: &idx, ContentBlockStop: true},
+			{StopReason: schemas.Ptr(stopReason)},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		events   []*BedrockStreamEvent
+		expected string
+	}{
+		{
+			name: "tool_use",
+			events: []*BedrockStreamEvent{
+				{Role: schemas.Ptr("assistant")},
+				{ContentBlockIndex: &idx, Start: &BedrockContentBlockStart{
+					ToolUse: &BedrockToolUseStart{ToolUseID: "tooluse_1", Name: "get_weather"},
+				}},
+				{ContentBlockIndex: &idx, Delta: &BedrockContentBlockDelta{
+					ToolUse: &BedrockToolUseDelta{Input: `{"city":"Paris"}`},
+				}},
+				{ContentBlockIndex: &idx, ContentBlockStop: true},
+				{StopReason: schemas.Ptr("tool_use")},
+			},
+			expected: "tool_use",
+		},
+		{name: "end_turn", events: textTurn("end_turn"), expected: "end_turn"},
+		{name: "max_tokens", events: textTurn("max_tokens"), expected: "max_tokens"},
+		{name: "guardrail_intervened", events: textTurn("guardrail_intervened"), expected: "refusal"},
+		{name: "model_context_window_exceeded", events: textTurn("model_context_window_exceeded"), expected: "model_context_window_exceeded"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, invokeStreamMessageDeltaStopReason(t, tt.events))
+		})
+	}
+}
+
+// BenchmarkToAnthropicInvokeStreamBytes_TerminalEvent measures the terminal event of an
+// invoke stream (message_delta + message_stop), which runs once per streamed turn.
+func BenchmarkToAnthropicInvokeStreamBytes_TerminalEvent(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeCompleted,
+		Response: &schemas.BifrostResponsesResponse{
+			StopReason: schemas.Ptr("tool_calls"),
+			Usage:      &schemas.ResponsesResponseUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := toAnthropicInvokeStreamBytes(ctx, resp); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// The invoke-with-response-stream route can be served by other providers, whose stop
+// reasons reach the terminal event without IncompleteDetails. Only reasons Anthropic
+// defines may reach message_delta.stop_reason.
+func TestToAnthropicInvokeStreamBytes_StopReasonWithoutIncompleteDetails(t *testing.T) {
+	tests := []struct {
+		stopReason string
+		expected   string
+	}{
+		{stopReason: "tool_calls", expected: "tool_use"},
+		{stopReason: "stop", expected: "end_turn"},
+		{stopReason: "compaction", expected: "compaction"},
+		{stopReason: "pause_turn", expected: "pause_turn"},
+		{stopReason: "guardrail_intervened", expected: "refusal"},
+		{stopReason: "content_filter", expected: "refusal"},
+		{stopReason: "some_future_reason", expected: "end_turn"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.stopReason, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeCompleted,
+				Response: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr(tt.stopReason)},
+			}
+			frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+			require.NoError(t, err)
+			require.NotEmpty(t, frames)
+			assert.Equal(t, tt.expected, gjson.GetBytes(frames[0], "delta.stop_reason").String())
+		})
+	}
+}
+
+func TestInvokeBuildConfig_ExcludesInternalConverseFields(t *testing.T) {
+	provider := &BedrockProvider{}
+	config := provider.invokeBuildConfig("us.anthropic.claude-sonnet-4-6", false, false, nil)
+
+	excluded := make(map[string]bool)
+	for _, f := range config.ExcludeFields {
+		excluded[f] = true
+	}
+
+	assert.True(t, excluded["guardrailConfig"], "guardrailConfig must be excluded")
+	assert.True(t, excluded["additionalModelRequestFieldPaths"], "additionalModelRequestFieldPaths must be excluded")
+	assert.True(t, excluded["additionalModelResponseFieldPaths"], "additionalModelResponseFieldPaths must be excluded")
+}
+
+// TestInvokeIngressCarriesToolStrict covers /bedrock/model/{modelId}/invoke with
+// AWS's strict tool example: convertAnthropicTools must keep tools[].strict on
+// its way through Converse, or the Converse egress sends the tool unenforced.
+// strict:false survives ingress but, being the default, stays off the egress wire.
+func TestInvokeIngressCarriesToolStrict(t *testing.T) {
+	for _, strict := range []bool{true, false} {
+		t.Run("strict="+strconv.FormatBool(strict), func(t *testing.T) {
+			tool := anthropicToolMap("get_weather", nil)
+			tool["strict"] = strict
+			req := &BedrockInvokeRequest{
+				ModelID: "us.anthropic.claude-sonnet-4-6-v1:0",
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("What's the weather like in San Francisco?")}}},
+				},
+				Tools: []interface{}{tool},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.Len(t, bifrostReq.Params.Tools, 1)
+			require.NotNil(t, bifrostReq.Params.Tools[0].ResponsesToolFunction)
+			assert.Equal(t, schemas.Ptr(strict), bifrostReq.Params.Tools[0].ResponsesToolFunction.Strict)
+
+			bifrostReq.Provider = schemas.Bedrock
+			egress, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			raw, err := sonic.Marshal(egress.ToolConfig)
+			require.NoError(t, err)
+			got := gjson.GetBytes(raw, "tools.0.toolSpec.strict")
+			if !strict {
+				assert.False(t, got.Exists(), "toolSpec.strict:false must stay off the Converse egress: %s", raw)
+				return
+			}
+			assert.True(t, got.Exists(), "toolSpec.strict dropped on the Converse egress: %s", raw)
+			assert.True(t, got.Bool())
+		})
+	}
+}
+
+// The InvokeModel body must send a tail system reminder in the same form at turn N and at N+1,
+// after Claude's tool_use reply is appended behind it, with the datasheet row held false as it
+// is for released gateways. Before the placement pass, the role-less function_call item made
+// the converter inline at N+1 a reminder it sent natively at N, which broke the cached prefix
+// at that reminder on every turn (Opus 5.5 on InvokeModel, 2026-11-16).
+func TestInvokeAnthropicBody_MidConvSystemReminderStableAcrossTurns(t *testing.T) {
+	no := false
+	providerUtils.SetCapabilityResolver(func(provider schemas.ModelProvider, _ string) *schemas.ModelCapabilities {
+		if provider == schemas.Bedrock {
+			return &schemas.ModelCapabilities{SupportsMidConversationSystem: &no}
+		}
+		return nil
+	})
+	t.Cleanup(func() { providerUtils.SetCapabilityResolver(nil) })
+
+	const reminder = "R1: the date is 2026-11-18."
+	turn := func(raw string) []byte {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		var input []schemas.ResponsesMessage
+		require.NoError(t, sonic.Unmarshal([]byte(raw), &input))
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "us.anthropic.claude-opus-5-5",
+			Input:    input,
+			Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("read"),
+				DeferLoading:          schemas.Ptr(true),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+			}}},
+		}
+		require.True(t, responsesUsesAnthropicInvokePath(ctx, req), "a deferred tool must take InvokeModel")
+		body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, req, (&BedrockProvider{}).invokeBuildConfig(req.Model, false, true, nil))
+		require.Nil(t, bifrostErr)
+		return body
+	}
+	head := `{"type":"message","role":"user","content":"q1"},
+		{"type":"message","role":"assistant","content":[{"type":"output_text","text":"a1"}]},
+		{"type":"message","role":"user","content":"q2"},
+		{"type":"message","role":"system","content":[{"type":"input_text","text":"` + reminder + `","cache_control":{"type":"ephemeral"}}]}`
+	reply := `,{"type":"function_call","call_id":"toolu_1","name":"read","arguments":"{}"},
+		{"type":"function_call_output","call_id":"toolu_1","output":"ok"}`
+
+	for _, body := range [][]byte{turn("[" + head + "]"), turn("[" + head + reply + "]")} {
+		msg := gjson.GetBytes(body, "messages.3")
+		assert.Equal(t, "system", msg.Get("role").String(), "messages=%s", gjson.GetBytes(body, "messages").Raw)
+		assert.Equal(t, reminder, msg.Get("content.0.text").String(), "messages=%s", gjson.GetBytes(body, "messages").Raw)
+		assert.Equal(t, "ephemeral", msg.Get("content.0.cache_control.type").String())
+	}
+}
+
+// invokeDocumentConverseBody pushes an InvokeModel body through the same chain the
+// /invoke and /invoke-with-response-stream routes use (decode, Converse shape, neutral
+// Responses request) and then the Converse egress, returning the body Bedrock receives.
+func invokeDocumentConverseBody(t *testing.T, body string) []byte {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+	req.ModelID = "us.anthropic.claude-sonnet-5-5"
+	bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	converseReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	out, err := sonic.Marshal(converseReq)
+	require.NoError(t, err)
+	return out
+}
+
+const (
+	invokeDocTextBlock   = `{"type":"document","title":"Notes","source":{"type":"text","media_type":"text/plain","data":"The secret word is PINEAPPLE."}}`
+	invokeDocPDFBlock    = `{"type":"document","title":"Report","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}`
+	invokeDocQuestionTxt = `{"type":"text","text":"What is the secret word?"}`
+)
+
+func TestInvokeRequest_DocumentBlockReachesConverse(t *testing.T) {
+	t.Run("text source is forwarded as txt bytes", func(t *testing.T) {
+		out := invokeDocumentConverseBody(t, `{"messages":[{"role":"user","content":[`+invokeDocQuestionTxt+`,`+invokeDocTextBlock+`]}]}`)
+		doc := gjson.GetBytes(out, "messages.0.content.1.document")
+		require.True(t, doc.Exists(), "document dropped on the invoke ingress: %s", out)
+		assert.Equal(t, "txt", doc.Get("format").String())
+		assert.Equal(t, "Notes", doc.Get("name").String())
+		decoded, err := base64.StdEncoding.DecodeString(doc.Get("source.bytes").String())
+		require.NoError(t, err)
+		assert.Equal(t, "The secret word is PINEAPPLE.", string(decoded))
+	})
+
+	t.Run("base64 pdf source is forwarded untouched", func(t *testing.T) {
+		out := invokeDocumentConverseBody(t, `{"messages":[{"role":"user","content":[`+invokeDocQuestionTxt+`,`+invokeDocPDFBlock+`]}]}`)
+		doc := gjson.GetBytes(out, "messages.0.content.1.document")
+		require.True(t, doc.Exists(), "document dropped on the invoke ingress: %s", out)
+		assert.Equal(t, "pdf", doc.Get("format").String())
+		assert.Equal(t, "Report", doc.Get("name").String())
+		assert.Equal(t, "JVBERi0xLjQK", doc.Get("source.bytes").String())
+	})
+
+	t.Run("untitled documents get distinct names", func(t *testing.T) {
+		untitled := `{"type":"document","source":{"type":"text","media_type":"text/plain","data":"a"}}`
+		out := invokeDocumentConverseBody(t, `{"messages":[{"role":"user","content":[`+untitled+`,`+untitled+`]}]}`)
+		names := gjson.GetBytes(out, "messages.0.content.#.document.name").Array()
+		require.Len(t, names, 2, "body=%s", out)
+		assert.NotEmpty(t, names[0].String())
+		assert.NotEqual(t, names[0].String(), names[1].String(), "Converse rejects duplicate document names: %s", out)
+	})
+
+	t.Run("cache_control becomes a cache point after the document", func(t *testing.T) {
+		cached := `{"type":"document","title":"Notes","cache_control":{"type":"ephemeral"},"source":{"type":"text","media_type":"text/plain","data":"x"}}`
+		out := invokeDocumentConverseBody(t, `{"messages":[{"role":"user","content":[`+cached+`]}]}`)
+		// Converse needs text beside a document, so a placeholder text block may precede it.
+		content := gjson.GetBytes(out, "messages.0.content").Array()
+		require.GreaterOrEqual(t, len(content), 2, "body=%s", out)
+		assert.True(t, content[len(content)-2].Get("document").Exists(), "body=%s", out)
+		assert.True(t, content[len(content)-1].Get("cachePoint").Exists(), "body=%s", out)
+	})
+
+	t.Run("document nested in tool_result survives", func(t *testing.T) {
+		out := invokeDocumentConverseBody(t, `{"messages":[`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"ok"},`+invokeDocTextBlock+`]}]}]}`)
+		content := gjson.GetBytes(out, "messages.1.content.0.toolResult.content")
+		require.Len(t, content.Array(), 2, "tool result flattened to text: %s", out)
+		assert.Equal(t, "ok", content.Get("0.text").String())
+		assert.Equal(t, "txt", content.Get("1.document.format").String())
+		assert.Equal(t, "Notes", content.Get("1.document.name").String())
+	})
+}
+
+func TestInvokeRequest_UnsupportedOrMalformedDocumentIsRejected(t *testing.T) {
+	cases := map[string]struct {
+		block   string
+		message string
+	}{
+		"url without url":         {`{"type":"document","source":{"type":"url"}}`, "requires source.url"},
+		"url with ftp scheme":     {`{"type":"document","source":{"type":"url","url":"ftp://example.com/a.pdf"}}`, `unsupported document url scheme "ftp"`},
+		"url with file scheme":    {`{"type":"document","source":{"type":"url","url":"file:///etc/passwd"}}`, `unsupported document url scheme "file"`},
+		"url without host":        {`{"type":"document","source":{"type":"url","url":"https:///report.pdf"}}`, "document url has no host"},
+		"url with s3 scheme":      {`{"type":"document","source":{"type":"url","url":"s3://bucket/key.pdf"}}`, `unsupported document url scheme "s3"`},
+		"url without scheme":      {`{"type":"document","source":{"type":"url","url":"example.com/a.pdf"}}`, `unsupported document url scheme ""`},
+		"content source":          {`{"type":"document","source":{"type":"content","content":[{"type":"text","text":"x"}]}}`, `unsupported document source type "content"`},
+		"file source":             {`{"type":"document","source":{"type":"file","file_id":"file_1"}}`, `unsupported document source type "file"`},
+		"missing source":          {`{"type":"document"}`, `unsupported document source type ""`},
+		"base64 without data":     {`{"type":"document","source":{"type":"base64","media_type":"application/pdf"}}`, "requires source.data"},
+		"base64 unknown type":     {`{"type":"document","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}`, "unsupported document media_type"},
+		"base64 without type":     {`{"type":"document","source":{"type":"base64","data":"AAAA"}}`, "unsupported document media_type"},
+		"text without data":       {`{"type":"document","source":{"type":"text","media_type":"text/plain"}}`, "requires source.data"},
+		"nested in tool_result":   {`{"type":"tool_result","tool_use_id":"t1","content":[{"type":"document","source":{"type":"file","file_id":"file_1"}}]}`, `unsupported document source type "file"`},
+		"tool_result bad content": {`{"type":"tool_result","tool_use_id":"t1","content":123}`, "invalid message content"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			var req BedrockInvokeRequest
+			err := sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[`+invokeDocQuestionTxt+`,`+tc.block+`]}]}`), &req)
+			require.Error(t, err, "a block that cannot be forwarded must fail the request, not be dropped: %+v", req.Messages)
+			assert.Contains(t, err.Error(), tc.message)
+		})
+	}
+}
+
+func TestInvokeRequest_StringContentMessageStillDecodesBesideBlocks(t *testing.T) {
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"messages":[`+
+		`{"role":"user","content":"plain string"},`+
+		`{"role":"user","content":[`+invokeDocQuestionTxt+`,`+invokeDocTextBlock+`]}]}`), &req))
+	require.Len(t, req.Messages, 2)
+	require.Len(t, req.Messages[0].Content, 1)
+	assert.Equal(t, "plain string", *req.Messages[0].Content[0].Text)
+	require.Len(t, req.Messages[1].Content, 2)
+	assert.NotNil(t, req.Messages[1].Content[1].Document)
+}
+
+func TestToBifrostResponsesRequest_ToolResultKeepsDocumentAndJSON(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var req BedrockConverseRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"modelId":"us.anthropic.claude-sonnet-5-5","messages":[`+
+		`{"role":"assistant","content":[{"toolUse":{"toolUseId":"toolu_01","name":"read","input":{}}}]},`+
+		`{"role":"user","content":[{"toolResult":{"toolUseId":"toolu_01","content":[`+
+		`{"json":{"rows":2}},{"document":{"format":"txt","name":"Notes","source":{"bytes":"UElORUFQUExF"}}}]}}]}]}`), &req))
+	bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+	out := toolReferenceFunctionCallOutput(t, bifrostReq)
+	require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 2, "got %+v", out)
+	jsonBlock, fileBlock := out.ResponsesFunctionToolCallOutputBlocks[0], out.ResponsesFunctionToolCallOutputBlocks[1]
+	require.NotNil(t, jsonBlock.Text)
+	assert.JSONEq(t, `{"rows":2}`, *jsonBlock.Text)
+	assert.Equal(t, schemas.ResponsesInputMessageContentBlockTypeFile, fileBlock.Type)
+	require.NotNil(t, fileBlock.ResponsesInputMessageContentBlockFile)
+	assert.Equal(t, "Notes", *fileBlock.ResponsesInputMessageContentBlockFile.Filename)
+}
+
+// A Converse tool_result holding a document beside a searchResult must keep the envelope, the
+// only form that carries the searchResult; building output blocks for the document drops it.
+func TestToBifrostResponsesRequest_ToolResultKeepsDocumentAndSearchResult(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var req BedrockConverseRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"modelId":"us.anthropic.claude-sonnet-5-5","messages":[`+
+		`{"role":"user","content":[{"text":"Search."}]},`+
+		`{"role":"assistant","content":[{"toolUse":{"toolUseId":"toolu_01","name":"search","input":{}}}]},`+
+		`{"role":"user","content":[{"toolResult":{"toolUseId":"toolu_01","content":[`+
+		`{"document":{"format":"txt","name":"Notes","source":{"bytes":"UElORUFQUExF"}}},`+
+		`{"searchResult":{"source":"https://example.com/kb","title":"KB","content":[{"text":"ORCHID-7731"}]}}]}}]}]}`), &req))
+	bifrostReq, err := req.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	converseReq, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	raw, err := sonic.Marshal(converseReq)
+	require.NoError(t, err)
+	content := gjson.GetBytes(raw, `messages.#(content.0.toolResult).content.0.toolResult.content`)
+	require.True(t, content.Exists(), "tool_result missing from the Converse egress: %s", raw)
+	assert.Equal(t, "Notes", content.Get("0.document.name").String(), "document dropped: %s", content.Raw)
+	assert.Equal(t, "ORCHID-7731", content.Get("1.searchResult.content.0.text").String(), "searchResult dropped: %s", content.Raw)
+}
+
+const invokeDocPresignedURL = "https://bucket.example.com/reports/q3.docx?X-Amz-Signature=SUPERSECRET"
+
+func TestInvokeRequest_DocumentURLSourceIsCarriedForTheEgressFetch(t *testing.T) {
+	decode := func(t *testing.T, sourceURL string) *BedrockDocumentSource {
+		t.Helper()
+		var req BedrockInvokeRequest
+		require.NoError(t, sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"type":"document","title":"Q3","source":{"type":"url","url":"`+sourceURL+`"}}]}]}`), &req))
+		require.Len(t, req.Messages, 1)
+		require.Len(t, req.Messages[0].Content, 1)
+		doc := req.Messages[0].Content[0].Document
+		require.NotNil(t, doc, "url document dropped on the invoke ingress")
+		require.NotNil(t, doc.Source)
+		return doc
+	}
+
+	t.Run("http url is kept unfetched with the extension as format hint", func(t *testing.T) {
+		doc := decode(t, "https://example.com/files/report.pdf")
+		require.NotNil(t, doc.Source.URL)
+		assert.Equal(t, "https://example.com/files/report.pdf", *doc.Source.URL)
+		assert.Nil(t, doc.Source.Bytes, "the decoder must not fetch")
+		assert.Equal(t, "pdf", doc.Format)
+		assert.Equal(t, "Q3", doc.Name)
+	})
+
+	t.Run("extension is read before the query string", func(t *testing.T) {
+		doc := decode(t, invokeDocPresignedURL)
+		assert.Equal(t, "docx", doc.Format)
+		assert.Equal(t, invokeDocPresignedURL, *doc.Source.URL)
+	})
+
+	t.Run("no extension leaves the format to the fetched content type", func(t *testing.T) {
+		assert.Empty(t, decode(t, "https://example.com/download?id=7").Format)
+	})
+
+	t.Run("the url is never serialized as a Converse field", func(t *testing.T) {
+		out, err := sonic.Marshal(decode(t, "https://example.com/files/report.pdf"))
+		require.NoError(t, err)
+		assert.NotContains(t, string(out), "example.com")
+	})
+
+	t.Run("rejection never echoes the url", func(t *testing.T) {
+		var req BedrockInvokeRequest
+		err := sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"url","url":"ftp://host/a.pdf?X-Amz-Signature=SUPERSECRET"}}]}]}`), &req)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "SUPERSECRET")
+	})
+}
+
+func TestInvokeRequest_DocumentURLReachesTheNeutralRequest(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	convert := func(t *testing.T, body string) *schemas.BifrostResponsesRequest {
+		t.Helper()
+		var req BedrockInvokeRequest
+		require.NoError(t, sonic.Unmarshal([]byte(body), &req))
+		req.ModelID = "us.anthropic.claude-sonnet-5-5"
+		bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		return bifrostReq
+	}
+	urlBlock := `{"type":"document","title":"Q3","source":{"type":"url","url":"https://example.com/files/report.pdf"}}`
+
+	t.Run("top level", func(t *testing.T) {
+		bifrostReq := convert(t, `{"messages":[{"role":"user","content":[`+urlBlock+`]}]}`)
+		var found *schemas.ResponsesInputMessageContentBlockFile
+		for _, m := range bifrostReq.Input {
+			if m.Content == nil {
+				continue
+			}
+			for _, b := range m.Content.ContentBlocks {
+				if b.ResponsesInputMessageContentBlockFile != nil {
+					found = b.ResponsesInputMessageContentBlockFile
+				}
+			}
+		}
+		require.NotNil(t, found, "url document dropped before the Converse egress: %+v", bifrostReq.Input)
+		require.NotNil(t, found.FileURL)
+		assert.Equal(t, "https://example.com/files/report.pdf", *found.FileURL)
+		assert.Nil(t, found.FileData)
+	})
+
+	t.Run("nested in tool_result", func(t *testing.T) {
+		bifrostReq := convert(t, `{"messages":[`+
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},`+
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[`+urlBlock+`]}]}]}`)
+		out := toolReferenceFunctionCallOutput(t, bifrostReq)
+		require.Len(t, out.ResponsesFunctionToolCallOutputBlocks, 1, "got %+v", out)
+		file := out.ResponsesFunctionToolCallOutputBlocks[0].ResponsesInputMessageContentBlockFile
+		require.NotNil(t, file)
+		require.NotNil(t, file.FileURL)
+		assert.Equal(t, "https://example.com/files/report.pdf", *file.FileURL)
+	})
+}
+
+// A unit test cannot fetch a real URL: FetchAndEncodeURL dials through an SSRF-safe dialer
+// that rejects loopback unconditionally and has no test seam (the constraint documented in
+// openai/chatfileurl_test.go). That refusal is the deterministic, network-free proof that
+// the egress reaches the shared fetcher instead of dropping the document, and that the
+// fetcher's error redaction holds on this ingress.
+func TestInvokeRequest_DocumentURLIsFetchedByTheEgress(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"type":"document","source":{"type":"url","url":"http://127.0.0.1/report.pdf?X-Amz-Signature=SUPERSECRET"}}]}]}`), &req))
+	req.ModelID = "us.anthropic.claude-sonnet-5-5"
+	bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	_, err = ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.Error(t, err, "a url document that cannot be fetched must fail the request, not be dropped")
+	assert.Contains(t, err.Error(), "blocked connection to non-public address 127.0.0.1", "the request must fail at the fetcher, not elsewhere")
+	assert.NotContains(t, err.Error(), "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
+}
+
+// Thinking or a deferred tool on the InvokeModel ingress selects the native InvokeModel builder
+// instead of Converse. A url document nested in a tool_result must be fetched there as well,
+// because AWS-hosted Claude rejects a url source. The loopback refusal of the SSRF-safe fetcher
+// is the network-free proof that the fetch was attempted (see the test above). The deferred-tool
+// case is the request shape of the matching provider-harness case.
+func TestInvokeRequest_NestedDocumentURLIsFetchedByTheNativeInvokeBuilder(t *testing.T) {
+	const toolResult = `{"role":"user","content":"Read the report."},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read_notes","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[` +
+		`{"type":"document","source":{"type":"url","url":"http://127.0.0.1/report.pdf?X-Amz-Signature=SUPERSECRET"}}]}]}`
+	cases := map[string]string{
+		"thinking": `{"max_tokens":2048,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[` + toolResult + `]}`,
+		"deferred tool": `{"max_tokens":64,"anthropic_beta":["tool-search-tool-2025-10-19"],"tools":[` +
+			`{"name":"tool_search","description":"Load deferred tool definitions by name.","input_schema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}},` +
+			`{"name":"read_notes","description":"Read the attached document.","input_schema":{"type":"object","properties":{}}},` +
+			`{"name":"fetch_weather_report","description":"Get weather.","defer_loading":true,"input_schema":{"type":"object","properties":{"zq_city_code_v7":{"type":"string"}},"required":["zq_city_code_v7"]}}` +
+			`],"messages":[` + toolResult + `]}`,
+	}
+	for name, invokeBody := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(BedrockContextKeyAnthropicInvokeIngress, true)
+			var req BedrockInvokeRequest
+			require.NoError(t, sonic.Unmarshal([]byte(invokeBody), &req))
+			req.ModelID = "us.anthropic.claude-sonnet-5-5"
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			bifrostReq.Model = req.ModelID
+			require.True(t, responsesUsesAnthropicInvokePath(ctx, bifrostReq), "the request must select the native builder")
+
+			provider := &BedrockProvider{}
+			body, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, bifrostReq, provider.invokeBuildConfig(bifrostReq.Model, false, true, nil))
+			require.NotNil(t, bifrostErr, "the nested url document reached Bedrock unfetched: %s", body)
+			require.NotNil(t, bifrostErr.Error.Error, "the builder error carries no cause")
+			cause := bifrostErr.Error.Error.Error()
+			assert.Contains(t, cause, "failed to inline URL content source", "the request must fail at url inlining, not elsewhere")
+			assert.Contains(t, cause, "blocked connection to non-public address 127.0.0.1", "the request must fail at the fetcher, not elsewhere")
+			assert.NotContains(t, bifrostErr.Error.Message, "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
+			assert.NotContains(t, cause, "SUPERSECRET", "the pre-signed query is a credential and must not reach the client")
+		})
+	}
+}
+
+// BenchmarkInvokeIngressDocuments measures the InvokeModel ingress (decode, Converse
+// shape, neutral Responses request) for requests with and without document blocks.
+func BenchmarkInvokeIngressDocuments(b *testing.B) {
+	bodies := []struct{ name, body string }{
+		{"text only", `{"max_tokens":256,"messages":[{"role":"user","content":[{"type":"text","text":"What is the secret word?"}]}]}`},
+		{"tool_result text only", `{"max_tokens":256,"messages":[` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"ok"}]}]}]}`},
+		{"document", `{"max_tokens":256,"messages":[{"role":"user","content":[{"type":"text","text":"What is the secret word?"},` +
+			`{"type":"document","title":"Notes","source":{"type":"text","media_type":"text/plain","data":"The secret word is PINEAPPLE."}}]}]}`},
+		{"tool_result with document", `{"max_tokens":256,"messages":[` +
+			`{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"read","input":{}}]},` +
+			`{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":[{"type":"text","text":"ok"},` +
+			`{"type":"document","title":"Notes","source":{"type":"text","media_type":"text/plain","data":"The secret word is PINEAPPLE."}}]}]}]}`},
+	}
+	for _, bc := range bodies {
+		body := []byte(bc.body)
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			b.ReportAllocs()
+			for b.Loop() {
+				var req BedrockInvokeRequest
+				if err := sonic.Unmarshal(body, &req); err != nil {
+					b.Fatal(err)
+				}
+				req.ModelID = "us.anthropic.claude-sonnet-5-5"
+				if _, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
 		})
 	}
 }

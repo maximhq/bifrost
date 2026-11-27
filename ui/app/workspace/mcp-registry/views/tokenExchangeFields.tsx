@@ -2,11 +2,66 @@ import { Button } from "@/components/ui/button";
 import { FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
+import { OAuthSigningAlgorithms } from "@/lib/types/config";
+import type { MCPResourceAuthMode, MCPTokenExchangeConfig } from "@/lib/types/mcp";
+import { isSecretVarSet, type SecretVar } from "@/lib/types/schemas";
 import { Info, TriangleAlert } from "lucide-react";
 import type { Control } from "react-hook-form";
-import { useWatch } from "react-hook-form";
+import { useFormContext, useWatch } from "react-hook-form";
+import { useTranslation } from "react-i18next";
+
+/**
+ * tokenExchangeProfilePayload returns the Cross App Access (id_jag) fields of a
+ * token_exchange create/update payload. The backend replaces the block
+ * wholesale, so every form that submits token_exchange must spread this in or
+ * an id_jag client would silently fall back to the direct profile.
+ */
+export function tokenExchangeProfilePayload(te?: Partial<MCPTokenExchangeConfig>): Partial<MCPTokenExchangeConfig> {
+	if (te?.profile !== "id_jag") return {};
+	const usesKey = isSecretVarSet(te.resource_private_key);
+	const usesSecret = !usesKey && isSecretVarSet(te.resource_client_secret);
+	return {
+		profile: "id_jag",
+		resource: te.resource?.trim() || undefined,
+		resource_token_endpoint: te.resource_token_endpoint?.trim() || undefined,
+		resource_client_id: te.resource_client_id,
+		resource_client_secret: usesSecret ? te.resource_client_secret : undefined,
+		resource_client_auth_method: usesSecret ? te.resource_client_auth_method || undefined : undefined,
+		resource_private_key: usesKey ? te.resource_private_key : undefined,
+		resource_key_id: usesKey ? te.resource_key_id?.trim() || undefined : undefined,
+		resource_signing_algorithm: usesKey ? te.resource_signing_algorithm || undefined : undefined,
+		resource_assertion_audience: usesKey ? te.resource_assertion_audience?.trim() || undefined : undefined,
+	};
+}
+
+/**
+ * exchangesAsSSOApplication mirrors MCPTokenExchangeConfig.ExchangesAsSSOApplication:
+ * id_jag always exchanges as the SSO login application, so no exchange app is sent.
+ */
+export function exchangesAsSSOApplication(te?: Partial<MCPTokenExchangeConfig>): boolean {
+	return !!te?.use_idp_credentials || te?.profile === "id_jag";
+}
+
+/** tokenExchangeProfileFormValues seeds the id_jag fields of a form from a stored config. */
+export function tokenExchangeProfileFormValues(te?: Partial<MCPTokenExchangeConfig>): Partial<MCPTokenExchangeConfig> {
+	return {
+		profile: te?.profile ?? "",
+		resource: te?.resource,
+		resource_token_endpoint: te?.resource_token_endpoint,
+		resource_client_id: te?.resource_client_id,
+		resource_client_secret: te?.resource_client_secret,
+		resource_client_auth_method: te?.resource_client_auth_method ?? "",
+		resource_private_key: te?.resource_private_key,
+		resource_key_id: te?.resource_key_id,
+		resource_signing_algorithm: te?.resource_signing_algorithm,
+		resource_assertion_audience: te?.resource_assertion_audience,
+		resource_auth_mode: isSecretVarSet(te?.resource_private_key) ? "private_key" : "secret",
+	};
+}
 
 interface TokenExchangeScopesFieldProps {
 	variant: "input" | "textarea";
@@ -105,14 +160,70 @@ export function TokenExchangeFields({
 	scopes,
 	gridClassName = "grid grid-cols-1 gap-4 md:grid-cols-2",
 }: TokenExchangeFieldsProps) {
+	const { t } = useTranslation("mcp");
 	const useIdPCredentials = useWatch({ control, name: "token_exchange.use_idp_credentials" });
-	const credentialFieldsDisabled = disabled || !!useIdPCredentials;
+	const profile = useWatch({ control, name: "token_exchange.profile" });
+	const isIDJAG = profile === "id_jag";
+	// id_jag always exchanges as the SSO login application, so it has no exchange app to pick.
+	const credentialFieldsDisabled = disabled || !!useIdPCredentials || isIDJAG;
+	const fullRow = gridClassName.includes("grid-cols") ? "md:col-span-2" : "";
 
 	return (
 		<>
 			{beforeFields}
 			<div className={gridClassName}>
-				{useIdPCredentialsLabel && (
+				{/* Cross App Access is performed by Bifrost Enterprise; other builds refuse the profile. */}
+				{(IS_ENTERPRISE || isIDJAG) && (
+					<FormField
+						control={control}
+						name="token_exchange.profile"
+						render={({ field }) => (
+							<FormItem className={`flex flex-col gap-2 ${fullRow}`}>
+								<FormLabel>{t("registry.tokenExchange.profileLabel")}</FormLabel>
+								<FormControl>
+									<div
+										className="bg-muted inline-flex w-fit gap-0.5 rounded-md p-0.5"
+										role="radiogroup"
+										aria-label={t("registry.tokenExchange.profileAria")}
+									>
+										{(
+											[
+												["", t("registry.tokenExchange.profileDirect")],
+												["id_jag", t("registry.tokenExchange.profileIdJag")],
+											] as const
+										).map(([value, label]) => {
+											const selected = (field.value ?? "") === value;
+											return (
+												<Button
+													key={value || "direct"}
+													type="button"
+													size="sm"
+													variant="ghost"
+													className={
+														selected
+															? "bg-background dark:bg-input/30 text-foreground hover:bg-background dark:hover:bg-input/30 shadow-sm"
+															: "text-muted-foreground hover:text-foreground"
+													}
+													disabled={disabled}
+													onClick={() => field.onChange(value)}
+													role="radio"
+													aria-checked={selected}
+													data-testid={`token-exchange-profile-${value || "direct"}`}
+												>
+													{label}
+												</Button>
+											);
+										})}
+									</div>
+								</FormControl>
+								<p className="text-muted-foreground text-xs">
+									{isIDJAG ? t("registry.tokenExchange.profileIdJagDesc") : t("registry.tokenExchange.profileDirectDesc")}
+								</p>
+							</FormItem>
+						)}
+					/>
+				)}
+				{useIdPCredentialsLabel && !isIDJAG && (
 					<FormField
 						control={control}
 						name="token_exchange.use_idp_credentials"
@@ -146,7 +257,7 @@ export function TokenExchangeFields({
 												aria-checked={!checked}
 												data-testid={`${useIdPCredentialsTestId}-dedicated`}
 											>
-												Dedicated application
+												{t("registry.tokenExchange.dedicatedApplication")}
 											</Button>
 											<Button
 												type="button"
@@ -163,7 +274,7 @@ export function TokenExchangeFields({
 												aria-checked={checked}
 												data-testid={`${useIdPCredentialsTestId}-idp`}
 											>
-												Identity provider application
+												{t("registry.tokenExchange.idpApplication")}
 											</Button>
 										</div>
 									</FormControl>
@@ -272,7 +383,7 @@ export function TokenExchangeFields({
 										field.onChange(e);
 										onAudienceTouched?.();
 									}}
-									placeholder="api://my-mcp-server"
+									placeholder={t("registry.tokenExchange.audiencePlaceholder")}
 									data-testid={audienceTestId}
 								/>
 							</FormControl>
@@ -303,7 +414,7 @@ export function TokenExchangeFields({
 									{...field}
 									value={field.value ?? ""}
 									disabled={disabled}
-									placeholder="https://your-domain.okta.com/oauth2/your-auth-server-id"
+									placeholder={t("registry.tokenExchange.authServerUrlPlaceholder")}
 									data-testid={authServerUrlTestId}
 								/>
 							</FormControl>
@@ -312,6 +423,78 @@ export function TokenExchangeFields({
 						</FormItem>
 					)}
 				/>
+				{isIDJAG && (
+					<>
+						<FormField
+							control={control}
+							name="token_exchange.resource_client_id"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-2">
+									<FormLabel>{t("registry.tokenExchange.resourceClientId")}</FormLabel>
+									<FormControl>
+										<SecretVarInput
+											data-testid="token-exchange-resource-client-id-input"
+											placeholder={t("registry.tokenExchange.resourceClientIdPlaceholder")}
+											disabled={disabled}
+											redactNonEnvValue={clientIdRedactNonEnvValue}
+											value={field.value}
+											onChange={field.onChange}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<UpstreamClientAuthFields
+							control={control}
+							names={idjagAuthNames}
+							testIdPrefix="token-exchange-resource"
+							disabled={disabled}
+							hideValueWhenEnv={clientSecretHideValueWhenEnv}
+							maskNonEnvValue={clientSecretMaskNonEnvValue}
+							redactNonEnvValue={clientSecretRedactNonEnvValue}
+						/>
+						<FormField
+							control={control}
+							name="token_exchange.resource_token_endpoint"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-2">
+									<FormLabel>{t("registry.tokenExchange.resourceTokenEndpoint")}</FormLabel>
+									<FormControl>
+										<Input
+											{...field}
+											value={field.value ?? ""}
+											disabled={disabled}
+											placeholder={t("registry.tokenExchange.resourceTokenEndpointPlaceholder")}
+											data-testid="token-exchange-resource-token-endpoint-input"
+										/>
+									</FormControl>
+									<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.resourceTokenEndpointHelp")}</p>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="token_exchange.resource"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-2">
+									<FormLabel>{t("registry.tokenExchange.resourceOptional")}</FormLabel>
+									<FormControl>
+										<Input
+											{...field}
+											value={field.value ?? ""}
+											disabled={disabled}
+											placeholder={t("registry.tokenExchange.resourcePlaceholder")}
+											data-testid="token-exchange-resource-input"
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					</>
+				)}
 				{scopes.variant === "input" ? (
 					<FormItem className="flex flex-col gap-2">
 						<FormLabel htmlFor="mcp-token-exchange-scopes-field">{scopes.label}</FormLabel>
@@ -321,7 +504,7 @@ export function TokenExchangeFields({
 								value={scopes.value}
 								disabled={scopes.disabled ?? disabled}
 								onChange={(e) => scopes.onChange(e.target.value)}
-								placeholder="jira.read, jira.write, offline_access"
+								placeholder={t("registry.tokenExchange.scopesPlaceholder")}
 								data-testid={scopes.testId}
 							/>
 						</FormControl>
@@ -338,7 +521,7 @@ export function TokenExchangeFields({
 						<Textarea
 							aria-labelledby="mcp-token-exchange-scopes-label"
 							className="h-20"
-							placeholder="jira.read, jira.write, offline_access"
+							placeholder={t("registry.tokenExchange.scopesPlaceholder")}
 							value={scopes.value}
 							disabled={scopes.disabled ?? disabled}
 							onChange={(e) => scopes.onChange(e.target.value)}
@@ -347,6 +530,252 @@ export function TokenExchangeFields({
 					</div>
 				)}
 			</div>
+		</>
+	);
+}
+
+// Radix Select can't hold an empty value; this stands in for "" (follow discovery,
+// or for the signing algorithm, choose from the key).
+const AUTO = "auto";
+
+/** The form field names one upstream client authentication is stored under. */
+export interface UpstreamClientAuthNames {
+	mode: string;
+	secret: string;
+	method: string;
+	key: string;
+	keyId: string;
+	alg: string;
+	audience: string;
+}
+
+const idjagAuthNames: UpstreamClientAuthNames = {
+	mode: "token_exchange.resource_auth_mode",
+	secret: "token_exchange.resource_client_secret",
+	method: "token_exchange.resource_client_auth_method",
+	key: "token_exchange.resource_private_key",
+	keyId: "token_exchange.resource_key_id",
+	alg: "token_exchange.resource_signing_algorithm",
+	audience: "token_exchange.resource_assertion_audience",
+};
+
+/** Labels that differ between surfaces; each defaults to the id_jag wording. */
+export interface UpstreamClientAuthLabels {
+	mode?: string;
+	secretOption?: string;
+	secret?: string;
+	secretPlaceholder?: string;
+	privateKeyHelp?: string;
+}
+
+interface UpstreamClientAuthFieldsProps {
+	control: Control<any>;
+	names: UpstreamClientAuthNames;
+	testIdPrefix: string;
+	labels?: UpstreamClientAuthLabels;
+	/** Offers "Automatic" for the signing algorithm, sent as "" so the server picks it from the key. */
+	autoAlgorithm?: boolean;
+	disabled?: boolean;
+	hideValueWhenEnv?: boolean;
+	maskNonEnvValue?: boolean;
+	redactNonEnvValue?: boolean;
+}
+
+/**
+ * UpstreamClientAuthFields picks how Bifrost authenticates at an upstream token
+ * endpoint: a client secret, or a client assertion signed with a private key
+ * (private_key_jwt). Switching clears the other method's settings, since the
+ * backend refuses both together. Shared by the id_jag profile of token exchange
+ * and by client_credentials.
+ */
+export function UpstreamClientAuthFields({
+	control,
+	names,
+	testIdPrefix,
+	labels,
+	autoAlgorithm,
+	disabled,
+	hideValueWhenEnv,
+	maskNonEnvValue,
+	redactNonEnvValue,
+}: UpstreamClientAuthFieldsProps) {
+	const { t } = useTranslation("mcp");
+	const { setValue } = useFormContext();
+	const key = useWatch({ control, name: names.key }) as SecretVar | undefined;
+	const mode = useWatch({ control, name: names.mode }) as MCPResourceAuthMode | undefined;
+	// The choice lives in the form so validation can require a key for it; a
+	// form seeded without one goes by whether a key is stored.
+	const method: MCPResourceAuthMode = mode ?? (isSecretVarSet(key) ? "private_key" : "secret");
+
+	const choose = (next: MCPResourceAuthMode) => {
+		setValue(names.mode, next, { shouldDirty: true });
+		const clear = (name: string) => setValue(name, undefined, { shouldDirty: true });
+		if (next === "private_key") {
+			[names.secret, names.method].forEach(clear);
+		} else {
+			[names.key, names.keyId, names.alg, names.audience].forEach(clear);
+		}
+	};
+
+	return (
+		<>
+			<FormItem className="flex flex-col gap-2">
+				<FormLabel>{labels?.mode ?? t("registry.tokenExchange.resourceAuth")}</FormLabel>
+				<Select value={method} onValueChange={(v) => choose(v as MCPResourceAuthMode)} disabled={disabled}>
+					<SelectTrigger className="w-full" data-testid={`${testIdPrefix}-auth-method-select`}>
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent>
+						<SelectItem value="secret">{labels?.secretOption ?? t("registry.tokenExchange.resourceAuthSecret")}</SelectItem>
+						<SelectItem value="private_key">{t("registry.tokenExchange.resourceAuthPrivateKey")}</SelectItem>
+					</SelectContent>
+				</Select>
+			</FormItem>
+			{method === "secret" ? (
+				<>
+					<FormField
+						control={control}
+						name={names.secret}
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>{labels?.secret ?? t("registry.tokenExchange.resourceClientSecret")}</FormLabel>
+								<FormControl>
+									<SecretVarInput
+										data-testid={`${testIdPrefix}-client-secret-input`}
+										placeholder={labels?.secretPlaceholder ?? t("registry.tokenExchange.resourceClientSecretPlaceholder")}
+										disabled={disabled}
+										hideValueWhenEnv={hideValueWhenEnv}
+										maskNonEnvValue={maskNonEnvValue}
+										redactNonEnvValue={redactNonEnvValue}
+										value={field.value}
+										onChange={field.onChange}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={names.method}
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>{t("registry.tokenExchange.sendSecret")}</FormLabel>
+								<Select value={field.value || AUTO} onValueChange={(v) => field.onChange(v === AUTO ? "" : v)} disabled={disabled}>
+									<FormControl>
+										<SelectTrigger className="w-full" data-testid={`${testIdPrefix}-client-auth-method-select`}>
+											<SelectValue />
+										</SelectTrigger>
+									</FormControl>
+									<SelectContent>
+										<SelectItem value={AUTO}>{t("registry.tokenExchange.authMethodAutomatic")}</SelectItem>
+										<SelectItem value="client_secret_basic">{t("registry.tokenExchange.authMethodBasic")}</SelectItem>
+										<SelectItem value="client_secret_post">{t("registry.tokenExchange.authMethodPost")}</SelectItem>
+									</SelectContent>
+								</Select>
+								<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.authMethodHelp")}</p>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</>
+			) : (
+				<>
+					<FormField
+						control={control}
+						name={names.key}
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>{t("registry.tokenExchange.privateKey")}</FormLabel>
+								<FormControl>
+									<SecretVarInput
+										data-testid={`${testIdPrefix}-private-key-input`}
+										variant="textarea"
+										rows={4}
+										placeholder={t("registry.tokenExchange.privateKeyPlaceholder")}
+										disabled={disabled}
+										hideValueWhenEnv={hideValueWhenEnv}
+										maskNonEnvValue={maskNonEnvValue}
+										redactNonEnvValue={redactNonEnvValue}
+										value={field.value}
+										onChange={field.onChange}
+									/>
+								</FormControl>
+								<p className="text-muted-foreground text-xs">{labels?.privateKeyHelp ?? t("registry.tokenExchange.privateKeyHelp")}</p>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={names.keyId}
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>{t("registry.tokenExchange.keyIdOptional")}</FormLabel>
+								<FormControl>
+									<Input
+										{...field}
+										value={field.value ?? ""}
+										disabled={disabled}
+										placeholder={t("registry.tokenExchange.keyIdPlaceholder")}
+										data-testid={`${testIdPrefix}-key-id-input`}
+									/>
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={names.alg}
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>{t("registry.tokenExchange.signingAlgorithm")}</FormLabel>
+								<Select
+									value={field.value || (autoAlgorithm ? AUTO : "RS256")}
+									onValueChange={(v) => field.onChange(v === AUTO ? "" : v)}
+									disabled={disabled}
+								>
+									<FormControl>
+										<SelectTrigger className="w-full" data-testid={`${testIdPrefix}-signing-algorithm-select`}>
+											<SelectValue />
+										</SelectTrigger>
+									</FormControl>
+									<SelectContent>
+										{autoAlgorithm && <SelectItem value={AUTO}>{t("registry.clientCredentials.algorithmFromKey")}</SelectItem>}
+										{OAuthSigningAlgorithms.map((alg) => (
+											<SelectItem key={alg} value={alg}>
+												{alg}
+											</SelectItem>
+										))}
+									</SelectContent>
+								</Select>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+					<FormField
+						control={control}
+						name={names.audience}
+						render={({ field }) => (
+							<FormItem className="flex flex-col gap-2">
+								<FormLabel>{t("registry.tokenExchange.assertionAudience")}</FormLabel>
+								<FormControl>
+									<Input
+										{...field}
+										value={field.value ?? ""}
+										disabled={disabled}
+										placeholder={t("registry.tokenExchange.assertionAudiencePlaceholder")}
+										data-testid={`${testIdPrefix}-assertion-audience-input`}
+									/>
+								</FormControl>
+								<p className="text-muted-foreground text-xs">{t("registry.tokenExchange.assertionAudienceHelp")}</p>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</>
+			)}
 		</>
 	);
 }

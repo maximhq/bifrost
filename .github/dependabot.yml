@@ -319,3 +319,88 @@ updates:
     directory: /plugins/modelcatalogresolver
     schedule:
       interval: weekly
+
+  - package-ecosystem: npm
+    directory: /.github/workflows/tools/csv-parse-compat
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /.github/workflows/tools/faker-compat
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /.github/workflows/tools
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /cmd/e2eseed
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/mcp-test-client
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/remote-test-server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/mcps/token-exchange-demo-server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/secretvar-config
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/plugins/virtual-key-from-config
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /examples/webhooks
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /npx/bifrost-migration-cli
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /plugins/routing
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /scripts/bifrost-migration-cli
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /scripts/realtime-test
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /tests/e2e/api/newman-reporter-cache-parity
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /tests/e2e/api/newman-reporter-token-parity
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: gomod
+    directory: /tests/e2e/api/webhook-receiver
+    schedule:
+      interval: weekly

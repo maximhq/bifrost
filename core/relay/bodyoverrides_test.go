@@ -1,0 +1,171 @@
+package relay
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func compiledOverrides(t testing.TB, overrides map[string]string) []bodyOverride {
+	t.Helper()
+	raw := make(map[string]json.RawMessage, len(overrides))
+	for path, value := range overrides {
+		raw[path] = json.RawMessage(value)
+	}
+	compiled := compileBodyOverrides(raw)
+	require.Len(t, compiled, len(overrides))
+	return compiled
+}
+
+func TestApplyBodyOverrides(t *testing.T) {
+	usage := map[string]string{"include_usage": "true"}
+	cases := []struct {
+		name        string
+		overrides   map[string]string
+		method      string
+		body        string
+		want        string
+		wantCreated bool
+		wantErr     string
+	}{
+		{name: "added when missing", overrides: usage, body: `{"query":"x"}`, want: `{"query":"x","include_usage":true}`},
+		{name: "replaced when the caller disagrees", overrides: usage, body: `{"query":"x","include_usage":false}`, want: `{"query":"x","include_usage":true}`},
+		{name: "kept when already set", overrides: usage, body: `{"include_usage":true,"query":"x"}`, want: `{"include_usage":true,"query":"x"}`},
+		{name: "a value of another type is replaced", overrides: usage, body: `{"include_usage":"yes"}`, want: `{"include_usage":true}`},
+		{name: "created for an empty POST", overrides: usage, body: ``, want: `{"include_usage":true}`, wantCreated: true},
+		{name: "created for a whitespace PUT", overrides: usage, method: "PUT", body: " \n", want: `{"include_usage":true}`, wantCreated: true},
+		{name: "an empty GET stays empty", overrides: usage, method: "GET", body: ``, want: ``},
+		{name: "a whitespace GET is forwarded as is", overrides: usage, method: "GET", body: " \t\r\n", want: " \t\r\n"},
+		{name: "a non-breaking space is not an empty body", overrides: usage, body: "\u00a0", wantErr: "must be a JSON object"},
+		{name: "spaces around a non-breaking space", overrides: usage, body: " \u00a0 \n", wantErr: "must be a JSON object"},
+		{name: "a form feed is not JSON whitespace", overrides: usage, body: "\f", wantErr: "must be a JSON object"},
+		{name: "a vertical tab is not JSON whitespace", overrides: usage, body: "\v", wantErr: "must be a JSON object"},
+		{name: "a line separator is not JSON whitespace", overrides: usage, body: "\u2028", wantErr: "must be a JSON object"},
+		{name: "an ideographic space is not JSON whitespace", overrides: usage, body: "\u3000", wantErr: "must be a JSON object"},
+		{name: "a GET of a non-breaking space is refused like any non-JSON body", overrides: usage, method: "GET", body: "\u00a0", wantErr: "must be a JSON object"},
+		{name: "a byte order mark is still refused", overrides: usage, body: "\ufeff{}", wantErr: "must be a JSON object"},
+		{name: "an empty DELETE stays empty", overrides: usage, method: "DELETE", body: ``, want: ``},
+		{name: "a DELETE with a JSON body is set", overrides: usage, method: "DELETE", body: `{"id":1}`, want: `{"id":1,"include_usage":true}`},
+		{name: "nested parent created", overrides: map[string]string{"options.depth": `"advanced"`}, body: `{"query":"x"}`, want: `{"query":"x","options":{"depth":"advanced"}}`},
+		{name: "nested parent kept", overrides: map[string]string{"options.depth": `"advanced"`}, body: `{"options":{"depth":"basic","n":2}}`, want: `{"options":{"depth":"advanced","n":2}}`},
+		{name: "object value written compact", overrides: map[string]string{"limits": "{ \"max\" : 3 }"}, body: `{}`, want: `{"limits":{"max":3}}`},
+		{name: "several fields in path order", overrides: map[string]string{"b": "2", "a": "1"}, body: `{}`, want: `{"a":1,"b":2}`},
+		{name: "a duplicate deep elsewhere is not our concern", overrides: usage, body: `{"doc":{"k":1,"k":2}}`, want: `{"doc":{"k":1,"k":2},"include_usage":true}`},
+		{name: "exact duplicate refused", overrides: usage, body: `{"include_usage":false,"include_usage":false}`, wantErr: "more than once"},
+		{name: "case variant duplicate refused", overrides: usage, body: `{"include_usage":true,"Include_Usage":false}`, wantErr: "more than once"},
+		{name: "lone case variant refused", overrides: usage, body: `{"INCLUDE_USAGE":false}`, wantErr: "different letter case"},
+		{name: "duplicate parent refused", overrides: map[string]string{"options.depth": `"advanced"`}, body: `{"options":{},"options":{"depth":"basic"}}`, wantErr: "names options more than once"},
+		{name: "duplicate inside the parent refused", overrides: map[string]string{"options.depth": `"advanced"`}, body: `{"options":{"depth":"a","Depth":"b"}}`, wantErr: "names options.depth more than once"},
+		{name: "non-object parent refused", overrides: map[string]string{"options.depth": `"advanced"`}, body: `{"options":5}`, wantErr: "non-object at options"},
+		{name: "array body refused", overrides: usage, body: `[{"query":"x"}]`, wantErr: "must be a JSON object"},
+		{name: "invalid JSON refused", overrides: usage, body: `{"query":`, wantErr: "must be a JSON object"},
+		{name: "form body refused", overrides: usage, body: `query=x`, wantErr: "must be a JSON object"},
+		{name: "no overrides leaves any body alone", body: `not json`, want: `not json`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			method := tc.method
+			if method == "" {
+				method = "POST"
+			}
+			var overrides []bodyOverride
+			if tc.overrides != nil {
+				overrides = compiledOverrides(t, tc.overrides)
+			}
+			in := []byte(tc.body)
+			original := string(in)
+			got, created, err := applyBodyOverrides(overrides, method, "", in)
+			assert.Equal(t, original, string(in), "the caller's buffer is never modified in place")
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+			assert.Equal(t, tc.wantCreated, created)
+		})
+	}
+}
+
+func TestApplyBodyOverridesKeepsACorrectBodyWithoutACopy(t *testing.T) {
+	body := []byte(`{"query":"x","include_usage":true}`)
+	got, _, err := applyBodyOverrides(compiledOverrides(t, map[string]string{"include_usage": "true"}), "POST", "", body)
+	require.NoError(t, err)
+	assert.Same(t, &body[0], &got[0], "a body that already carries the value is forwarded as is")
+}
+
+func TestWithJSONContentTypeReplacesAnySpelling(t *testing.T) {
+	in := map[string]string{"Content-Type": "text/plain", "x-trace": "1"}
+	out := withJSONContentType(in)
+	assert.Equal(t, map[string]string{"content-type": "application/json", "x-trace": "1"}, out)
+	assert.Equal(t, "text/plain", in["Content-Type"], "the caller's map is not modified")
+}
+
+func BenchmarkApplyBodyOverrides(b *testing.B) {
+	usage := compiledOverrides(b, map[string]string{"include_usage": "true"})
+	small := []byte(`{"query":"who won the 2026 world cup","search_depth":"advanced","max_results":5,"include_answer":true}`)
+	smallSet := []byte(`{"query":"who won the 2026 world cup","search_depth":"advanced","max_results":5,"include_answer":true,"include_usage":true}`)
+	large := []byte(`{"document":"` + strings.Repeat("a", 1<<20) + `","query":"x"}`)
+	cases := []struct {
+		name      string
+		overrides []bodyOverride
+		body      []byte
+	}{
+		{"no overrides", nil, small},
+		{"small already set", usage, smallSet},
+		{"small rewrite", usage, small},
+		{"1MiB rewrite", usage, large},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.body)))
+			for b.Loop() {
+				_, _, _ = applyBodyOverrides(tc.overrides, "POST", "", tc.body)
+			}
+		})
+	}
+}
+
+// A deeply nested body is refused before gjson's recursive validation could overflow the stack.
+func TestApplyBodyOverridesRefusesADeeplyNestedBody(t *testing.T) {
+	overrides := compileBodyOverrides(map[string]json.RawMessage{"include_usage": json.RawMessage("true")})
+	deep := `{"a":` + strings.Repeat("[", 2_000_000) + strings.Repeat("]", 2_000_000) + `}`
+	_, _, err := applyBodyOverrides(overrides, "POST", "", []byte(deep))
+	require.ErrorContains(t, err, "nests deeper than 1000 levels")
+	// A string full of brackets is not nesting.
+	out, _, err := applyBodyOverrides(overrides, "POST", "", []byte(`{"q":"`+strings.Repeat("[", 5000)+`"}`))
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"include_usage":true`)
+	assert.False(t, jsonTooDeep([]byte(`{"a":"\"[[["}`)), "an escaped quote does not end the string")
+}
+
+// Forced fields go only into a JSON body: a form-encoded body that happens to parse as JSON would
+// carry them where a form-reading upstream never looks.
+func TestApplyBodyOverridesNeedsAJSONBody(t *testing.T) {
+	overrides := compileBodyOverrides(map[string]json.RawMessage{"include_usage": json.RawMessage("true")})
+	body := []byte(`{"z":"&include_usage=false&q=x"}`)
+	_, _, err := applyBodyOverrides(overrides, "POST", "application/x-www-form-urlencoded", body)
+	require.ErrorContains(t, err, "sent as Content-Type: application/json")
+	for _, contentType := range []string{"application/jsonp", "text/plain", "application/json-seq+xml", "json"} {
+		_, _, err := applyBodyOverrides(overrides, "POST", contentType, body)
+		require.ErrorContains(t, err, "sent as Content-Type: application/json", contentType)
+	}
+	for _, contentType := range []string{
+		"", "application/json", "Application/JSON; charset=utf-8", "application/x-amz-json-1.1",
+		"application/vnd.api+json", "application/merge-patch+json", "application/x-json",
+	} {
+		out, _, err := applyBodyOverrides(overrides, "POST", contentType, body)
+		require.NoError(t, err, contentType)
+		assert.Contains(t, string(out), `"include_usage":true`)
+	}
+	_, created, err := applyBodyOverrides(overrides, "POST", "application/x-www-form-urlencoded", nil)
+	require.NoError(t, err, "an empty body is created as JSON whatever the caller labelled it")
+	assert.True(t, created)
+	_, _, err = applyBodyOverrides(overrides, "POST", "application/x-www-form-urlencoded", []byte("\u00a0"))
+	require.ErrorContains(t, err, "sent as Content-Type: application/json", "a non-breaking space is a body, not an empty one")
+}

@@ -27,15 +27,18 @@ import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useLocation } from "@tanstack/react-router";
 import { AlertCircle } from "lucide-react";
 import { parseAsSafeArrayOf, parseAsSafeString } from "@/lib/queryParamsParser";
+import { parseMetadataFiltersParam } from "@/lib/utils/metadataFilters";
 import { getLiveToggleState } from "@/lib/utils/timeRange";
 import { parseAsBoolean, parseAsFloat, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 // A fallback chain is a handful of attempts, so one page covers every realistic
 // chain. Capped at the list endpoint's own maximum.
 const chainChildrenPageLimit = 1000;
 
 export default function LogsPage() {
+	const { t } = useTranslation("observability");
 	const [error, setError] = useState<string | null>(null);
 	const [showEmptyState, setShowEmptyState] = useState(false);
 	const hasCheckedEmptyState = useRef(false);
@@ -88,6 +91,7 @@ export default function LogsPage() {
 			selected_key_ids: parseAsSafeArrayOf.withDefault([]),
 			virtual_key_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
+			model_router_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			apps: parseAsSafeArrayOf.withDefault([]),
 			user_agents: parseAsSafeArrayOf.withDefault([]),
@@ -101,6 +105,7 @@ export default function LogsPage() {
 			customer_ids: parseAsSafeArrayOf.withDefault([]),
 			business_unit_ids: parseAsSafeArrayOf.withDefault([]),
 			project_ids: parseAsSafeArrayOf.withDefault([]),
+			topic_ids: parseAsSafeArrayOf.withDefault([]),
 			content_search: parseAsSafeString.withDefault(""),
 			request_id: parseAsSafeString.withDefault(""),
 			// No default: these are genuinely unset most of the time, and 0 is a
@@ -154,6 +159,7 @@ export default function LogsPage() {
 			selected_key_ids: urlState.selected_key_ids,
 			virtual_key_ids: urlState.virtual_key_ids,
 			routing_rule_ids: urlState.routing_rule_ids,
+			model_router_ids: urlState.model_router_ids,
 			routing_engine_used: urlState.routing_engine_used,
 			apps: urlState.apps,
 			user_agents: urlState.user_agents,
@@ -167,6 +173,7 @@ export default function LogsPage() {
 			customer_ids: urlState.customer_ids,
 			business_unit_ids: urlState.business_unit_ids,
 			project_ids: urlState.project_ids,
+			topic_ids: urlState.topic_ids,
 			content_search: urlState.content_search,
 			request_id: urlState.request_id,
 			min_latency: urlState.min_latency ?? undefined,
@@ -177,15 +184,7 @@ export default function LogsPage() {
 			max_tokens: urlState.max_tokens ?? undefined,
 			missing_cost_only: urlState.missing_cost_only,
 			cache_hit_types: urlState.cache_hit_types,
-			metadata_filters: urlState.metadata_filters
-				? (() => {
-						try {
-							return JSON.parse(urlState.metadata_filters);
-						} catch {
-							return undefined;
-						}
-					})()
-				: undefined,
+			metadata_filters: parseMetadataFiltersParam(urlState.metadata_filters),
 			// Use a period if present
 			...(urlState.period
 				? { period: urlState.period }
@@ -206,6 +205,7 @@ export default function LogsPage() {
 			urlState.selected_key_ids,
 			urlState.virtual_key_ids,
 			urlState.routing_rule_ids,
+			urlState.model_router_ids,
 			urlState.routing_engine_used,
 			urlState.apps,
 			urlState.user_agents,
@@ -219,6 +219,7 @@ export default function LogsPage() {
 			urlState.customer_ids,
 			urlState.business_unit_ids,
 			urlState.project_ids,
+			urlState.topic_ids,
 			urlState.content_search,
 			urlState.request_id,
 			urlState.parent_request_id,
@@ -279,6 +280,7 @@ export default function LogsPage() {
 				selected_key_ids: newFilters.selected_key_ids || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
 				routing_rule_ids: newFilters.routing_rule_ids || [],
+				model_router_ids: newFilters.model_router_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
 				apps: newFilters.apps || [],
 				user_agents: newFilters.user_agents || [],
@@ -292,6 +294,7 @@ export default function LogsPage() {
 				customer_ids: newFilters.customer_ids || [],
 				business_unit_ids: newFilters.business_unit_ids || [],
 				project_ids: newFilters.project_ids || [],
+				topic_ids: newFilters.topic_ids || [],
 				content_search: newFilters.content_search || "",
 				request_id: newFilters.request_id || "",
 				min_latency: newFilters.min_latency ?? null,
@@ -706,8 +709,8 @@ export default function LogsPage() {
 	}, [userAgentMappingsData?.mappings]);
 
 	const columns = useMemo(
-		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped, handleFilterBySessionId),
-		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped, handleFilterBySessionId],
+		() => createColumns(handleDelete, hasDeleteAccess, metadataKeys, customAppIcons, grouped, handleFilterBySessionId, t),
+		[customAppIcons, handleDelete, hasDeleteAccess, metadataKeys, grouped, handleFilterBySessionId, t],
 	);
 
 	const columnIds = useMemo(
@@ -717,29 +720,43 @@ export default function LogsPage() {
 
 	const COLUMN_LABELS: Record<string, string> = useMemo(
 		() => ({
-			timestamp: "Time",
-			request_type: "Type",
-			input: "Message",
-			provider: "Provider",
-			model: "Model",
-			app: "App",
-			latency: "Latency",
-			tokens: "Tokens",
-			cost: "Cost",
-			session: "Session",
-			service_tier: "Service Tier",
-			virtual_key: "Virtual Key",
-			routing_rule: "Routing Rule",
-			team: "Team",
-			customer: "Customer",
-			user: "User",
-			business_unit: "Business Unit",
+			timestamp: t("labels.time"),
+			request_type: t("labels.type"),
+			stop_reason: t("logs.detail.stopReason"),
+			input: t("labels.message"),
+			provider: t("labels.provider"),
+			model: t("labels.model"),
+			app: t("labels.app"),
+			client_ip: t("labels.clientIp"),
+			latency: t("labels.latency"),
+			tokens: t("labels.tokens"),
+			cost: t("labels.cost"),
+			session: t("labels.session"),
+			service_tier: t("labels.serviceTier"),
+			virtual_key: t("labels.virtualKey"),
+			routing_rule: t("labels.routingRule"),
+			team: t("labels.team"),
+			customer: t("labels.customer"),
+			user: t("labels.user"),
+			business_unit: t("labels.businessUnit"),
 		}),
-		[],
+		[t],
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(
-		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project"],
+		() => [
+			"stop_reason",
+			"session",
+			"service_tier",
+			"virtual_key",
+			"routing_rule",
+			"team",
+			"customer",
+			"user",
+			"business_unit",
+			"project",
+			"client_ip",
+		],
 		[],
 	);
 
@@ -971,6 +988,9 @@ export default function LogsPage() {
 								columnLabels={COLUMN_LABELS}
 								onToggleColumnVisibility={toggleColumnVisibility}
 								onResetColumns={resetColumns}
+								currentPageLogs={logs}
+								sortBy={urlState.sort_by}
+								order={urlState.order}
 							/>
 						</div>
 						{/* The four queries resolve independently, so `data` can hold the

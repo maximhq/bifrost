@@ -12,15 +12,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -37,6 +39,18 @@ type MCPCredentialCacheManager interface {
 	EvictOauthTokenCacheByMCPClient(ctx context.Context, mcpClientID string)
 	EvictMCPHeaderCredentialCacheByID(ctx context.Context, credentialID string)
 	EvictMCPHeaderCredentialCacheByMCPClient(ctx context.Context, mcpClientID string)
+	EvictMCPPerUserDiscoveryCache(ctx context.Context, mode schemas.MCPAuthMode, identity, mcpClientID string)
+	EvictMCPPerUserDiscoveryCacheByMCPClient(ctx context.Context, mcpClientID string)
+}
+
+// evictRevokedCredentialDiscovery drops the cached discovery made with a revoked
+// credential of mode and identity, on every node: its row was deleted with the
+// credential. Only user and virtual-key callers keep one.
+func evictRevokedCredentialDiscovery(ctx context.Context, cache MCPCredentialCacheManager, mode schemas.MCPAuthMode, identity, mcpClientID string) {
+	if cache == nil || identity == "" || (mode != schemas.MCPAuthModeUser && mode != schemas.MCPAuthModeVK) {
+		return
+	}
+	cache.EvictMCPPerUserDiscoveryCache(ctx, mode, identity, mcpClientID)
 }
 
 // MCPSessionsHandler serves the sessions tab API.
@@ -46,17 +60,20 @@ type MCPSessionsHandler struct {
 	// this handler writes token or credential rows directly through the
 	// configstore.
 	mcpCredentialCacheManager MCPCredentialCacheManager
+	mcpManager                MCPManager // discovers a caller's tools again on refresh, and says which MCP clients a user may connect to
 }
 
 // NewMCPSessionsHandler creates the handler.
-func NewMCPSessionsHandler(store *lib.Config, mcpCredentialCacheManager MCPCredentialCacheManager) *MCPSessionsHandler {
-	return &MCPSessionsHandler{store: store, mcpCredentialCacheManager: mcpCredentialCacheManager}
+func NewMCPSessionsHandler(store *lib.Config, mcpCredentialCacheManager MCPCredentialCacheManager, mcpManager MCPManager) *MCPSessionsHandler {
+	return &MCPSessionsHandler{store: store, mcpCredentialCacheManager: mcpCredentialCacheManager, mcpManager: mcpManager}
 }
 
 // RegisterRoutes registers the sessions tab routes.
 func (h *MCPSessionsHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.GET("/api/mcp/sessions", lib.ChainMiddlewares(h.list, middlewares...))
+	r.POST("/api/mcp/sessions/connect", lib.ChainMiddlewares(h.connect, middlewares...))
 	r.POST("/api/mcp/sessions/{id}/reauth", lib.ChainMiddlewares(h.reauth, middlewares...))
+	r.POST("/api/mcp/sessions/{id}/refresh", lib.ChainMiddlewares(h.refresh, middlewares...))
 	r.DELETE("/api/mcp/sessions/{id}", lib.ChainMiddlewares(h.revoke, middlewares...))
 	r.GET("/api/oauth/per-user/flows/{id}", lib.ChainMiddlewares(h.flowDetail, middlewares...))
 	r.GET("/api/oauth/per-user/flows/{id}/start", lib.ChainMiddlewares(h.flowStart, middlewares...))
@@ -64,8 +81,19 @@ func (h *MCPSessionsHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 
 // mcpClientSummary is the minimal MCP client view embedded in session rows.
 type mcpClientSummary struct {
-	ClientID string `json:"client_id"`
-	Name     string `json:"name"`
+	ClientID             string `json:"client_id"`
+	Name                 string `json:"name"`
+	PerUserDiscovery     bool   `json:"per_user_discovery,omitempty"` // Each caller keeps their own discovery on this client
+	awaitingVerification bool   // the client serves no caller until an admin verifies it; not on the wire
+}
+
+// mcpSessionDiscovery is what Bifrost discovered with a credential row's
+// binding on a client with per_user_discovery on.
+type mcpSessionDiscovery struct {
+	DiscoveredAt  string `json:"discovered_at"`
+	ToolCount     int    `json:"tool_count"`
+	PromptCount   int    `json:"prompt_count"`
+	ResourceCount int    `json:"resource_count"` // Resources plus resource templates
 }
 
 // virtualKeySummary is the minimal VK view embedded in session rows.
@@ -118,6 +146,17 @@ type mcpSessionRow struct {
 	// Always false for kind == "flow" — flow rows are completed via
 	// /api/oauth/per-user/flows/{id}/start, not /reauth.
 	CanReauth bool `json:"can_reauth"`
+	// CanRefresh mirrors what POST /refresh accepts for this row: an active credential of a client
+	// that keeps a discovery per caller, refreshable by the same callers as CanReauth, and by them
+	// only if the row is their own or they may act on others' credentials.
+	CanRefresh bool `json:"can_refresh"`
+	// OwnedByCaller marks a row bound to the calling user's own identity (user mode, their user
+	// ID), which the caller manages end to end.
+	OwnedByCaller bool `json:"owned_by_caller"`
+	// Discovery is what Bifrost discovered with this credential's binding, on a
+	// client with per_user_discovery on. Token and header rows of user and
+	// virtual-key callers only; nil when the binding holds none.
+	Discovery *mcpSessionDiscovery `json:"discovery,omitempty"`
 }
 
 type mcpSessionsListResponse struct {
@@ -333,7 +372,9 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 	})
 
 	caller := callerUserIDFromCtx(ctx)
+	refreshOthers := h.mcpManager != nil && h.mcpManager.IsMCPCredentialActionAllowedOnOthers(ctx, MCPCredentialActionRefresh)
 	for i := range rows {
+		rows[i].OwnedByCaller = ownedByCaller(rows[i].AuthMode, rows[i].UserID, caller)
 		// Flow rows are completed via /api/oauth/per-user/flows/{id}/start, not
 		// /reauth — passing a flow ID to /reauth always 404s before the identity
 		// gate runs. Leave CanReauth at its zero value so the wire field matches
@@ -342,6 +383,7 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 			continue
 		}
 		rows[i].CanReauth = canAccessUserFlow(rows[i].AuthMode, rows[i].UserID, caller)
+		rows[i].CanRefresh = rows[i].CanReauth && refreshable(rows[i]) && (rows[i].OwnedByCaller || refreshOthers)
 	}
 
 	totalCount := len(rows)
@@ -351,6 +393,11 @@ func (h *MCPSessionsHandler) list(ctx *fasthttp.RequestCtx) {
 		end = totalCount
 	}
 	page := rows[start:end]
+	if err := h.attachDiscoveries(ctx, page); err != nil {
+		logger.Error("[mcp/sessions] reading discoveries failed: %v", err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to list MCP sessions")
+		return
+	}
 
 	SendJSON(ctx, mcpSessionsListResponse{
 		Sessions:   page,
@@ -365,6 +412,76 @@ type sessionBindingKey struct {
 	Mode        string
 	Identity    string
 	MCPClientID string
+}
+
+// attachDiscoveries sets Discovery on the page's credential rows whose client
+// has per_user_discovery on, from one read of their bindings' discoveries. The
+// read is skipped when no row on the page can hold one.
+func (h *MCPSessionsHandler) attachDiscoveries(ctx context.Context, page []mcpSessionRow) error {
+	var bindings []configstore.MCPPerUserDiscoveryBinding
+	for _, row := range page {
+		if binding, ok := discoveryBindingOf(row); ok {
+			bindings = append(bindings, binding)
+		}
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	summaries, err := h.store.ConfigStore.GetMCPPerUserDiscoverySummaries(ctx, bindings)
+	if err != nil {
+		return err
+	}
+	for i := range page {
+		binding, ok := discoveryBindingOf(page[i])
+		if !ok {
+			continue
+		}
+		if summary, held := summaries[binding]; held {
+			page[i].Discovery = &mcpSessionDiscovery{
+				DiscoveredAt:  summary.DiscoveredAt.UTC().Format(rfc3339Nano),
+				ToolCount:     summary.ToolCount,
+				PromptCount:   summary.PromptCount,
+				ResourceCount: summary.ResourceCount,
+			}
+		}
+	}
+	return nil
+}
+
+// discoveryBindingOf is the binding whose discovery a row shows: a token or
+// header credential of a user or virtual-key caller on a client with
+// per_user_discovery on. A pending flow has no credential yet, and a
+// session-bound caller keeps no discovery.
+func discoveryBindingOf(row mcpSessionRow) (configstore.MCPPerUserDiscoveryBinding, bool) {
+	if row.Kind == "flow" || row.MCPClient == nil || !row.MCPClient.PerUserDiscovery {
+		return configstore.MCPPerUserDiscoveryBinding{}, false
+	}
+	binding := configstore.MCPPerUserDiscoveryBinding{Mode: schemas.MCPAuthMode(row.AuthMode), MCPClientID: row.MCPClient.ClientID}
+	switch binding.Mode {
+	case schemas.MCPAuthModeUser:
+		if row.UserID != nil {
+			binding.Identity = *row.UserID
+		}
+	case schemas.MCPAuthModeVK:
+		if row.VirtualKey != nil {
+			binding.Identity = row.VirtualKey.ID
+		}
+	}
+	return binding, binding.Identity != ""
+}
+
+// clientSummaryOf is a session row's MCP client: the preloaded client, or only
+// its id when the client row is gone.
+func clientSummaryOf(client *tables.TableMCPClient, mcpClientID string) *mcpClientSummary {
+	if client == nil {
+		return &mcpClientSummary{ClientID: mcpClientID}
+	}
+	return &mcpClientSummary{
+		ClientID:             client.ClientID,
+		Name:                 client.Name,
+		PerUserDiscovery:     client.PerUserDiscovery != nil && *client.PerUserDiscovery,
+		awaitingVerification: client.PendingVerification,
+	}
 }
 
 func bindingKeyFromToken(t tables.TableMCPOauthToken) sessionBindingKey {
@@ -429,6 +546,251 @@ func canAccessUserFlow(authMode string, rowUserID *string, callerUserID string) 
 		return false
 	}
 	return callerUserID != "" && callerUserID == *rowUserID
+}
+
+// ownedByCaller reports whether a row of authMode bound to rowUserID is the calling user's
+// own: a user-mode row of their user ID. A caller without a user identity owns no row.
+func ownedByCaller(authMode string, rowUserID *string, callerUserID string) bool {
+	return authMode == string(schemas.MCPAuthModeUser) && callerUserID != "" && rowUserID != nil && *rowUserID == callerUserID
+}
+
+// MCPCredentialAction is an action a caller takes on a per-user MCP credential row.
+type MCPCredentialAction string
+
+const (
+	// MCPCredentialActionRefresh discovers again with the row's stored credential.
+	MCPCredentialActionRefresh MCPCredentialAction = "refresh"
+	// MCPCredentialActionRevoke deletes the row: a credential or a pending sign-in.
+	MCPCredentialActionRevoke MCPCredentialAction = "revoke"
+)
+
+// isCredentialActionAllowed reports whether the caller may take action on a credential row of authMode
+// bound to rowUserID: on their own always, on anyone else's when the server allows it. Without a
+// manager to ask, on their own only.
+func isCredentialActionAllowed(ctx *fasthttp.RequestCtx, manager MCPManager, action MCPCredentialAction, authMode string, rowUserID *string) bool {
+	if ownedByCaller(authMode, rowUserID, callerUserIDFromCtx(ctx)) {
+		return true
+	}
+	return manager != nil && manager.IsMCPCredentialActionAllowedOnOthers(ctx, action)
+}
+
+// revokeOthersRefused answers a revoke of a row the caller may not act on.
+const revokeOthersRefused = "You can only revoke your own MCP sessions."
+
+// refreshable reports whether POST /refresh accepts row, before its identity gate: an active
+// credential of a user or a virtual key on a client with per_user_discovery on that is serving
+// callers.
+func refreshable(row mcpSessionRow) bool {
+	if _, ok := discoveryBindingOf(row); !ok {
+		return false
+	}
+	return row.Status == "active" && !row.MCPClient.awaitingVerification
+}
+
+// refreshSession is the credential row a refresh is for.
+type refreshSession struct {
+	kind         string // "header" or "token"
+	mcpClientID  string
+	mode         schemas.MCPAuthMode
+	identity     string
+	userID       *string
+	virtualKeyID *string
+	status       string
+	updatedAt    time.Time
+}
+
+// loadRefreshSession reads the header credential or OAuth token row rowID, or nil when there is
+// neither.
+func (h *MCPSessionsHandler) loadRefreshSession(ctx context.Context, rowID string) (*refreshSession, error) {
+	cred, err := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID)
+	if err != nil {
+		return nil, err
+	}
+	if cred != nil {
+		session := &refreshSession{kind: "header", mcpClientID: cred.MCPClientID, mode: schemas.MCPAuthMode(cred.AuthMode),
+			userID: cred.UserID, virtualKeyID: cred.VirtualKeyID, status: cred.Status, updatedAt: cred.UpdatedAt}
+		session.identity = bindingIdentity(session.mode, cred.UserID, cred.VirtualKeyID, cred.SessionID)
+		return session, nil
+	}
+	tok, err := h.store.ConfigStore.GetOauthUserTokenByID(ctx, rowID)
+	if err != nil || tok == nil {
+		return nil, err
+	}
+	session := &refreshSession{kind: "token", mcpClientID: tok.MCPClientID, mode: schemas.MCPAuthMode(tok.AuthMode),
+		userID: tok.UserID, virtualKeyID: tok.VirtualKeyID, status: tok.Status, updatedAt: tok.UpdatedAt}
+	session.identity = bindingIdentity(session.mode, tok.UserID, tok.VirtualKeyID, tok.SessionID)
+	return session, nil
+}
+
+// bindingIdentity is who a credential row belongs to under mode.
+func bindingIdentity(mode schemas.MCPAuthMode, userID, virtualKeyID *string, sessionID string) string {
+	switch mode {
+	case schemas.MCPAuthModeUser:
+		if userID != nil {
+			return *userID
+		}
+	case schemas.MCPAuthModeVK:
+		if virtualKeyID != nil {
+			return *virtualKeyID
+		}
+	case schemas.MCPAuthModeSession:
+		return sessionID
+	}
+	return ""
+}
+
+// refresh discovers the tools, prompts and resources of the caller a session row belongs to again,
+// with the credential the row stores, and keeps what it finds as their discovery of the row's
+// client, which every node then serves. It lets a caller pick up what their upstream added since
+// they signed in.
+//
+// Only an active credential of a user or a virtual key, on a client with per_user_discovery on that
+// is serving callers, can be refreshed, and a user's only by that user: the same rule as reauth,
+// since the refresh dials as them. A virtual key's credential is refreshed only by a caller the
+// server lets act on others' credentials. A refresh that cannot discover answers 502 and keeps the
+// caller's discovery, since the credential it was made with is unchanged. The row is read again
+// before storing, as a sign-in reads its credential again: if it was revoked or replaced meanwhile,
+// nothing is stored and the refresh answers 409.
+func (h *MCPSessionsHandler) refresh(ctx *fasthttp.RequestCtx) {
+	rowID, ok := ctx.UserValue("id").(string)
+	if !ok || rowID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid session id")
+		return
+	}
+	if h.store.ConfigStore == nil || h.mcpManager == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "MCP session refresh is unavailable: config store is disabled")
+		return
+	}
+	session, err := h.loadRefreshSession(ctx, rowID)
+	if err != nil {
+		logger.Error("[mcp/sessions] load session to refresh failed: id=%s err=%v", rowID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to load MCP session")
+		return
+	}
+	if session == nil {
+		SendError(ctx, fasthttp.StatusNotFound, "MCP session not found")
+		return
+	}
+	if !canAccessUserFlow(string(session.mode), session.userID, callerUserIDFromCtx(ctx)) {
+		SendError(ctx, fasthttp.StatusForbidden, "Only the bound user can refresh this session's tools.")
+		return
+	}
+	if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRefresh, string(session.mode), session.userID) {
+		SendError(ctx, fasthttp.StatusForbidden, "You can only refresh tools for your own MCP sessions.")
+		return
+	}
+	config, err := h.store.ConfigStore.GetMCPClientConfigByID(ctx, session.mcpClientID)
+	if err != nil || config == nil {
+		if err != nil && !errors.Is(err, configstore.ErrNotFound) {
+			logger.Error("[mcp/sessions] load MCP client to refresh failed: id=%s err=%v", session.mcpClientID, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to load the session's MCP client")
+			return
+		}
+		SendError(ctx, fasthttp.StatusNotFound, "The session's MCP client no longer exists")
+		return
+	}
+	switch {
+	case !perUserDiscoveryOn(config):
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("MCP client %s keeps one tool list for every caller; refresh it from the MCP registry instead", config.Name))
+		return
+	case !keepsSignInDiscovery(config, session.mode, session.identity):
+		SendError(ctx, fasthttp.StatusBadRequest, "A session-bound caller keeps no discovery to refresh")
+		return
+	case config.PendingVerification:
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("MCP client %s is awaiting admin verification, which serves no caller until it completes", config.Name))
+		return
+	case session.status != "active" && session.kind == "header":
+		SendError(ctx, fasthttp.StatusBadRequest, "Update this session's headers before refreshing its tools")
+		return
+	case session.status != "active":
+		SendError(ctx, fasthttp.StatusBadRequest, "Reauthorize this session before refreshing its tools")
+		return
+	}
+
+	discoverCtx, cancel := context.WithTimeout(ctx, signInDiscoveryTimeout)
+	defer cancel()
+	// The credential is read before the row the recheck below compares with: reading an expired
+	// access token refreshes it and stores the new one, which moves the row, and that write is this
+	// refresh's own, not a revoke or a replacement.
+	credential, err := h.readStoredCredential(discoverCtx, config, session)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadGateway, fmt.Sprintf("Failed to discover the tools of MCP client %s: %v", config.Name, err))
+		return
+	}
+	if session, err = h.loadRefreshSession(ctx, rowID); err != nil || session == nil || session.status != "active" {
+		SendError(ctx, fasthttp.StatusConflict, "The session was revoked or replaced while its tools were being refreshed")
+		return
+	}
+	discovery, err := h.discoverWithStoredCredential(discoverCtx, config, session, credential)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadGateway, fmt.Sprintf("Failed to discover the tools of MCP client %s: %v", config.Name, err))
+		return
+	}
+	if again, err := h.loadRefreshSession(ctx, rowID); err != nil || again == nil || again.status != "active" || !again.updatedAt.Equal(session.updatedAt) {
+		SendError(ctx, fasthttp.StatusConflict, "The session was revoked or replaced while its tools were being refreshed")
+		return
+	}
+	discovery.DiscoveredAt = time.Now()
+	if err := storeSignInDiscovery(ctx, perUserDiscoveryStore(h.store), config, session.mode, session.identity, discovery); err != nil {
+		logger.Error("[mcp/sessions] store refreshed discovery failed: id=%s err=%v", rowID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to store the refreshed tools")
+		return
+	}
+	lib.RecordAuditChange(ctx, "mcp_session.tools_refreshed", "mcp_session", rowID, config.Name, nil,
+		auditMCPSession(refreshAuditKind(session.kind), config.ID, string(session.mode), session.userID, session.virtualKeyID))
+	SendJSON(ctx, map[string]any{
+		"status":         "success",
+		"tool_count":     len(discovery.Tools),
+		"prompt_count":   len(discovery.Prompts),
+		"resource_count": len(discovery.Resources) + len(discovery.ResourceTemplates),
+	})
+}
+
+// storedCredential is the credential a refresh discovers with: a header row's headers, or a token
+// row's access token.
+type storedCredential struct {
+	headers     map[string]string
+	accessToken string
+}
+
+// readStoredCredential reads the credential session stores. Reading an expired access token
+// refreshes it and stores the new one, which writes the session's row.
+func (h *MCPSessionsHandler) readStoredCredential(ctx context.Context, config *schemas.MCPClientConfig, session *refreshSession) (storedCredential, error) {
+	if session.kind == "header" {
+		if h.store.MCPHeadersProvider == nil {
+			return storedCredential{}, errors.New("per-user headers credential provider is not configured")
+		}
+		cred, err := h.store.MCPHeadersProvider.GetCredentialByMode(ctx, session.mode, session.identity, config.ID)
+		if err != nil {
+			return storedCredential{}, fmt.Errorf("failed to read the stored headers: %w", err)
+		}
+		return storedCredential{headers: cred.Headers}, nil
+	}
+	if h.store.OAuthProvider == nil {
+		return storedCredential{}, errors.New("OAuth provider is not configured")
+	}
+	accessToken, err := h.store.OAuthProvider.GetUserAccessTokenByMode(ctx, session.mode, session.identity, config.ID)
+	if err != nil {
+		return storedCredential{}, fmt.Errorf("failed to read the stored token: %w", err)
+	}
+	return storedCredential{accessToken: accessToken}, nil
+}
+
+// discoverWithStoredCredential discovers config's tools, prompts and resources with credential,
+// the way verifying it at sign-in or submit does.
+func (h *MCPSessionsHandler) discoverWithStoredCredential(ctx context.Context, config *schemas.MCPClientConfig, session *refreshSession, credential storedCredential) (*schemas.MCPDiscovery, error) {
+	if session.kind == "header" {
+		return h.mcpManager.VerifyHeadersConnection(ctx, config, credential.headers)
+	}
+	return h.mcpManager.VerifyPerUserOAuthConnection(ctx, config, credential.accessToken)
+}
+
+// refreshAuditKind is the audit record kind of a refreshed row.
+func refreshAuditKind(kind string) string {
+	if kind == "header" {
+		return "header_credential"
+	}
+	return "oauth_token"
 }
 
 // reauth starts a fresh OAuth flow OR a fresh header-submission flow for
@@ -515,13 +877,14 @@ func (h *MCPSessionsHandler) reauth(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
-	flow, sessionID, err := provider.InitiateUserOAuthFlow(bfCtx, tok.OauthConfigID, tok.MCPClientID, redirectURI, rowMode)
+	flow, sessionID, err := provider.InitiateUserOAuthFlow(bfCtx, tok.OauthConfigID, tok.MCPClientID, redirectURI, rowMode, "")
 	if err != nil {
 		logger.Error("[mcp/sessions] reauth flow init failed: token=%s err=%v", rowID, err)
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to initiate reauthentication")
 		return
 	}
 	logger.Debug("[mcp/sessions] reauth initiated: token=%s mcp_client=%s mode=%s flow=%s", rowID, tok.MCPClientID, rowMode, sessionID)
+	lib.RecordAuditChange(ctx, "mcp_session.reauth_started", "mcp_session", rowID, mcpSessionAuditName(tok.MCPClient, tok.MCPClientID), nil, auditMCPSession("oauth_token", tok.MCPClientID, tok.AuthMode, tok.UserID, tok.VirtualKeyID))
 	SendJSON(ctx, map[string]any{
 		"authorize_url": flow.AuthorizeURL,
 		"session_id":    sessionID,
@@ -583,6 +946,7 @@ func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bf
 		return
 	}
 	logger.Debug("[mcp/sessions] reauth header initiated: cred=%s mcp_client=%s mode=%s flow=%s", cred.ID, cred.MCPClientID, rowMode, initiation.FlowID)
+	lib.RecordAuditChange(ctx, "mcp_session.reauth_started", "mcp_session", cred.ID, mcpSessionAuditName(cred.MCPClient, cred.MCPClientID), nil, auditMCPSession("header_credential", cred.MCPClientID, cred.AuthMode, cred.UserID, cred.VirtualKeyID))
 	SendJSON(ctx, map[string]any{
 		// submit_url is set so a future header-specific client can branch
 		// cleanly; authorize_url stays compatible with the existing UI which
@@ -594,26 +958,185 @@ func (h *MCPSessionsHandler) reauthHeaderCredential(ctx *fasthttp.RequestCtx, bf
 	})
 }
 
+// mcpSessionConnectRequest is the body of POST /api/mcp/sessions/connect.
+type mcpSessionConnectRequest struct {
+	MCPClientID string `json:"mcp_client_id"`
+	Origin      string `json:"origin,omitempty"` // dashboard page the sign-in starts from (tables.MCPOauthFlowOrigin*), which the OAuth callback returns to
+}
+
+// connect starts the calling user's own sign-in to an MCP client: the first
+// one, or a fresh one in place of a pending, expired or rejected credential.
+// It needs a signed-in user allowed to call the client
+// (MCPManager.IsMCPAllowedForUser); a client they may not call answers 404 as
+// if it did not exist. Only an
+// enabled, verified per_user_oauth or per_user_headers client takes a caller's
+// own credential.
+//
+// per_user_oauth: starts or reuses the user's pending flow for the client and
+// answers the provider's authorize URL, for the browser to open directly. An
+// origin makes the callback return a signed-in caller to that page.
+// per_user_headers: starts a submission flow and answers its ID and the header
+// names to submit, for PUT /api/mcp/per-user-headers/flows/{id}.
+func (h *MCPSessionsHandler) connect(ctx *fasthttp.RequestCtx) {
+	var req mcpSessionConnectRequest
+	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil || req.MCPClientID == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "mcp_client_id is required")
+		return
+	}
+	if req.Origin != "" && req.Origin != tables.MCPOauthFlowOriginHome {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Unknown origin %q", req.Origin))
+		return
+	}
+	userID := callerUserIDFromCtx(ctx)
+	if userID == "" {
+		SendError(ctx, fasthttp.StatusForbidden, "Connecting to an MCP server needs a signed-in user.")
+		return
+	}
+	config, err := h.store.GetMCPClient(req.MCPClientID)
+	if err != nil || config == nil || h.mcpManager == nil || !h.mcpManager.IsMCPAllowedForUser(ctx, config.Name, userID) {
+		SendError(ctx, fasthttp.StatusNotFound, "MCP server not found")
+		return
+	}
+	switch {
+	case config.Disabled:
+		SendError(ctx, fasthttp.StatusConflict, "This MCP server is disabled.")
+		return
+	case config.PendingVerification:
+		SendError(ctx, fasthttp.StatusConflict, "This MCP server is waiting for an administrator to verify it.")
+		return
+	}
+	bfCtx, cancel := lib.ConvertToBifrostContext(ctx, h.store)
+	defer cancel()
+	switch config.AuthType {
+	case schemas.MCPAuthTypePerUserOauth:
+		h.connectOAuth(ctx, bfCtx, userID, config, req.Origin)
+	case schemas.MCPAuthTypePerUserHeaders:
+		h.connectHeaders(ctx, bfCtx, userID, config)
+	default:
+		SendError(ctx, fasthttp.StatusConflict, "This MCP server does not take your own credentials.")
+	}
+}
+
+// connectOAuth is connect's per_user_oauth branch.
+func (h *MCPSessionsHandler) connectOAuth(ctx *fasthttp.RequestCtx, bfCtx *schemas.BifrostContext, userID string, config *schemas.MCPClientConfig, origin string) {
+	provider := h.store.OAuthProvider
+	if provider == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "OAuth provider not configured")
+		return
+	}
+	if config.OauthConfigID == nil || *config.OauthConfigID == "" {
+		SendError(ctx, fasthttp.StatusInternalServerError, "This MCP server has no OAuth configuration")
+		return
+	}
+	bfCtx.SetValue(schemas.BifrostContextKeyUserID, userID)
+	redirectURI := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL()) + "/api/oauth/callback"
+	_, flowID, err := provider.InitiateUserOAuthFlow(bfCtx, *config.OauthConfigID, config.ID, redirectURI, schemas.MCPAuthModeUser, origin)
+	if err != nil {
+		logger.Error("[mcp/sessions] connect flow init failed: mcp_client=%s err=%v", config.ID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start signing in")
+		return
+	}
+	authorizeURL, err := provider.BuildUpstreamAuthorizeURL(ctx, flowID)
+	if err != nil {
+		switch {
+		case errors.Is(err, schemas.ErrOAuth2FlowExpired),
+			errors.Is(err, schemas.ErrOAuth2FlowNotPending),
+			errors.Is(err, schemas.ErrOAuth2NotPerUserSession):
+			SendError(ctx, fasthttp.StatusConflict, "Signing in was started again elsewhere; try again")
+			return
+		}
+		logger.Error("[mcp/sessions] connect authorize URL failed: flow=%s err=%v", flowID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to build upstream authorize URL")
+		return
+	}
+	lib.RecordAuditChange(ctx, "mcp_session.connect_started", "mcp_session", flowID, config.Name, nil, auditMCPSession("oauth_flow", config.ID, string(schemas.MCPAuthModeUser), &userID, nil))
+	SendJSON(ctx, map[string]any{
+		"kind":          "oauth",
+		"flow_id":       flowID,
+		"authorize_url": authorizeURL,
+	})
+}
+
+// connectHeaders is connect's per_user_headers branch.
+func (h *MCPSessionsHandler) connectHeaders(ctx *fasthttp.RequestCtx, bfCtx *schemas.BifrostContext, userID string, config *schemas.MCPClientConfig) {
+	provider := h.store.MCPHeadersProvider
+	if provider == nil {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "Per-user headers provider not configured")
+		return
+	}
+	baseURL := lib.BuildBaseURL(ctx, h.store.GetMCPExternalClientURL())
+	if baseURL == "" {
+		SendError(ctx, fasthttp.StatusInternalServerError, "Could not derive callback base URL")
+		return
+	}
+	initiation, err := provider.InitiateUserSubmissionFlow(bfCtx, schemas.MCPAuthModeUser, userID, config.ID, baseURL)
+	if err != nil {
+		logger.Error("[mcp/sessions] connect header flow init failed: mcp_client=%s err=%v", config.ID, err)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start submitting your headers")
+		return
+	}
+	lib.RecordAuditChange(ctx, "mcp_session.connect_started", "mcp_session", initiation.FlowID, config.Name, nil, auditMCPSession("header_flow", config.ID, string(schemas.MCPAuthModeUser), &userID, nil))
+	keys := config.PerUserHeaderKeys
+	if keys == nil {
+		keys = []string{}
+	}
+	SendJSON(ctx, map[string]any{
+		"kind":                 "headers",
+		"flow_id":              initiation.FlowID,
+		"required_header_keys": keys,
+		"missing_header_keys":  h.missingCallerHeaderKeys(bfCtx, provider, userID, config.ID, keys),
+	})
+}
+
+// missingCallerHeaderKeys is which of the required header keys the user's stored credential for
+// the client does not hold, the keys an admin added since they last submitted, so a resubmission
+// can point them out. A user with no stored credential is missing none: everything is new to
+// them. Only key names are compared; no value leaves the store. A failed read is logged and
+// reports none, since it only drives a hint.
+func (h *MCPSessionsHandler) missingCallerHeaderKeys(ctx context.Context, provider schemas.MCPHeadersProvider, userID, mcpClientID string, required []string) []string {
+	missing := []string{}
+	cred, err := provider.GetCredentialByMode(ctx, schemas.MCPAuthModeUser, userID, mcpClientID)
+	if err != nil {
+		if !errors.Is(err, schemas.ErrHeadersCredentialNotFound) {
+			logger.Warn("[mcp/sessions] connect could not read the stored header keys: mcp_client=%s err=%v", mcpClientID, err)
+		}
+		return missing
+	}
+	if cred == nil {
+		return missing
+	}
+	// Required keys and stored keys are both canonical (lowercase, trimmed) by the write-side
+	// invariant, so an exact lookup is correct.
+	for _, key := range required {
+		if value, ok := cred.Headers[key]; !ok || value == "" {
+			missing = append(missing, key)
+		}
+	}
+	return missing
+}
+
 // revoke hard-deletes the local token row and any pending flow rows for the
 // same identity + MCP client. Upstream revocation against the OAuth provider
 // is NOT performed — the per-user OAuth template config doesn't carry a
 // revocation endpoint, and discovery for it is not yet wired up. The provider
 // token therefore remains live upstream until natural expiry; a follow-up can
 // add explicit upstream revocation once the schema captures the endpoint.
+// Every row kind the list returns can be revoked: a header credential, a
+// pending header flow, a pending OAuth flow and an OAuth token.
 //
-// Same authorization model as list/reauth: caller with an identity must match
-// the row's identity column; caller without an identity is the dashboard admin
-// view and can act on any row.
+// A row the caller cannot see answers 404. Of the rows they can see, a caller
+// revokes their own (isCredentialActionAllowed), and anyone else's only when the server
+// lets them act on others' credentials; otherwise 403.
 func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 	rowID, ok := ctx.UserValue("id").(string)
 	if !ok || rowID == "" {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid session id")
 		return
 	}
-	// Row IDs from three tables (OAuth tokens, header credentials, header
-	// flows) are all UUIDs. Try headers first (credential, then pending
-	// flow); on miss fall through to OAuth tokens. Each branch returns;
-	// only one delete runs per request. Store errors must surface as 500
+	// Row IDs from four tables (OAuth tokens, OAuth flows, header credentials,
+	// header flows) are all UUIDs. Try headers first (credential, then pending
+	// flow), then OAuth flows; on miss fall through to OAuth tokens. Each
+	// branch returns; only one delete runs per request. Store errors must surface as 500
 	// (not be swallowed into a miss) so a DB outage doesn't manifest as
 	// a misleading 404 from the OAuth fallback.
 	headerCred, headerCredErr := h.store.ConfigStore.GetMCPPerUserHeaderCredentialByID(ctx, rowID)
@@ -623,6 +1146,10 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if headerCred != nil {
+		if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, headerCred.AuthMode, headerCred.UserID) {
+			SendError(ctx, fasthttp.StatusForbidden, revokeOthersRefused)
+			return
+		}
 		// Drop pending submission flow rows for the same binding BEFORE
 		// the credential. If a flow finishes (submit lands) after the
 		// credential is gone, the upsert would mint a fresh credential and
@@ -654,7 +1181,9 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		h.mcpCredentialCacheManager.EvictMCPHeaderCredentialCacheByID(ctx, headerCred.ID)
+		evictRevokedCredentialDiscovery(ctx, h.mcpCredentialCacheManager, credMode, credIdentity, headerCred.MCPClientID)
 		logger.Debug("[mcp/sessions] revoked header credential: id=%s mcp_client=%s mode=%s", rowID, headerCred.MCPClientID, headerCred.AuthMode)
+		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", headerCred.ID, mcpSessionAuditName(headerCred.MCPClient, headerCred.MCPClientID), auditMCPSession("header_credential", headerCred.MCPClientID, headerCred.AuthMode, headerCred.UserID, headerCred.VirtualKeyID), nil)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}
@@ -665,18 +1194,52 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	if headerFlow != nil {
+		if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, headerFlow.FlowMode, headerFlow.UserID) {
+			SendError(ctx, fasthttp.StatusForbidden, revokeOthersRefused)
+			return
+		}
 		if err := h.store.ConfigStore.DeleteMCPPerUserHeaderFlow(ctx, headerFlow.ID); err != nil {
 			logger.Error("[mcp/sessions] delete header flow failed: id=%s err=%v", rowID, err)
 			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
 			return
 		}
 		logger.Debug("[mcp/sessions] revoked header flow: id=%s mcp_client=%s mode=%s", rowID, headerFlow.MCPClientID, headerFlow.FlowMode)
+		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", headerFlow.ID, mcpSessionAuditName(headerFlow.MCPClient, headerFlow.MCPClientID), auditMCPSession("header_flow", headerFlow.MCPClientID, headerFlow.FlowMode, headerFlow.UserID, headerFlow.VirtualKeyID), nil)
+		ctx.SetStatusCode(fasthttp.StatusNoContent)
+		return
+	}
+	// A pending OAuth flow is listed beside the tokens. Deleting its row is the
+	// whole revoke: the callback then finds no flow for its state, so no token is
+	// minted. The lookup never returns an admin-mode flow, the same visibility the
+	// token lookup below has.
+	oauthFlow, oauthFlowErr := h.store.ConfigStore.GetOauthUserSessionByID(ctx, rowID)
+	if oauthFlowErr != nil {
+		logger.Error("[mcp/sessions] load oauth flow failed: id=%s err=%v", rowID, oauthFlowErr)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+		return
+	}
+	if oauthFlow != nil {
+		if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, oauthFlow.FlowMode, oauthFlow.UserID) {
+			SendError(ctx, fasthttp.StatusForbidden, revokeOthersRefused)
+			return
+		}
+		if err := h.store.ConfigStore.DeleteOauthUserSession(ctx, oauthFlow.ID); err != nil {
+			logger.Error("[mcp/sessions] delete oauth flow failed: id=%s err=%v", rowID, err)
+			SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete MCP session")
+			return
+		}
+		logger.Debug("[mcp/sessions] revoked oauth flow: id=%s mcp_client=%s mode=%s", rowID, oauthFlow.MCPClientID, oauthFlow.FlowMode)
+		lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", oauthFlow.ID, mcpSessionAuditName(oauthFlow.MCPClient, oauthFlow.MCPClientID), auditMCPSession("oauth_flow", oauthFlow.MCPClientID, oauthFlow.FlowMode, oauthFlow.UserID, oauthFlow.VirtualKeyID), nil)
 		ctx.SetStatusCode(fasthttp.StatusNoContent)
 		return
 	}
 	tok, err := h.loadRowAuthorizedForCaller(ctx, rowID)
 	if err != nil {
 		_ = err
+		return
+	}
+	if !isCredentialActionAllowed(ctx, h.mcpManager, MCPCredentialActionRevoke, tok.AuthMode, tok.UserID) {
+		SendError(ctx, fasthttp.StatusForbidden, revokeOthersRefused)
 		return
 	}
 	// Delete pending flow rows BEFORE the token row. If a flow finishes
@@ -699,7 +1262,9 @@ func (h *MCPSessionsHandler) revoke(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.mcpCredentialCacheManager.EvictOauthTokenCacheByID(ctx, tok.ID)
+	evictRevokedCredentialDiscovery(ctx, h.mcpCredentialCacheManager, rowMode, rowIdentity, tok.MCPClientID)
 	logger.Debug("[mcp/sessions] revoked: token=%s mcp_client=%s mode=%s", rowID, tok.MCPClientID, tok.AuthMode)
+	lib.RecordAuditChange(ctx, "mcp_session.revoked", "mcp_session", tok.ID, mcpSessionAuditName(tok.MCPClient, tok.MCPClientID), auditMCPSession("oauth_token", tok.MCPClientID, tok.AuthMode, tok.UserID, tok.VirtualKeyID), nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -923,11 +1488,7 @@ func tokenRow(t tables.TableMCPOauthToken) mcpSessionRow {
 		CreatedAt:     t.CreatedAt.UTC().Format(rfc3339Nano),
 		OauthConfigID: t.OauthConfigID,
 	}
-	if t.MCPClient != nil {
-		row.MCPClient = &mcpClientSummary{ClientID: t.MCPClient.ClientID, Name: t.MCPClient.Name}
-	} else {
-		row.MCPClient = &mcpClientSummary{ClientID: t.MCPClientID}
-	}
+	row.MCPClient = clientSummaryOf(t.MCPClient, t.MCPClientID)
 	if t.VirtualKey != nil {
 		row.VirtualKey = &virtualKeySummary{ID: t.VirtualKey.ID, Name: t.VirtualKey.Name}
 	} else if t.VirtualKeyID != nil {
@@ -995,11 +1556,7 @@ func flowRow(f tables.TableMCPOauthFlow) mcpSessionRow {
 		CreatedAt:     f.CreatedAt.UTC().Format(rfc3339Nano),
 		OauthConfigID: f.OauthConfigID,
 	}
-	if f.MCPClient != nil {
-		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClient.ClientID, Name: f.MCPClient.Name}
-	} else {
-		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClientID}
-	}
+	row.MCPClient = clientSummaryOf(f.MCPClient, f.MCPClientID)
 	if f.VirtualKey != nil {
 		row.VirtualKey = &virtualKeySummary{ID: f.VirtualKey.ID, Name: f.VirtualKey.Name}
 	} else if f.VirtualKeyID != nil {
@@ -1031,11 +1588,7 @@ func headerCredentialRow(c tables.TableMCPPerUserHeaderCredential) mcpSessionRow
 		CreatedAt: c.CreatedAt.UTC().Format(rfc3339Nano),
 		UpdatedAt: &updated,
 	}
-	if c.MCPClient != nil {
-		row.MCPClient = &mcpClientSummary{ClientID: c.MCPClient.ClientID, Name: c.MCPClient.Name}
-	} else {
-		row.MCPClient = &mcpClientSummary{ClientID: c.MCPClientID}
-	}
+	row.MCPClient = clientSummaryOf(c.MCPClient, c.MCPClientID)
 	if c.VirtualKey != nil {
 		row.VirtualKey = &virtualKeySummary{ID: c.VirtualKey.ID, Name: c.VirtualKey.Name}
 	} else if c.VirtualKeyID != nil {
@@ -1066,11 +1619,7 @@ func headerFlowRow(f tables.TableMCPPerUserHeaderFlow) mcpSessionRow {
 		ExpiresAt: &exp,
 		CreatedAt: f.CreatedAt.UTC().Format(rfc3339Nano),
 	}
-	if f.MCPClient != nil {
-		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClient.ClientID, Name: f.MCPClient.Name}
-	} else {
-		row.MCPClient = &mcpClientSummary{ClientID: f.MCPClientID}
-	}
+	row.MCPClient = clientSummaryOf(f.MCPClient, f.MCPClientID)
 	if f.VirtualKey != nil {
 		row.VirtualKey = &virtualKeySummary{ID: f.VirtualKey.ID, Name: f.VirtualKey.Name}
 	} else if f.VirtualKeyID != nil {
@@ -1124,3 +1673,27 @@ func bindingKeyFromHeaderFlow(f tables.TableMCPPerUserHeaderFlow) sessionBinding
 }
 
 const rfc3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
+
+// auditMCPSession snapshots an MCP auth session's binding; session ids and credential material are left out.
+func auditMCPSession(kind, mcpClientID, authMode string, userID, virtualKeyID *string) map[string]any {
+	snap := map[string]any{
+		"kind":          kind,
+		"mcp_client_id": mcpClientID,
+		"auth_mode":     authMode,
+	}
+	if userID != nil {
+		snap["user_id"] = *userID
+	}
+	if virtualKeyID != nil {
+		snap["virtual_key_id"] = *virtualKeyID
+	}
+	return snap
+}
+
+// mcpSessionAuditName names an MCP auth session after its MCP client, falling back to the client id.
+func mcpSessionAuditName(client *tables.TableMCPClient, mcpClientID string) string {
+	if client != nil && client.Name != "" {
+		return client.Name
+	}
+	return mcpClientID
+}

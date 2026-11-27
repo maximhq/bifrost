@@ -55,3 +55,25 @@ func FilterHeaders(headers map[string]string, patterns []string) map[string]stri
 	}
 	return out
 }
+
+// credentialQueryParams are credential query parameter names that IsSensitiveHeader does not name.
+var credentialQueryParams = map[string]struct{}{
+	"key": {}, "apikey": {}, "token": {}, "password": {}, "pwd": {}, "sig": {}, "signature": {},
+	"x-amz-signature": {}, "x-amz-credential": {},
+	// Azure Functions and API Management accept these keys in the URL as well as in a header.
+	"x-functions-key": {}, "subscription-key": {},
+}
+
+// IsCredentialQueryParam reports whether a query parameter carries a credential: a name the header
+// rules flag once "_" is read as "-", or a well-known credential parameter. Relay job validation and
+// Relay Logs redaction share it, so a name refused on save is also masked in logs.
+func IsCredentialQueryParam(name string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "_", "-")
+	if _, ok := credentialQueryParams[normalized]; ok {
+		return true
+	}
+	if _, ok := credentialQueryParams[strings.ReplaceAll(normalized, "-", "")]; ok {
+		return true
+	}
+	return IsSensitiveHeader(normalized)
+}

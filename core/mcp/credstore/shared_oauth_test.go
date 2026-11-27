@@ -27,11 +27,11 @@ func (f *fakeSharedOAuthProvider) RevokeToken(_ context.Context, _ string) error
 func (f *fakeSharedOAuthProvider) GetUserAccessTokenByMode(_ context.Context, _ schemas.MCPAuthMode, _, _ string) (string, error) {
 	return "", nil
 }
-func (f *fakeSharedOAuthProvider) InitiateUserOAuthFlow(_ context.Context, _ string, _ string, _ string, _ schemas.MCPAuthMode) (*schemas.OAuth2FlowInitiation, string, error) {
+func (f *fakeSharedOAuthProvider) InitiateUserOAuthFlow(_ context.Context, _ string, _ string, _ string, _ schemas.MCPAuthMode, _ string) (*schemas.OAuth2FlowInitiation, string, error) {
 	return nil, "", nil
 }
-func (f *fakeSharedOAuthProvider) CompleteUserOAuthFlow(_ context.Context, _ string, _ string) (string, error) {
-	return "", nil
+func (f *fakeSharedOAuthProvider) CompleteUserOAuthFlow(_ context.Context, _ string, _ string) (*schemas.UserOAuthCompletion, error) {
+	return nil, nil
 }
 func (f *fakeSharedOAuthProvider) RefreshAccessToken(_ context.Context, _ string) error { return nil }
 func (f *fakeSharedOAuthProvider) ForceRefreshAccessToken(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {
@@ -86,4 +86,8 @@ func TestSharedOAuthResolverAdminConnectionHeaders_PerCallDelegatesToConnectionH
 	if got := headers.Get("Authorization"); got != "Bearer shared-token-abc" {
 		t.Errorf("expected the resolved bearer token, got %q", got)
 	}
+}
+
+func (f *fakeSharedOAuthProvider) GetClientCredentialsAccessToken(_ context.Context, _ *schemas.MCPClientConfig) (string, error) {
+	return f.accessToken, nil
 }

@@ -19,6 +19,16 @@ func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	return acc
 }
 
+// TestDeepCopyResponsesStreamResponseCopiesEventID pins that a copied chunk's resume cursor is its own.
+func TestDeepCopyResponsesStreamResponseCopiesEventID(t *testing.T) {
+	original := &schemas.BifrostResponsesStreamResponse{EventID: schemas.Ptr("e1")}
+	copied := deepCopyResponsesStreamResponse(original)
+	require.NotNil(t, copied.EventID)
+	*copied.EventID = "e2"
+	require.Equal(t, "e1", *original.EventID)
+	require.Nil(t, deepCopyResponsesStreamResponse(&schemas.BifrostResponsesStreamResponse{}).EventID)
+}
+
 func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
 	original := schemas.ResponsesMessage{ResponsesToolMessage: &schemas.ResponsesToolMessage{Error: &schemas.ResponsesToolMessageError{
 		ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{
@@ -755,4 +765,180 @@ func TestResponsesStreamRetainsStopReason(t *testing.T) {
 			require.Equal(t, reason, *got.Data.FinishReason)
 		})
 	}
+}
+
+// TestAccumulatedResponsesStreamKeepsRawResponseFormat verifies the joined raw keeps the format its events declared,
+// so an event without a declaration (a synthetic tail) does not clear it.
+func TestAccumulatedResponsesStreamKeepsRawResponseFormat(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "responses-raw-format")
+	declared := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+		Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("Hello"), ContentIndex: schemas.Ptr(0),
+	}}
+	declared.ResponsesStreamResponse.ExtraFields.RawResponse = `{"type":"response.output_text.delta","delta":"Hello"}`
+	declared.ResponsesStreamResponse.ExtraFields.RawResponseFormat = schemas.RawResponseFormatOpenAIResponsesStreamEvent
+	_, err := acc.processResponsesStreamingResponse(ctx, declared, nil)
+	require.NoError(t, err)
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	tail := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}}
+	tail.ResponsesStreamResponse.ExtraFields.ChunkIndex = 1
+	tail.ResponsesStreamResponse.ExtraFields.RawResponse = `{"type":"response.completed"}`
+	got, err := acc.processResponsesStreamingResponse(ctx, tail, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, got.Data.RawResponse)
+	require.Equal(t, `{"type":"response.output_text.delta","delta":"Hello"}`+"\n\n"+`{"type":"response.completed"}`, *got.Data.RawResponse)
+	require.Equal(t, schemas.RawResponseFormatOpenAIResponsesStreamEvent, got.Data.RawResponseFormat)
+}
+
+// TestBuildResponsesMessagesFromChunksWithoutAccumulator pins the exported builder used to rebuild
+// recorded streams outside a live Accumulator: it must sort out-of-order chunks itself and match
+// what the Accumulator method produces for the same input.
+func TestBuildResponsesMessagesFromChunksWithoutAccumulator(t *testing.T) {
+	ci := 0
+	makeChunks := func() []*ResponsesStreamChunk {
+		return []*ResponsesStreamChunk{
+			{ChunkIndex: 2, StreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("world"), ContentIndex: &ci}},
+			{ChunkIndex: 0, StreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("hello"), ContentIndex: &ci}},
+			{ChunkIndex: 1, StreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr(", "), ContentIndex: &ci}},
+		}
+	}
+
+	msgs := BuildResponsesMessagesFromChunks(makeChunks())
+	require.Len(t, msgs, 1)
+	require.NotNil(t, msgs[0].Content)
+	require.NotEmpty(t, msgs[0].Content.ContentBlocks)
+	require.NotNil(t, msgs[0].Content.ContentBlocks[0].Text)
+	require.Equal(t, "hello, world", *msgs[0].Content.ContentBlocks[0].Text)
+
+	viaAccumulator := testResponsesAccumulator(t).buildCompleteMessageFromResponsesStreamChunks(makeChunks())
+	require.Equal(t, viaAccumulator, msgs)
+}
+
+func TestPassthroughStreamCarriesServiceTierFromUsage(t *testing.T) {
+	acc := testResponsesAccumulator(t)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "passthrough-service-tier")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	tier := schemas.BifrostServiceTierDefault
+
+	processed, err := acc.processPassthroughStreamingResponse(ctx, &schemas.BifrostResponse{
+		PassthroughResponse: &schemas.BifrostPassthroughResponse{
+			StatusCode: 200,
+			PassthroughUsage: &schemas.BifrostPassthroughUsage{
+				LLMUsage:    &schemas.BifrostLLMUsage{TotalTokens: 10},
+				ServiceTier: &tier,
+			},
+		},
+	}, nil)
+	require.NoError(t, err)
+	require.NotNil(t, processed.Data)
+	require.NotNil(t, processed.Data.ServiceTier)
+	require.Equal(t, schemas.BifrostServiceTierDefault, *processed.Data.ServiceTier)
+}
+
+// TestBuildResponsesMessageKeepsStreamedMedia pins that an answer's media, which has no delta event, is kept
+// beside the text that streamed, and is not repeated when the item already holds it.
+func TestBuildResponsesMessageKeepsStreamedMedia(t *testing.T) {
+	media := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr("data:image/png;base64,QQ==")}}
+	text := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hi")}
+	item := func(status string, blocks ...schemas.ResponsesMessageContentBlock) *schemas.ResponsesMessage {
+		return &schemas.ResponsesMessage{ID: schemas.Ptr("msg_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Status: &status, Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+	}
+	chunk := func(i int, resp *schemas.BifrostResponsesStreamResponse) *ResponsesStreamChunk {
+		return &ResponsesStreamChunk{ChunkIndex: i, StreamResponse: resp}
+	}
+	zero := 0
+	messages := testResponsesAccumulator(t).buildCompleteMessageFromResponsesStreamChunks([]*ResponsesStreamChunk{
+		chunk(0, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &zero, Item: item("in_progress")}),
+		chunk(1, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeContentPartAdded, OutputIndex: &zero, ContentIndex: &zero, ItemID: schemas.Ptr("msg_1"), Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("")}}),
+		chunk(2, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, OutputIndex: &zero, ContentIndex: &zero, ItemID: schemas.Ptr("msg_1"), Delta: schemas.Ptr("hi")}),
+		chunk(3, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &zero, Item: item("completed", text, media)}),
+		chunk(4, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &zero, Item: item("completed", text, media)}),
+	})
+	if len(messages) != 1 || messages[0].Content == nil || len(messages[0].Content.ContentBlocks) != 2 {
+		t.Fatalf("messages = %+v", messages)
+	}
+	if blocks := messages[0].Content.ContentBlocks; *blocks[0].Text != "hi" || blocks[1].ResponsesInputMessageContentBlockImage == nil {
+		t.Errorf("want the text and its image, got %+v", blocks)
+	}
+}
+
+// TestBuildResponsesMessageMediaOrder pins that an answer's media keeps its place among the text that streamed,
+// whichever came first, and is not shared with the chunk it came on.
+func TestBuildResponsesMessageMediaOrder(t *testing.T) {
+	image := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeImage, ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{ImageURL: schemas.Ptr("data:image/png;base64,QQ==")}}
+	text := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hi")}
+	item := func(status string, blocks ...schemas.ResponsesMessageContentBlock) *schemas.ResponsesMessage {
+		return &schemas.ResponsesMessage{ID: schemas.Ptr("msg_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant), Status: &status, Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks}}
+	}
+	for name, blocks := range map[string][]schemas.ResponsesMessageContentBlock{
+		"image first": {image, text}, "text first": {text, image}, "text between": {image, text, image},
+	} {
+		textAt := 0
+		if blocks[0].Text == nil {
+			textAt = 1
+		}
+		zero := 0
+		var chunks []*ResponsesStreamChunk
+		for i, resp := range []*schemas.BifrostResponsesStreamResponse{
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &zero, Item: item("in_progress")},
+			{Type: schemas.ResponsesStreamResponseTypeContentPartAdded, OutputIndex: &zero, ContentIndex: &textAt, ItemID: schemas.Ptr("msg_1"), Part: &schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("")}},
+			{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, OutputIndex: &zero, ContentIndex: &textAt, ItemID: schemas.Ptr("msg_1"), Delta: schemas.Ptr("hi")},
+			{Type: schemas.ResponsesStreamResponseTypeOutputItemDone, OutputIndex: &zero, Item: item("completed", blocks...)},
+		} {
+			// The accumulator stores its own copy of every chunk.
+			chunks = append(chunks, &ResponsesStreamChunk{ChunkIndex: i, StreamResponse: deepCopyResponsesStreamResponse(resp)})
+		}
+		messages := BuildResponsesMessagesFromChunks(chunks)
+		require.Len(t, messages, 1, name)
+		got := messages[0].Content.ContentBlocks
+		require.Len(t, got, len(blocks), name)
+		for i := range blocks {
+			if blocks[i].Text != nil {
+				require.NotNil(t, got[i].Text, name)
+				require.Equal(t, "hi", *got[i].Text, name)
+				continue
+			}
+			require.NotNil(t, got[i].ResponsesInputMessageContentBlockImage, name)
+			*got[i].ImageURL = "changed"
+		}
+		for _, b := range chunks[3].StreamResponse.Item.Content.ContentBlocks {
+			if b.ResponsesInputMessageContentBlockImage != nil {
+				require.Equal(t, "data:image/png;base64,QQ==", *b.ImageURL, name)
+			}
+		}
+	}
+	require.Equal(t, "data:image/png;base64,QQ==", *image.ImageURL)
+}
+
+// TestBuildResponsesMessageSummaryItems pins that summary items that streamed apart stay apart, and that deltas of
+// one item are joined, with or without a summary index.
+func TestBuildResponsesMessageSummaryItems(t *testing.T) {
+	build := func(deltas ...*schemas.BifrostResponsesStreamResponse) []schemas.ResponsesReasoningSummary {
+		zero := 0
+		item := &schemas.ResponsesMessage{ID: schemas.Ptr("rs_1"), Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}}
+		chunks := []*ResponsesStreamChunk{{ChunkIndex: 0, StreamResponse: &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, OutputIndex: &zero, Item: item}}}
+		for i, d := range deltas {
+			d.Type, d.OutputIndex, d.ItemID = schemas.ResponsesStreamResponseTypeReasoningSummaryTextDelta, &zero, schemas.Ptr("rs_1")
+			chunks = append(chunks, &ResponsesStreamChunk{ChunkIndex: i + 1, StreamResponse: d})
+		}
+		messages := BuildResponsesMessagesFromChunks(chunks)
+		require.Len(t, messages, 1)
+		return messages[0].Summary
+	}
+	at := func(i int, text string) *schemas.BifrostResponsesStreamResponse {
+		return &schemas.BifrostResponsesStreamResponse{SummaryIndex: &i, Delta: &text}
+	}
+	got := build(at(0, "on"), at(0, "e"), at(1, "two"))
+	require.Len(t, got, 2)
+	require.Equal(t, "one", got[0].Text)
+	require.Equal(t, "two", got[1].Text)
+	require.Equal(t, schemas.ResponsesReasoningContentBlockTypeSummaryText, got[1].Type)
+
+	got = build(&schemas.BifrostResponsesStreamResponse{Delta: schemas.Ptr("a")}, &schemas.BifrostResponsesStreamResponse{Delta: schemas.Ptr("b")})
+	require.Len(t, got, 1)
+	require.Equal(t, "ab", got[0].Text)
 }

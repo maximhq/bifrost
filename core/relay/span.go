@@ -1,0 +1,194 @@
+package relay
+
+import (
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/maximhq/bifrost/core/schemas"
+)
+
+// relaySpan is the operation span of one relay call: relay.<name>, started once the pre-hooks
+// have admitted the call and ended when the reply (or the stream) has ended, so the trace shows
+// the upstream call between the hook spans as it does for MCP tools and Agent operations. Nil
+// when no tracer is on the context.
+type relaySpan struct {
+	tracer schemas.Tracer
+	handle schemas.SpanHandle
+	spanID string
+	// raw is whether a connector asked for raw bodies and content logging is on for this call, as
+	// the Agent span decides it; request is the caller's body kept for that export.
+	raw     bool
+	request []byte
+	// callStart is when the call entered the gateway (before the pre-hooks), so the call's
+	// duration covers a call the pre-hooks refused, which never reaches the operation itself.
+	callStart time.Time
+}
+
+// startRelaySpan opens the operation span under the gate-entry parent, so it is not a child of
+// the last (already ended) pre-hook span, and threads its id onto ctx so the post-hook spans nest
+// under it.
+func startRelaySpan(ctx *schemas.BifrostContext, entrySpanID any, req *schemas.BifrostRelayRequest, callStart time.Time) *relaySpan {
+	tracer, _ := ctx.Value(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if tracer == nil || req == nil {
+		return nil
+	}
+	ctx.SetValue(schemas.BifrostContextKeySpanID, entrySpanID)
+	spanCtx, handle := tracer.StartSpan(ctx, fmt.Sprintf("relay.%s", req.RelayName), schemas.SpanKindRelay)
+	if handle == nil {
+		return nil
+	}
+	if spanCtx != nil {
+		if id, ok := spanCtx.Value(schemas.BifrostContextKeySpanID).(string); ok && id != "" {
+			ctx.SetValue(schemas.BifrostContextKeySpanID, id)
+		}
+	}
+	tracer.SetAttribute(handle, schemas.AttrBifrostRelayName, req.RelayName)
+	tracer.SetAttribute(handle, schemas.AttrHTTPRequestMethod, req.Method)
+	tracer.SetAttribute(handle, schemas.AttrBifrostRelayRoutePath, req.RoutePath)
+	tracer.SetAttribute(handle, schemas.AttrBifrostRelayBillable, req.Billable)
+	tracer.SetAttribute(handle, schemas.AttrBifrostRelayStreamed, req.Streams)
+	// The span starts after the pre-hooks, so governance's identity is settled. It is attached now,
+	// as an LLM span attaches it at its start, while nothing else can read or recycle the span; at
+	// the end a streamed call's span closes on another goroutine, alongside export.
+	setRelayGovernanceSpanAttrs(tracer, handle, ctx)
+	s := &relaySpan{tracer: tracer, handle: handle, callStart: callStart}
+	s.spanID, _ = ctx.Value(schemas.BifrostContextKeySpanID).(string)
+	// Raw bodies ride the span's raw-payload slot, never its attributes, so a connector exports
+	// them only through its own raw-payload opt-in and content controls, exactly as Agent bodies.
+	if consumer, ok := tracer.(interface{ A2AContentDemand() (bool, bool) }); ok {
+		_, s.raw = consumer.A2AContentDemand()
+	}
+	if disabled, _ := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); disabled {
+		s.raw = false
+	}
+	// Bodies are attached whole: the relay keeps no size bound of its own on what it records.
+	if s.raw && len(req.Body) > 0 {
+		s.request = req.Body
+	}
+	return s
+}
+
+// end records the outcome and closes the span. resp may be nil on a transport failure.
+func (s *relaySpan) end(ctx *schemas.BifrostContext, resp *schemas.BifrostRelayResponse, bifrostErr *schemas.BifrostError) {
+	if s == nil {
+		return
+	}
+	if resp != nil {
+		s.tracer.SetAttribute(s.handle, schemas.AttrHTTPResponseStatusCode, resp.StatusCode)
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayBytesOut, resp.BytesOut)
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayStreamed, resp.Streamed)
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayCounted, resp.Usage != nil)
+		if resp.Usage != nil {
+			s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayCost, resp.Usage.Cost)
+		}
+	} else {
+		// No reply was streamed: the start marked the span with the route's stream mode, so a call
+		// that failed before any reply would otherwise read as a stream in the overhead breakdown.
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayStreamed, false)
+		if bifrostErr != nil && bifrostErr.StatusCode != nil {
+			s.tracer.SetAttribute(s.handle, schemas.AttrHTTPResponseStatusCode, *bifrostErr.StatusCode)
+		}
+	}
+	// Fractional milliseconds from the context, as the root span takes them, and on a failed
+	// call too: time spent before a transport error is still time on the upstream.
+	if upstream, ok := schemas.GetUpstreamLatency(ctx); ok && upstream > 0 {
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayUpstreamDurationMs, float64(upstream)/float64(time.Millisecond))
+	}
+	if !s.callStart.IsZero() {
+		s.tracer.SetAttribute(s.handle, schemas.AttrBifrostRelayDurationMs, float64(time.Since(s.callStart))/float64(time.Millisecond))
+	}
+	// Governance's decision for the key or project is read again here before any body is attached.
+	if disabled, _ := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); disabled {
+		s.raw = false
+	}
+	if s.raw {
+		if span := s.tracer.SpanFromHandle(s.handle); span != nil {
+			var response string
+			if resp != nil && len(resp.Body) > 0 {
+				response = string(resp.Body)
+			}
+			span.SetA2ARawPayloads(s.spanID, &schemas.A2ASpanData{RawRequest: string(s.request), RawResponse: response})
+		}
+	}
+	switch {
+	case bifrostErr != nil:
+		msg := ""
+		if bifrostErr.Error != nil {
+			msg = bifrostErr.Error.Message
+		}
+		s.tracer.SetAttribute(s.handle, schemas.AttrErrorTypeSpec, relayErrorType(bifrostErr))
+		s.tracer.EndSpan(s.handle, schemas.SpanStatusError, msg)
+	case resp != nil && resp.StatusCode >= http.StatusBadRequest:
+		// The upstream's status is classified as an LLM provider status is (rate limited, auth,
+		// server error, ...), so error_type is a failure class and never a bare code.
+		code := resp.StatusCode
+		s.tracer.SetAttribute(s.handle, schemas.AttrErrorTypeSpec, relayErrorType(&schemas.BifrostError{StatusCode: &code}))
+		s.tracer.EndSpan(s.handle, schemas.SpanStatusError, fmt.Sprintf("HTTP %d", resp.StatusCode))
+	default:
+		s.tracer.EndSpan(s.handle, schemas.SpanStatusOk, "")
+	}
+}
+
+// relayErrorType classifies a failed call for the error.type attribute and metric label the way
+// LLM calls are classified (ClassifyErrorType): a governance decision (budget exceeded, rate
+// limited, access denied), a timeout or cancellation, or the upstream's failure class, rather than
+// a bare status code.
+func relayErrorType(bifrostErr *schemas.BifrostError) string {
+	if t := schemas.ClassifyErrorType(bifrostErr, schemas.RelayRequest); t != "" {
+		return string(t)
+	}
+	return "_OTHER"
+}
+
+// setRelayGovernanceSpanAttrs gives the relay span the same SpanEnrichment an LLM call span carries
+// (user, app, every team, customer and business unit), so the connectors read one shape for both.
+func setRelayGovernanceSpanAttrs(tracer schemas.Tracer, handle schemas.SpanHandle, ctx *schemas.BifrostContext) {
+	if tracer == nil || ctx == nil {
+		return
+	}
+	relaySpanEnrichment(ctx).ApplyToSpan(tracer.SpanFromHandle(handle))
+}
+
+// relaySpanEnrichment reads the dimensions an LLM span reads off the context, then takes the
+// governance identity from the Grant, the settled source, wherever it names one.
+func relaySpanEnrichment(ctx *schemas.BifrostContext) *schemas.SpanEnrichment {
+	e := schemas.SpanEnrichmentFromContext(ctx)
+	if e == nil {
+		e = &schemas.SpanEnrichment{}
+	}
+	grant := ctx.Grant()
+	if grant == nil {
+		return e
+	}
+	identity := grant.Identity()
+	if identity == nil {
+		return e
+	}
+	if vk := identity.VirtualKey(); vk != nil && vk.ID != "" {
+		e.VirtualKeyID, e.VirtualKeyName = vk.ID, vk.Name
+	}
+	if user := identity.User(); user != nil && user.ID != "" {
+		e.UserID, e.UserName, e.UserEmail = user.ID, user.Name, user.Email
+	}
+	if project := identity.Project(); project != nil && project.ID != "" {
+		e.ProjectID, e.ProjectName = project.ID, project.Name
+	}
+	takeRefs(identity.Teams(), &e.TeamID, &e.TeamName, &e.TeamIDs, &e.TeamNames)
+	takeRefs(identity.Customers(), &e.CustomerID, &e.CustomerName, &e.CustomerIDs, &e.CustomerNames)
+	takeRefs(identity.BusinessUnits(), &e.BusinessUnitID, &e.BusinessUnitName, &e.BusinessUnitIDs, &e.BusinessUnitNames)
+	return e
+}
+
+// takeRefs sets the attributed entity (the first) and the full lists, when the identity names any.
+func takeRefs(refs []schemas.EntityRef, id, name *string, ids, names *[]string) {
+	if len(refs) == 0 {
+		return
+	}
+	*id, *name = refs[0].ID, refs[0].Name
+	*ids, *names = make([]string, 0, len(refs)), make([]string, 0, len(refs))
+	for _, ref := range refs {
+		*ids = append(*ids, ref.ID)
+		*names = append(*names, ref.Name)
+	}
+}

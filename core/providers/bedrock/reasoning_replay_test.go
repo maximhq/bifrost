@@ -414,6 +414,10 @@ func TestConverseRequiresSignedReasoningFamilyFallback(t *testing.T) {
 		{"amazon.nova-pro-v1:0", false},
 		{"minimax.minimax-m2", false},
 		{"us.deepseek.r1-v1:0", false},
+		// Grok's signature carries the encrypted reasoning; OpenAI accepts unsigned text.
+		{"us.xai.grok-4.6", true},
+		{"global.xai.grok-4.7", true},
+		{"us.openai.gpt-5.6-luna", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.model, func(t *testing.T) {
@@ -483,6 +487,31 @@ func TestConvertBifrostReasoningToBedrockReasoningRedactedShape(t *testing.T) {
 		require.Empty(t, blocks, "an unreplayable block must be dropped, not reshaped")
 	})
 
+	t.Run("a token that is not a Converse blob is dropped, not sent", func(t *testing.T) {
+		// Pair A2 of the provider-switch harness: Mantle mints the bare token Bedrock
+		// would have base64-wrapped. redactedContent is a blob, so Bedrock answered
+		// 400 SerializationException with an empty message, which no reasoning fail-soft
+		// can recognise, and the turn failed instead of continuing without the token.
+		// Driven through the upstream request converter: the Converse response renderer
+		// shares the block builder and wraps foreign tokens for its client instead.
+		foreign := "rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln"
+		messages, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), "us.openai.gpt-5.6-luna", []schemas.ResponsesMessage{
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}},
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: &foreign}},
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Hello!")}},
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("again")}},
+		}, false)
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(messages)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "redactedContent", "a non-base64 token cannot deserialize as redactedContent: %s", raw)
+		require.Contains(t, string(raw), "Hello!", "the assistant turn itself must survive: %s", raw)
+	})
+
 	t.Run("summary text is dropped too", func(t *testing.T) {
 		blocks := convertBifrostReasoningToBedrockReasoning(&schemas.ResponsesMessage{
 			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
@@ -533,4 +562,222 @@ func TestRedactedReasoningSurvivesTheReplayLoop(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, blob, gjson.GetBytes(raw, "content.0.reasoningContent.redactedContent").String())
 	require.False(t, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText").Exists())
+}
+
+// TestChatReplayDropsForeignRedactedToken is the Chat-path mirror of the Responses
+// case above: an encrypted reasoning detail minted by another host is not a Converse
+// blob, so it is dropped instead of failing the whole turn with SerializationException.
+func TestChatReplayDropsForeignRedactedToken(t *testing.T) {
+	foreign := "rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln"
+	msg := schemas.ChatMessage{
+		Role:    schemas.ChatMessageRoleAssistant,
+		Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Hello!")},
+		ChatAssistantMessage: &schemas.ChatAssistantMessage{
+			ReasoningDetails: []schemas.ChatReasoningDetails{{Type: schemas.BifrostReasoningDetailsTypeEncrypted, Data: &foreign}},
+		},
+	}
+	replayed, err := convertMessage(context.Background(), "openai.gpt-5.6-luna", msg, newBedrockDocNamer())
+	require.NoError(t, err)
+	raw, err := sonic.Marshal(replayed)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(raw, "content.#.reasoningContent").Exists() && len(gjson.GetBytes(raw, "content.#.reasoningContent").Array()) > 0,
+		"a foreign token reached redactedContent: %s", raw)
+	require.Equal(t, "Hello!", gjson.GetBytes(raw, "content.#.text").Array()[0].String())
+}
+
+// Bedrock Grok (us.xai.grok-4.6 since November 2026) answers with reasoningText whose
+// signature is the encrypted reasoning: a tampered signature is a 400 "invalid encrypted
+// reasoning", a changed text is not. Replaying it unchanged is the only way the model keeps
+// its earlier reasoning, so a redacted-shape model replays signed text verbatim and still
+// drops unsigned text, on all three replay paths.
+func TestRedactedShapeReplaysSignedReasoningText(t *testing.T) {
+	const model = "us.xai.grok-4.6"
+	sig := "rsn_eyJhbGciOiJFUzI1NiIsInR5cCI6ImFyY2grandzIn0.e30.c2ln"
+	user := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeMessage), Role: new(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: new(text)}}
+	}
+	assistant := schemas.ResponsesMessage{Type: new(schemas.ResponsesMessageTypeMessage), Role: new(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentStr: new("They meet at 5:00pm.")}}
+	replay := func(t *testing.T, msgs []schemas.ResponsesMessage) []byte {
+		t.Helper()
+		out, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), model, msgs, false)
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		return raw
+	}
+
+	t.Run("responses reasoning item: signed text replays verbatim", func(t *testing.T) {
+		raw := replay(t, []schemas.ResponsesMessage{
+			user("When do the trains meet?"),
+			{Type: new(schemas.ResponsesMessageTypeReasoning),
+				Content:            &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{reasoningTextBlock("Relative speed first.", &sig)}},
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}},
+			assistant,
+			user("Restate it."),
+		})
+		got := gjson.GetBytes(raw, "1.content.#(reasoningContent).reasoningContent")
+		require.True(t, got.Exists(), "the signed reasoning was dropped: %s", raw)
+		require.Equal(t, sig, got.Get("reasoningText.signature").String(), "%s", raw)
+		require.Equal(t, "Relative speed first.", got.Get("reasoningText.text").String(), "%s", raw)
+		require.False(t, got.Get("redactedContent").Exists(), "%s", raw)
+	})
+
+	t.Run("responses reasoning item: unsigned text is still dropped", func(t *testing.T) {
+		raw := replay(t, []schemas.ResponsesMessage{
+			user("When do the trains meet?"),
+			{Type: new(schemas.ResponsesMessageTypeReasoning),
+				Content:            &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{reasoningTextBlock("Relative speed first.", nil)}},
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}}},
+			assistant,
+			user("Restate it."),
+		})
+		require.NotContains(t, string(raw), "reasoningContent", "%s", raw)
+	})
+
+	t.Run("responses message content block: signed text replays verbatim", func(t *testing.T) {
+		raw := replay(t, []schemas.ResponsesMessage{
+			user("When do the trains meet?"),
+			{Type: new(schemas.ResponsesMessageTypeMessage), Role: new(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					reasoningTextBlock("Relative speed first.", &sig),
+					{Type: schemas.ResponsesOutputMessageContentTypeText, Text: new("They meet at 5:00pm.")},
+				}}},
+			user("Restate it."),
+		})
+		got := gjson.GetBytes(raw, "1.content.#(reasoningContent).reasoningContent.reasoningText")
+		require.Equal(t, sig, got.Get("signature").String(), "%s", raw)
+		require.Equal(t, "Relative speed first.", got.Get("text").String(), "%s", raw)
+	})
+
+	t.Run("chat reasoning_details: signed text replays verbatim, unsigned is dropped", func(t *testing.T) {
+		msg := schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: new("They meet at 5:00pm.")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ReasoningDetails: []schemas.ChatReasoningDetails{
+				{Type: schemas.BifrostReasoningDetailsTypeText, Text: new("Relative speed first."), Signature: &sig},
+				{Type: schemas.BifrostReasoningDetailsTypeText, Text: new("unsigned aside")},
+			}},
+		}
+		replayed, err := convertMessage(context.Background(), model, msg, newBedrockDocNamer())
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(replayed)
+		require.NoError(t, err)
+		reasoning := gjson.GetBytes(raw, "content.#.reasoningContent").Array()
+		require.Len(t, reasoning, 1, "%s", raw)
+		require.Equal(t, sig, reasoning[0].Get("reasoningText.signature").String(), "%s", raw)
+		require.Equal(t, "Relative speed first.", reasoning[0].Get("reasoningText.text").String(), "%s", raw)
+	})
+
+	t.Run("responses reasoning item: streamed shape (summary plus signature) replays verbatim", func(t *testing.T) {
+		raw := replay(t, []schemas.ResponsesMessage{
+			user("When do the trains meet?"),
+			{Type: new(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{
+				Summary:          []schemas.ResponsesReasoningSummary{{Type: "summary_text", Text: "Relative speed first."}},
+				EncryptedContent: &sig,
+			}},
+			assistant,
+			user("Restate it."),
+		})
+		got := gjson.GetBytes(raw, "1.content.#(reasoningContent).reasoningContent")
+		require.Equal(t, sig, got.Get("reasoningText.signature").String(), "%s", raw)
+		require.Equal(t, "Relative speed first.", got.Get("reasoningText.text").String(), "%s", raw)
+		require.False(t, got.Get("redactedContent").Exists(), "the signature must not also go out as a blob: %s", raw)
+	})
+
+	t.Run("responses reasoning item: signed text and a blob both replay, text first", func(t *testing.T) {
+		blob := "cnNuX2pRenlYWklGSkxscEt5ZmxZa0NmdndJRmVMK2Jp"
+		raw := replay(t, []schemas.ResponsesMessage{
+			user("When do the trains meet?"),
+			{Type: new(schemas.ResponsesMessageTypeReasoning),
+				Content:            &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{reasoningTextBlock("Relative speed first.", &sig)}},
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: &blob}},
+			assistant,
+			user("Restate it."),
+		})
+		reasoning := gjson.GetBytes(raw, "1.content.#.reasoningContent").Array()
+		require.Len(t, reasoning, 2, "%s", raw)
+		require.Equal(t, sig, reasoning[0].Get("reasoningText.signature").String(), "%s", raw)
+		require.Equal(t, blob, reasoning[1].Get("redactedContent").String(), "%s", raw)
+	})
+
+	t.Run("responses reasoning item: a blob alone still replays as redactedContent", func(t *testing.T) {
+		blob := "cnNuX2pRenlYWklGSkxscEt5ZmxZa0NmdndJRmVMK2Jp"
+		raw := replay(t, []schemas.ResponsesMessage{
+			user("When do the trains meet?"),
+			{Type: new(schemas.ResponsesMessageTypeReasoning), ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}, EncryptedContent: &blob}},
+			assistant,
+			user("Restate it."),
+		})
+		reasoning := gjson.GetBytes(raw, "1.content.#.reasoningContent").Array()
+		require.Len(t, reasoning, 1, "%s", raw)
+		require.Equal(t, blob, reasoning[0].Get("redactedContent").String(), "%s", raw)
+		require.False(t, reasoning[0].Get("reasoningText").Exists(), "%s", raw)
+	})
+
+	t.Run("chat reasoning_details: a signature-only detail replays with empty text", func(t *testing.T) {
+		msg := schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: new("They meet at 5:00pm.")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ReasoningDetails: []schemas.ChatReasoningDetails{
+				{Type: schemas.BifrostReasoningDetailsTypeText, Text: new("Relative speed first.")},
+				{Type: schemas.BifrostReasoningDetailsTypeText, Signature: &sig},
+			}},
+		}
+		replayed, err := convertMessage(context.Background(), model, msg, newBedrockDocNamer())
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(replayed)
+		require.NoError(t, err)
+		reasoning := gjson.GetBytes(raw, "content.#.reasoningContent").Array()
+		require.Len(t, reasoning, 1, "%s", raw)
+		require.Equal(t, sig, reasoning[0].Get("reasoningText.signature").String(), "%s", raw)
+		require.True(t, reasoning[0].Get("reasoningText.text").Exists(), "text must be present, even empty: %s", raw)
+	})
+
+	t.Run("OpenAI on Bedrock still gets no reasoningText, signed or not", func(t *testing.T) {
+		// It does not verify signatures, and one minted by another model is a 400 there.
+		const openaiModel = "us.openai.gpt-5.6-luna"
+		out, _, err := ConvertBifrostMessagesToBedrockMessages(context.Background(), openaiModel, []schemas.ResponsesMessage{
+			user("When do the trains meet?"),
+			{Type: new(schemas.ResponsesMessageTypeReasoning),
+				Content:            &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{reasoningTextBlock("Relative speed first.", &sig)}},
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{{Type: "summary_text", Text: "Relative speed first."}}, EncryptedContent: &sig}},
+			assistant,
+			user("Restate it."),
+		}, false)
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(out)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "reasoningContent", "%s", raw)
+
+		replayed, err := convertMessage(context.Background(), openaiModel, schemas.ChatMessage{
+			Role:    schemas.ChatMessageRoleAssistant,
+			Content: &schemas.ChatMessageContent{ContentStr: new("They meet at 5:00pm.")},
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ReasoningDetails: []schemas.ChatReasoningDetails{
+				{Type: schemas.BifrostReasoningDetailsTypeText, Text: new("Relative speed first."), Signature: &sig},
+			}},
+		}, newBedrockDocNamer())
+		require.NoError(t, err)
+		raw, err = sonic.Marshal(replayed)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "reasoningContent", "%s", raw)
+	})
+
+	t.Run("chat loop: Grok's signed reasoning survives the round trip", func(t *testing.T) {
+		resp := &BedrockConverseResponse{Output: &BedrockConverseOutput{Message: &BedrockMessage{
+			Role: BedrockMessageRoleAssistant,
+			Content: []BedrockContentBlock{
+				{ReasoningContent: &BedrockReasoningContent{ReasoningText: &BedrockReasoningContentText{Text: new("Relative speed first."), Signature: &sig}}},
+				{Text: new("They meet at 5:00pm.")},
+			},
+		}}}
+		bifrostResp, err := resp.ToBifrostChatResponse(context.Background(), model)
+		require.NoError(t, err)
+		replayed, err := convertMessage(context.Background(), model, *bifrostResp.Choices[0].ChatNonStreamResponseChoice.Message, newBedrockDocNamer())
+		require.NoError(t, err)
+		raw, err := sonic.Marshal(replayed)
+		require.NoError(t, err)
+		require.Equal(t, sig, gjson.GetBytes(raw, "content.0.reasoningContent.reasoningText.signature").String(), "%s", raw)
+	})
 }

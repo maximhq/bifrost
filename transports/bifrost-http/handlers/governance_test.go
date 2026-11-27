@@ -76,12 +76,12 @@ func (m *mockRotateConfigStore) ExecuteTransaction(_ context.Context, fn func(tx
 	return fn(nil)
 }
 
-func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) error {
+func (m *mockRotateConfigStore) RevokeOAuth2GrantsBySubject(_ context.Context, bfMode, bfSub string, _ ...*gorm.DB) (int64, error) {
 	if m.revokeErr != nil {
-		return m.revokeErr
+		return 0, m.revokeErr
 	}
 	m.revokedGrants = append(m.revokedGrants, bfMode+":"+bfSub)
-	return nil
+	return 1, nil
 }
 
 func (m *mockRotateConfigStore) GetClientConfig(_ context.Context) (*configstore.ClientConfig, error) {
@@ -281,6 +281,61 @@ func TestClassifyAgentGrantReplacementError(t *testing.T) {
 		require.ErrorIs(t, classified, err)
 		require.NotErrorAs(t, classified, &badReqErr)
 	}
+}
+
+// A virtual key holds one config per provider, so create and update refuse provider_configs that name
+// a provider twice, before anything is written.
+func TestVirtualKeyProviderConfigsHoldOneConfigPerProvider(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	// Configured, so the only thing wrong with each request below is the repeated provider.
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+
+	duplicates := []string{
+		`"provider_configs":[{"provider":"openai","allowed_models":["gpt-4o-mini"]},{"provider":"openai","allowed_models":["gpt-4.1-mini"]}]`,
+		`"provider_configs":[{"provider":"openai","allowed_models":["*"]},{"provider":" openai ","allowed_models":["*"]}]`,
+	}
+
+	for _, configs := range duplicates {
+		createCtx := newTestRequestCtx(`{"name":"two-openai",` + configs + `}`)
+		handler.createVirtualKey(createCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+		assert.Contains(t, string(createCtx.Response.Body()), `provider_configs names provider \"openai\" more than once`)
+	}
+	keys, err := store.GetVirtualKeys(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, keys, "a refused create writes nothing")
+
+	createCtx := newTestRequestCtx(`{"name":"no-providers","description":"original"}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), string(createCtx.Response.Body()))
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+
+	for _, configs := range duplicates {
+		updateCtx := newTestRequestCtx(`{"description":"changed",` + configs + `}`)
+		updateCtx.SetUserValue("vk_id", created.VirtualKey.ID)
+		handler.updateVirtualKey(updateCtx)
+		require.Equal(t, fasthttp.StatusBadRequest, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
+	}
+	persisted, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "original", persisted.Description, "a refused update changes nothing")
+	assert.Empty(t, persisted.ProviderConfigs)
+}
+
+func TestValidateVirtualKeyProviders(t *testing.T) {
+	assert.NoError(t, validateVirtualKeyProviders(nil))
+	assert.NoError(t, validateVirtualKeyProviders([]string{"openai", "anthropic"}))
+	assert.NoError(t, validateVirtualKeyProviders([]string{"", " "}), "blank names are the provider check's to refuse")
+	assert.ErrorContains(t, validateVirtualKeyProviders([]string{"openai", "anthropic", "openai"}), `"openai"`)
+	assert.ErrorContains(t, validateVirtualKeyProviders([]string{"openai", " openai"}), `"openai"`, "compared as stored, trimmed")
 }
 
 func TestVirtualKeyAgentAssignmentsHTTPContract(t *testing.T) {
@@ -3494,9 +3549,9 @@ func TestBudgetRemovalRequestDetection(t *testing.T) {
 }
 
 // A deprecated single-budget update merges into the budget already stored, so every field it does not
-// name has to survive - the window settings included. Before, coerceLegacyBudget dropped them, which
+// name has to survive - the window settings included. Before, BudgetsFromSingleBudgetUpdate dropped them, which
 // moved a quarterly budget's fiscal start back to the default on any unrelated edit.
-func TestCoerceLegacyBudgetKeepsResetConfig(t *testing.T) {
+func TestBudgetsFromSingleBudgetUpdateKeepsResetConfig(t *testing.T) {
 	existing := &configstoreTables.TableBudget{
 		ID:            "budget-1",
 		MaxLimit:      100,
@@ -3505,7 +3560,7 @@ func TestCoerceLegacyBudgetKeepsResetConfig(t *testing.T) {
 	}
 
 	t.Run("an edit that does not name it keeps the stored value", func(t *testing.T) {
-		got := coerceLegacyBudget(&UpdateBudgetRequest{MaxLimit: schemas.Ptr(250.0)}, existing)
+		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{MaxLimit: schemas.Ptr(250.0)}, existing)
 		if got == nil || len(*got) != 1 {
 			t.Fatalf("expected one budget, got %v", got)
 		}
@@ -3518,8 +3573,22 @@ func TestCoerceLegacyBudgetKeepsResetConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("moving off the quarterly window drops the stored quarter start", func(t *testing.T) {
+		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{ResetDuration: schemas.Ptr("1M")}, existing)
+		if got == nil || len(*got) != 1 {
+			t.Fatalf("expected one budget, got %v", got)
+		}
+		budget := (*got)[0]
+		if budget.ResetDuration != "1M" || budget.MaxLimit != 100 {
+			t.Fatalf("expected the stored maximum on the new window, got %+v", budget)
+		}
+		if budget.ResetConfig != nil {
+			t.Fatalf("expected no quarter start on a monthly window, got %+v", budget.ResetConfig)
+		}
+	})
+
 	t.Run("an edit that names it applies the requested value", func(t *testing.T) {
-		got := coerceLegacyBudget(&UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}}, existing)
+		got := BudgetsFromSingleBudgetUpdate(&UpdateBudgetRequest{ResetConfig: &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4}}, existing)
 		if got == nil || len(*got) != 1 {
 			t.Fatalf("expected one budget, got %v", got)
 		}
@@ -3641,7 +3710,7 @@ func TestCollectProviderConfigDeleteIDs(t *testing.T) {
 	}
 }
 
-func TestCoerceLegacyBudget(t *testing.T) {
+func TestBudgetsFromSingleBudgetUpdate(t *testing.T) {
 	existing := &configstoreTables.TableBudget{ID: "bud-1", MaxLimit: 50, ResetDuration: "1d"}
 
 	tests := []struct {
@@ -3700,7 +3769,7 @@ func TestCoerceLegacyBudget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := coerceLegacyBudget(tt.req, tt.existing)
+			got := BudgetsFromSingleBudgetUpdate(tt.req, tt.existing)
 			if tt.wantNil {
 				if got != nil {
 					t.Fatalf("expected nil, got %+v", got)
@@ -3945,8 +4014,10 @@ func newMockCustomerStore() *mockCustomerStore {
 	return &mockCustomerStore{customers: make(map[string]*configstoreTables.TableCustomer)}
 }
 
+// ExecuteTransaction runs fn with a placeholder transaction. The mock's methods ignore it, but a real
+// store never hands fn a nil one, and code that requires a transaction refuses nil.
 func (m *mockCustomerStore) ExecuteTransaction(_ context.Context, fn func(*gorm.DB) error) error {
-	return fn(nil)
+	return fn(&gorm.DB{})
 }
 func (m *mockCustomerStore) GetCustomer(_ context.Context, id string, _ ...*gorm.DB) (*configstoreTables.TableCustomer, error) {
 	c, ok := m.customers[id]
@@ -4172,6 +4243,44 @@ func TestUpdateCustomer_CalendarAligned_DoesNotTouchBudgets(t *testing.T) {
 	}
 }
 
+// TestUpdateCustomer_LegacyBudgetLeavesTheQuarterBehind pins the deprecated single-budget update that
+// moves a quarterly budget to another window: the stored quarter start does not travel onto a window it
+// is invalid for, so the request succeeds instead of failing validation with a 500.
+func TestUpdateCustomer_LegacyBudgetLeavesTheQuarterBehind(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newMockCustomerStore()
+	store.customers["cust-q"] = &configstoreTables.TableCustomer{
+		ID:   "cust-q",
+		Name: "Quarterly",
+		Budgets: []configstoreTables.TableBudget{{
+			ID:            "bud-q",
+			MaxLimit:      500,
+			ResetDuration: "1Q",
+			ResetConfig:   &configstoreTables.BudgetResetConfig{QuarterStartMonth: 4},
+			LastReset:     time.Now(),
+		}},
+	}
+	h := &GovernanceHandler{configStore: store, governanceManager: &mockCustomerGovernanceManager{}}
+
+	body, _ := json.Marshal(map[string]any{"budget": map[string]any{"reset_duration": "1M"}})
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBody(body)
+	ctx.SetUserValue("customer_id", "cust-q")
+
+	h.updateCustomer(ctx)
+
+	if ctx.Response.StatusCode() != 200 {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	budgets := store.customers["cust-q"].Budgets
+	if len(budgets) != 1 || budgets[0].ResetDuration != "1M" || budgets[0].MaxLimit != 500 {
+		t.Fatalf("expected the budget moved to 1M with its maximum, got %+v", budgets)
+	}
+	if budgets[0].ResetConfig != nil {
+		t.Fatalf("expected no quarter start on a monthly budget, got %+v", budgets[0].ResetConfig)
+	}
+}
+
 // TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled verifies that if
 // calendar_aligned is already true, no snap/UpdateBudget call occurs on update.
 func TestUpdateCustomer_CalendarAligned_NoSnapWhenAlreadyEnabled(t *testing.T) {
@@ -4267,6 +4376,55 @@ func TestApplyVKGovernanceFromModelConfigs_PreservesDirectlyAttachedBudget(t *te
 	if len(vk.ProviderConfigs[0].Budgets) != 1 || vk.ProviderConfigs[0].Budgets[0].ID != "bud-direct-pc" {
 		t.Errorf("directly attached per-provider budget was wiped: got %+v", vk.ProviderConfigs[0].Budgets)
 	}
+}
+
+// TestUpdateVirtualKey_AdoptsStandaloneBudgetFromConfigJSON is a regression test for
+// updating the budget of a VK provisioned from config.json. Such a VK carries its
+// budget as a standalone row (TableBudget.VirtualKeyID set, no model config), and the
+// first update adopts that row into a new VK-scoped model config. The adoption only
+// moves the row to its new owner; it must not run TableBudget's BeforeSave hook,
+// which validates a zero-value model and rejects it with
+// "invalid reset duration format: ".
+func TestUpdateVirtualKey_AdoptsStandaloneBudgetFromConfigJSON(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	const vkID = "vk-from-config"
+	active := true
+	vk := &configstoreTables.TableVirtualKey{
+		ID:       vkID,
+		Name:     "svc-from-config",
+		Value:    *schemas.NewSecretVar("sk-bf-config-json-secret"),
+		IsActive: &active,
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	// The shape config.json provisioning writes: a budget owned directly by the VK.
+	require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{
+		ID:            "bud-from-config",
+		MaxLimit:      100,
+		ResetDuration: "1M",
+		VirtualKeyID:  schemas.Ptr(vkID),
+	}))
+
+	updateCtx := newTestRequestCtx(`{"budgets":[{"max_limit":250,"reset_duration":"1M"}]}`)
+	updateCtx.SetUserValue("vk_id", vkID)
+	handler.updateVirtualKey(updateCtx)
+	require.Equal(t, fasthttp.StatusOK, updateCtx.Response.StatusCode(), string(updateCtx.Response.Body()))
+
+	persisted, err := store.GetVirtualKey(ctx, vkID)
+	require.NoError(t, err)
+	assert.Equal(t, "sk-bf-config-json-secret", persisted.Value.GetValue(), "the key value must not change")
+
+	budgets, err := store.GetBudgets(ctx)
+	require.NoError(t, err)
+	var limits []float64
+	for _, budget := range budgets {
+		assert.Nil(t, budget.VirtualKeyID, "no budget is left owned directly by the VK after adoption: %+v", budget)
+		limits = append(limits, budget.MaxLimit)
+	}
+	assert.Equal(t, []float64{250}, limits, "the VK keeps exactly one budget, at the new limit")
 }
 
 // TestApplyVKGovernanceFromModelConfigs_OverlaysModelConfigGovernance verifies the
@@ -5089,6 +5247,7 @@ func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
 	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
 	ctx := context.Background()
 	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, configstore.ProviderConfig{}))
 
 	create := func(t *testing.T, name, weight string) *fasthttp.RequestCtx {
 		t.Helper()
@@ -5128,7 +5287,7 @@ func TestVirtualKeyProviderConfigWeight_RejectsNegative(t *testing.T) {
 
 	for name, body := range map[string]string{
 		"an existing config to a negative weight": fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":-0.5}]}`, pcID),
-		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"openai","allowed_models":["*"],"weight":-1}]}`, pcID),
+		"a new config with a negative weight":     fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"weight":1},{"provider":"anthropic","allowed_models":["*"],"weight":-1}]}`, pcID),
 	} {
 		put := newTestRequestCtx(body)
 		put.SetUserValue("vk_id", created.VirtualKey.ID)
@@ -5568,4 +5727,441 @@ func TestRunVKExpiryCleanupJob_ClientConfigErrorFailsJob(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, store.deleted)
 	assert.Empty(t, *published)
+}
+
+// TestVirtualKeyMetadataRoundTrip drives the handlers end to end: create stores metadata, an
+// update that omits it leaves it alone, an object replaces it, {} clears it, and invalid metadata
+// is refused with a 400 that names the problem on both create and update.
+func TestVirtualKeyMetadataRoundTrip(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	ctx := context.Background()
+
+	createCtx := newTestRequestCtx(`{"name":"vk-metadata","metadata":{"cost_center":"cc-42","owner":"a@example.com"}}`)
+	handler.createVirtualKey(createCtx)
+	require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID       string            `json:"id"`
+			Metadata map[string]string `json:"metadata"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(createCtx.Response.Body(), &created))
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "owner": "a@example.com"}, created.VirtualKey.Metadata, "create response must echo the metadata")
+
+	putVK := func(t *testing.T, body string, wantStatus int) []byte {
+		t.Helper()
+		putCtx := newTestRequestCtx(body)
+		putCtx.SetUserValue("vk_id", created.VirtualKey.ID)
+		handler.updateVirtualKey(putCtx)
+		require.Equal(t, wantStatus, putCtx.Response.StatusCode(), "PUT body=%s resp=%s", body, putCtx.Response.Body())
+		return putCtx.Response.Body()
+	}
+	metadataOf := func(t *testing.T) map[string]string {
+		t.Helper()
+		stored, err := store.GetVirtualKey(ctx, created.VirtualKey.ID)
+		require.NoError(t, err)
+		return stored.Metadata
+	}
+
+	putVK(t, `{"description":"touched"}`, fasthttp.StatusOK)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "owner": "a@example.com"}, metadataOf(t), "an update that omits metadata must not change it")
+
+	putVK(t, `{"metadata":{"cost_center":"cc-7"}}`, fasthttp.StatusOK)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, metadataOf(t), "metadata replaces as a whole")
+
+	body := putVK(t, `{"metadata":{"bad key":"x"}}`, fasthttp.StatusBadRequest)
+	assert.Contains(t, string(body), "invalid metadata key")
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, metadataOf(t), "a refused update must not change metadata")
+
+	putVK(t, `{"metadata":{}}`, fasthttp.StatusOK)
+	assert.Empty(t, metadataOf(t), "{} clears metadata")
+
+	for _, bad := range []string{
+		`{"name":"vk-bad-1","metadata":{"bifrost_alb_provider":"x"}}`,
+		`{"name":"vk-bad-2","metadata":{"a/b":"x"}}`,
+	} {
+		badCtx := newTestRequestCtx(bad)
+		handler.createVirtualKey(badCtx)
+		assert.Equal(t, fasthttp.StatusBadRequest, badCtx.Response.StatusCode(), "create body=%s resp=%s", bad, badCtx.Response.Body())
+		assert.Contains(t, string(badCtx.Response.Body()), "metadata key")
+	}
+}
+
+// TestGetVirtualKeysMetadataFilter pins the list contract: metadata_<key>=<value> query params
+// route to the filtered store path and AND together, and an invalid key is a 400 rather than an
+// ignored filter that would return every key.
+func TestGetVirtualKeysMetadataFilter(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	for _, body := range []string{
+		`{"name":"vk-a","metadata":{"cost_center":"cc-42","env":"prod"}}`,
+		`{"name":"vk-b","metadata":{"cost_center":"cc-42","env":"dev"}}`,
+		`{"name":"vk-c"}`,
+	} {
+		createCtx := newTestRequestCtx(body)
+		handler.createVirtualKey(createCtx)
+		require.Equal(t, fasthttp.StatusOK, createCtx.Response.StatusCode(), "create resp=%s", createCtx.Response.Body())
+	}
+
+	list := func(t *testing.T, query string) (int, []string) {
+		t.Helper()
+		listCtx := newTestRequestCtx("")
+		listCtx.Request.SetRequestURI("/api/governance/virtual-keys?" + query)
+		handler.getVirtualKeys(listCtx)
+		if listCtx.Response.StatusCode() != fasthttp.StatusOK {
+			return listCtx.Response.StatusCode(), nil
+		}
+		var resp struct {
+			VirtualKeys []struct {
+				Name string `json:"name"`
+			} `json:"virtual_keys"`
+		}
+		require.NoError(t, json.Unmarshal(listCtx.Response.Body(), &resp))
+		names := make([]string, 0, len(resp.VirtualKeys))
+		for _, vk := range resp.VirtualKeys {
+			names = append(names, vk.Name)
+		}
+		sort.Strings(names)
+		return fasthttp.StatusOK, names
+	}
+
+	status, names := list(t, "metadata_cost_center=cc-42")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []string{"vk-a", "vk-b"}, names)
+
+	status, names = list(t, "metadata_cost_center=cc-42&metadata_env=prod")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []string{"vk-a"}, names)
+
+	status, names = list(t, "search=cc-42&limit=10")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []string{"vk-a", "vk-b"}, names, "search matches metadata values")
+
+	status, _ = list(t, "metadata_bad%20key=x")
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+
+	// An empty key is invalid too: it must be refused, not dropped (which would list every key).
+	status, _ = list(t, "metadata_=x")
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+
+	// from_memory serves the cached keys, and must apply the same filter and validation.
+	keys, err := store.GetVirtualKeys(context.Background())
+	require.NoError(t, err)
+	cached := make(map[string]*configstoreTables.TableVirtualKey, len(keys))
+	for i := range keys {
+		cached[keys[i].Value.GetValue()] = &keys[i]
+	}
+	handler.governanceManager = &mockGovernanceManagerForVK{data: &governance.GovernanceData{VirtualKeys: cached}}
+	status, names = list(t, "from_memory=true&metadata_cost_center=cc-42&metadata_env=dev")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []string{"vk-b"}, names, "from_memory must apply metadata filters")
+	status, names = list(t, "from_memory=true")
+	require.Equal(t, fasthttp.StatusOK, status)
+	assert.Equal(t, []string{"vk-a", "vk-b", "vk-c"}, names)
+	status, _ = list(t, "from_memory=true&metadata_=x")
+	assert.Equal(t, fasthttp.StatusBadRequest, status)
+}
+
+// TestVirtualKeyMCPConfigCallerErrorsAre400 pins that naming an MCP client that does not exist, or
+// another key's config id, is the caller's error. Both came back as 500s: the client lookup's not-found
+// and the ownership check were returned as plain errors, which the handler reports as server faults.
+func TestVirtualKeyMCPConfigCallerErrorsAre400(t *testing.T) {
+	SetLogger(&mockLogger{})
+	ctx := context.Background()
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+	require.NoError(t, store.CreateMCPClientConfig(ctx, &schemas.MCPClientConfig{
+		ID:               "client-alpha",
+		Name:             "alpha",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("http://127.0.0.1:0/mcp"),
+		ToolsToExecute:   []string{"*"},
+	}))
+	require.NoError(t, store.AddProvider(ctx, schemas.OpenAI, configstore.ProviderConfig{}))
+
+	create := func(body string) *fasthttp.RequestCtx {
+		c := newTestRequestCtx(body)
+		handler.createVirtualKey(c)
+		return c
+	}
+	update := func(vkID, body string) *fasthttp.RequestCtx {
+		c := newTestRequestCtx(body)
+		c.SetUserValue("vk_id", vkID)
+		handler.updateVirtualKey(c)
+		return c
+	}
+	created := func(name string) *configstoreTables.TableVirtualKey {
+		c := create(`{"name":"` + name + `","mcp_configs":[{"mcp_client_name":"alpha","tools_to_execute":["echo"]}],"provider_configs":[{"provider":"openai","allowed_models":["*"],"key_ids":["*"]}]}`)
+		require.Equal(t, fasthttp.StatusOK, c.Response.StatusCode(), "create %s: %s", name, c.Response.Body())
+		var resp struct {
+			VirtualKey struct {
+				ID string `json:"id"`
+			} `json:"virtual_key"`
+		}
+		require.NoError(t, json.Unmarshal(c.Response.Body(), &resp))
+		vk, err := store.GetVirtualKey(ctx, resp.VirtualKey.ID)
+		require.NoError(t, err)
+		require.Len(t, vk.MCPConfigs, 1)
+		require.Len(t, vk.ProviderConfigs, 1)
+		return vk
+	}
+	assertBadRequest := func(t *testing.T, c *fasthttp.RequestCtx, message string) {
+		t.Helper()
+		assert.Equal(t, fasthttp.StatusBadRequest, c.Response.StatusCode(), "body: %s", c.Response.Body())
+		assert.Contains(t, string(c.Response.Body()), message)
+	}
+
+	assertBadRequest(t, create(`{"name":"unknown-client","mcp_configs":[{"mcp_client_name":"no-such","tools_to_execute":["*"]}]}`), "unknown mcp_client_name: no-such")
+
+	a := created("vk-a")
+	b := created("vk-b")
+	assertBadRequest(t, update(a.ID, `{"mcp_configs":[{"mcp_client_name":"no-such","tools_to_execute":["*"]}]}`), "unknown mcp_client_name: no-such")
+	assertBadRequest(t, update(a.ID, fmt.Sprintf(`{"mcp_configs":[{"id":%d,"mcp_client_name":"alpha","tools_to_execute":["*"]}]}`, b.MCPConfigs[0].ID)),
+		fmt.Sprintf("MCP config %d does not belong to this virtual key", b.MCPConfigs[0].ID))
+	assertBadRequest(t, update(a.ID, fmt.Sprintf(`{"provider_configs":[{"id":%d,"provider":"openai","allowed_models":["*"],"key_ids":["*"]}]}`, b.ProviderConfigs[0].ID)),
+		fmt.Sprintf("provider config %d does not belong to this virtual key", b.ProviderConfigs[0].ID))
+
+	// The refused updates changed nothing.
+	unchanged, err := store.GetVirtualKey(ctx, a.ID)
+	require.NoError(t, err)
+	require.Len(t, unchanged.MCPConfigs, 1)
+	assert.Equal(t, a.MCPConfigs[0].ID, unchanged.MCPConfigs[0].ID)
+	assert.Equal(t, []string{"echo"}, []string(unchanged.MCPConfigs[0].ToolsToExecute))
+}
+
+// newOwnedBudgetsStore opens a sqlite store holding one team for the budgets to belong to.
+
+func newOwnedBudgetsStore(t *testing.T) configstore.ConfigStore {
+	t.Helper()
+	ctx := context.Background()
+	store, err := configstore.NewConfigStore(ctx, &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "owned-budgets.db")},
+	}, &mockLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(ctx) })
+	require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: "team-1", Name: "Team"}))
+	return store
+}
+func ownedByTeam(b *configstoreTables.TableBudget) {
+	teamID := "team-1"
+	b.TeamID = &teamID
+}
+func reconcileOwned(t *testing.T, store configstore.ConfigStore, existing []configstoreTables.TableBudget, requests []CreateBudgetRequest, usageReset *BudgetUsageReset) ([]configstoreTables.TableBudget, error) {
+	t.Helper()
+	var out []configstoreTables.TableBudget
+	err := store.ExecuteTransaction(context.Background(), func(tx *gorm.DB) error {
+		var err error
+		out, err = ReconcileOwnedBudgets(context.Background(), store, tx, existing, requests, false, ownedByTeam, usageReset, NewBudgetInheritsShorterWindow)
+		return err
+	})
+	return out, err
+}
+func TestReconcileOwnedBudgets(t *testing.T) {
+	store := newOwnedBudgetsStore(t)
+	ctx := context.Background()
+
+	first, err := reconcileOwned(t, store, nil, []CreateBudgetRequest{{MaxLimit: 100, ResetDuration: "1M"}, {MaxLimit: 1000, ResetDuration: "1Y"}}, nil)
+	require.NoError(t, err)
+	require.Len(t, first, 2)
+	for _, b := range first {
+		require.NotNil(t, b.TeamID, "a new row carries the owner setOwner stamped")
+		assert.Equal(t, "team-1", *b.TeamID)
+	}
+	var monthly, yearly configstoreTables.TableBudget
+	for _, b := range first {
+		if b.ResetDuration == "1M" {
+			monthly = b
+		} else {
+			yearly = b
+		}
+	}
+	require.NoError(t, store.UpdateBudgetUsage(ctx, monthly.ID, 42))
+	stored, err := store.GetBudget(ctx, monthly.ID)
+	require.NoError(t, err)
+	first = []configstoreTables.TableBudget{*stored, yearly}
+
+	// Matched by window: the same row, a new limit, the spend it had.
+	second, err := reconcileOwned(t, store, first, []CreateBudgetRequest{{MaxLimit: 200, ResetDuration: "1M"}, {ID: yearly.ID, MaxLimit: 1000, ResetDuration: "2Y"}}, nil)
+	require.NoError(t, err)
+	require.Len(t, second, 2)
+	assert.Equal(t, monthly.ID, second[0].ID, "matched by window")
+	assert.Equal(t, 200.0, second[0].MaxLimit)
+	assert.Equal(t, 42.0, second[0].CurrentUsage, "usage survives an edit")
+	assert.Equal(t, yearly.ID, second[1].ID, "matched by id")
+	assert.Equal(t, "2Y", second[1].ResetDuration, "and moved onto the window the request names")
+
+	// Left out: deleted. Reset: zeroed and reported.
+	reset := NewBudgetUsageReset(true)
+	third, err := reconcileOwned(t, store, second, []CreateBudgetRequest{{ID: monthly.ID, MaxLimit: 300, ResetDuration: "1M"}}, reset)
+	require.NoError(t, err)
+	require.Len(t, third, 1)
+	assert.Zero(t, third[0].CurrentUsage)
+	assert.Equal(t, []string{monthly.ID}, reset.BudgetIDs(), "the in-memory pass is told which rows were zeroed")
+	persisted, err := store.GetBudget(ctx, monthly.ID)
+	require.NoError(t, err)
+	assert.Zero(t, persisted.CurrentUsage, "the reset reached the column the store owns")
+	_, err = store.GetBudget(ctx, yearly.ID)
+	assert.ErrorIs(t, err, configstore.ErrNotFound, "a row the request leaves out is deleted")
+
+	// Nothing reset when nothing was asked for.
+	quiet := NewBudgetUsageReset(false)
+	_, err = reconcileOwned(t, store, third, []CreateBudgetRequest{{ID: monthly.ID, MaxLimit: 300, ResetDuration: "1M"}}, quiet)
+	require.NoError(t, err)
+	assert.Empty(t, quiet.BudgetIDs())
+}
+func TestReconcileOwnedBudgetsRefusesBadDeclarations(t *testing.T) {
+	store := newOwnedBudgetsStore(t)
+	for name, requests := range map[string][]CreateBudgetRequest{
+		"shared window":  {{MaxLimit: 1, ResetDuration: "1M"}, {MaxLimit: 2, ResetDuration: "1M"}},
+		"negative limit": {{MaxLimit: -1, ResetDuration: "1M"}},
+		"zero limit":     {{MaxLimit: 0, ResetDuration: "1M"}},
+		"bad window":     {{MaxLimit: 1, ResetDuration: "fortnight"}},
+		"foreign id":     {{ID: "someone-elses", MaxLimit: 1, ResetDuration: "1M"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := reconcileOwned(t, store, nil, requests, nil)
+			require.Error(t, err)
+			assert.True(t, IsBadRequestError(err), "%v should answer 400", err)
+		})
+	}
+}
+func TestReconcileOwnedBudgetsRefusesANilTransaction(t *testing.T) {
+	store := newOwnedBudgetsStore(t)
+	_, err := ReconcileOwnedBudgets(context.Background(), store, nil, nil, []CreateBudgetRequest{{MaxLimit: 1, ResetDuration: "1M"}}, false, nil, nil, NewBudgetStartsAtZero)
+	require.Error(t, err)
+	assert.False(t, IsBadRequestError(err), "a missing transaction is the caller's bug, not a bad request")
+}
+func TestReconcileOwnedBudgetsNewBudgetUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		mode  NewBudgetUsage
+		usage float64
+	}{
+		{"starts at zero", NewBudgetStartsAtZero, 0},
+		{"inherits the shorter window", NewBudgetInheritsShorterWindow, 40},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newOwnedBudgetsStore(t)
+			ctx := context.Background()
+			teamID := "team-1"
+			weekly := configstoreTables.TableBudget{ID: "weekly", MaxLimit: 100, ResetDuration: "1w", CurrentUsage: 40, TeamID: &teamID}
+			require.NoError(t, store.CreateBudget(ctx, &weekly))
+			var out []configstoreTables.TableBudget
+			require.NoError(t, store.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
+				var err error
+				out, err = ReconcileOwnedBudgets(ctx, store, tx, []configstoreTables.TableBudget{weekly},
+					[]CreateBudgetRequest{{ID: "weekly", MaxLimit: 100, ResetDuration: "1w"}, {MaxLimit: 500, ResetDuration: "1M"}},
+					false, ownedByTeam, nil, tc.mode)
+				return err
+			}))
+			for _, b := range out {
+				if b.ResetDuration == "1M" {
+					assert.Equal(t, tc.usage, b.CurrentUsage)
+					return
+				}
+			}
+			t.Fatal("the monthly budget was not created")
+		})
+	}
+}
+func TestApplyRateLimitUpdate(t *testing.T) {
+	hour, day := "1h", "1d"
+	tokens, requests := int64(100), int64(10)
+	stored := func() *configstoreTables.TableRateLimit {
+		return &configstoreTables.TableRateLimit{TokenMaxLimit: &tokens, TokenResetDuration: &hour, RequestMaxLimit: &requests, RequestResetDuration: &hour}
+	}
+
+	keepWindow := stored()
+	newTokens := int64(200)
+	applyRateLimitUpdate(keepWindow, &UpdateRateLimitRequest{TokenMaxLimit: &newTokens, RequestMaxLimit: &requests})
+	assert.Equal(t, int64(200), *keepWindow.TokenMaxLimit)
+	require.NotNil(t, keepWindow.TokenResetDuration)
+	assert.Equal(t, "1h", *keepWindow.TokenResetDuration, "a maximum sent alone keeps the stored window")
+	require.NoError(t, validateRateLimit(keepWindow))
+
+	newWindow := stored()
+	applyRateLimitUpdate(newWindow, &UpdateRateLimitRequest{TokenMaxLimit: &tokens, TokenResetDuration: &day})
+	assert.Equal(t, "1d", *newWindow.TokenResetDuration)
+	assert.Nil(t, newWindow.RequestMaxLimit, "a maximum left out is cleared")
+	assert.Nil(t, newWindow.RequestResetDuration, "with its window")
+}
+func TestReconcileOwnedBudgetsNewWindowFollowsTheResetChoice(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		reset bool
+		want  float64
+	}{
+		{name: "keep carries the spend over", reset: false, want: 5},
+		{name: "reset starts it at zero", reset: true, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newOwnedBudgetsStore(t)
+			ctx := context.Background()
+			first, err := reconcileOwned(t, store, nil, []CreateBudgetRequest{{MaxLimit: 10, ResetDuration: "1d"}}, nil)
+			require.NoError(t, err)
+			require.NoError(t, store.UpdateBudgetUsage(ctx, first[0].ID, 5))
+			daily, err := store.GetBudget(ctx, first[0].ID)
+			require.NoError(t, err)
+
+			out, err := reconcileOwned(t, store, []configstoreTables.TableBudget{*daily},
+				[]CreateBudgetRequest{{ID: daily.ID, MaxLimit: 10, ResetDuration: "1d"}, {MaxLimit: 100, ResetDuration: "1M"}},
+				NewBudgetUsageReset(tc.reset))
+			require.NoError(t, err)
+			require.Len(t, out, 2)
+			for _, b := range out {
+				if b.ResetDuration == "1M" {
+					assert.Equal(t, tc.want, b.CurrentUsage)
+				}
+			}
+		})
+	}
+}
+
+// TestUpdateTeamNewBudgetStartsAtZero pins that a team's budgets go through the shared reconciler and
+// keep the team behaviour: a window added on an edit starts at zero whether usage is preserved or
+// reset, never with the spend counted in the team's shorter window. The existing window keeps its
+// spend unless the operator resets it.
+func TestUpdateTeamNewBudgetStartsAtZero(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		reset     bool
+		wantDaily float64
+	}{
+		{name: "preserve keeps the existing spend", reset: false, wantDaily: 5},
+		{name: "reset zeroes the existing spend", reset: true, wantDaily: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			store := setupPricingOverrideHandlerStore(t)
+			handler := &GovernanceHandler{configStore: store, governanceManager: pricingOverrideTestGovernanceManager{}}
+			ctx := context.Background()
+			teamID := "team-carry"
+			require.NoError(t, store.CreateTeam(ctx, &configstoreTables.TableTeam{ID: teamID, Name: "Carry " + tc.name}))
+			require.NoError(t, store.CreateBudget(ctx, &configstoreTables.TableBudget{ID: "team-daily", MaxLimit: 10, ResetDuration: "1d", TeamID: &teamID, LastReset: time.Now()}))
+			require.NoError(t, store.UpdateBudgetUsage(ctx, "team-daily", 5))
+
+			body := fmt.Sprintf(`{"budgets":[{"id":"team-daily","max_limit":10,"reset_duration":"1d"},{"max_limit":100,"reset_duration":"1M"}],"reset_budget_usage":%t}`, tc.reset)
+			put := newGovernanceTeamIDCtx(teamID, body)
+			handler.updateTeam(put)
+			require.Equal(t, fasthttp.StatusOK, put.Response.StatusCode(), "body: %s", put.Response.Body())
+
+			team, err := store.GetTeam(ctx, teamID)
+			require.NoError(t, err)
+			require.Len(t, team.Budgets, 2)
+			for _, b := range team.Budgets {
+				switch b.ResetDuration {
+				case "1M":
+					assert.Equal(t, 0.0, b.CurrentUsage, "the new monthly budget starts at zero")
+				case "1d":
+					assert.Equal(t, tc.wantDaily, b.CurrentUsage, "the existing daily budget")
+				}
+			}
+		})
+	}
 }

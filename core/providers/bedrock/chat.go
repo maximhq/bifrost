@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -28,7 +29,7 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
 
-	input := bifrostReq.Input
+	input := providerUtils.ChatBreakpointsAsCacheControl(bifrostReq.Input, bifrostReq.Params, BedrockMaxCachePoints)
 	if schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) &&
 		!caps.SupportsAssistantPrefill(ctx.Value(schemas.BifrostContextKeySupportsAssistantPrefill) != false) {
 		trimmed := len(input)
@@ -69,8 +70,31 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	// Ensure tool config is present when needed
 	ensureChatToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
+	// After the history rebuild, so the flag also covers tools rebuilt from it.
+	if bifrostReq.Params != nil && bifrostReq.Params.ParallelToolCalls != nil && !*bifrostReq.Params.ParallelToolCalls &&
+		schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		tc := bifrostReq.Params.ToolChoice
+		none := tc != nil && ((tc.ChatToolChoiceStr != nil && *tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeNone)) ||
+			(tc.ChatToolChoiceStruct != nil && tc.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeNone))
+		if !none {
+			applyBedrockParallelToolUse(bedrockReq)
+		}
+	}
+
 	if !caps.SupportsConverseToolResultImages(schemas.BedrockModelSupportsToolResultImages(capModel)) {
 		hoistToolResultImages(bedrockReq)
+	}
+
+	if bifrostReq.Params != nil {
+		// The typed field is what Go SDK callers set; ExtraParams carries the same marker from
+		// HTTP ingress. The typed field wins when both are present.
+		cc := bifrostReq.Params.CacheControl
+		if cc == nil || cc.Type != schemas.CacheControlTypeEphemeral {
+			cc = bedrockTopLevelCacheControl(bifrostReq.Params.ExtraParams)
+		}
+		if err := applyBedrockAutomaticCachePoint(bedrockReq, cc); err != nil {
+			return nil, err
+		}
 	}
 
 	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {
@@ -78,6 +102,9 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	} else {
 		if !caps.SupportsExtendedCacheTTL(schemas.BedrockModelSupportsExtendedCacheTTL(capModel)) {
 			downgradeExtendedCacheTTLInBedrockRequest(bedrockReq)
+		}
+		if schemas.IsNovaModelFamily(ctx, bifrostReq.Model) {
+			stripNonTextCachePoints(bedrockReq)
 		}
 		// See the same call in ToBedrockResponsesRequest: exceeding the cap is a hard rejection,
 		// so trim the earliest markers rather than let the request fail.

@@ -3,6 +3,9 @@ package governance
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1278,7 +1281,7 @@ func TestGovernanceStoreUpsertBudgetConfigRefreshesOverride(t *testing.T) {
 
 	refreshed := buildBudgetWithUsage(live.ID, 120, 0, "2h")
 	require.NoError(t, refreshed.SetOverride(30, configstoreTables.BudgetOverrideModeCycles, 3))
-	store.UpsertBudgetConfig(context.Background(), live.ID, refreshed)
+	store.UpsertBudgetConfig(context.Background(), live.ID, refreshed, false)
 
 	got := store.LoadBudget(context.Background(), live.ID)
 	require.NotNil(t, got)
@@ -2301,26 +2304,1653 @@ func TestGovernanceStore_CollectModelConfigsForPrecedence(t *testing.T) {
 
 	// The dated alias on openai reaches every tier. "exact-any" shares its key with "base-any"
 	// (provider-less configs collapse to the base model), so whichever was indexed last answers.
-	got := ids(store.collectModelConfigsFor(ctx, global, "", "openai/GPT-4o-2024-08-06", &providerName))
+	got := ids(store.collectModelConfigsFor(ctx, global, "", "openai/GPT-4o-2024-08-06", &providerName, nil))
 	require.Len(t, got, 5)
 	assert.Equal(t, []string{"exact-pair", "base-pair"}, got[:2])
 	assert.Contains(t, []string{"exact-any", "base-any"}, got[2])
 	assert.Equal(t, []string{"all-openai", "all-any"}, got[3:])
 
 	// The base name skips the dated pair but still finds its own.
-	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o", &providerName))
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o", &providerName, nil))
 	require.Len(t, got, 4)
 	assert.Equal(t, "base-pair", got[0])
 	assert.Equal(t, []string{"all-openai", "all-any"}, got[2:])
 
 	// A sibling model only reaches the wildcards.
-	assert.Equal(t, []string{"all-openai", "all-any"}, ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-mini", &providerName)))
+	assert.Equal(t, []string{"all-openai", "all-any"}, ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-mini", &providerName, nil)))
 
 	// Another provider skips the openai-scoped tiers entirely.
 	anthropic := "anthropic"
-	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-2024-08-06", &anthropic))
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-2024-08-06", &anthropic, nil))
 	assert.NotContains(t, got, "exact-pair")
 	assert.NotContains(t, got, "base-pair")
 	assert.NotContains(t, got, "all-openai")
 	assert.Contains(t, got, "all-any")
+}
+
+// A key alias names a model the keys resolve only after governance has run, so a limit set on the
+// model the alias stands for has to reach a request that names the alias. Targets the keys
+// disagree on all apply; a key that key selection never picks for the name does not count.
+func TestGovernanceStore_CollectModelConfigsForKeyAliases(t *testing.T) {
+	ctx := context.Background()
+	provider := "bedrock"
+	const sonnet, opus = "us.anthropic.claude-sonnet-4-6", "us.anthropic.claude-opus-4-6"
+	anyModel := schemas.WhiteList{"*"}
+	mk := func(id, model string) *configstoreTables.TableModelConfig {
+		return buildModelConfig(id, model, &provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+	}
+	ids := func(mcs []*configstoreTables.TableModelConfig) []string {
+		out := make([]string, 0, len(mcs))
+		for _, mc := range mcs {
+			out = append(out, mc.ID)
+		}
+		return out
+	}
+	global := configstoreTables.ModelConfigScopeGlobal
+	withKeys := func(keys ...schemas.Key) *LocalGovernanceStore {
+		store := modelKeyStore(t, mk("sonnet-limit", sonnet), mk("opus-limit", opus))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: keys},
+		}}
+		return store
+	}
+	off := false
+	// collect resolves the targets the way every entry point does, then walks the global scope.
+	collect := func(store *LocalGovernanceStore, model string, prov *string) []*configstoreTables.TableModelConfig {
+		return store.collectModelConfigsFor(ctx, global, "", model, prov, store.aliasTargets(ctx, prov, model))
+	}
+
+	t.Run("the alias reaches the limit of the model it stands for", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, sonnet, &provider)))
+	})
+	t.Run("keys that disagree apply every target", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		)
+		assert.ElementsMatch(t, []string{"sonnet-limit", "opus-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a key that cannot serve the name contributes nothing", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: schemas.WhiteList{"titan-*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Enabled: &off, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: opus}}},
+		)
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+	})
+	t.Run("no aliases leaves the lookup as it was", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel})
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+	})
+	t.Run("a lookup without a provider cannot resolve an alias", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		assert.Empty(t, collect(store, "claude-sonnet", nil))
+	})
+
+	t.Run("the real entry point finds the limit through the alias", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		budgets, _ := store.GlobalModelLimits(ctx, schemas.Bedrock, "claude-sonnet")
+		require.Len(t, budgets, 1)
+		assert.Equal(t, "b-sonnet-limit", budgets[0].ID)
+	})
+	t.Run("two keys that agree yield each limit once, and the alias name's own limit stays", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+		)
+		assert.Equal(t, []string{"sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"))
+
+		store = modelKeyStore(t, mk("sonnet-limit", sonnet), mk("alias-limit", "claude-sonnet"))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		assert.Equal(t, []string{"alias-limit", "sonnet-limit"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a provider-less config on the target is found", func(t *testing.T) {
+		store := modelKeyStore(t, buildModelConfig("any-provider", sonnet, nil, buildBudget("b-any", 100.0, "1d"), nil))
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		assert.Equal(t, []string{"any-provider"}, ids(collect(store, "claude-sonnet", &provider)))
+	})
+	t.Run("a virtual-key-scoped config on the target is found when charging", func(t *testing.T) {
+		scoped := mk("vk-sonnet", sonnet)
+		scoped.Scope = configstoreTables.ModelConfigScopeVirtualKey
+		vkID := "vk-1"
+		scoped.ScopeID = &vkID
+		store := modelKeyStore(t, scoped)
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+		}}
+		budgetIDs, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.Bedrock, "claude-sonnet")
+		assert.Equal(t, []string{"b-vk-sonnet"}, budgetIDs)
+	})
+	t.Run("a store that cannot see provider config leaves the lookup as it was", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		store.inMemoryStore = nil
+		assert.Empty(t, collect(store, "claude-sonnet", &provider))
+		assert.Nil(t, store.aliasTargets(ctx, &provider, "claude-sonnet"))
+	})
+	t.Run("a provider missing from the in-memory store adds nothing", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		other := "openai"
+		assert.Empty(t, collect(store, "claude-sonnet", &other))
+	})
+	// Core serves a pinned request from the pinned key alone (a routing-rule pin first, then the
+	// caller's id, then the caller's name), so only that key's alias decides what the name becomes.
+	t.Run("a pinned key contributes only its own target", func(t *testing.T) {
+		store := withKeys(
+			schemas.Key{ID: "k-alias", Name: "alias-key", Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}},
+			schemas.Key{ID: "k-plain", Name: "plain-key", Models: anyModel},
+		)
+		pinned := func(key schemas.BifrostContextKey, value string) context.Context {
+			return context.WithValue(ctx, key, value)
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"), "unpinned: every eligible key's target")
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-plain"), &provider, "claude-sonnet"))
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyName, "plain-key"), &provider, "claude-sonnet"))
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-alias"), &provider, "claude-sonnet"))
+		assert.Nil(t, store.aliasTargets(pinned(schemas.BifrostContextKeyAPIKeyID, "k-missing"), &provider, "claude-sonnet"), "core refuses an unknown pin, so nothing is added")
+
+		routed := context.WithValue(pinned(schemas.BifrostContextKeyAPIKeyID, "k-alias"), schemas.BifrostContextKeyRoutingPinnedAPIKeyID, "k-plain")
+		assert.Nil(t, store.aliasTargets(routed, &provider, "claude-sonnet"), "a routing-rule pin overrides the caller's pin")
+		assert.Empty(t, ids(store.collectModelConfigsFor(routed, global, "", "claude-sonnet", &provider, store.aliasTargets(routed, &provider, "claude-sonnet"))))
+	})
+
+	// A model that runs at the provider exactly as written is never resolved through a key alias,
+	// so the limits of the alias's target must not be added to it.
+	t.Run("a model that runs as written takes no alias target's limits", func(t *testing.T) {
+		store := withKeys(schemas.Key{Models: anyModel, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}})
+		bifrostCtx := func(key, value any) *schemas.BifrostContext {
+			c := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			c.SetValue(key, value)
+			return c
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(ctx, &provider, "claude-sonnet"), "an ordinary request is resolved through the alias")
+		for name, marked := range map[string]context.Context{
+			"literal marker":               context.WithValue(ctx, literalLimitsContextKey, true),
+			"literal on a bifrost context": bifrostCtx(literalLimitsContextKey, true),
+			"direct key":                   bifrostCtx(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"}),
+			"skip key selection":           bifrostCtx(schemas.BifrostContextKeySkipKeySelection, true),
+		} {
+			assert.Nil(t, store.aliasTargets(marked, &provider, "claude-sonnet"), name)
+			assert.Empty(t, ids(store.collectModelConfigsFor(marked, global, "", "claude-sonnet", &provider, store.aliasTargets(marked, &provider, "claude-sonnet"))), name)
+		}
+		assert.Equal(t, []string{sonnet}, store.aliasTargets(bifrostCtx(literalLimitsContextKey, false), &provider, "claude-sonnet"), "an unmarked literal flag leaves the alias in force")
+	})
+	t.Run("an exhausted limit on the alias target does not reach the aliased name when it runs as written", func(t *testing.T) {
+		sonnetCfg := buildModelConfig("sonnet-cfg", "claude-sonnet-4-6", &provider, buildBudget("b-sonnet-cfg", 100.0, "1d"), nil)
+		store := modelKeyStore(t, sonnetCfg)
+		store.inMemoryStore = &mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.Bedrock: {Keys: []schemas.Key{{Models: anyModel, Aliases: schemas.KeyAliases{"claude-opus-4-6": {ModelID: "claude-sonnet-4-6"}}}}},
+		}}
+		normal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		literal := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		literal.SetValue(literalLimitsContextKey, true)
+
+		budgets, _, err := store.GatherLimits(normal, nil, schemas.Bedrock, "claude-opus-4-6")
+		require.NoError(t, err)
+		require.Len(t, budgets, 1, "the alias is resolved, so the target's limit applies")
+		budgets, _, err = store.GatherLimits(literal, nil, schemas.Bedrock, "claude-opus-4-6")
+		require.NoError(t, err)
+		assert.Empty(t, budgets, "the name runs as written, so the target's limit does not apply")
+
+		sonnetBudgets, _ := store.CollectModelScopedGovernanceIDs(normal, "", "", schemas.Bedrock, "claude-opus-4-6")
+		assert.Equal(t, []string{"b-sonnet-cfg"}, sonnetBudgets)
+		sonnetBudgets, _ = store.CollectModelScopedGovernanceIDs(literal, "", "", schemas.Bedrock, "claude-opus-4-6")
+		assert.Empty(t, sonnetBudgets)
+	})
+}
+
+// Resolving what an alias stands for takes the provider lookup, a shared read lock in production,
+// so it is done once per attempt and once per charge however many scopes and permits the walks
+// cover, not once per scope.
+func TestGovernanceStore_KeyAliasTargetsResolvedOncePerAttempt(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	provider := "bedrock"
+	const sonnet = "us.anthropic.claude-sonnet-4-6"
+	mk := func(id, model, scope, scopeID string) *configstoreTables.TableModelConfig {
+		mc := buildModelConfig(id, model, &provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+		mc.Scope = scope
+		if scopeID != "" {
+			mc.ScopeID = &scopeID
+		}
+		return mc
+	}
+	counting := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Bedrock: {Keys: []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"claude-sonnet": {ModelID: sonnet}}}}},
+	}}}
+	store := modelKeyStore(t,
+		mk("global-sonnet", sonnet, configstoreTables.ModelConfigScopeGlobal, ""),
+		mk("vk-a-sonnet", sonnet, configstoreTables.ModelConfigScopeVirtualKey, "vk-a"),
+		mk("vk-b-sonnet", sonnet, configstoreTables.ModelConfigScopeVirtualKey, "vk-b"),
+	)
+	store.inMemoryStore = counting
+
+	t.Run("GatherLimits with no access", func(t *testing.T) {
+		counting.single = 0
+		budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, "claude-sonnet")
+		require.NoError(t, err)
+		require.Len(t, budgets, 1)
+		assert.Equal(t, 1, counting.single)
+	})
+	t.Run("GatherLimits with two permits", func(t *testing.T) {
+		counting.single = 0
+		access := grant.NewAccess([]schemas.Permit{
+			permitWithProviders(grant.PermitVirtualKey, "vk-a", "a", "bedrock"),
+			permitWithProviders(grant.PermitVirtualKey, "vk-b", "b", "bedrock"),
+		}, "", nil, "", nil)
+		budgets, _, err := store.GatherLimits(ctx, access, schemas.Bedrock, "claude-sonnet")
+		require.NoError(t, err)
+		var got []string
+		for _, b := range budgets {
+			got = append(got, b.ID)
+		}
+		assert.ElementsMatch(t, []string{"b-global-sonnet", "b-vk-a-sonnet", "b-vk-b-sonnet"}, got)
+		assert.Equal(t, 1, counting.single, "the alias targets are resolved once for the whole attempt")
+	})
+	t.Run("CollectModelScopedGovernanceIDs", func(t *testing.T) {
+		counting.single = 0
+		budgetIDs, _ := store.CollectModelScopedGovernanceIDs(ctx, "vk-a", "", schemas.Bedrock, "claude-sonnet")
+		assert.ElementsMatch(t, []string{"b-global-sonnet", "b-vk-a-sonnet"}, budgetIDs)
+		assert.Equal(t, 1, counting.single)
+	})
+}
+
+// lockedProviderStore reads the provider under a shared lock, as the production store does, so a
+// benchmark of the lookup includes what it costs there.
+type lockedProviderStore struct {
+	mockInMemoryStore
+	mu sync.RWMutex
+}
+
+func (s *lockedProviderStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	config, ok := s.configuredProviders[provider]
+	return config, ok
+}
+
+func BenchmarkGatherLimits_KeyAliases(b *testing.B) {
+	provider := "bedrock"
+	mc := buildModelConfig("sonnet-limit", "us.anthropic.claude-sonnet-4-6", &provider, buildBudget("b-sonnet-limit", 100.0, "1d"), nil)
+	cfg := &configstore.GovernanceConfig{ModelConfigs: []configstoreTables.TableModelConfig{*mc}, Budgets: mc.Budgets}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, cfg, nil, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	aliased := schemas.KeyAliases{}
+	for a := 0; a < 20; a++ {
+		aliased[fmt.Sprintf("alias-%d", a)] = schemas.AliasConfig{ModelID: fmt.Sprintf("us.vendor.model-%d", a)}
+	}
+	aliased["claude-sonnet"] = schemas.AliasConfig{ModelID: "us.anthropic.claude-sonnet-4-6"}
+	plain := []schemas.Key{{Models: schemas.WhiteList{"*"}}, {Models: schemas.WhiteList{"*"}}}
+	withAliases := []schemas.Key{{Models: schemas.WhiteList{"*"}, Aliases: aliased}, {Models: schemas.WhiteList{"*"}, Aliases: aliased}}
+	withAliases[0].ID = "k-aliased"
+	for _, tc := range []struct {
+		name  string
+		keys  []schemas.Key
+		noMem bool
+		model string
+		want  int
+		set   func(*schemas.BifrostContext)
+	}{
+		// baseline and no_aliases name the canonical model too, so every row does the same limit work and the
+		// allocation difference between rows is the alias resolution alone.
+		{"baseline_no_store", nil, true, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"no_aliases", plain, false, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"aliases_unused", withAliases, false, "us.anthropic.claude-sonnet-4-6", 1, nil},
+		{"alias_used", withAliases, false, "claude-sonnet", 1, nil},
+		// A pinned key resolves through that key alone; a direct key runs the name as written.
+		{"alias_used_pinned_key", withAliases, false, "claude-sonnet", 1, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyAPIKeyID, "k-aliased")
+		}},
+		{"alias_direct_key", withAliases, false, "claude-sonnet", 0, func(ctx *schemas.BifrostContext) {
+			ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "direct"})
+		}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.set != nil {
+				tc.set(ctx)
+			}
+			if tc.noMem {
+				store.inMemoryStore = nil
+			} else {
+				store.inMemoryStore = &lockedProviderStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Bedrock: {Keys: tc.keys}}}}
+			}
+			budgets, _, err := store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
+			if err != nil || len(budgets) != tc.want {
+				b.Fatalf("%s: %d budgets (err %v), want %d", tc.name, len(budgets), err, tc.want)
+			}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_, _, _ = store.GatherLimits(ctx, nil, schemas.Bedrock, tc.model)
+			}
+		})
+	}
+}
+
+// TestResolveAccessStampsVirtualKeyMetadata checks that resolving access publishes the key's
+// metadata for the logging plugin, as a copy: a request that changes its copy must not reach the key
+// every other request shares. A key without metadata stamps nothing.
+func TestResolveAccessStampsVirtualKeyMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]string
+	}{
+		{name: "no metadata stamps nothing", metadata: nil},
+		{name: "metadata is stamped", metadata: map[string]string{"cost_center": "cc-42", "owner": "a@example.com"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVKForMCPStamping(nil)
+			vk.Metadata = tc.metadata
+
+			logger := NewMockLogger()
+			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, &mockInMemoryStore{})
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			ctx := emptyCtx()
+			ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+			_, err = plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+			require.Equal(t, vk.ID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID), "the key resolved")
+
+			stamped := ctx.Value(VirtualKeyMetadataContextKey)
+			if tc.metadata == nil {
+				assert.Nil(t, stamped, "a key without metadata must leave the context key absent")
+				return
+			}
+			got, ok := stamped.(map[string]string)
+			require.True(t, ok, "stamped metadata must be a map[string]string, got %T", stamped)
+			assert.Equal(t, tc.metadata, got)
+
+			got["cost_center"] = "tampered"
+			stored, ok := local.GetVirtualKey(ctx, mcpTestVKValue)
+			require.True(t, ok)
+			assert.Equal(t, "cc-42", stored.Metadata["cost_center"], "the stamped map must be a copy, not the stored key's map")
+		})
+	}
+}
+
+// dimensionRecorder records the trace dimensions governance writes and backs the root span with a
+// real span, starting from the attributes the transport would have set.
+type dimensionRecorder struct {
+	schemas.NoOpTracer
+	traceID   string
+	traceDims map[string]string
+	root      *schemas.Span
+}
+
+type rootHandle struct{}
+
+func newDimensionRecorder(rootAttrs map[string]any) *dimensionRecorder {
+	return &dimensionRecorder{root: &schemas.Span{SpanID: "root", Attributes: maps.Clone(rootAttrs)}}
+}
+
+func (r *dimensionRecorder) MergeTraceDimensions(traceID string, dims map[string]string) {
+	r.traceID = traceID
+	r.traceDims = dims
+}
+
+func (r *dimensionRecorder) GetSpanHandleByID(_ string, spanID *string) schemas.SpanHandle {
+	if spanID != nil {
+		return nil
+	}
+	return rootHandle{}
+}
+
+func (r *dimensionRecorder) SpanFromHandle(handle schemas.SpanHandle) *schemas.Span {
+	if _, ok := handle.(rootHandle); ok {
+		return r.root
+	}
+	return nil
+}
+
+func (r *dimensionRecorder) SetAttribute(handle schemas.SpanHandle, key string, value any) {
+	r.SpanFromHandle(handle).SetAttribute(key, value)
+}
+
+// TestResolveAccessStampsVirtualKeyMetadataIntoDimensions checks that the key's metadata reaches
+// the dimensions on the context, the trace and the root span, overriding a header dimension of the
+// same name, without touching the header map. "path" and "method" stay out, as for headers. On the
+// root span a key never replaces an attribute Bifrost set: metadata named after the content-logging
+// flag must not turn content back on for connectors.
+func TestResolveAccessStampsVirtualKeyMetadataIntoDimensions(t *testing.T) {
+	headerRoot := map[string]any{"team": "header", "region": "eu", "http.request.method": "POST"}
+	for _, tc := range []struct {
+		name           string
+		metadata       map[string]string
+		disableContent bool
+		wantCtx        map[string]string
+		wantAdded      map[string]string
+		wantRoot       map[string]any
+	}{
+		{
+			name:     "no metadata leaves the dimensions alone",
+			metadata: nil,
+			wantCtx:  map[string]string{"team": "header", "region": "eu"},
+			wantRoot: headerRoot,
+		},
+		{
+			name:      "metadata is added and wins over a header",
+			metadata:  map[string]string{"team": "vk", "cost_center": "cc-42", "path": "/vk", "method": "PUT"},
+			wantCtx:   map[string]string{"team": "vk", "region": "eu", "cost_center": "cc-42"},
+			wantAdded: map[string]string{"team": "vk", "cost_center": "cc-42"},
+			wantRoot:  map[string]any{"team": "vk", "region": "eu", "http.request.method": "POST", "cost_center": "cc-42"},
+		},
+		{
+			name:           "metadata never replaces an attribute bifrost set on the root span",
+			metadata:       map[string]string{schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			disableContent: true,
+			wantCtx:        map[string]string{"team": "header", "region": "eu", schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			wantAdded:      map[string]string{schemas.AttrBifrostContentLoggingDisabled: "false", "http.request.method": "GET", "cost_center": "cc-42"},
+			wantRoot:       map[string]any{"team": "header", "region": "eu", "http.request.method": "POST", schemas.AttrBifrostContentLoggingDisabled: true, "cost_center": "cc-42"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVKForMCPStamping(nil)
+			vk.Metadata = tc.metadata
+			if tc.disableContent {
+				vk.DisableContentLogging = boolPtr(true)
+			}
+
+			logger := NewMockLogger()
+			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, &mockInMemoryStore{})
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			recorder := newDimensionRecorder(headerRoot)
+			headerDims := map[string]string{"team": "header", "region": "eu"}
+			ctx := emptyCtx()
+			ctx.SetValue(schemas.BifrostContextKeyTracer, recorder)
+			ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+			ctx.SetValue(schemas.BifrostContextKeyDimensions, headerDims)
+			ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+			_, err = plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantCtx, ctx.Value(schemas.BifrostContextKeyDimensions))
+			assert.Equal(t, map[string]string{"team": "header", "region": "eu"}, headerDims, "the header map must not be changed in place")
+			assert.Equal(t, tc.wantRoot, recorder.root.Attributes)
+			assert.Equal(t, tc.disableContent, schemas.ContentLoggingDisabledForTrace(&schemas.Trace{RootSpan: recorder.root}), "content logging decision connectors read")
+			if tc.wantAdded == nil {
+				assert.Nil(t, recorder.traceDims, "nothing merged into the trace")
+				return
+			}
+			assert.Equal(t, "trace-1", recorder.traceID)
+			assert.Equal(t, tc.wantAdded, recorder.traceDims)
+		})
+	}
+}
+
+// TestVirtualKeyMetadataContextKeyValue pins the context key's wire string. The logging plugin and
+// the HTTP transport declare their own copy of it, so changing it here alone would silently stop
+// virtual key metadata from reaching the logs.
+func TestVirtualKeyMetadataContextKeyValue(t *testing.T) {
+	assert.Equal(t, schemas.BifrostContextKey("bifrost-governance-virtual-key-metadata"), VirtualKeyMetadataContextKey)
+}
+
+// BenchmarkStampVirtualKeyMetadata measures stamping a key's metadata on a traced request, with
+// and without metadata (the common case, which must stay free).
+func BenchmarkStampVirtualKeyMetadata(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		metadata map[string]string
+	}{
+		{name: "no_metadata", metadata: nil},
+		{name: "two_entries", metadata: map[string]string{"cost_center": "cc-42", "owner": "platform"}},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			vk := &configstoreTables.TableVirtualKey{Metadata: bc.metadata}
+			recorder := newDimensionRecorder(nil)
+			headerDims := map[string]string{"team": "header"}
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				ctx.SetValue(schemas.BifrostContextKeyTracer, recorder)
+				ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+				ctx.SetValue(schemas.BifrostContextKeyDimensions, headerDims)
+				stampVirtualKeyMetadata(ctx, vk)
+			}
+		})
+	}
+}
+
+// TestGovernanceStore_UpdateTeamInMemory_MovesKeysToNewCustomer checks a team's keys charge and log its new
+// customer as soon as the team changes, and none once it is cleared.
+func TestGovernanceStore_UpdateTeamInMemory_MovesKeysToNewCustomer(t *testing.T) {
+	ctx := context.Background()
+	budgetA := buildBudgetWithUsage("budget-a", 1000.0, 0.0, "1d")
+	budgetB := buildBudgetWithUsage("budget-b", 1000.0, 0.0, "1d")
+	customerA := buildCustomer("customer-a", "Customer A", budgetA)
+	customerB := buildCustomer("customer-b", "Customer B", budgetB)
+
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	vk := buildVirtualKey("vk", "sk-bf-team", "Team key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})}
+	vk.TeamID = &team.ID
+	vk.Team = team
+
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Budgets:     []configstoreTables.TableBudget{*budgetA, *budgetB},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	// chargedAndStamped reports the customer budgets charged and the customer logged.
+	chargedAndStamped := func() (charged []string, stamped string) {
+		key, ok := store.GetVirtualKey(ctx, "sk-bf-team")
+		require.True(t, ok)
+		byID, ok := store.GetVirtualKeyByID(ctx, "vk")
+		require.True(t, ok)
+		require.Same(t, key, byID, "both lookups serve the same refreshed key")
+		reqCtx := emptyCtx()
+		budgets, _ := store.HolderLimits(reqCtx, store.permitForVirtualKey(reqCtx, key))
+		for _, b := range budgets {
+			if b.ID == "budget-a" || b.ID == "budget-b" {
+				charged = append(charged, b.ID)
+			}
+		}
+		reqCtx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-team"), nil, nil, nil, nil, nil, nil))
+		StampVirtualKeyScope(reqCtx, key)
+		if identity := reqCtx.Grant().Identity(); identity != nil && len(identity.Customers()) > 0 {
+			stamped = identity.Customers()[0].ID
+		}
+		return charged, stamped
+	}
+
+	charged, stamped := chargedAndStamped()
+	require.Equal(t, []string{"budget-a"}, charged)
+	require.Equal(t, "customer-a", stamped)
+
+	moved := *team
+	moved.CustomerID = &customerB.ID
+	moved.Customer = customerB
+	store.UpdateTeamInMemory(ctx, &moved, nil)
+	charged, stamped = chargedAndStamped()
+	require.Equal(t, []string{"budget-b"}, charged, "the new customer is charged, the old one is not")
+	require.Equal(t, "customer-b", stamped)
+
+	cleared := *team
+	cleared.CustomerID = nil
+	cleared.Customer = nil
+	store.UpdateTeamInMemory(ctx, &cleared, nil)
+	charged, stamped = chargedAndStamped()
+	require.Empty(t, charged, "a team with no customer charges none")
+	require.Empty(t, stamped)
+}
+
+// TestGovernanceStore_TeamChangesReachGracePeriodAlias checks a team update and delete reach a
+// key's rotated-out value as well as its current one.
+func TestGovernanceStore_TeamChangesReachGracePeriodAlias(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", nil)
+	vk := buildVirtualKey("vk1", "sk-bf-old", "Test VK", true)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customer},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	exp := time.Now().UTC().Add(5 * time.Minute)
+	rotated := *vk
+	rotated.Value = *schemas.NewSecretVar("sk-bf-new")
+	rotated.PreviousValue = *schemas.NewSecretVar("sk-bf-old")
+	rotated.PreviousValueExpiresAt = &exp
+	store.UpdateVirtualKeyInMemory(ctx, &rotated, nil, nil, nil)
+
+	moved := *team
+	moved.CustomerID = &customer.ID
+	moved.Customer = customer
+	store.UpdateTeamInMemory(ctx, &moved, nil)
+	for _, value := range []string{"sk-bf-new", "sk-bf-old"} {
+		key, ok := store.GetVirtualKey(ctx, value)
+		require.True(t, ok, value)
+		require.NotNil(t, key.Team, value)
+		assert.Equal(t, "customer-b", *key.Team.CustomerID, value)
+	}
+
+	store.DeleteTeamInMemory(ctx, "team")
+	for _, value := range []string{"sk-bf-new", "sk-bf-old"} {
+		key, ok := store.GetVirtualKey(ctx, value)
+		require.True(t, ok, value)
+		assert.Nil(t, key.Team, value)
+		assert.Nil(t, key.TeamID, value)
+	}
+}
+
+// TestGovernanceStore_DeleteBeatsConcurrentTeamRefresh races key deletes against team refreshes and
+// checks a deleted key never survives in either lookup.
+func TestGovernanceStore_DeleteBeatsConcurrentTeamRefresh(t *testing.T) {
+	ctx := context.Background()
+	team := buildTeam("team", "Team", nil)
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		Teams: []configstoreTables.TableTeam{*team},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	for i := 0; i < 1000; i++ {
+		vk := buildVirtualKey("vk1", "sk-bf-key", "Test VK", true)
+		vk.TeamID = &team.ID
+		vk.Team = team
+		store.CreateVirtualKeyInMemory(ctx, vk)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			renamed := *team
+			store.UpdateTeamInMemory(ctx, &renamed, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			store.DeleteVirtualKeyInMemory(ctx, "vk1")
+		}()
+		wg.Wait()
+
+		_, found := store.GetVirtualKey(ctx, "sk-bf-key")
+		require.False(t, found, "iteration %d: deleted key still authenticates", i)
+		_, found = store.GetVirtualKeyByID(ctx, "vk1")
+		require.False(t, found, "iteration %d: deleted key still in the ID index", i)
+	}
+}
+
+// TestGovernanceStore_ConcurrentTeamAndKeyWritesStayConsistent races team updates, key edits and key
+// rotations, then checks a key's value, ID and grace-period entries agree and follow the last team.
+func TestGovernanceStore_ConcurrentTeamAndKeyWritesStayConsistent(t *testing.T) {
+	ctx := context.Background()
+	customerA := buildCustomer("customer-a", "Customer A", nil)
+	customerB := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	vk := buildVirtualKey("vk1", "sk-bf-v0", "Test VK", true)
+	vk.TeamID = &team.ID
+	vk.Team = team
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Teams:       []configstoreTables.TableTeam{*team},
+		Customers:   []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	exp := time.Now().UTC().Add(5 * time.Minute)
+	for round := 0; round < 200; round++ {
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			moved := *team
+			moved.CustomerID = &customerB.ID
+			moved.Customer = customerB
+			store.UpdateTeamInMemory(ctx, &moved, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			moved := *team
+			store.UpdateTeamInMemory(ctx, &moved, nil)
+		}()
+		go func(round int) {
+			defer wg.Done()
+			current, ok := store.GetVirtualKeyByID(ctx, "vk1")
+			if !ok {
+				return
+			}
+			rotated := *current
+			rotated.PreviousValue = current.Value
+			rotated.PreviousValueExpiresAt = &exp
+			rotated.Value = *schemas.NewSecretVar(fmt.Sprintf("sk-bf-v%d", round+1))
+			store.UpdateVirtualKeyInMemory(ctx, &rotated, nil, nil, nil)
+		}(round)
+		wg.Wait()
+
+		byID, ok := store.GetVirtualKeyByID(ctx, "vk1")
+		require.True(t, ok)
+		byValue, ok := store.GetVirtualKey(ctx, byID.Value.GetValue())
+		require.True(t, ok, "round %d: current value resolves", round)
+		require.Same(t, byID, byValue, "round %d: ID and value entries agree", round)
+		if prev := byID.PreviousValue.GetValue(); prev != "" {
+			alias, ok := store.GetVirtualKey(ctx, prev)
+			require.True(t, ok, "round %d: grace alias resolves", round)
+			require.Same(t, byID, alias, "round %d: grace alias agrees", round)
+		}
+		cachedTeam, _ := store.teams.Load("team")
+		require.Same(t, cachedTeam, byID.Team, "round %d: the key follows the cached team", round)
+	}
+}
+
+// TestGovernanceStore_CreateTeamInMemory_RefreshesKeysThatArrivedFirst checks a key cached before its
+// team picks up the team's customer once the team lands.
+func TestGovernanceStore_CreateTeamInMemory_RefreshesKeysThatArrivedFirst(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("customer-a", "Customer A", nil)
+	stale := buildTeam("team", "Team", nil)
+	vk := buildVirtualKey("vk1", "sk-bf-key", "Test VK", true)
+	vk.TeamID = &stale.ID
+	vk.Team = stale
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+		Customers:   []configstoreTables.TableCustomer{*customer},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	team := buildTeam("team", "Team", nil)
+	team.CustomerID = &customer.ID
+	team.Customer = customer
+	store.CreateTeamInMemory(ctx, team)
+
+	key, ok := store.GetVirtualKey(ctx, "sk-bf-key")
+	require.True(t, ok)
+	require.NotNil(t, key.Team)
+	require.NotNil(t, key.Team.CustomerID)
+	assert.Equal(t, "customer-a", *key.Team.CustomerID)
+}
+
+// TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit checks a budget reset that read a team
+// before a team edit applies its reset to the edited team instead of putting the old one back.
+func TestGovernanceStore_ResetDoesNotRevertAConcurrentTeamEdit(t *testing.T) {
+	ctx := context.Background()
+	budget := buildBudgetWithUsage("team-budget", 100.0, 40.0, "1d")
+	customerA := buildCustomer("customer-a", "Customer A", nil)
+	customerB := buildCustomer("customer-b", "Customer B", nil)
+	team := buildTeam("team", "Team", budget)
+	team.CustomerID = &customerA.ID
+	team.Customer = customerA
+	store, err := NewLocalGovernanceStore(ctx, NewMockLogger(), nil, &configstore.GovernanceConfig{
+		Budgets:   []configstoreTables.TableBudget{*budget},
+		Teams:     []configstoreTables.TableTeam{*team},
+		Customers: []configstoreTables.TableCustomer{*customerA, *customerB},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	// The reset reads the team, then a team edit moves it to customer B before the reset writes.
+	readByReset, ok := store.teams.Load("team")
+	require.True(t, ok)
+	edited := *readByReset.(*configstoreTables.TableTeam)
+	edited.CustomerID = &customerB.ID
+	edited.Customer = customerB
+	store.teams.Store("team", &edited)
+
+	patchCached(&store.teams, "team", readByReset, func(cur *configstoreTables.TableTeam) *configstoreTables.TableTeam {
+		clone := *cur
+		clone.Budgets = append([]configstoreTables.TableBudget(nil), cur.Budgets...)
+		clone.Budgets[0].CurrentUsage = 0
+		return &clone
+	})
+
+	got, _ := store.teams.Load("team")
+	final := got.(*configstoreTables.TableTeam)
+	assert.Equal(t, "customer-b", *final.CustomerID, "the edit is kept")
+	assert.Zero(t, final.Budgets[0].CurrentUsage, "and the reset still applies")
+}
+
+// TestModelConfigRefreshPreservesRateLimitResetBoundaries checks that a stale
+// model-config refresh keeps the live usage and reset boundaries of its rate
+// limit while still applying the new limits.
+func TestModelConfigRefreshPreservesRateLimitResetBoundaries(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	rate := buildRateLimit("rate", 1000, 1000)
+	rate.TokenLastReset = time.Now().UTC().Truncate(time.Hour)
+	rate.RequestLastReset = rate.TokenLastReset.Add(-time.Hour)
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+
+	incoming := buildRateLimit(rate.ID, 2000, 3000)
+	incoming.TokenLastReset = rate.TokenLastReset.Add(-24 * time.Hour)
+	incoming.RequestLastReset = incoming.TokenLastReset
+	model := &configstoreTables.TableModelConfig{ID: "model", RateLimit: incoming}
+	updated := store.UpdateModelConfigInMemory(ctx, model)
+	live := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, live, updated.RateLimit)
+	require.Equal(t, incoming.TokenMaxLimit, live.TokenMaxLimit)
+	require.Equal(t, incoming.RequestMaxLimit, live.RequestMaxLimit)
+	require.Equal(t, rate.TokenCurrentUsage, live.TokenCurrentUsage)
+	require.Equal(t, rate.RequestCurrentUsage, live.RequestCurrentUsage)
+	require.True(t, rate.TokenLastReset.Equal(live.TokenLastReset), "token boundary rolled back")
+	require.True(t, rate.RequestLastReset.Equal(live.RequestLastReset), "request boundary rolled back")
+}
+
+// TestConfigRefreshPreservesBudgetAndProviderAccounting checks that stale
+// persisted settings can change limits without changing the live accounting
+// tuple, and without the refresh writing into the caller's structs.
+func TestConfigRefreshPreservesBudgetAndProviderAccounting(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	boundary := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	modelBudget := buildBudgetWithUsage("model-budget", 100, 7, "1M")
+	modelBudget.LastReset = boundary
+	store.UpsertBudgetConfig(ctx, modelBudget.ID, modelBudget, false)
+	staleModelBudget := buildBudgetWithUsage(modelBudget.ID, 200, 42, "1M")
+	model := &configstoreTables.TableModelConfig{
+		ID: "model", Budgets: []configstoreTables.TableBudget{*staleModelBudget},
+	}
+	updatedModel := store.UpdateModelConfigInMemory(ctx, model)
+	expectedModelBudget := *modelBudget
+	expectedModelBudget.MaxLimit = staleModelBudget.MaxLimit
+	require.Equal(t, expectedModelBudget, *store.LoadBudget(ctx, modelBudget.ID))
+	require.Equal(t, expectedModelBudget, updatedModel.Budgets[0])
+	require.Equal(t, *staleModelBudget, model.Budgets[0])
+
+	providerBudget := buildBudgetWithUsage("provider-budget", 100, 9, "1M")
+	providerBudget.LastReset = boundary
+	store.UpsertBudgetConfig(ctx, providerBudget.ID, providerBudget, false)
+	rate := buildRateLimit("provider-rate", 1000, 1000)
+	rate.TokenLastReset = boundary
+	rate.RequestLastReset = boundary.Add(-time.Hour)
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+
+	provider := &configstoreTables.TableProvider{
+		Name: "provider", Budget: buildBudgetWithUsage(providerBudget.ID, 200, 42, "1M"),
+		RateLimit: buildRateLimit(rate.ID, 2000, 3000),
+	}
+	staleBudget, staleRate := *provider.Budget, *provider.RateLimit
+	updatedProvider := store.UpdateProviderInMemory(ctx, provider)
+	expectedProviderBudget := *providerBudget
+	expectedProviderBudget.MaxLimit = staleBudget.MaxLimit
+	expectedRate := *rate
+	expectedRate.TokenMaxLimit, expectedRate.RequestMaxLimit = staleRate.TokenMaxLimit, staleRate.RequestMaxLimit
+	require.Equal(t, expectedProviderBudget, *store.LoadBudget(ctx, providerBudget.ID))
+	require.Equal(t, expectedProviderBudget, *updatedProvider.Budget)
+	require.Equal(t, expectedRate, *store.LoadRateLimit(ctx, rate.ID))
+	require.Equal(t, expectedRate, *updatedProvider.RateLimit)
+	require.Equal(t, staleBudget, *provider.Budget)
+}
+
+// TestCreateInMemoryDoesNotAliasCallerLimits checks that the create paths
+// publish their own copies of budgets and rate limits, so the caller's structs
+// are neither stamped by the create nor able to change live entries afterwards.
+func TestCreateInMemoryDoesNotAliasCallerLimits(t *testing.T) {
+	creates := map[string]func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit){
+		"virtual key": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+		"provider config": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: true, ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate}}})
+		},
+		"team": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "owner", CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+		"customer": func(ctx context.Context, store *LocalGovernanceStore, budgets []configstoreTables.TableBudget, rate *configstoreTables.TableRateLimit) {
+			store.CreateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "owner", CalendarAligned: true, Budgets: budgets, RateLimitID: &rate.ID, RateLimit: rate})
+		},
+	}
+	for name, create := range creates {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			budgets := []configstoreTables.TableBudget{*buildBudgetWithUsage("budget", 100, 0, "1M")}
+			rate := buildRateLimit("rate", 1000, 1000)
+			create(ctx, store, budgets, rate)
+
+			require.False(t, budgets[0].IsCalendarAligned, "create stamped the caller's budget")
+			require.False(t, rate.IsCalendarAligned, "create stamped the caller's rate limit")
+			require.True(t, store.LoadBudget(ctx, "budget").IsCalendarAligned)
+			require.True(t, store.LoadRateLimit(ctx, "rate").IsCalendarAligned)
+
+			require.NotSame(t, rate, store.LoadRateLimit(ctx, "rate"), "live rate limit is the caller's struct")
+			budgets[0].MaxLimit = 1
+			require.Equal(t, 100.0, store.LoadBudget(ctx, "budget").MaxLimit, "caller write reached the live budget")
+		})
+	}
+}
+
+// TestConfigRefreshKeepsConcurrentCharges checks that owner refreshes racing
+// with accounting never lose a charge: every refresh must merge into the live
+// counter rather than read it and store it back later.
+func TestConfigRefreshKeepsConcurrentCharges(t *testing.T) {
+	ctx := context.Background()
+	store := newStandaloneStore(t)
+	hour := "1h"
+	budget := buildBudgetWithUsage("budget", 1e9, 0, "1M")
+	rate := buildRateLimit("rate", 1e9, 1e9)
+	rate.TokenResetDuration, rate.RequestResetDuration = &hour, &hour
+	team := func() *configstoreTables.TableTeam {
+		r := *rate
+		return &configstoreTables.TableTeam{ID: "team", Budgets: []configstoreTables.TableBudget{*budget}, RateLimitID: &r.ID, RateLimit: &r}
+	}
+	store.CreateTeamInMemory(ctx, team())
+
+	const workers, charges = 8, 2000
+	stop := make(chan struct{})
+	refreshed := make(chan struct{})
+	go func() {
+		defer close(refreshed)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				store.UpdateTeamInMemory(ctx, team(), nil)
+			}
+		}
+	}()
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range charges {
+				require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 1))
+				require.NoError(t, store.BumpRateLimitUsageBy(ctx, rate.ID, 1, 1))
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	<-refreshed
+
+	require.Equal(t, float64(workers*charges), store.LoadBudget(ctx, budget.ID).CurrentUsage)
+	live := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(workers*charges), live.TokenCurrentUsage)
+	require.Equal(t, int64(workers*charges), live.RequestCurrentUsage)
+}
+
+// calendarOwner reloads one kind of owner holding the given limits.
+type calendarOwner func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit)
+
+// calendarOwners lists every OSS owner whose reload stamps calendar alignment.
+func calendarOwners() map[string]calendarOwner {
+	return map[string]calendarOwner{
+		"team": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateTeamInMemory(ctx, &configstoreTables.TableTeam{ID: "owner", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil)
+		},
+		"customer": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateCustomerInMemory(ctx, &configstoreTables.TableCustomer{ID: "owner", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil)
+		},
+		"virtual key": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}, nil, nil, nil)
+		},
+		"provider config": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateVirtualKeyInMemory(ctx, &configstoreTables.TableVirtualKey{ID: "owner", Value: *schemas.NewSecretVar("sk-bf-owner"), CalendarAligned: aligned, ProviderConfigs: []configstoreTables.TableVirtualKeyProviderConfig{{ID: 1, Provider: "openai", Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate}}}, nil, nil, nil)
+		},
+		"model config": func(ctx context.Context, store *LocalGovernanceStore, aligned bool, budget configstoreTables.TableBudget, rate configstoreTables.TableRateLimit) {
+			store.UpdateModelConfigInMemory(ctx, &configstoreTables.TableModelConfig{ID: "owner", ModelName: "gpt-4o", CalendarAligned: aligned, Budgets: []configstoreTables.TableBudget{budget}, RateLimitID: &rate.ID, RateLimit: &rate})
+		},
+	}
+}
+
+// openWindow returns limits with usage in a window opened before this month's boundary.
+func openWindow() (time.Time, configstoreTables.TableBudget, configstoreTables.TableRateLimit) {
+	month, day := "1M", "1d"
+	now := time.Now().UTC()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	opened := monthStart.Add(-10 * 24 * time.Hour)
+	budget := configstoreTables.TableBudget{ID: "budget", MaxLimit: 100, CurrentUsage: 7, ResetDuration: month, CreatedAt: opened, LastReset: opened}
+	rate := *buildRateLimit("rate", 100, 100)
+	rate.TokenResetDuration, rate.RequestResetDuration = &month, &day
+	rate.TokenCurrentUsage, rate.RequestCurrentUsage = 17, 19
+	rate.TokenLastReset, rate.RequestLastReset = opened, opened
+	return monthStart, budget, rate
+}
+
+// TestReloadAdoptsCalendarBeforeSweep checks that a sweep running right after the
+// reload that switches alignment on finds every window current and keeps its usage.
+func TestReloadAdoptsCalendarBeforeSweep(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			reload(ctx, store, false, budget, rate)
+			reload(ctx, store, true, budget, rate)
+
+			require.Empty(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID))
+			require.Empty(t, store.ResetExpiredRateLimitsInMemory(ctx, true, rate.ID))
+			liveBudget, liveRate := store.LoadBudget(ctx, budget.ID), store.LoadRateLimit(ctx, rate.ID)
+			require.Equal(t, 7.0, liveBudget.CurrentUsage)
+			require.True(t, liveBudget.LastReset.Equal(monthStart))
+			require.Equal(t, int64(17), liveRate.TokenCurrentUsage)
+			require.Equal(t, int64(19), liveRate.RequestCurrentUsage)
+			require.True(t, liveRate.TokenLastReset.Equal(monthStart))
+		})
+	}
+}
+
+// TestReloadAdoptsCalendarWithNewDuration checks that adoption uses the duration
+// installed by the same edit, not the one it replaces.
+func TestReloadAdoptsCalendarWithNewDuration(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			hourly := budget
+			hourly.ResetDuration = "1h"
+			reload(ctx, store, false, hourly, rate)
+			reload(ctx, store, true, budget, rate)
+
+			require.Empty(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID))
+			live := store.LoadBudget(ctx, budget.ID)
+			require.Equal(t, 7.0, live.CurrentUsage)
+			require.True(t, live.LastReset.Equal(monthStart))
+		})
+	}
+}
+
+// TestReloadKeepsDueCalendarReset checks that reloading an owner that was already
+// aligned does not adopt, even when its rows were loaded without the flag, as
+// startup does. The overdue window must still reset.
+func TestReloadKeepsDueCalendarReset(t *testing.T) {
+	for name, reload := range calendarOwners() {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newStandaloneStore(t)
+			monthStart, budget, rate := openWindow()
+			reload(ctx, store, true, budget, rate)
+			unstampedBudget, unstampedRate := budget, rate
+			store.budgets.Store(budget.ID, &unstampedBudget)
+			store.rateLimits.Store(rate.ID, &unstampedRate)
+			reload(ctx, store, true, budget, rate)
+
+			require.True(t, store.LoadBudget(ctx, budget.ID).LastReset.Before(monthStart))
+			require.Len(t, store.ResetExpiredBudgetsInMemory(ctx, true, budget.ID), 1)
+			require.Len(t, store.ResetExpiredRateLimitsInMemory(ctx, true, rate.ID), 1)
+			require.Zero(t, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+			require.Zero(t, store.LoadRateLimit(ctx, rate.ID).TokenCurrentUsage)
+		})
+	}
+}
+
+// newBaselineStore returns a store without a config store, for baseline tests.
+func newBaselineStore(t *testing.T) *LocalGovernanceStore {
+	t.Helper()
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	return store
+}
+
+// TestApplyBudgetBaselineWindows pins how a cluster baseline lands relative to
+// the local window: rebased in the same window, replacing usage from a newer
+// window, and refused from an older one.
+func TestApplyBudgetBaselineWindows(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1000, 102, "1d")
+	window := budget.LastReset
+	store.UpsertBudgetConfig(ctx, budget.ID, budget, false)
+	store.SetBudgetDBBaseline(budget.ID, 100)
+
+	require.True(t, store.ApplyBudgetBaseline(ctx, budget.ID, 110, window))
+	require.Equal(t, 112.0, store.LoadBudget(ctx, budget.ID).CurrentUsage, "the $2 charged on top of the old baseline survives")
+	require.Equal(t, 110.0, store.LastDBUsagesBudgets[budget.ID])
+
+	require.False(t, store.ApplyBudgetBaseline(ctx, budget.ID, 500, window.Add(-time.Hour)), "a baseline from a window this node closed is refused")
+	require.Equal(t, 112.0, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+	require.True(t, store.LoadBudget(ctx, budget.ID).LastReset.Equal(window), "a refused baseline moved the window")
+	require.Equal(t, 110.0, store.LastDBUsagesBudgets[budget.ID])
+
+	next := window.Add(time.Hour)
+	require.True(t, store.ApplyBudgetBaseline(ctx, budget.ID, 7, next))
+	installed := store.LoadBudget(ctx, budget.ID)
+	require.Equal(t, 7.0, installed.CurrentUsage, "charges from the closed window do not carry into the new one")
+	require.True(t, installed.LastReset.Equal(next))
+	require.Equal(t, 7.0, store.LastDBUsagesBudgets[budget.ID])
+}
+
+// TestApplyRateLimitBaselinesPerCounter pins that each counter checks its own
+// window: a counter that already reset refuses an older baseline while the other
+// counter still takes its own.
+func TestApplyRateLimitBaselinesPerCounter(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	rate := buildRateLimitWithUsage("r", 1_000_000, 300, 1_000, 30)
+	day := "1d"
+	rate.TokenResetDuration, rate.RequestResetDuration = &day, &day
+	window := rate.RequestLastReset
+	tokenWindow := window.Add(-time.Hour)
+	rate.TokenLastReset = tokenWindow
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+	store.SetRateLimitDBBaseline(rate.ID, 200, 20)
+
+	// The token boundary is older than the request window and the request
+	// boundary is newer than the token window, so applying either boundary to
+	// the other counter flips both results.
+	acceptTokens, acceptRequests := store.ApplyRateLimitBaselines(ctx, rate.ID, 9_000, 25, window.Add(-2*time.Hour), window)
+	require.False(t, acceptTokens)
+	require.True(t, acceptRequests)
+	installed := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(300), installed.TokenCurrentUsage, "the token counter already reset past this window")
+	require.True(t, installed.TokenLastReset.Equal(tokenWindow), "a refused baseline moved the token window")
+	require.True(t, installed.RequestLastReset.Equal(window))
+	require.Equal(t, int64(35), installed.RequestCurrentUsage, "10 local requests on top of the old baseline survive")
+	require.Equal(t, int64(200), store.LastDBUsagesTokensRateLimits[rate.ID], "a refused baseline changed the token baseline")
+	require.Equal(t, int64(25), store.LastDBUsagesRequestsRateLimits[rate.ID])
+}
+
+// TestApplyBudgetBaselineKeepsConcurrentCharges installs baselines while
+// requests charge the same budget. Every charge must survive: the install
+// computes the local delta and writes usage in one compare-and-swap.
+func TestApplyBudgetBaselineKeepsConcurrentCharges(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1_000_000, 0, "1d")
+	window := budget.LastReset
+	store.UpsertBudgetConfig(ctx, budget.ID, budget, false)
+	store.SetBudgetDBBaseline(budget.ID, 0)
+
+	const workers, charges, installs = 4, 2_000, 500
+	var wg sync.WaitGroup
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range charges {
+				// assert, not require: FailNow must not run off the test goroutine.
+				if !assert.NoError(t, store.BumpBudgetUsage(ctx, budget.ID, 1)) {
+					return
+				}
+			}
+		}()
+	}
+	// Non-fatal so a failed install still reaches wg.Wait below.
+	for i := 1; i <= installs; i++ {
+		assert.True(t, store.ApplyBudgetBaseline(ctx, budget.ID, float64(i), window))
+	}
+	wg.Wait()
+
+	require.Equal(t, float64(installs+workers*charges), store.LoadBudget(ctx, budget.ID).CurrentUsage)
+}
+
+// TestResetClearsBaselineInSameSwap pins that a reset zeroes the baseline as
+// part of the reset itself, so a baseline install queued behind it rebases onto
+// zero instead of a stale pre-reset baseline.
+func TestResetClearsBaselineInSameSwap(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1000, 40, "1d")
+	store.UpsertBudgetConfig(ctx, budget.ID, budget, false)
+	store.SetBudgetDBBaseline(budget.ID, 30)
+	next := budget.LastReset.Add(time.Hour)
+
+	_, ok := store.ResetBudgetAt(ctx, budget.ID, next)
+	require.True(t, ok)
+	require.Zero(t, store.LastDBUsagesBudgets[budget.ID])
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 2))
+	require.True(t, store.ApplyBudgetBaseline(ctx, budget.ID, 5, next))
+	require.Equal(t, 7.0, store.LoadBudget(ctx, budget.ID).CurrentUsage)
+
+	rate := buildRateLimitWithUsage("r", 1_000_000, 300, 1_000, 30)
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+	store.SetRateLimitDBBaseline(rate.ID, 200, 20)
+	requestWindow := rate.RequestLastReset
+	tokenNext := rate.TokenLastReset.Add(time.Hour)
+	reset, ok := store.ResetRateLimitAt(ctx, rate.ID, &tokenNext, nil)
+	require.True(t, ok)
+	require.True(t, reset.TokenReset())
+	require.False(t, reset.RequestReset())
+	installedRate := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(30), installedRate.RequestCurrentUsage, "a token-only reset cleared request usage")
+	require.True(t, installedRate.RequestLastReset.Equal(requestWindow), "a token-only reset moved the request window")
+	require.Zero(t, store.LastDBUsagesTokensRateLimits[rate.ID])
+	require.Equal(t, int64(20), store.LastDBUsagesRequestsRateLimits[rate.ID], "the request counter did not reset")
+}
+
+// waitForPendingWriter returns once a writer is waiting on mu. The caller holds
+// a read lock, so the writer blocks in Lock, and TryRLock fails from the moment
+// it announces itself until it unlocks. It returns an error if done closes
+// first, meaning the operation finished without taking the write lock, or if no
+// writer shows up within a few seconds. The caller releases its read lock before
+// failing on that error, so the writer is never left blocked.
+func waitForPendingWriter(mu *sync.RWMutex, done <-chan struct{}) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for mu.TryRLock() {
+		mu.RUnlock()
+		select {
+		case <-done:
+			return errors.New("the operation finished without waiting for the write lock")
+		default:
+		}
+		if time.Now().After(deadline) {
+			return errors.New("no writer waited for the lock")
+		}
+		runtime.Gosched()
+	}
+	return nil
+}
+
+// TestResetPublishesWindowWithClearedBaseline tries to read under the baseline
+// lock at the first moment a reset releases it. The test holds a read lock until
+// the reset waits for the write lock, then releases it and immediately asks for
+// another read lock. When that request queues while the writer still holds the
+// lock, Go admits it at the writer's first Unlock, before any later Lock, so a
+// reset that published its window before clearing the baseline is caught. The
+// queueing is scheduler-dependent: if the reset unlocks, relocks and clears
+// before the read request arrives, a split-lock regression can slip through. On
+// correct code it fails only if the reset is not seen waiting for the lock within
+// waitForPendingWriter's five-second limit; it is a regression detector, not a
+// proof.
+func TestResetPublishesWindowWithClearedBaseline(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1000, 40, "1d")
+	store.UpsertBudgetConfig(ctx, budget.ID, budget, false)
+	store.SetBudgetDBBaseline(budget.ID, 30)
+	next := budget.LastReset.Add(time.Hour)
+
+	store.LastDBUsagesBudgetsMu.RLock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		store.ResetBudgetAt(ctx, budget.ID, next)
+	}()
+	if err := waitForPendingWriter(&store.LastDBUsagesBudgetsMu, done); err != nil {
+		store.LastDBUsagesBudgetsMu.RUnlock()
+		t.Fatal(err)
+	}
+	pendingWindow := store.LoadBudget(ctx, budget.ID).LastReset
+	store.LastDBUsagesBudgetsMu.RUnlock()
+	store.LastDBUsagesBudgetsMu.RLock()
+	window := store.LoadBudget(ctx, budget.ID).LastReset
+	baseline := store.LastDBUsagesBudgets[budget.ID]
+	store.LastDBUsagesBudgetsMu.RUnlock()
+	<-done
+
+	require.Equal(t, budget.LastReset, pendingWindow, "the reset published its window before taking the baseline lock")
+	require.Equal(t, next, window)
+	require.Zero(t, baseline, "the reset published its window before clearing the baseline")
+
+	rate := buildRateLimitWithUsage("r", 1_000_000, 300, 1_000, 30)
+	store.UpsertRateLimitConfig(ctx, rate.ID, rate, false)
+	store.SetRateLimitDBBaseline(rate.ID, 200, 20)
+	tokenNext, requestNext := rate.TokenLastReset.Add(time.Hour), rate.RequestLastReset.Add(time.Hour)
+
+	// The reset takes the request lock first, so it waits there.
+	store.LastDBUsagesRateLimitsRequestsMu.RLock()
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		store.ResetRateLimitAt(ctx, rate.ID, &tokenNext, &requestNext)
+	}()
+	if err := waitForPendingWriter(&store.LastDBUsagesRateLimitsRequestsMu, done); err != nil {
+		store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+		t.Fatal(err)
+	}
+	pending := store.LoadRateLimit(ctx, rate.ID)
+	store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+	store.LastDBUsagesRateLimitsRequestsMu.RLock()
+	store.LastDBUsagesRateLimitsTokensMu.RLock()
+	reset := store.LoadRateLimit(ctx, rate.ID)
+	tokens := store.LastDBUsagesTokensRateLimits[rate.ID]
+	requests := store.LastDBUsagesRequestsRateLimits[rate.ID]
+	store.LastDBUsagesRateLimitsTokensMu.RUnlock()
+	store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+	<-done
+
+	require.Equal(t, rate.TokenLastReset, pending.TokenLastReset, "the reset published its windows before taking the baseline locks")
+	require.Equal(t, rate.RequestLastReset, pending.RequestLastReset, "the reset published its windows before taking the baseline locks")
+	require.Equal(t, tokenNext, reset.TokenLastReset)
+	require.Equal(t, requestNext, reset.RequestLastReset)
+	require.Zero(t, tokens, "the reset published its token window before clearing the baseline")
+	require.Zero(t, requests, "the reset published its request window before clearing the baseline")
+}
+
+// errorHookLogger runs onError once, on the first Error call. The inline reset
+// logs right after loading its snapshot, so the hook lands a competing write
+// between that load and the reset's swap.
+type errorHookLogger struct {
+	*MockLogger
+	onError func()
+}
+
+// Error records the message and runs the pending hook, if any, exactly once.
+func (l *errorHookLogger) Error(format string, args ...interface{}) {
+	l.MockLogger.Error(format, args...)
+	if hook := l.onError; hook != nil {
+		l.onError = nil
+		hook()
+	}
+}
+
+// newInlineResetStore returns a store logging through logger.
+func newInlineResetStore(t *testing.T, logger *errorHookLogger) *LocalGovernanceStore {
+	t.Helper()
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{}, nil, nil)
+	require.NoError(t, err)
+	return store
+}
+
+// The entries below are stored under a key that differs from their ID, so the
+// shared reset path (which resets by ID) never converges and BumpBudgetUsage /
+// BumpRateLimitUsage fall back to their inline reset.
+
+// TestInlineBudgetResetKeepsBaselineOnLostSwap lands a fresh window between the
+// inline reset's load and its swap. The reset loses the swap and the retry
+// charges the fresh window, so the baseline that window installed must survive:
+// clearing it with the lost reset would leave usage 52 over a zero baseline,
+// and the next dump would count the 50 already persisted again.
+func TestInlineBudgetResetKeepsBaselineOnLostSwap(t *testing.T) {
+	ctx := context.Background()
+	logger := &errorHookLogger{MockLogger: NewMockLogger()}
+	store := newInlineResetStore(t, logger)
+	stale := buildBudgetWithUsage("elsewhere", 1000, 40, "1h")
+	stale.LastReset = time.Now().Add(-2 * time.Hour)
+	store.budgets.Store("b", stale)
+	store.SetBudgetDBBaseline("b", 40)
+	gen := store.budgetResetGens["b"]
+
+	logger.onError = func() {
+		store.budgets.Store("b", buildBudgetWithUsage("elsewhere", 1000, 50, "1h"))
+		store.SetBudgetDBBaseline("b", 50)
+	}
+	require.NoError(t, store.BumpBudgetUsage(ctx, "b", 2))
+
+	require.Equal(t, 52.0, store.LoadBudget(ctx, "b").CurrentUsage)
+	require.Equal(t, 50.0, store.LastDBUsagesBudgets["b"], "a lost inline reset cleared the baseline")
+	require.Equal(t, gen, store.budgetResetGens["b"], "a lost inline reset bumped the reset generation")
+}
+
+// TestInlineBudgetResetClearsBaselineWithSwap pins the winning inline reset:
+// usage restarts from the charge, and the baseline and reset generation change
+// with it.
+func TestInlineBudgetResetClearsBaselineWithSwap(t *testing.T) {
+	ctx := context.Background()
+	store := newInlineResetStore(t, &errorHookLogger{MockLogger: NewMockLogger()})
+	stale := buildBudgetWithUsage("elsewhere", 1000, 40, "1h")
+	stale.LastReset = time.Now().Add(-2 * time.Hour)
+	store.budgets.Store("b", stale)
+	store.SetBudgetDBBaseline("b", 40)
+	gen := store.budgetResetGens["b"]
+	staleWindow := stale.LastReset
+
+	require.NoError(t, store.BumpBudgetUsage(ctx, "b", 2))
+
+	installed := store.LoadBudget(ctx, "b")
+	require.Equal(t, 2.0, installed.CurrentUsage)
+	require.True(t, installed.LastReset.After(staleWindow), "the inline reset did not advance the window")
+	require.Zero(t, store.LastDBUsagesBudgets["b"])
+	require.Equal(t, gen+1, store.budgetResetGens["b"])
+}
+
+// inlineResetRateLimit returns a rate limit with both windows overdue, stored
+// under a key other than its ID.
+func inlineResetRateLimit(tokens, requests int64) *configstoreTables.TableRateLimit {
+	rateLimit := buildRateLimitWithUsage("elsewhere", 1_000_000, tokens, 1_000, requests)
+	hour := "1h"
+	rateLimit.TokenResetDuration, rateLimit.RequestResetDuration = &hour, &hour
+	rateLimit.TokenLastReset = time.Now().Add(-2 * time.Hour)
+	rateLimit.RequestLastReset = rateLimit.TokenLastReset
+	return rateLimit
+}
+
+// TestInlineRateLimitResetKeepsBaselinesOnLostSwap is the rate-limit form of
+// TestInlineBudgetResetKeepsBaselineOnLostSwap.
+func TestInlineRateLimitResetKeepsBaselinesOnLostSwap(t *testing.T) {
+	ctx := context.Background()
+	logger := &errorHookLogger{MockLogger: NewMockLogger()}
+	store := newInlineResetStore(t, logger)
+	store.rateLimits.Store("r", inlineResetRateLimit(400, 40))
+	store.SetRateLimitDBBaseline("r", 400, 40)
+	gen := store.rateLimitResetGens["r"]
+
+	logger.onError = func() {
+		store.rateLimits.Store("r", buildRateLimitWithUsage("elsewhere", 1_000_000, 500, 1_000, 50))
+		store.SetRateLimitDBBaseline("r", 500, 50)
+	}
+	require.NoError(t, store.BumpRateLimitUsage(ctx, "r", 7, true, true))
+
+	installed := store.LoadRateLimit(ctx, "r")
+	require.Equal(t, int64(507), installed.TokenCurrentUsage)
+	require.Equal(t, int64(51), installed.RequestCurrentUsage)
+	require.Equal(t, int64(500), store.LastDBUsagesTokensRateLimits["r"], "a lost inline reset cleared the token baseline")
+	require.Equal(t, int64(50), store.LastDBUsagesRequestsRateLimits["r"], "a lost inline reset cleared the request baseline")
+	require.Equal(t, gen, store.rateLimitResetGens["r"])
+}
+
+// TestInlineRateLimitResetMarksResetGeneration pins the winning inline reset:
+// it clears both baselines and bumps the reset generation, so a dump that
+// snapshotted the pre-reset usage drops its row instead of writing it back.
+func TestInlineRateLimitResetMarksResetGeneration(t *testing.T) {
+	ctx := context.Background()
+	store := newInlineResetStore(t, &errorHookLogger{MockLogger: NewMockLogger()})
+	stale := inlineResetRateLimit(400, 40)
+	store.rateLimits.Store("r", stale)
+	store.SetRateLimitDBBaseline("r", 400, 40)
+	gen := store.rateLimitResetGens["r"]
+	staleWindow := stale.TokenLastReset
+
+	require.NoError(t, store.BumpRateLimitUsage(ctx, "r", 7, true, true))
+
+	installed := store.LoadRateLimit(ctx, "r")
+	require.Equal(t, int64(7), installed.TokenCurrentUsage)
+	require.Equal(t, int64(1), installed.RequestCurrentUsage)
+	require.True(t, installed.TokenLastReset.After(staleWindow), "the inline reset did not advance the token window")
+	require.True(t, installed.RequestLastReset.After(staleWindow), "the inline reset did not advance the request window")
+	require.Zero(t, store.LastDBUsagesTokensRateLimits["r"])
+	require.Zero(t, store.LastDBUsagesRequestsRateLimits["r"])
+	require.Equal(t, gen+1, store.rateLimitResetGens["r"], "the inline reset did not mark the reset generation")
+}
+
+// TestInlineRateLimitResetKeepsCurrentRequestWindow pins a winning inline reset
+// where only the token window is overdue: the token counter restarts from the
+// charge and loses its baseline, while the request counter keeps its window and
+// baseline and simply takes the request.
+func TestInlineRateLimitResetKeepsCurrentRequestWindow(t *testing.T) {
+	ctx := context.Background()
+	store := newInlineResetStore(t, &errorHookLogger{MockLogger: NewMockLogger()})
+	stale := inlineResetRateLimit(400, 40)
+	requestWindow := time.Now()
+	stale.RequestLastReset = requestWindow
+	store.rateLimits.Store("r", stale)
+	store.SetRateLimitDBBaseline("r", 400, 40)
+	gen := store.rateLimitResetGens["r"]
+	staleWindow := stale.TokenLastReset
+
+	require.NoError(t, store.BumpRateLimitUsage(ctx, "r", 7, true, true))
+
+	installed := store.LoadRateLimit(ctx, "r")
+	require.Equal(t, int64(7), installed.TokenCurrentUsage)
+	require.True(t, installed.TokenLastReset.After(staleWindow), "the inline reset did not advance the token window")
+	require.Equal(t, int64(41), installed.RequestCurrentUsage, "the current request window lost its usage")
+	require.True(t, installed.RequestLastReset.Equal(requestWindow), "the inline reset moved the current request window")
+	require.Zero(t, store.LastDBUsagesTokensRateLimits["r"])
+	require.Equal(t, int64(40), store.LastDBUsagesRequestsRateLimits["r"], "the inline reset cleared the current request baseline")
+	require.Equal(t, gen+1, store.rateLimitResetGens["r"])
+}
+
+// TestSeedConfigPublishesUsageWithBaseline reads under the baseline locks, the
+// way a dump or delta capture does, while a limit is seeded. It must see no
+// entry, or the entry with a baseline equal to its usage, never the usage
+// without its baseline. Once seeding finishes, both entries must be there.
+func TestSeedConfigPublishesUsageWithBaseline(t *testing.T) {
+	ctx := context.Background()
+	for range 200 {
+		store := newBaselineStore(t)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			store.SeedBudgetConfig(ctx, "b", &configstoreTables.TableBudget{ID: "b", CurrentUsage: 100})
+			store.SeedRateLimitConfig(ctx, "r", &configstoreTables.TableRateLimit{ID: "r", TokenCurrentUsage: 200, RequestCurrentUsage: 20})
+		}()
+		for finished := false; !finished; {
+			select {
+			case <-done:
+				finished = true
+			default:
+			}
+			// Copy under the locks and assert after releasing them, so a failed
+			// assertion never leaves the seed blocked on a held lock.
+			store.LastDBUsagesBudgetsMu.RLock()
+			budget := store.LoadBudget(ctx, "b")
+			lastDB, held := store.LastDBUsagesBudgets["b"]
+			store.LastDBUsagesBudgetsMu.RUnlock()
+			store.LastDBUsagesRateLimitsRequestsMu.RLock()
+			store.LastDBUsagesRateLimitsTokensMu.RLock()
+			rate := store.LoadRateLimit(ctx, "r")
+			tokens, heldTokens := store.LastDBUsagesTokensRateLimits["r"]
+			requests, heldRequests := store.LastDBUsagesRequestsRateLimits["r"]
+			store.LastDBUsagesRateLimitsTokensMu.RUnlock()
+			store.LastDBUsagesRateLimitsRequestsMu.RUnlock()
+
+			if finished {
+				require.NotNil(t, budget, "the seed did not publish the budget")
+				require.NotNil(t, rate, "the seed did not publish the rate limit")
+				require.Equal(t, 100.0, budget.CurrentUsage)
+				require.Equal(t, int64(200), rate.TokenCurrentUsage)
+				require.Equal(t, int64(20), rate.RequestCurrentUsage)
+			}
+			if budget == nil {
+				require.False(t, held, "a capture saw a budget baseline without its budget")
+			} else {
+				require.True(t, held, "a capture saw seeded budget usage without its baseline")
+				require.Equal(t, budget.CurrentUsage, lastDB)
+			}
+			if rate == nil {
+				require.False(t, heldTokens || heldRequests, "a capture saw rate-limit baselines without the rate limit")
+			} else {
+				require.True(t, heldTokens && heldRequests, "a capture saw seeded rate-limit usage without its baselines")
+				require.Equal(t, rate.TokenCurrentUsage, tokens)
+				require.Equal(t, rate.RequestCurrentUsage, requests)
+			}
+		}
+	}
+}
+
+// TestSeedConfigKeepsHeldUsageAndBaseline pins seeding over a limit the store
+// already holds: like an upsert, the held usage and last resets stay, and so do
+// the held baselines, because the held usage may carry charges not yet
+// persisted that count from them. The config fields still take effect.
+func TestSeedConfigKeepsHeldUsageAndBaseline(t *testing.T) {
+	ctx := context.Background()
+	store := newBaselineStore(t)
+	budget := buildBudgetWithUsage("b", 1000, 100, "1d")
+	store.SeedBudgetConfig(ctx, budget.ID, budget)
+	require.NoError(t, store.BumpBudgetUsageBy(ctx, budget.ID, 7))
+	reloaded := *budget
+	reloaded.MaxLimit = 2000
+	reloaded.CurrentUsage = 300
+	reloaded.LastReset = budget.LastReset.Add(time.Hour)
+	store.SeedBudgetConfig(ctx, budget.ID, &reloaded)
+
+	held := store.LoadBudget(ctx, budget.ID)
+	require.Equal(t, 107.0, held.CurrentUsage)
+	require.Equal(t, 2000.0, held.MaxLimit)
+	require.Equal(t, budget.LastReset, held.LastReset)
+	require.Equal(t, 100.0, store.LastDBUsagesBudgets[budget.ID], "the unsaved $7 must still count as a local delta")
+
+	rate := buildRateLimitWithUsage("r", 1_000_000, 200, 1_000, 20)
+	store.SeedRateLimitConfig(ctx, rate.ID, rate)
+	require.NoError(t, store.BumpRateLimitUsageBy(ctx, rate.ID, 11, 3))
+	reloadedRate := *rate
+	reloadedRate.TokenCurrentUsage, reloadedRate.RequestCurrentUsage = 900, 90
+	tokenMaxLimit, requestMaxLimit := int64(2_000_000), int64(2_000)
+	reloadedRate.TokenMaxLimit, reloadedRate.RequestMaxLimit = &tokenMaxLimit, &requestMaxLimit
+	reloadedRate.TokenLastReset = rate.TokenLastReset.Add(time.Hour)
+	reloadedRate.RequestLastReset = rate.RequestLastReset.Add(time.Hour)
+	store.SeedRateLimitConfig(ctx, rate.ID, &reloadedRate)
+
+	heldRate := store.LoadRateLimit(ctx, rate.ID)
+	require.Equal(t, int64(211), heldRate.TokenCurrentUsage)
+	require.Equal(t, int64(23), heldRate.RequestCurrentUsage)
+	require.Equal(t, tokenMaxLimit, *heldRate.TokenMaxLimit)
+	require.Equal(t, requestMaxLimit, *heldRate.RequestMaxLimit)
+	require.Equal(t, rate.TokenLastReset, heldRate.TokenLastReset)
+	require.Equal(t, rate.RequestLastReset, heldRate.RequestLastReset)
+	require.Equal(t, int64(200), store.LastDBUsagesTokensRateLimits[rate.ID])
+	require.Equal(t, int64(20), store.LastDBUsagesRequestsRateLimits[rate.ID])
+}
+
+// TestDeleteConfigRacingSeedKeepsPairs races deleting a limit against seeding it
+// again. Whichever lands last decides the outcome, but the entry and its
+// baselines always go together: a delete that removed the entry before taking
+// the baseline lock could wipe the baseline of the entry seeded in between. The
+// replacement seed carries its own values, so a surviving entry shows which
+// operation produced it: a seed over the held entry keeps the held usage, so
+// only a seed after the delete leaves the replacement.
+func TestDeleteConfigRacingSeedKeepsPairs(t *testing.T) {
+	ctx := context.Background()
+	seed := func(store *LocalGovernanceStore) {
+		store.SeedBudgetConfig(ctx, "b", &configstoreTables.TableBudget{ID: "b", CurrentUsage: 100})
+		store.SeedRateLimitConfig(ctx, "r", &configstoreTables.TableRateLimit{ID: "r", TokenCurrentUsage: 200, RequestCurrentUsage: 20})
+	}
+	reseed := func(store *LocalGovernanceStore) {
+		store.SeedBudgetConfig(ctx, "b", &configstoreTables.TableBudget{ID: "b", CurrentUsage: 300})
+		store.SeedRateLimitConfig(ctx, "r", &configstoreTables.TableRateLimit{ID: "r", TokenCurrentUsage: 600, RequestCurrentUsage: 60})
+	}
+	remove := func(store *LocalGovernanceStore) {
+		store.DeleteBudget(ctx, "b")
+		store.DeleteRateLimit(ctx, "r")
+	}
+
+	// In order: the delete leaves nothing, and the seed after it the replacement.
+	store := newBaselineStore(t)
+	seed(store)
+	remove(store)
+	require.Nil(t, store.LoadBudget(ctx, "b"))
+	require.Nil(t, store.LoadRateLimit(ctx, "r"))
+	require.NotContains(t, store.LastDBUsagesBudgets, "b")
+	require.NotContains(t, store.LastDBUsagesTokensRateLimits, "r")
+	require.NotContains(t, store.LastDBUsagesRequestsRateLimits, "r")
+	reseed(store)
+	budget, rate := store.LoadBudget(ctx, "b"), store.LoadRateLimit(ctx, "r")
+	require.NotNil(t, budget, "the seed after the delete did not recreate the budget")
+	require.NotNil(t, rate, "the seed after the delete did not recreate the rate limit")
+	require.Equal(t, 300.0, budget.CurrentUsage)
+	require.Equal(t, 300.0, store.LastDBUsagesBudgets["b"])
+	require.Equal(t, int64(600), rate.TokenCurrentUsage)
+	require.Equal(t, int64(60), rate.RequestCurrentUsage)
+	require.Equal(t, int64(600), store.LastDBUsagesTokensRateLimits["r"])
+	require.Equal(t, int64(60), store.LastDBUsagesRequestsRateLimits["r"])
+
+	for range 2000 {
+		store := newBaselineStore(t)
+		seed(store)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			remove(store)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			reseed(store)
+		}()
+		close(start)
+		wg.Wait()
+
+		lastDB, held := store.LastDBUsagesBudgets["b"]
+		if budget := store.LoadBudget(ctx, "b"); budget != nil {
+			require.Equal(t, 300.0, budget.CurrentUsage, "the budget survived the delete")
+			require.True(t, held, "the seeded budget lost its baseline to the delete")
+			require.Equal(t, budget.CurrentUsage, lastDB)
+		} else {
+			require.False(t, held, "the deleted budget kept its baseline")
+		}
+		tokens, heldTokens := store.LastDBUsagesTokensRateLimits["r"]
+		requests, heldRequests := store.LastDBUsagesRequestsRateLimits["r"]
+		if rate := store.LoadRateLimit(ctx, "r"); rate != nil {
+			require.Equal(t, int64(600), rate.TokenCurrentUsage, "the rate limit survived the delete")
+			require.Equal(t, int64(60), rate.RequestCurrentUsage, "the rate limit survived the delete")
+			require.True(t, heldTokens && heldRequests, "the seeded rate limit lost its baselines to the delete")
+			require.Equal(t, rate.TokenCurrentUsage, tokens)
+			require.Equal(t, rate.RequestCurrentUsage, requests)
+		} else {
+			require.False(t, heldTokens || heldRequests, "the deleted rate limit kept its baselines")
+		}
+	}
 }

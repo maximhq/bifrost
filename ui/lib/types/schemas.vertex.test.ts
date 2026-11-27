@@ -1,10 +1,68 @@
 import { describe, expect, it } from "vitest";
 
-import { vertexKeyConfigSchema } from "./schemas";
+import { aliasConfigSchema, modelProviderKeySchema, vertexKeyConfigSchema } from "./schemas";
+import { parseVertexEndpointURL } from "../vertexEndpoint";
 
 const secret = (value: string) => ({ value, ref: "" });
 const base = { project_id: secret("my-project"), region: secret("us-central1") };
 const audience = secret("//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/eks/providers/aws");
+
+describe("Vertex custom endpoint", () => {
+	it("preserves both serving methods and accepts the default method", () => {
+		for (const method of [undefined, "raw_predict", "chat_completions"]) {
+			const alias = {
+				model_id: "gemma-custom-version",
+				vertex_endpoint: { endpoint_id: "2222", format: "openai_chat", ...(method ? { method } : {}) },
+			};
+			expect(aliasConfigSchema.parse(alias)).toEqual(alias);
+		}
+	});
+	it("rejects invalid IDs and unsupported methods before save", () => {
+		for (const endpoint_id of ["", "a/b", "a:predict", "a?x=y", " a", "a%2fb"]) {
+			expect(aliasConfigSchema.safeParse({ model_id: "custom", vertex_endpoint: { endpoint_id, format: "openai_chat" } }).success).toBe(
+				false,
+			);
+		}
+		expect(
+			aliasConfigSchema.safeParse({
+				model_id: "custom",
+				vertex_endpoint: { endpoint_id: "2222", format: "openai_chat", method: "predict" },
+			}).success,
+		).toBe(false);
+		for (const format of [undefined, "openai", "gemini"]) {
+			expect(
+				aliasConfigSchema.safeParse({ model_id: "custom", vertex_endpoint: { endpoint_id: "2222", format } }).success,
+				String(format),
+			).toBe(false);
+		}
+	});
+	it("extracts endpoint ID, route, project and region from a pasted URL", () => {
+		for (const route of [":rawPredict", ":streamRawPredict", "/chat/completions"]) {
+			expect(
+				parseVertexEndpointURL(
+					`https://us-west1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-west1/endpoints/2222${route}`,
+				),
+			).toEqual({
+				endpoint: { endpoint_id: "2222", method: route === "/chat/completions" ? "chat_completions" : "raw_predict" },
+				projectId: "my-project",
+				region: "us-west1",
+			});
+		}
+	});
+	it("rejects unrecognized routes, hosts, query strings and fragments", () => {
+		const url = "https://us-west1-aiplatform.googleapis.com/v1/projects/my-project/locations/us-west1/endpoints/2222:rawPredict";
+		for (const value of [
+			url.replace("https:", "http:"),
+			url.replace("googleapis.com", "example.com"),
+			url.replace(":rawPredict", ":predict"),
+			`${url}?key=secret`,
+			`${url}#fragment`,
+			url.replace("locations/us-west1", "locations/us-central1"),
+		]) {
+			expect(parseVertexEndpointURL(value), value).toBeNull();
+		}
+	});
+});
 
 describe("vertexKeyConfigSchema, aws workload identity", () => {
 	// The federation tab hides the JSON and API-key inputs, so a key saved from it with no
@@ -69,5 +127,22 @@ describe("vertexKeyConfigSchema, aws workload identity", () => {
 			aws_workload_identity: { audience: secret("") },
 		});
 		expect(result.success).toBe(true);
+	});
+});
+
+describe("service tier on keys and aliases", () => {
+	const key = { id: "k1", name: "vertex-priority", weight: 0, vertex_key_config: { ...base, auth_credentials: secret("env.CREDS") } };
+
+	it("keeps a key tier, and null so a cleared tier reaches the update API", () => {
+		expect(modelProviderKeySchema.parse({ ...key, service_tier: "priority" }).service_tier).toBe("priority");
+		const cleared = modelProviderKeySchema.parse({ ...key, service_tier: null });
+		expect(cleared).toHaveProperty("service_tier", null);
+		expect(modelProviderKeySchema.safeParse({ ...key, service_tier: "provisioned" }).success).toBe(false);
+	});
+
+	it("keeps an alias tier override", () => {
+		const alias = { model_id: "gemini-4-carbon", service_tier: "priority" };
+		expect(aliasConfigSchema.parse(alias)).toEqual(alias);
+		expect(aliasConfigSchema.safeParse({ model_id: "gemini-4-carbon", service_tier: "turbo" }).success).toBe(false);
 	});
 });

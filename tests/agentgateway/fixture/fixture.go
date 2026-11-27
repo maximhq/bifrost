@@ -264,3 +264,14 @@ func Start(bind, host string) (*Server, error) {
 
 // Close stops the fixture server and drops open connections.
 func (s *Server) Close() error { return s.server.Close() }
+
+// NewLifecycleHandler exposes the existing finite lifecycle fixture for alternate transport tests.
+func NewLifecycleHandler(publicCard *a2a.AgentCard) (a2asrv.RequestHandler, func()) {
+	extended := *publicCard
+	extended.Description = "Extended static lifecycle fixture card"
+	gate := make(chan struct{})
+	exec := newExecutor()
+	exec.gate = gate
+	handler := a2asrv.NewHandler(exec, a2asrv.WithCapabilityChecks(&publicCard.Capabilities), a2asrv.WithExtendedAgentCard(&extended), a2asrv.WithCallInterceptors(&fixtureAuth{}))
+	return handler, sync.OnceFunc(func() { close(gate) })
+}

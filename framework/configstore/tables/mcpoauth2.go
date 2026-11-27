@@ -1,6 +1,7 @@
 package tables
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -49,6 +50,11 @@ type TableOauthConfig struct {
 	EncryptionStatus    string             `gorm:"type:varchar(20);default:'plain_text'" json:"-"`
 	CreatedAt           time.Time          `gorm:"index;not null" json:"created_at"`
 	UpdatedAt           time.Time          `gorm:"index;not null" json:"updated_at"`
+
+	Issuer                 string `gorm:"type:text" json:"-"`     // Authorization server the client credentials belong to; "" when unknown
+	IssParameterSupported  bool   `gorm:"default:false" json:"-"` // The authorization server sends iss in authorization responses (RFC 9207)
+	DynamicallyRegistered  bool   `gorm:"default:false" json:"-"` // ClientID came from dynamic client registration
+	ClientMetadataDocument bool   `gorm:"default:false" json:"-"` // ClientID is Bifrost's own Client ID Metadata Document URL
 }
 
 // TableName sets the table name
@@ -95,6 +101,18 @@ func (c *TableOauthConfig) VaultPathKey() string { return c.ID }
 // GetResolvedClientID returns the resolved ClientID value, expanding env var references at runtime.
 func (c *TableOauthConfig) GetResolvedClientID() string {
 	return c.ClientID.GetValue()
+}
+
+// ScopeList decodes the stored JSON scopes; none stored is nil.
+func (c *TableOauthConfig) ScopeList() ([]string, error) {
+	if c.Scopes == "" {
+		return nil, nil
+	}
+	var scopes []string
+	if err := json.Unmarshal([]byte(c.Scopes), &scopes); err != nil {
+		return nil, err
+	}
+	return scopes, nil
 }
 
 // GetResolvedClientSecret returns the resolved ClientSecret value, expanding env var references at runtime.
@@ -289,6 +307,11 @@ func (t *TableMCPOauthToken) AfterFind(tx *gorm.DB) error {
 // introduced this struct — it does not alter or extend oauth_user_sessions,
 // this type's predecessor's table. See that migration for why the old table
 // is left in place unused.
+// MCPOauthFlowOriginHome marks a per-user sign-in started from the Home page, so
+// the OAuth callback returns a signed-in caller there. A flow with no origin
+// returns to the default page.
+const MCPOauthFlowOriginHome = "home"
+
 type TableMCPOauthFlow struct {
 	ID            string `gorm:"type:varchar(255);primaryKey" json:"id"`                  // Flow UUID
 	MCPClientID   string `gorm:"type:varchar(255);not null;index" json:"mcp_client_id"`   // Which MCP server this auth is for
@@ -312,6 +335,11 @@ type TableMCPOauthFlow struct {
 	ExpiresAt        time.Time `gorm:"index;not null" json:"expires_at"` // Flow expiration (15 min)
 	CreatedAt        time.Time `gorm:"index;not null" json:"created_at"`
 	UpdatedAt        time.Time `gorm:"index;not null" json:"updated_at"`
+
+	Issuer                string `gorm:"type:text" json:"-"`     // Issuer the authorization response must name; "" when unknown
+	IssParameterSupported bool   `gorm:"default:false" json:"-"` // The response must carry iss (RFC 9207)
+
+	Origin string `gorm:"type:varchar(32);not null;default:''" json:"-"` // Dashboard page the sign-in started on (MCPOauthFlowOrigin*); "" returns to the default page
 
 	// Display-only relations (no DB-level FK constraint; preloaded for
 	// sessions/admin UI). "-:migration" is load-bearing, not decorative — see

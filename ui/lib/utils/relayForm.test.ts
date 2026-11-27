@@ -1,0 +1,387 @@
+import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Relay, RelayRouteConfig } from "@/lib/types/relays";
+import { parseJSONExact, relayAuthSchema, relayFormSchema, relayNetworkFormSchema, relayUsageBaseSchema } from "@/lib/types/schemas";
+import {
+	displayOrder,
+	hasRoundedBodyOverride,
+	cleanJob,
+	cleanUsage,
+	describePricing,
+	emptyNetworkForm,
+	emptyRelayForm,
+	emptyUsageForm,
+	locateRoute,
+	mergeUsage,
+	routeKey,
+	toBodyOverridePairs,
+	toBodyOverrides,
+	toRelayConfig,
+	toRelayForm,
+	relayGatewayPath,
+} from "./relayForm";
+
+const stored: Relay = {
+	name: "tavily",
+	base_url: "https://search.example.com",
+	auth: { type: "bearer" },
+	credential: { value: { value: "tvly-*******6789" } },
+	extra_headers: { "X-Tenant": { value: "acme" } },
+	usage: { cost_per_request: 0.001, units_path: "usage.credits", cost_per_unit: 0.008 },
+	routes: [
+		{ method: "POST", path: "/search" },
+		{ method: "POST", path: "/extract", usage: { cost_per_request: 0, cost_per_unit: 0.016 } },
+		{ method: "GET", path: "/jobs/*", billable: true, enabled: false, headers: { "X-Kind": "poll" } },
+	],
+};
+
+describe("relay form", () => {
+	it("round-trips body overrides on the relay and its routes as JSON values", () => {
+		const withOverrides: Relay = {
+			...stored,
+			body_overrides: { include_usage: true },
+			routes: [
+				{ method: "POST", path: "/search", body_overrides: { "options.depth": "advanced", limits: { max: 3 }, tags: [1, 2], none: null } },
+				{ method: "POST", path: "/extract" },
+			],
+		};
+		const form = toRelayForm(withOverrides);
+		expect(form.body_overrides).toEqual([{ name: "include_usage", value: "true" }]);
+		expect(form.routes[0].body_overrides).toContainEqual({ name: "options.depth", value: '"advanced"' });
+		const back = toRelayConfig(form);
+		expect(back.body_overrides).toEqual({ include_usage: true });
+		expect(back.routes?.find((r) => r.path === "/search")?.body_overrides).toEqual({
+			"options.depth": "advanced",
+			limits: { max: 3 },
+			tags: [1, 2],
+			none: null,
+		});
+		expect(back.routes?.find((r) => r.path === "/extract")).not.toHaveProperty("body_overrides");
+	});
+
+	it("keeps a __proto__ path as a field", () => {
+		const out = toBodyOverrides([{ name: "__proto__", value: "true" }]);
+		expect(out && Object.keys(out)).toEqual(["__proto__"]);
+		expect(JSON.stringify(out)).toBe('{"__proto__":true}');
+	});
+
+	it("saves no body_overrides when every row is blank", () => {
+		expect(toBodyOverrides([{ name: "", value: "" }])).toBeUndefined();
+		expect(toBodyOverrides(undefined)).toBeUndefined();
+		expect(toBodyOverridePairs(undefined)).toEqual([]);
+		expect(toRelayConfig(toRelayForm(stored)).body_overrides).toBeUndefined();
+	});
+
+	it("saves a route's switch that turns the relay's enforced fields off, and leaves it out when on", () => {
+		const relay = {
+			...stored,
+			body_overrides: { include_usage: true },
+			routes: [
+				{ method: "POST" as const, path: "/off", inherit_body_overrides: false },
+				{ method: "POST" as const, path: "/on", inherit_body_overrides: true },
+			],
+		};
+		const back = toRelayConfig(toRelayForm(relay));
+		expect(back.routes?.find((r) => r.path === "/off")?.inherit_body_overrides).toBe(false);
+		expect(back.routes?.find((r) => r.path === "/on")).not.toHaveProperty("inherit_body_overrides");
+	});
+
+	it("round-trips an endpoint, keeping route overrides and the redacted secret", () => {
+		const back = toRelayConfig(toRelayForm(stored));
+		const route = (path: string) => back.routes?.find((r) => r.path === path);
+		expect(back.credential?.value?.value).toBe("tvly-*******6789");
+		expect(back.extra_headers?.["X-Tenant"].value).toBe("acme");
+		expect(route("/extract")?.usage).toEqual({ cost_per_request: 0, cost_per_unit: 0.016 });
+		expect(route("/jobs/*")?.billable).toBe(true);
+		expect(route("/jobs/*")?.headers).toEqual({ "X-Kind": "poll" });
+		expect(route("/search")?.billable).toBeUndefined();
+		expect(route("/jobs/*")?.enabled).toBe(false);
+		expect(route("/search")?.enabled).toBeUndefined();
+	});
+
+	it("drops the hidden price of a route that is not billed, keeping its model and token mapping", () => {
+		const routes: RelayRouteConfig[] = [
+			{ method: "GET", path: "/status", usage: { cost_per_request: 0.5 } },
+			{
+				method: "POST",
+				path: "/free",
+				billable: false,
+				usage: { cost_per_unit: 0.01, units_path: "u", model_path: "model", model_source: "query", total_tokens_path: "usage.total" },
+			},
+			{ method: "POST", path: "/search", usage: { cost_per_request: 0.02 } },
+		];
+		const back = toRelayConfig(toRelayForm({ ...stored, routes }));
+		const route = (path: string) => back.routes?.find((r) => r.path === path);
+		expect(route("/status")?.usage).toBeUndefined();
+		// The gateway reads the model and tokens on every call, billed or not; only pricing is dropped.
+		expect(route("/free")?.usage).toEqual({ model_path: "model", model_source: "query", total_tokens_path: "usage.total" });
+		expect(route("/search")?.usage).toEqual({ cost_per_request: 0.02 });
+	});
+
+	it("keeps settings the form does not edit, and saves a none proxy as unset, as for providers", () => {
+		const aws: Relay = {
+			...stored,
+			auth: { type: "aws_sigv4", aws: { service: "textract" } },
+			credential: {
+				aws: { region: { value: "us-east-1" }, role_arn: { value: "arn:aws:iam::1:role/r" }, session_name: { value: "bifrost" } },
+			},
+			proxy_config: { type: "http", url: { value: "http://proxy:8080" }, ca_cert_pem: { value: "<REDACTED>" } },
+		};
+		const back = toRelayConfig(toRelayForm(aws));
+		expect(back.credential?.aws?.session_name?.value).toBe("bifrost");
+		expect(back.proxy_config?.ca_cert_pem?.value).toBe("<REDACTED>");
+
+		// "none" is an unconfigured proxy: it inherits the global proxy exactly as an unset one does.
+		const none = toRelayConfig(toRelayForm({ ...stored, proxy_config: { type: "none" } }));
+		expect(none.proxy_config).toBeUndefined();
+		const inherits = toRelayConfig(toRelayForm({ ...stored, proxy_config: undefined }));
+		expect(inherits.proxy_config).toBeUndefined();
+	});
+
+	it("treats an empty auth type as bearer, and refuses duplicate extra headers and dot names", () => {
+		const form = toRelayForm({ ...stored, auth: { type: "" as "bearer" } });
+		expect(form.auth.type).toBe("bearer");
+		expect(relayFormSchema.safeParse(form).success).toBe(true);
+		const dup = {
+			...form,
+			extra_headers: [
+				{ name: "X-Tenant", value: { value: "a" } },
+				{ name: "x-tenant", value: { value: "b" } },
+			],
+		};
+		expect(relayFormSchema.safeParse(dup).error?.issues.some((i) => i.path.join(".") === "extra_headers.1.name")).toBe(true);
+		expect(relayFormSchema.safeParse({ ...form, name: ".." }).success).toBe(false);
+	});
+
+	it("refuses a half-filled extra header row and skips a blank one", () => {
+		const base = toRelayForm(stored);
+		const issues = (rows: { name: string; value: { value: string } }[]) =>
+			relayFormSchema.safeParse({ ...base, extra_headers: rows }).error?.issues.map((i) => i.path.join(".")) ?? [];
+		expect(issues([{ name: "X-Tenant", value: { value: "" } }])).toContain("extra_headers.0.value");
+		expect(issues([{ name: "", value: { value: "acme" } }])).toContain("extra_headers.0.name");
+		expect(issues([{ name: "", value: { value: "" } }])).toEqual([]);
+	});
+
+	it("loads a lowercase route method as uppercase so the form validates", () => {
+		const form = toRelayForm({ ...stored, routes: [{ method: "post" as "POST", path: "/search" }] });
+		expect(form.routes[0].method).toBe("POST");
+		expect(relayFormSchema.safeParse(form).success).toBe(true);
+	});
+
+	it("reports a bad streaming path on the paths field, skipping blank lines", () => {
+		const form = {
+			...toRelayForm(stored),
+			streaming: { paths: ["/ok/**", "", "no-slash"] },
+		};
+		const parsed = relayFormSchema.safeParse(form);
+		expect(parsed.success).toBe(false);
+		const issue = parsed.error?.issues.find((i) => i.path.join(".") === "streaming.paths");
+		expect(issue?.message).toContain("Line 3");
+	});
+
+	it("stores only the job fields that were set", () => {
+		const job = cleanJob({
+			id_path: " JobId ",
+			poll: { method: "POST", path: "/", headers: {}, body: "", content_type: "" },
+			status_path: "JobStatus",
+			succeeded: ["SUCCEEDED"],
+			failed: [],
+			interval_seconds: 30,
+			timeout_seconds: null,
+			usage: { units_path: "DocumentMetadata.Pages", cost_per_unit: 0.0015, cost_per_request: undefined },
+		});
+		expect(job).toEqual({
+			id_path: "JobId",
+			poll: { method: "POST", path: "/" },
+			status_path: "JobStatus",
+			succeeded: ["SUCCEEDED"],
+			interval_seconds: 30,
+			usage: { units_path: "DocumentMetadata.Pages", cost_per_unit: 0.0015 },
+		});
+	});
+
+	it("keeps a job's reused id switch, which only the API used to set", () => {
+		const job = { id_path: "id", poll: { path: "/jobs/{{job.id}}" }, status_path: "status", succeeded: ["done"] };
+		expect(cleanJob({ ...job, reused_id_is_new_job: true }).reused_id_is_new_job).toBe(true);
+		expect(cleanJob({ ...job, reused_id_is_new_job: false })).not.toHaveProperty("reused_id_is_new_job");
+	});
+
+	it("leaves the reported cost out of the price when the relay ignores it", () => {
+		expect(describePricing({ cost_per_request: 0.001, cost_path: "usage.cost" })).toContain("reported cost");
+		expect(describePricing({ cost_per_request: 0.001, cost_path: "usage.cost" }, true)).not.toContain("reported cost");
+	});
+
+	it("loads relay-level defaults as unset so the form shows placeholders", () => {
+		const form = toRelayForm({ ...stored, usage: { cost_per_unit: 0.008, units_minimum: 0, units_block_size: 0 } });
+		expect(form.usage).toEqual({ cost_per_unit: 0.008 });
+		expect(cleanUsage({ units_minimum: 0, units_block_size: 1 }, true)).toEqual({ units_minimum: 0, units_block_size: 1 });
+	});
+
+	it("keeps an explicit block size at the relay level, since it changes the price", () => {
+		expect(cleanUsage({ units_block_size: 1 }, false)).toEqual({ units_block_size: 1 });
+		expect(cleanUsage({ units_block_size: 0.5 }, false)).toEqual({ units_block_size: 0.5 });
+		expect(cleanUsage({ units_block_size: 0 }, false)).toBeUndefined();
+		const form = toRelayForm({ ...stored, usage: { units_block_size: 0.5 } });
+		expect(form.usage).toEqual({ units_block_size: 0.5 });
+	});
+
+	it("keeps a zero on a route and drops it at the endpoint level", () => {
+		expect(cleanUsage({ cost_per_request: 0 }, true)).toEqual({ cost_per_request: 0 });
+		expect(cleanUsage({ cost_per_request: 0 }, false)).toBeUndefined();
+	});
+
+	it("merges a route override over the endpoint mapping", () => {
+		expect(mergeUsage(stored.usage, stored.routes?.[1].usage)).toEqual({
+			cost_per_request: 0,
+			units_path: "usage.credits",
+			cost_per_unit: 0.016,
+		});
+	});
+
+	it("describes the pricing formula", () => {
+		expect(describePricing({ cost_per_request: 0.002, cost_per_unit: 0.0001, units_block_size: 1000, units_minimum: 1 })).toBe(
+			"$0.002 / call + $0.0001 per 1000 units, min 1",
+		);
+		expect(describePricing(undefined)).toBe("Free");
+	});
+
+	it("requires the credential the auth type needs", () => {
+		const form = { ...emptyRelayForm(), name: "x", base_url: "https://x.example" };
+		expect(relayFormSchema.safeParse(form).success).toBe(false);
+		expect(relayFormSchema.safeParse({ ...form, credential_value: { value: "k" } }).success).toBe(true);
+		expect(relayFormSchema.safeParse({ ...form, auth: { type: "none" } }).success).toBe(true);
+	});
+});
+
+describe("usage form defaults", () => {
+	it("carry every usage field the sheet registers, so a reset after a save reads clean", () => {
+		const keys = Object.keys(relayUsageBaseSchema.shape).sort();
+		expect(Object.keys(emptyUsageForm()).sort()).toEqual(keys);
+		expect(Object.keys(emptyRelayForm().usage ?? {}).sort()).toEqual(keys);
+		const stored: Relay = { name: "r", base_url: "https://x", auth: { type: "bearer" }, usage: { cost_per_request: 0.01 } };
+		const form = toRelayForm(stored);
+		expect(Object.keys(form.usage ?? {}).sort()).toEqual(keys);
+		expect(form.usage?.cost_per_request).toBe(0.01);
+		expect(toRelayConfig(form).usage).toEqual({ cost_per_request: 0.01 });
+	});
+
+	it("do the same for the network and auth sections", () => {
+		const networkKeys = Object.keys(relayNetworkFormSchema.shape).sort();
+		const authKeys = Object.keys(relayAuthSchema.shape).sort();
+		expect(Object.keys(emptyNetworkForm()).sort()).toEqual(networkKeys);
+		expect(Object.keys(emptyRelayForm().network).sort()).toEqual(networkKeys);
+		expect(Object.keys(emptyRelayForm().auth).sort()).toEqual(authKeys);
+		const stored: Relay = {
+			name: "r",
+			base_url: "https://x",
+			auth: { type: "header", header_name: "X-Key" },
+			network: { timeout_seconds: 30 },
+		};
+		const form = toRelayForm(stored);
+		expect(Object.keys(form.network).sort()).toEqual(networkKeys);
+		expect(Object.keys(form.auth).sort()).toEqual(authKeys);
+		expect(form.network.timeout_seconds).toBe(30);
+		expect(form.auth.header_name).toBe("X-Key");
+		const back = toRelayConfig(form);
+		expect(back.network).toEqual({ timeout_seconds: 30 });
+		expect(back.auth).toEqual({ type: "header", header_name: "X-Key" });
+	});
+
+	it("treats a cleared (null) field as unset when merging and saving", () => {
+		expect(mergeUsage({ cost_per_request: 0.01, units_path: "u" }, { cost_per_request: null, units_path: "" })).toEqual({
+			cost_per_request: 0.01,
+			units_path: "u",
+		});
+		expect(cleanUsage({ ...emptyUsageForm(), cost_per_unit: null, cost_per_request: 0 }, true)).toEqual({ cost_per_request: 0 });
+	});
+});
+
+describe("relayGatewayPath", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it("is the server's path, or /relay/<name> without one, at the domain root", () => {
+		expect(relayGatewayPath({ name: "tavily", url: "/relay/tavily" })).toBe("/relay/tavily");
+		expect(relayGatewayPath({ name: "tavily" })).toBe("/relay/tavily");
+	});
+
+	it("carries server.base_path, since the copied path is what a client sends through the proxy", () => {
+		vi.stubGlobal("window", { __BIFROST_BASE_PATH__: "/bifrost" });
+		expect(relayGatewayPath({ name: "tavily", url: "/relay/tavily" })).toBe("/bifrost/relay/tavily");
+		expect(relayGatewayPath({ name: "tavily" })).toBe("/bifrost/relay/tavily");
+	});
+});
+
+describe("locateRoute", () => {
+	const r = (path: string) => ({ method: "GET", path, headers: [] });
+
+	it("follows the opened route when the list reorders", () => {
+		expect(locateRoute([r("/a"), r("/b")], 0, routeKey(r("/b")))).toBe(1);
+	});
+
+	it("keeps the position of an identical duplicate", () => {
+		expect(locateRoute([r("/a"), r("/a")], 1, routeKey(r("/a")))).toBe(1);
+	});
+
+	it("reports a route that is gone", () => {
+		expect(locateRoute([r("/a")], 0, routeKey(r("/b")))).toBe(-1);
+	});
+
+	it("treats header matchers as part of the route", () => {
+		const start = { ...r("/"), headers: [{ name: "X-Target", value: "Start" }] };
+		const get = { ...r("/"), headers: [{ name: "x-target", value: "Get" }] };
+		expect(locateRoute([get, start], 0, routeKey(start))).toBe(1);
+	});
+
+	it("never takes another route whose headers read the same when glued together", () => {
+		const one = { ...r("/"), headers: [{ name: "x", value: "a y: b" }] };
+		const two = {
+			...r("/"),
+			headers: [
+				{ name: "x", value: "a" },
+				{ name: "y", value: "b" },
+			],
+		};
+		expect(routeKey(one)).not.toBe(routeKey(two));
+		expect(locateRoute([two], 0, routeKey(one)), "the opened route is gone, so nothing is overwritten").toBe(-1);
+	});
+});
+
+describe("exact body override numbers", () => {
+	it("keeps digits a double cannot hold, from the API and from the form", () => {
+		const loaded = parseJSONExact('{"tenant":9007199254740993,"limit":5,"nested":{"id":12345678901234567891}}');
+		expect(JSON.stringify(loaded)).toBe('{"tenant":9007199254740993,"limit":5,"nested":{"id":12345678901234567891}}');
+		const pairs = toBodyOverridePairs(loaded as { tenant: unknown; limit: unknown } as Record<string, unknown>);
+		expect(pairs.find((p) => p.name === "tenant")?.value).toBe("9007199254740993");
+		expect(JSON.stringify(toBodyOverrides(pairs))).toContain('"tenant":9007199254740993');
+	});
+});
+
+describe("hasRoundedBodyOverride", () => {
+	const relay = (overrides: Record<string, unknown>, routeOverrides?: Record<string, unknown>) =>
+		({
+			name: "r",
+			body_overrides: overrides,
+			routes: routeOverrides ? [{ method: "POST", path: "/", body_overrides: routeOverrides }] : [],
+		}) as unknown as Relay;
+	it("flags a whole number past 2^53 read by a browser without JSON.rawJSON", () => {
+		expect(hasRoundedBodyOverride(relay({ seed: 9007199254740992 }), false)).toBe(true);
+		expect(hasRoundedBodyOverride(relay({}, { nested: { ids: [1, 9007199254740992] } }), false)).toBe(true);
+	});
+	it("leaves ordinary numbers alone", () => {
+		expect(hasRoundedBodyOverride(relay({ max: 50, ratio: 0.5, big: 9007199254740991 }), false)).toBe(false);
+		expect(hasRoundedBodyOverride(relay({ huge: Infinity }), false), "a number past a double's range").toBe(true);
+	});
+	it("never flags in a browser that keeps exact digits", () => {
+		expect(hasRoundedBodyOverride(relay({ seed: 9007199254740992 }), true)).toBe(false);
+	});
+});
+
+describe("displayOrder", () => {
+	it("follows the gateway's match_order, and falls back to the saved order when it is unusable", () => {
+		expect(displayOrder([2, 1, 0], 3)).toEqual([2, 1, 0]);
+		for (const bad of [undefined, [0, 1], [0, 0, 1], [0, 1.5, 2], [0, 1, 3], [-1, 0, 1]])
+			expect(displayOrder(bad, 3), JSON.stringify(bad)).toEqual([0, 1, 2]);
+	});
+});

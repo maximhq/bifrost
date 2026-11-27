@@ -68,16 +68,32 @@ func (s *RDBConfigStore) UpsertProviderJob(ctx context.Context, job *tables.Tabl
 	if job.NextCheckAt != nil {
 		updates["next_check_at"] = job.NextCheckAt
 	}
-	if job.PollAttempts > 0 {
+	// A relay job's polls are counted as they are sent (IncrementProviderJobPollAttempts), so a
+	// write never sets the column: a count read before another node's poll would overwrite it.
+	if job.PollAttempts > 0 && job.Kind != tables.ProviderJobKindRelay {
 		updates["poll_attempts"] = job.PollAttempts
 	}
-	if tables.IsTerminalBatchProviderStatus(job.ProviderStatus) &&
+	// Relay and interaction statuses are the upstream's own word, so "failed" or "cancelled"
+	// there is no batch state: a failed run can still owe for the work it did, so the sweeper
+	// settles it and retries a failed settlement at next_check_at.
+	if job.Kind != tables.ProviderJobKindRelay &&
+		job.Kind != tables.ProviderJobKindInteraction &&
+		tables.IsTerminalBatchProviderStatus(job.ProviderStatus) &&
 		job.ProviderStatus != string(schemas.BatchStatusCompleted) &&
 		job.ProviderStatus != string(schemas.BatchStatusEnded) {
 		updates["next_check_at"] = nil
 	}
 
-	return db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID).Updates(updates).Error
+	update := db.Model(&tables.TableProviderJob{}).Where("id = ?", job.ID)
+	if job.Kind == tables.ProviderJobKindInteraction || job.Kind == tables.ProviderJobKindRelay {
+		// A read or an unclaimed poll can land its upsert after the job was settled; the condition
+		// sits in the UPDATE so no interleaving rewrites a settled row.
+		update = update.Where("accounting_status NOT IN ?", []string{
+			tables.ProviderJobAccountingStatusAccounted,
+			tables.ProviderJobAccountingStatusUnpriceable,
+		})
+	}
+	return update.Updates(updates).Error
 }
 
 // GetProviderJobsByIDs returns the provider jobs among jobIDs that exist, in no
@@ -196,6 +212,16 @@ func (s *RDBConfigStore) GetProviderJob(ctx context.Context, jobID string) (*tab
 		return nil, err
 	}
 	return &job, nil
+}
+
+// IncrementProviderJobPollAttempts counts one more poll on a provider job and touches nothing else,
+// so a poll sent outside the sweeper (a relay job's confirming poll) is counted without racing a claim.
+func (s *RDBConfigStore) IncrementProviderJobPollAttempts(ctx context.Context, jobID string) error {
+	if jobID == "" {
+		return fmt.Errorf("provider job id is required")
+	}
+	return s.DB().WithContext(ctx).Model(&tables.TableProviderJob{}).Where("id = ?", jobID).
+		UpdateColumn("poll_attempts", gorm.Expr("poll_attempts + 1")).Error
 }
 
 // ListDueProviderJobs returns non-terminal jobs of one kind whose next poll is due

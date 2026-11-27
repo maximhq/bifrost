@@ -3,10 +3,8 @@ package bedrock
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,15 +19,12 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials/stscreds"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	openai "github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/providers/utils/awsauth"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -40,18 +35,15 @@ type BedrockProvider struct {
 	logger                schemas.Logger                // Logger for provider operations
 	client                *http.Client                  // HTTP client for unary API requests (Client.Timeout bounds overall response)
 	streamingClient       *http.Client                  // HTTP client for streaming API requests (no Timeout; idle governed by NewIdleTimeoutReader)
+	realtimeClient        *http.Client                  // HTTP/2-only client for Nova Sonic bidirectional streams (no Timeout)
 	mantleClient          *fasthttp.Client              // fasthttp client for Bedrock Mantle unary requests (OpenAI-compatible and native-Anthropic paths)
 	mantleStreamingClient *fasthttp.Client              // fasthttp streaming client for Bedrock Mantle streaming requests
 	networkConfig         schemas.NetworkConfig         // Network configuration including extra headers
+	runtimeHost           string                        // bedrock-runtime host from network_config.base_url; empty means the public regional host
 	customProviderConfig  *schemas.CustomProviderConfig // Custom provider config
 	sendBackRawRequest    bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse   bool                          // Whether to include raw response in BifrostResponse
 }
-
-// assumeRoleCredsCache caches *aws.CredentialsCache instances keyed by the
-// unique combination of role parameters so that STS AssumeRole is not called
-// on every request.
-var assumeRoleCredsCache sync.Map
 
 // bedrockChatResponsePool provides a pool for Bedrock response objects.
 var bedrockChatResponsePool = sync.Pool{
@@ -85,77 +77,30 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// Bedrock's runtime client is net/http, so proxy_config has to be applied here
 	// explicitly; ConfigureProxy below only covers the fasthttp Mantle clients. With
 	// no proxy configured, keep proxying from the environment as before.
-	proxy, proxyTLS, err := providerUtils.NetHTTPProxy(config.ProxyConfig)
+	proxy, proxyTLS, proxyHopTLS, err := providerUtils.NetHTTPProxyWithHopTLS(config.ProxyConfig)
 	if err != nil {
 		return nil, err
 	}
-	if proxy == nil {
+	proxyFromConfig := proxy != nil
+	if !proxyFromConfig {
 		proxy = providerUtils.EnvProxyFunc()
 	}
 
-	transport := &http.Transport{
-		Proxy:                 proxy,
-		TLSClientConfig:       proxyTLS,
-		MaxConnsPerHost:       config.NetworkConfig.MaxConnsPerHost,
-		MaxIdleConns:          schemas.DefaultMaxIdleConnsPerHost,
-		MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
-		IdleConnTimeout:       time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: requestTimeout,
-		ExpectContinueTimeout: 1 * time.Second,
-		ForceAttemptHTTP2:     config.NetworkConfig.EnforceHTTP2,
+	transport, err := newBedrockHTTPTransport(config, proxy, proxyFromConfig, proxyTLS, proxyHopTLS, requestTimeout, config.NetworkConfig.EnforceHTTP2)
+	if err != nil {
+		return nil, err
 	}
-
-	// Disable HTTP/2 auto-negotiation when not explicitly enforced.
-	// ForceAttemptHTTP2=false alone does NOT prevent HTTP/2 — Go's http2 package
-	// auto-registers h2 via TLSNextProto in init(). Setting TLSNextProto to an
-	// empty map prevents ALPN negotiation from upgrading connections to h2.
+	// Nova Sonic's bidirectional stream is HTTP/2 only, so it needs its own transport unless enforce_http2 is on.
+	realtimeTransport := transport
 	if !config.NetworkConfig.EnforceHTTP2 {
-		transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
-	}
-
-	// Apply TLS settings from NetworkConfig
-	caCertPEM := ""
-	if config.NetworkConfig.CACertPEM != nil {
-		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
-	}
-	if config.NetworkConfig.InsecureSkipVerify || caCertPEM != "" {
-		// Layer on top of the proxy's CA, if any, so both are trusted.
-		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
-		if proxyTLS != nil {
-			tlsConfig = proxyTLS.Clone()
-		}
-		if config.NetworkConfig.InsecureSkipVerify {
-			tlsConfig.InsecureSkipVerify = true
-		}
-		if caCertPEM != "" {
-			var certPool *x509.CertPool
-			if tlsConfig.RootCAs != nil {
-				certPool = tlsConfig.RootCAs.Clone()
-			} else if certPool, err = x509.SystemCertPool(); err != nil {
-				certPool = x509.NewCertPool()
-			}
-			if !certPool.AppendCertsFromPEM([]byte(caCertPEM)) {
-				return nil, fmt.Errorf("failed to parse CA certificate PEM")
-			}
-			tlsConfig.RootCAs = certPool
-		}
-		// Keep an inherited proxy's skip_tls_verify scoped to proxied traffic, now
-		// checked against the merged roots.
-		transport.TLSClientConfig = providerUtils.RescopeProxySkipVerify(proxyTLS, tlsConfig, config.NetworkConfig.InsecureSkipVerify)
-	}
-
-	// When HTTP/2 is enforced and a ping interval is configured, send client-initiated
-	// PING keepalives so an idle streaming connection isn't closed by an intermediary
-	// (surfaces as "unexpected EOF"). Left off by default; opt in via the interval.
-	if config.NetworkConfig.EnforceHTTP2 && config.NetworkConfig.HTTP2PingIntervalInSeconds > 0 {
-		transport.HTTP2 = &http.HTTP2Config{
-			SendPingTimeout: time.Duration(config.NetworkConfig.HTTP2PingIntervalInSeconds) * time.Second,
+		if realtimeTransport, err = newBedrockHTTPTransport(config, proxy, proxyFromConfig, proxyTLS, proxyHopTLS, requestTimeout, true); err != nil {
+			return nil, err
 		}
 	}
 
 	client := &http.Client{Transport: transport, Timeout: requestTimeout}
 	streamingClient := providerUtils.BuildStreamingHTTPClient(client)
+	realtimeClient := &http.Client{Transport: realtimeTransport}
 
 	// fasthttp clients for Bedrock Mantle (shared by OpenAI-compatible and native-Anthropic paths).
 	// ReadTimeout is the shared provider request timeout, not an OpenAI-specific value; oversized
@@ -193,13 +138,91 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		logger:                logger,
 		client:                client,
 		streamingClient:       streamingClient,
+		realtimeClient:        realtimeClient,
 		mantleClient:          mantleFasthttpClient,
 		mantleStreamingClient: mantleStreamingFasthttpClient,
 		networkConfig:         config.NetworkConfig,
+		runtimeHost:           schemas.NormalizeEndpointHost(&schemas.SecretVar{Val: config.NetworkConfig.BaseURL}),
 		customProviderConfig:  config.CustomProviderConfig,
 		sendBackRawRequest:    config.SendBackRawRequest,
 		sendBackRawResponse:   config.SendBackRawResponse,
 	}, nil
+}
+
+// newBedrockHTTPTransport returns an independent transport; enabling HTTP/2 mutates it and its TLS config.
+func newBedrockHTTPTransport(config *schemas.ProviderConfig, proxy func(*http.Request) (*url.URL, error), proxyFromConfig bool, proxyTLS, proxyHopTLS *tls.Config, requestTimeout time.Duration, enforceHTTP2 bool) (*http.Transport, error) {
+	transport := &http.Transport{
+		Proxy:                 proxy,
+		TLSClientConfig:       proxyTLS.Clone(), // HTTP/2 setup appends to NextProtos, so never share it
+		MaxConnsPerHost:       config.NetworkConfig.MaxConnsPerHost,
+		MaxIdleConns:          schemas.DefaultMaxIdleConnsPerHost,
+		MaxIdleConnsPerHost:   schemas.DefaultMaxIdleConnsPerHost,
+		IdleConnTimeout:       time.Second * time.Duration(config.NetworkConfig.KeepAliveTimeoutInSeconds),
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: requestTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     enforceHTTP2,
+	}
+
+	// Disable HTTP/2 auto-negotiation when not explicitly enforced.
+	// ForceAttemptHTTP2=false alone does NOT prevent HTTP/2 — Go's http2 package
+	// auto-registers h2 via TLSNextProto in init(). Setting TLSNextProto to an
+	// empty map prevents ALPN negotiation from upgrading connections to h2.
+	if !enforceHTTP2 {
+		transport.TLSNextProto = make(map[string]func(authority string, c *tls.Conn) http.RoundTripper)
+	}
+
+	// Apply TLS settings from NetworkConfig
+	caCertPEM := ""
+	if config.NetworkConfig.CACertPEM != nil {
+		caCertPEM = config.NetworkConfig.CACertPEM.GetValue()
+	}
+	if config.NetworkConfig.InsecureSkipVerify || caCertPEM != "" {
+		// Layer on top of the proxy's CA, if any, so both are trusted.
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if proxyTLS != nil {
+			tlsConfig = proxyTLS.Clone()
+		}
+		if config.NetworkConfig.InsecureSkipVerify {
+			tlsConfig.InsecureSkipVerify = true
+		}
+		if caCertPEM != "" {
+			var certPool *x509.CertPool
+			var err error
+			if tlsConfig.RootCAs != nil {
+				certPool = tlsConfig.RootCAs.Clone()
+			} else if certPool, err = x509.SystemCertPool(); err != nil {
+				certPool = x509.NewCertPool()
+			}
+			if !certPool.AppendCertsFromPEM([]byte(caCertPEM)) {
+				return nil, fmt.Errorf("failed to parse CA certificate PEM")
+			}
+			tlsConfig.RootCAs = certPool
+		}
+		transport.TLSClientConfig = tlsConfig
+	}
+
+	// Dial-time address policy, shared with the fasthttp Mantle clients (ConfigureDialer). It must
+	// be installed before the https-proxy hop dialer below, which dials proxies through it.
+	providerUtils.ConfigureNetHTTPDialer(transport, config.NetworkConfig.AllowPrivateNetwork)
+
+	// An https:// proxy from proxy_config is dialed with its own TLS config (proxy CA,
+	// skip_tls_verify), separate from the target's, which net/http would otherwise share
+	// through TLSClientConfig. skip_tls_verify covers only that hop: targets are verified.
+	if proxyFromConfig {
+		providerUtils.DialHTTPSProxyWithHopTLS(transport, proxyHopTLS)
+	}
+
+	// When HTTP/2 is enforced and a ping interval is configured, send client-initiated
+	// PING keepalives so an idle streaming connection isn't closed by an intermediary
+	// (surfaces as "unexpected EOF"). Left off by default; opt in via the interval.
+	if enforceHTTP2 && config.NetworkConfig.HTTP2PingIntervalInSeconds > 0 {
+		transport.HTTP2 = &http.HTTP2Config{
+			SendPingTimeout: time.Duration(config.NetworkConfig.HTTP2PingIntervalInSeconds) * time.Second,
+		}
+	}
+
+	return transport, nil
 }
 
 // GetProviderKey returns the provider identifier for Bedrock.
@@ -231,6 +254,19 @@ func isStreamTransportError(err error) bool {
 	var opErr *net.OpError
 	var dnsErr *net.DNSError
 	return errors.As(err, &opErr) || errors.As(err, &dnsErr)
+}
+
+// newStreamTransportError reports a connection lost after the 200 as a 502 from
+// upstream. Without a status the error resolves to 400, a client fault.
+func newStreamTransportError(err error) *schemas.BifrostError {
+	return &schemas.BifrostError{
+		IsBifrostError: false,
+		StatusCode:     schemas.Ptr(fasthttp.StatusBadGateway),
+		Error: &schemas.ErrorField{
+			Message: schemas.ErrProviderNetworkError,
+			Error:   err,
+		},
+	}
 }
 
 // retryableBedrockExceptions maps AWS Bedrock EventStream exception types (the
@@ -339,7 +375,7 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	region := resolveBedrockRegion(ctx, key, model)
 
 	// Create the request with the JSON body
-	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", provider.serviceHost(bedrockEndpoints(config), bedrockServiceRuntime, region), path)
 	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return nil, 0, nil, &schemas.BifrostError{
@@ -371,7 +407,56 @@ func (provider *BedrockProvider) completeRequest(ctx *schemas.BifrostContext, js
 	}
 
 	body, latency, providerResponseHeaders, bErr := provider.executeBedrockRequest(req)
+	if bErr != nil {
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+	}
 	return body, latency, providerResponseHeaders, bErr
+}
+
+// nativeSchemaRejections are the Converse 400s for a native structured-output schema Claude will
+// not compile (shape or grammar size); the same request succeeds on the synthetic tool.
+var nativeSchemaRejections = []string{"output_config.format.schema:", "compiled grammar is too large", "grammar compilation timed out", "schema is too complex"}
+
+// markNativeSchemaRejection flags a natively sent structured-output request whose schema was
+// rejected, so core re-sends it once with the synthetic tool.
+func markNativeSchemaRejection(ctx *schemas.BifrostContext, jsonData []byte, bErr *schemas.BifrostError) {
+	if ctx.Value(schemas.BifrostContextKeyStructuredOutputGrammarRetry) == schemas.StructuredOutputForceTool ||
+		bErr.StatusCode == nil || *bErr.StatusCode != http.StatusBadRequest || bErr.Error == nil ||
+		!providerUtils.JSONFieldExists(jsonData, "outputConfig") {
+		return
+	}
+	message := strings.ToLower(bErr.Error.Message)
+	for _, limit := range nativeSchemaRejections {
+		if strings.Contains(message, limit) {
+			ctx.SetValue(schemas.BifrostContextKeyStructuredOutputGrammarRetry, schemas.StructuredOutputGrammarRejected)
+			return
+		}
+	}
+}
+
+// newRequestError classifies a failed net/http request the way the shared fasthttp
+// path does in makeRequestWithDoFunc.
+func newRequestError(err error, latency time.Duration) *schemas.BifrostError {
+	if errors.Is(err, context.Canceled) {
+		return providerUtils.SetErrorLatency(&schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Type:    schemas.Ptr(schemas.RequestCancelled),
+				Message: schemas.ErrRequestCancelled,
+				Error:   err,
+			},
+		}, latency)
+	}
+	var netErr net.Error
+	if (errors.As(err, &netErr) && netErr.Timeout()) || errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		return providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
+	}
+	var opErr *net.OpError
+	var dnsErr *net.DNSError
+	if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
+		return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderNetworkError, err), latency)
+	}
+	return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 }
 
 // executeBedrockRequest sends an already-built (and authenticated) request via the
@@ -383,43 +468,7 @@ func (provider *BedrockProvider) executeBedrockRequest(req *http.Request) ([]byt
 	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}, latency)
-		}
-		// Check for timeout first using net.Error before checking net.OpError
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		// Check for DNS lookup and network errors after timeout checks
-		var opErr *net.OpError
-		var dnsErr *net.DNSError
-		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   err,
-				},
-			}, latency)
-		}
-		return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   err,
-			},
-		}, latency)
+		return nil, latency, nil, newRequestError(err, latency)
 	}
 
 	// Extract provider response headers before closing the body
@@ -488,41 +537,7 @@ func (provider *BedrockProvider) completeAgentRuntimeRequest(ctx *schemas.Bifros
 	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}, latency)
-		}
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		var opErr *net.OpError
-		var dnsErr *net.DNSError
-		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   err,
-				},
-			}, latency)
-		}
-		return nil, latency, nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   err,
-			},
-		}, latency)
+		return nil, latency, nil, newRequestError(err, latency)
 	}
 
 	// Extract provider response headers before closing the body
@@ -555,7 +570,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
 
 	// Create HTTP request for streaming
-	requestURL := fmt.Sprintf("https://%s/model/%s", resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
+	requestURL := fmt.Sprintf("https://%s/model/%s", provider.serviceHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region), path)
 	req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(jsonData))
 	if reqErr != nil {
 		return nil, providerUtils.NewBifrostOperationError("error creating request", reqErr)
@@ -590,43 +605,7 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	resp, respErr := providerUtils.DoHTTPRequest(provider.streamingClient, req)
 	latency := time.Since(startTime)
 	if respErr != nil {
-		if errors.Is(respErr, context.Canceled) {
-			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   respErr,
-				},
-			}, latency)
-		}
-		// Check for timeout first using net.Error before checking net.OpError
-		var netErr net.Error
-		if errors.As(respErr, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr), latency)
-		}
-		if errors.Is(respErr, http.ErrHandlerTimeout) || errors.Is(respErr, context.DeadlineExceeded) {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, respErr), latency)
-		}
-		// Check for DNS lookup and network errors after timeout checks
-		var opErr *net.OpError
-		var dnsErr *net.DNSError
-		if errors.As(respErr, &opErr) || errors.As(respErr, &dnsErr) {
-			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   respErr,
-				},
-			}, latency)
-		}
-		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   respErr,
-			},
-		}, latency)
+		return nil, newRequestError(respErr, latency)
 	}
 
 	// Extract provider response headers before status check so error responses also forward them
@@ -636,68 +615,35 @@ func (provider *BedrockProvider) makeStreamingRequest(ctx *schemas.BifrostContex
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		return nil, providerUtils.SetErrorLatency(parseBedrockHTTPError(resp.StatusCode, resp.Header, body), latency)
+		bErr := parseBedrockHTTPError(resp.StatusCode, resp.Header, body)
+		markNativeSchemaRejection(ctx, jsonData, bErr)
+		return nil, providerUtils.SetErrorLatency(bErr, latency)
 	}
 
 	return resp, nil
 }
 
-// Returns a BifrostError if signing fails.
-// unsignableHeaders must not be covered by the SigV4 signature: hop-by-hop and
-// proxy-managed headers that an intermediary may rewrite in transit, which invalidates the
-// signature. AWS's signing guide requires only host and x-amz-* to be signed and warns
-// against "volatile transport headers that are mutated by proxies, load balancers, and the
-// nodes in a distributed system". The AWS SDK itself skips only authorization, user-agent,
-// x-amzn-trace-id, expect and transfer-encoding, so the rest is on us. These are removed for
-// signing and restored afterwards, so what goes on the wire is unchanged.
-var unsignableHeaders = map[string]struct{}{
-	"connection":          {},
-	"keep-alive":          {},
-	"te":                  {},
-	"trailer":             {},
-	"upgrade":             {},
-	"proxy-authorization": {},
-	"proxy-authenticate":  {},
-	"x-real-ip":           {},
-	"x-request-id":        {},
+// SignAWSRequest SigV4-signs req for service in region with the key's AWS credentials (static,
+// assumed role, or the default chain when the key holds none). Other providers that relay to AWS
+// APIs (relays) sign through it so the credential handling lives in one place.
+func SignAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
+	// A relayed request is signed as the caller sent it: no Content-Type or Accept is invented,
+	// since an S3 PutObject would store the guess as the object's metadata.
+	return signAWSRequestWithDefaults(ctx, req, keyCfg, region, service, false)
 }
 
-// internalHeaderPrefix marks Bifrost's own headers. They carry the caller's virtual key, so
-// they are dropped outright rather than restored — they must never reach a provider.
-const internalHeaderPrefix = "x-bf-"
-
-// restoredHeader is a header lifted off the request for signing, to be put back after.
-type restoredHeader struct {
-	name   string
-	values []string
+// signAWSRequest signs a Bedrock request, defaulting Content-Type and Accept to JSON when the
+// caller set neither, which every Bedrock API expects.
+func signAWSRequest(ctx *schemas.BifrostContext, req *http.Request, keyCfg *schemas.BedrockKeyConfig, region, service string) *schemas.BifrostError {
+	return signAWSRequestWithDefaults(ctx, req, keyCfg, region, service, true)
 }
 
-// stripHeadersForSigning removes headers that must not be signed and returns the ones to put
-// back after signing. Bifrost-internal headers are dropped and never returned. A request with
-// no volatile headers — the common case — allocates nothing and leaves the request untouched.
-func stripHeadersForSigning(header http.Header) []restoredHeader {
-	var restore []restoredHeader
-	for name, values := range header {
-		lower := strings.ToLower(name)
-		internal := strings.HasPrefix(lower, internalHeaderPrefix)
-		_, volatile := unsignableHeaders[lower]
-		if !internal && !volatile && !strings.HasPrefix(lower, "x-forwarded-") {
-			continue
-		}
-		if !internal {
-			restore = append(restore, restoredHeader{name: name, values: values})
-		}
-		// The name came straight off the map, so skip Del's redundant canonicalization.
-		delete(header, name)
-	}
-	return restore
-}
-
-func signAWSRequest(
+func signAWSRequestWithDefaults(
 	ctx *schemas.BifrostContext,
 	req *http.Request,
 	keyCfg *schemas.BedrockKeyConfig,
 	region, service string,
+	jsonDefaults bool,
 ) (signErr *schemas.BifrostError) {
 	// "request-sign" overhead phase: AWS SigV4 signing is real per-request work. The
 	// nested "credentials-fetch" span (below) isolates the network portion (STS
@@ -717,138 +663,55 @@ func signAWSRequest(
 		}()
 	}
 
-	var accessKey, secretKey schemas.SecretVar
-	var sessionToken, roleARN, externalID, sessionName *schemas.SecretVar
-
-	if keyCfg != nil {
-		accessKey = keyCfg.AccessKey
-		secretKey = keyCfg.SecretKey
-		sessionToken = keyCfg.SessionToken
-		roleARN = keyCfg.RoleARN
-		externalID = keyCfg.ExternalID
-		sessionName = keyCfg.RoleSessionName
-	}
-
 	// Set required headers before signing (only if not already set)
-	if req.Header.Get("Content-Type") == "" {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if req.Header.Get("Accept") == "" {
-		req.Header.Set("Accept", "application/json")
-	}
-
-	// Calculate SHA256 hash of the request body
-	var bodyHash string
-	if req.Body != nil {
-		bodyBytes, err := io.ReadAll(req.Body)
-		if err != nil {
-			return providerUtils.NewBifrostOperationError("error reading request body", err)
+	if jsonDefaults {
+		if req.Header.Get("Content-Type") == "" {
+			req.Header.Set("Content-Type", "application/json")
 		}
-		// Restore the body for subsequent reads
-		req.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+		if req.Header.Get("Accept") == "" {
+			req.Header.Set("Accept", "application/json")
+		}
+	}
 
-		hash := sha256.Sum256(bodyBytes)
-		bodyHash = hex.EncodeToString(hash[:])
-	} else {
-		// For empty body, use the hash of an empty string
-		hash := sha256.Sum256([]byte{})
-		bodyHash = hex.EncodeToString(hash[:])
+	bodyHash, err := awsauth.HashBody(req)
+	if err != nil {
+		return providerUtils.NewBifrostOperationError("error reading request body", err)
 	}
 
 	// Set x-amz-content-sha256 header (required for S3, harmless for other AWS services)
 	req.Header.Set("x-amz-content-sha256", bodyHash)
 
-	var cfg aws.Config
-	var err error
-
-	// If both accessKey and secretKey are empty, use the default credential provider chain
-	// This will automatically use IAM roles, environment variables, shared credentials, etc.
-	if accessKey.GetValue() == "" && secretKey.GetValue() == "" {
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-		)
-	} else {
-		// Use explicit credentials when provided
-		cfg, err = config.LoadDefaultConfig(ctx,
-			config.WithRegion(region),
-			config.WithCredentialsProvider(aws.CredentialsProviderFunc(func(ctx context.Context) (aws.Credentials, error) {
-				creds := aws.Credentials{
-					AccessKeyID:     accessKey.GetValue(),
-					SecretAccessKey: secretKey.GetValue(),
-				}
-				if sessionToken != nil && sessionToken.GetValue() != "" {
-					creds.SessionToken = sessionToken.GetValue()
-				}
-				return creds, nil
-			})),
-		)
+	creds, credErr := ResolveAWSCredentials(ctx, keyCfg, region)
+	if credErr != nil {
+		return credErr
 	}
+
+	return signWithCredentials(ctx, req, creds, bodyHash, service, region)
+}
+
+// signWithCredentials signs req with SigV4 using already resolved credentials.
+func signWithCredentials(ctx context.Context, req *http.Request, creds aws.Credentials, payloadHash, service, region string) *schemas.BifrostError {
+	if err := awsauth.Sign(ctx, req, creds, payloadHash, service, region); err != nil {
+		return providerUtils.NewBifrostOperationError("failed to sign request", err)
+	}
+	return nil
+}
+
+// ResolveAWSCredentials resolves the AWS credentials for keyCfg: explicit keys, else the default
+// chain, with an optional STS AssumeRole on top. Providers are cached per source and role, so a
+// warm call fetches nothing.
+func ResolveAWSCredentials(ctx *schemas.BifrostContext, keyCfg *schemas.BedrockKeyConfig, region string) (aws.Credentials, *schemas.BifrostError) {
+	provider, err := awsauth.CredentialsProvider(ctx, awsAuthConfig(keyCfg), region)
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to load aws config", err)
+		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to load aws config", err)
 	}
-
-	if roleARN != nil && roleARN.GetValue() != "" {
-		extID := ""
-		if externalID != nil {
-			extID = externalID.GetValue()
-		}
-		sessName := "bifrost-session"
-		if sessionName != nil && sessionName.GetValue() != "" {
-			sessName = sessionName.GetValue()
-		}
-		sourceIdentity := "default_chain"
-		if accessKey.GetValue() != "" || secretKey.GetValue() != "" {
-			sourceIdentity = accessKey.GetValue()
-			if sessionToken != nil && sessionToken.GetValue() != "" {
-				tokenHash := sha256.Sum256([]byte(sessionToken.GetValue()))
-				sourceIdentity = sourceIdentity + "|" + hex.EncodeToString(tokenHash[:8])
-			}
-		}
-		cacheKey := strings.Join([]string{
-			region,
-			roleARN.GetValue(),
-			extID,
-			sessName,
-			sourceIdentity,
-		}, "|")
-
-		if cached, ok := assumeRoleCredsCache.Load(cacheKey); ok {
-			cfg.Credentials = cached.(*aws.CredentialsCache)
-		} else {
-			stsClient := sts.NewFromConfig(cfg)
-
-			opts := func(o *stscreds.AssumeRoleOptions) {
-				if extID != "" {
-					o.ExternalID = aws.String(extID)
-				}
-				o.RoleSessionName = sessName
-			}
-
-			credsCache := aws.NewCredentialsCache(
-				stscreds.NewAssumeRoleProvider(
-					stsClient,
-					roleARN.GetValue(),
-					opts,
-				),
-			)
-			actual, _ := assumeRoleCredsCache.LoadOrStore(cacheKey, credsCache)
-			cfg.Credentials = actual.(*aws.CredentialsCache)
-		}
-	}
-
-	// The SDK signs every header still on the request, so lift the volatile ones out for
-	// the duration of signing and put them back before the request goes out.
-	restoreHeaders := stripHeadersForSigning(req.Header)
-
-	// Create the AWS signer
-	signer := v4.NewSigner()
 
 	// Get credentials. Nested "credentials-fetch" span: on a cache miss this triggers a
 	// network round trip (STS AssumeRole when RoleARN is set, or the default provider
 	// chain's IMDS/env/STS lookup), which is the dominant cost on an idle box whose
 	// credential cache has expired between sparse requests.
 	credT, credH := providerUtils.StartPhaseSpan(ctx, "credentials-fetch")
-	creds, err := cfg.Credentials.Retrieve(ctx)
+	creds, err := provider.Retrieve(ctx)
 	if credT != nil {
 		if err != nil {
 			credT.EndSpan(credH, schemas.SpanStatusError, "credential retrieval failed")
@@ -857,19 +720,30 @@ func signAWSRequest(
 		}
 	}
 	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
+		return aws.Credentials{}, providerUtils.NewBifrostOperationError("failed to retrieve aws credentials", err)
 	}
+	return creds, nil
+}
 
-	// Sign the request with AWS Signature V4
-	err = signer.SignHTTP(ctx, creds, req, bodyHash, service, region, time.Now())
-	for _, h := range restoreHeaders {
-		req.Header[h.name] = h.values
+// awsAuthConfig maps a Bedrock key's AWS credential fields onto awsauth.Config.
+func awsAuthConfig(keyCfg *schemas.BedrockKeyConfig) awsauth.Config {
+	if keyCfg == nil {
+		return awsauth.Config{}
 	}
-	if err != nil {
-		return providerUtils.NewBifrostOperationError("failed to sign request", err)
+	value := func(v *schemas.SecretVar) string {
+		if v == nil {
+			return ""
+		}
+		return v.GetValue()
 	}
-
-	return nil
+	return awsauth.Config{
+		AccessKey:    keyCfg.AccessKey.GetValue(),
+		SecretKey:    keyCfg.SecretKey.GetValue(),
+		SessionToken: value(keyCfg.SessionToken),
+		RoleARN:      value(keyCfg.RoleARN),
+		ExternalID:   value(keyCfg.ExternalID),
+		SessionName:  value(keyCfg.RoleSessionName),
+	}
 }
 
 // listModelsByKey performs a list models request to Bedrock's API for a single key.
@@ -980,43 +854,7 @@ func (provider *BedrockProvider) listModelsByKey(ctx *schemas.BifrostContext, ke
 	resp, err := providerUtils.DoHTTPRequest(provider.client, req)
 	latency := time.Since(startTime)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Type:    schemas.Ptr(schemas.RequestCancelled),
-					Message: schemas.ErrRequestCancelled,
-					Error:   err,
-				},
-			}, latency)
-		}
-		// Check for timeout first using net.Error before checking net.OpError
-		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		if errors.Is(err, http.ErrHandlerTimeout) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
-		}
-		// Check for DNS lookup and network errors after timeout checks
-		var opErr *net.OpError
-		var dnsErr *net.DNSError
-		if errors.As(err, &opErr) || errors.As(err, &dnsErr) {
-			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-				IsBifrostError: false,
-				Error: &schemas.ErrorField{
-					Message: schemas.ErrProviderNetworkError,
-					Error:   err,
-				},
-			}, latency)
-		}
-		return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
-			IsBifrostError: false,
-			Error: &schemas.ErrorField{
-				Message: schemas.ErrProviderDoRequest,
-				Error:   err,
-			},
-		}, latency)
+		return nil, newRequestError(err, latency)
 	}
 
 	// Read response body and close
@@ -1106,7 +944,7 @@ func (provider *BedrockProvider) TextCompletion(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockTextCompletionRequest, error) {
 			return ToBedrockTextCompletionRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1203,7 +1041,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockTextCompletionRequest, error) {
 			return ToBedrockTextCompletionRequest(request), nil
 		})
 	if bifrostErr != nil {
@@ -1234,6 +1072,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer resp.Body.Close()
 
 		// Wrap body with idle timeout to detect stalled streams.
@@ -1269,13 +1108,7 @@ func (provider *BedrockProvider) TextCompletionStream(ctx *schemas.BifrostContex
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
@@ -1353,7 +1186,7 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			return ToBedrockChatCompletionRequest(ctx, request)
 		})
 	if bifrostErr != nil {
@@ -1386,6 +1219,9 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	if parseTracer != nil {
 		parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
 	}
+	if IsDSMLLeakModel(ctx, request.Model) {
+		stripDSMLLeakConverse(bedrockResponse)
+	}
 
 	// Convert using the new response converter
 	convTracer, convHandle := providerUtils.StartResponseConvertorSpan(ctx)
@@ -1403,7 +1239,10 @@ func (provider *BedrockProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 	// Override finish reason for structured output (Converse API only)
 	if _, ok := ctx.Value(schemas.BifrostContextKeyStructuredOutputToolName).(string); ok {
 		if len(bifrostResponse.Choices) > 0 && bifrostResponse.Choices[0].FinishReason != nil {
-			if *bifrostResponse.Choices[0].FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
+			choice := bifrostResponse.Choices[0]
+			hasToolCalls := choice.ChatNonStreamResponseChoice != nil && choice.Message != nil &&
+				choice.Message.ChatAssistantMessage != nil && len(choice.Message.ChatAssistantMessage.ToolCalls) > 0
+			if !hasToolCalls && *choice.FinishReason == string(schemas.BifrostFinishReasonToolCalls) {
 				bifrostResponse.Choices[0].FinishReason = schemas.Ptr(string(schemas.BifrostFinishReasonStop))
 			}
 		}
@@ -1552,7 +1391,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			return ToBedrockChatCompletionRequest(ctx, request)
 		})
 	if bifrostErr != nil {
@@ -1583,6 +1422,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		defer resp.Body.Close()
 
 		// Wrap body with idle timeout to detect stalled streams.
@@ -1619,6 +1459,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}()
 		var finishReason *string
 		var progress converseStreamProgress
+		dsml := NewDSMLStreamFilter(ctx, request.Model)
 		chunkIndex := 0
 
 		// Process AWS Event Stream format using proper decoder
@@ -1637,8 +1478,49 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		}
 
 		streamState := NewBedrockStreamStateWithContext(ctx)
-		var isAccumulatingStructuredOutput bool
+		var isAccumulatingStructuredOutput, sawCallerToolUse, usedStructuredOutputTool bool
 		var structuredOutputBuilder strings.Builder
+		var heldSO []heldConverseEvent      // events held from the first text until the turn shows whether bf_so_* answered
+		var heldTextBlocks map[int]struct{} // content block indices of held text
+		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+		var held heldStreamRaw
+
+		// sendEvent converts one Converse event and sends it; false means an error was sent.
+		sendEvent := func(ev *BedrockStreamEvent, payload []byte) bool {
+			// Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
+			response, bifrostErr, _ := ev.ToBifrostChatCompletionStream(streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
+			if bifrostErr != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+				return false
+			}
+			if response != nil {
+				response.ID = id
+				response.Model = request.Model
+				response.ExtraFields = schemas.BifrostResponseExtraFields{
+					ChunkIndex: chunkIndex,
+					Latency:    time.Since(lastChunkTime).Milliseconds(),
+				}
+				chunkIndex++
+				lastChunkTime = time.Now()
+
+				if sendRaw {
+					if payload != nil {
+						response.ExtraFields.RawResponse = string(payload)
+						response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+					} else {
+						held.attach(&response.ExtraFields, false)
+					}
+				}
+
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
+			} else if sendRaw && payload != nil {
+				held.hold(payload)
+			}
+			return true
+		}
 
 		for {
 			if ctx.Err() != nil {
@@ -1667,13 +1549,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
@@ -1709,6 +1585,12 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 				}
 
 				progress.observe(message, &streamEvent)
+				// Held text the next event showed was the answer goes out first; structured output drops text anyway.
+				if release := dsml.filterConverseEvent(&streamEvent); release != nil && structuredOutputToolName == "" {
+					if !sendEvent(release, nil) {
+						return
+					}
+				}
 
 				if streamEvent.Usage != nil {
 					// Accumulate usage information instead of overwriting
@@ -1759,7 +1641,7 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 					// Override finish reason for structured output
 					// When structured output is used, tool_use stop reason should appear as "stop" to the client
-					if structuredOutputToolName != "" && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
+					if structuredOutputToolName != "" && !sawCallerToolUse && *finishReason == string(schemas.BifrostFinishReasonToolCalls) {
 						finishReason = schemas.Ptr(string(schemas.BifrostFinishReasonStop))
 					}
 				}
@@ -1772,8 +1654,19 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 						if streamEvent.Start.ToolUse.Name == structuredOutputToolName {
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
+							usedStructuredOutputTool = true
+							// The held text was prose beside the answer; what followed it still goes out, in order.
+							for _, h := range heldSO {
+								if !h.text && !sendEvent(h.event, h.payload) {
+									return
+								}
+							}
+							heldSO = nil
 							continue
 						}
+						// A caller tool block ends the synthetic one; its deltas stay a tool call.
+						isAccumulatingStructuredOutput = false
+						sawCallerToolUse = true
 					}
 
 					// Check for tool use delta event
@@ -1807,46 +1700,45 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
 							response.ExtraFields.RawResponse = string(message.Payload)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
 						}
 
 						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 						continue
 					}
 
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output (mirrors ResponsesStreamRequest).
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+					// Text is held, not dropped: see the matching block in ResponsesStream.
+					if streamEvent.Delta != nil && streamEvent.Delta.ReasoningContent != nil {
 						continue
 					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
+					if isTextBlockEvent(&streamEvent, heldTextBlocks) {
+						if !usedStructuredOutputTool {
+							if heldTextBlocks == nil {
+								heldTextBlocks = make(map[int]struct{}, 1)
+							}
+							if streamEvent.ContentBlockIndex != nil {
+								heldTextBlocks[*streamEvent.ContentBlockIndex] = struct{}{}
+							}
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, true))
+						}
+						continue
+					}
+					if len(heldSO) > 0 && !usedStructuredOutputTool {
+						if streamEvent.StopReason == nil {
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, false))
+							continue
+						}
+						for _, h := range heldSO {
+							if !sendEvent(h.event, h.payload) {
+								return
+							}
+						}
+						heldSO = nil
 					}
 				}
 
-				// Per-event mapping -> "convertor" (Convertor) stream phase.
-				convStart := time.Now()
-				response, bifrostErr, _ := streamEvent.ToBifrostChatCompletionStream(streamState)
-				schemas.AddStreamConvert(ctx, time.Since(convStart))
-				if bifrostErr != nil {
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+				if !sendEvent(&streamEvent, message.Payload) {
 					return
-				}
-				if response != nil {
-					response.ID = id
-					response.Model = request.Model
-					response.ExtraFields = schemas.BifrostResponseExtraFields{
-						ChunkIndex: chunkIndex,
-						Latency:    time.Since(lastChunkTime).Milliseconds(),
-					}
-					chunkIndex++
-					lastChunkTime = time.Now()
-
-					if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-						response.ExtraFields.RawResponse = string(message.Payload)
-					}
-
-					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, response, nil, nil, nil, nil), responseChan, postHookSpanFinalizer)
 				}
 			}
 		}
@@ -1855,6 +1747,9 @@ func (provider *BedrockProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 
 		// Send final chunk with accumulated usage
 		response := providerUtils.CreateBifrostChatCompletionChunkResponse(id, usage, finishReason, chunkIndex, request.Model, 0)
+		if sendRaw {
+			held.attach(&response.ExtraFields, true)
+		}
 		// Set raw request if enabled
 		if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
 			providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonData)
@@ -1892,7 +1787,7 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			return ToBedrockResponsesRequest(ctx, request)
 		})
 	if bifrostErr != nil {
@@ -1924,6 +1819,9 @@ func (provider *BedrockProvider) Responses(ctx *schemas.BifrostContext, key sche
 	}
 	if parseTracer != nil {
 		parseTracer.EndSpan(parseHandle, schemas.SpanStatusOk, "")
+	}
+	if IsDSMLLeakModel(ctx, request.Model) {
+		stripDSMLLeakConverse(bedrockResponse)
 	}
 
 	// Convert using the new response converter
@@ -1985,7 +1883,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockConverseRequest, error) {
 			return ToBedrockResponsesRequest(ctx, request)
 		})
 	if bifrostErr != nil {
@@ -2018,6 +1916,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			}
 			providerUtils.CloseStream(ctx, responseChan)
 		}()
+		defer providerUtils.RecoverStreamPanic(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer)
 		// Always release response on exit; bodyStream close should prevent indefinite blocking.
 		defer resp.Body.Close()
 
@@ -2053,6 +1952,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 		var streamTrace *BedrockConverseTrace
 		var progress converseStreamProgress
+		dsml := NewDSMLStreamFilter(ctx, request.Model)
 		chunkIndex := 0
 
 		// Create stream state for stateful conversions (used by Converse API path)
@@ -2068,11 +1968,59 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 			structuredOutputToolName = toolName
 		}
 		var isAccumulatingStructuredOutput bool
+		var heldSO []heldConverseEvent      // events held from the first text until the turn shows whether bf_so_* answered
+		var heldTextBlocks map[int]struct{} // content block indices of heldText
 
 		// Process AWS Event Stream format using proper decoder
 		lastChunkTime := startTime
 		decoder := eventstream.NewDecoder()
 		payloadBuf := make([]byte, 0, 1024*1024) // 1MB payload buffer
+		sendRaw := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+		var held heldStreamRaw
+
+		// sendEvent converts one Converse event and sends it; false means an error was sent.
+		sendEvent := func(ev *BedrockStreamEvent, payload []byte) bool {
+			// Per-event mapping -> "convertor" (Convertor) stream phase.
+			convStart := time.Now()
+			responses, bifrostErr, _ := ev.ToBifrostResponsesStream(chunkIndex, streamState)
+			schemas.AddStreamConvert(ctx, time.Since(convStart))
+			if bifrostErr != nil {
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+				return false
+			}
+			// Attach the upstream event to exactly one response: the one streaming its text or arguments.
+			rawIdx := providerUtils.ResponsesStreamRawIndex(responses, len(responses)-1)
+			sent := false
+			for i, response := range responses {
+				if response != nil {
+					response.ExtraFields = schemas.BifrostResponseExtraFields{
+						ChunkIndex: chunkIndex,
+						Latency:    time.Since(lastChunkTime).Milliseconds(),
+					}
+					chunkIndex++
+					lastChunkTime = time.Now()
+
+					if sendRaw {
+						if payload != nil && i == rawIdx {
+							response.ExtraFields.RawResponse = string(payload)
+							response.ExtraFields.RawResponseFormat = schemas.RawResponseFormatBedrockConverseStreamEvent
+						} else if payload == nil || i < rawIdx {
+							// Only responses ahead of this event's own payload take held events, keeping the record in order.
+							held.attach(&response.ExtraFields, false)
+						}
+					}
+
+					providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+					sent = true
+				}
+			}
+			if !sent && sendRaw && payload != nil {
+				held.hold(payload)
+			}
+			return true
+		}
+
 		for {
 			// If context was cancelled/timed out, let defer handle it
 			if ctx.Err() != nil {
@@ -2103,8 +2051,9 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 						chunkIndex++
 						lastChunkTime = time.Now()
 
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							finalResponse.ExtraFields.RawResponse = "{}" // Final event has no payload
+						if sendRaw {
+							// The stream's held events (messageStop, metadata, ...) ride on its closing chunks.
+							held.attach(&finalResponse.ExtraFields, i == len(finalResponses)-1)
 						}
 
 						if i == len(finalResponses)-1 {
@@ -2125,13 +2074,7 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				// Transport-level errors (stale/closed connection, unexpected EOF) are retryable.
 				// Use IsBifrostError:false so the retry gate in executeRequestWithRetries can retry.
 				if isStreamTransportError(err) {
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, &schemas.BifrostError{
-						IsBifrostError: false,
-						Error: &schemas.ErrorField{
-							Message: schemas.ErrProviderNetworkError,
-							Error:   err,
-						},
-					}, responseChan, provider.logger, postHookSpanFinalizer)
+					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, newStreamTransportError(err), responseChan, provider.logger, postHookSpanFinalizer)
 				} else {
 					providerUtils.ProcessAndSendError(ctx, postHookRunner, err, responseChan, provider.logger, postHookSpanFinalizer)
 				}
@@ -2167,6 +2110,12 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 				}
 
 				progress.observe(message, &streamEvent)
+				// Held text the next event showed was the answer goes out first; structured output drops text anyway.
+				if release := dsml.filterConverseEvent(&streamEvent); release != nil && structuredOutputToolName == "" {
+					if !sendEvent(release, nil) {
+						return
+					}
+				}
 
 				if streamEvent.Trace != nil {
 					streamTrace = streamEvent.Trace
@@ -2187,71 +2136,57 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 							// This is the structured output tool - start accumulating, don't forward
 							isAccumulatingStructuredOutput = true
 							streamState.UsedStructuredOutputTool = true
+							// The held text was prose beside the answer; what followed it still goes out, in order.
+							for _, h := range heldSO {
+								if !h.text && !sendEvent(h.event, h.payload) {
+									return
+								}
+							}
+							heldSO = nil
 							continue
 						}
+						// A caller tool block ends the synthetic one; its deltas stay a tool call.
+						isAccumulatingStructuredOutput = false
 					}
 
-					// Check for tool use delta event
+					// The synthetic tool's input is the answer: send it as a text delta on the same
+					// content block so the converter opens and closes a regular text item around it.
 					if streamEvent.Delta != nil && streamEvent.Delta.ToolUse != nil && isAccumulatingStructuredOutput {
-						// Convert tool use delta to text delta
-						content := streamEvent.Delta.ToolUse.Input
-						response := &schemas.BifrostResponsesStreamResponse{
-							Type:           schemas.ResponsesStreamResponseTypeOutputTextDelta,
-							SequenceNumber: chunkIndex,
-							Delta:          &content,
-							ExtraFields: schemas.BifrostResponseExtraFields{
-								ChunkIndex: chunkIndex,
-								Latency:    time.Since(lastChunkTime).Milliseconds(),
-							},
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
-						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
+						text := streamEvent.Delta.ToolUse.Input
+						streamEvent.Delta = &BedrockContentBlockDelta{Text: &text}
+					} else if streamEvent.Delta != nil && streamEvent.Delta.ReasoningContent != nil {
 						continue
-					}
-
-					// Suppress non-tool content events that would leak into the
-					// assembled structured output. Bedrock Claude can emit prose
-					// alongside the forced tool call (markdown, preambles, reasoning
-					// blocks); forwarding those as text deltas corrupts the JSON
-					// the client assembles from the structured-output stream.
-					if streamEvent.Delta != nil && (streamEvent.Delta.Text != nil || streamEvent.Delta.ReasoningContent != nil) {
+					} else if isTextBlockEvent(&streamEvent, heldTextBlocks) {
+						// Prose beside the synthetic tool would corrupt the JSON, but an unpinned
+						// tool (thinking, Fable 5.1+) can be answered in plain text instead: hold
+						// it until the turn shows which one happened.
+						if !streamState.UsedStructuredOutputTool {
+							if heldTextBlocks == nil {
+								heldTextBlocks = make(map[int]struct{}, 1)
+							}
+							if streamEvent.ContentBlockIndex != nil {
+								heldTextBlocks[*streamEvent.ContentBlockIndex] = struct{}{}
+							}
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, true))
+						}
 						continue
-					}
-					if streamEvent.Start != nil && streamEvent.Start.ToolUse == nil {
-						continue // non-tool content-block start (text block) — drop
+					} else if len(heldSO) > 0 && !streamState.UsedStructuredOutputTool {
+						if streamEvent.StopReason == nil {
+							// Anything after held text waits behind it, so blocks reach the client in order.
+							heldSO = append(heldSO, holdConverseEvent(&streamEvent, message.Payload, sendRaw, false))
+							continue
+						}
+						for _, h := range heldSO {
+							if !sendEvent(h.event, h.payload) {
+								return
+							}
+						}
+						heldSO = nil
 					}
 				}
 
-				// Per-event mapping -> "convertor" (Convertor) stream phase.
-				convStart := time.Now()
-				responses, bifrostErr, _ := streamEvent.ToBifrostResponsesStream(chunkIndex, streamState)
-				schemas.AddStreamConvert(ctx, time.Since(convStart))
-				if bifrostErr != nil {
-					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
-					providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, bifrostErr, responseChan, provider.logger, postHookSpanFinalizer)
+				if !sendEvent(&streamEvent, message.Payload) {
 					return
-				}
-				for _, response := range responses {
-					if response != nil {
-						response.ExtraFields = schemas.BifrostResponseExtraFields{
-							ChunkIndex: chunkIndex,
-							Latency:    time.Since(lastChunkTime).Milliseconds(),
-						}
-						chunkIndex++
-						lastChunkTime = time.Now()
-
-						if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
-							response.ExtraFields.RawResponse = string(message.Payload)
-						}
-
-						providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, response, nil, nil, nil), responseChan, postHookSpanFinalizer)
-					}
 				}
 			}
 		}
@@ -2286,7 +2221,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockTitanEmbeddingRequest, error) {
 				return ToBedrockTitanEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2299,7 +2234,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockCohereEmbeddingRequest, error) {
 				return ToBedrockCohereEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2312,7 +2247,7 @@ func (provider *BedrockProvider) Embedding(ctx *schemas.BifrostContext, key sche
 		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 			ctx,
 			request,
-			func() (providerUtils.RequestBodyWithExtraParams, error) {
+			func() (*BedrockNovaEmbeddingRequest, error) {
 				return ToBedrockNovaEmbeddingRequest(request)
 			})
 		if bifrostError != nil {
@@ -2475,7 +2410,7 @@ func (provider *BedrockProvider) Rerank(ctx *schemas.BifrostContext, key schemas
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockRerankRequest, error) {
 			return ToBedrockRerankRequest(request, modelARN)
 		},
 	)
@@ -2579,15 +2514,22 @@ func (provider *BedrockProvider) ImageGeneration(ctx *schemas.BifrostContext, ke
 
 	path, _ = provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 
-	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isStabilityAIModel(request.Model) {
+	// Branch before the call so each converter keeps its concrete body type.
+	if isStabilityAIModel(request.Model) {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*StabilityAIImageGenerationRequest, error) {
 				return ToStabilityAIImageGenerationRequest(request)
-			}
-			return ToBedrockImageGenerationRequest(request)
-		})
+			})
+	} else {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*BedrockImageGenerationRequest, error) {
+				return ToBedrockImageGenerationRequest(request)
+			})
+	}
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -2665,15 +2607,22 @@ func (provider *BedrockProvider) ImageEdit(ctx *schemas.BifrostContext, key sche
 	// Stability AI routing and task-type inference use the actual model ID.
 	path, _ := provider.getModelPathAndRegion(ctx, "invoke", request.Model, key)
 
-	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			if isStabilityAIModel(request.Model) {
+	// Branch before the call so each converter keeps its concrete body type.
+	if isStabilityAIModel(request.Model) {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*StabilityAIImageEditRequest, error) {
 				return ToStabilityAIImageEditRequest(request, request.Model)
-			}
-			return ToBedrockImageEditRequest(request)
-		})
+			})
+	} else {
+		jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
+			ctx,
+			request,
+			func() (*BedrockImageEditRequest, error) {
+				return ToBedrockImageEditRequest(request)
+			})
+	}
 	if bifrostError != nil {
 		return nil, bifrostError
 	}
@@ -2750,7 +2699,7 @@ func (provider *BedrockProvider) ImageVariation(ctx *schemas.BifrostContext, key
 	jsonData, bifrostError = providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*BedrockImageVariationRequest, error) {
 			return ToBedrockImageVariationRequest(request)
 		})
 	if bifrostError != nil {
@@ -3149,7 +3098,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		return nil, bucketErr
 	}
 
-	var lastErr *schemas.BifrostError
+	var keyErrs s3KeyErrors
 	for _, key := range keys {
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3162,13 +3111,13 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodHead, reqURL, nil)
 		if err != nil {
-			lastErr = providerUtils.NewBifrostOperationError("error creating request", err)
+			keyErrs.local = providerUtils.NewBifrostOperationError("error creating request", err)
 			continue
 		}
 
 		// Sign request for S3
 		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
-			lastErr = err
+			keyErrs.local = err
 			continue
 		}
 
@@ -3187,13 +3136,13 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 					},
 				}
 			}
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+			keyErrs.local = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 HEAD failed with status %d", resp.StatusCode), nil, resp.StatusCode, nil, nil)
+			keyErrs.status(resp.StatusCode, resp.Header, bucketName, region, providerUtils.NewProviderAPIError(fmt.Sprintf("S3 HEAD failed with status %d", resp.StatusCode), nil, resp.StatusCode, nil, nil))
 			continue
 		}
 
@@ -3228,7 +3177,7 @@ func (provider *BedrockProvider) FileRetrieve(ctx *schemas.BifrostContext, keys 
 		}, nil
 	}
 
-	return nil, lastErr
+	return nil, keyErrs.result()
 }
 
 // FileDelete deletes an S3 object used for Bedrock batch processing by trying each key until successful.
@@ -3250,7 +3199,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		return nil, bucketErr
 	}
 
-	var lastErr *schemas.BifrostError
+	var keyErrs s3KeyErrors
 	for _, key := range keys {
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3263,13 +3212,13 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, reqURL, nil)
 		if err != nil {
-			lastErr = providerUtils.NewBifrostOperationError("error creating request", err)
+			keyErrs.local = providerUtils.NewBifrostOperationError("error creating request", err)
 			continue
 		}
 
 		// Sign request for S3
 		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
-			lastErr = err
+			keyErrs.local = err
 			continue
 		}
 
@@ -3288,7 +3237,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 					},
 				}
 			}
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+			keyErrs.local = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 			continue
 		}
 
@@ -3296,7 +3245,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 DELETE failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
+			keyErrs.status(resp.StatusCode, resp.Header, bucketName, region, providerUtils.NewProviderAPIError(fmt.Sprintf("S3 DELETE failed: %s", string(body)), nil, resp.StatusCode, nil, nil))
 			continue
 		}
 
@@ -3312,7 +3261,7 @@ func (provider *BedrockProvider) FileDelete(ctx *schemas.BifrostContext, keys []
 		}, nil
 	}
 
-	return nil, lastErr
+	return nil, keyErrs.result()
 }
 
 // FileContent downloads S3 object content for Bedrock batch processing by trying each key until found.
@@ -3334,7 +3283,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		return nil, bucketErr
 	}
 
-	var lastErr *schemas.BifrostError
+	var keyErrs s3KeyErrors
 	for _, key := range keys {
 		region := DefaultBedrockRegion
 		if key.BedrockKeyConfig.Region != nil && key.BedrockKeyConfig.Region.GetValue() != "" {
@@ -3347,13 +3296,13 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 		if err != nil {
-			lastErr = providerUtils.NewBifrostOperationError("error creating request", err)
+			keyErrs.local = providerUtils.NewBifrostOperationError("error creating request", err)
 			continue
 		}
 
 		// Sign request for S3
 		if err := signAWSRequest(ctx, httpReq, key.BedrockKeyConfig, region, "s3"); err != nil {
-			lastErr = err
+			keyErrs.local = err
 			continue
 		}
 
@@ -3372,21 +3321,21 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 					},
 				}
 			}
-			lastErr = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
+			keyErrs.local = providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err)
 			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			lastErr = providerUtils.NewProviderAPIError(fmt.Sprintf("S3 GET failed: %s", string(body)), nil, resp.StatusCode, nil, nil)
+			keyErrs.status(resp.StatusCode, resp.Header, bucketName, region, providerUtils.NewProviderAPIError(fmt.Sprintf("S3 GET failed: %s", string(body)), nil, resp.StatusCode, nil, nil))
 			continue
 		}
 
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if err != nil {
-			lastErr = providerUtils.NewBifrostOperationError("error reading S3 object content", err)
+			keyErrs.local = providerUtils.NewBifrostOperationError("error reading S3 object content", err)
 			continue
 		}
 
@@ -3405,7 +3354,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 		}, nil
 	}
 
-	return nil, lastErr
+	return nil, keyErrs.result()
 }
 
 // BatchCreate creates a new batch inference job on AWS Bedrock.
@@ -4556,24 +4505,76 @@ func chatUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.B
 }
 
 func responsesUsesAnthropicInvokePath(ctx *schemas.BifrostContext, request *schemas.BifrostResponsesRequest) bool {
-	if request == nil || request.Params == nil {
+	if request == nil {
 		return false
 	}
-	if usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
+	if request.Params != nil && usesAnthropicInvokePath(ctx, request.Model, request.Params.ContextManagement, request.Params.ExtraParams["context_management"]) {
 		return true
 	}
 	if !schemas.IsAnthropicModelFamily(ctx, request.Model) {
 		return false
 	}
-	if extraParamsHasSafeguards(request.Params.ExtraParams) && safeguardsSurviveStrip(ctx, request.Model) {
+	return responsesParamsNeedAnthropicInvokePath(ctx, request.Model, request.Params) || responsesInputHasToolReference(request.Input) || inputHasToolChanges(request.Input)
+}
+
+func responsesParamsNeedAnthropicInvokePath(ctx *schemas.BifrostContext, model string, params *schemas.ResponsesParameters) bool {
+	if params == nil {
+		return false
+	}
+	if extraParamsHasSafeguards(params.ExtraParams) && safeguardsSurviveStrip(ctx, model) {
 		return true
 	}
-	if invokeIngressThinkingNeedsInvokePath(ctx, request.Params.Reasoning) {
+	if invokeIngressThinkingNeedsInvokePath(ctx, params.Reasoning) {
 		return true
 	}
-	for _, tool := range request.Params.Tools {
+	for _, tool := range params.Tools {
 		if toolNeedsAnthropicInvokePath(string(tool.Type), tool.DeferLoading) {
 			return true
+		}
+		if tool.Type == schemas.ResponsesToolTypeComputer || tool.Type == schemas.ResponsesToolTypeComputerUsePreview {
+			return true
+		}
+	}
+	return false
+}
+
+// responsesInputHasToolReference runs on every Anthropic-family Responses request, so
+// it indexes rather than ranging by value: a by-value range copies each 224-byte
+// ResponsesMessage, which cost ~0.5µs on a 200-message conversation.
+func responsesInputHasToolReference(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		toolMsg := input[i].ResponsesToolMessage
+		if toolMsg == nil || toolMsg.Output == nil {
+			continue
+		}
+		blocks := toolMsg.Output.ResponsesFunctionToolCallOutputBlocks
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// inputHasToolChanges reports tool_addition / tool_removal blocks (system or developer
+// messages) or a compaction item's tool_changes, which Converse has no block for.
+func inputHasToolChanges(input []schemas.ResponsesMessage) bool {
+	for i := range input {
+		if input[i].Content == nil || len(input[i].Content.ContentBlocks) == 0 {
+			continue
+		}
+		blocks := input[i].Content.ContentBlocks
+		if cmp := blocks[0].ResponsesOutputMessageContentCompaction; cmp != nil && len(cmp.ToolChanges) > 0 {
+			return true
+		}
+		if role := input[i].Role; role == nil || (*role != schemas.ResponsesInputMessageRoleSystem && *role != schemas.ResponsesInputMessageRoleDeveloper) {
+			continue
+		}
+		for j := range blocks {
+			if blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolAddition || blocks[j].Type == schemas.ResponsesInputMessageContentBlockTypeToolRemoval {
+				return true
+			}
 		}
 	}
 	return false
@@ -4604,7 +4605,7 @@ func invokeIngressThinkingNeedsInvokePath(ctx *schemas.BifrostContext, reasoning
 // the same region and model-path resolution as the Converse path.
 func (provider *BedrockProvider) invokeURL(ctx *schemas.BifrostContext, key schemas.Key, model, action string) (requestURL, region string) {
 	path, region := provider.getModelPathAndRegion(ctx, action, model, key)
-	host := resolveBedrockHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
+	host := provider.serviceHost(bedrockEndpoints(key.BedrockKeyConfig), bedrockServiceRuntime, region)
 	return fmt.Sprintf("https://%s/model/%s", host, path), region
 }
 
@@ -4635,7 +4636,7 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 		Model:                     bareModel,
 		IsStreaming:               streaming,
 		ValidateTools:             validateTools,
-		ExcludeFields:             []string{"guardrailConfig"},
+		ExcludeFields:             []string{"guardrailConfig", "additionalModelRequestFieldPaths", "additionalModelResponseFieldPaths"},
 		IncludeFields:             includeFields,
 		BetaHeaderOverrides:       provider.networkConfig.BetaHeaderOverrides,
 		ProviderExtraHeaders:      provider.networkConfig.ExtraHeaders,
@@ -4647,13 +4648,14 @@ func (provider *BedrockProvider) invokeBuildConfig(model string, streaming, vali
 // invokeGuardrailHeaders adds the X-Amzn-Bedrock-Guardrail* headers InvokeModel takes in place
 // of the guardrailConfig body field that invokeBuildConfig strips. Without them the request
 // runs unguarded. The Converse-shaped lowercase trace is uppercased, as the header requires.
-func invokeGuardrailHeaders(base map[string]string, extraParams map[string]any) map[string]string {
+func invokeGuardrailHeaders(base map[string]schemas.SecretVar, extraParams map[string]any) map[string]schemas.SecretVar {
 	out := withGuardrailHeaders(base, extraParams)
 	config, _ := extraParams["guardrailConfig"].(map[string]any)
-	if trace, _ := config["trace"].(string); trace != "" && out[guardrailTraceHeader] == trace {
+	traceHeader := out[guardrailTraceHeader]
+	if trace, _ := config["trace"].(string); trace != "" && traceHeader.GetValue() == trace {
 		// out may still be the shared provider headers, so write to a copy.
 		out = maps.Clone(out)
-		out[guardrailTraceHeader] = strings.ToUpper(trace)
+		out[guardrailTraceHeader] = *schemas.NewSecretVar(strings.ToUpper(trace))
 	}
 	return out
 }
@@ -4675,12 +4677,12 @@ func responsesExtraParams(request *schemas.BifrostResponsesRequest) map[string]a
 // invokeStreamHeaders adds Accept-Encoding: identity to the static extra
 // headers so the event stream arrives frame by frame rather than as one gzip
 // burst, matching what makeStreamingRequest does for ConverseStream.
-func (provider *BedrockProvider) invokeStreamHeaders(extraParams map[string]any) map[string]string {
+func (provider *BedrockProvider) invokeStreamHeaders(extraParams map[string]any) map[string]schemas.SecretVar {
 	out := maps.Clone(invokeGuardrailHeaders(provider.networkConfig.ExtraHeaders, extraParams))
 	if out == nil {
-		out = make(map[string]string, 1)
+		out = make(map[string]schemas.SecretVar, 1)
 	}
-	out["Accept-Encoding"] = "identity"
+	out["Accept-Encoding"] = *schemas.NewSecretVar("identity")
 	return out
 }
 
@@ -4862,4 +4864,38 @@ func (r *invokeEventStreamReader) ReadEvent() (string, []byte, error) {
 		// payloadBuf and is safe to hand to the caller before the next Decode.
 		return gjson.GetBytes(chunk.Bytes, "type").String(), chunk.Bytes, nil
 	}
+}
+
+// isTextBlockEvent reports whether ev starts, extends, or ends a text content block: a text delta, a
+// non-tool block start, or the stop of a block already in textBlocks.
+func isTextBlockEvent(ev *BedrockStreamEvent, textBlocks map[int]struct{}) bool {
+	if ev.Delta != nil {
+		return ev.Delta.Text != nil
+	}
+	if ev.Start != nil {
+		return ev.Start.ToolUse == nil
+	}
+	if ev.ContentBlockIndex != nil && ev.StopReason == nil && ev.Usage == nil {
+		_, ok := textBlocks[*ev.ContentBlockIndex]
+		return ok
+	}
+	return false
+}
+
+// heldConverseEvent is a Converse stream event held back on the synthetic structured-output path.
+type heldConverseEvent struct {
+	event   *BedrockStreamEvent
+	payload []byte // upstream payload, copied off the reused decoder buffer; nil when raw responses are off
+	text    bool   // part of a text block, dropped if bf_so_* turns out to carry the answer
+}
+
+// holdConverseEvent copies ev, and its payload when raw responses are on, so both outlive the
+// decoder's buffer reuse.
+func holdConverseEvent(ev *BedrockStreamEvent, payload []byte, sendRaw, text bool) heldConverseEvent {
+	h := heldConverseEvent{event: new(BedrockStreamEvent), text: text}
+	*h.event = *ev
+	if sendRaw && len(payload) > 0 {
+		h.payload = append([]byte(nil), payload...)
+	}
+	return h
 }

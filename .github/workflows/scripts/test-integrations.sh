@@ -300,7 +300,7 @@ else
 
   # Wait for server to be ready
   echo "⏳ Waiting for Bifrost to be ready..."
-  MAX_WAIT=30
+  MAX_WAIT=120
   ELAPSED=0
   SERVER_READY=false
 

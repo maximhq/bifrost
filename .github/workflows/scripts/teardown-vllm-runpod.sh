@@ -22,12 +22,8 @@ if [ -z "${RUNPOD_API_KEY:-}" ]; then
   exit 1
 fi
 
-if ! command -v runpodctl >/dev/null 2>&1; then
-  echo "::warning::runpodctl not found, cannot delete pods - check the RunPod console (auto-terminate-after is set as a backstop)"
-  exit 0
-fi
-
-# runpodctl reads RUNPOD_API_KEY from the environment directly.
+# shellcheck source=/dev/null
+source "$(dirname "$0")/runpod-api.sh"
 
 delete_pod() {
   local name_suffix="$1" pod_id="$2"
@@ -35,9 +31,13 @@ delete_pod() {
     return 0
   fi
   echo "🧹 Deleting ${name_suffix} vLLM pod ${pod_id}..."
-  if runpodctl pod delete "$pod_id"; then
+  local response
+  response=$(runpod_graphql 'mutation terminatePod($podId: String!) { podTerminate(input: {podId: $podId}) }' \
+    "$(jq -n --arg id "$pod_id" '{podId: $id}')") || response=""
+  if jq -e '(.errors | length // 0) == 0 and (.data | has("podTerminate"))' <<<"$response" >/dev/null 2>&1; then
     echo "✅ ${name_suffix} pod ${pod_id} deleted"
   else
+    echo "${response:-no response from ${RUNPOD_GRAPHQL_URL}}"
     echo "::warning::Failed to delete ${name_suffix} pod ${pod_id} - check the RunPod console (auto-terminate-after is set as a backstop)"
   fi
 }

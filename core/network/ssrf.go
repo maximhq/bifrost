@@ -3,12 +3,14 @@ package network
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -496,6 +498,25 @@ func AllowlistedPrivateDialContext(dialTimeout time.Duration, allow func() *Allo
 	return allowlistedPrivateDialContext(net.DefaultResolver, dialer.DialContext, allow)
 }
 
+// ResolveAllowlistedPrivateTarget resolves and validates every address before
+// a proxy tunnel is opened. Metadata and link-local targets remain forbidden
+// even when their hostname or network is allowlisted.
+func ResolveAllowlistedPrivateTarget(ctx context.Context, host string, allow *Allowlist) ([]net.IP, error) {
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
+	}
+	for _, ip := range ips {
+		if err := checkAllowlistedPrivatePolicy(ip, host, allow); err != nil {
+			return nil, err
+		}
+	}
+	return ips, nil
+}
+
 // allowlistedPrivateDialContext is the seam behind AllowlistedPrivateDialContext,
 // with injectable resolver and dial for tests.
 func allowlistedPrivateDialContext(resolver ipLookuper, dial func(ctx context.Context, network, addr string) (net.Conn, error), allow func() *Allowlist) func(ctx context.Context, netw, addr string) (net.Conn, error) {
@@ -532,6 +553,17 @@ func allowlistedPrivateDialContext(resolver ipLookuper, dial func(ctx context.Co
 	}
 }
 
+// PrivateTargetNotAllowedError identifies a private destination missing operator permission.
+type PrivateTargetNotAllowedError struct {
+	Host string
+	IP   net.IP
+}
+
+// Error describes the rejected destination without prescribing a product-specific setting.
+func (e *PrivateTargetNotAllowedError) Error() string {
+	return fmt.Sprintf("blocked connection to non-public address %s (host %s)", e.IP, e.Host)
+}
+
 // checkAllowlistedPrivatePolicy applies the AllowlistedPrivateDialContext
 // policy to one resolved address of host.
 func checkAllowlistedPrivatePolicy(ip net.IP, host string, allow *Allowlist) error {
@@ -542,7 +574,7 @@ func checkAllowlistedPrivatePolicy(ip net.IP, host string, allow *Allowlist) err
 		return err
 	}
 	if !allow.Permits(host, ip) {
-		return fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
+		return &PrivateTargetNotAllowedError{Host: host, IP: ip}
 	}
 	return nil
 }
@@ -638,6 +670,18 @@ func NewSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
 	})
 }
 
+// NewStrictSSRFSafeHTTPClient is NewSSRFSafeHTTPClient for a URL an unauthenticated caller chose:
+// on the proxied path it also refuses a destination the local resolver cannot answer, instead of
+// leaving it to the proxy (the strict rule of CheckProxiedDestination).
+func NewStrictSSRFSafeHTTPClient(timeout time.Duration) *http.Client {
+	return newGuardedHTTPClientWithPolicy(timeout, SSRFSafeDialContext(timeout), func(ip net.IP, host string) error {
+		if !IsPublicIP(ip) {
+			return fmt.Errorf("blocked redirect to non-public address %s (host %s)", ip, host)
+		}
+		return nil
+	}, DefaultProxyFunc(ClientPurposeAPI), net.DefaultResolver, false)
+}
+
 // NewPrivateNetworkHTTPClient is the PrivateNetworkDialContext counterpart of
 // NewSSRFSafeHTTPClient, for fetchers whose documented primary use includes
 // targets on the operator's own network (a self-hosted MCP server and its
@@ -673,6 +717,13 @@ func newGuardedHTTPClient(timeout time.Duration, dial func(ctx context.Context, 
 // operator's proxy on a private or loopback address is the normal self-hosted setup,
 // and the destination itself is vetted by guardedProxySelector before the proxy sees it.
 func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error, proxy func(*http.Request) (*url.URL, error), resolver ipLookuper) *http.Client {
+	return newGuardedHTTPClientWithPolicy(timeout, dial, checkIP, proxy, resolver, true)
+}
+
+// newGuardedHTTPClientWithPolicy is newGuardedHTTPClientWith with the proxied-path rule for a
+// destination the local resolver cannot answer: deferUnresolved leaves it to the proxy; strict
+// clients pass false and refuse it.
+func newGuardedHTTPClientWithPolicy(timeout time.Duration, dial func(ctx context.Context, netw, addr string) (net.Conn, error), checkIP func(ip net.IP, host string) error, proxy func(*http.Request) (*url.URL, error), resolver ipLookuper, deferUnresolved bool) *http.Client {
 	newTransport := func(selector func(*http.Request) (*url.URL, error), dial func(ctx context.Context, netw, addr string) (net.Conn, error)) *http.Transport {
 		return &http.Transport{
 			Proxy:                 selector,
@@ -681,6 +732,9 @@ func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Conte
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: time.Second,
 			ForceAttemptHTTP2:     true,
+			// net/http's defaults: zero would keep every idle connection to every host forever.
+			MaxIdleConns:    100,
+			IdleConnTimeout: 90 * time.Second,
 		}
 	}
 	var transport http.RoundTripper = newTransport(nil, dial)
@@ -688,7 +742,7 @@ func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Conte
 		transport = &ProxyAwareTransport{
 			Proxy:    proxy,
 			Direct:   newTransport(nil, dial),
-			ViaProxy: newTransport(guardedProxySelector(proxy, checkIP, resolver), PrivateNetworkDialContext(timeout)),
+			ViaProxy: newTransport(guardedProxySelectorWith(proxy, checkIP, resolver, deferUnresolved), PrivateNetworkDialContext(timeout)),
 		}
 	}
 	return &http.Client{
@@ -715,7 +769,7 @@ func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Conte
 			}
 			ctx, cancel := context.WithTimeout(req.Context(), guardedRedirectDNSTimeout)
 			defer cancel()
-			if err := vetGuardedDestination(ctx, host, proxied, resolver, checkIP); err != nil {
+			if err := vetGuardedDestination(ctx, host, proxied && deferUnresolved, resolver, checkIP); err != nil {
 				return fmt.Errorf("blocked redirect to %s: %w", host, err)
 			}
 			return nil
@@ -734,6 +788,12 @@ func newGuardedHTTPClientWith(timeout time.Duration, dial func(ctx context.Conte
 // policy boundary for anything resolved only there; the dialer still refuses a
 // proxy that sits on a blocked address. A nil selector stays nil.
 func guardedProxySelector(next func(*http.Request) (*url.URL, error), checkIP func(ip net.IP, host string) error, resolver ipLookuper) func(*http.Request) (*url.URL, error) {
+	return guardedProxySelectorWith(next, checkIP, resolver, true)
+}
+
+// guardedProxySelectorWith is guardedProxySelector with the unresolved-destination rule chosen:
+// deferUnresolved false refuses a hostname the local resolver cannot answer.
+func guardedProxySelectorWith(next func(*http.Request) (*url.URL, error), checkIP func(ip net.IP, host string) error, resolver ipLookuper, deferUnresolved bool) func(*http.Request) (*url.URL, error) {
 	if next == nil {
 		return nil
 	}
@@ -744,7 +804,7 @@ func guardedProxySelector(next func(*http.Request) (*url.URL, error), checkIP fu
 		}
 		ctx, cancel := context.WithTimeout(req.Context(), guardedRedirectDNSTimeout)
 		defer cancel()
-		if err := vetGuardedDestination(ctx, req.URL.Hostname(), true, resolver, checkIP); err != nil {
+		if err := vetGuardedDestination(ctx, req.URL.Hostname(), deferUnresolved, resolver, checkIP); err != nil {
 			return nil, err
 		}
 		return proxyURL, nil
@@ -816,9 +876,14 @@ type ProxyAwareTransport struct {
 	// Proxy decides the route: nil means direct. It is the operator's proxy
 	// configuration (http.ProxyFromEnvironment), not a policy check; the
 	// destination policy for the proxied path runs in ViaProxy.Proxy.
-	Proxy    func(*http.Request) (*url.URL, error)
-	Direct   *http.Transport
+	Proxy  func(*http.Request) (*url.URL, error)
+	Direct *http.Transport
+	// ViaProxy is used as is unless the global proxy is on for API traffic; then
+	// requests run on a copy that trusts the global proxy's TLS (see proxiedTransport).
 	ViaProxy *http.Transport
+
+	viaOnce sync.Once
+	via     *proxiedTransport
 }
 
 // RoundTrip implements http.RoundTripper.
@@ -829,7 +894,7 @@ func (t *ProxyAwareTransport) RoundTrip(req *http.Request) (*http.Response, erro
 			return nil, err
 		}
 		if proxyURL != nil {
-			return t.ViaProxy.RoundTrip(req)
+			return t.proxied().transport().RoundTrip(req)
 		}
 	}
 	return t.Direct.RoundTrip(req)
@@ -838,5 +903,84 @@ func (t *ProxyAwareTransport) RoundTrip(req *http.Request) (*http.Response, erro
 // CloseIdleConnections closes idle connections on both transports.
 func (t *ProxyAwareTransport) CloseIdleConnections() {
 	t.Direct.CloseIdleConnections()
-	t.ViaProxy.CloseIdleConnections()
+	t.proxied().closeIdleConnections()
+}
+
+func (t *ProxyAwareTransport) proxied() *proxiedTransport {
+	t.viaOnce.Do(func() { t.via = &proxiedTransport{base: t.ViaProxy} })
+	return t.via
+}
+
+// proxiedTransport gives the proxied side of a ProxyAwareTransport the global proxy's
+// TLS settings while the global proxy is on for API traffic: its CA is added to the
+// target roots (a TLS-inspecting proxy re-signs targets with it), and an https:// proxy
+// is dialed with the hop TLS (the CA, and skip_tls_verify, which never reaches a
+// target). The settings are read from the registered factory on every request, and a
+// copy of base is built once per proxy config, so a CA saved later reaches clients
+// built before it. Otherwise base is used as is: an environment proxy never trusts the
+// global CA.
+type proxiedTransport struct {
+	base *http.Transport
+
+	mu      sync.Mutex
+	config  *GlobalProxyConfig // the factory config current was built for
+	current *http.Transport
+}
+
+// transport returns the transport for the factory's current proxy config.
+func (p *proxiedTransport) transport() *http.Transport {
+	var config *GlobalProxyConfig
+	var roots *x509.CertPool
+	if factory := defaultFactory.Load(); factory != nil {
+		factory.mu.RLock()
+		if factory.proxyURLForPurpose(ClientPurposeAPI) != nil {
+			config, roots = factory.proxyConfig, factory.proxyRoots
+		}
+		factory.mu.RUnlock()
+	}
+	if config == nil {
+		return p.base
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.current != nil && p.config == config {
+		return p.current
+	}
+	previous := p.current
+	p.current, p.config = withGlobalProxyTLS(p.base, config, roots), config
+	if previous != nil {
+		previous.CloseIdleConnections()
+	}
+	return p.current
+}
+
+func (p *proxiedTransport) closeIdleConnections() {
+	p.base.CloseIdleConnections()
+	p.mu.Lock()
+	current := p.current
+	p.mu.Unlock()
+	if current != nil {
+		current.CloseIdleConnections()
+	}
+}
+
+// withGlobalProxyTLS returns a copy of base that trusts the global proxy's CA for its
+// targets, on top of base's own roots, and dials an https:// proxy with the proxy's hop
+// TLS. base is not modified.
+func withGlobalProxyTLS(base *http.Transport, config *GlobalProxyConfig, roots *x509.CertPool) *http.Transport {
+	transport := base.Clone()
+	if roots != nil {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+		}
+		if transport.TLSClientConfig.RootCAs == nil {
+			transport.TLSClientConfig.RootCAs = roots
+		} else {
+			merged := transport.TLSClientConfig.RootCAs.Clone()
+			merged.AppendCertsFromPEM([]byte(config.CACertPEM))
+			transport.TLSClientConfig.RootCAs = merged
+		}
+	}
+	DialHTTPSProxyWithHopTLS(transport, config.proxyTLS(roots))
+	return transport
 }

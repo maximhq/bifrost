@@ -239,6 +239,8 @@ type ImageTokenDetails struct {
 	NImages     int `json:"-"` // Number of images generated (used internally for bifrost)
 	ImageTokens int `json:"image_tokens,omitempty"`
 	TextTokens  int `json:"text_tokens,omitempty"`
+	// Thinking tokens, counted in the parent OutputTokens; output side only
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // DeepCopy returns an independent copy of u with no shared pointer fields,
@@ -350,7 +352,8 @@ type ImageInput struct {
 
 // UnmarshalJSON accepts either the object form or a bare string, so images: ["https://..."] reads
 // the way input_images does on /v1/images/generations. A string lands in URL, the same field the
-// multipart image_url path fills. Marshalling always emits the object form.
+// multipart image_url path fills. The object form takes url or OpenAI's image_url. Marshalling
+// always emits the object form.
 func (i *ImageInput) UnmarshalJSON(data []byte) error {
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -365,12 +368,19 @@ func (i *ImageInput) UnmarshalJSON(data []byte) error {
 		i.URL = s
 		return nil
 	}
-	type imageInput ImageInput
-	var obj imageInput
+	var obj struct {
+		Image    []byte `json:"image"`
+		URL      string `json:"url"`
+		ImageURL string `json:"image_url"` // OpenAI's JSON edit shape
+	}
 	if err := Unmarshal(data, &obj); err != nil {
 		return fmt.Errorf("image input is neither a string nor an object")
 	}
-	*i = ImageInput(obj)
+	i.Image = obj.Image
+	i.URL = obj.URL
+	if i.URL == "" {
+		i.URL = obj.ImageURL
+	}
 	return nil
 }
 

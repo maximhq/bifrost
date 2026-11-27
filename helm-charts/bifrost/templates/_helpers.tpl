@@ -216,6 +216,11 @@ env.BIFROST_WEAVIATE_API_KEY
 {{- end -}}
 {{- end -}}
 
+{{- /* Redis exporter port; the metrics values are optional, so the default lives here. */ -}}
+{{- define "bifrost.redis.metricsPort" -}}
+{{- .Values.vectorStore.redis.metrics.port | default 9121 -}}
+{{- end }}
+
 {{- define "bifrost.redis.host" -}}
 {{- if .Values.vectorStore.redis.external.enabled }}
 {{- .Values.vectorStore.redis.external.host }}
@@ -299,6 +304,9 @@ false
 {{- if .Values.bifrost.envLabel }}
 {{- $_ := set $config "env_label" .Values.bifrost.envLabel }}
 {{- end }}
+{{- if hasKey .Values.bifrost "disableOnboarding" }}
+{{- $_ := set $config "disable_onboarding" .Values.bifrost.disableOnboarding }}
+{{- end }}
 {{- if .Values.bifrost.setupToken }}
 {{- $_ := set $config "setup_token" .Values.bifrost.setupToken }}
 {{- end }}
@@ -315,6 +323,40 @@ false
 {{- if hasKey . "enableForInference" }}{{- $_ := set $proxy "enable_for_inference" .enableForInference }}{{- end }}
 {{- if hasKey . "enableForApi" }}{{- $_ := set $proxy "enable_for_api" .enableForApi }}{{- end }}
 {{- $_ := set $config "proxy_config" $proxy }}
+{{- end }}
+{{- /* Warp: numbers render whenever set, since an explicit 0 means the default (or a reset) */ -}}
+{{- with .Values.bifrost.warp }}
+{{- $warp := dict }}
+{{- if hasKey . "enabled" }}{{- $_ := set $warp "enabled" .enabled }}{{- end }}
+{{- if .provider }}{{- $_ := set $warp "provider" .provider }}{{- end }}
+{{- if .model }}{{- $_ := set $warp "model" .model }}{{- end }}
+{{- if .apiKeyId }}{{- $_ := set $warp "api_key_id" .apiKeyId }}{{- end }}
+{{- if hasKey . "additionalModels" }}
+{{- $models := list }}
+{{- range .additionalModels }}
+{{- $m := dict "provider" .provider "model" .model }}
+{{- if .apiKeyId }}{{- $_ := set $m "api_key_id" .apiKeyId }}{{- end }}
+{{- $models = append $models $m }}
+{{- end }}
+{{- $_ := set $warp "additional_models" $models }}
+{{- end }}
+{{- if hasKey . "maxIterations" }}{{- $_ := set $warp "max_iterations" (.maxIterations | int) }}{{- end }}
+{{- if hasKey . "requestTimeoutSeconds" }}{{- $_ := set $warp "request_timeout_seconds" (.requestTimeoutSeconds | int) }}{{- end }}
+{{- if hasKey . "historyRetentionDays" }}{{- $_ := set $warp "history_retention_days" (.historyRetentionDays | int) }}{{- end }}
+{{- if .systemPromptSuffix }}{{- $_ := set $warp "system_prompt_suffix" .systemPromptSuffix }}{{- end }}
+{{- if hasKey . "temperature" }}{{- $_ := set $warp "temperature" (.temperature | float64) }}{{- end }}
+{{- if .reasoningEffort }}{{- $_ := set $warp "reasoning_effort" .reasoningEffort }}{{- end }}
+{{- /* hasKey: "" must clear the stored embedding provider, model or key, since an omitted one keeps the stored value */ -}}
+{{- if hasKey . "embeddingProvider" }}{{- $_ := set $warp "embedding_provider" .embeddingProvider }}{{- end }}
+{{- if hasKey . "embeddingModel" }}{{- $_ := set $warp "embedding_model" .embeddingModel }}{{- end }}
+{{- if hasKey . "embeddingApiKeyId" }}{{- $_ := set $warp "embedding_api_key_id" .embeddingApiKeyId }}{{- end }}
+{{- if hasKey . "embeddingDimension" }}{{- $_ := set $warp "embedding_dimension" (.embeddingDimension | int) }}{{- end }}
+{{- /* hasKey: "" must reset to the default namespace, since an omitted one keeps the stored value */ -}}
+{{- if hasKey . "logVectorStoreNamespace" }}{{- $_ := set $warp "log_vector_store_namespace" .logVectorStoreNamespace }}{{- end }}
+{{- if hasKey . "semanticSearchThreshold" }}{{- $_ := set $warp "semantic_search_threshold" (.semanticSearchThreshold | float64) }}{{- end }}
+{{- if hasKey . "semanticSearchLimit" }}{{- $_ := set $warp "semantic_search_limit" (.semanticSearchLimit | int) }}{{- end }}
+{{- if hasKey . "topicDiscoveryMinRequests" }}{{- $_ := set $warp "topic_discovery_min_requests" (.topicDiscoveryMinRequests | int) }}{{- end }}
+{{- if $warp }}{{- $_ := set $config "warp" $warp }}{{- end }}
 {{- end }}
 {{- if .Values.bifrost.client }}
 {{- $client := dict }}
@@ -335,6 +377,9 @@ false
 {{- end }}
 {{- if .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- $_ := set $client "dual_credential_conflict_behavior" .Values.bifrost.client.dualCredentialConflictBehavior }}
+{{- end }}
+{{- if .Values.bifrost.client.extraFieldsPlacement }}
+{{- $_ := set $client "extra_fields_placement" .Values.bifrost.client.extraFieldsPlacement }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
@@ -428,6 +473,9 @@ false
 {{- if .Values.bifrost.client.allowedHeaders }}
 {{- $_ := set $client "allowed_headers" .Values.bifrost.client.allowedHeaders }}
 {{- end }}
+{{- if .Values.bifrost.client.usageEstimationTokenizers }}
+{{- $_ := set $client "usage_estimation_tokenizers" .Values.bifrost.client.usageEstimationTokenizers }}
+{{- end }}
 {{- if .Values.bifrost.client.mcpAgentDepth }}
 {{- $_ := set $client "mcp_agent_depth" .Values.bifrost.client.mcpAgentDepth }}
 {{- end }}
@@ -445,6 +493,15 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client "deleteExpiredVirtualKeys" }}
 {{- $_ := set $client "delete_expired_virtual_keys" .Values.bifrost.client.deleteExpiredVirtualKeys }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyCreation" }}
+{{- $_ := set $client "skip_access_profile_user_virtual_key_creation" .Values.bifrost.client.skipAccessProfileUserVirtualKeyCreation }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "skipAccessProfileUserVirtualKeyDeletion" }}
+{{- $_ := set $client "skip_access_profile_user_virtual_key_deletion" .Values.bifrost.client.skipAccessProfileUserVirtualKeyDeletion }}
+{{- end }}
+{{- if .Values.bifrost.client.entityAccessProfileMode }}
+{{- $_ := set $client "entity_access_profile_mode" .Values.bifrost.client.entityAccessProfileMode }}
 {{- end }}
 {{- if hasKey .Values.bifrost.client "vkRotationCooldown" }}
 {{- $_ := set $client "vk_rotation_cooldown" .Values.bifrost.client.vkRotationCooldown }}
@@ -464,7 +521,26 @@ false
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
-{{- if .Values.bifrost.client.a2aExternalClientUrl }}
+{{- if hasKey .Values.bifrost.client "mcpClientMetadataUrl" }}
+{{- $_ := set $client "mcp_client_metadata_url" .Values.bifrost.client.mcpClientMetadataUrl }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "bifrostUrl" }}
+{{- $_ := set $client "bifrost_url" .Values.bifrost.client.bifrostUrl }}
+{{- end }}
+{{- /* hasKey: an explicit false must render, since the default is true */ -}}
+{{- if hasKey .Values.bifrost.client "bifrostMcpAllowWrites" }}
+{{- $_ := set $client "bifrost_mcp_allow_writes" .Values.bifrost.client.bifrostMcpAllowWrites }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "mcpOpenapiMaxSpecMb" }}
+{{- $_ := set $client "mcp_openapi_max_spec_mb" (.Values.bifrost.client.mcpOpenapiMaxSpecMb | int) }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
+{{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aPrivateAllowlist" }}
+{{- $_ := set $client "a2a_private_allowlist" .Values.bifrost.client.a2aPrivateAllowlist }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aExternalClientUrl" }}
 {{- $_ := set $client "a2a_external_client_url" .Values.bifrost.client.a2aExternalClientUrl }}
 {{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}
@@ -478,10 +554,28 @@ false
 {{- if .Values.bifrost.client.oauth2ServerConfig }}
 {{- $oauth2 := dict }}
 {{- with .Values.bifrost.client.oauth2ServerConfig.issuerUrl }}{{- $_ := set $oauth2 "issuer_url" . }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.browserBaseUrl }}{{- $_ := set $oauth2 "browser_base_url" . }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.additionalIssuerUrls }}{{- $_ := set $oauth2 "additional_issuer_urls" . }}{{- end }}
 {{- with .Values.bifrost.client.oauth2ServerConfig.authCodeTtl }}{{- $_ := set $oauth2 "auth_code_ttl" (. | int) }}{{- end }}
 {{- with .Values.bifrost.client.oauth2ServerConfig.accessTokenTtl }}{{- $_ := set $oauth2 "access_token_ttl" (. | int) }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "disableVkIdentity" }}{{- $_ := set $oauth2 "disable_vk_identity" .Values.bifrost.client.oauth2ServerConfig.disableVkIdentity }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "allowedRedirectUris" }}{{- $_ := set $oauth2 "allowed_redirect_uris" (default (list) .Values.bifrost.client.oauth2ServerConfig.allowedRedirectUris) }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.gateways }}
+{{- $gateways := dict }}
+{{- with .claudeCode }}
+{{- if and .enabled (not $.Values.bifrost.client.oauth2ServerConfig.issuerUrl) }}{{- fail "ERROR: bifrost.client.oauth2ServerConfig.issuerUrl is required when bifrost.client.oauth2ServerConfig.gateways.claudeCode.enabled is true. Bifrost exits at startup without it." }}{{- end }}
+{{- $claudeCode := dict "enabled" (.enabled | default false) }}
+{{- if hasKey . "managedSettings" }}{{- $_ := set $claudeCode "managed_settings" .managedSettings }}{{- end }}
+{{- with .telemetry }}
+{{- $telemetry := dict "enabled" (.enabled | default false) }}
+{{- with .destinations }}{{- $_ := set $telemetry "destinations" . }}{{- end }}
+{{- with .dropAttributes }}{{- $_ := set $telemetry "drop_attributes" . }}{{- end }}
+{{- $_ := set $claudeCode "telemetry" $telemetry }}
+{{- end }}
+{{- $_ := set $gateways "claude_code" $claudeCode }}
+{{- end }}
+{{- if $gateways }}{{- $_ := set $oauth2 "gateways" $gateways }}{{- end }}
+{{- end }}
 {{- if $oauth2 }}{{- $_ := set $client "oauth2_server_config" $oauth2 }}{{- end }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
@@ -491,6 +585,12 @@ false
 {{- $server := dict }}
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
+{{- end }}
+{{- if .Values.bifrost.server.basePath }}
+{{- $_ := set $server "base_path" .Values.bifrost.server.basePath }}
+{{- end }}
+{{- if not (kindIs "invalid" .Values.bifrost.server.bodyBufferPoolLimitBytes) }}
+{{- $_ := set $server "body_buffer_pool_limit_bytes" .Values.bifrost.server.bodyBufferPoolLimitBytes }}
 {{- end }}
 {{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
@@ -533,7 +633,11 @@ false
 {{- if not (kindIs "invalid" .Values.bifrost.framework.pricing.liveModelsSyncInterval) }}
 {{- $_ := set $pricing "live_models_sync_interval" .Values.bifrost.framework.pricing.liveModelsSyncInterval }}
 {{- end }}
-{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") }}
+{{- /* hasKey: "" must render (the build's default spec, clearing a stored override), since an omitted one keeps the stored value */ -}}
+{{- if hasKey .Values.bifrost.framework.pricing "openapiUrl" }}
+{{- $_ := set $pricing "openapi_url" .Values.bifrost.framework.pricing.openapiUrl }}
+{{- end }}
+{{- if or $pricing.pricing_url $pricing.model_parameters_url $pricing.pricing_sync_interval $pricing.mcp_library_url (hasKey $pricing "mcp_library_sync_interval") (hasKey $pricing "live_models_sync_interval") (hasKey $pricing "openapi_url") }}
 {{- $_ := set $framework "pricing" $pricing }}
 {{- end }}
 {{- end }}
@@ -684,6 +788,7 @@ false
 {{- if .expires_at }}{{- $_ := set $vk "expires_at" .expires_at }}{{- end }}
 {{- if hasKey . "delete_after_expire" }}{{- $_ := set $vk "delete_after_expire" .delete_after_expire }}{{- end }}
 {{- if hasKey . "disable_content_logging" }}{{- $_ := set $vk "disable_content_logging" .disable_content_logging }}{{- end }}
+{{- if hasKey . "metadata" }}{{- $_ := set $vk "metadata" .metadata }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
 {{- if .business_unit_id }}{{- $_ := set $vk "business_unit_id" .business_unit_id }}{{- end }}
@@ -693,6 +798,8 @@ false
 {{- if hasKey . "allow_all_providers" }}{{- $_ := set $vk "allow_all_providers" .allow_all_providers }}{{- end }}
 {{- if .provider_configs }}{{- $_ := set $vk "provider_configs" .provider_configs }}{{- end }}
 {{- if .mcp_configs }}{{- $_ := set $vk "mcp_configs" .mcp_configs }}{{- end }}
+{{- /* Rendered as declared; [] must survive so the key hash records an explicit empty list. */ -}}
+{{- if hasKey . "relay_grants" }}{{- $_ := set $vk "relay_grants" (default (list) .relay_grants) }}{{- end }}
 {{- $vks = append $vks $vk }}
 {{- end }}
 {{- $_ := set $governance "virtual_keys" $vks }}
@@ -892,7 +999,7 @@ false
 {{- end }}
 {{- /* Load Balancer Config */ -}}
 {{- if and .Values.bifrost.loadBalancer .Values.bifrost.loadBalancer.enabled }}
-{{- $lb := dict "enabled" true }}
+{{- $lb := dict }}
 {{- if hasKey .Values.bifrost.loadBalancer "directionSelectionEnabled" }}
 {{- $_ := set $lb "direction_selection_enabled" .Values.bifrost.loadBalancer.directionSelectionEnabled }}
 {{- end }}
@@ -908,11 +1015,17 @@ false
 {{- if hasKey .Values.bifrost.loadBalancer "pruneFailedFallbacks" }}
 {{- $_ := set $lb "prune_failed_fallbacks" .Values.bifrost.loadBalancer.pruneFailedFallbacks }}
 {{- end }}
-{{- if .Values.bifrost.loadBalancer.trackerConfig }}
-{{- $_ := set $lb "tracker_config" .Values.bifrost.loadBalancer.trackerConfig }}
+{{- if hasKey .Values.bifrost.loadBalancer "rerouteTarget" }}
+{{- $_ := set $lb "reroute_target" .Values.bifrost.loadBalancer.rerouteTarget }}
 {{- end }}
-{{- if .Values.bifrost.loadBalancer.bootstrap }}
-{{- $_ := set $lb "bootstrap" .Values.bifrost.loadBalancer.bootstrap }}
+{{- if hasKey .Values.bifrost.loadBalancer "historyEnabled" }}
+{{- $_ := set $lb "history_enabled" .Values.bifrost.loadBalancer.historyEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "historyRetentionDays" }}
+{{- $_ := set $lb "history_retention_days" .Values.bifrost.loadBalancer.historyRetentionDays }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "snapshotPersistIntervalSeconds" }}
+{{- $_ := set $lb "snapshot_persist_interval_seconds" .Values.bifrost.loadBalancer.snapshotPersistIntervalSeconds }}
 {{- end }}
 {{- $_ := set $config "load_balancer_config" $lb }}
 {{- end }}
@@ -932,6 +1045,9 @@ false
 {{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
 {{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
+{{- if .output_mode }}{{- $_ := set $rule "output_mode" .output_mode }}{{- end }}
+{{- if .input_timing }}{{- $_ := set $rule "input_timing" .input_timing }}{{- end }}
+{{- if .profile_execution_mode }}{{- $_ := set $rule "profile_execution_mode" .profile_execution_mode }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -1013,6 +1129,31 @@ false
 {{- end }}
 {{- $_ := set $config "agents" .Values.bifrost.agents }}
 {{- end }}
+{{- /* Relays. Rendered whenever the key is declared, [] included: with config.json as the source of
+       truth an explicit list prunes stored relays it does not name, and omitting the key leaves them.
+       Startup skips every copy of a repeated name, so a duplicate is refused here instead. */ -}}
+{{- if hasKey .Values.bifrost "relays" }}
+{{- $seenRelayNames := list }}
+{{- range .Values.bifrost.relays }}
+{{- if has .name $seenRelayNames }}
+{{- fail (printf "ERROR: bifrost.relays[].name '%s' is used by more than one relay. Names must be unique; startup reconciliation identifies relays by name." .name) }}
+{{- end }}
+{{- $seenRelayNames = append $seenRelayNames .name }}
+{{- end }}
+{{- $_ := set $config "relays" (default (list) .Values.bifrost.relays) }}
+{{- end }}
+{{- /* Model routers, each with its targets and routing, rendered as declared. Rendered whenever the
+       key is declared, [] included: with config.json as the source of truth an explicit list removes
+       stored routers it does not name, and omitting the key leaves them. */ -}}
+{{- if hasKey .Values.bifrost "modelRouters" }}
+{{- $_ := set $config "model_routers" (default (list) .Values.bifrost.modelRouters) }}
+{{- end }}
+{{- /* Datasheet overrides. Rendered whenever the key is declared, [] included: with config.json as
+       the source of truth an explicit list removes stored overrides it does not name, and omitting
+       the key leaves them. */ -}}
+{{- if hasKey .Values.bifrost "datasheetOverrides" }}
+{{- $_ := set $config "datasheet_overrides" (default (list) .Values.bifrost.datasheetOverrides) }}
+{{- end }}
 {{- /* Config Store */ -}}
 {{- if .Values.storage.configStore.enabled }}
 {{- $configStoreType := .Values.storage.configStore.type | default .Values.storage.mode }}
@@ -1036,6 +1177,7 @@ false
 {{- end }}
 {{- with .Values.storage.configStore.statementTimeout }}{{- $_ := set $pgConfig "statement_timeout" (toString .) }}{{- end }}
 {{- with .Values.storage.configStore.idleInTransactionSessionTimeout }}{{- $_ := set $pgConfig "idle_in_transaction_session_timeout" (toString .) }}{{- end }}
+{{- with .Values.storage.configStore.migrationLockRetryBudget }}{{- $_ := set $pgConfig "migration_lock_retry_budget" (toString .) }}{{- end }}
 {{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
 {{- else }}
@@ -1076,7 +1218,18 @@ false
 {{- if $vs.hashicorp.mountPath }}{{- $_ := set $hashicorp "mount_path" $vs.hashicorp.mountPath }}{{- end }}
 {{- if $vs.hashicorp.roleId }}{{- $_ := set $hashicorp "role_id" $vs.hashicorp.roleId }}{{- end }}
 {{- if $vs.hashicorp.secretId }}{{- $_ := set $hashicorp "secret_id" $vs.hashicorp.secretId }}{{- end }}
+{{- if $vs.hashicorp.kubernetesRole }}{{- $_ := set $hashicorp "kubernetes_role" $vs.hashicorp.kubernetesRole }}{{- end }}
+{{- if $vs.hashicorp.kubernetesMountPath }}{{- $_ := set $hashicorp "kubernetes_mount_path" $vs.hashicorp.kubernetesMountPath }}{{- end }}
+{{- if $vs.hashicorp.kubernetesTokenPath }}{{- $_ := set $hashicorp "kubernetes_token_path" $vs.hashicorp.kubernetesTokenPath }}{{- end }}
 {{- $_ := set $vaultStore "hashicorp" $hashicorp }}
+{{- end }}
+{{- if $vs.azure }}
+{{- $azure := dict }}
+{{- if $vs.azure.vaultUrl }}{{- $_ := set $azure "vault_url" $vs.azure.vaultUrl }}{{- end }}
+{{- if $vs.azure.tenantId }}{{- $_ := set $azure "tenant_id" $vs.azure.tenantId }}{{- end }}
+{{- if $vs.azure.clientId }}{{- $_ := set $azure "client_id" $vs.azure.clientId }}{{- end }}
+{{- if $vs.azure.clientSecret }}{{- $_ := set $azure "client_secret" $vs.azure.clientSecret }}{{- end }}
+{{- $_ := set $vaultStore "azure" $azure }}
 {{- end }}
 {{- $cs := index $config "config_store" }}
 {{- $_ := set $cs "vault_store" $vaultStore }}
@@ -1116,11 +1269,18 @@ false
 {{- if .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- $_ := set $pgConfig "matview_refresh_timeout" .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- end }}
+{{- if .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- $_ := set $pgConfig "matview_refresh_temp_file_limit" .Values.storage.logsStore.matviewRefreshTempFileLimit }}
+{{- end }}
+{{- if .Values.storage.logsStore.migrationMatviewCancelAfter }}
+{{- $_ := set $pgConfig "migration_matview_cancel_after" .Values.storage.logsStore.migrationMatviewCancelAfter }}
+{{- end }}
 {{- if .Values.storage.logsStore.connMaxIdleTime }}
 {{- $_ := set $pgConfig "conn_max_idle_time" .Values.storage.logsStore.connMaxIdleTime }}
 {{- end }}
 {{- with .Values.storage.logsStore.statementTimeout }}{{- $_ := set $pgConfig "statement_timeout" (toString .) }}{{- end }}
 {{- with .Values.storage.logsStore.idleInTransactionSessionTimeout }}{{- $_ := set $pgConfig "idle_in_transaction_session_timeout" (toString .) }}{{- end }}
+{{- with .Values.storage.logsStore.migrationLockRetryBudget }}{{- $_ := set $pgConfig "migration_lock_retry_budget" (toString .) }}{{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- if .Values.storage.logsStore.writer }}
 {{- $writer := dict }}
@@ -1180,6 +1340,12 @@ false
 {{- if $os.compress }}
 {{- $_ := set $osConfig "compress" true }}
 {{- end }}
+{{- if hasKey $os "format" }}
+{{- $_ := set $osConfig "format" $os.format }}
+{{- end }}
+{{- if hasKey $os "compression" }}
+{{- $_ := set $osConfig "compression" $os.compression }}
+{{- end }}
 {{- if eq $os.type "s3" }}
 {{- if $os.region }}
 {{- $_ := set $osConfig "region" $os.region }}
@@ -1226,6 +1392,16 @@ false
 {{- $_ := set $osConfig "credentials_json" $os.credentialsJson }}
 {{- end }}
 {{- end }}
+{{- if eq $os.type "azure" }}
+{{- if hasKey $os "endpoint" }}
+{{- $_ := set $osConfig "endpoint" $os.endpoint }}
+{{- end }}
+{{- if $os.existingSecret }}
+{{- $_ := set $osConfig "connection_string" "env.BIFROST_OBJECT_STORAGE_CONNECTION_STRING" }}
+{{- else if hasKey $os "connectionString" }}
+{{- $_ := set $osConfig "connection_string" $os.connectionString }}
+{{- end }}
+{{- end }}
 {{- $_ := set (index $config "logs_store") "object_storage" $osConfig }}
 {{- end }}
 {{- if .Values.storage.logsStore.objectStorageExcludeFields }}
@@ -1233,6 +1409,9 @@ false
 {{- end }}
 {{- if .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
 {{- $_ := set (index $config "logs_store") "object_storage_exclude_request_types" .Values.storage.logsStore.objectStorageExcludeRequestTypes }}
+{{- end }}
+{{- if hasKey .Values.storage.logsStore "captureClientIp" }}
+{{- $_ := set (index $config "logs_store") "capture_client_ip" .Values.storage.logsStore.captureClientIp }}
 {{- end }}
 {{- end }}
 {{- /* Vector Store */ -}}
@@ -1379,6 +1558,18 @@ false
 {{- if and (eq $client.connectionType "sse") $client.connectionString }}
 {{- $_ := set $cc "connection_string" $client.connectionString }}
 {{- end }}
+{{- /* Map openapiConfig -> openapi_config (connection_type "openapi" synthesizes an in-process MCP server from the document) */ -}}
+{{- if and (eq $client.connectionType "openapi") $client.openapiConfig }}
+{{- $oa := dict }}
+{{- with $client.openapiConfig.spec }}{{- $_ := set $oa "spec" . }}{{- end }}
+{{- with $client.openapiConfig.specFile }}{{- $_ := set $oa "spec_file" . }}{{- end }}
+{{- with $client.openapiConfig.specUrl }}{{- $_ := set $oa "spec_url" . }}{{- end }}
+{{- with $client.openapiConfig.baseUrl }}{{- $_ := set $oa "base_url" . }}{{- end }}
+{{- with $client.openapiConfig.securityCredentials }}{{- $_ := set $oa "security_credentials" . }}{{- end }}
+{{- if hasKey $client.openapiConfig "includeDeprecated" }}{{- $_ := set $oa "include_deprecated" $client.openapiConfig.includeDeprecated }}{{- end }}
+{{- if hasKey $client.openapiConfig "maxResponseBytes" }}{{- $_ := set $oa "max_response_bytes" $client.openapiConfig.maxResponseBytes }}{{- end }}
+{{- $_ := set $cc "openapi_config" $oa }}
+{{- end }}
 {{- /* Map stdioConfig -> stdio_config */ -}}
 {{- if $client.stdioConfig }}
 {{- $stdio := dict "command" $client.stdioConfig.command }}
@@ -1404,6 +1595,16 @@ false
 {{- else if hasKey $client "toolsToAutoExecute" }}
 {{- $_ := set $cc "tools_to_auto_execute" $client.toolsToAutoExecute }}
 {{- end }}
+{{- if hasKey $client "prompts_to_expose" }}
+{{- $_ := set $cc "prompts_to_expose" $client.prompts_to_expose }}
+{{- else if hasKey $client "promptsToExpose" }}
+{{- $_ := set $cc "prompts_to_expose" $client.promptsToExpose }}
+{{- end }}
+{{- if hasKey $client "resources_to_expose" }}
+{{- $_ := set $cc "resources_to_expose" $client.resources_to_expose }}
+{{- else if hasKey $client "resourcesToExpose" }}
+{{- $_ := set $cc "resources_to_expose" $client.resourcesToExpose }}
+{{- end }}
 {{- if hasKey $client "auth_type" }}
 {{- $_ := set $cc "auth_type" $client.auth_type }}
 {{- else if hasKey $client "authType" }}
@@ -1418,6 +1619,8 @@ false
 {{- with $client.oauthConfig.tokenUrl }}{{- $_ := set $oauthCfg "token_url" . }}{{- end }}
 {{- with $client.oauthConfig.registrationUrl }}{{- $_ := set $oauthCfg "registration_url" . }}{{- end }}
 {{- with $client.oauthConfig.scopes }}{{- $_ := set $oauthCfg "scopes" . }}{{- end }}
+{{- with $client.oauthConfig.resource }}{{- $_ := set $oauthCfg "resource" . }}{{- end }}
+{{- with $client.oauthConfig.useClientMetadataDocument }}{{- $_ := set $oauthCfg "use_client_metadata_document" . }}{{- end }}
 {{- /* Only emit oauth_config when at least one field resolved; an all-empty block would render "oauth_config": {} instead of relying on discovery. */ -}}
 {{- if $oauthCfg }}
 {{- $_ := set $cc "oauth_config" $oauthCfg }}
@@ -1432,7 +1635,43 @@ false
 {{- with $client.tokenExchange.clientSecret }}{{- $_ := set $te "client_secret" . }}{{- end }}
 {{- with $client.tokenExchange.authorizationServerUrl }}{{- $_ := set $te "authorization_server_url" . }}{{- end }}
 {{- with $client.tokenExchange.scopes }}{{- $_ := set $te "scopes" . }}{{- end }}
+{{- with $client.tokenExchange.profile }}{{- $_ := set $te "profile" . }}{{- end }}
+{{- with $client.tokenExchange.resource }}{{- $_ := set $te "resource" . }}{{- end }}
+{{- with $client.tokenExchange.resourceTokenEndpoint }}{{- $_ := set $te "resource_token_endpoint" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientId }}{{- $_ := set $te "resource_client_id" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientSecret }}{{- $_ := set $te "resource_client_secret" . }}{{- end }}
+{{- with $client.tokenExchange.resourcePrivateKey }}{{- $_ := set $te "resource_private_key" . }}{{- end }}
+{{- with $client.tokenExchange.resourceKeyId }}{{- $_ := set $te "resource_key_id" . }}{{- end }}
+{{- with $client.tokenExchange.resourceSigningAlgorithm }}{{- $_ := set $te "resource_signing_algorithm" . }}{{- end }}
+{{- with $client.tokenExchange.resourceAssertionAudience }}{{- $_ := set $te "resource_assertion_audience" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientAuthMethod }}{{- $_ := set $te "resource_client_auth_method" . }}{{- end }}
 {{- $_ := set $cc "token_exchange" $te }}
+{{- end }}
+{{- /* OAuth client_credentials grant for auth_type "client_credentials". resource is rendered when set, even empty: "" means send no resource. */ -}}
+{{- if $client.clientCredentials }}
+{{- $ccc := dict }}
+{{- with $client.clientCredentials.tokenUrl }}{{- $_ := set $ccc "token_url" . }}{{- end }}
+{{- with $client.clientCredentials.clientId }}{{- $_ := set $ccc "client_id" . }}{{- end }}
+{{- /* A whitespace-only secret or key counts as unset, as the values schema treats it; the value is rendered as written. */ -}}
+{{- if trim (toString (default "" $client.clientCredentials.clientSecret)) }}{{- $_ := set $ccc "client_secret" $client.clientCredentials.clientSecret }}{{- end }}
+{{- with $client.clientCredentials.authMethod }}{{- $_ := set $ccc "auth_method" . }}{{- end }}
+{{- if trim (toString (default "" $client.clientCredentials.privateKey)) }}{{- $_ := set $ccc "private_key" $client.clientCredentials.privateKey }}{{- end }}
+{{- with $client.clientCredentials.keyId }}{{- $_ := set $ccc "key_id" . }}{{- end }}
+{{- with $client.clientCredentials.signingAlgorithm }}{{- $_ := set $ccc "signing_algorithm" . }}{{- end }}
+{{- with $client.clientCredentials.assertionAudience }}{{- $_ := set $ccc "assertion_audience" . }}{{- end }}
+{{- with $client.clientCredentials.scopes }}{{- $_ := set $ccc "scopes" . }}{{- end }}
+{{- if hasKey $client.clientCredentials "resource" }}{{- $_ := set $ccc "resource" $client.clientCredentials.resource }}{{- end }}
+{{- $_ := set $cc "client_credentials" $ccc }}
+{{- end }}
+{{- /* AWS SigV4 signing for auth_type "aws_sigv4": Bifrost signs with its own AWS identity, optionally assuming roleArn. */ -}}
+{{- if $client.awsSigV4 }}
+{{- $aws := dict }}
+{{- with $client.awsSigV4.region }}{{- $_ := set $aws "region" . }}{{- end }}
+{{- with $client.awsSigV4.service }}{{- $_ := set $aws "service" . }}{{- end }}
+{{- with $client.awsSigV4.roleArn }}{{- $_ := set $aws "role_arn" . }}{{- end }}
+{{- with $client.awsSigV4.externalId }}{{- $_ := set $aws "external_id" . }}{{- end }}
+{{- with $client.awsSigV4.sessionName }}{{- $_ := set $aws "session_name" . }}{{- end }}
+{{- $_ := set $cc "aws_sigv4" $aws }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}
 {{- $_ := set $cc "is_ping_available" $client.isPingAvailable }}
@@ -1440,14 +1679,23 @@ false
 {{- if hasKey $client "needsSessionStickiness" }}
 {{- $_ := set $cc "needs_session_stickiness" $client.needsSessionStickiness }}
 {{- end }}
+{{- if hasKey $client "perUserDiscovery" }}
+{{- $_ := set $cc "per_user_discovery" $client.perUserDiscovery }}
+{{- end }}
 {{- if $client.clientId }}
 {{- $_ := set $cc "client_id" $client.clientId }}
 {{- end }}
 {{- if hasKey $client "isCodeModeClient" }}
 {{- $_ := set $cc "is_code_mode_client" $client.isCodeModeClient }}
 {{- end }}
+{{- if $client.serverTypeOnSlug }}
+{{- $_ := set $cc "server_type_on_slug" $client.serverTypeOnSlug }}
+{{- end }}
 {{- if $client.toolSyncInterval }}
 {{- $_ := set $cc "tool_sync_interval" $client.toolSyncInterval }}
+{{- end }}
+{{- if $client.maxProtocolVersion }}
+{{- $_ := set $cc "max_protocol_version" $client.maxProtocolVersion }}
 {{- end }}
 {{- if hasKey $client "toolExecutionTimeout" }}
 {{- $_ := set $cc "tool_execution_timeout" $client.toolExecutionTimeout }}
@@ -1557,6 +1805,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp "toolSyncInterval" }}
 {{- $_ := set $mcpConfig "tool_sync_interval" .Values.bifrost.mcp.toolSyncInterval }}
+{{- end }}
+{{- if .Values.bifrost.mcp.maxProtocolVersion }}
+{{- $_ := set $mcpConfig "max_protocol_version" .Values.bifrost.mcp.maxProtocolVersion }}
 {{- end }}
 {{- if hasKey .Values.bifrost.mcp "toolGroups" }}
 {{- $toolGroups := list }}
@@ -1768,6 +2019,9 @@ false
 {{- if hasKey $inputConfig "disable_root_span_content" }}
 {{- $_ := set $otelConfig "disable_root_span_content" $inputConfig.disable_root_span_content }}
 {{- end }}
+{{- if hasKey $inputConfig "apply_trace_dimensions_to_child_spans" }}
+{{- $_ := set $otelConfig "apply_trace_dimensions_to_child_spans" $inputConfig.apply_trace_dimensions_to_child_spans }}
+{{- end }}
 {{- if hasKey $inputConfig "request_headers" }}
 {{- $_ := set $otelConfig "request_headers" $inputConfig.request_headers }}
 {{- end }}
@@ -1841,6 +2095,12 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "enable_llm_obs" }}
 {{- $_ := set $datadogConfig "enable_llm_obs" $inputConfig.enable_llm_obs }}
+{{- end }}
+{{- if $inputConfig.otel_llmobs_conversion }}
+{{- $_ := set $datadogConfig "otel_llmobs_conversion" $inputConfig.otel_llmobs_conversion }}
+{{- end }}
+{{- if hasKey $inputConfig "llmobs_gateway_mode" }}
+{{- $_ := set $datadogConfig "llmobs_gateway_mode" $inputConfig.llmobs_gateway_mode }}
 {{- end }}
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}
@@ -2151,6 +2411,14 @@ false
 {{- end }}
 {{- if $aos.credentialsJson }}
 {{- $_ := set $aosConfig "credentials_json" $aos.credentialsJson }}
+{{- end }}
+{{- end }}
+{{- if eq $aos.type "azure" }}
+{{- if hasKey $aos "endpoint" }}
+{{- $_ := set $aosConfig "endpoint" $aos.endpoint }}
+{{- end }}
+{{- if hasKey $aos "connectionString" }}
+{{- $_ := set $aosConfig "connection_string" $aos.connectionString }}
 {{- end }}
 {{- end }}
 {{- $_ := set $auditLogs "object_storage" $aosConfig }}
@@ -2719,7 +2987,7 @@ Call this template at the beginning of deployment/stateful templates
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].name is required." $idx) }}
 {{- end }}
 {{- if not $client.connectionType }}
-{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http" $idx $client.name) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].connectionType is required for client '%s'. Values: stdio, websocket, http, sse, openapi" $idx $client.name) }}
 {{- end }}
 {{- if eq $client.connectionType "stdio" }}
 {{- if not $client.stdioConfig }}
@@ -2743,6 +3011,43 @@ Call this template at the beginning of deployment/stateful templates
 {{- end }}
 {{- if not $client.httpConfig.url }}
 {{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].httpConfig.url is required for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- end }}
+{{- if eq $client.connectionType "openapi" }}
+{{- if not $client.openapiConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig is required when connectionType is 'openapi' for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- if not (or $client.openapiConfig.spec $client.openapiConfig.specFile $client.openapiConfig.specUrl) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig needs one of spec, specFile or specUrl for client '%s'." $idx $client.name) }}
+{{- end }}
+{{- $oaAuth := default "none" (default $client.authType $client.auth_type) }}
+{{- if not (has $oaAuth (list "none" "headers" "per_user_headers" "aws_sigv4")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'openapi' (client '%s'). Use none, headers, per_user_headers or aws_sigv4; upstream API credentials go in openapiConfig.securityCredentials." $idx $oaAuth $client.name) }}
+{{- end }}
+{{- else if $client.openapiConfig }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].openapiConfig only applies to connectionType 'openapi' (client '%s' is '%s')." $idx $client.name $client.connectionType) }}
+{{- end }}
+{{- $ccAuth := default "none" (default $client.authType $client.auth_type) }}
+{{- $perUserAuthTypes := list "per_user_oauth" "per_user_headers" "token_exchange" }}
+{{- /* websocket renders as sse, so it takes the same restriction. */ -}}
+{{- if and (has $client.connectionType (list "sse" "stdio" "websocket")) (has $ccAuth $perUserAuthTypes) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType '%s' (client '%s'). Per-user auth types open a connection per call, which SSE and STDIO cannot serve; use none, headers or oauth." $idx $ccAuth $client.connectionType $client.name) }}
+{{- end }}
+{{- if and (eq $client.connectionType "stdio") (has $ccAuth (list "client_credentials" "aws_sigv4")) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].authType '%s' is not supported for connectionType 'stdio' (client '%s'). It authenticates HTTP requests, which a STDIO server never receives." $idx $ccAuth $client.name) }}
+{{- end }}
+{{- if and (eq $ccAuth "client_credentials") (not (and $client.clientCredentials $client.clientCredentials.clientId)) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].clientCredentials.clientId is required for authType 'client_credentials' (client '%s')." $idx $client.name) }}
+{{- end }}
+{{- if and (eq $ccAuth "aws_sigv4") (not (and $client.awsSigV4 $client.awsSigV4.region)) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].awsSigV4.region is required for authType 'aws_sigv4' (client '%s')." $idx $client.name) }}
+{{- end }}
+{{- if $client.perUserDiscovery }}
+{{- if eq $client.connectionType "openapi" }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].perUserDiscovery does not apply to connectionType 'openapi' (client '%s'): its tools come from the OpenAPI document." $idx $client.name) }}
+{{- end }}
+{{- if not (has $ccAuth $perUserAuthTypes) }}
+{{- fail (printf "ERROR: bifrost.mcp.clientConfigs[%d].perUserDiscovery requires authType per_user_oauth, per_user_headers or token_exchange (client '%s' has '%s')." $idx $client.name $ccAuth) }}
 {{- end }}
 {{- end }}
 {{- end }}

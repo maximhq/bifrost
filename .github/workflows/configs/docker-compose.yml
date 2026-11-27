@@ -49,6 +49,7 @@ services:
         - LOG_LEVEL=info
     ports:
         - "9000:8080"
+        - "127.0.0.1:50051:50051"
     volumes:
         - weaviate_data:/var/lib/weaviate
     networks:
@@ -107,4 +108,3 @@ volumes:
     driver: local
   qdrant_data:
     driver: local
-
