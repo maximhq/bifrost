@@ -4659,3 +4659,196 @@ func TestToAnthropicResponsesRequest_AllowedTools(t *testing.T) {
 		})
 	}
 }
+
+// TestUserMessageBetweenParallelToolResultsFollowsTheResults checks a Responses input where a user message
+// sits between the outputs of one assistant turn's parallel tool calls (a client that attaches a file read by
+// the first call). Anthropic requires every tool_use of a turn to be answered in the very next user message,
+// so all of the turn's tool_result blocks must lead that message and the user content must come after them.
+func TestUserMessageBetweenParallelToolResultsFollowsTheResults(t *testing.T) {
+	t.Parallel()
+	call := func(id string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: new(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: new(id), Name: new("read_file"), Arguments: new(`{"file_path":"` + id + `"}`),
+			},
+		}
+	}
+	output := func(id, text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: new(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: new(id),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: new(text)},
+			},
+		}
+	}
+	computerCall := func(id string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type:                 new(schemas.ResponsesMessageTypeComputerCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: new(id)},
+		}
+	}
+	computerOutput := func(id string) schemas.ResponsesMessage {
+		out := output(id, "screenshot taken")
+		out.Type = new(schemas.ResponsesMessageTypeComputerCallOutput)
+		return out
+	}
+	user := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: new(schemas.ResponsesMessageTypeMessage),
+			Role: new(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: new(text)},
+			}},
+		}
+	}
+	noRole := func(text string) schemas.ResponsesMessage {
+		msg := user(text)
+		msg.Role = nil
+		return msg
+	}
+	reasoning := schemas.ResponsesMessage{
+		Type: new(schemas.ResponsesMessageTypeReasoning),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: new("Both files are needed."), Signature: new("sig-1")},
+		}},
+	}
+
+	for _, tc := range []struct {
+		name         string
+		input        []schemas.ResponsesMessage
+		wantThinking bool
+	}{
+		{name: "function outputs", input: []schemas.ResponsesMessage{
+			user("read both files"), call("toolu_a"), call("toolu_b"),
+			output("toolu_a", "Binary content provided (1 item(s))."), user("attached file content"), output("toolu_b", "notes"),
+		}},
+		{name: "computer outputs", input: []schemas.ResponsesMessage{
+			user("click twice"), computerCall("toolu_a"), computerCall("toolu_b"),
+			computerOutput("toolu_a"), user("attached file content"), computerOutput("toolu_b"),
+		}},
+		{name: "call ids the tool_use id sanitizer rewrites", input: []schemas.ResponsesMessage{
+			user("read both files"), call("call/a"), call("call/b"),
+			output("call/a", "Binary content provided (1 item(s))."), user("attached file content"), output("call/b", "notes"),
+		}},
+		{name: "user message with no role", input: []schemas.ResponsesMessage{
+			user("read both files"), call("toolu_a"), call("toolu_b"),
+			output("toolu_a", "Binary content provided (1 item(s))."), noRole("attached file content"), output("toolu_b", "notes"),
+		}},
+		{name: "reasoning after the calls is kept", wantThinking: true, input: []schemas.ResponsesMessage{
+			user("read both files"), call("toolu_a"), call("toolu_b"), reasoning,
+			output("toolu_a", "Binary content provided (1 item(s))."), user("attached file content"), output("toolu_b", "notes"),
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, tc.input, true, schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-5"))
+			wire, _ := sonic.Marshal(msgs)
+
+			turn := -1
+			var callIDs []string
+			for i, m := range msgs {
+				for _, b := range m.Content.ContentBlocks {
+					if b.Type == AnthropicContentBlockTypeToolUse && b.ID != nil {
+						turn = i
+						callIDs = append(callIDs, *b.ID)
+					}
+				}
+			}
+			if len(callIDs) != 2 || turn+1 >= len(msgs) {
+				t.Fatalf("expected one assistant turn with two tool_use blocks followed by a user message, got %s", wire)
+			}
+			next := msgs[turn+1]
+			if next.Role != AnthropicMessageRoleUser {
+				t.Fatalf("message after the tool_use turn has role %s: %s", next.Role, wire)
+			}
+			answered := map[string]bool{}
+			sawOther := false
+			for _, b := range next.Content.ContentBlocks {
+				if b.Type == AnthropicContentBlockTypeToolResult && b.ToolUseID != nil {
+					if sawOther {
+						t.Fatalf("tool_result %s follows other content in the answering message: %s", *b.ToolUseID, wire)
+					}
+					answered[*b.ToolUseID] = true
+				} else {
+					sawOther = true
+				}
+			}
+			for _, id := range callIDs {
+				if !answered[id] {
+					t.Fatalf("tool_use %s is not answered in the next message: %s", id, wire)
+				}
+			}
+			foundUser, foundThinking := false, false
+			for _, m := range msgs[turn+1:] {
+				for _, b := range m.Content.ContentBlocks {
+					if m.Role == AnthropicMessageRoleUser && b.Text != nil && *b.Text == "attached file content" {
+						foundUser = true
+					}
+					if m.Role == AnthropicMessageRoleAssistant && b.Type == AnthropicContentBlockTypeThinking &&
+						b.Thinking != nil && *b.Thinking == "Both files are needed." && !foundUser {
+						foundThinking = true
+					}
+				}
+			}
+			if !foundUser {
+				t.Fatalf("the user message between the results was dropped: %s", wire)
+			}
+			if tc.wantThinking && !foundThinking {
+				t.Fatalf("the reasoning item must reach the wire as an assistant thinking block ahead of the held user content: %s", wire)
+			}
+		})
+	}
+}
+
+// BenchmarkToAnthropicResponsesRequest_ToolResultLookahead measures the lookahead that holds a user message
+// arriving between one turn's parallel tool outputs. "completed" is the ordinary history, where every call is
+// answered before the user speaks and the lookahead must cost nothing; "interleaved" holds a message every turn.
+func BenchmarkToAnthropicResponsesRequest_ToolResultLookahead(b *testing.B) {
+	user := schemas.ResponsesInputMessageRoleUser
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	functionCallOutput := schemas.ResponsesMessageTypeFunctionCallOutput
+	say := func(s string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Role: &user, Content: &schemas.ResponsesMessageContent{ContentStr: new(s)}}
+	}
+	call := func(id string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Type: &functionCall, ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: new(id), Name: new("read"), Arguments: new("{}"),
+		}}
+	}
+	output := func(id string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{Type: &functionCallOutput, ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: new(id), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: new("ok")},
+		}}
+	}
+	const turns = 100
+	completed := make([]schemas.ResponsesMessage, 0, turns*5)
+	interleaved := make([]schemas.ResponsesMessage, 0, turns*6)
+	for i := range turns {
+		a, c := fmt.Sprintf("toolu_%d_a", i), fmt.Sprintf("toolu_%d_b", i)
+		completed = append(completed, say("Read both files."), call(a), call(c), output(a), output(c))
+		interleaved = append(interleaved, say("Read both files."), call(a), call(c), output(a), say("Attached file content."), output(c))
+	}
+	completed = append(completed, say("Thanks."))
+	for _, bc := range []struct {
+		name  string
+		input []schemas.ResponsesMessage
+	}{
+		{"completed", completed},
+		{"interleaved", interleaved},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			req := &schemas.BifrostResponsesRequest{Provider: schemas.Anthropic, Model: "claude-opus-4-6", Input: bc.input}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := ToAnthropicResponsesRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

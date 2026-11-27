@@ -2378,6 +2378,109 @@
         "structured-data"
       ],
       "icon_url": "https://avatars.githubusercontent.com/u/287127998?v=4"
+    },
+    {
+      "name": "Databuddy",
+      "description": "Connect AI tools to Databuddy to query web and product analytics: traffic, funnels, goals, errors, Web Vitals, session replays, and why a metric moved. Can also manage feature flags, short links, and annotations. Hosted remotely by Databuddy.",
+      "category": "Analytics",
+      "connection_type": "http",
+      "connection_url": "https://api.databuddy.cc/v1/mcp",
+      "auth_type": "oauth",
+      "docs_url": "https://www.databuddy.cc/docs/api/mcp",
+      "publisher": "Databuddy",
+      "tags": [
+        "databuddy",
+        "analytics",
+        "product-analytics",
+        "web-analytics",
+        "feature-flags"
+      ],
+      "icon_url": "https://raw.githubusercontent.com/databuddy-analytics/skills/main/assets/logo.png"
+    },
+    {
+      "name": "Wiro AI",
+      "description": "Authorization header: Bearer <api-key>, or Bearer <key>:<secret> for signature auth. Search, price and run 1,000+ image, video, audio, 3D and LLM models on Wiro AI, upload input files and wait for results, build and run multi-step workflows, and deploy and message AI agents. Hosted remotely by Wiro AI.",
+      "category": "AI Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.wiro.ai/v1",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://wiro.ai/docs/wiro-mcp-server",
+      "publisher": "Wiro AI",
+      "tags": [
+        "wiro",
+        "image-generation",
+        "video-generation",
+        "audio",
+        "llm",
+        "workflows",
+        "agents",
+        "hosted"
+      ],
+      "icon_url": "https://wiro.ai/images/favicon/icon-512x512.png"
+    },
+    {
+      "name": "GetYouTubeTranscript",
+      "description": "Get the transcript of a YouTube video with optional timestamps, search YouTube, and list channel uploads and playlist videos. Hosted remotely by GetYouTubeTranscript. Needs an API key sent as an Authorization: Bearer <key> header (OAuth also supported); new accounts get 100 free credits.",
+      "category": "Research",
+      "connection_type": "http",
+      "connection_url": "https://getyoutubetranscript.com/api/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://github.com/tubeagentkit/youtube-mcp",
+      "publisher": "GetYouTubeTranscript",
+      "tags": [
+        "youtube",
+        "transcripts",
+        "captions",
+        "video",
+        "search",
+        "research"
+      ],
+      "icon_url": "https://avatars.githubusercontent.com/u/328486248?v=4"
+    },
+    {
+      "name": "Bargo Congress Trades",
+      "description": "Read normalized U.S. House and Senate STOCK Act trade disclosures, with filters for ticker, member, chamber, transaction type, and date.",
+      "category": "Finance",
+      "connection_type": "http",
+      "connection_url": "https://www.bargo.ai/free-apis/congress/mcp",
+      "auth_type": "headers",
+      "required_header_keys": [
+        "Authorization"
+      ],
+      "docs_url": "https://www.bargo.ai/free-apis/congress",
+      "publisher": "Bargo",
+      "tags": [
+        "congress",
+        "congressional-trading",
+        "stock-act",
+        "market-data",
+        "finance"
+      ],
+      "icon_url": "https://www.bargo.ai/favicon.png"
+    },
+    {
+      "name": "Spala Public MCP",
+      "description": "Connect AI tools to Spala for public documentation, onboarding, backend template discovery, and addon discovery. Hosted remotely by Spala; project operations are currently unavailable on this public endpoint.",
+      "category": "Developer Tools",
+      "connection_type": "http",
+      "connection_url": "https://mcp.spala.ai/mcp",
+      "auth_type": "none",
+      "docs_url": "https://github.com/spala-ai/spala-public-mcp",
+      "publisher": "Spala AI",
+      "tags": [
+        "spala",
+        "backend",
+        "documentation",
+        "templates",
+        "developer-tools"
+      ],
+      "icon_url": "https://spala.ai/brand/spala-logo-512.png"
     }
   ]
 }
