@@ -65,6 +65,7 @@
 - fix: openai - streaming speech on `tts-1` and `tts-1-hd` returns a 400
 - fix: gemini - audio `fileData` parts are no longer treated as transcription
 - fix: vertex - model listing on `us` and `eu` keys uses the regional endpoint host, and token errors show the underlying cause
+- fix: model listing keeps paging past pages whose models were all filtered out by governance, so permitted models on later pages are still listed
 - fix: streams cancelled before the upstream's first byte run their terminal post-hooks
 - chore: brotli 1.2.8 and dependency updates
 - chore: upgraded Go to 1.27.4
