@@ -180,12 +180,14 @@ export function createWarpLib(pm) {
       var data = names.filter(function (n) { return DISCOVERY_TOOLS.indexOf(n) < 0; });
       if (data.length) failures.push("queried data for an out-of-scope question: " + data.join(", "));
     }
+    // tool is one name or a list of names, any of which may carry the arguments.
     (e.argsMatch || []).forEach(function (m) {
       var re = pattern(m.pattern);
+      var tools = m.tool ? [].concat(m.tool) : null;
       var hit = calls.some(function (t) {
-        return (!m.tool || t.name === m.tool) && re.test(t.arguments || "");
+        return (!tools || tools.indexOf(t.name) >= 0) && re.test(t.arguments || "");
       });
-      if (!hit) failures.push("no " + (m.tool || "tool") + " call with arguments matching /" + m.pattern + "/");
+      if (!hit) failures.push("no " + (tools ? tools.join(" or ") : "tool") + " call with arguments matching /" + m.pattern + "/");
     });
     // A filter the question never asked for narrows the answer without saying so.
     (e.argsNone || []).forEach(function (m) {
