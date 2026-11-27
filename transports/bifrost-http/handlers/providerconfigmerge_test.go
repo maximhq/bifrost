@@ -31,6 +31,10 @@ func savedConfig() configstore.ProviderConfig {
 		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Anthropic},
 		OpenAIConfig:         &schemas.OpenAIConfig{DisableStore: true},
 		PromptCache:          &schemas.PromptCacheConfig{AutoInject: true, TTL: schemas.Ptr("1h")},
+		InjectedTools: []schemas.InjectedTool{
+			{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		},
+		Passthrough: &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{"POST"}, Path: "/v1/chat/completions"}}},
 	}
 }
 
@@ -48,11 +52,15 @@ func TestApplyProviderConfigUpdates_OmittedBlocksArePreserved(t *testing.T) {
 	assert.True(t, config.PromptCache.AutoInject)
 	require.NotNil(t, config.PromptCache.TTL)
 	assert.Equal(t, "1h", *config.PromptCache.TTL)
+	require.NotNil(t, config.InjectedTools, "an omitted injected_tools must survive")
+	assert.Equal(t, "tavily", config.InjectedTools[0].MCPClientName)
+	require.NotNil(t, config.Passthrough, "an omitted passthrough must survive")
+	assert.Equal(t, "/v1/chat/completions", config.Passthrough.AllowedRoutes[0].Path)
 }
 
 func TestApplyProviderConfigUpdates_ExplicitNullClears(t *testing.T) {
 	config := savedConfig()
-	payload, fields := decodeUpdate(t, `{"proxy_config":null,"custom_provider_config":null,"openai_config":null,"prompt_cache":null}`)
+	payload, fields := decodeUpdate(t, `{"proxy_config":null,"custom_provider_config":null,"openai_config":null,"prompt_cache":null,"injected_tools":null,"passthrough":null}`)
 
 	applyProviderConfigUpdates(&config, payload, fields)
 
@@ -60,6 +68,8 @@ func TestApplyProviderConfigUpdates_ExplicitNullClears(t *testing.T) {
 	assert.Nil(t, config.CustomProviderConfig)
 	assert.Nil(t, config.OpenAIConfig)
 	assert.Nil(t, config.PromptCache)
+	assert.Nil(t, config.InjectedTools)
+	assert.Nil(t, config.Passthrough, "null returns passthrough to the provider default")
 }
 
 func TestApplyProviderConfigUpdates_PresentBlocksAreReplaced(t *testing.T) {
@@ -72,4 +82,36 @@ func TestApplyProviderConfigUpdates_PresentBlocksAreReplaced(t *testing.T) {
 	assert.False(t, config.PromptCache.AutoInject, "a supplied block replaces the saved one wholesale")
 	assert.Nil(t, config.PromptCache.TTL, "replacement is not a field-level merge")
 	assert.NotNil(t, config.ProxyConfig, "the blocks this request did not mention are untouched")
+}
+
+func TestApplyProviderConfigUpdates_InjectedToolsReplaced(t *testing.T) {
+	config := savedConfig()
+	payload, fields := decodeUpdate(t, `{"injected_tools":[{"name":"web_search","mcp_client_name":"exa","tool_name":"web_search_exa"},{"name":"read_page","mcp_client_name":"exa","tool_name":"crawl"}]}`)
+
+	applyProviderConfigUpdates(&config, payload, fields)
+
+	assert.Equal(t, []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "exa", ToolName: "web_search_exa"},
+		{Name: "read_page", MCPClientName: "exa", ToolName: "crawl"},
+	}, config.InjectedTools, "the list is replaced whole, in order")
+	assert.NotNil(t, config.PromptCache, "the blocks this request did not mention are untouched")
+}
+
+// An empty allowed_routes is not the same as no policy: [] forwards nothing, while a
+// cleared policy forwards every route. The update must keep that distinction.
+func TestApplyProviderConfigUpdates_PassthroughReplaced(t *testing.T) {
+	config := savedConfig()
+	payload, fields := decodeUpdate(t, `{"passthrough":{"allowed_routes":[{"methods":["GET"],"path":"/v1/files/*"}]}}`)
+
+	applyProviderConfigUpdates(&config, payload, fields)
+
+	assert.Equal(t, &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{
+		{Methods: []string{"GET"}, Path: "/v1/files/*"},
+	}}, config.Passthrough, "the policy is replaced whole")
+	assert.NotNil(t, config.InjectedTools, "the blocks this request did not mention are untouched")
+
+	payload, fields = decodeUpdate(t, `{"passthrough":{"allowed_routes":[]}}`)
+	applyProviderConfigUpdates(&config, payload, fields)
+	require.NotNil(t, config.Passthrough, "an empty allowlist is a policy that forwards nothing")
+	assert.Empty(t, config.Passthrough.AllowedRoutes)
 }

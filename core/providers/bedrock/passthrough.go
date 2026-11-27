@@ -122,12 +122,26 @@ func hasBedrockSigningCredentials(cfg *schemas.BedrockKeyConfig) bool {
 // Host and x-amz-* names are never forwarded, so the request is authenticated and signed by Bifrost alone.
 var bedrockPassthroughForwardedHeaders = []string{"Content-Type", "Accept"}
 
+// IsPassthroughRoute reports whether a request is one of the allow-listed passthrough operations.
+// The HTTP route policy uses it so the gateway and the provider accept exactly the same list.
+func IsPassthroughRoute(method, path string) bool {
+	_, ok := matchBedrockPassthroughRoute(method, path)
+	return ok
+}
+
 // IsPassthroughStreamPath reports whether a request is an allow-listed operation whose AWS response is an
 // event stream (InvokeAgent). The HTTP router uses it to pick the streaming passthrough for exactly those
 // requests: the path and body of an InvokeAgent call carry no "stream" marker of their own.
 func IsPassthroughStreamPath(method, path string) bool {
 	route, ok := matchBedrockPassthroughRoute(method, path)
 	return ok && route.streaming
+}
+
+// IsPassthroughAgentPath reports whether a passthrough request is InvokeAgent, the one forwarded operation that runs a
+// conversation turn.
+func IsPassthroughAgentPath(method, path string) bool {
+	route, ok := matchBedrockPassthroughRoute(method, path)
+	return ok && route.operation == "InvokeAgent"
 }
 
 // buildPassthroughRequest checks the request against the allow-list, resolves the service host from the
@@ -140,7 +154,7 @@ func (provider *BedrockProvider) buildPassthroughRequest(ctx *schemas.BifrostCon
 
 	config := key.BedrockKeyConfig
 	region := resolveBedrockRegion(ctx, key, "")
-	requestURL := fmt.Sprintf("https://%s%s", resolveBedrockHost(bedrockEndpoints(config), route.service, region), req.Path)
+	requestURL := fmt.Sprintf("https://%s%s", provider.serviceHost(bedrockEndpoints(config), route.service, region), req.Path)
 	if req.RawQuery != "" {
 		requestURL += "?" + req.RawQuery
 	}
@@ -189,6 +203,8 @@ func passthroughTransportError(err error, latency time.Duration) *schemas.Bifros
 		}, latency)
 	case errors.As(err, &netErr) && netErr.Timeout(), errors.Is(err, context.DeadlineExceeded):
 		return providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
+	case errors.As(err, new(*providerUtils.DialBlockedError)):
+		return providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
 	}
 	return providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderDoRequest, err), latency)
 }

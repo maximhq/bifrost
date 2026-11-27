@@ -1,3 +1,5 @@
+import i18n from "@/lib/i18n";
+import type { RoutingTarget } from "@/lib/types/routingRules";
 /**
  * Routing Rules Utility Functions
  * Helper functions for CEL validation, formatting, and rule management
@@ -103,7 +105,7 @@ export function truncateCELExpression(expression: string, maxLength: number = 60
  */
 export function validateProviderModel(provider: string, _model?: string): string {
 	if (!provider || provider.trim().length === 0) {
-		return "Provider is required";
+		return i18n.t("validation.providerIsRequired");
 	}
 	return "";
 }
@@ -117,7 +119,7 @@ export function getPriorityBadgeClass(): string {
 }
 
 /**
- * Gets a user-friendly CEL operator from the expression
+ * Gets a user-friendly CEL operator from the expression. Developer-facing: nothing renders these labels.
  * @param expression - The CEL expression
  * @returns Array of detected operators
  */
@@ -127,20 +129,20 @@ export function detectCELOperators(expression: string): string[] {
 
 	// Common CEL operators
 	const operatorPatterns = [
-		{ regex: /==/, label: "Equals" },
-		{ regex: /!=/, label: "Not equals" },
-		{ regex: />=/, label: "Greater than or equal" },
-		{ regex: /<=/, label: "Less than or equal" },
-		{ regex: />/, label: "Greater than" },
-		{ regex: /</, label: "Less than" },
-		{ regex: /&&/, label: "AND" },
-		{ regex: /\|\|/, label: "OR" },
-		{ regex: /!(?!=)/, label: "NOT" },
-		{ regex: /in\s/, label: "IN" },
-		{ regex: /.matches\(/, label: "Regex" },
-		{ regex: /.startsWith\(/, label: "StartsWith" },
-		{ regex: /.contains\(/, label: "Contains" },
-		{ regex: /.endsWith\(/, label: "EndsWith" },
+		{ regex: /==/, label: "Equals" }, // i18n-ignore
+		{ regex: /!=/, label: "Not equals" }, // i18n-ignore
+		{ regex: />=/, label: "Greater than or equal" }, // i18n-ignore
+		{ regex: /<=/, label: "Less than or equal" }, // i18n-ignore
+		{ regex: />/, label: "Greater than" }, // i18n-ignore
+		{ regex: /</, label: "Less than" }, // i18n-ignore
+		{ regex: /&&/, label: "AND" }, // i18n-ignore
+		{ regex: /\|\|/, label: "OR" }, // i18n-ignore
+		{ regex: /!(?!=)/, label: "NOT" }, // i18n-ignore
+		{ regex: /in\s/, label: "IN" }, // i18n-ignore
+		{ regex: /.matches\(/, label: "Regex" }, // i18n-ignore
+		{ regex: /.startsWith\(/, label: "StartsWith" }, // i18n-ignore
+		{ regex: /.contains\(/, label: "Contains" }, // i18n-ignore
+		{ regex: /.endsWith\(/, label: "EndsWith" }, // i18n-ignore
 	];
 
 	operatorPatterns.forEach(({ regex, label }) => {
@@ -169,4 +171,53 @@ export function parseTTFTTimeoutInput(raw: string): number | undefined | null {
 	}
 	const ms = Number(trimmed);
 	return ms >= 1 && ms <= MAX_TTFT_TIMEOUT_MS ? ms : null;
+}
+
+/**
+ * The API stores the TTFT deadline per target while the form edits a single value. Returns
+ * the shared deadline, or mixed=true when targets disagree (set vs unset counts as a disagreement).
+ */
+export function summarizeTargetsTTFT(targets: RoutingTarget[] | undefined): { ms: number | undefined; mixed: boolean } {
+	const values = (targets ?? []).map((t) => t.ttft_timeout_ms || undefined);
+	const first = values[0];
+	const mixed = values.some((v) => v !== first);
+	return { ms: mixed ? undefined : first, mixed };
+}
+
+/** Display text for a rule's TTFT deadline, derived from its targets. */
+export function formatTargetsTTFT(targets: RoutingTarget[] | undefined): string {
+	const { ms, mixed } = summarizeTargetsTTFT(targets);
+	if (mixed) {
+		return "Mixed";
+	}
+	return ms ? `${ms} ms (streaming)` : "Off";
+}
+
+/**
+ * Deadline to send for one target. While the input still equals what was loaded, a target keeps
+ * its own stored deadline (so mixed values survive an unrelated save) and a target added since
+ * inherits the shared one. Once the user edits the input, the new value applies to every target,
+ * including an empty one: `edited` separates "cleared on purpose" from "never touched".
+ */
+export function resolveTargetTTFTMs(input: string, loadedInput: string, targetMs?: number | null, edited = false): number {
+	if (!edited && input === loadedInput) {
+		return targetMs || Number(loadedInput) || 0;
+	}
+	return parseTTFTTimeoutInput(input) ?? 0;
+}
+
+/**
+ * What the TTFT field should convey. While untouched it reflects the loaded targets, so a mixed
+ * rule reads "Mixed" and still counts as having a deadline; once edited it follows the input.
+ */
+export function summarizeTTFTDisplay(
+	targets: RoutingTarget[] | undefined,
+	input: string,
+	edited: boolean,
+): { mixed: boolean; active: boolean } {
+	if (edited) {
+		return { mixed: false, active: typeof parseTTFTTimeoutInput(input) === "number" };
+	}
+	const { ms, mixed } = summarizeTargetsTTFT(targets);
+	return { mixed, active: mixed || ms !== undefined };
 }

@@ -148,6 +148,9 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Handle empty candidates (filtered/malformed responses)
 	if len(response.Candidates) == 0 {
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
+		if response.promptBlockError() != nil {
+			finishReason = ConvertGeminiFinishReasonToBifrost(FinishReasonSafety)
+		}
 		return createErrorResponse(response, finishReason, false)
 	}
 
@@ -178,6 +181,9 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// too. ToBifrostChatCompletionStream already builds its choice outside this guard.
 	if candidate.Content != nil {
 		for _, part := range candidate.Content.Parts {
+			if part == nil {
+				continue
+			}
 			// Handle thought/reasoning text separately - add to reasoning details
 			if part.Text != "" && part.Thought {
 				reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
@@ -446,6 +452,9 @@ func (response *GenerateContentResponse) splitInlineMediaParts() []*GenerateCont
 	var groups [][]*Part
 	var run []*Part
 	for _, part := range candidate.Content.Parts {
+		if part == nil {
+			continue
+		}
 		if isInlineMediaPart(part) {
 			if len(run) > 0 {
 				groups = append(groups, run)
@@ -521,6 +530,9 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 	// Handle empty candidates (filtered/malformed responses)
 	if len(response.Candidates) == 0 {
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
+		if response.promptBlockError() != nil {
+			finishReason = ConvertGeminiFinishReasonToBifrost(FinishReasonSafety)
+		}
 		return createErrorResponse(response, finishReason, true), nil, true
 	}
 
@@ -567,6 +579,9 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 		var reasoningDetails []schemas.ChatReasoningDetails
 
 		for _, part := range candidate.Content.Parts {
+			if part == nil {
+				continue
+			}
 			switch {
 			case part.Text != "" && part.Thought:
 				// Thought/reasoning content - add to reasoning details

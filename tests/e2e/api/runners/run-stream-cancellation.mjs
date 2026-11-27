@@ -3,9 +3,11 @@
 // reading the first bytes, then aborting the downstream request.
 
 import { writeFileSync } from "node:fs";
+import { generatedCharsInData, cancelledUsageFailure, charThresholdFor } from "./lib/cancel-stream-usage.mjs";
 import { createRequire } from "node:module";
 import { evaluateProbeStream } from "./lib/stream-probe-verdict.mjs";
-import { evaluateNonStreamCancel } from "./lib/nonstream-cancel-verdict.mjs";
+import { evaluateNonStreamCancel, TERMINAL_STATUSES } from "./lib/nonstream-cancel-verdict.mjs";
+import { evaluatePreStreamCancel } from "./lib/prestream-cancel-verdict.mjs";
 import { resolveVariables } from "./lib/resolve-variables.mjs";
 
 const require = createRequire(import.meta.url);
@@ -13,6 +15,7 @@ const require = createRequire(import.meta.url);
 // Shared with newman-reporter-dbverify so provider alias normalization stays in sync.
 const { resolvePricingEntry, expectedCostFromRow } = require("../lib/pricing");
 const { readLogsDbUrl } = require("../lib/logs-db-url");
+const { openSqliteReadonly } = require("../lib/sqlite-readonly");
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -30,6 +33,9 @@ const providerFilter = (args.provider || "").toLowerCase();
 const out = args.out || "tmp/stream-cancel-report.json";
 const readTimeoutMs = Number(args["read-timeout-ms"] || 20000);
 const abortAfterBytes = Number(args["abort-after-bytes"] || 1);
+const expectEstimation = args["expect-estimation"] !== "false";
+const abortAfterChars = Number(args["abort-after-chars"] || (expectEstimation ? 128 : 0));
+const EARLY_USAGE_PROVIDERS = new Set(["anthropic"]);
 // Non-streaming cancellation: abort this many ms after dispatch (before the full
 // response can return) to force a client-disconnect on a non-streaming request,
 // exercising the non-streaming client-disconnect billing path (#3357).
@@ -51,6 +57,21 @@ if (!Number.isSafeInteger(parsedNonStreamTrials) || parsedNonStreamTrials < 1) {
   throw new Error(`--nonstream-trials must be a positive integer, got ${JSON.stringify(args["nonstream-trials"])}`);
 }
 const nonStreamTrials = parsedNonStreamTrials;
+// Pre-header stream cancellation: abort this many ms after dispatch, before the
+// upstream's first chunk lets Bifrost send headers. That path has no provider
+// goroutine to end the request, so it leaked bifrost_active_requests and left
+// the log row in `processing`. Trials are per route and provider. The telemetry
+// transport hook alone balances the gauge, so only the log-row check proves the core fix.
+const preStreamAbortMs = Number(args["prestream-abort-ms"] || 150);
+if (!Number.isSafeInteger(preStreamAbortMs) || preStreamAbortMs < 1) {
+  // NaN makes setTimeout fire at once, aborting before the request reaches Bifrost.
+  throw new Error(`--prestream-abort-ms must be a positive integer, got ${JSON.stringify(args["prestream-abort-ms"])}`);
+}
+const parsedPreStreamTrials = Number(args["prestream-trials"] || 4);
+if (!Number.isSafeInteger(parsedPreStreamTrials) || parsedPreStreamTrials < 1) {
+  throw new Error(`--prestream-trials must be a positive integer, got ${JSON.stringify(args["prestream-trials"])}`);
+}
+const preStreamTrials = parsedPreStreamTrials;
 // Cost verification: after aborting a stream mid-flight, confirm the logs DB row
 // for that request carries a cost (#3357). Needs a logs DB. Skip with --no-cost-check.
 const skipCostCheck = args["no-cost-check"] === "true";
@@ -59,19 +80,79 @@ const configPathArg = args["config"] || process.env.BIFROST_CONFIG_PATH || "conf
 const serverWorkingDir = args["server-working-dir"] || process.cwd();
 const pricingUrl =
   args["pricing-url"] || process.env.BIFROST_PRICING_URL || "https://getbifrost.ai/datasheet";
-// Providers that emit usage in the FIRST stream event → a cancel-after-first-byte
-// deterministically has billable usage, so cost MUST be > 0. Only native Anthropic
-// qualifies: its message_start event carries input_tokens + cache tokens immediately
-// (https://platform.claude.com/docs/en/api/messages-streaming).
-// Everyone else delivers usage only in a terminal event, so an early cancel may
-// legitimately have none — for those we require only that the error row exists.
-// Notably Bedrock (Converse) is NOT early-usage: per the ConverseStream response
-// schema the `usage` field lives solely in the terminal `metadata`
-// (ConverseStreamMetadataEvent), after messageStop — messageStart carries only role
-// (https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html).
-// So a Bedrock stream cancelled before metadata has nothing to bill, same as the
-// OpenAI family — the fix still bills Bedrock whenever metadata arrives before failure.
-const EARLY_USAGE_PROVIDERS = new Set(["anthropic"]);
+// Every provider must account for output actually received before cancellation.
+const BILLED_CANCEL_COUNTERS = ["bifrost_error_requests_total", "bifrost_input_tokens_total", "bifrost_output_tokens_total", "bifrost_cost_total"];
+
+// /metrics sits behind the API auth chain: the OSS setup lock, or dashboard credentials once auth is on.
+const adminAuthHeader = process.env.BIFROST_E2E_AUTH_HEADER || "";
+const setupToken = (process.env.BIFROST_E2E_SETUP_TOKEN || process.env.BIFROST_SETUP_TOKEN || "bifrost-e2e-setup-token").trim();
+const metricsHeaders = {
+  ...(adminAuthHeader ? { Authorization: adminAuthHeader } : {}),
+  ...(setupToken ? { "X-Bifrost-Setup-Token": setupToken } : {}),
+};
+
+// Sums each BILLED_CANCEL_COUNTERS family across every series labelled with provider.
+async function scrapeProviderCounters(provider) {
+  const res = await fetch(`${baseUrl}/metrics`, { headers: metricsHeaders });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`GET /metrics returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+  const sums = Object.fromEntries(BILLED_CANCEL_COUNTERS.map((n) => [n, 0]));
+  const providerLabel = new RegExp(`(^|,)provider="${provider}"(,|$)`);
+  for (const line of text.split("\n")) {
+    const m = /^(\w+)\{([^}]*)\}\s+(\S+)/.exec(line);
+    if (m && m[1] in sums && providerLabel.test(m[2])) sums[m[1]] += Number(m[3]);
+  }
+  return sums;
+}
+
+// Reads bifrost_active_requests for one method label; undefined when the series does not exist yet.
+async function scrapeActiveRequests(method) {
+  const res = await fetch(`${baseUrl}/metrics`, { headers: metricsHeaders });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`GET /metrics returned HTTP ${res.status}: ${text.slice(0, 300)}`);
+  const methodLabel = new RegExp(`(^|,)method="${method}"(,|$)`);
+  let value;
+  for (const line of text.split("\n")) {
+    const m = /^bifrost_active_requests\{([^}]*)\}\s+(\S+)/.exec(line);
+    if (m && methodLabel.test(m[1])) value = (value ?? 0) + Number(m[2]);
+  }
+  return value;
+}
+
+// Waits up to ~10s for the gauge to go idle (0, or no series yet) and returns the last reading.
+// A slot still held by an earlier case or other traffic fails the verdict rather than becoming the baseline.
+async function idleActiveRequests(method) {
+  let value = await scrapeActiveRequests(method);
+  for (let i = 0; i < 20 && (value ?? 0) > 0; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    value = await scrapeActiveRequests(method);
+  }
+  return value;
+}
+
+// Polls the gauge until it settles back to before (abandoned streams end asynchronously in the worker).
+async function pollActiveRequests(method, before) {
+  let value;
+  for (const ms of [300, 700, 1200, 2000, 3000]) {
+    await new Promise((r) => setTimeout(r, ms));
+    value = await scrapeActiveRequests(method);
+    if (value !== undefined && value === (before ?? 0)) return value;
+  }
+  return value;
+}
+
+// Polls /metrics until the cancel's input tokens and cost land (the telemetry
+// post-hook records asynchronously). Returns an error string, or undefined on success.
+async function verifyCancelMetrics(provider, before) {
+  let delta = {};
+  for (const ms of [300, 700, 1200, 2000]) {
+    await new Promise((r) => setTimeout(r, ms));
+    const after = await scrapeProviderCounters(provider);
+    delta = Object.fromEntries(BILLED_CANCEL_COUNTERS.map((n) => [n, after[n] - before[n]]));
+    if (delta.bifrost_input_tokens_total > 0 && (!expectEstimation || delta.bifrost_output_tokens_total > 0) && delta.bifrost_cost_total > 0) return undefined;
+  }
+  return `cancelled ${provider} stream billed usage missing from /metrics: ${BILLED_CANCEL_COUNTERS.map((n) => `${n} +${delta[n]}`).join(", ")}`;
+}
 
 // ─── logs DB + datasheet helpers (cost verification) ──────────────────────────
 function resolveLogsDbUrl() {
@@ -88,8 +169,7 @@ async function connectLogsDb(url) {
       close: () => client.end().catch(() => {}),
     };
   }
-  const Database = require("better-sqlite3");
-  const sdb = new Database(url.replace(/^sqlite:\/\//i, ""), { readonly: true });
+  const sdb = openSqliteReadonly(url.replace(/^sqlite:\/\//i, ""));
   return {
     query: async (sql, p) => sdb.prepare(sql.replace(/\$\d+/g, "?")).all(...p),
     close: () => {
@@ -98,6 +178,20 @@ async function connectLogsDb(url) {
       } catch (_) {}
     },
   };
+}
+
+// Polls until the row reaches a terminal status; returns the last row seen.
+async function pollTerminalLogRow(db, id) {
+  let last = null;
+  for (const ms of [300, 700, 1200, 2000]) {
+    await new Promise((r) => setTimeout(r, ms));
+    const rows = await db.query("SELECT status FROM logs WHERE id = $1", [id]);
+    if (rows && rows.length) {
+      last = rows[0];
+      if (TERMINAL_STATUSES.has(last.status)) return last;
+    }
+  }
+  return last;
 }
 
 async function pollLogRow(db, id) {
@@ -234,7 +328,27 @@ const nonStreamCases = streamCases.flatMap((c) =>
   })),
 );
 
-const cases = [...streamCases, ...nonStreamCases].filter(
+const responsesStreamCases = streamCases.map((c) => ({
+  provider:c.provider, name:`${c.body.model} Responses cancelled usage`, path:"/v1/responses",
+  body:{model:c.body.model,input:"Count from 1 to 200, one number per line.",stream:true,max_output_tokens:1024},
+}));
+const nativeAnthropicStreamCase = {
+  provider:"anthropic", name:"Anthropic native messages cancelled usage", path:"/anthropic/v1/messages",
+  body:{model:"claude-haiku-4-5",messages:[{role:"user",content:"Count from 1 to 200, one number per line."}],stream:true,max_tokens:1024},
+};
+// One pre-header abort group per provider and route; the customer-visible leak was mostly responses_stream.
+const preStreamCases = [
+  ...streamCases.map((c) => ({ ...c, method: "chat_completion_stream" })),
+  ...responsesStreamCases.map((c) => ({ ...c, method: "responses_stream" })),
+].map((c) => ({
+  provider: c.provider,
+  name: `${c.body.model} ${c.path} pre-header cancel x${preStreamTrials}`,
+  path: c.path,
+  body: c.body,
+  method: c.method,
+  preStream: true,
+}));
+const cases = [...streamCases, ...responsesStreamCases, nativeAnthropicStreamCase, ...nonStreamCases, ...preStreamCases].filter(
   (c) => !providerFilter || c.provider === providerFilter,
 );
 
@@ -288,8 +402,78 @@ async function runNonStreamCase(testCase) {
   }
 }
 
+// Pre-header stream cancel: abort each trial before the response headers arrive,
+// then require bifrost_active_requests for the route's method to go from idle back
+// to idle. A trial whose headers win the race is aborted anyway and still counts
+// toward the gauge, but does not exercise the pre-header path.
+async function runPreStreamCase(testCase) {
+  const requestIds = [];
+  const errors = [];
+  let abortedBeforeHeaders = 0;
+  let gaugeBefore;
+  try {
+    gaugeBefore = await idleActiveRequests(testCase.method);
+  } catch (err) {
+    return { ...testCase, ok: false, error: err?.message || String(err) };
+  }
+  for (let i = 0; i < preStreamTrials; i++) {
+    const controller = new AbortController();
+    const requestId = `prestream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
+    const timer = setTimeout(
+      () => controller.abort(new Error("intentional stream abort before headers")),
+      preStreamAbortMs,
+    );
+    try {
+      const response = await fetch(`${baseUrl}${testCase.path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-request-id": requestId },
+        body: JSON.stringify(resolveVariables(testCase.body)),
+        signal: controller.signal,
+      });
+      // Headers beat the abort: disconnect now, outside the path under test.
+      clearTimeout(timer);
+      if (!response.ok) errors.push(`trial ${i + 1}: HTTP ${response.status}`);
+      controller.abort(new Error("headers arrived before the abort"));
+      await response.body?.cancel().catch(() => {});
+    } catch (err) {
+      if (controller.signal.aborted) {
+        abortedBeforeHeaders++;
+        requestIds.push(requestId);
+      } else {
+        errors.push(`trial ${i + 1}: ${err?.message || String(err)}`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  let gaugeAfter;
+  try {
+    gaugeAfter = await pollActiveRequests(testCase.method, gaugeBefore);
+  } catch (err) {
+    errors.push(err?.message || String(err));
+  }
+  const v = evaluatePreStreamCancel({
+    method: testCase.method,
+    trials: preStreamTrials,
+    abortedBeforeHeaders,
+    gaugeBefore,
+    gaugeAfter,
+  });
+  const ok = v.verdict === "PASS" && errors.length === 0;
+  return {
+    ...testCase,
+    requestIds,
+    abortedBeforeHeaders,
+    gaugeBefore,
+    gaugeAfter,
+    ok,
+    error: ok ? undefined : [v.verdict === "PASS" ? undefined : v.detail, ...errors].filter(Boolean).join("; "),
+  };
+}
+
 async function runCase(testCase) {
   if (testCase.nonStream) return runNonStreamCase(testCase);
+  if (testCase.preStream) return runPreStreamCase(testCase);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error("stream read timeout")), readTimeoutMs);
   let bytesRead = 0;
@@ -297,6 +481,7 @@ async function runCase(testCase) {
   const requestId = `stream-cancel-${testCase.provider}-${crypto.randomUUID()}`;
 
   try {
+    const metricsBefore = expectEstimation || EARLY_USAGE_PROVIDERS.has(testCase.provider) ? await scrapeProviderCounters(testCase.provider) : undefined;
     const response = await fetch(`${baseUrl}${testCase.path}`, {
       method: "POST",
       headers: {
@@ -339,24 +524,39 @@ async function runCase(testCase) {
     }
 
     const reader = response.body.getReader();
-    while (bytesRead < abortAfterBytes) {
+    const decoder = new TextDecoder();
+    let pending = "";
+    let generatedChars = 0;
+    const charThreshold = charThresholdFor(contentType, abortAfterChars);
+    while (bytesRead < abortAfterBytes || generatedChars < charThreshold) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) throw new Error(`stream completed before cancellation threshold (${generatedChars} generated characters)`);
       bytesRead += value?.byteLength || 0;
+      pending += decoder.decode(value, {stream:true});
+      const lines = pending.split("\n");
+      pending = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        generatedChars += generatedCharsInData(payload);
+      }
     }
 
     controller.abort(new Error("intentional downstream abort after first stream bytes"));
     await reader.cancel("intentional downstream abort").catch(() => {});
 
+    const metricsError =
+      bytesRead > 0 && metricsBefore ? await verifyCancelMetrics(testCase.provider, metricsBefore) : undefined;
     return {
       ...testCase,
       requestId,
-      ok: bytesRead > 0,
+      ok: bytesRead > 0 && !metricsError,
       status: response.status,
       contentType,
       bytesRead,
       aborted: true,
-      error: bytesRead > 0 ? undefined : "stream ended before any bytes were read",
+      error: bytesRead > 0 ? metricsError : "stream ended before any bytes were read",
     };
   } catch (err) {
     return {
@@ -525,6 +725,21 @@ if (skipCostCheck) {
           `[stream-cancel] pricing datasheet (${pricingUrl}) unavailable; cost-accuracy checks skipped`,
         );
       for (const r of results) {
+        if (r.preStream) {
+          // Each stream aborted before headers must still reach a terminal log status.
+          const stuck = [];
+          for (const id of r.requestIds || []) {
+            const v = evaluateNonStreamCancel({ row: await pollTerminalLogRow(db, id), aborted: true });
+            if (v.verdict === "FAIL") stuck.push(`${id}: ${v.detail}`);
+          }
+          r.costCheck = stuck.length ? "FAIL" : (r.requestIds || []).length ? "PASS" : "SKIP";
+          r.costDetail = stuck.length
+            ? `${stuck.length}/${(r.requestIds || []).length} pre-header abort(s) without a terminal log row - ${stuck[0]}`
+            : `${(r.requestIds || []).length} pre-header abort(s) logged with a terminal status`;
+          if (stuck.length) costFailures++;
+          console.error(`[stream-cancel] log status ${r.provider} (pre-header): ${r.costCheck} — ${r.costDetail}`);
+          continue;
+        }
         const kind = r.nonStream ? "non-stream" : "stream";
         if (r.nonStream) {
           // Every abandoned non-streaming request must reach a terminal log status,
@@ -600,30 +815,19 @@ if (skipCostCheck) {
         } else {
           const cost = Number(row.cost || 0),
             tokens = Number(row.total_tokens || 0);
-          // Strict cost-presence only where usage is deterministically available at the
-          // moment of cancel: native Anthropic streaming (input tokens in message_start).
-          if (EARLY_USAGE_PROVIDERS.has(r.provider)) {
-            if (!(cost > 0 && tokens > 0)) {
-              r.costCheck = "FAIL";
-              r.costDetail = `cancelled ${r.provider} ${kind} logged no cost (cost=$${cost} tokens=${tokens})`;
-              costFailures++;
-            } else {
-              const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
-              if (v.fail) costFailures++;
-              r.costDetail = v.detail;
-              r.costCheck = v.verdict;
-            }
+          const failure = expectEstimation ? cancelledUsageFailure(row, r.provider) : EARLY_USAGE_PROVIDERS.has(r.provider) && !(cost > 0 && tokens > 0) ? `cancelled ${r.provider} logged no usage` : undefined;
+          if (failure) {
+            r.costCheck = "FAIL";
+            r.costDetail = failure;
+            costFailures++;
+          } else if (!expectEstimation && !(cost > 0 && tokens > 0)) {
+            r.costCheck = "PASS";
+            r.costDetail = "Estimation disabled; provider usage not available before cancellation";
           } else {
-            // Presence not required. If a cost WAS recorded, still verify its accuracy.
-            if (cost > 0 && tokens > 0) {
-              const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
-              if (v.fail) costFailures++;
-              r.costDetail = v.detail;
-              r.costCheck = v.verdict;
-            } else {
-              r.costCheck = "PASS";
-              r.costDetail = `status=${row.status} cost=$${cost} (cost-presence not required for ${r.provider} ${kind})`;
-            }
+            const v = costAccuracyVerdict(sheet, row, cost, tokens, kind);
+            if (v.fail) costFailures++;
+            r.costDetail = v.detail;
+            r.costCheck = v.verdict;
           }
         }
         console.error(

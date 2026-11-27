@@ -2,6 +2,8 @@ package tables
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -185,4 +187,48 @@ func TestVirtualKeyOwnerMutualExclusion(t *testing.T) {
 			assert.Contains(t, err.Error(), "more than one of team, customer or business unit")
 		}
 	})
+}
+
+// TestValidateVirtualKeyMetadata covers the entry, key and value limits and the reserved keys,
+// including the load balancer's "bifrost_alb_" prefix spelled out literally so a drift from
+// core's schemas.LoadBalancerMetadataPrefix value shows up here.
+func TestValidateVirtualKeyMetadata(t *testing.T) {
+	tooMany := make(map[string]string, MaxVirtualKeyMetadataEntries+1)
+	for i := range MaxVirtualKeyMetadataEntries + 1 {
+		tooMany[fmt.Sprintf("k%d", i)] = "v"
+	}
+	atLimit := make(map[string]string, MaxVirtualKeyMetadataEntries)
+	for i := range MaxVirtualKeyMetadataEntries {
+		atLimit[fmt.Sprintf("k%d", i)] = "v"
+	}
+	tests := []struct {
+		name     string
+		metadata map[string]string
+		wantErr  string
+	}{
+		{name: "nil", metadata: nil},
+		{name: "empty", metadata: map[string]string{}},
+		{name: "valid keys", metadata: map[string]string{"cost_center": "cc-42", "owner.email": "a@example.com", "env-1": ""}},
+		{name: "entries at limit", metadata: atLimit},
+		{name: "key at max length", metadata: map[string]string{strings.Repeat("k", MaxVirtualKeyMetadataKeyLength): "v"}},
+		{name: "value at max length", metadata: map[string]string{"k": strings.Repeat("é", MaxVirtualKeyMetadataValueLength)}},
+		{name: "too many entries", metadata: tooMany, wantErr: "at most 50 entries"},
+		{name: "empty key", metadata: map[string]string{"": "v"}, wantErr: "invalid metadata key"},
+		{name: "key with space", metadata: map[string]string{"cost center": "v"}, wantErr: `invalid metadata key "cost center"`},
+		{name: "key with quote", metadata: map[string]string{`a"b`: "v"}, wantErr: "invalid metadata key"},
+		{name: "key too long", metadata: map[string]string{strings.Repeat("k", MaxVirtualKeyMetadataKeyLength+1): "v"}, wantErr: "invalid metadata key"},
+		{name: "reserved key", metadata: map[string]string{"isAsyncRequest": "true"}, wantErr: "reserved"},
+		{name: "load balancer prefix", metadata: map[string]string{"bifrost_alb_provider": "x"}, wantErr: "reserved"},
+		{name: "value too long", metadata: map[string]string{"k": strings.Repeat("v", MaxVirtualKeyMetadataValueLength+1)}, wantErr: "at most 512 characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateVirtualKeyMetadata(tt.metadata)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
 }

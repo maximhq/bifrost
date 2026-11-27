@@ -137,6 +137,10 @@ export class ProvidersPage extends BasePage {
     // Note: Model selection is skipped for now as it requires specific UI interaction
     // that may vary based on the provider type
 
+    if (config.contentLogging && config.contentLogging !== 'inherit') {
+      await this.setKeyContentLogging(config.contentLogging)
+    }
+
     // Save the key
     await this.keySaveBtn.click()
 
@@ -144,6 +148,224 @@ export class ProvidersPage extends BasePage {
     await this.waitForSuccessToast()
 
     // Wait for form to close and table to refresh
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Add an OAuth-minted key (client credentials) to the currently selected openai-based provider.
+   * The token endpoint is never contacted at save time, so any https URL works here.
+   */
+  async addOAuthClientCredentialsKey(config: {
+    name: string
+    tokenUrl: string
+    clientId: string
+    clientSecret: string
+    scopes?: string[]
+    audience?: string
+    credentialPlacement?: 'header' | 'body'
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('apikey-openai-oauth-tab').click()
+    await this.page.getByTestId('key-input-oauth-token-url').fill(config.tokenUrl)
+    await this.page.getByTestId('key-input-oauth-client-id').fill(config.clientId)
+    await this.page.getByTestId('key-input-oauth-client-secret').fill(config.clientSecret)
+    if (config.credentialPlacement) {
+      await this.page.getByTestId('key-select-oauth-auth-style').click()
+      const label = config.credentialPlacement === 'body' ? /Form body/i : /Authorization header/i
+      await this.page.getByRole('option', { name: label }).click()
+    }
+    await this.fillOAuthScopes(config.scopes)
+    if (config.audience !== undefined) {
+      await this.page.getByTestId('key-input-oauth-cc-audience').fill(config.audience)
+    }
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Open a new GitHub Copilot key and start Sign in with GitHub. The caller mocks the gateway's
+   * sign-in endpoints and saves the key.
+   */
+  async startCopilotSignIn(config: { name: string }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('copilot-sign-in-button').click()
+  }
+
+  /**
+   * Add a key that mints its bearer with the RFC 7523 JWT bearer grant.
+   * Only fields the caller sets are filled, so the form's defaults (RS256, subject = issuer,
+   * 300s lifetime) are exercised when they are left out.
+   */
+  async addOAuthJWTBearerKey(config: {
+    name: string
+    tokenUrl: string
+    privateKeyPem: string
+    issuer: string
+    audience: string
+    subject?: string
+    keyId?: string
+    signingAlgorithm?: string
+    assertionLifetimeSeconds?: number
+    scopes?: string[]
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('apikey-openai-oauth-tab').click()
+    await this.page.getByTestId('key-select-oauth-grant-type').click()
+    await this.page.getByRole('option', { name: /JWT bearer/i }).click()
+    await this.page.getByTestId('key-input-oauth-token-url').fill(config.tokenUrl)
+    await this.page.getByTestId('key-input-oauth-private-key').fill(config.privateKeyPem)
+    await this.page.getByTestId('key-input-oauth-issuer').fill(config.issuer)
+    await this.page.getByTestId('key-input-oauth-audience').fill(config.audience)
+    if (config.subject !== undefined) {
+      await this.page.getByTestId('key-input-oauth-subject').fill(config.subject)
+    }
+    if (config.keyId !== undefined) {
+      await this.page.getByTestId('key-input-oauth-key-id').fill(config.keyId)
+    }
+    if (config.signingAlgorithm) {
+      await this.page.getByTestId('key-select-oauth-signing-algorithm').click()
+      await this.page.getByRole('option', { name: config.signingAlgorithm, exact: true }).click()
+    }
+    if (config.assertionLifetimeSeconds !== undefined) {
+      await this.page.getByTestId('key-input-oauth-assertion-lifetime').fill(String(config.assertionLifetimeSeconds))
+    }
+    await this.fillOAuthScopes(config.scopes)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Open the key editor for an existing key and leave it on screen.
+   */
+  async openKeyEditor(keyName: string): Promise<void> {
+    const keyRow = this.getKeyRow(keyName)
+    await keyRow.scrollIntoViewIfNeeded()
+    const menuBtn = keyRow.locator('button').filter({ has: this.page.locator('svg') }).last()
+    await menuBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await menuBtn.click()
+    await this.page.getByRole('menuitem', { name: /Edit/i }).click()
+    await expect(this.keyForm).toBeVisible()
+  }
+
+  /**
+   * Edit an OAuth-minted key: the editor must reopen on the OAuth tab (detected from the
+   * stored block) and the masked credentials are left untouched so the save sends them back.
+   */
+  async editOAuthKey(keyName: string, updates: { audience?: string; scopes?: string[] }): Promise<void> {
+    await this.openKeyEditor(keyName)
+    await expect(this.page.getByTestId('apikey-openai-oauth-tab')).toHaveAttribute('data-state', 'active')
+
+    if (updates.audience !== undefined) {
+      const audience = this.page.getByTestId('key-input-oauth-cc-audience')
+      await audience.clear()
+      await audience.fill(updates.audience)
+    }
+    await this.fillOAuthScopes(updates.scopes)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Reopen an OAuth-minted key and move it back to a static API key.
+   */
+  async switchOAuthKeyToApiKey(keyName: string, apiKey: string): Promise<void> {
+    await this.openKeyEditor(keyName)
+    await expect(this.page.getByTestId('apikey-openai-oauth-tab')).toHaveAttribute('data-state', 'active')
+    await this.page.getByTestId('apikey-openai-api-key-tab').click()
+    await this.page.getByLabel('API Key').fill(apiKey)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Add a key that federates through Anthropic Workload Identity Federation, reading its identity
+   * token from a file, to the currently selected anthropic-based provider. No token exchange runs
+   * at save time, so the IDs and the path only need to be present.
+   */
+  async addAnthropicWorkloadIdentityKey(config: {
+    name: string
+    federationRuleId: string
+    organizationId: string
+    serviceAccountId: string
+    workspaceId?: string
+    identityTokenFile: string
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name').fill(config.name)
+    await this.page.getByTestId('apikey-anthropic-workload-identity-tab').click()
+    await this.page.getByTestId('key-input-anthropic-wif-federation-rule-id').fill(config.federationRuleId)
+    await this.page.getByTestId('key-input-anthropic-wif-organization-id').fill(config.organizationId)
+    await this.page.getByTestId('key-input-anthropic-wif-service-account-id').fill(config.serviceAccountId)
+    if (config.workspaceId !== undefined) {
+      await this.page.getByTestId('key-input-anthropic-wif-workspace-id').fill(config.workspaceId)
+    }
+    // Token File is the default source, so its path input is already on screen.
+    await expect(this.page.getByTestId('key-select-anthropic-wif-token-source')).toContainText('Token File')
+    await this.page.getByTestId('key-input-anthropic-wif-identity-token-file').fill(config.identityTokenFile)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    await waitForNetworkIdle(this.page)
+  }
+
+  private async fillOAuthScopes(scopes: string[] | undefined): Promise<void> {
+    for (const scope of scopes ?? []) {
+      await this.page.getByTestId('key-input-oauth-scopes').fill(scope)
+      await this.page.getByTestId('key-input-oauth-scopes').press('Enter')
+    }
+  }
+
+  /**
+   * Add a SageMaker key with explicit AWS credentials to the currently selected sagemaker provider.
+   * Bifrost mints the endpoint bearer token from these locally, so no AWS call is made at save time.
+   */
+  async addSageMakerKey(config: {
+    name: string
+    accessKey: string
+    secretKey: string
+    region: string
+  }): Promise<void> {
+    await this.dismissToasts()
+    await this.addKeyBtn.click()
+    await expect(this.keyForm).toBeVisible()
+
+    await this.page.getByLabel('Name', { exact: true }).fill(config.name)
+    await this.page.getByTestId('apikey-sagemaker-explicit-credentials-tab').click()
+    await this.page.getByTestId('apikey-sagemaker-access-key-input').fill(config.accessKey)
+    await this.page.getByTestId('apikey-sagemaker-secret-key-input').fill(config.secretKey)
+    await this.page.getByTestId('apikey-sagemaker-region-input').fill(config.region)
+
+    await this.keySaveBtn.click()
+    await this.waitForSuccessToast()
     await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
     await waitForNetworkIdle(this.page)
   }
@@ -174,6 +396,14 @@ export class ProvidersPage extends BasePage {
    * Create a custom provider
    */
   async createProvider(config: CustomProviderConfig): Promise<void> {
+    await this.fillCustomProviderForm(config)
+    await this.saveCustomProvider()
+  }
+
+  /**
+   * Open the custom provider sheet and fill name, base format and base URL without saving
+   */
+  async fillCustomProviderForm(config: CustomProviderConfig): Promise<void> {
     await this.openCustomProviderSheet()
 
     // Fill in provider name
@@ -190,7 +420,12 @@ export class ProvidersPage extends BasePage {
     if (config.baseUrl) {
       await this.baseUrlInput.fill(config.baseUrl)
     }
+  }
 
+  /**
+   * Save the open custom provider sheet and wait for it to close
+   */
+  async saveCustomProvider(): Promise<void> {
     // Save the provider
     await this.customProviderSaveBtn.click()
 
@@ -310,9 +545,43 @@ export class ProvidersPage extends BasePage {
       }
     }
 
+    if (updates.contentLogging) {
+      await this.setKeyContentLogging(updates.contentLogging)
+    }
+
     // Save
     await this.keySaveBtn.click()
     await this.waitForSuccessToast()
+  }
+
+  /**
+   * Pick the key's content-logging choice in the open key form
+   */
+  async setKeyContentLogging(choice: 'inherit' | 'disabled' | 'enabled'): Promise<void> {
+    await this.page.getByTestId('apikey-content-logging-select').click()
+    await this.page.getByTestId(`apikey-content-logging-option-${choice}`).click()
+  }
+
+  /**
+   * Open the key's editor, read its content-logging choice by the label it shows, and cancel out
+   */
+  async getKeyContentLogging(keyName: string): Promise<'inherit' | 'disabled' | 'enabled'> {
+    const keyRow = this.getKeyRow(keyName)
+    await keyRow.scrollIntoViewIfNeeded()
+    const menuBtn = keyRow.locator('button').filter({ has: this.page.locator('svg') }).last()
+    await menuBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await menuBtn.click()
+    await this.page.getByRole('menuitem', { name: /Edit/i }).click()
+    await expect(this.keyForm).toBeVisible()
+    const text = (await this.page.getByTestId('apikey-content-logging-select').textContent()) ?? ''
+    await this.keyCancelBtn.click()
+    await expect(this.keyForm).not.toBeVisible({ timeout: 5000 })
+    // Map only the exact labels: an empty or unexpected label must fail, not read as inherit.
+    const label = text.trim()
+    if (label === 'Inherit') return 'inherit'
+    if (label === 'Off for this key') return 'disabled'
+    if (label === 'On for this key') return 'enabled'
+    throw new Error(`unexpected key content-logging label: ${JSON.stringify(label)}`)
   }
 
   /**
@@ -409,6 +678,7 @@ export class ProvidersPage extends BasePage {
       gemini: 'Gemini',
       cohere: 'Cohere',
       bedrock: 'AWS Bedrock',
+      typesafe: 'TypeSafe',
     }
     return labels[type] || type
   }
@@ -437,7 +707,7 @@ export class ProvidersPage extends BasePage {
   /**
    * Select a configuration tab
    */
-  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging'): Promise<void> {
+  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'tools'): Promise<void> {
     await this.openConfigSheet()
 
     const tab = this.page.getByTestId(`provider-tab-${tabName}`)

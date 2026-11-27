@@ -2,11 +2,15 @@ package warp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/vectorstore"
@@ -20,6 +24,10 @@ const warpSemanticCandidateLimit = 100
 // advertises the same figure as maxLength, so the model can stay inside it
 // instead of learning the bound from a refusal.
 const MaxSemanticQueryChars = 2000
+
+// MaxSemanticQueries bounds how many phrasings one search embeds. Each is an
+// embedding request and a vector search per prefilter, so the bound is spend.
+const MaxSemanticQueries = 5
 
 // SemanticSearcher joins the vector index back to the authoritative log store.
 // Vector metadata is only a coarse prefilter: every candidate is reloaded using
@@ -51,15 +59,27 @@ func NewSemanticSearcher(store configstore.WarpStore, vectors vectorstore.Vector
 }
 
 // Search returns meaning-similar conversations in vector score order.
-func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *logstore.SearchFilters, requestedLimit int) (SemanticSearchResult, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return SemanticSearchResult{}, fmt.Errorf("query is required")
+func (s *SemanticSearcher) Search(ctx context.Context, queries []string, filters *logstore.SearchFilters, requestedLimit int) (SemanticSearchResult, error) {
+	return s.SearchVisible(ctx, queries, filters, nil, requestedLimit)
+}
+
+// SearchVisible is Search for a caller whose reads row-level access control
+// narrows to visible.
+//
+// visible changes which candidates the index is asked for, never which rows
+// come back: every candidate is still reloaded through the caller's context,
+// and the store decides. What it buys is recall. Unfiltered, the candidate cap
+// is spent on the deployment's nearest rows, and for a caller who may see a
+// small slice of them nearly all are discarded after hydration - a genuine
+// match of theirs at rank 500 is never reached. A nil visible searches exactly
+// as Search always has.
+func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, filters *logstore.SearchFilters, visible *LogVisibility, requestedLimit int) (SemanticSearchResult, error) {
+	queries, err := normalizeSemanticQueries(queries)
+	if err != nil {
+		return SemanticSearchResult{}, err
 	}
-	// Refused before the embedding request is paid for. Runes, not bytes, to
-	// match the schema's advertised maxLength.
-	if count := utf8.RuneCountInString(query); count > MaxSemanticQueryChars {
-		return SemanticSearchResult{}, fmt.Errorf("query is %d characters; at most %d are accepted", count, MaxSemanticQueryChars)
+	if err := checkSemanticFilters(filters); err != nil {
+		return SemanticSearchResult{}, err
 	}
 	if s == nil || s.store == nil || s.vectors == nil || s.embed == nil || s.logs == nil {
 		return SemanticSearchResult{}, ErrUnavailable
@@ -78,9 +98,9 @@ func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *lo
 	}
 	limit = min(limit, config.EffectiveSemanticSearchLimit(), warpMaxSemanticLimit())
 	threshold := config.EffectiveSemanticSearchThreshold()
-	embedding, _, err := generateWarpEmbedding(ctx, s.embed, config, query)
+	embeddings, err := s.embedQueries(ctx, config, queries)
 	if err != nil {
-		return SemanticSearchResult{}, fmt.Errorf("embed semantic query: %w", err)
+		return SemanticSearchResult{}, err
 	}
 	// The vector store only knows the metadata it was indexed with. Scope,
 	// content-hiding and ContentSearch are decided here, after hydration, so a
@@ -92,30 +112,27 @@ func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *lo
 	hydrated := make(map[string]*logstore.Log, candidateLimit)
 	scores := make(map[string]float64, candidateLimit)
 	result := SemanticSearchResult{Rows: make([]SemanticSearchRow, 0, limit), Threshold: threshold}
+	prefilters := semanticPrefilters(filters, visible)
+	sessionDropped := false
 	for {
-		nearest, err := s.vectors.GetNearest(
-			vectorstore.WithDisableScanFallback(ctx),
-			config.EffectiveLogVectorStoreNamespace(),
-			embedding,
-			semanticVectorFilters(filters),
-			[]string{"log_id"},
-			threshold,
-			int64(candidateLimit),
-		)
+		pages, err := s.nearestPages(ctx, config.EffectiveLogVectorStoreNamespace(), embeddings, prefilters, storeThreshold(threshold), candidateLimit)
+		if filters != nil && filters.SessionID != "" && !sessionDropped && missingSessionProperty(err) {
+			// A namespace made before session_id was stored may not have the
+			// property, and Weaviate refuses a filter on one it lacks. Search
+			// as before the prefilter existed: matchesSemanticFilters still
+			// narrows to the session, only with the cap's recall.
+			withoutSession := *filters
+			withoutSession.SessionID = ""
+			prefilters, sessionDropped = semanticPrefilters(&withoutSession, visible), true
+			pages, err = s.nearestPages(ctx, config.EffectiveLogVectorStoreNamespace(), embeddings, prefilters, storeThreshold(threshold), candidateLimit)
+		}
 		if err != nil {
 			return SemanticSearchResult{}, fmt.Errorf("search log embeddings: %w", err)
 		}
-		ids := make([]string, 0, len(nearest))
-		pending := make([]string, 0, len(nearest))
-		for _, candidate := range nearest {
-			id := semanticCandidateID(candidate)
-			if id == "" {
-				continue
-			}
-			ids = append(ids, id)
-			if candidate.Score != nil {
-				scores[id] = *candidate.Score
-			}
+		atCap := candidateLimit >= warpSemanticCandidateLimit
+		ids, exhausted := mergeSemanticPages(pages, candidateLimit, scores, atCap)
+		pending := make([]string, 0, len(ids))
+		for _, id := range ids {
 			if _, seen := hydrated[id]; !seen {
 				pending = append(pending, id)
 			}
@@ -149,8 +166,9 @@ func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *lo
 			}
 		}
 		// A short page means the index had nothing more to give at this
-		// threshold, so widening it again would return the same rows.
-		if len(result.Rows) == limit || len(nearest) < candidateLimit || candidateLimit >= warpSemanticCandidateLimit {
+		// threshold, so widening it again would return the same rows. So would
+		// widening past a full merged set: it is already the best the cap allows.
+		if len(result.Rows) == limit || exhausted || atCap || len(ids) >= warpSemanticCandidateLimit {
 			break
 		}
 		if err := ctx.Err(); err != nil {
@@ -160,6 +178,384 @@ func (s *SemanticSearcher) Search(ctx context.Context, query string, filters *lo
 	}
 	result.Returned = len(result.Rows)
 	return result, nil
+}
+
+// missingSessionProperty reports whether a search failed because the namespace
+// has no session_id property to filter on: Weaviate's "no such prop with name
+// 'session_id'", RediSearch's "Unknown field ... session_id". Only that failure
+// is retried without the session; any other is the store's, and retrying it
+// with a weaker filter would answer a different question.
+func missingSessionProperty(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "session_id") &&
+		(strings.Contains(message, "no such prop") || strings.Contains(message, "unknown field"))
+}
+
+// ErrInvalidSearchQuery matches a search refused for its queries: none given,
+// one too long, or too many.
+var ErrInvalidSearchQuery = errors.New("invalid search query")
+
+// invalidSearchQueryError is a refused query set. Its text is what the caller
+// reads; it matches ErrInvalidSearchQuery.
+type invalidSearchQueryError string
+
+func (e invalidSearchQueryError) Error() string { return string(e) }
+
+// Is makes errors.Is(err, ErrInvalidSearchQuery) hold.
+func (e invalidSearchQueryError) Is(target error) bool { return target == ErrInvalidSearchQuery }
+
+// SearchLogs is the semantic search GET /api/logs/search serves: the search
+// semantic_search_logs runs, for the caller on ctx. ctx must carry the caller's
+// query scope and identity: the caller's visibility narrows which candidates the
+// index is asked for, and every match is reloaded through ctx, so the store
+// decides what comes back. Warp's own defaults, such as narrowing an unscoped
+// question to the asker's traffic, do not apply. It returns ErrUnavailable when
+// the log index is not set up.
+func (s *Service) SearchLogs(ctx context.Context, queries []string, filters *logstore.SearchFilters, limit int) (SemanticSearchResult, error) {
+	_, searcher := s.researchDeps()
+	if searcher == nil {
+		// A bad request is refused as such even where search is unavailable.
+		if err := ValidateLogSearch(queries, filters); err != nil {
+			return SemanticSearchResult{}, err
+		}
+		return SemanticSearchResult{}, ErrUnavailable
+	}
+	if filters == nil {
+		filters = &logstore.SearchFilters{}
+	}
+	scope := CallerScope(ctx, s.callerRestriction)
+	return searcher.SearchVisible(ctx, queries, filters, scope.Visible, limit)
+}
+
+// ValidateLogSearch refuses a search whose queries or filters it cannot run,
+// matching ErrInvalidSearchQuery, without embedding anything. A caller checks
+// it before availability, so a bad request reads the same whether or not
+// search is set up.
+func ValidateLogSearch(queries []string, filters *logstore.SearchFilters) error {
+	if _, err := normalizeSemanticQueries(queries); err != nil {
+		return err
+	}
+	return checkSemanticFilters(filters)
+}
+
+// checkSemanticFilters refuses filters search by meaning cannot apply, naming them.
+func checkSemanticFilters(filters *logstore.SearchFilters) error {
+	if unsupported := unsupportedSemanticFilters(filters); len(unsupported) > 0 {
+		return invalidSearchQueryError(fmt.Sprintf(
+			"search by meaning cannot filter on %s. It filters on start_time, end_time, providers, models, status, virtual_key_ids, user_ids, apps, team_ids, customer_ids, business_unit_ids, min_latency, max_latency, min_cost, max_cost, session_id and content_search; drop the others, or use an exact log search for them",
+			strings.Join(unsupported, ", ")))
+	}
+	return nil
+}
+
+// normalizeSemanticQueries trims and de-duplicates the phrasings, and refuses
+// a set that is empty, too long or too many before any embedding is paid for.
+// Runes, not bytes, to match the schema's advertised maxLength.
+func normalizeSemanticQueries(queries []string) ([]string, error) {
+	out := make([]string, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" || slices.Contains(out, query) {
+			continue
+		}
+		if count := utf8.RuneCountInString(query); count > MaxSemanticQueryChars {
+			return nil, invalidSearchQueryError(fmt.Sprintf("query is %d characters; at most %d are accepted", count, MaxSemanticQueryChars))
+		}
+		out = append(out, query)
+	}
+	if len(out) == 0 {
+		return nil, invalidSearchQueryError("at least one query is required")
+	}
+	if len(out) > MaxSemanticQueries {
+		return nil, invalidSearchQueryError(fmt.Sprintf("%d queries given; at most %d are accepted", len(out), MaxSemanticQueries))
+	}
+	return out, nil
+}
+
+// unsupportedSemanticFilters names the filters set on filters that semantic
+// search cannot apply. The vector prefilter and matchesSemanticFilters cover
+// only the fields the index carries; any other filter would be dropped, and a
+// dropped filter widens the result without saying so.
+func unsupportedSemanticFilters(filters *logstore.SearchFilters) []string {
+	if filters == nil {
+		return nil
+	}
+	var names []string
+	add := func(set bool, name string) {
+		if set {
+			names = append(names, name)
+		}
+	}
+	add(len(filters.Aliases) > 0, "aliases")
+	add(len(filters.StopReasons) > 0, "stop_reasons")
+	add(len(filters.ToolCallNames) > 0, "tool_call_names")
+	add(len(filters.Objects) > 0, "objects")
+	add(filters.ParentRequestID != "", "parent_request_id")
+	add(filters.FallbackHopsOnly, "fallback_hops_only")
+	add(filters.RequestID != "", "request_id")
+	add(filters.RootsOnly, "roots_only")
+	add(filters.GroupSessions, "group_sessions")
+	add(len(filters.SelectedKeyIDs) > 0, "selected_key_ids")
+	add(len(filters.RoutingRuleIDs) > 0, "routing_rule_ids")
+	add(len(filters.ModelRouterIDs) > 0, "model_router_ids")
+	add(len(filters.ComplexityTiers) > 0, "complexity_tiers")
+	add(len(filters.ComplexityMechanisms) > 0, "complexity_mechanisms")
+	add(len(filters.AgentNames) > 0, "agent_names")
+	add(filters.AgentCorrelationID != "", "agent_correlation_id")
+	add(len(filters.ProjectIDs) > 0, "project_ids")
+	add(len(filters.TopicIDs) > 0, "topic_ids")
+	add(len(filters.RoutingEngineUsed) > 0, "routing_engine_used")
+	add(len(filters.UserAgents) > 0, "user_agents")
+	add(filters.MinTokens != nil, "min_tokens")
+	add(filters.MaxTokens != nil, "max_tokens")
+	add(filters.MissingCostOnly, "missing_cost_only")
+	add(len(filters.CacheHitTypes) > 0, "cache_hit_types")
+	add(len(filters.ErrorTypes) > 0, "error_types")
+	add(len(filters.ErrorCodes) > 0, "error_codes")
+	add(len(filters.StatusCodes) > 0, "status_codes")
+	add(len(filters.GuardrailOutcomes) > 0, "guardrail_outcomes")
+	add(len(filters.GuardrailActions) > 0, "guardrail_actions")
+	add(len(filters.GuardrailRuleIDs) > 0, "guardrail_rule_ids")
+	add(len(filters.GuardrailProfileIDs) > 0, "guardrail_profile_ids")
+	add(len(filters.GuardrailPhases) > 0, "guardrail_phases")
+	add(len(filters.MetadataFilters) > 0, "metadata_filters")
+	add(filters.RealtimeInputItemID != "", "realtime_input_item_id")
+	return names
+}
+
+// LogVisibility is the row ownership row-level access control grants a
+// restricted caller: a log is theirs to read when it matches any one of these
+// sets. It mirrors the store's own predicate, and it only has to be no
+// narrower than it - a set that is too wide costs candidates, one that is too
+// narrow hides rows the caller may see.
+type LogVisibility struct {
+	UserIDs         []string
+	VirtualKeyIDs   []string
+	TeamIDs         []string
+	BusinessUnitIDs []string
+	CustomerIDs     []string
+}
+
+// warpVisibilityPrefilterMaxIDs bounds each visibility set pushed into the
+// vector filter. A caller who may see thousands of users sees a large share of
+// the index anyway, so the unfiltered search serves them; a filter that size
+// is what some vector stores refuse.
+const warpVisibilityPrefilterMaxIDs = 500
+
+// semanticPrefilters returns the vector filters to search with: the question's
+// own, once per visibility dimension.
+//
+// Vector filters only AND, and visibility is an OR across fields - the
+// caller's user ids, or their teams, or their keys. So each dimension is its
+// own query, and the pages are merged by score. One filter set, the question's
+// own, is returned when there is nothing to narrow by: no visibility, a set
+// too large to send, or a question that already names ids inside one of the
+// sets - its candidates are the caller's own already.
+func semanticPrefilters(filters *logstore.SearchFilters, visible *LogVisibility) [][]vectorstore.Query {
+	base := semanticVectorFilters(filters)
+	if visible == nil || filtersWithinVisibility(filters, visible) {
+		return [][]vectorstore.Query{base}
+	}
+	dimensions := []struct {
+		field  string
+		ids    []string
+		scalar bool
+	}{
+		{"user_id", visible.UserIDs, true},
+		{"virtual_key_id", visible.VirtualKeyIDs, true},
+		{"team_ids", visible.TeamIDs, false},
+		{"business_unit_ids", visible.BusinessUnitIDs, false},
+		{"customer_ids", visible.CustomerIDs, false},
+	}
+	prefilters := make([][]vectorstore.Query, 0, len(dimensions))
+	for _, dimension := range dimensions {
+		if len(dimension.ids) > warpVisibilityPrefilterMaxIDs {
+			return [][]vectorstore.Query{base}
+		}
+		if len(dimension.ids) == 0 {
+			continue
+		}
+		queries := slices.Clone(base)
+		if dimension.scalar {
+			queries = appendScalarQuery(queries, dimension.field, dimension.ids)
+		} else {
+			queries = appendContainsAnyQuery(queries, dimension.field, dimension.ids)
+		}
+		prefilters = append(prefilters, queries)
+	}
+	if len(prefilters) == 0 {
+		return [][]vectorstore.Query{base}
+	}
+	return prefilters
+}
+
+// filtersWithinVisibility reports whether the question already names ids that
+// all sit inside one visibility set, so its own filter narrows the index to
+// rows the caller may see.
+func filtersWithinVisibility(filters *logstore.SearchFilters, visible *LogVisibility) bool {
+	if filters == nil {
+		return false
+	}
+	within := func(named, allowed []string) bool {
+		if len(named) == 0 {
+			return false
+		}
+		for _, id := range named {
+			if !matchesString(id, allowed) {
+				return false
+			}
+		}
+		return true
+	}
+	return within(filters.UserIDs, visible.UserIDs) ||
+		within(filters.VirtualKeyIDs, visible.VirtualKeyIDs) ||
+		within(filters.TeamIDs, visible.TeamIDs) ||
+		within(filters.BusinessUnitIDs, visible.BusinessUnitIDs) ||
+		within(filters.CustomerIDs, visible.CustomerIDs)
+}
+
+// nearestPages runs one nearest-neighbour query per phrasing and prefilter and
+// returns the pages phrasing by phrasing, each in prefilter order. They run
+// together: they are independent reads, and neither more phrasings nor a
+// restricted caller should multiply the wait. Scores come back as similarity
+// whatever the store, so the merge compares pages on one scale.
+func (s *SemanticSearcher) nearestPages(ctx context.Context, namespace string, embeddings [][]float32, prefilters [][]vectorstore.Query, threshold float64, limit int) ([][]vectorstore.SearchResult, error) {
+	pages := make([][]vectorstore.SearchResult, len(embeddings)*len(prefilters))
+	errs := make([]error, len(pages))
+	var wg sync.WaitGroup
+	for phrasing, embedding := range embeddings {
+		for filter, queries := range prefilters {
+			index := phrasing*len(prefilters) + filter
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pages[index], errs[index] = s.vectors.GetNearest(
+					vectorstore.WithDisableScanFallback(ctx),
+					namespace,
+					embedding,
+					queries,
+					[]string{"log_id"},
+					threshold,
+					int64(limit),
+				)
+			}()
+		}
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	for _, page := range pages {
+		for index := range page {
+			if score := page[index].Score; score != nil {
+				similarity := similarityFromScore(*score)
+				page[index].Score = &similarity
+			}
+		}
+	}
+	return pages, nil
+}
+
+// embedQueries embeds every phrasing at once, in order. Each is a provider
+// round trip, so they are not made to wait on one another.
+func (s *SemanticSearcher) embedQueries(ctx context.Context, config *schemas.WarpConfig, queries []string) ([][]float32, error) {
+	embeddings := make([][]float32, len(queries))
+	errs := make([]error, len(queries))
+	var wg sync.WaitGroup
+	for index, query := range queries {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			embeddings[index], _, errs[index] = generateWarpEmbedding(ctx, s.embed, config, query)
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, fmt.Errorf("embed semantic query: %w", err)
+		}
+	}
+	return embeddings, nil
+}
+
+// The configured threshold and every score Warp reports are a similarity in
+// 0..1, (1 + cosine) / 2, whatever the store. Every vector store filters and
+// scores on raw cosine, so both are converted at the boundary. Kept in Warp
+// rather than the shared vector store: semantic cache and the complexity
+// classifier use cosine as it is.
+
+// storeThreshold is the similarity threshold as the cosine the store filters on.
+func storeThreshold(similarity float64) float64 {
+	return 2*similarity - 1
+}
+
+// similarityFromScore is a store's cosine score as a similarity.
+func similarityFromScore(score float64) float64 {
+	return (1 + score) / 2
+}
+
+// mergeSemanticPages folds the pages into one candidate list, best first,
+// recording each score. exhausted reports that no page was full, so the index
+// has nothing more at this threshold.
+//
+// One page passes through in the store's own order. Several are merged by
+// score, and then only as far as the merge can be trusted: a full page stopped
+// at its last score, so rows it would have returned next may outrank another
+// page's lower ones. Candidates below the highest such stopping score are held
+// back for the wider round, unless final says there will not be one. The result
+// is capped at the candidate limit, which is also all hydration accepts.
+func mergeSemanticPages(pages [][]vectorstore.SearchResult, pageLimit int, scores map[string]float64, final bool) (ids []string, exhausted bool) {
+	exhausted = true
+	seen := map[string]struct{}{}
+	frontier, hasFrontier := 0.0, false
+	for _, page := range pages {
+		if len(page) >= pageLimit {
+			exhausted = false
+			if last := page[len(page)-1].Score; last != nil && (!hasFrontier || *last > frontier) {
+				frontier, hasFrontier = *last, true
+			}
+		}
+		for _, candidate := range page {
+			id := semanticCandidateID(candidate)
+			if id == "" {
+				continue
+			}
+			if candidate.Score != nil {
+				if known, ok := scores[id]; !ok || *candidate.Score > known {
+					scores[id] = *candidate.Score
+				}
+			}
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	if len(pages) < 2 {
+		return ids, exhausted
+	}
+	slices.SortStableFunc(ids, func(a, b string) int {
+		switch {
+		case scores[a] > scores[b]:
+			return -1
+		case scores[a] < scores[b]:
+			return 1
+		}
+		return 0
+	})
+	if hasFrontier && !final {
+		ids = slices.DeleteFunc(ids, func(id string) bool { return scores[id] < frontier })
+	}
+	if len(ids) > warpSemanticCandidateLimit {
+		ids = ids[:warpSemanticCandidateLimit]
+	}
+	return ids, exhausted
 }
 
 func warpMaxSemanticLimit() int {
@@ -173,6 +569,22 @@ func semanticCandidateID(candidate vectorstore.SearchResult) string {
 		return value
 	}
 	return candidate.ID
+}
+
+// appendBoundQuery adds a numeric bound, scaled and rounded outward, as an int64
+// prefilter. A bound the int64 cannot hold (infinite, NaN, or past its range) is
+// left out: converting it is undefined, and on amd64 an infinite maximum became
+// the smallest int64 and matched nothing. matchesSemanticFilters applies every
+// bound exactly after hydration, so leaving one out only widens the prefilter.
+func appendBoundQuery(queries []vectorstore.Query, field string, op vectorstore.QueryOperator, bound *float64, scale float64, round func(float64) float64) []vectorstore.Query {
+	if bound == nil {
+		return queries
+	}
+	v := round(*bound * scale)
+	if math.IsNaN(v) || v < math.MinInt64 || v >= math.MaxInt64 {
+		return queries
+	}
+	return append(queries, vectorstore.Query{Field: field, Operator: op, Value: int64(v)})
 }
 
 func semanticVectorFilters(filters *logstore.SearchFilters) []vectorstore.Query {
@@ -192,21 +604,21 @@ func semanticVectorFilters(filters *logstore.SearchFilters) []vectorstore.Query 
 	queries = appendScalarQuery(queries, "virtual_key_id", filters.VirtualKeyIDs)
 	queries = appendScalarQuery(queries, "user_id", filters.UserIDs)
 	queries = appendScalarQuery(queries, "app", filters.Apps)
+	// Exact, not lowered: a session id is opaque, and indexed as it is. A
+	// session is too small a slice of the index to find after hydration - the
+	// capped candidate page almost never holds any of its rows. Vectors indexed
+	// before the session was stored on them have none, so a session search
+	// misses them until they are indexed again.
+	if filters.SessionID != "" {
+		queries = append(queries, vectorstore.Query{Field: "session_id", Operator: vectorstore.QueryOperatorEqual, Value: filters.SessionID})
+	}
 	queries = appendContainsAnyQuery(queries, "team_ids", filters.TeamIDs)
 	queries = appendContainsAnyQuery(queries, "customer_ids", filters.CustomerIDs)
 	queries = appendContainsAnyQuery(queries, "business_unit_ids", filters.BusinessUnitIDs)
-	if filters.MinLatency != nil {
-		queries = append(queries, vectorstore.Query{Field: "latency_ms", Operator: vectorstore.QueryOperatorGreaterThanOrEqual, Value: int64(math.Floor(*filters.MinLatency))})
-	}
-	if filters.MaxLatency != nil {
-		queries = append(queries, vectorstore.Query{Field: "latency_ms", Operator: vectorstore.QueryOperatorLessThanOrEqual, Value: int64(math.Ceil(*filters.MaxLatency))})
-	}
-	if filters.MinCost != nil {
-		queries = append(queries, vectorstore.Query{Field: "cost_micro_usd", Operator: vectorstore.QueryOperatorGreaterThanOrEqual, Value: int64(math.Floor(*filters.MinCost * 1_000_000))})
-	}
-	if filters.MaxCost != nil {
-		queries = append(queries, vectorstore.Query{Field: "cost_micro_usd", Operator: vectorstore.QueryOperatorLessThanOrEqual, Value: int64(math.Ceil(*filters.MaxCost * 1_000_000))})
-	}
+	queries = appendBoundQuery(queries, "latency_ms", vectorstore.QueryOperatorGreaterThanOrEqual, filters.MinLatency, 1, math.Floor)
+	queries = appendBoundQuery(queries, "latency_ms", vectorstore.QueryOperatorLessThanOrEqual, filters.MaxLatency, 1, math.Ceil)
+	queries = appendBoundQuery(queries, "cost_micro_usd", vectorstore.QueryOperatorGreaterThanOrEqual, filters.MinCost, 1_000_000, math.Floor)
+	queries = appendBoundQuery(queries, "cost_micro_usd", vectorstore.QueryOperatorLessThanOrEqual, filters.MaxCost, 1_000_000, math.Ceil)
 	return queries
 }
 
@@ -252,6 +664,11 @@ func matchesSemanticFilters(entry *logstore.Log, filters *logstore.SearchFilters
 		return false
 	}
 	if !matchesString(entry.Provider, filters.Providers) || !matchesString(entry.Model, filters.Models) || !matchesString(entry.Status, filters.Status) || !matchesPointer(entry.VirtualKeyID, filters.VirtualKeyIDs) || !matchesPointer(entry.UserID, filters.UserIDs) || !matchesPointer(entry.App, filters.Apps) {
+		return false
+	}
+	// Exact, not EqualFold: a session id is opaque, and the log store matches
+	// it exactly.
+	if filters.SessionID != "" && (entry.SessionID == nil || *entry.SessionID != filters.SessionID) {
 		return false
 	}
 	if !intersectsIDs(mergedIDs(entry.TeamID, entry.TeamIDs), filters.TeamIDs) || !intersectsIDs(mergedIDs(entry.CustomerID, entry.CustomerIDs), filters.CustomerIDs) || !intersectsIDs(mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs), filters.BusinessUnitIDs) {

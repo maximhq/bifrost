@@ -3,16 +3,17 @@ package mcpcatalog
 import (
 	"context"
 	"fmt"
-	"maps"
-	"sync"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 )
 
+// MCPCatalog answers what an MCP tool call costs. It keeps nothing of its own: each MCP client
+// record in the live store carries its tools' prices, so a client written, renamed or removed is
+// priced as stored the moment the store holds it.
 type MCPCatalog struct {
-	mu          sync.RWMutex
-	pricingData MCPPricingData
-	logger      schemas.Logger
+	clients *livestore.Collection[registry.MCPClient]
 }
 
 // PricingEntry represents a single MCP server's tool call pricing information
@@ -22,69 +23,24 @@ type PricingEntry struct {
 	CostPerExecution float64 `json:"cost_per_execution"`
 }
 
-type MCPPricingData map[string]PricingEntry // Map of [{server_label}/{tool_name}] -> PricingEntry
-
-type Config struct {
-	PricingData MCPPricingData
-}
-
-// Init initializes the MCP catalog
-func Init(ctx context.Context, config *Config, logger schemas.Logger) (*MCPCatalog, error) {
+// Init initializes the MCP catalog over the MCP client records in live.
+func Init(ctx context.Context, live *livestore.Store, logger schemas.Logger) (*MCPCatalog, error) {
+	if live == nil {
+		return nil, fmt.Errorf("MCP catalog: %w", livestore.ErrNoLiveStore)
+	}
 	logger.Info("initializing MCP catalog...")
-
-	pricingData := MCPPricingData{}
-
-	if config != nil && config.PricingData != nil {
-		// Defensively copy the pricing map to prevent external mutations
-		pricingData = make(MCPPricingData, len(config.PricingData))
-		maps.Copy(pricingData, config.PricingData)
-	}
-
-	return &MCPCatalog{
-		logger:      logger,
-		pricingData: pricingData,
-	}, nil
+	return &MCPCatalog{clients: live.Collections.MCPClients}, nil
 }
 
-// GetAllPricingData returns all the pricing data
-func (mc *MCPCatalog) GetAllPricingData() MCPPricingData {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	// Create a defensive copy to prevent callers from mutating shared state
-	copy := make(MCPPricingData, len(mc.pricingData))
-	maps.Copy(copy, mc.pricingData)
-	return copy
-}
-
-// GetPricingData returns the pricing data for the given server and tool name
+// GetPricingData returns the pricing for toolName on the MCP client named server.
 func (mc *MCPCatalog) GetPricingData(server string, toolName string) (PricingEntry, bool) {
-	mc.mu.RLock()
-	defer mc.mu.RUnlock()
-	pricing, ok := mc.pricingData[fmt.Sprintf("%s/%s", server, toolName)]
-	return pricing, ok
-}
-
-// UpdatePricingData updates the pricing data for the given server and tool name
-func (mc *MCPCatalog) UpdatePricingData(server string, toolName string, costPerExecution float64) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	mc.pricingData[fmt.Sprintf("%s/%s", server, toolName)] = PricingEntry{
-		Server:           server,
-		ToolName:         toolName,
-		CostPerExecution: costPerExecution,
+	client, ok := mc.clients.GetBy(registry.MCPClientByName, server)
+	if !ok {
+		return PricingEntry{}, false
 	}
-}
-
-// DeletePricingData deletes the pricing data for the given server and tool name
-func (mc *MCPCatalog) DeletePricingData(server string, toolName string) {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	delete(mc.pricingData, fmt.Sprintf("%s/%s", server, toolName))
-}
-
-// Cleanup cleans up the MCP catalog
-func (mc *MCPCatalog) Cleanup() {
-	mc.mu.Lock()
-	defer mc.mu.Unlock()
-	mc.pricingData = nil
+	cost, ok := client.Config.ToolPricing[toolName]
+	if !ok {
+		return PricingEntry{}, false
+	}
+	return PricingEntry{Server: server, ToolName: toolName, CostPerExecution: cost}, true
 }

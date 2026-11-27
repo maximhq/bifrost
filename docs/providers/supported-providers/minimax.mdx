@@ -1,0 +1,283 @@
+---
+title: "MiniMax"
+description: "MiniMax conversion guide for chat, streaming, tool calling, reasoning, image generation with image-01, H3 video generation, text-to-speech and speech-to-text"
+icon: "m"
+---
+
+## Overview
+
+MiniMax is an OpenAI-compatible provider with its own Bifrost implementation. Chat goes through the shared OpenAI converters. Image and video generation use MiniMax's native endpoints, which Bifrost maps to the standard image and video APIs. Key characteristics:
+
+- **OpenAI-compatible chat.** Chat Completions use `/v1/chat/completions`.
+- **Reasoning.** Bifrost asks MiniMax to split thinking into `reasoning_content`, so it never shows up as `<think>` tags inside the answer.
+- **Tool calling.** Function tools use the OpenAI-compatible schema.
+- **Vision.** `MiniMax-M3` and `MiniMax-M3.1-Flash-Preview` accept `image_url` parts. The M2.x models are text only.
+- **Responses API.** Converted to Chat Completions internally.
+- **Image generation.** `image-01` through `/v1/image_generation`.
+- **Video generation.** `MiniMax-H3` and `MiniMax-H3-Max` as async tasks through `/v2/video_generation`.
+- **Text-to-speech.** `speech-2.8-hd`, `speech-2.8-turbo` and older speech models through `/v1/t2a_v2`, streamed or not.
+- **Speech-to-text.** `asr-1.0` through `/v1/speech_to_text`, with sentence or word timestamps, speaker labels, SRT/VTT output and streaming.
+
+### Supported operations
+
+| Operation | Non-Streaming | Streaming | Endpoint |
+|-----------|---------------|-----------|----------|
+| Chat Completions | ✅ | ✅ | `/v1/chat/completions` |
+| Responses API | ✅ | ✅ | `/v1/chat/completions` |
+| List Models | ✅ | - | `/v1/models` |
+| Image Generation | ✅ | ❌ | `/v1/image_generation` |
+| Video Generation | ✅ | - | `/v2/video_generation` |
+| Video Retrieve | ✅ | - | `/v2/query/video_generation/{task_id}` |
+| Video Download | ✅ | - | signed URL from the task |
+| Video Delete | ✅ | - | `DELETE /v2/video_generation/{task_id}` |
+| Text Completions | ❌ | ❌ | - |
+| Embeddings | ❌ | ❌ | - |
+| Speech (TTS) | ✅ | ✅ | `/v1/t2a_v2` |
+| Transcriptions (STT) | ✅ | ✅ | `/v1/speech_to_text` |
+| Image Edit | ❌ | ❌ | - |
+| Video List | ❌ | - | - |
+| Files, Batch | ❌ | ❌ | - |
+
+## Setup and configuration
+
+Bifrost calls `https://api.minimax.io` by default. Both pay-as-you-go API keys and M Plan subscription keys work, since MiniMax sends both as a bearer token. For the mainland China platform, set `network_config.base_url` to `https://api.minimaxi.com`.
+
+<Tabs>
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers**. Look for **MiniMax** under **Configured Providers**. If it is missing, click **Add New Provider** and select **MiniMax**.
+2. Click **Add Key** or edit an existing key.
+3. Set a name for your key.
+4. Paste your API key directly or use an environment variable (for example, `env.MINIMAX_API_KEY`).
+5. Set **Allowed Models** to **All Models** (default) or the specific models this key should serve.
+6. Save the provider configuration.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "minimax": {
+      "keys": [
+        {
+          "name": "minimax-key-1",
+          "value": "env.MINIMAX_API_KEY",
+          "models": [
+            "*"
+          ],
+          "weight": 1.0
+        }
+      ]
+    }
+  }
+}
+```
+
+</Tab>
+<Tab title="API">
+Refer to the API documentation for [Provider Keys Management](https://docs.getbifrost.ai/api-reference/providers/create-a-key-for-a-provider).
+</Tab>
+<Tab title="Go SDK">
+
+```go
+case schemas.MiniMax:
+    return []schemas.Key{{
+        Name:   "minimax-key-1",
+        Value:  *schemas.NewSecretVar("env.MINIMAX_API_KEY"),
+        Models: []string{"*"},
+        Weight: 1.0,
+    }}, nil
+```
+
+</Tab>
+</Tabs>
+
+---
+
+# 1. Chat Completions
+
+## Request parameters
+
+MiniMax supports the OpenAI chat parameters it documents: `max_completion_tokens`, `temperature` (0 to 2), `top_p`, `tools`, `stream`, `stream_options` and `service_tier`. For the full parameter reference, see [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
+
+Current text models are `MiniMax-M3`, `MiniMax-M3.1-Flash-Preview` (M Plan only), `MiniMax-M2.7`, `MiniMax-M2.5` and `MiniMax-M2.1`, plus `-highspeed` variants of the M2.x models. MiniMax closes M2.5 and M2.7 to new users on October 19, 2026 and retires them on November 18, 2026.
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "minimax/MiniMax-M3",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
+### Reasoning
+
+Bifrost sends `reasoning_split: true` on every chat request, so MiniMax returns its thinking in `reasoning_content` and Bifrost exposes it as the message's `reasoning`. If you set `reasoning_split` yourself through extra params, Bifrost leaves it alone.
+
+`reasoning_effort` maps to MiniMax's own values, with two adjustments:
+
+| Bifrost value | Sent to MiniMax |
+|---------------|-----------------|
+| `minimal` | `low` |
+| `low`, `medium`, `high`, `xhigh`, `max` | unchanged |
+| `none` | `thinking: {"type": "disabled"}` and no `reasoning_effort` |
+| `none` on `MiniMax-M3.1-Flash-Preview` | nothing; the model always thinks and rejects both `none` and `disabled` |
+
+The M2.x models ignore `thinking.type: disabled`, so they keep thinking either way.
+
+### Extra parameters
+
+Extra parameters pass through, so MiniMax-only fields like `thinking`, `service_tier` or `reasoning_split` reach the API unchanged.
+
+### Errors
+
+MiniMax sometimes returns HTTP 200 with a non-zero `base_resp.status_code`. Bifrost turns those into errors with a matching HTTP status. For example, `1002` becomes 429, `1004` becomes 401, `1008` (insufficient balance) becomes 402, and `1026`/`1027` (sensitive content) become 400.
+
+---
+
+# 2. Responses API
+
+Bifrost converts Responses API requests to Chat Completions and converts the result back. Streaming Responses requests go through Chat Completions streaming the same way.
+
+```
+BifrostResponsesRequest
+  → ToChatRequest()
+  → ChatCompletion
+  → ToBifrostResponsesResponse()
+```
+
+---
+
+# 3. List Models
+
+Lists models from MiniMax's OpenAI-compatible `/v1/models`.
+
+---
+
+# 4. Image Generation
+
+`image-01` generates up to 9 images per request.
+
+```bash
+curl -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "minimax/image-01",
+    "prompt": "A lighthouse at dusk, oil painting",
+    "n": 2,
+    "size": "1024x1024"
+  }'
+```
+
+| Bifrost parameter | MiniMax field | Notes |
+|-------------------|---------------|-------|
+| `prompt` | `prompt` | Up to 1500 characters |
+| `n` | `n` | 1 to 9 |
+| `size` | `width` + `height` | When both sides are 512 to 2048 and divisible by 8. Otherwise Bifrost picks the closest supported aspect ratio. |
+| `aspect_ratio` | `aspect_ratio` | `1:1`, `16:9`, `4:3`, `3:2`, `2:3`, `3:4`, `9:16`, `21:9`. Takes priority over `size`. |
+| `response_format` | `response_format` | `b64_json` becomes `base64`. MiniMax image URLs expire after 24 hours. |
+| `seed` | `seed` | |
+| `extra_params.prompt_optimizer` | `prompt_optimizer` | |
+
+If content safety blocks every image, the request fails with a 400 instead of returning an empty list.
+
+---
+
+# 5. Video Generation
+
+MiniMax video generation is asynchronous. Create a task, poll it, then download the result.
+
+```bash
+curl -X POST http://localhost:8080/v1/videos \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "minimax/MiniMax-H3",
+    "prompt": "A paper boat drifting down a rainy street",
+    "seconds": "6",
+    "size": "1280x720"
+  }'
+```
+
+| Operation | Endpoint | Notes |
+|-----------|----------|-------|
+| Create | `POST /v1/videos` | Returns a queued job ID |
+| Get status | `GET /v1/videos/{id}` | Poll until `status: completed`. MiniMax keeps tasks for 7 days. |
+| Download content | `GET /v1/videos/{id}/content` | Fetches the MP4 from the signed URL on the task |
+| Cancel or delete | `DELETE /v1/videos/{id}` | Cancels a queued task or deletes a finished one |
+
+## Parameter mapping
+
+| Bifrost parameter | MiniMax field | Notes |
+|-------------------|---------------|-------|
+| `prompt` | `content[]` text item | Required |
+| `input_reference` | `content[]` image item with role `first_frame` | Image to video |
+| `seconds` | `duration` | Defaults to 6. Clamped to 4 to 15 on `MiniMax-H3` and 5 to 15 on `MiniMax-H3-Max`. |
+| `size` | `resolution` + `ratio` | The short side picks the tier (`480P` only on H3-Max, `2K` only on H3 above 1080 pixels, otherwise `768P`) and the shape picks the closest ratio. |
+| `extra_params.resolution`, `extra_params.ratio` | `resolution`, `ratio` | Override the values derived from `size` |
+| `extra_params.last_frame` | `content[]` image item with role `last_frame` | |
+| `extra_params.reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
+| `extra_params.callback_url` | `callback_url` | |
+
+Without a `size`, text to video uses `16:9` (MiniMax needs a concrete ratio there) and image to video uses `adaptive`. `video_uri` and video list aren't supported.
+
+---
+
+# 6. Speech (TTS)
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "minimax/speech-2.8-turbo",
+    "input": "Hello! This is MiniMax speaking through Bifrost.",
+    "voice": "English_Graceful_Lady",
+    "response_format": "mp3"
+  }' --output hello.mp3
+```
+
+`voice` is a MiniMax `voice_id`, such as `English_Graceful_Lady`, `English_Insightful_Speaker` or `English_Persuasive_Man`, or a cloned or designed voice. See MiniMax's [system voice list](https://platform.minimax.io/docs/faq/system-voice-id) for the rest. MiniMax reports an unknown voice as an HTTP 200 with error code 2054 (`voice id not exist`), and Bifrost returns it as a 400.
+
+| Bifrost parameter | MiniMax field | Notes |
+|-------------------|---------------|-------|
+| `input` | `text` | Under 10,000 characters |
+| `voice` | `voice_setting.voice_id` | Required. Multi-speaker voice config isn't supported. |
+| `speed` | `voice_setting.speed` | 0.5 to 2 |
+| `response_format` | `audio_setting.format` | `mp3` (default), `wav`, `flac`, `pcm`, `opus`, `pcmu_raw`, `pcmu_wav`. Other formats are rejected. |
+| `extra_params.vol`, `extra_params.pitch`, `extra_params.emotion` | `voice_setting.vol`, `.pitch`, `.emotion` | |
+| `extra_params.sample_rate`, `extra_params.bitrate`, `extra_params.channel` | `audio_setting.*` | |
+| `extra_params.language_boost` | `language_boost` | For example `English` or `Chinese,Yue` |
+
+Any other extra params, such as `pronunciation_dict` or `voice_modify`, are sent to MiniMax unchanged. Usage reports MiniMax's `usage_characters`.
+
+## Streaming
+
+Set `stream_format: "sse"` on `/v1/audio/speech` to stream. MiniMax returns hex-encoded audio chunks, which Bifrost decodes into `speech.audio.delta` events, followed by a `speech.audio.done` event carrying usage. Bifrost asks MiniMax not to repeat the whole clip in its final chunk (`exclude_aggregated_audio`), so each audio byte arrives once.
+
+---
+
+# 7. Transcriptions (STT)
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F model="minimax/asr-1.0" \
+  -F file="@meeting.mp3" \
+  -F language="en" \
+  -F response_format="verbose_json" \
+  -F "timestamp_granularities[]=word"
+```
+
+| Bifrost parameter | MiniMax field | Notes |
+|-------------------|---------------|-------|
+| `file` | `file` | wav, aiff, flac, m4a, mp3, aac, opus, ogg. Up to 500 seconds and 50 MB. |
+| `language` | `language` request header | Short codes such as `en`, `zh`, `ja`. Omit it for mixed-language audio. |
+| `response_format` | `response_format` | `json` (default), `verbose_json`, `srt`, `vtt`. `text` is served from MiniMax's `json` output. |
+| `timestamp_granularities` | `timestamp_level` | `segment` maps to `sentence` and `word` to `word`. Either one switches the response to `verbose_json`. |
+
+With `verbose_json`, sentence-level timestamps come back as `segments`. Word-level timestamps come back as `words`, with MiniMax's speaker label (`S1`, `S2`, and so on) on each word. Usage is reported as seconds of audio.
+
+## Streaming
+
+Send the form field `stream=true` to stream. Each MiniMax event becomes a `transcript.text.delta`, and the final event becomes `transcript.text.done` with the full text and the audio duration. MiniMax only streams the `json` format, so streaming with `verbose_json`, `srt` or `vtt` fails with a 400.
+

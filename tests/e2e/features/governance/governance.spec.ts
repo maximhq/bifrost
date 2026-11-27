@@ -1,5 +1,6 @@
 import { customersApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
+import { expectListLoadError } from '../../core/utils/test-helpers'
 import { createCustomerData, createTeamData } from './governance.data'
 
 const createdTeams: string[] = []
@@ -63,6 +64,23 @@ test.describe('Governance - Teams', () => {
 
     const exists = await governancePage.teamExists(teamData.name)
     expect(exists).toBe(true)
+  })
+
+  test('should set and clear content logging for a team', async ({ governancePage }) => {
+    const teamData = createTeamData({ name: `E2E Content Logging Team ${Date.now()}`, contentLogging: 'disabled' })
+    createdTeams.push(teamData.name)
+    await governancePage.createTeam(teamData)
+
+    // The choice made on create is what the editor shows when the team is reopened.
+    expect(await governancePage.getTeamContentLogging(teamData.name)).toBe('disabled')
+
+    // Back to inherit: the update sends null, and the editor must not read that as "off".
+    await governancePage.editTeam(teamData.name, { contentLogging: 'inherit' })
+    expect(await governancePage.getTeamContentLogging(teamData.name)).toBe('inherit')
+
+    // And the third state is a decision of its own, distinct from inherit.
+    await governancePage.editTeam(teamData.name, { contentLogging: 'enabled' })
+    expect(await governancePage.getTeamContentLogging(teamData.name)).toBe('enabled')
   })
 
   test('should create team with customer assignment', async ({ governancePage }) => {
@@ -138,6 +156,10 @@ test.describe('Governance - Teams', () => {
     exists = await governancePage.teamExists(teamData.name)
     expect(exists).toBe(false)
   })
+
+  test('should show the load error instead of the empty state when teams fail to load', async ({ page }) => {
+    await expectListLoadError(page, '/api/governance/teams', 'teams-load-error', 'team-button-read-more')
+  })
 })
 
 test.describe('Governance - Customers', () => {
@@ -164,6 +186,10 @@ test.describe('Governance - Customers', () => {
     const createVisible = await governancePage.customersCreateBtn.isVisible().catch(() => false)
     const emptyCreateVisible = await governancePage.page.getByTestId('customer-button-create').isVisible().catch(() => false)
     expect(createVisible || emptyCreateVisible).toBe(true)
+  })
+
+  test('should show the load error instead of the empty state when customers fail to load', async ({ page }) => {
+    await expectListLoadError(page, '/api/governance/customers', 'customers-load-error', 'customer-button-read-more')
   })
 
   test('should not show a limit value as the rate limit placeholder', async ({ governancePage }) => {

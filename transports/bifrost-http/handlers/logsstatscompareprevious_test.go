@@ -249,3 +249,122 @@ func TestLogsStatsCompareSkippedForEmptyWindow(t *testing.T) {
 		})
 	}
 }
+
+// callMCPStats runs GET /api/mcp-logs/stats with the given query string against a mock log manager and
+// returns the decoded body and the status code.
+func callMCPStats(t *testing.T, mgr *dashboardLogManager, query string) (map[string]json.RawMessage, int) {
+	t.Helper()
+	SetLogger(&mockLogger{})
+
+	h := &LoggingHandler{logManager: mgr}
+	var req fasthttp.Request
+	uri := "/api/mcp-logs/stats"
+	if query != "" {
+		uri += "?" + query
+	}
+	req.SetRequestURI(uri)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.getMCPLogsStats(ctx)
+
+	body := ctx.Response.Body()
+	payload := map[string]json.RawMessage{}
+	if json.Valid(body) {
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode MCP stats response: %v (body %s)", err, string(body))
+		}
+	}
+	return payload, ctx.Response.StatusCode()
+}
+
+// TestMCPLogsStatsWithoutCompareIsUnchanged pins that /api/mcp-logs/stats keeps the current period at the
+// top level, issues one stats query and always carries has_previous_period, as /api/logs/stats does.
+func TestMCPLogsStatsWithoutCompareIsUnchanged(t *testing.T) {
+	mgr := &dashboardLogManager{
+		mcpStatsFunc: func(filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error) {
+			return &logstore.MCPToolLogStats{TotalExecutions: 42, SuccessCount: 40}, nil
+		},
+	}
+
+	payload, status := callMCPStats(t, mgr, "period=24h")
+
+	if status != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if len(mgr.mcpStatsCalls) != 1 {
+		t.Fatalf("expected exactly one stats query, got %d", len(mgr.mcpStatsCalls))
+	}
+	if _, ok := payload["previous"]; ok {
+		t.Fatal("previous must be omitted when compare_to_previous is not requested")
+	}
+	var hasPrevious bool
+	if err := json.Unmarshal(payload["has_previous_period"], &hasPrevious); err != nil || hasPrevious {
+		t.Fatalf("has_previous_period must be present and false, got %v (err %v)", hasPrevious, err)
+	}
+	var total, succeeded int64
+	if err := json.Unmarshal(payload["total_executions"], &total); err != nil || total != 42 {
+		t.Fatalf("expected top-level total_executions 42, got %d (err %v)", total, err)
+	}
+	if err := json.Unmarshal(payload["success_count"], &succeeded); err != nil || succeeded != 40 {
+		t.Fatalf("expected top-level success_count 40, got %d (err %v)", succeeded, err)
+	}
+}
+
+// TestMCPLogsStatsComparePreviousWindow checks the previous window has the current one's length and ends
+// just before it starts, as on /api/logs/stats.
+func TestMCPLogsStatsComparePreviousWindow(t *testing.T) {
+	mgr := &dashboardLogManager{}
+	mgr.mcpStatsFunc = func(filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error) {
+		return &logstore.MCPToolLogStats{TotalExecutions: int64(100 * len(mgr.mcpStatsCalls))}, nil
+	}
+
+	payload, status := callMCPStats(t, mgr, "period=24h&compare_to_previous=true")
+
+	if status != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if len(mgr.mcpStatsCalls) != 2 {
+		t.Fatalf("expected current + previous stats queries, got %d", len(mgr.mcpStatsCalls))
+	}
+	current, previous := mgr.mcpStatsCalls[0], mgr.mcpStatsCalls[1]
+	if current.StartTime == nil || current.EndTime == nil || previous.StartTime == nil || previous.EndTime == nil {
+		t.Fatal("both windows must be bounded")
+	}
+	if got := current.EndTime.Sub(*current.StartTime) - previous.EndTime.Sub(*previous.StartTime); got != time.Nanosecond {
+		t.Fatalf("previous window must match the current length (minus the 1ns gap), got a %v difference", got)
+	}
+	if !previous.EndTime.Equal(current.StartTime.Add(-time.Nanosecond)) {
+		t.Fatalf("previous window must end 1ns before the current one starts: prevEnd=%v currentStart=%v", previous.EndTime, current.StartTime)
+	}
+	var hasPrevious bool
+	if err := json.Unmarshal(payload["has_previous_period"], &hasPrevious); err != nil || !hasPrevious {
+		t.Fatalf("expected has_previous_period true, got %v (err %v)", hasPrevious, err)
+	}
+	var prev struct {
+		TotalExecutions int64 `json:"total_executions"`
+	}
+	if err := json.Unmarshal(payload["previous"], &prev); err != nil || prev.TotalExecutions != 200 {
+		t.Fatalf("expected the previous period's stats under previous, got %+v (err %v)", prev, err)
+	}
+}
+
+// TestMCPLogsStatsCompareSkippedWhenUnbounded covers the all-time filter: there is no preceding window, so
+// no second query is issued.
+func TestMCPLogsStatsCompareSkippedWhenUnbounded(t *testing.T) {
+	mgr := &dashboardLogManager{}
+
+	payload, status := callMCPStats(t, mgr, "compare_to_previous=true")
+
+	if status != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if len(mgr.mcpStatsCalls) != 1 {
+		t.Fatalf("an unbounded filter has no previous period, expected one query, got %d", len(mgr.mcpStatsCalls))
+	}
+	var hasPrevious bool
+	if err := json.Unmarshal(payload["has_previous_period"], &hasPrevious); err != nil || hasPrevious {
+		t.Fatalf("has_previous_period must be false for an unbounded window, got %v (err %v)", hasPrevious, err)
+	}
+}

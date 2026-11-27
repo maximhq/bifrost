@@ -9,6 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
 )
 
 // maxRememberedEmbeddingDimensions bounds the persisted map. Entries are keyed
@@ -32,17 +33,37 @@ type persistentEmbeddingDimensionStore struct {
 
 	mu     sync.RWMutex
 	loaded bool
-	widths map[string]int
+	// widths is the in-memory copy, a live-store table read and written under mu.
+	widths *livestore.Table[string, int]
+	live   *livestore.Store
 }
 
-func newPersistentEmbeddingDimensionStore(ctx context.Context, store configstore.ConfigStore, logger schemas.Logger) *persistentEmbeddingDimensionStore {
+// embeddingWidthsTable is the live-store table of remembered embedding widths. Routing is a fixed
+// built-in plugin, so one instance runs per process and the name is fixed.
+const embeddingWidthsTable = "routing_embedding_widths"
+
+// newPersistentEmbeddingDimensionStore returns the store over store, its in-memory copy in a table
+// of live, or nil without a config store, which leaves nothing to remember to.
+func newPersistentEmbeddingDimensionStore(ctx context.Context, store configstore.ConfigStore, live *livestore.Store, logger schemas.Logger) (*persistentEmbeddingDimensionStore, error) {
 	if store == nil {
-		return nil
+		return nil, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &persistentEmbeddingDimensionStore{ctx: ctx, store: store, logger: logger, widths: map[string]int{}}
+	widths, err := live.NewTable[string, int](ctx, embeddingWidthsTable)
+	if err != nil {
+		return nil, err
+	}
+	return &persistentEmbeddingDimensionStore{ctx: ctx, store: store, logger: logger, widths: widths, live: live}, nil
+}
+
+// close drops the in-memory copy's table, for a plugin being cleaned up.
+func (s *persistentEmbeddingDimensionStore) close() {
+	if s == nil {
+		return
+	}
+	_ = s.live.DropTable(context.Background(), embeddingWidthsTable)
 }
 
 // Dimension returns the remembered width for an embedding identity. A read that
@@ -56,7 +77,7 @@ func (s *persistentEmbeddingDimensionStore) Dimension(identity string) (int, boo
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	dimension, ok := s.widths[identity]
+	dimension, ok := s.widths.Get(identity)
 	if !ok || dimension < 2 {
 		return 0, false
 	}
@@ -74,19 +95,21 @@ func (s *persistentEmbeddingDimensionStore) Remember(identity string, dimension 
 	s.load()
 
 	s.mu.Lock()
-	if existing, ok := s.widths[identity]; ok && existing == dimension {
+	if existing, ok := s.widths.Get(identity); ok && existing == dimension {
 		s.mu.Unlock()
 		return
 	}
-	if _, replacing := s.widths[identity]; !replacing && len(s.widths) >= maxRememberedEmbeddingDimensions {
-		s.mu.Unlock()
-		return
-	}
-	s.widths[identity] = dimension
-	snapshot := make(map[string]int, len(s.widths))
-	for key, value := range s.widths {
+	snapshot := make(map[string]int, maxRememberedEmbeddingDimensions)
+	s.widths.Range(func(key string, value int) bool {
 		snapshot[key] = value
+		return true
+	})
+	if _, replacing := snapshot[identity]; !replacing && len(snapshot) >= maxRememberedEmbeddingDimensions {
+		s.mu.Unlock()
+		return
 	}
+	s.widths.Put(identity, dimension)
+	snapshot[identity] = dimension
 	// The write stays under the lock so concurrent callers persist in the same
 	// order they mutated: releasing first lets two writers race and leave the
 	// row holding whichever snapshot happened to reach the store last, which
@@ -149,7 +172,7 @@ func (s *persistentEmbeddingDimensionStore) load() {
 	}
 	for identity, dimension := range stored {
 		if dimension >= 2 {
-			s.widths[identity] = dimension
+			s.widths.Put(identity, dimension)
 		}
 	}
 }

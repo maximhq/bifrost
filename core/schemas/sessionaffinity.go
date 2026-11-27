@@ -1,5 +1,7 @@
 package schemas
 
+import "time"
+
 // Route is one provider and model a request can be sent to, with the provider key pinned for
 // that attempt when a routing rule named one. An empty KeyID leaves the key to selection.
 // The pin belongs to the route: an implementation that reorders a chain moves each route
@@ -14,10 +16,12 @@ type Route struct {
 type RouteOutcome struct {
 	// Served is the route that answered, nil when no route did.
 	Served *Route
-	// KeyID is the key Served used, when key selection ran for it.
+	// KeyID is the pool key Served used, empty when it served on the caller's direct key or on no key.
 	KeyID string
 	// Fallback reports that Served was not the first route of the dispatched chain.
 	Fallback bool
+	// DirectKey reports that the request carried the caller's own key, which only the first route is tried with.
+	DirectKey bool
 	// Err is the failure the request ended in, nil when it was served.
 	Err *BifrostError
 }
@@ -54,12 +58,18 @@ type SessionAffinity interface {
 	// order. It answers with the chain to dispatch. The chain unchanged, or nil, leaves the
 	// request as the hooks left it.
 	ResolveRoute(ctx *BifrostContext, requested Route, chain []Route) []Route
-	// ResolveKey is asked once the eligible key pool for a provider attempt has been built
-	// with two or more keys in it. It answers with the key the session's state settles on, or
-	// with ok=false to leave the choice to ordinary key selection. A returned key is used for
-	// every attempt of the request.
+	// ResolveKey is asked once the eligible key pool for a provider attempt has been built. It
+	// answers with the key the session's state settles on, or with ok=false to leave the choice
+	// to ordinary key selection. A pool of one key is offered too, so a binding to a key that
+	// left the pool can be dropped; its answer is ignored, since that one key is used. A returned key is used for
+	// every attempt of the request until the provider rejects it outright (a credential, quota
+	// or model-access failure); the request then continues on another eligible key.
 	ResolveKey(ctx *BifrostContext, provider ModelProvider, model string, eligible []Key) (key Key, ok bool)
 	// Observe is told how the request ended, once: for a unary request when its response is
 	// in, for a stream once the upstream has accepted it and started streaming.
 	Observe(ctx *BifrostContext, requested Route, outcome RouteOutcome)
 }
+
+// DefaultSessionStickyTTL is how long a session binding lasts when the request sets no TTL of its
+// own.
+const DefaultSessionStickyTTL = time.Hour

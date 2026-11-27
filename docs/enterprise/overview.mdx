@@ -14,7 +14,7 @@ Bifrost Enterprise builds on the open-source [Bifrost AI Gateway](/overview) wit
   <Card title="Try Enterprise free" icon="rocket" href="https://www.getmaxim.ai/bifrost/enterprise">
     Start a 14-day free trial. No credit card required.
   </Card>
-  <Card title="Book a demo" icon="calendar" href="https://www.getmaxim.ai/bifrost/book-a-demo">
+  <Card title="Book a demo" icon="calendar" href="https://www.getmaxim.ai/book-a-demo">
     Walk through Enterprise capabilities with a Bifrost engineer.
   </Card>
 </CardGroup>
@@ -100,7 +100,7 @@ Decide what each user is allowed to do with the gateway: which providers, which 
 
 <CardGroup cols={2}>
   <Card title="Access Profiles" icon="id-card" href="/enterprise/access-profiles">
-    Reusable provider, model, budget, and rate-limit policies. Auto-allocate virtual keys to users at scale.
+    Reusable provider, model, budget, and rate-limit policies for users, roles, teams, business units, and customers.
   </Card>
   <Card title="Virtual MCPs" icon="layer-group" href="/enterprise/virtual-mcps">
     Curated bundles of MCP tools served at /mcp/&lt;slug&gt; and attachable to virtual keys and access profiles.
@@ -117,14 +117,14 @@ Decide what each user is allowed to do with the gateway: which providers, which 
 Define who can configure the gateway, and limit which rows each operator can see in the dashboard.
 
 <CardGroup cols={2}>
-  <Card title="Advanced Governance" icon="shield-check" href="/enterprise/advanced-governance">
+  <Card title="Teams, Business Units & Customers" icon="sitemap" href="/enterprise/teams-business-units-customers">
     Hierarchical governance across teams, customers, and business units, layered on top of OSS governance.
   </Card>
   <Card title="Role-Based Access Control" icon="user-shield" href="/enterprise/rbac">
     Custom roles with fine-grained permissions across every Bifrost resource.
   </Card>
   <Card title="Data Access Control" icon="user-shield" href="/enterprise/data-access-control">
-    Row-level scope (own / team / all) so different operators see only what their role entitles them to.
+    Scope what each role sees to its own data, its team, business unit, or customer, or everything.
   </Card>
 </CardGroup>
 
@@ -138,8 +138,8 @@ Once policy and access are wired up, move from a single-node install to a cluste
   <Card title="Clustering" icon="circle-nodes" href="/enterprise/clustering">
     High-availability clustering with automatic service discovery, gossip-based state sync, and zero-downtime rolling deployments.
   </Card>
-  <Card title="Adaptive Load Balancing" icon="brain" href="/enterprise/adaptive-load-balancing">
-    Predictive scaling with real-time provider health monitoring; traffic shifts automatically to the fastest available upstream.
+  <Card title="Adaptive Routing" icon="brain" href="/enterprise/adaptive-routing/overview">
+    Live provider and key health picks where each request goes; failing providers and refused keys lose traffic until they recover.
   </Card>
   <Card title="Circuit Breaker" icon="shield" href="/enterprise/circuit-breaker">
     Automatic failover to a backup provider when a primary endpoint signals degradation via response headers.
@@ -203,4 +203,4 @@ For workflows the built-in features don't cover, write a custom plugin.
 
 - New to Bifrost entirely? Start with the [open-source quickstart](/quickstart/gateway/setting-up) to get the gateway running locally before layering Enterprise on top.
 - Already running OSS in production? Skip to [Audit Logs](/enterprise/audit-logs) and [User Provisioning](/enterprise/user-provisioning) to begin the upgrade path.
-- Evaluating? Read the [Security Posture](/security), then [book a demo](https://www.getmaxim.ai/bifrost/book-a-demo).
+- Evaluating? Read the [Security Posture](/security), then [book a demo](https://www.getmaxim.ai/book-a-demo).

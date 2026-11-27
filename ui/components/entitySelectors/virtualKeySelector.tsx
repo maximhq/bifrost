@@ -51,8 +51,7 @@ export function VirtualKeySelector({ limit = ENTITY_SELECTOR_PAGE_SIZE, filters,
 		{ skip: search.skip },
 	);
 
-	// Memoized because multi mode hands the merged list to react-select as
-	// defaultOptions, which re-syncs on identity change. vk.value is the secret
+	// Memoized so EntitySelector's effects don't re-run every render. vk.value is the secret
 	// itself and is deliberately never rendered.
 	const entries = useMemo(
 		() =>

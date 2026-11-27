@@ -12,14 +12,11 @@ import (
 const QuarterStartNotApplicable = time.January
 
 // IsCalendarAlignableDuration reports whether the given duration string supports calendar-aligned resets.
-// Only day ("d"), week ("w"), month ("M"), quarter ("Q") and year ("Y") suffixes have natural
-// calendar boundaries. Sub-day durations like "1h", "30m" are not alignable.
+// Only single-unit days, weeks, months, quarters and years have calendar boundaries.
+// Other durations, including "7d" and "2w", retain their rolling schedule.
 func IsCalendarAlignableDuration(duration string) bool {
-	if duration == "" {
-		return false
-	}
-	switch duration[len(duration)-1] {
-	case 'd', 'w', 'M', 'Q', 'Y':
+	switch duration {
+	case "1d", "1w", "1M", "1Q", "1Y":
 		return true
 	default:
 		return false
@@ -28,14 +25,13 @@ func IsCalendarAlignableDuration(duration string) bool {
 
 // GetCalendarPeriodStart returns the start of the current calendar period for the given duration and time.
 // For calendar-scale durations (daily, weekly, monthly, quarterly, yearly) it snaps to clean boundaries in UTC:
-//   - "Nd"  → midnight UTC on the current day
-//   - "Nw"  → midnight UTC on the most recent Monday
-//   - "NM"  → midnight UTC on the 1st of the current month
-//   - "NQ"  → midnight UTC on the 1st of the current fiscal quarter's opening month
-//   - "NY"  → midnight UTC on Jan 1 of the current year
+//   - "1d" → midnight UTC on the current day
+//   - "1w" → midnight UTC on the most recent Monday
+//   - "1M" → midnight UTC on the 1st of the current month
+//   - "1Q" → midnight UTC on the 1st of the current fiscal quarter's opening month
+//   - "1Y" → midnight UTC on Jan 1 of the current year
 //
-// For all other durations (e.g. "1h", "30m") the original time t is returned unchanged,
-// since sub-day periods don't have a natural calendar boundary.
+// For all other durations (e.g. "1h", "7d") the original time t is returned unchanged.
 //
 // quarterStart is the first month of Q1 and is consulted only for "Q". Callers with
 // no fiscal calendar - rate limits, which cannot be quarterly - pass
@@ -45,7 +41,7 @@ func IsCalendarAlignableDuration(duration string) bool {
 // boundary for eight of the twelve possible fiscal starts, and only for part of
 // the year, which is exactly the kind of drift that hides in production.
 func GetCalendarPeriodStart(duration string, t time.Time, quarterStart time.Month) time.Time {
-	if duration == "" {
+	if !IsCalendarAlignableDuration(duration) {
 		return t
 	}
 	t = t.UTC()
@@ -125,19 +121,15 @@ func RollingWindowStart(anchor time.Time, duration time.Duration, now time.Time)
 // boundaries GetCalendarPeriodStart would produce, so "d" counts UTC days, "w"
 // counts Mondays, "M" counts months and "Y" counts years.
 //
-// Like GetCalendarPeriodStart this deliberately ignores the numeric multiplier,
-// so "7d" counts days rather than seven-day blocks. The two must agree: a
-// mismatch would make a finite override's derived cycle count drift away from
-// the cadence at which the budget actually resets.
-//
-// Returns 0 for a non-calendar suffix and whenever to is not after from.
+// Returns 0 for durations without single-unit calendar alignment and whenever
+// to is not after from. Multi-unit durations count cycles on the rolling path.
 //
 // quarterStart carries the same meaning as in GetCalendarPeriodStart and is
 // consulted only for "Q". The two must agree exactly: a mismatch of one makes a
 // finite override on a quarterly budget expire a whole quarter early or live a
 // quarter too long.
 func CountCalendarPeriods(duration string, from, to time.Time, quarterStart time.Month) int {
-	if duration == "" || !to.After(from) {
+	if !IsCalendarAlignableDuration(duration) || !to.After(from) {
 		return 0
 	}
 	from = from.UTC()

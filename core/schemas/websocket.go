@@ -6,8 +6,9 @@ import "encoding/json"
 type WebSocketEventType string
 
 const (
-	WSEventResponseCreate WebSocketEventType = "response.create"
-	WSEventError          WebSocketEventType = "error"
+	WSEventResponseCreate    WebSocketEventType = "response.create"
+	WSEventResponseInterrupt WebSocketEventType = "response.interrupt"
+	WSEventError             WebSocketEventType = "error"
 )
 
 // WebSocketResponsesEvent represents a client-sent event over the Responses WebSocket connection.
@@ -30,6 +31,7 @@ type WebSocketResponsesEvent struct {
 	Metadata           json.RawMessage    `json:"metadata,omitempty"`
 	Text               json.RawMessage    `json:"text,omitempty"`
 	Truncation         string             `json:"truncation,omitempty"`
+	AccessPrograms     *AccessPrograms    `json:"access_programs,omitempty"`
 }
 
 // WebSocketErrorEvent represents a server-sent error event over WebSocket.

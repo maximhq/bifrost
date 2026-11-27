@@ -7,7 +7,10 @@ systemone:
     description: |
       Evaluates state against a map of named questions using Typesafe's native
       System One API. The request body matches Typesafe's native format; question
-      identifiers become result field names.
+      identifiers become result field names. Images are listed in `assets` and placed
+      by reference; send them base64 in JSON, or as file parts of a multipart request
+      whose `request` part holds the JSON. Bifrost adds the
+      `TypeSafe-Danger-Zone-Images` header Typesafe requires for images and box questions.
     tags:
     - Typesafe Integration
     requestBody:
@@ -31,7 +34,26 @@ systemone:
                   items: {}
               model:
                 type: string
-                description: Typesafe model identifier (e.g. `jev-1.13.0`, `jev-latest`).
+                description: Typesafe model identifier (e.g. `jev-1.14.0`, `jev-latest`).
+              assets:
+                type: object
+                description: Images keyed by the reference string written wherever each belongs in the state, instructions, or criteria.
+                additionalProperties:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                      enum: [image]
+                    format:
+                      type: string
+                      enum: [png, jpg, jpeg]
+                      description: Required with `data_base64`
+                    data_base64:
+                      type: string
+                      description: The image file, base64-encoded, without a `data:` prefix
+                    part:
+                      type: string
+                      description: In a multipart request, the name of the file part holding the image
               questions:
                 type: object
                 minProperties: 1
@@ -44,8 +66,8 @@ systemone:
                   properties:
                     type:
                       type: string
-                      enum: [noul, choice, score]
-                      description: Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value.
+                      enum: [noul, choice, score, box]
+                      description: Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value, `box` the edges of a box around the instructions' subject in an image (Jev 1.14).
                     instructions:
                       description: Question instructions. A string, or structured data.
                       oneOf:
@@ -66,6 +88,19 @@ systemone:
                       - type: array
                         items:
                           type: string
+        multipart/form-data:
+          schema:
+            type: object
+            required:
+            - request
+            properties:
+              request:
+                type: string
+                description: The JSON request, as for `application/json`, with each multipart asset's `part` naming a file part of this request.
+            additionalProperties:
+              type: string
+              format: binary
+              description: An image file part, named by exactly one asset's `part`
     responses:
       '200':
         description: Successful response in Typesafe's native shape
@@ -90,7 +125,7 @@ systemone:
                     properties:
                       type:
                         type: string
-                        enum: [noul, choice, score]
+                        enum: [noul, choice, score, box]
                       noul:
                         type: number
                         description: Probability from 0 to 1 (noul answers)
@@ -100,6 +135,19 @@ systemone:
                       score:
                         type: number
                         description: Probability-weighted value (score answers)
+                      box:
+                        type: object
+                        description: Box answers. Edges as fractions from 0 to 1 of the image, from its top-left
+                        required: [top, bottom, left, right]
+                        properties:
+                          top:
+                            type: number
+                          bottom:
+                            type: number
+                          left:
+                            type: number
+                          right:
+                            type: number
                       probabilities:
                         type: object
                         additionalProperties:
