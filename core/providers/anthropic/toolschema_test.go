@@ -68,6 +68,37 @@ func TestNormalizeAnthropicToolInputSchemaOtherRootCompositions(t *testing.T) {
 	}
 }
 
+// TestNormalizeAnthropicToolInputSchemaKeepsExplicitEmptyRequired checks a root
+// composition: an explicit required: [] stays present, and an absent one stays absent.
+func TestNormalizeAnthropicToolInputSchemaKeepsExplicitEmptyRequired(t *testing.T) {
+	for _, test := range []struct {
+		name, raw    string
+		wantRequired bool
+	}{
+		{"explicit empty", `{"type":"object","properties":{},"required":[],"allOf":[{"type":"object","properties":{}}]}`, true},
+		{"absent", `{"type":"object","properties":{},"allOf":[{"type":"object","properties":{}}]}`, false},
+		{"absent with disjoint anyOf required", `{"type":"object","anyOf":[{"type":"object","properties":{"left":{"type":"string"}},"required":["left"]},{"type":"object","properties":{"right":{"type":"string"}},"required":["right"]}]}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var schema schemas.ToolFunctionParameters
+			if err := schemas.Unmarshal([]byte(test.raw), &schema); err != nil {
+				t.Fatalf("unmarshal schema: %v", err)
+			}
+			normalized, err := NormalizeAnthropicToolInputSchema(&schema)
+			if err != nil {
+				t.Fatalf("normalize schema: %v", err)
+			}
+			out, err := schemas.MarshalSorted(normalized)
+			if err != nil {
+				t.Fatalf("marshal schema: %v", err)
+			}
+			if got := strings.Contains(string(out), `"required":[]`); got != test.wantRequired {
+				t.Fatalf("required: [] present = %v, want %v: %s", got, test.wantRequired, out)
+			}
+		})
+	}
+}
+
 // TestNormalizeAnthropicToolInputSchemaRootOneOf verifies that root
 // alternatives are merged without removing accepted nested composition.
 func TestNormalizeAnthropicToolInputSchemaRootOneOf(t *testing.T) {

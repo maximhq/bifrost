@@ -1747,3 +1747,63 @@ func BenchmarkConverseToolStrict(b *testing.B) {
 		})
 	}
 }
+
+// TestBedrockToolSpecPreservesExplicitEmptyRequired checks that an explicit required: []
+// reaches toolSpec.inputSchema.json on both Converse routes, which serialize the tool
+// schema verbatim.
+func TestBedrockToolSpecPreservesExplicitEmptyRequired(t *testing.T) {
+	newParams := func(t *testing.T) *schemas.ToolFunctionParameters {
+		var params schemas.ToolFunctionParameters
+		if err := schemas.Unmarshal([]byte(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`), &params); err != nil {
+			t.Fatal(err)
+		}
+		return &params
+	}
+	assertRequired := func(t *testing.T, req *BedrockConverseRequest) {
+		if req.ToolConfig == nil || len(req.ToolConfig.Tools) != 1 || req.ToolConfig.Tools[0].ToolSpec == nil {
+			t.Fatalf("expected one toolSpec, got %+v", req.ToolConfig)
+		}
+		if got := string(req.ToolConfig.Tools[0].ToolSpec.InputSchema.JSON); !strings.Contains(got, `"required":[]`) {
+			t.Fatalf("inputSchema.json lost required: []: %s", got)
+		}
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    "global.anthropic.claude-sonnet-4-6",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Take a screenshot.")}}},
+			Params: &schemas.ChatParameters{
+				Tools: []schemas.ChatTool{{
+					Type:     schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{Name: "take_screenshot", Parameters: newParams(t)},
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRequired(t, req)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    "global.anthropic.claude-sonnet-4-6",
+			Input:    []schemas.ResponsesMessage{glmUserMessage("Take a screenshot.")},
+			Params: &schemas.ResponsesParameters{
+				Tools: []schemas.ResponsesTool{{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("take_screenshot"),
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: newParams(t)},
+				}},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertRequired(t, req)
+	})
+}

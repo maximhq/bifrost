@@ -352427,6 +352427,281 @@
           ]
         }
       ]
+    },
+    {
+      "name": "393. Tool schemas keep an explicit required: [] (empty required array) (#6404)",
+      "description": "A zero-argument tool schema sent with \"required\": [] lost the array when Bifrost re-encoded the request, because ToolFunctionParameters.Required was tagged omitempty and DeepCopyToolFunctionParameters turned an empty slice into nil. OpenAI-compatible strict validators (OpenAI, Bedrock Mantle) then reject the tool with \"required is required to be supplied\". Cases 1-2 pin the strict OpenAI routes. Cases 3-4 pin that the now-preserved required: [] is accepted by Anthropic on /v1/responses and by Bedrock Converse on /v1/chat/completions, the two non-OpenAI wire formats that serialize the schema verbatim. Case 5 pins the route where #6404 was reported: strict /v1/responses on Bedrock Mantle (openai.gpt-5.6-sol), asserting required: [] in the outbound raw_request.",
+      "item": [
+        {
+          "name": "393.1 openai/gpt-4o-mini responses strict (empty required array) - #6404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Call get_current_time. It takes no arguments.\",\n  \"max_output_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_current_time\",\n      \"description\": \"Return the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"required\": [],\n        \"additionalProperties\": false\n      },\n      \"strict\": true\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_current_time\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var name = '393.1';",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test(name + ' the zero-argument tool schema with required: [] is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { pm.expect.fail(name + ' response was not JSON: ' + raw.slice(0, 300)); }",
+                  "var calls = (j.output || []).filter(function (o) { return o && o.type === 'function_call'; }).map(function (o) { return { name: o.name, args: o.arguments }; });",
+                  "pm.test(name + ' the forced tool is called with an empty arguments object', function () {",
+                  "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].name).to.eql('get_current_time');",
+                  "  pm.expect(calls[0].args, 'missing function arguments: ' + raw.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "  var args = JSON.parse(calls[0].args);",
+                  "  pm.expect(args !== null && typeof args === 'object' && !Array.isArray(args), 'expected an arguments object: ' + calls[0].args).to.be.true;",
+                  "  pm.expect(Object.keys(args), 'expected empty arguments: ' + calls[0].args).to.have.length(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "393.2 openai/gpt-4o-mini chat strict (empty required array) - #6404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_current_time. It takes no arguments.\"\n    }\n  ],\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_current_time\",\n        \"description\": \"Return the current time.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {},\n          \"required\": [],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"get_current_time\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var name = '393.2';",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test(name + ' the zero-argument tool schema with required: [] is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { pm.expect.fail(name + ' response was not JSON: ' + raw.slice(0, 300)); }",
+                  "var calls = ((((j.choices || [])[0] || {}).message || {}).tool_calls || []).map(function (c) { return { name: (c.function || {}).name, args: (c.function || {}).arguments }; });",
+                  "pm.test(name + ' the forced tool is called with an empty arguments object', function () {",
+                  "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].name).to.eql('get_current_time');",
+                  "  pm.expect(calls[0].args, 'missing function arguments: ' + raw.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "  var args = JSON.parse(calls[0].args);",
+                  "  pm.expect(args !== null && typeof args === 'object' && !Array.isArray(args), 'expected an arguments object: ' + calls[0].args).to.be.true;",
+                  "  pm.expect(Object.keys(args), 'expected empty arguments: ' + calls[0].args).to.have.length(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "393.3 anthropic/claude-haiku-4-5 responses (empty required array) - #6404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"input\": \"Call get_current_time. It takes no arguments.\",\n  \"max_output_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_current_time\",\n      \"description\": \"Return the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"required\": [],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_current_time\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var name = '393.3';",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test(name + ' the zero-argument tool schema with required: [] is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { pm.expect.fail(name + ' response was not JSON: ' + raw.slice(0, 300)); }",
+                  "var calls = (j.output || []).filter(function (o) { return o && o.type === 'function_call'; }).map(function (o) { return { name: o.name, args: o.arguments }; });",
+                  "pm.test(name + ' the forced tool is called with an empty arguments object', function () {",
+                  "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].name).to.eql('get_current_time');",
+                  "  pm.expect(calls[0].args, 'missing function arguments: ' + raw.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "  var args = JSON.parse(calls[0].args);",
+                  "  pm.expect(args !== null && typeof args === 'object' && !Array.isArray(args), 'expected an arguments object: ' + calls[0].args).to.be.true;",
+                  "  pm.expect(Object.keys(args), 'expected empty arguments: ' + calls[0].args).to.have.length(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "393.4 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 chat (empty required array) - #6404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_current_time. It takes no arguments.\"\n    }\n  ],\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_current_time\",\n        \"description\": \"Return the current time.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {},\n          \"required\": [],\n          \"additionalProperties\": false\n        }\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"function\": {\n      \"name\": \"get_current_time\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var name = '393.4';",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test(name + ' the zero-argument tool schema with required: [] is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { pm.expect.fail(name + ' response was not JSON: ' + raw.slice(0, 300)); }",
+                  "var calls = ((((j.choices || [])[0] || {}).message || {}).tool_calls || []).map(function (c) { return { name: (c.function || {}).name, args: (c.function || {}).arguments }; });",
+                  "pm.test(name + ' the forced tool is called with an empty arguments object', function () {",
+                  "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].name).to.eql('get_current_time');",
+                  "  pm.expect(calls[0].args, 'missing function arguments: ' + raw.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "  var args = JSON.parse(calls[0].args);",
+                  "  pm.expect(args !== null && typeof args === 'object' && !Array.isArray(args), 'expected an arguments object: ' + calls[0].args).to.be.true;",
+                  "  pm.expect(Object.keys(args), 'expected empty arguments: ' + calls[0].args).to.have.length(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "393.5 bedrock_mantle/openai.gpt-5.6-sol responses strict (empty required array) - #6404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"input\": \"Call get_current_time. It takes no arguments.\",\n  \"max_output_tokens\": 512,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_current_time\",\n      \"description\": \"Return the current time.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"required\": [],\n        \"additionalProperties\": false\n      },\n      \"strict\": true\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"function\",\n    \"name\": \"get_current_time\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var name = '393.5';",
+                  "var raw = pm.response.text() || '';",
+                  "pm.test(name + ' the zero-argument tool schema with required: [] is accepted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw).to.be.below(400);",
+                  "});",
+                  "var j = {}; try { j = pm.response.json(); } catch (e) { pm.expect.fail(name + ' response was not JSON: ' + raw.slice(0, 300)); }",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test(name + ' required: [] reaches Bedrock Mantle', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + raw.slice(0, 300)).to.be.an('object');",
+                  "  var fn = (rr.tools || []).filter(function (t) { return t.name === 'get_current_time'; })[0];",
+                  "  pm.expect(fn, 'get_current_time missing from outbound tools: ' + JSON.stringify(rr).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(fn.parameters.required, 'required dropped before the provider: ' + JSON.stringify(fn)).to.be.an('array').that.is.empty;",
+                  "});",
+                  "var calls = (j.output || []).filter(function (o) { return o && o.type === 'function_call'; }).map(function (o) { return { name: o.name, args: o.arguments }; });",
+                  "pm.test(name + ' the forced tool is called with an empty arguments object', function () {",
+                  "  pm.expect(calls.length, 'no tool call in response: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(calls[0].name).to.eql('get_current_time');",
+                  "  pm.expect(calls[0].args, 'missing function arguments: ' + raw.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "  var args = JSON.parse(calls[0].args);",
+                  "  pm.expect(args !== null && typeof args === 'object' && !Array.isArray(args), 'expected an arguments object: ' + calls[0].args).to.be.true;",
+                  "  pm.expect(Object.keys(args), 'expected empty arguments: ' + calls[0].args).to.have.length(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -506,3 +506,63 @@ func TestBedrockMantleKeepsHeldTextOnFinishWithoutDelta(t *testing.T) {
 	require.Nil(t, bifrostErr, "%+v", bifrostErr)
 	require.Equal(t, "this result is <", drainMantleText(t, stream))
 }
+
+// TestBedrockMantleResponsesKeepsExplicitEmptyRequired checks that an explicit required: []
+// reaches Mantle's native /v1/responses endpoint, whose strict validation rejects a
+// zero-argument tool schema sent without required.
+func TestBedrockMantleResponsesKeepsExplicitEmptyRequired(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		captured []byte
+		path     string
+	)
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("reading request body: %v", err)
+		}
+		mu.Lock()
+		captured, path = reqBody, r.URL.Path
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"openai.gpt-5.6-sol",` +
+			`"output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_current_time","arguments":"{}","status":"completed"}],` +
+			`"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`))
+	}))
+	defer ts.Close()
+	provider, key := newMantleDSMLProvider(t, ts)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	var tool schemas.ResponsesTool
+	require.NoError(t, schemas.Unmarshal([]byte(`{"type":"function","name":"get_current_time","description":"Return the current time.",`+
+		`"parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"strict":true}`), &tool))
+
+	_, bifrostErr := provider.Responses(ctx, key, &schemas.BifrostResponsesRequest{
+		Provider: schemas.BedrockMantle,
+		Model:    "openai.gpt-5.6-sol",
+		Input: []schemas.ResponsesMessage{{
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Call get_current_time.")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool}},
+	})
+	require.Nil(t, bifrostErr, "%+v", bifrostErr)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.True(t, strings.HasSuffix(path, "/responses"), "expected the native Mantle responses route, got %q", path)
+
+	var body struct {
+		Tools []struct {
+			Parameters map[string]any `json:"parameters"`
+		} `json:"tools"`
+	}
+	require.NoError(t, sonic.Unmarshal(captured, &body), "outbound body: %s", captured)
+	require.Len(t, body.Tools, 1, "outbound body: %s", captured)
+	required, ok := body.Tools[0].Parameters["required"]
+	require.True(t, ok, "required: [] was dropped before Mantle: %s", captured)
+	require.Equal(t, []any{}, required)
+}

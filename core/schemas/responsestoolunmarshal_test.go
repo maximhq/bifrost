@@ -259,6 +259,23 @@ func TestResponsesToolUnmarshalNullFunctionWrapper(t *testing.T) {
 	assert.NotNil(t, tool.ResponsesToolFunction)
 }
 
+// TestResponsesToolRoundTripPreservesExplicitEmptyRequired checks the /v1/responses
+// ingress: strict validators reject a zero-argument schema without required, so an
+// explicit required: [] must survive decode and re-encode.
+func TestResponsesToolRoundTripPreservesExplicitEmptyRequired(t *testing.T) {
+	const input = `{"type":"function","name":"run_tests","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"strict":true}`
+
+	var tool ResponsesTool
+	require.NoError(t, Unmarshal([]byte(input), &tool))
+	require.NotNil(t, tool.ResponsesToolFunction)
+	require.NotNil(t, tool.ResponsesToolFunction.Parameters)
+	require.NotNil(t, tool.ResponsesToolFunction.Parameters.Required, "decode must keep an explicit [] distinct from an absent required")
+
+	out, err := MarshalSorted(tool)
+	require.NoError(t, err)
+	assert.Equal(t, input, string(out))
+}
+
 // TestResponsesToolMarshalUnmarshalRoundTrip walks every tool type through
 // Unmarshal -> MarshalSorted and asserts the JSON is preserved. This is the
 // broadest guard on the decoder refactor: if any type's embedded struct stops
