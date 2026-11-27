@@ -460,9 +460,19 @@ func TestConvertBifrostMessagesToGemini_UnusableExtraContentFallsBackToTheSentin
 	for _, extra := range []string{
 		`{"google":{}}`,
 		`{"google":{"thought_signature":"not base64!"}}`,
+		`{"google":{"thought_signature":"\n"}}`,
 		`{"other":{"thought_signature":"` + testExtraContentSignature + `"}}`,
 	} {
 		assert.Equal(t, skipThoughtSignatureValidator, replayedSignature(t, json.RawMessage(extra)), extra)
+	}
+}
+
+func TestConvertBifrostMessagesToGemini_ExtraContentThoughtSignatureAcceptsAnyBase64Variant(t *testing.T) {
+	const raw = "\xfb\xff\xfe\x01"
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		extra := json.RawMessage(`{"google":{"thought_signature":"` + encoding.EncodeToString([]byte(raw)) + `"}}`)
+
+		assert.Equal(t, raw, replayedSignature(t, extra), string(extra))
 	}
 }
 

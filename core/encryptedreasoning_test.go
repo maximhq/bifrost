@@ -3,6 +3,7 @@ package bifrost
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -2157,6 +2158,38 @@ func TestStripUnverifiableReasoning_ChatShape(t *testing.T) {
 			t.Errorf("expected the reasoning text to survive, got %+v", d[0].Text)
 		}
 	})
+}
+
+// The Gemini chat converter also replays a tool call's signature from
+// extra_content.google.thought_signature, so the strip has to remove it there too.
+func TestStripUnverifiableReasoning_ChatToolCallExtraContent(t *testing.T) {
+	original := json.RawMessage(`{"google":{"thought_signature":"c2ln","other":true}}`)
+	toolCalls := []schemas.ChatAssistantMessageToolCall{
+		{ID: schemas.Ptr("call_1"), ExtraContent: original},
+		{ID: schemas.Ptr("call_2")},
+	}
+	req := &schemas.BifrostRequest{ChatRequest: &schemas.BifrostChatRequest{
+		Provider: schemas.Gemini,
+		Model:    "gemini-3.6-flash",
+		Input: []schemas.ChatMessage{{
+			Role:                 schemas.ChatMessageRoleAssistant,
+			ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: toolCalls},
+		}},
+	}}
+
+	if !stripUnverifiableReasoning(nil, req) {
+		t.Fatal("expected the strip to report a change")
+	}
+	got := req.ChatRequest.Input[0].ChatAssistantMessage.ToolCalls[0].ExtraContent
+	if string(got) != `{"google":{"other":true}}` {
+		t.Errorf("expected only thought_signature to be removed, got %s", got)
+	}
+	if string(toolCalls[0].ExtraContent) != `{"google":{"thought_signature":"c2ln","other":true}}` {
+		t.Errorf("expected the caller's extra_content to be untouched, got %s", toolCalls[0].ExtraContent)
+	}
+	if stripUnverifiableReasoning(nil, req) {
+		t.Error("expected no change on a second pass")
+	}
 }
 
 // TestStripUnverifiableReasoning_ResponsesContentBlockSignature covers the second half

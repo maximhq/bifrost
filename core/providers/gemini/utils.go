@@ -2362,11 +2362,13 @@ func thoughtSignatureFromExtraContent(extraContent json.RawMessage) []byte {
 	if signature == "" {
 		return nil
 	}
-	decoded, err := base64.StdEncoding.DecodeString(signature)
-	if err != nil {
-		return nil
+	// the field's alphabet and padding are not specified, so accept all four base64 variants
+	for _, encoding := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if decoded, err := encoding.DecodeString(signature); err == nil {
+			return decoded
+		}
 	}
-	return decoded
+	return nil
 }
 
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
@@ -2739,11 +2741,11 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 					}
 
 					// Google's OpenAI-compatible endpoint hands the signature back in extra_content
-					if part.ThoughtSignature == nil {
+					if len(part.ThoughtSignature) == 0 {
 						part.ThoughtSignature = thoughtSignatureFromExtraContent(toolCall.ExtraContent)
 					}
 
-					if part.ThoughtSignature == nil {
+					if len(part.ThoughtSignature) == 0 {
 						part.ThoughtSignature = []byte(skipThoughtSignatureValidator)
 					}
 

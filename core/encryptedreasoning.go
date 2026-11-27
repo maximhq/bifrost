@@ -2,6 +2,7 @@ package bifrost
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -361,20 +362,25 @@ func stripChatUnverifiableReasoning(ctx *schemas.BifrostContext, req *schemas.Bi
 		// is needed, so the caller's slices are never mutated.
 		if assistant := rewritten[i].ChatAssistantMessage; assistant != nil && len(assistant.ToolCalls) > 0 {
 			var cloned []schemas.ChatAssistantMessageToolCall
-			for j := range assistant.ToolCalls {
-				id := assistant.ToolCalls[j].ID
-				if id == nil {
-					continue
-				}
-				base := providerUtils.StripThoughtSignature(*id)
-				if base == *id {
-					continue
-				}
+			clone := func() {
 				if cloned == nil {
 					cloned = make([]schemas.ChatAssistantMessageToolCall, len(assistant.ToolCalls))
 					copy(cloned, assistant.ToolCalls)
 				}
-				cloned[j].ID = &base
+			}
+			for j := range assistant.ToolCalls {
+				if id := assistant.ToolCalls[j].ID; id != nil {
+					if base := providerUtils.StripThoughtSignature(*id); base != *id {
+						clone()
+						cloned[j].ID = &base
+					}
+				}
+				// The Gemini chat converter also replays the signature from
+				// extra_content.google.thought_signature.
+				if extra, ok := stripExtraContentThoughtSignature(assistant.ToolCalls[j].ExtraContent); ok {
+					clone()
+					cloned[j].ExtraContent = extra
+				}
 			}
 			if cloned != nil {
 				assistantCopy := *assistant
@@ -414,6 +420,20 @@ func stripChatUnverifiableReasoning(ctx *schemas.BifrostContext, req *schemas.Bi
 	}
 	req.Input = rewritten
 	return true
+}
+
+// stripExtraContentThoughtSignature returns a copy of a tool call's extra_content without
+// google.thought_signature, and whether there was one to remove.
+func stripExtraContentThoughtSignature(extraContent json.RawMessage) (json.RawMessage, bool) {
+	const path = "google.thought_signature"
+	if len(extraContent) == 0 || !gjson.GetBytes(extraContent, path).Exists() {
+		return nil, false
+	}
+	stripped, err := sjson.DeleteBytes(extraContent, path)
+	if err != nil {
+		return nil, false
+	}
+	return stripped, true
 }
 
 // stripChatReasoningDetails returns the details with every signature and encrypted
