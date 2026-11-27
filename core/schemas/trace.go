@@ -1333,6 +1333,7 @@ const (
 	AttrBifrostVirtualKeyName      = "bifrost.virtual_key.name"
 	AttrBifrostSelectedKeyID       = "bifrost.selected_key.id"
 	AttrBifrostSelectedKeyName     = "bifrost.selected_key.name"
+	AttrBifrostVertexProjectID     = "bifrost.vertex.project_id"
 	AttrBifrostRoutingRuleID       = "bifrost.routing_rule.id"
 	AttrBifrostRoutingRuleName     = "bifrost.routing_rule.name"
 	AttrBifrostTeamID              = "bifrost.team.id"

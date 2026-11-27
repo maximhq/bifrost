@@ -1,3 +1,4 @@
+- feat: emit the target Vertex project on attempt spans [@whereandy](https://github.com/whereandy)
 - fix: a zero provider usage.cost returns as total_cost 0 instead of an empty cost object (#9000) [@kunalgoesbyken](https://github.com/kunalgoesbyken)
 [fix]: preserve cache-write TTL usage on Bedrock Invoke responses [@gauravch-code](https://github.com/gauravch-code)
 - feat: baseten - new provider for Model APIs and dedicated deployments: chat, Responses, embeddings, transcription, decisions through System One, image generation on dedicated deployments (including `/predict` URLs) and rerank on BEI deployments
