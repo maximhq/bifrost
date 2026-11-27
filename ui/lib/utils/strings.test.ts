@@ -1,5 +1,12 @@
 import { describe, expect, it, test } from "vitest";
-import { cleanNumericInput, isSentinelValue, secondsToHumanReadable, titleCaseFromSnakeCase, trimFields } from "./strings";
+import {
+	cleanIntegerInput,
+	cleanNumericInput,
+	isSentinelValue,
+	secondsToHumanReadable,
+	titleCaseFromSnakeCase,
+	trimFields,
+} from "./strings";
 
 // Simulate what onChange does: clean → Number()
 function simulateOnChange(raw: string): { display: string; value: number | undefined } {
@@ -23,6 +30,14 @@ function simulateOnBlur(displayValue: string): { display: string; value: number 
 	}
 	return { display: "", value: undefined };
 }
+
+describe("cleanIntegerInput", () => {
+	// NumberAndSelect's integer mode: a decimal truncates instead of merging its digits.
+	test("truncates at the decimal point", () => expect(cleanIntegerInput("1.5")).toBe("1"));
+	test("keeps a whole number", () => expect(cleanIntegerInput("1,000")).toBe("1000"));
+	test("a leading decimal point is empty", () => expect(cleanIntegerInput(".5")).toBe(""));
+	test("a trailing decimal point is dropped", () => expect(cleanIntegerInput("12.")).toBe("12"));
+});
 
 describe("cleanNumericInput", () => {
 	// Basic valid inputs
