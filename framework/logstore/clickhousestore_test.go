@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -74,7 +76,7 @@ func chTestTargetIsDedicated(cfg *ClickHouseConfig, overridden bool) bool {
 
 // requireDedicatedClickHouseTestDB fails the test before any connection is
 // opened when the configured target is not safe to truncate.
-func requireDedicatedClickHouseTestDB(t *testing.T, cfg *ClickHouseConfig) {
+func requireDedicatedClickHouseTestDB(t testing.TB, cfg *ClickHouseConfig) {
 	t.Helper()
 	if !chTestTargetIsDedicated(cfg, chTestOverridden()) {
 		t.Fatalf("refusing to run destructive ClickHouse tests against database %q: BIFROST_TEST_CLICKHOUSE_* overrides must point at a database whose name contains \"test\" (the suite truncates logs, mcp_tool_logs, agent_logs, async_jobs and webhook_deliveries and rewrites their TTL)", cfg.Database.GetValue())
@@ -96,7 +98,7 @@ func clickhouseTestConfig() *ClickHouseConfig {
 // when ClickHouse is unavailable locally; in CI (the CI env var is set by
 // GitHub Actions and tests/docker-compose.yml provides the service) an
 // unreachable ClickHouse is a failure, so the suite can never silently skip.
-func trySetupClickHouseStore(t *testing.T) *ClickHouseLogStore {
+func trySetupClickHouseStore(t testing.TB) *ClickHouseLogStore {
 	t.Helper()
 	ctx := context.Background()
 	cfg := clickhouseTestConfig()
@@ -300,7 +302,8 @@ func TestClickHouseReconcileAgentCorrelation(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	taskID, contextID := "task-clickhouse", "context-clickhouse"
-	request := &AgentLog{ID: "ch-a2a-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-request-id"}
+	requestBody, responseBody := `{"message":"original request"}`, `{"message":"original response"}`
+	request := &AgentLog{ID: "ch-a2a-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-request-id", RequestBody: &requestBody, ResponseBody: &responseBody}
 	event := &AgentLog{ID: "ch-a2a-event", Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-request-id", TaskID: &taskID, ContextID: &contextID}
 
 	_, err := store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{request})
@@ -313,6 +316,66 @@ func TestClickHouseReconcileAgentCorrelation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, taskID, *found.TaskID)
 	require.Equal(t, contextID, *found.ContextID)
+	require.Equal(t, &requestBody, found.RequestBody)
+	require.Equal(t, &responseBody, found.ResponseBody)
+	require.Equal(t, request.Timestamp, found.Timestamp)
+
+	// A different request for the same task inherits context through the task
+	// pass. Its event body must survive the metadata-only correlation scan too.
+	eventBody := `{"artifact":"keep this payload"}`
+	taskOnly := &AgentLog{ID: "ch-a2a-task-only", Timestamp: now.Add(2 * time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "another-request", TaskID: &taskID, EventBody: &eventBody, HasObject: true}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{taskOnly})))
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{taskOnly}))
+	found, err = store.FindAgentLog(ctx, taskOnly.ID)
+	require.NoError(t, err)
+	require.Equal(t, contextID, *found.ContextID)
+	require.Equal(t, &eventBody, found.EventBody)
+	require.True(t, found.HasObject)
+
+	// Complete groups require no rewrite, even when reconciliation repeats.
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{request, event, taskOnly}))
+	found, err = store.FindAgentLog(ctx, request.ID)
+	require.NoError(t, err)
+	require.Equal(t, &requestBody, found.RequestBody)
+	require.Equal(t, &responseBody, found.ResponseBody)
+}
+
+// TestClickHouseReconcileAgentCorrelationReusedID keeps rows with the same ID
+// at different millisecond timestamps isolated in both reconciliation passes.
+func TestClickHouseReconcileAgentCorrelationReusedID(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second).Add(123 * time.Millisecond)
+	for _, pass := range []string{"request", "task"} {
+		t.Run(pass, func(t *testing.T) {
+			taskID, contextID := "task-"+pass, "context-"+pass
+			oldBody, targetBody := "old payload", "target payload"
+			old := &AgentLog{ID: "reused-" + pass, Timestamp: now.Add(-time.Hour), RecordKind: "event", Status: "success", AgentName: "other-agent", RequestID: "other-request", EventBody: &oldBody, HasObject: true}
+			target := &AgentLog{ID: old.ID, Timestamp: now, RecordKind: "event", Status: "success", AgentName: "fixture-" + pass, RequestID: "target-" + pass, EventBody: &targetBody}
+			source := &AgentLog{ID: "source-" + pass, Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: target.AgentName, RequestID: target.RequestID, TaskID: &taskID, ContextID: &contextID}
+			if pass == "task" {
+				target.TaskID = &taskID
+				source.RequestID = "different-request"
+			}
+			// Separate creates exercise the API's timestamp-bounded existence check.
+			require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{old})))
+			require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{target, source})))
+			require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{target, source}))
+			var rows []AgentLog
+			require.NoError(t, store.db.Where("id = ?", old.ID).Order("timestamp").Find(&rows).Error)
+			require.Len(t, rows, 2)
+			require.Equal(t, old.Timestamp, rows[0].Timestamp)
+			require.Empty(t, rows[0].TaskID)
+			require.Empty(t, rows[0].ContextID)
+			require.Equal(t, &oldBody, rows[0].EventBody)
+			require.True(t, rows[0].HasObject)
+			require.Equal(t, target.Timestamp, rows[1].Timestamp)
+			require.Equal(t, &taskID, rows[1].TaskID)
+			require.Equal(t, &contextID, rows[1].ContextID)
+			require.Equal(t, &targetBody, rows[1].EventBody)
+			require.False(t, rows[1].HasObject)
+		})
+	}
 }
 
 func TestChTTLDays(t *testing.T) {
@@ -370,13 +433,38 @@ func TestLogsCleanerStopsAfterOversizedBatch(t *testing.T) {
 	t.Run("FullBatchesKeepGoing", func(t *testing.T) {
 		m := &countingRetentionManager{counts: []int64{batchSize, batchSize, 40}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
-		assert.Equal(t, 3, m.calls, "SQL stores return exactly batchSize while rows remain")
+		assert.Equal(t, 4, m.calls, "SQL stores keep going until a batch deletes nothing")
 	})
 	t.Run("ExactBatchThenEmpty", func(t *testing.T) {
 		m := &countingRetentionManager{counts: []int64{batchSize, 0}}
 		NewLogsCleaner(m, CleanerConfig{RetentionDays: 3}, testLogger{}).cleanupOldLogs(context.Background())
 		assert.Equal(t, 2, m.calls, "a full batch is followed by one more probe that finds nothing")
 	})
+}
+
+// The cleaner calls again after a short count. On a replicated cluster that
+// count can reach a replica that has not applied the first delete yet, so a
+// repeat call for a cutoff already deleted must not touch the database at all.
+// The store has no connection here: any query it sent would panic.
+func TestClickHouseRetentionDeleteRunsOncePerCutoff(t *testing.T) {
+	s := &ClickHouseLogStore{}
+	cutoff := time.Now().UTC().AddDate(0, 0, -30)
+	for _, table := range []string{"logs", "relay_logs", "warp_topic_assignments", "warp_topic_unmatched"} {
+		s.retentionCutoffs.Store(table, cutoff)
+	}
+	ctx := context.Background()
+	for name, deleteBatch := range map[string]func(context.Context, time.Time, int) (int64, error){
+		"logs":                   s.DeleteLogsBatch,
+		"relay_logs":             s.DeleteRelayLogsBatch,
+		"warp_topic_assignments": s.DeleteWarpTopicAssignmentsBatch,
+		"warp_topic_unmatched":   s.DeleteWarpTopicUnmatchedBatch,
+	} {
+		var deleted int64
+		var err error
+		require.NotPanics(t, func() { deleted, err = deleteBatch(ctx, cutoff, batchSize) }, "%s: a repeat call must not query", name)
+		require.NoError(t, err, name)
+		assert.Zero(t, deleted, name)
+	}
 }
 
 func TestChApplyUpdateMapSkipsDedupKeys(t *testing.T) {
@@ -451,6 +539,224 @@ func TestClickHouseCreateAndFind(t *testing.T) {
 	assert.True(t, hasLogs)
 
 	require.NoError(t, store.Ping(ctx))
+}
+
+// chSelectedParts returns how many parts ClickHouse read for the most recent
+// finished SELECT on logs whose text contains marker. Fails the test when no
+// such query was logged, so a lookup that stops being issued cannot pass.
+func chSelectedParts(t *testing.T, db *gorm.DB, marker string) uint64 {
+	t.Helper()
+	require.NoError(t, db.Exec("SYSTEM FLUSH LOGS").Error)
+	var parts []uint64
+	require.NoError(t, db.Raw(`SELECT ProfileEvents['SelectedParts'] FROM system.query_log
+		WHERE type = 'QueryFinish' AND current_database = currentDatabase() AND query_kind = 'Select'
+		AND has(tables, currentDatabase() || '.logs') AND position(query, ?) > 0
+		AND event_time > now() - INTERVAL 5 MINUTE
+		ORDER BY event_time_microseconds DESC LIMIT 1`, marker).Scan(&parts).Error)
+	require.Len(t, parts, 1, "no finished SELECT on logs containing %q in system.query_log", marker)
+	return parts[0]
+}
+
+// TestClickHouseIDLookupsPruneParts covers #9316: a lookup by id alone could
+// use neither the monthly partitions nor the (timestamp, id) sort key, so
+// FindByID and every update's read-modify-write read scanned all of logs.
+//
+// Every part holds rows at more than one timestamp, as real parts do: a part
+// with a single timestamp lets the sort key bound its ids and hides the scan.
+// A bloom filter is sized by its granule's row count, so a two-row filler part
+// would false-positive often; 64 rows keeps it near its 2.5% design rate, and
+// the hashes are deterministic, so these fixed ids never flake.
+func TestClickHouseIDLookupsPruneParts(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	months := []time.Time{now.AddDate(0, -2, 0), now.AddDate(0, -1, 0), now}
+	for i, ts := range months {
+		filler := make([]*Log, 0, 64)
+		for j := range 64 {
+			filler = append(filler, chTestLog(fmt.Sprintf("ch-prune-filler-%d-%d", i, j), ts.Add(-time.Hour+time.Duration(j)*time.Second)))
+		}
+		require.NoError(t, store.BatchCreateIfNotExists(ctx, filler))
+	}
+	target := months[1]
+	ids := map[string]time.Time{
+		"ch-prune-hinted":    target.Add(time.Minute),
+		"ch-prune-id-only":   target.Add(2 * time.Minute),
+		"ch-prune-update":    target.Add(3 * time.Minute),
+		"ch-prune-stale":     target.Add(4 * time.Minute),
+		"ch-prune-companion": target.Add(5 * time.Minute),
+	}
+	batch := make([]*Log, 0, len(ids))
+	for id, ts := range ids {
+		batch = append(batch, chTestLog(id, ts))
+	}
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, batch))
+	var parts uint64
+	require.NoError(t, store.db.Raw("SELECT count() FROM system.parts WHERE database = currentDatabase() AND table = 'logs' AND active").Scan(&parts).Error)
+	require.Equal(t, uint64(4), parts, "rows must land in four parts for pruning to be observable")
+
+	hinted := context.WithValue(ctx, LogTimestampContextKey, ids["ch-prune-hinted"])
+	found, err := store.FindByID(hinted, "ch-prune-hinted")
+	require.NoError(t, err)
+	assert.Equal(t, "ch-prune-hinted", found.ID)
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "WHERE id = 'ch-prune-hinted'"), "timestamp hint must prune to the row's part")
+
+	found, err = store.FindByID(ctx, "ch-prune-id-only")
+	require.NoError(t, err)
+	assert.Equal(t, "ch-prune-id-only", found.ID)
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "WHERE id = 'ch-prune-id-only'"), "id bloom filter must prune an unhinted lookup under FINAL")
+
+	require.NoError(t, store.Update(ctx, "ch-prune-update", map[string]interface{}{"status": "success"}))
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "WHERE id = 'ch-prune-update'"), "Update's read must prune by id")
+
+	// A hint that misses the row (an old link, a client clock) still finds it.
+	stale := context.WithValue(ctx, LogTimestampContextKey, months[0])
+	found, err = store.FindByID(stale, "ch-prune-stale")
+	require.NoError(t, err)
+	assert.Equal(t, "ch-prune-stale", found.ID)
+	assert.True(t, found.Timestamp.Equal(ids["ch-prune-stale"]))
+
+	_, err = store.FindByID(hinted, "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestClickHouseFindByIDChildAggregatesPruneParts covers the child rollup that
+// FindByID attaches. Its `parent_request_id IN ?` predicate cannot use the sort
+// key, and that index is unsafe under FINAL (parent_request_id can change
+// between versions), so on 24.x it scanned all of logs. Children that move to
+// or away from the parent after insert must still be counted by their newest
+// version.
+func TestClickHouseFindByIDChildAggregatesPruneParts(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	months := []time.Time{now.AddDate(0, -2, 0), now.AddDate(0, -1, 0), now}
+	for i, ts := range months {
+		filler := make([]*Log, 0, 64)
+		for j := range 64 {
+			filler = append(filler, chTestLog(fmt.Sprintf("ch-agg-filler-%d-%d", i, j), ts.Add(-time.Hour+time.Duration(j)*time.Second)))
+		}
+		require.NoError(t, store.BatchCreateIfNotExists(ctx, filler))
+	}
+	parent, elsewhere := "ch-agg-parent", "ch-agg-elsewhere"
+	target := months[1]
+	child := func(id string, offset time.Duration, parentID string, cost float64) *Log {
+		l := chTestLog(id, target.Add(offset))
+		l.ParentRequestID = &parentID
+		l.Cost = &cost
+		return l
+	}
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{
+		chTestLog(parent, target),
+		child("ch-agg-child-1", time.Minute, parent, 1),
+		child("ch-agg-child-2", 2*time.Minute, parent, 2),
+		child("ch-agg-moves-away", 3*time.Minute, parent, 4),
+		child("ch-agg-moves-in", 4*time.Minute, elsewhere, 8),
+	}))
+	var parts uint64
+	require.NoError(t, store.db.Raw("SELECT count() FROM system.parts WHERE database = currentDatabase() AND table = 'logs' AND active").Scan(&parts).Error)
+	require.Equal(t, uint64(4), parts, "rows must land in four parts for pruning to be observable")
+
+	found, err := store.FindByID(ctx, parent)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), found.ChildCount)
+	assert.Equal(t, 7.0, found.ChildrenCost)
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, "child_count"), "the child rollup must prune to the children's part")
+	assert.Equal(t, uint64(1), chSelectedParts(t, store.db, fmt.Sprintf("LIMIT %d", chChildCandidateLimit+1)), "the child candidate read must prune by the parent_request_id index")
+
+	require.NoError(t, store.Update(ctx, "ch-agg-moves-away", map[string]interface{}{"parent_request_id": elsewhere}))
+	require.NoError(t, store.Update(ctx, "ch-agg-moves-in", map[string]interface{}{"parent_request_id": parent}))
+	found, err = store.FindByID(ctx, parent)
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), found.ChildCount, "children are counted by their newest version")
+	assert.Equal(t, 11.0, found.ChildrenCost)
+}
+
+// TestClickHouseScopedFindByIDSeesNewestVersion pins that the id lookup's skip
+// indexes cannot hide a row's newest version from FINAL. Once an update moves a
+// log out of the caller's scope, the user_id bloom filter would prune the part
+// holding the new version and FINAL would return the old, in-scope one.
+func TestClickHouseScopedFindByIDSeesNewestVersion(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	require.True(t, store.idLookupSkipIndexes)
+	assert.Contains(t, store.idLookupIgnoredIndexes, "`idx_logs_user_id`")
+	assert.NotContains(t, store.idLookupIgnoredIndexes, "`idx_logs_id`")
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	before, after := "ch-scope-before", "ch-scope-after"
+	rows := make([]*Log, 0, 64)
+	for j := range 63 {
+		rows = append(rows, chTestLog(fmt.Sprintf("ch-scope-filler-%d", j), ts.Add(-time.Duration(j+1)*time.Second)))
+	}
+	moved := chTestLog("ch-scope-moved", ts)
+	moved.UserID = &before
+	rows = append(rows, moved)
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, rows))
+	require.NoError(t, store.Update(ctx, "ch-scope-moved", map[string]interface{}{"user_id": after}))
+
+	scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB {
+		return db.Where("user_id = ?", before)
+	})
+	_, err := store.FindByID(scoped, "ch-scope-moved")
+	assert.ErrorIs(t, err, ErrNotFound, "unhinted lookup must not return the out-of-scope row's old version")
+	_, err = store.FindByID(context.WithValue(scoped, LogTimestampContextKey, ts), "ch-scope-moved")
+	assert.ErrorIs(t, err, ErrNotFound, "hinted lookup must not return the out-of-scope row's old version")
+
+	found, err := store.FindByID(ctx, "ch-scope-moved")
+	require.NoError(t, err)
+	require.NotNil(t, found.UserID)
+	assert.Equal(t, after, *found.UserID)
+}
+
+// BenchmarkChIDLookupContext measures what each ClickHouse id read (FindByID
+// and every update's read-modify-write) pays to carry its query setting.
+func BenchmarkChIDLookupContext(b *testing.B) {
+	ctx := context.Background()
+	store := &ClickHouseLogStore{idLookupSkipIndexes: true, idLookupIgnoredIndexes: "`idx_logs_provider`,`idx_logs_user_id`"}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = store.idLookupContext(ctx)
+	}
+}
+
+// TestClickHouseReconcileSkipIndexesMaterializesNewIndex covers the upgrade
+// path for #9316: an index added to a table that already holds data must be
+// backfilled onto the existing parts, once, without blocking startup.
+func TestClickHouseReconcileSkipIndexesMaterializesNewIndex(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	for _, idx := range []string{"idx_logs_id", "idx_logs_parent_request_id", "idx_agent_logs_id", "idx_relay_logs_id", "idx_mcp_logs_id"} {
+		var n int64
+		require.NoError(t, store.db.Raw("SELECT count() FROM system.data_skipping_indices WHERE database = currentDatabase() AND name = ?", idx).Scan(&n).Error)
+		assert.Equal(t, int64(1), n, "migration must create skip index %s", idx)
+	}
+
+	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("ch-materialize-1", time.Now().UTC())))
+	require.NoError(t, store.db.Exec("ALTER TABLE logs DROP INDEX IF EXISTS idx_logs_id").Error)
+	indexes := []string{"INDEX idx_logs_id id TYPE bloom_filter GRANULARITY 1"}
+
+	before := chMutationIDs(t, store.db, "logs")
+	start := time.Now().UnixMicro()
+	require.NoError(t, clickhouseReconcileSkipIndexes(ctx, store.db, "logs", "", indexes, testLogger{}))
+	cmds := chNewMutationCommands(t, store.db, "logs", before)
+	require.Len(t, cmds, 1, "re-adding the index must submit exactly one backfill")
+	assert.Contains(t, cmds[0], "MATERIALIZE INDEX idx_logs_id")
+
+	// Later boots skip an index that exists, so the add and its backfill must be
+	// one ALTER: a stop between two statements would leave it unbackfilled.
+	require.NoError(t, store.db.Exec("SYSTEM FLUSH LOGS").Error)
+	var alters []string
+	require.NoError(t, store.db.Raw(`SELECT query FROM system.query_log
+		WHERE type = 'QueryFinish' AND current_database = currentDatabase() AND query_kind = 'Alter'
+		AND position(query, 'idx_logs_id') > 0 AND event_time_microseconds >= fromUnixTimestamp64Micro(?)
+		ORDER BY event_time_microseconds`, start).Scan(&alters).Error)
+	require.Len(t, alters, 1, "the index must be added and backfilled by a single ALTER, got %q", alters)
+	assert.Contains(t, alters[0], "ADD INDEX")
+	assert.Contains(t, alters[0], "MATERIALIZE INDEX")
+
+	before = chMutationIDs(t, store.db, "logs")
+	require.NoError(t, clickhouseReconcileSkipIndexes(ctx, store.db, "logs", "", indexes, testLogger{}))
+	assert.Empty(t, chNewMutationCommands(t, store.db, "logs", before), "an index already on the table must not be backfilled again")
 }
 
 func TestClickHouseIdempotentCreate(t *testing.T) {
@@ -697,6 +1003,126 @@ func TestClickHouseSearchAndStats(t *testing.T) {
 	assert.ElementsMatch(t, []string{"gpt-4o"}, upper)
 }
 
+// The driver binds a time.Time at seconds precision, so a window bound inside a
+// second used to widen to that second's start and narrow to its end's start.
+// Warp's backfill resumes from a millisecond cursor, and every page re-read the
+// rows earlier in that second and embedded them again.
+func TestClickHouseSearchWindowKeepsMilliseconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	second := time.Now().UTC().Truncate(time.Second)
+
+	for _, offset := range []time.Duration{100, 400, 700} {
+		entry := chTestLog(fmt.Sprintf("ch-window-%d", offset), second.Add(offset*time.Millisecond))
+		entry.Status = "success"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+	}
+
+	ids := func(filters SearchFilters) []string {
+		result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 10, SortBy: "timestamp", Order: "asc"})
+		require.NoError(t, err)
+		out := make([]string, 0, len(result.Logs))
+		for _, entry := range result.Logs {
+			out = append(out, entry.ID)
+		}
+		return out
+	}
+
+	start := second.Add(400 * time.Millisecond)
+	assert.Equal(t, []string{"ch-window-400", "ch-window-700"}, ids(SearchFilters{StartTime: &start}),
+		"a start inside a second must not reach back to rows earlier in it")
+	end := second.Add(400 * time.Millisecond)
+	assert.Equal(t, []string{"ch-window-100", "ch-window-400"}, ids(SearchFilters{EndTime: &end}),
+		"an end inside a second must still include the rows up to it")
+	assert.Equal(t, []string{"ch-window-400"}, ids(SearchFilters{StartTime: &start, EndTime: &end}))
+}
+
+func TestClickHouseDimensionFiltersMatchFanoutRankings(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	assertFilterMatchesFanoutRankings(t, store.RDBLogStore, func(idCol, id, scalarID, scalarName, arrayIDs, arrayNames string) {
+		insertDimensionLog(t, store.db, idCol, id, now, scalarID, scalarName, arrayIDs, arrayNames)
+	}, now)
+}
+
+// The agent-log team, customer and business-unit filters bound the ids as a
+// bare list inside hasAny, which ClickHouse refuses as a string, so every one
+// of them failed on this backend.
+func TestClickHouseA2AAttributionFilters(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertA2AAttributionFilters(t, store.RDBLogStore, store.BatchCreateAgentLogsIfNotExists)
+}
+
+// The MCP tool log team, customer and business-unit filters go through the same hasAny membership
+// SQL as agent logs, so they are pinned on this backend too.
+func TestClickHouseMCPAttributionFilters(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertMCPAttributionFilters(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// The MCP filter options fan out over the JSON-array columns through this backend's own ARRAY JOIN.
+func TestClickHouseMCPKeyPairs(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertMCPKeyPairs(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// The MCP latency histogram reads its percentiles from ClickHouse's own quantile functions.
+func TestClickHouseMCPStatsAndHistograms(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertMCPFinishedCallAggregates(t, store.RDBLogStore, store.BatchCreateMCPToolLogsIfNotExists)
+}
+
+// The keyset cursor bound its timestamp as a time.Time, which the driver sends
+// at seconds precision. Ascending, every page re-read the rows earlier in the
+// cursor's second, and a second holding a full page never advanced; descending,
+// the rows between that second's start and the cursor were skipped. Cost
+// recalculation pages through logs this way.
+//
+// Three rows share the 200ms timestamp, and with two rows a page a boundary
+// falls inside that group in both directions (after 200-a ascending, after
+// 200-c descending), so only the id comparison decides what the next page
+// starts with.
+func TestClickHouseKeysetCursorKeepsMilliseconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	second := time.Now().UTC().Truncate(time.Second)
+
+	var ascending []string
+	for _, row := range []struct {
+		offset int
+		suffix string
+	}{{100, "a"}, {200, "a"}, {200, "b"}, {200, "c"}, {300, "a"}} {
+		entry := chTestLog(fmt.Sprintf("ch-keyset-%d-%s", row.offset, row.suffix), second.Add(time.Duration(row.offset)*time.Millisecond))
+		entry.Status = "success"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+		ascending = append(ascending, entry.ID)
+	}
+	descending := slices.Clone(ascending)
+	slices.Reverse(descending)
+
+	walk := func(order string) []string {
+		var seen []string
+		pagination := PaginationOptions{Limit: 2, SortBy: "timestamp", Order: order}
+		for page := 0; page < 10; page++ {
+			result, err := store.SearchLogs(ctx, SearchFilters{}, pagination)
+			require.NoError(t, err)
+			if len(result.Logs) == 0 {
+				return seen
+			}
+			for _, entry := range result.Logs {
+				seen = append(seen, entry.ID)
+			}
+			last := result.Logs[len(result.Logs)-1]
+			cursor := last.Timestamp
+			pagination.AfterTimestamp, pagination.AfterID = &cursor, last.ID
+		}
+		t.Fatalf("%s paging did not finish in 10 pages: %v", order, seen)
+		return nil
+	}
+	assert.Equal(t, ascending, walk("asc"), "every row once, in order")
+	assert.Equal(t, descending, walk("desc"), "every row once, in order")
+}
+
 func TestClickHouseDeleteLogs(t *testing.T) {
 	store := trySetupClickHouseStore(t)
 	ctx := context.Background()
@@ -826,7 +1252,8 @@ func TestClickHouseDeleteLogsBatchIsSingleLightweightMutation(t *testing.T) {
 		deleted, err := store.DeleteLogsBatch(ctx, cutoff, batchSize)
 		require.NoError(t, err)
 		total += deleted
-		if deleted != int64(batchSize) {
+		// The cleaner's stop rule: only an empty batch or one above batchSize ends the drain.
+		if deleted == 0 || deleted > int64(batchSize) {
 			break
 		}
 	}
@@ -843,7 +1270,7 @@ func TestClickHouseDeleteLogsBatchIsSingleLightweightMutation(t *testing.T) {
 }
 
 // TestClickHouseFlushIsLightweightAndSkipsWhenEmpty covers the minute sweep
-// from plugins/logging: Flush and FlushMCPToolLogs must use lightweight
+// from plugins/logging: LLM, MCP and A2A cleanup must use lightweight
 // deletes and must not issue any mutation when nothing is left to flush.
 func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	store := trySetupClickHouseStore(t)
@@ -856,14 +1283,28 @@ func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	require.NoError(t, store.CreateIfNotExists(ctx, stuck))
 	require.NoError(t, store.CreateIfNotExists(ctx, done))
 	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-flush-mcp", old)}))
+	agents := []*AgentLog{
+		{ID: "ch-flush-agent", Timestamp: old, CreatedAt: old, Status: "processing"},
+		{ID: "ch-flush-agent-done", Timestamp: old, CreatedAt: old, Status: "success"},
+		{ID: "ch-flush-agent-fresh", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC(), Status: "processing"},
+	}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, agents)))
 
 	logsBefore := chMutationIDs(t, store.db, "logs")
 	mcpBefore := chMutationIDs(t, store.db, "mcp_tool_logs")
+	agentBefore := chMutationIDs(t, store.db, "agent_logs")
 	since := time.Now().UTC().Add(-30 * time.Minute)
 	require.NoError(t, store.Flush(ctx, since))
 	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+	require.NoError(t, store.FlushAgentLogs(ctx, since))
+	_, err := store.FindAgentLog(ctx, "ch-flush-agent")
+	assert.ErrorIs(t, err, ErrNotFound)
+	for _, id := range []string{"ch-flush-agent-done", "ch-flush-agent-fresh"} {
+		_, err := store.FindAgentLog(ctx, id)
+		assert.NoError(t, err, "completed and fresh A2A rows must survive")
+	}
 
-	_, err := store.FindByID(ctx, "ch-flush-stuck")
+	_, err = store.FindByID(ctx, "ch-flush-stuck")
 	assert.ErrorIs(t, err, ErrNotFound, "stale processing row must be flushed")
 	_, err = store.FindByID(ctx, "ch-flush-done")
 	assert.NoError(t, err, "completed rows must survive the flush")
@@ -876,15 +1317,21 @@ func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	mcpCmds := chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore)
 	require.Len(t, mcpCmds, 1, "mcp_tool_logs: one flush must issue exactly one mutation, got %v", mcpCmds)
 	assertLightweightMutations(t, "mcp_tool_logs", mcpCmds)
+	agentCmds := chNewMutationCommands(t, store.db, "agent_logs", agentBefore)
+	require.Len(t, agentCmds, 1)
+	assertLightweightMutations(t, "agent_logs", agentCmds)
 
 	// Nothing left to flush: the once-a-minute sweep must not touch the
 	// tables at all (the issue counted ~1,440 mutations per table per day).
 	logsBefore = chMutationIDs(t, store.db, "logs")
 	mcpBefore = chMutationIDs(t, store.db, "mcp_tool_logs")
+	agentBefore = chMutationIDs(t, store.db, "agent_logs")
 	require.NoError(t, store.Flush(ctx, since))
 	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+	require.NoError(t, store.FlushAgentLogs(ctx, since))
 	assert.Empty(t, chNewMutationCommands(t, store.db, "logs", logsBefore), "empty flush must not issue a mutation")
 	assert.Empty(t, chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore), "empty flush must not issue a mutation")
+	assert.Empty(t, chNewMutationCommands(t, store.db, "agent_logs", agentBefore), "empty A2A flush must not issue a mutation")
 }
 
 // TestClickHouseFlushSkipsSupersededProcessingRow: a log created as processing
@@ -1183,7 +1630,7 @@ func TestClickHouseNodeUsageCursorDoesNotRewind(t *testing.T) {
 	require.NoError(t, store.CreateIfNotExists(ctx, mk("ch-usage-1", base, 1.0)))
 	require.NoError(t, store.CreateIfNotExists(ctx, mk("ch-usage-2", base.Add(200*time.Millisecond), 2.0)))
 
-	first, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: base.Add(-time.Hour)})
+	first, err := store.GetNodeUsageAfter(ctx, nodeID, NodeUsageCursor{Timestamp: base.Add(-time.Hour)}, NodeUsageWindows{})
 	require.NoError(t, err)
 	assert.Equal(t, 2, first.RowCount)
 	assert.InDelta(t, 3.0, first.BudgetCosts["b1"], 1e-9)
@@ -1191,7 +1638,7 @@ func TestClickHouseNodeUsageCursorDoesNotRewind(t *testing.T) {
 	// Re-scan from the advanced cursor: nothing new, so nothing may be
 	// re-aggregated - a rewound (seconds-truncated) cursor would return both
 	// rows again and double-count the budget spend.
-	second, err := store.GetNodeUsageAfter(ctx, nodeID, first.NextCursor)
+	second, err := store.GetNodeUsageAfter(ctx, nodeID, first.NextCursor, NodeUsageWindows{})
 	require.NoError(t, err)
 	assert.Equal(t, 0, second.RowCount, "cursor must not rewind into already-counted rows")
 	assert.Empty(t, second.BudgetCosts)
@@ -1416,6 +1863,13 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 			return replica.AppendWarpMessages(ctx, owner, owner+"-append", []WarpMessage{{ID: owner + "-append-m", Role: "user", Content: "q", CreatedAt: now}})
 		})
 	})
+	t.Run("swap question", func(t *testing.T) {
+		seed(owner+"-swap", now, 1)
+		waitsForLock(t, func() error {
+			_, err := replica.SwapWarpQuestion(ctx, owner, owner+"-swap", owner+"-swap-m0", "", `{}`)
+			return err
+		})
+	})
 	t.Run("delete if empty", func(t *testing.T) {
 		seed(owner+"-empty", now, 0)
 		waitsForLock(t, func() error {
@@ -1445,6 +1899,138 @@ func TestClickHouseWarpWritesWaitForTheSharedOwnerLock(t *testing.T) {
 	})
 }
 
+// A question swap writes only while the stored value is the expected one, on
+// the owner's own thread, so a confirmation card is claimed once.
+// On a cluster the claim path writes with a replica quorum and reads with
+// sequential consistency, so a second Confirm answered by another replica sees
+// the first claim. Run here against one node with the store marked clustered:
+// the settings reach the server on every Warp write and swap read, and the
+// claim still holds exactly once.
+func TestClickHouseWarpSwapQuestionOnCluster(t *testing.T) {
+	require.Equal(t, clickhouse.Settings{"insert_quorum": "auto", "insert_quorum_parallel": 0}, warpReplicaSettings(true))
+	require.Equal(t, clickhouse.Settings{"select_sequential_consistency": 1}, warpReplicaSettings(false))
+	single := &ClickHouseLogStore{}
+	ctx := context.Background()
+	require.Equal(t, ctx, single.warpReplicaContext(ctx, true), "single-node Warp queries carry no replica settings")
+
+	store := trySetupClickHouseStore(t)
+	locker := &keyRecordingLocker{}
+	store.SetDistributedLocker(locker)
+	store.cluster = "warp-test-cluster"
+	t.Cleanup(func() { store.cluster = "" })
+	owner := fmt.Sprintf("user:swap-cluster-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: owner + "-c", OwnerID: owner, Title: "t", CreatedAt: now, UpdatedAt: now}))
+	card := WarpMessage{ID: owner + "-card", Role: "assistant", Content: "a", QuestionJSON: `{"pending":{"token":"t"}}`, CreatedAt: now}
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{card}))
+
+	swapped, err := store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	swapped, err = store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{"again":true}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "the second claim loses")
+
+	// With insert_quorum_parallel = 0 a replicated table takes one quorum insert
+	// at a time, so writes for different owners, under different owner locks,
+	// would fail each other; every quorum write also takes the one shared lock.
+	// The append writes twice (messages, then the thread row), the winning claim once.
+	require.Equal(t, 3, locker.count(warpQuorumWriteLockKey), "every Warp quorum write takes the shared quorum lock")
+
+	// The delete waits for every replica (lightweight_deletes_sync = 2); the server
+	// takes the setting, and the thread is gone once it returns.
+	require.NoError(t, store.DeleteWarpConversation(ctx, owner, owner+"-c"))
+	_, err = store.GetWarpConversation(ctx, owner, owner+"-c")
+	require.ErrorIs(t, err, ErrWarpConversationNotFound)
+}
+
+// A Warp history delete on a cluster waits for every replica, so once the owner's
+// lock is released no replica still shows the thread: a Confirm answered there
+// would otherwise claim the card and re-insert the message, bringing it back.
+// Other deletes, and every delete single-node, wait for the current replica only.
+func TestClickHouseWarpHistoryDeletesWaitForEveryReplica(t *testing.T) {
+	single := &ClickHouseLogStore{}
+	clustered := &ClickHouseLogStore{cluster: "warp-test-cluster"}
+	for _, table := range []string{"warp_messages", "warp_conversations"} {
+		require.Contains(t, single.chLightweightDeleteStmt(table, "id = ?"), "lightweight_deletes_sync = 1", table)
+		require.Contains(t, clustered.chLightweightDeleteStmt(table, "id = ?"), "lightweight_deletes_sync = 2", table)
+	}
+	require.Contains(t, clustered.chLightweightDeleteStmt("logs", "id = ?"), "lightweight_deletes_sync = 1", "only the Warp history tables wait for every replica")
+	require.Contains(t, clustered.chLightweightDeleteStmt("warp_topics", "id = ?"), "lightweight_deletes_sync = 1")
+}
+
+// keyRecordingLocker is a fakeDistributedLocker that counts acquisitions per key.
+type keyRecordingLocker struct {
+	fakeDistributedLocker
+	seenMu sync.Mutex
+	seen   map[string]int
+}
+
+func (k *keyRecordingLocker) Acquire(ctx context.Context, key string) (context.Context, func(), error) {
+	k.seenMu.Lock()
+	if k.seen == nil {
+		k.seen = map[string]int{}
+	}
+	k.seen[key]++
+	k.seenMu.Unlock()
+	return k.fakeDistributedLocker.Acquire(ctx, key)
+}
+
+func (k *keyRecordingLocker) count(key string) int {
+	k.seenMu.Lock()
+	defer k.seenMu.Unlock()
+	return k.seen[key]
+}
+
+// A card a later turn has overtaken is not claimed, checked under the owner's
+// lock that appends take.
+func TestClickHouseWarpSwapQuestionRefusesOvertakenCard(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	store.SetDistributedLocker(&fakeDistributedLocker{})
+	ctx := context.Background()
+	owner := fmt.Sprintf("user:swap-overtaken-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: owner + "-c", OwnerID: owner, Title: "t", CreatedAt: now, UpdatedAt: now}))
+	card := WarpMessage{ID: owner + "-card", Role: "assistant", Content: "a", QuestionJSON: `{"pending":{"token":"t"}}`, CreatedAt: now}
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{card}))
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{{ID: owner + "-later", Role: "user", Content: "never mind", CreatedAt: now.Add(time.Second)}}))
+
+	swapped, err := store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "an overtaken card is not claimed")
+}
+
+func TestClickHouseWarpSwapQuestion(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	owner := fmt.Sprintf("user:swap-%d", time.Now().UnixNano())
+	now := time.Now().UTC()
+	require.NoError(t, store.CreateWarpConversation(ctx, &WarpConversation{ID: owner + "-c", OwnerID: owner, Title: "t", CreatedAt: now, UpdatedAt: now}))
+	card := WarpMessage{ID: owner + "-card", Role: "assistant", Content: "a", QuestionJSON: `{"pending":{"token":"t"}}`, CreatedAt: now}
+	require.NoError(t, store.AppendWarpMessages(ctx, owner, owner+"-c", []WarpMessage{card}))
+
+	// Without a distributed locker the claim is refused: this process's lock
+	// cannot keep a replica sharing the ClickHouse from claiming the card too.
+	_, err := store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.ErrorIs(t, err, ErrWarpClaimNeedsSharedLock)
+	store.SetDistributedLocker(&fakeDistributedLocker{})
+
+	swapped, err := store.SwapWarpQuestion(ctx, "other", owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "another owner's thread is not touched")
+	swapped, err = store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{}`)
+	require.NoError(t, err)
+	require.True(t, swapped)
+	swapped, err = store.SwapWarpQuestion(ctx, owner, owner+"-c", card.ID, card.QuestionJSON, `{"again":true}`)
+	require.NoError(t, err)
+	require.False(t, swapped, "the second claim loses")
+
+	thread, err := store.GetWarpConversation(ctx, owner, owner+"-c")
+	require.NoError(t, err)
+	require.Len(t, thread.Messages, 1, "the re-insert replaces the card rather than adding a row")
+	require.Equal(t, `{}`, thread.Messages[0].QuestionJSON)
+}
+
 // lostLeaseLocker grants the lock but reports it lost at once, the way the
 // config-store lock does when its lease expires mid-write.
 type lostLeaseLocker struct{}
@@ -1472,4 +2058,528 @@ func TestClickHouseWarpWriteStopsWhenTheLeaseIsLost(t *testing.T) {
 	counts, err := store.CountWarpMessages(ctx, []string{owner + "-c"})
 	require.NoError(t, err)
 	require.Zero(t, counts[owner+"-c"], "nothing was written without the lock")
+}
+
+func TestClickHouseBatchUpdate(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+
+	for i := 0; i < 3; i++ {
+		entry := chTestLog(fmt.Sprintf("ch-upd-%d", i), ts.Add(time.Duration(i)*time.Millisecond))
+		entry.Status = "processing"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+	}
+	before, err := store.FindByID(ctx, "ch-upd-0")
+	require.NoError(t, err)
+
+	output := "late output"
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{
+		// Two entries for one id in a single batch: both overlays must apply, in order.
+		{ID: "ch-upd-0", TotalTokens: 15},
+		{ID: "ch-upd-0", Status: "success", OutputMessageParsed: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}},
+		{ID: "ch-upd-1", Status: "error", ContentHidden: true},
+		{ID: "ch-upd-missing", Status: "success"}, // skipped, never inserted
+		nil,
+	}))
+	require.NoError(t, store.BatchUpdate(ctx, nil)) // no-op
+
+	found, err := store.FindByID(ctx, "ch-upd-0")
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
+	assert.Equal(t, 15, found.TotalTokens)
+	assert.Contains(t, found.OutputMessage, output)
+	// Only non-zero fields overlay; the rest of the row is reproduced as it was.
+	assert.Equal(t, before.Provider, found.Provider)
+	assert.Equal(t, before.Model, found.Model)
+	assert.Equal(t, before.InputHistory, found.InputHistory)
+	assert.Equal(t, before.ContentSummary, found.ContentSummary, "content_summary is left as the row had it")
+	assert.True(t, before.Timestamp.Equal(found.Timestamp))
+	assert.Equal(t, int64(1), chCountRows(t, store.db, "logs", "ch-upd-0"), "re-insert supersedes the old row")
+
+	errRow, err := store.FindByID(ctx, "ch-upd-1")
+	require.NoError(t, err)
+	assert.Equal(t, "error", errRow.Status)
+	assert.True(t, errRow.ContentHidden)
+
+	// A final visible decision clears the flag again.
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "ch-upd-1", ContentHidden: false}}))
+	errRow, err = store.FindByID(ctx, "ch-upd-1")
+	require.NoError(t, err)
+	assert.False(t, errRow.ContentHidden, "content_hidden is written even when false")
+
+	untouched, err := store.FindByID(ctx, "ch-upd-2")
+	require.NoError(t, err)
+	assert.Equal(t, "processing", untouched.Status)
+
+	_, err = store.FindByID(ctx, "ch-upd-missing")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestClickHouseUserAgentMappingsCRUD(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.db.Exec("TRUNCATE TABLE user_agent_mappings").Error)
+
+	mime := "image/png"
+	mapping := &UserAgentMapping{ID: "ch-uam-1", Pattern: "my-cli/", MatchType: "prefix", App: "My CLI", Logo: []byte{0x89, 'P', 'N', 'G'}, LogoMime: &mime, IsActive: true}
+	require.NoError(t, store.CreateUserAgentMapping(ctx, mapping))
+
+	listed, err := store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, "My CLI", listed[0].App)
+	assert.Equal(t, []byte{0x89, 'P', 'N', 'G'}, listed[0].Logo)
+
+	require.NoError(t, store.UpdateUserAgentMapping(ctx, "ch-uam-1", &UserAgentMapping{Pattern: "my-cli/", MatchType: "prefix", App: "Renamed", IsActive: false}))
+	listed, err = store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	assert.Equal(t, "Renamed", listed[0].App)
+	assert.False(t, listed[0].IsActive)
+	assert.Nil(t, listed[0].LogoMime)
+
+	active, err := store.ListUserAgentMappings(ctx, true)
+	require.NoError(t, err)
+	assert.Empty(t, active)
+
+	assert.ErrorIs(t, store.UpdateUserAgentMapping(ctx, "missing", &UserAgentMapping{}), gorm.ErrRecordNotFound)
+	assert.ErrorIs(t, store.DeleteUserAgentMapping(ctx, "missing"), gorm.ErrRecordNotFound)
+
+	require.NoError(t, store.DeleteUserAgentMapping(ctx, "ch-uam-1"))
+	listed, err = store.ListUserAgentMappings(ctx, false)
+	require.NoError(t, err)
+	assert.Empty(t, listed)
+}
+
+// Update reads then re-inserts, so a delete from another instance landing in
+// between would bring the mapping back. Both must wait on the shared per-id lock.
+func TestClickHouseUserAgentMappingWritesWaitForTheSharedLock(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	require.NoError(t, store.db.Exec("TRUNCATE TABLE user_agent_mappings").Error)
+	locker := &fakeDistributedLocker{}
+	store.SetDistributedLocker(locker)
+	t.Cleanup(func() { store.SetDistributedLocker(nil) })
+	require.NoError(t, store.CreateUserAgentMapping(ctx, &UserAgentMapping{ID: "ch-uam-lock", Pattern: "x", MatchType: "prefix", App: "X", IsActive: true}))
+
+	waitsForLock := func(t *testing.T, write func() error) {
+		t.Helper()
+		_, release, err := locker.Acquire(ctx, userAgentMappingLockKey("ch-uam-lock"))
+		require.NoError(t, err)
+		done := make(chan error, 1)
+		go func() { done <- write() }()
+		select {
+		case err := <-done:
+			release()
+			t.Fatalf("write finished while another instance held the mapping lock (err=%v)", err)
+		case <-time.After(300 * time.Millisecond):
+		}
+		release()
+		select {
+		case err := <-done:
+			require.NoError(t, err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("write never finished after the lock was released")
+		}
+	}
+
+	waitsForLock(t, func() error {
+		return store.UpdateUserAgentMapping(ctx, "ch-uam-lock", &UserAgentMapping{Pattern: "x", MatchType: "prefix", App: "Y", IsActive: true})
+	})
+	waitsForLock(t, func() error { return store.DeleteUserAgentMapping(ctx, "ch-uam-lock") })
+
+	store.SetDistributedLocker(lostLeaseLocker{})
+	assert.ErrorIs(t, store.UpdateUserAgentMapping(ctx, "ch-uam-lock", &UserAgentMapping{}), context.Canceled)
+}
+
+// The assignments table is read like logs, by time range first, so it is laid
+// out like logs and expires with them. Topics must not expire at all: they
+// outlive the requests they were built from.
+func TestClickHouseWarpTopicTablesFollowLogsRetention(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	expiring := []string{"warp_topic_assignments", "warp_topic_unmatched"}
+	removeTTLs := func() {
+		t.Helper()
+		for _, table := range expiring {
+			if strings.Contains(chEngineFull(t, store.db, table), "TTL ") {
+				require.NoError(t, store.db.Exec("ALTER TABLE `"+table+"` REMOVE TTL").Error, "%s: reset TTL", table)
+			}
+		}
+	}
+	removeTTLs()
+	t.Cleanup(removeTTLs)
+
+	assignments := chEngineFull(t, store.db, "warp_topic_assignments")
+	assert.Contains(t, assignments, "PARTITION BY toYYYYMM(timestamp)")
+	assert.Contains(t, assignments, "ORDER BY (timestamp, log_id)", "the sort key is also the identity a rewritten assignment replaces")
+	assert.Contains(t, chEngineFull(t, store.db, "warp_topic_unmatched"), "ORDER BY log_id")
+	assert.Contains(t, chEngineFull(t, store.db, "warp_topics"), "ORDER BY id")
+
+	// Retention configured after the tables exist is applied to them, and a
+	// change of retention replaces the rule instead of adding a second.
+	for _, days := range []int{30, 7} {
+		require.NoError(t, migrationClickHouseWarpTopicTables(ctx, store.db, "", days, testLogger{}))
+		for _, table := range expiring {
+			engineFull := chEngineFull(t, store.db, table)
+			got, ok := chTTLDaysFromEngineFull(engineFull)
+			require.True(t, ok, "%s: expected a managed TTL, got %q", table, engineFull)
+			assert.Equal(t, days, got, "%s: %q", table, engineFull)
+			assert.Equal(t, 1, strings.Count(engineFull, "TTL "), "%s: exactly one TTL clause expected in %q", table, engineFull)
+		}
+		assert.NotContains(t, chEngineFull(t, store.db, "warp_topics"), "TTL ", "topics never expire")
+	}
+}
+
+// TestClickHouseUpdateTimestampHint: Update bounds its read with the row
+// timestamp hint, and a hint that matches no row (wrong timestamp) falls back
+// to the id alone instead of reporting the row missing.
+func TestClickHouseUpdateTimestampHint(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().Add(-48 * time.Hour).Truncate(time.Millisecond)
+	require.NoError(t, store.CreateIfNotExists(ctx, chTestLog("hint-row", ts)))
+
+	require.NoError(t, store.Update(withLogTimestamp(ctx, ts), "hint-row", map[string]interface{}{"has_object": true}))
+	row, err := store.FindByID(ctx, "hint-row")
+	require.NoError(t, err)
+	assert.True(t, row.HasObject, "update with the matching hint must apply")
+
+	require.NoError(t, store.Update(withLogTimestamp(ctx, ts.Add(24*time.Hour)), "hint-row", map[string]interface{}{"status": "success"}))
+	row, err = store.FindByID(ctx, "hint-row")
+	require.NoError(t, err)
+	assert.Equal(t, "success", row.Status, "a hint that matches nothing must fall back to the id lookup")
+	assert.True(t, row.HasObject)
+
+	err = store.Update(withLogTimestamp(ctx, ts), "hint-missing", map[string]interface{}{"has_object": true})
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// chRowVer returns the ver of a logs row's newest version, which changes on
+// every re-insert. Counting stored versions instead races background merges.
+func chRowVer(t *testing.T, store *ClickHouseLogStore, id string) string {
+	t.Helper()
+	var ver string
+	require.NoError(t, store.db.Raw("SELECT toString(ver) FROM logs WHERE id = ?", id).Scan(&ver).Error)
+	require.NotEmpty(t, ver, id)
+	return ver
+}
+
+// TestClickHouseMarkHasObject: one call flags every listed row whatever its
+// timestamp hint (exact, zero, or wrong), reports ids with no row once, and
+// leaves already-flagged rows without a new version.
+func TestClickHouseMarkHasObject(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().Add(-72 * time.Hour).Truncate(time.Millisecond)
+	for _, id := range []string{"mark-exact", "mark-zero", "mark-wrong", "mark-done"} {
+		require.NoError(t, store.CreateIfNotExists(ctx, chTestLog(id, ts)))
+	}
+	require.NoError(t, store.Update(ctx, "mark-done", map[string]interface{}{"has_object": true}))
+	doneVer, exactVer := chRowVer(t, store, "mark-done"), chRowVer(t, store, "mark-exact")
+
+	result, err := store.MarkHasObject(ctx, "logs", []HasObjectMark{
+		{ID: "mark-exact", Timestamp: ts},
+		{ID: "mark-zero"},
+		{ID: "mark-wrong", Timestamp: ts.Add(48 * time.Hour)},
+		{ID: "mark-done", Timestamp: ts},
+		{ID: "mark-absent", Timestamp: ts},
+		{ID: "mark-absent", Timestamp: ts},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"mark-absent"}, result.Missing)
+	assert.Empty(t, result.Superseded, "logs rows track no object reference, so no mark is superseded")
+	for _, id := range []string{"mark-exact", "mark-zero", "mark-wrong", "mark-done"} {
+		row, err := store.FindByID(ctx, id)
+		require.NoError(t, err)
+		assert.True(t, row.HasObject, id)
+	}
+	assert.Equal(t, doneVer, chRowVer(t, store, "mark-done"), "an already-flagged row must not be re-inserted")
+	assert.NotEqual(t, exactVer, chRowVer(t, store, "mark-exact"))
+
+	_, err = store.MarkHasObject(ctx, "warp_topics", []HasObjectMark{{ID: "x"}})
+	assert.Error(t, err)
+}
+
+// TestClickHouseHybridBatchesHasObjectFlips: over ClickHouse the hybrid store
+// flips has_object through the batcher, and every offloaded row ends flagged
+// and hydrates.
+func TestClickHouseHybridBatchesHasObjectFlips(t *testing.T) {
+	ch := trySetupClickHouseStore(t)
+	hybrid := newHybridLogStore(ch, objectstore.NewInMemoryObjectStore(), "test", hybridTestLogger{}, nil, nil)
+	require.NotNil(t, hybrid.markQueue, "ClickHouse must take the batched has_object path")
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	input := "batched flip"
+	entries := make([]*Log, 0, 40)
+	for i := range 40 {
+		e := chTestLog(fmt.Sprintf("ch-batch-%d", i), ts.Add(time.Duration(i)*time.Millisecond))
+		e.InputHistoryParsed = []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &input}},
+		}
+		entries = append(entries, e)
+	}
+	require.NoError(t, hybrid.BatchCreateIfNotExists(ctx, entries))
+	waitForUploads(t, func() bool {
+		var flagged int64
+		err := ch.db.Raw("SELECT count() FROM logs WHERE id LIKE 'ch-batch-%' AND has_object").Scan(&flagged).Error
+		return err == nil && flagged == 40
+	})
+	found, err := hybrid.FindByID(ctx, "ch-batch-7")
+	require.NoError(t, err)
+	assert.NotEmpty(t, found.InputHistory, "payload should hydrate from the object store")
+	assert.Zero(t, hybrid.DroppedUploads())
+	require.NoError(t, hybrid.Close(ctx))
+}
+
+// TestClickHouseHybridFlushMarksMissingRows: a relay flip whose row is gone
+// deletes the uploaded object at once; any other flip whose row is missing is
+// retried, and when the retries run out its object is deleted too, since the
+// row was inserted before the upload was queued.
+func TestClickHouseHybridFlushMarksMissingRows(t *testing.T) {
+	ch := trySetupClickHouseStore(t)
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := newHybridLogStore(ch, objects, "test", hybridTestLogger{}, nil, nil)
+	t.Cleanup(func() { _ = hybrid.Close(context.Background()) })
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	relayKey := hybrid.relayLogKey(ts, "gone-relay")
+	logKey := hybrid.logKey(ts, "gone-log")
+	require.NoError(t, objects.Put(ctx, relayKey, []byte("{}"), nil))
+	require.NoError(t, objects.Put(ctx, logKey, []byte("{}"), nil))
+
+	retry := hybrid.flushMarks([]hasObjectMark{
+		{kind: uploadKindRelay, logID: "gone-relay", timestamp: ts, key: relayKey},
+		{kind: uploadKindLog, logID: "gone-log", timestamp: ts, key: logKey},
+	}, false)
+	_, err := objects.Get(ctx, relayKey)
+	assert.ErrorIs(t, err, objectstore.ErrNotFound, "the deleted relay row's object must be removed")
+	require.Len(t, retry, 1)
+	assert.Equal(t, "gone-log", retry[0].logID)
+	assert.Equal(t, 1, retry[0].attempts)
+	assert.True(t, retry[0].retryAt.After(time.Now()))
+	_, err = objects.Get(ctx, logKey)
+	require.NoError(t, err, "the object stays while the row may still appear")
+
+	assert.Empty(t, hybrid.flushMarks(retry, true))
+	_, err = objects.Get(ctx, logKey)
+	assert.ErrorIs(t, err, objectstore.ErrNotFound, "a row still missing after the retries was deleted, so its object goes too")
+	assert.Zero(t, hybrid.DroppedUploads(), "removing a deleted row's object is not a dropped upload")
+}
+
+// TestClickHouseHybridAgentDeletedBeforeFlagRemovesObject: an A2A row deleted
+// after its object was written but before the batched has_object flip ran is
+// deleted with has_object=false, so DeleteAgentLogs leaves the object. The
+// flip that finds the row gone must remove it.
+func TestClickHouseHybridAgentDeletedBeforeFlagRemovesObject(t *testing.T) {
+	ch := trySetupClickHouseStore(t)
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := newHybridLogStore(ch, objects, "test", hybridTestLogger{}, nil, nil)
+	t.Cleanup(func() { _ = hybrid.Close(context.Background()) })
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	body := `{"message":"to be deleted"}`
+	entry := &AgentLog{
+		ID: "agent-deleted-early", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-deleted-early",
+		RequestBody: &body,
+	}
+	key := hybrid.agentLogKey(ts, entry.ID)
+	dbEntry := *entry
+	PrepareAgentLogDBEntry(&dbEntry, key)
+	_, err := ch.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{&dbEntry})
+	require.NoError(t, err)
+	// The upload worker's Put has run; its flip is still queued.
+	require.NoError(t, objects.Put(ctx, key, []byte(`{"request_body":"to be deleted"}`), nil))
+
+	require.NoError(t, hybrid.DeleteAgentLogs(ctx, []string{entry.ID}))
+	_, err = objects.Get(ctx, key)
+	require.NoError(t, err, "DeleteAgentLogs skips the object while has_object is false")
+
+	mark := hasObjectMark{kind: uploadKindAgent, logID: entry.ID, timestamp: ts, key: key}
+	for attempt := 1; attempt <= markMaxAttempts; attempt++ {
+		retry := hybrid.flushMarks([]hasObjectMark{mark}, false)
+		if attempt < markMaxAttempts {
+			require.Len(t, retry, 1)
+			mark = retry[0]
+		} else {
+			assert.Empty(t, retry)
+		}
+	}
+	_, err = objects.Get(ctx, key)
+	assert.ErrorIs(t, err, objectstore.ErrNotFound, "the deleted row's object must not outlive it")
+	assert.Zero(t, hybrid.DroppedUploads())
+}
+
+// TestClickHouseHybridSupersededAgentMarkLeavesFlag: payload A is written and
+// its flip is still queued when an update moves the row to payload B, whose
+// upload then fails. A's delayed flip must not set has_object, since the row's
+// object (B) does not exist; reads must show B's bodies, and A's object, which
+// no row references, must be gone.
+func TestClickHouseHybridSupersededAgentMarkLeavesFlag(t *testing.T) {
+	ch := trySetupClickHouseStore(t)
+	objects := objectstore.NewInMemoryObjectStore()
+	hybrid := newHybridLogStore(ch, objects, "test", hybridTestLogger{}, nil, nil)
+	t.Cleanup(func() { _ = hybrid.Close(context.Background()) })
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+	bodyA := `{"message":"payload A"}`
+	bodyB := `{"message":"payload B"}`
+	entry := &AgentLog{
+		ID: "agent-superseded-mark", Timestamp: ts, RecordKind: "request",
+		Operation: "SendMessage", Status: "success", AgentName: "fixture", RequestID: "req-agent-superseded-mark",
+		RequestBody: &bodyA,
+	}
+	keyA := hybrid.agentLogKey(ts, entry.ID)
+	dbEntry := *entry
+	PrepareAgentLogDBEntry(&dbEntry, keyA)
+	_, err := ch.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{&dbEntry})
+	require.NoError(t, err)
+	payloadA, err := MarshalAgentLogPayload(entry)
+	require.NoError(t, err)
+	require.NoError(t, objects.Put(ctx, keyA, payloadA, nil)) // A's Put ran; its flip is queued
+
+	objects.PutErr = assert.AnError
+	require.NoError(t, hybrid.UpdateAgentLog(ctx, entry.ID, map[string]interface{}{"request_body": bodyB}))
+	waitForUploads(t, func() bool { return hybrid.DroppedUploads() == 1 })
+	objects.PutErr = nil
+
+	assert.Empty(t, hybrid.flushMarks([]hasObjectMark{{kind: uploadKindAgent, logID: entry.ID, timestamp: ts, key: keyA}}, false))
+	row, err := ch.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, row.HasObject, "a mark for a superseded object must not flag the row")
+	require.NotNil(t, row.PayloadReference)
+	assert.NotEqual(t, keyA, *row.PayloadReference)
+	found, err := hybrid.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	require.NotNil(t, found.RequestBody)
+	assert.Equal(t, bodyB, *found.RequestBody)
+	_, err = objects.Get(ctx, keyA)
+	assert.ErrorIs(t, err, objectstore.ErrNotFound, "the superseded object must be deleted")
+
+	// A mark for the object the row does reference still applies.
+	result, err := ch.MarkHasObject(ctx, "agent_logs", []HasObjectMark{{ID: entry.ID, Timestamp: ts, Key: *row.PayloadReference}})
+	require.NoError(t, err)
+	assert.Empty(t, result.Superseded)
+	row, err = ch.FindAgentLog(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, row.HasObject)
+}
+
+// BenchmarkClickHouseUpdateHasObject measures the hybrid store's has_object
+// flip on a logs table with many active parts, with and without the row
+// timestamp hint the upload worker now passes. Merges are stopped so the part
+// count stays fixed, matching a server whose merges lag the insert rate.
+// Without the hint the read is the bare id lookup Update made before.
+//
+// batched_per_row runs MarkHasObject over chRMWBatchChunk rows at a time, and
+// b.N counts rows, so its ns/op and allocs/op are per row like the others.
+//
+// Size the table with BENCH_CH_ROWS (default 1,000,000) and BENCH_CH_PARTS
+// (default 200 seed inserts).
+func BenchmarkClickHouseUpdateHasObject(b *testing.B) {
+	store := trySetupClickHouseStore(b)
+	ctx := context.Background()
+	rows, parts := 1_000_000, 200
+	if v := os.Getenv("BENCH_CH_ROWS"); v != "" {
+		_, _ = fmt.Sscan(v, &rows)
+	}
+	if v := os.Getenv("BENCH_CH_PARTS"); v != "" {
+		_, _ = fmt.Sscan(v, &parts)
+	}
+	base := time.Now().Add(-90 * 24 * time.Hour).Truncate(time.Millisecond)
+	stepMs := int64(90*24*time.Hour/time.Millisecond) / int64(rows)
+	require.NoError(b, store.db.Exec("SYSTEM STOP MERGES logs").Error)
+	b.Cleanup(func() { _ = store.db.Exec("SYSTEM START MERGES logs").Error })
+	perPart := rows / parts
+	for p := 0; p < parts; p++ {
+		// Interleave rows across parts so every part spans the whole 90 days, like
+		// re-inserted updates and late completions do on a live table.
+		require.NoError(b, store.db.Exec(fmt.Sprintf(`INSERT INTO logs (id, timestamp, created_at, object_type, provider, model, status, content_summary)
+SELECT concat('bench-', toString(n)), fromUnixTimestamp64Milli(toInt64(%d + n * %d)), fromUnixTimestamp64Milli(toInt64(%d + n * %d)),
+       'chat.completion', 'openai', 'gpt-4o', 'success', repeat('x', 1024)
+FROM (SELECT number * %d + %d AS n FROM numbers(%d))`,
+			base.UnixMilli(), stepMs, base.UnixMilli(), stepMs, parts, p, perPart)).Error)
+	}
+	var active int64
+	require.NoError(b, store.db.Raw("SELECT count() FROM system.parts WHERE database = currentDatabase() AND table = 'logs' AND active").Scan(&active).Error)
+	var version string
+	require.NoError(b, store.db.Raw("SELECT version()").Scan(&version).Error)
+	b.Logf("clickhouse %s, %d rows, %d active parts, skip indexes under FINAL: %v", version, rows, active, store.idLookupSkipIndexes)
+
+	// Go runs every sub-benchmark more than once (a b.N=1 probe, then the
+	// measured run), so rows are drawn from cursors that survive those reruns:
+	// no row is flagged twice, and every measured batch writes all its rows.
+	// The per-row cases take rows from the first half of the table and the
+	// batched case from the second, scattered by a stride coprime with each range.
+	total := perPart * parts
+	half := total / 2
+	blocks := half / chRMWBatchChunk
+	const stride = 7919
+	if half%stride == 0 || blocks%stride == 0 {
+		b.Fatalf("pick BENCH_CH_ROWS so that %d does not divide the row or block count", stride)
+	}
+	rowAt := func(n int) (string, time.Time) {
+		return fmt.Sprintf("bench-%d", n), base.Add(time.Duration(int64(n)*stepMs) * time.Millisecond)
+	}
+	rowCursor := 0
+	nextRow := func(b *testing.B) (string, time.Time) {
+		if rowCursor >= half {
+			b.Fatalf("per-row cases used all %d rows of their half; raise BENCH_CH_ROWS", half)
+		}
+		n := (rowCursor*stride + 13) % half
+		rowCursor++
+		return rowAt(n)
+	}
+	update := map[string]interface{}{"has_object": true}
+	b.Run("no_hint", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			id, _ := nextRow(b)
+			if err := store.Update(ctx, id, update); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("timestamp_hint", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			id, ts := nextRow(b)
+			if err := store.Update(withLogTimestamp(ctx, ts), id, update); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	// What the upload batcher does: one MarkHasObject per chRMWBatchChunk rows
+	// that finished uploading close together, so their timestamps are near.
+	// b.N counts rows, so the last call of a run carries only the rows left
+	// in b.N; Go divides the time by b.N, and a full-size last batch would
+	// spread more rows' work over fewer counted ones.
+	blockCursor, rowsSent := 0, 0
+	b.Run("batched_per_row", func(b *testing.B) {
+		b.ReportAllocs()
+		marks := make([]HasObjectMark, chRMWBatchChunk)
+		for i := 0; i < b.N; i += chRMWBatchChunk {
+			if blockCursor >= blocks {
+				b.Fatalf("batched case used all %d blocks; raise BENCH_CH_ROWS", blocks)
+			}
+			first := half + ((blockCursor*stride+13)%blocks)*chRMWBatchChunk
+			blockCursor++
+			batch := marks[:min(chRMWBatchChunk, b.N-i)]
+			for j := range batch {
+				id, ts := rowAt(first + j)
+				batch[j] = HasObjectMark{ID: id, Timestamp: ts}
+			}
+			rowsSent += len(batch)
+			if result, err := store.MarkHasObject(ctx, "logs", batch); err != nil || len(result.Missing) > 0 {
+				b.Fatalf("MarkHasObject: missing %v, err %v", result.Missing, err)
+			}
+		}
+		b.StopTimer()
+		var flagged int64
+		require.NoError(b, store.db.Raw("SELECT count() FROM logs WHERE has_object AND toUInt64(substring(id, 7)) >= ?", half).Scan(&flagged).Error)
+		require.EqualValues(b, rowsSent, flagged, "every row sent must be a fresh row flagged once")
+	})
 }

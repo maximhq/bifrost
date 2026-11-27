@@ -5,7 +5,9 @@ import (
 	"fmt"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/postgresconn"
+	"github.com/maximhq/bifrost/framework/storehooks"
 	"gorm.io/gorm"
 )
 
@@ -18,11 +20,11 @@ type PostgresConfig = postgresconn.Config
 // immediately, then a fresh runtime pool is opened. The runtime pool's
 // connections never see pre-migration schema, so their cached prepared-plans
 // stay valid for the life of the process.
-func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger schemas.Logger) (ConfigStore, error) {
+func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger schemas.Logger, migrationPause *logstore.MatViewPauseOptions) (ConfigStore, error) {
 	if err := postgresconn.Validate(config, false); err != nil {
 		return nil, err
 	}
-	dsn := postgresconn.BuildDSN(config)
+	dsn := postgresconn.WithApplicationName(postgresconn.BuildDSN(config), string(storehooks.RoleConfig))
 	logger.Debug("configstore: postgres target host=%s port=%s db=%s sslmode=%s",
 		config.Host.GetValue(), config.Port.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 
@@ -31,7 +33,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// 0A000 ("cached plan must not change result type") structurally impossible
 	// when a migration mixes DDL with subsequent SELECTs against the same table.
 	// Runtime pools keep the default cache-statement mode for performance.
-	migrationDSN := dsn + " default_query_exec_mode=simple_protocol"
+	migrationDSN := postgresconn.MigrationDSN(dsn)
 
 	// Throwaway pool for schema migrations. Closing it before the runtime pool
 	// opens guarantees no cached prepared-plan survives the DDL.
@@ -49,7 +51,12 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 		return nil, err
 	}
 	logger.Info("configstore: migration pool opened; running schema migrations (may block on a cross-node advisory lock if another pod is migrating)")
-	if err := triggerMigrations(ctx, mDb, logger); err != nil {
+	pause := migrationMatViewPause
+	if migrationPause != nil {
+		pause = *migrationPause
+	}
+	retry := postgresconn.MigrationLockRetryOptions(config, logger)
+	if err := triggerMigrationsWithOptions(ctx, mDb, logger, pause, retry); err != nil {
 		logger.Error("configstore: schema migrations failed: %v", err)
 		postgresconn.Close(mDb, logger)
 		return nil, err
@@ -73,6 +80,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// plaintext SecretVar fields are rewritten to vault refs before persistence
 	// and owned vault secrets are cleaned up on delete.
 	RegisterVaultCallbacks(db)
+	storehooks.PoolOpened(storehooks.RoleConfig, db)
 	logger.Info("configstore: runtime connection pool ready")
 
 	d := &RDBConfigStore{logger: logger}
@@ -108,6 +116,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 			return fmt.Errorf("failed to tune fresh runtime pool: %w", err)
 		}
 		RegisterVaultCallbacks(newDB)
+		storehooks.PoolOpened(storehooks.RoleConfig, newDB)
 		oldDB := d.db.Swap(newDB)
 		if oldDB != nil {
 			postgresconn.Close(oldDB, logger)

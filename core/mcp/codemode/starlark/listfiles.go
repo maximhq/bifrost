@@ -5,6 +5,7 @@ package starlark
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	codemcp "github.com/maximhq/bifrost/core/mcp"
@@ -62,7 +63,7 @@ func (s *StarlarkCodeMode) createListToolFilesTool() schemas.ChatTool {
 // handleListToolFiles handles the listToolFiles tool call.
 // It builds a tree structure listing all virtual .pyi files available for code mode clients.
 func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, error) {
-	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
+	availableToolsPerClient := s.clientManager.GetToolPerClient(codemcp.WithModelToolsOnly(ctx))
 
 	if len(availableToolsPerClient) == 0 {
 		responseText := "No servers are currently connected. There are no virtual .pyi files available. " +
@@ -75,6 +76,7 @@ func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall sch
 
 	// Build file list based on binding level
 	var files []string
+	var serversWithInstructions []string
 	codeModeServerCount := 0
 
 	for clientName, tools := range availableToolsPerClient {
@@ -83,10 +85,13 @@ func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall sch
 			s.logger.Warn("%s Client %s not found, skipping", codemcp.CodeModeLogPrefix, clientName)
 			continue
 		}
-		if !client.ExecutionConfig.IsCodeModeClient {
+		if !client.ExecutionConfig.CodeModeFor(ctx) {
 			continue
 		}
 		codeModeServerCount++
+		if s.clientManager.GetInstructionsForClient(ctx, client.ExecutionConfig.ID) != "" {
+			serversWithInstructions = append(serversWithInstructions, clientName)
+		}
 
 		if bindingLevel == schemas.CodeModeBindingLevelServer {
 			// Server-level: one file per server
@@ -114,11 +119,12 @@ func (s *StarlarkCodeMode) handleListToolFiles(ctx context.Context, toolCall sch
 	}
 
 	// Build tree structure from file list
-	responseText := buildListToolFilesResponse(files, bindingLevel)
+	slices.Sort(serversWithInstructions)
+	responseText := buildListToolFilesResponse(files, bindingLevel, serversWithInstructions)
 	return createToolResponseMessage(toolCall, responseText, false), nil
 }
 
-func buildListToolFilesResponse(files []string, bindingLevel schemas.CodeModeBindingLevel) string {
+func buildListToolFilesResponse(files []string, bindingLevel schemas.CodeModeBindingLevel, serversWithInstructions []string) string {
 	tree := buildVFSTree(files)
 	if tree == "" {
 		return ""
@@ -135,6 +141,12 @@ func buildListToolFilesResponse(files []string, bindingLevel schemas.CodeModeBin
 			"# Filenames below use the exact canonical tool identifiers available in executeToolCode.",
 			"# Still call readToolFile before executeToolCode to confirm parameters and return shape.",
 		)
+	}
+
+	// A pointer, not the prose: this listing is an index, so the text stays in the .pyi stub.
+	if len(serversWithInstructions) > 0 {
+		header = append(header, fmt.Sprintf("# Servers with their own usage instructions: %s. Read their .pyi before calling their tools.",
+			strings.Join(serversWithInstructions, ", ")))
 	}
 
 	return strings.Join(append(header, "", tree), "\n")

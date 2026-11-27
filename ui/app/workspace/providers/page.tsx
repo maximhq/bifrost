@@ -1,5 +1,6 @@
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -21,17 +22,21 @@ import {
 import { KnownProvider, ModelProvider, ModelProviderName, ProviderStatus } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
 import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
+import { CLOUDFLARE_PROVIDER, isMigratableCloudflareProvider } from "@/lib/utils/cloudflareMigration";
 import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
+import { showLoadError } from "@/lib/utils/loadError";
 import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
 import { AlertCircle, ArrowLeft, Server } from "lucide-react";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import AddCustomProviderSheet from "./dialogs/addNewCustomProviderSheet";
 import ConfirmDeleteProviderDialog from "./dialogs/confirmDeleteProviderDialog";
 import ConfirmRedirectionDialog from "./dialogs/confirmRedirection";
+import CloudflareMigrationDialog from "./dialogs/cloudflareMigrationDialog";
 import DatabricksMigrationDialog from "./dialogs/databricksMigrationDialog";
 import FirstPartyProviderAvailableDialog from "./dialogs/firstPartyProviderAvailableDialog";
 import { AddProviderDropdown } from "./views/addProviderDropdown";
@@ -44,6 +49,9 @@ export default function Providers() {
 	const hasProvidersAccess = useRbac(RbacResource.ModelProvider, RbacOperation.View);
 	const hasSettingsOnly = useRbac(RbacResource.Settings, RbacOperation.View);
 	const hasProviderCreateAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Create);
+
+	const { t } = useTranslation("models");
+	const { t: tCommon } = useTranslation("common");
 
 	// Redirect Settings-only users to Custom pricing tab
 	useEffect(() => {
@@ -63,13 +71,15 @@ export default function Providers() {
 	const [provider, setProvider] = useQueryState("provider");
 	const { dismissed: dismissedCollisions, dismiss: dismissCollision, hydrated: collisionsHydrated } = useDismissedProviderCollisions();
 	const [handledCollisions, setHandledCollisions] = useState<Set<string>>(() => new Set());
-	// Custom Databricks provider the user chose not to migrate for now; cleared on every re-selection.
+	// Custom Databricks or Cloudflare provider the user chose not to migrate for now; cleared on every re-selection.
 	const [migrationDeferredFor, setMigrationDeferredFor] = useState<string | undefined>(undefined);
 	// The migration dialog is pinned to the provider it opened for: the source disappears from the
 	// list mid-migration, and the dialog must survive that.
-	const [migrationSession, setMigrationSession] = useState<{ provider: ModelProvider } | undefined>(undefined);
+	const [migrationSession, setMigrationSession] = useState<{ provider: ModelProvider; target: ModelProviderName } | undefined>(undefined);
 
-	const { data: savedProviders, isLoading: isLoadingProviders } = useGetProvidersQuery();
+	const MigrationDialog = migrationSession?.target === CLOUDFLARE_PROVIDER ? CloudflareMigrationDialog : DatabricksMigrationDialog;
+
+	const { data: savedProviders, isLoading: isLoadingProviders, error: providersError, refetch: refetchProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
 	const [createProvider] = useCreateProviderMutation();
 
@@ -81,13 +91,16 @@ export default function Providers() {
 	const knownProviders = VisibleProviderNames.map((name) => ({ name }));
 
 	// Custom providers whose name matches a provider that is now supported natively.
-	// Databricks is excluded: it gets the guided migration dialog below instead of the advisory one.
+	// Databricks, and a custom "cloudflare" on Workers AI, are excluded: they get the guided migration
+	// dialog below instead of the advisory one.
 	// Hidden (unreleased) providers are excluded too, since the user cannot add them yet.
 	const activeCollision = collisionsHydrated
 		? findCustomProviderCollisions(configuredProviders).find((c) => {
 				const key = normalizeProviderName(c.customName);
+				const source = configuredProviders.find((p) => p.name === c.customName);
 				return (
 					c.knownProvider !== DATABRICKS_PROVIDER &&
+					!(source && isMigratableCloudflareProvider(source)) &&
 					!HiddenProviders.has(c.knownProvider) &&
 					!dismissedCollisions.has(key) &&
 					!handledCollisions.has(key)
@@ -96,11 +109,14 @@ export default function Providers() {
 		: undefined;
 
 	// Open the migration dialog when the selected provider is a custom provider named exactly
-	// "databricks", unless the user deferred it for this selection.
+	// "databricks", or one named exactly "cloudflare" that points at Workers AI, unless the user
+	// deferred it for this selection.
 	useEffect(() => {
 		if (migrationSession || !selectedProvider || provider !== selectedProvider.name || isLoadingProvider) return;
 		if (migrationDeferredFor === selectedProvider.name) return;
-		if (isCustomDatabricksProvider(selectedProvider)) setMigrationSession({ provider: selectedProvider });
+		if (isCustomDatabricksProvider(selectedProvider)) setMigrationSession({ provider: selectedProvider, target: DATABRICKS_PROVIDER });
+		else if (isMigratableCloudflareProvider(selectedProvider))
+			setMigrationSession({ provider: selectedProvider, target: CLOUDFLARE_PROVIDER });
 	}, [migrationSession, selectedProvider, provider, isLoadingProvider, migrationDeferredFor]);
 
 	useEffect(() => {
@@ -135,8 +151,8 @@ export default function Providers() {
 					);
 					return;
 				}
-				toast.error("Something went wrong", {
-					description: `We encountered an error while getting provider config: ${getErrorMessage(err)}`,
+				toast.error(t("providers.somethingWentWrong"), {
+					description: t("providers.getConfigError", { message: getErrorMessage(err) }),
 				});
 			});
 	}, [provider, isLoadingProviders]);
@@ -171,6 +187,18 @@ export default function Providers() {
 	if (isLoadingProviders) {
 		return <FullPageLoader />;
 	}
+	if (showLoadError(providersError, savedProviders)) {
+		return (
+			<div className="mx-auto w-full max-w-7xl">
+				<LoadErrorView
+					entity={tCommon("entities.providers")}
+					error={providersError}
+					onRetry={() => void refetchProviders()}
+					testId="providers-load-error"
+				/>
+			</div>
+		);
+	}
 
 	const handleSelectKnownProvider = async (name: string) => {
 		try {
@@ -181,7 +209,7 @@ export default function Providers() {
 				setProvider(name);
 				return;
 			}
-			toast.error("Failed to add provider", {
+			toast.error(t("providers.failedToAdd"), {
 				description: getErrorMessage(err),
 			});
 		}
@@ -239,7 +267,7 @@ export default function Providers() {
 				}}
 			/>
 			{migrationSession && (
-				<DatabricksMigrationDialog
+				<MigrationDialog
 					show
 					provider={migrationSession.provider}
 					onDeferred={() => {
@@ -249,7 +277,7 @@ export default function Providers() {
 					onMigrated={() => {
 						setMigrationDeferredFor(undefined);
 						setMigrationSession(undefined);
-						setProvider(DATABRICKS_PROVIDER);
+						setProvider(migrationSession.target);
 						if (isMobile) setMobileDetailOpen(true);
 					}}
 				/>
@@ -289,7 +317,7 @@ export default function Providers() {
 				<TooltipProvider>
 					<div className="flex min-h-0 flex-1 flex-col rounded-md bg-zinc-50/50 md:p-4 md:pb-0 dark:bg-zinc-800/20">
 						{/* Pinned lane title */}
-						<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">Configured Providers</div>
+						<div className="text-muted-foreground mb-2 shrink-0 text-xs font-medium">{t("providers.configuredProviders")}</div>
 
 						{/* Configured providers (standard with keys + custom): the only scrolling region */}
 						<div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
@@ -349,7 +377,7 @@ export default function Providers() {
 											<ProviderStatusBadge status={p.provider_status} />
 											{isCustom && (
 												<Badge variant="secondary" className="text-muted-foreground ml-auto shrink-0 px-1.5 py-0.5 text-[10px] font-bold">
-													CUSTOM
+													{t("providers.customBadge")}
 												</Badge>
 											)}
 										</div>
@@ -358,7 +386,7 @@ export default function Providers() {
 							) : (
 								<div data-testid="providers-lane-empty" className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center">
 									<Server className="text-muted-foreground h-8 w-8" strokeWidth={1} />
-									<div className="text-muted-foreground text-xs">No providers configured yet</div>
+									<div className="text-muted-foreground text-xs">{t("providers.laneEmpty")}</div>
 								</div>
 							)}
 
@@ -381,7 +409,7 @@ export default function Providers() {
 			<div className={cn("min-w-0 w-full", mobileDetailOpen ? "block" : "hidden md:block")}>
 				<Button variant="ghost" size="sm" className="mb-3 -ml-2 md:hidden" onClick={() => setMobileDetailOpen(false)}>
 					<ArrowLeft className="size-4" />
-					Providers
+					{t("providers.title")}
 				</Button>
 				{isLoadingProvider && (
 					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(var(--app-content-viewport)_-_300px)]">
@@ -390,7 +418,7 @@ export default function Providers() {
 				)}
 				{!selectedProvider && (
 					<div className="bg-muted/10 flex w-full items-center justify-center rounded-md md:max-h-[calc(var(--app-content-viewport)_-_300px)]">
-						<div className="text-muted-foreground text-sm">Select a provider</div>
+						<div className="text-muted-foreground text-sm">{t("providers.selectProvider")}</div>
 					</div>
 				)}
 				{!isLoadingProvider && selectedProvider && (
@@ -402,12 +430,13 @@ export default function Providers() {
 }
 
 function ProviderStatusBadge({ status }: { status: ProviderStatus }) {
+	const { t } = useTranslation("models");
 	return status != "active" ? (
 		<Tooltip>
 			<TooltipTrigger>
 				<AlertCircle className="h-3 w-3" />
 			</TooltipTrigger>
-			<TooltipContent>{status === "error" ? "Provider could not be initialized" : "Provider is deleted"}</TooltipContent>
+			<TooltipContent>{status === "error" ? t("providers.statusInitError") : t("providers.statusDeleted")}</TooltipContent>
 		</Tooltip>
 	) : null;
 }
@@ -420,6 +449,7 @@ function KeyDiscoveryFailedBadge({
 		description?: string;
 	};
 }) {
+	const { t } = useTranslation("models");
 	const providerFailed = provider.status === "list_models_failed";
 
 	if (!providerFailed) return null;
@@ -429,7 +459,7 @@ function KeyDiscoveryFailedBadge({
 			<TooltipTrigger>
 				<AlertCircle className="h-3 w-3" />
 			</TooltipTrigger>
-			<TooltipContent>{provider.description || "Provider model discovery failed."}</TooltipContent>
+			<TooltipContent>{provider.description || t("providers.discoveryFailed")}</TooltipContent>
 		</Tooltip>
 	);
 }

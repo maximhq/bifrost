@@ -763,6 +763,34 @@ func TestRedisStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
 	err := setup.Store.CreateNamespace(setup.ctx, namespace, RedisTestDimension/2, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists with dimension")
+	assert.ErrorIs(t, err, ErrDimensionMismatch, "callers tell a config mistake apart from a store failure by this sentinel")
+}
+
+// TestRedisStore_GetNearestScoresCosineSimilarity pins GetNearest's threshold and score to cosine
+// similarity, the scale every store uses.
+func TestRedisStore_GetNearestScoresCosineSimilarity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+
+	namespace := TestNamespace + "_cosine"
+	properties := map[string]VectorStoreProperties{"label": {DataType: VectorStorePropertyTypeString}}
+	_ = setup.Store.DeleteNamespace(setup.ctx, namespace)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, namespace) }()
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, 2, properties))
+
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, generateUUID(), unitVectorAtCosine(2, 0.9), map[string]interface{}{"label": "close"}))
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, generateUUID(), unitVectorAtCosine(2, 0.7), map[string]interface{}{"label": "far"}))
+
+	results, err := setup.Store.GetNearest(setup.ctx, namespace, unitVectorAtCosine(2, 1), nil, []string{"label"}, 0.8, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "only the vector at cosine 0.9 clears a 0.8 threshold")
+	assert.Equal(t, "close", results[0].Properties["label"])
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.9, *results[0].Score, 1e-3)
 }
 
 func TestRedisStore_ParseSearchResults_ByteScore(t *testing.T) {
@@ -2017,9 +2045,11 @@ func TestRedisStore_ErrorHandling(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("Delete non-existent key", func(t *testing.T) {
+	t.Run("Delete non-existent key is a no-op", func(t *testing.T) {
+		// Every store treats deleting a missing id as success, so clearing an unknown cache
+		// entry answers 200 whichever store backs it.
 		err := setup.Store.Delete(setup.ctx, TestNamespace, "non-existent-key")
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 
 	t.Run("Add with empty ID", func(t *testing.T) {
@@ -2180,4 +2210,47 @@ func TestBuildRedisQueryCondition_FilterableTagUsesHex(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A search stops at MAXSEARCHRESULTS, 10,000 by default, and a read that
+// pages past it gets an empty page back - the same thing the end of the
+// namespace looks like. A caller reading a namespace out with its vectors was
+// handed 10,000 of 10,450 entries and no error. That read walks the keys now,
+// which has no such ceiling.
+func TestRedisStore_VectorReadGoesPastTheSearchLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+
+	const dimension, entries = 8, RedisMaxSearchResults + 450
+	namespace := "deep_read_" + generateUUID()
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, dimension, map[string]VectorStoreProperties{
+		"seq": {DataType: VectorStorePropertyTypeInteger, Description: "sequence"},
+	}))
+	defer func() { _ = setup.Store.DeleteNamespace(context.Background(), namespace) }()
+
+	for index := 0; index < entries; index++ {
+		vector := make([]float32, dimension)
+		vector[index%dimension] = 1
+		require.NoError(t, setup.Store.Add(setup.ctx, namespace, fmt.Sprintf("entry-%06d", index), vector, map[string]interface{}{"seq": int64(index)}))
+	}
+
+	seen := map[string]struct{}{}
+	var cursor *string
+	for pages := 0; ; pages++ {
+		require.Less(t, pages, entries, "paging did not end")
+		results, next, err := setup.Store.GetAll(WithIncludeVectors(setup.ctx), namespace, nil, []string{"seq"}, cursor, 200)
+		require.NoError(t, err)
+		for _, result := range results {
+			require.Len(t, result.Vector, dimension)
+			seen[result.ID] = struct{}{}
+		}
+		if next == nil {
+			break
+		}
+		cursor = next
+	}
+	require.Len(t, seen, entries)
 }

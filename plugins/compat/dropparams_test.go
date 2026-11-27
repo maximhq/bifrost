@@ -412,3 +412,88 @@ func TestDropUnsupportedParams_ChatReasoningNilForcedToNoneWithUnsupportedTools(
 		t.Errorf("reasoning reported in dropped=%v, want absent since it was never set", dropped)
 	}
 }
+
+// TestDropUnsupportedParams_ReasoningSummary pins the summary flags, with effort always
+// kept: a detailed/concise summary the model does not support becomes "auto" when
+// supports_reasoning_summary_auto holds and is dropped otherwise (Fireworks models on
+// Azure Responses accept "auto" and 400 on "concise"/"detailed"), and an unsupported
+// "auto" is dropped.
+func TestDropUnsupportedParams_ReasoningSummary(t *testing.T) {
+	all := []string{"reasoning", "reasoning_summary_detailed", "reasoning_summary_concise", "reasoning_summary_auto"}
+	autoOnly := []string{"reasoning", "reasoning_summary_auto"}
+	tests := []struct {
+		name        string
+		supported   []string
+		summary     string
+		want        string
+		wantDropped bool
+	}{
+		{name: "all supported keeps detailed", supported: all, summary: "detailed", want: "detailed"},
+		{name: "all supported keeps concise", supported: all, summary: "concise", want: "concise"},
+		{name: "auto only converts detailed", supported: autoOnly, summary: "detailed", want: "auto"},
+		{name: "auto only converts concise", supported: autoOnly, summary: "concise", want: "auto"},
+		{name: "auto only keeps auto", supported: autoOnly, summary: "auto", want: "auto"},
+		{name: "concise unsupported keeps detailed", supported: []string{"reasoning", "reasoning_summary_detailed", "reasoning_summary_auto"}, summary: "detailed", want: "detailed"},
+		{name: "concise unsupported converts concise", supported: []string{"reasoning", "reasoning_summary_detailed", "reasoning_summary_auto"}, summary: "concise", want: "auto"},
+		{name: "no auto drops detailed", supported: []string{"reasoning"}, summary: "detailed", wantDropped: true},
+		{name: "no auto drops auto", supported: []string{"reasoning", "reasoning_summary_detailed", "reasoning_summary_concise"}, summary: "auto", wantDropped: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"/responses", func(t *testing.T) {
+			req := newResponsesRequest(schemas.Azure, "FW-GLM-5.3", &schemas.ResponsesParameters{
+				Reasoning: &schemas.ResponsesParametersReasoning{Effort: schemas.Ptr("high"), Summary: schemas.Ptr(tt.summary)},
+			})
+
+			dropped := dropUnsupportedParams(newTestContext(), req, tt.supported)
+			reasoning := req.ResponsesRequest.Params.Reasoning
+			if reasoning == nil || reasoning.Effort == nil || *reasoning.Effort != "high" {
+				t.Fatalf("reasoning = %+v, want effort=high kept", reasoning)
+			}
+			assertReasoningSummary(t, reasoning.Summary, dropped, tt.want, tt.wantDropped)
+		})
+
+		t.Run(tt.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostRequest{
+				RequestType: schemas.ChatCompletionRequest,
+				ChatRequest: &schemas.BifrostChatRequest{
+					Provider: schemas.Azure,
+					Model:    "FW-GLM-5.3",
+					Params: &schemas.ChatParameters{
+						Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high"), Summary: schemas.Ptr(tt.summary)},
+					},
+				},
+			}
+
+			dropped := dropUnsupportedParams(newTestContext(), req, tt.supported)
+			reasoning := req.ChatRequest.Params.Reasoning
+			if reasoning == nil || reasoning.Effort == nil || *reasoning.Effort != "high" {
+				t.Fatalf("reasoning = %+v, want effort=high kept", reasoning)
+			}
+			assertReasoningSummary(t, reasoning.Summary, dropped, tt.want, tt.wantDropped)
+		})
+	}
+}
+
+func assertReasoningSummary(t *testing.T, got *string, dropped []string, want string, wantDropped bool) {
+	t.Helper()
+	if wantDropped {
+		if got != nil {
+			t.Fatalf("reasoning.summary = %q, want dropped", *got)
+		}
+		if !slices.Contains(dropped, "reasoning.summary") {
+			t.Errorf("reasoning.summary not reported in dropped=%v, want present", dropped)
+		}
+		return
+	}
+	if got == nil || *got != want {
+		gotValue := "<nil>"
+		if got != nil {
+			gotValue = *got
+		}
+		t.Fatalf("reasoning.summary = %q, want %q", gotValue, want)
+	}
+	if slices.Contains(dropped, "reasoning.summary") {
+		t.Errorf("reasoning.summary reported in dropped=%v, want absent", dropped)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"mime"
 	"net/url"
 	"slices"
 	"sort"
@@ -18,7 +19,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -87,6 +88,7 @@ func (s *NotificationService) Publish(ctx context.Context, input schemas.Notific
 		ID: uuid.NewString(), Audience: input.Audience, RoleIDs: append([]uint(nil), input.RoleIDs...),
 		Severity: input.Severity, Title: input.Title, Message: input.Message,
 		ActionLabel: input.ActionLabel, ActionPath: input.ActionPath,
+		SubjectType: input.SubjectType, SubjectID: input.SubjectID,
 		CreatedAt: now, ExpiresAt: now.Add(notificationRetention),
 	}
 	row := notificationToTable(notification)
@@ -97,6 +99,47 @@ func (s *NotificationService) Publish(ctx context.Context, input schemas.Notific
 		s.websocket.BroadcastNotification(notification)
 	}
 	return notification, nil
+}
+
+// Resolve marks the subject's open notifications as handled and pushes each
+// updated row, which open dashboards upsert in place by ID.
+func (s *NotificationService) Resolve(ctx context.Context, input schemas.NotificationResolveInput) ([]*schemas.Notification, error) {
+	if s.store == nil {
+		return nil, ErrNotificationsUnavailable
+	}
+	if err := validateNotificationSubject(input.SubjectType, input.SubjectID, true); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(input.Resolution) == "" || len(input.Resolution) > 512 {
+		return nil, errors.New("resolution is required and must not exceed 512 characters")
+	}
+	// Rows resolved before a mid-way failure are committed and a retry skips them, so they are broadcast either way.
+	rows, err := s.store.ResolveNotifications(ctx, input.SubjectType, input.SubjectID, s.now(), input.Resolution)
+	resolved := make([]*schemas.Notification, 0, len(rows))
+	for i := range rows {
+		notification := notificationFromTable(&rows[i])
+		resolved = append(resolved, &notification)
+		if s.websocket != nil {
+			s.websocket.BroadcastNotification(&notification)
+		}
+	}
+	if err != nil {
+		return resolved, fmt.Errorf("resolve notifications: %w", err)
+	}
+	return resolved, nil
+}
+
+// validateNotificationSubject checks the subject pair fits its columns. Both
+// halves are optional on publish but must be set together.
+func validateNotificationSubject(subjectType, subjectID string, required bool) error {
+	hasType, hasID := strings.TrimSpace(subjectType) != "", strings.TrimSpace(subjectID) != ""
+	if hasType != hasID || (required && !hasType) {
+		return errors.New("subject_type and subject_id must be provided together")
+	}
+	if len(subjectType) > 64 || len(subjectID) > 255 {
+		return errors.New("subject_type must not exceed 64 characters and subject_id must not exceed 255")
+	}
+	return nil
 }
 
 // validateNotificationInput rejects bad input without rewriting good input: what
@@ -144,6 +187,9 @@ func validateNotificationInput(input *schemas.NotificationInput) error {
 			return errors.New("action_path must be an internal absolute path")
 		}
 	}
+	if err := validateNotificationSubject(input.SubjectType, input.SubjectID, false); err != nil {
+		return err
+	}
 	sort.Slice(input.RoleIDs, func(i, j int) bool { return input.RoleIDs[i] < input.RoleIDs[j] })
 	input.RoleIDs = slices.Compact(input.RoleIDs)
 	return nil
@@ -162,6 +208,12 @@ func (s *NotificationService) create(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusForbidden, "Only administrators can publish notifications")
 		return
 	}
+	// JSON only: a form or text/plain POST needs no CORS preflight, so a page on
+	// another site could send one with admin Basic credentials the browser cached.
+	if mediaType, _, err := mime.ParseMediaType(string(ctx.Request.Header.ContentType())); err != nil || mediaType != "application/json" {
+		SendError(ctx, fasthttp.StatusUnsupportedMediaType, "Content-Type must be application/json")
+		return
+	}
 	var input schemas.NotificationInput
 	if err := sonic.Unmarshal(ctx.PostBody(), &input); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -176,6 +228,15 @@ func (s *NotificationService) create(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, status, err.Error())
 		return
 	}
+	lib.RecordAuditChange(ctx, "notification.published", "notification", notification.ID, notification.Title, nil, map[string]any{
+		"audience":     notification.Audience,
+		"role_ids":     notification.RoleIDs,
+		"severity":     notification.Severity,
+		"title":        notification.Title,
+		"message":      notification.Message,
+		"action_label": notification.ActionLabel,
+		"action_path":  notification.ActionPath,
+	})
 	SendJSONWithStatus(ctx, notification, fasthttp.StatusCreated)
 }
 
@@ -184,6 +245,10 @@ type notificationListResponse struct {
 	NextCursor    string                 `json:"next_cursor,omitempty"`
 }
 
+// list handles GET /api/notifications: one page of the notifications the caller may see, newest
+// first. It answers 503 while the service's store is nil: the config store does not provide
+// notification storage (it does not implement configstore.NotificationStore), which
+// RequireConfigStoreMiddleware does not catch, since it refuses only a disabled config store.
 func (s *NotificationService) list(ctx *fasthttp.RequestCtx) {
 	if s.store == nil {
 		SendError(ctx, fasthttp.StatusServiceUnavailable, ErrNotificationsUnavailable.Error())
@@ -297,9 +362,9 @@ func decodeNotificationCursor(cursor string) (time.Time, string, error) {
 }
 
 func notificationToTable(notification *schemas.Notification) tables.TableNotification {
-	return tables.TableNotification{ID: notification.ID, Audience: string(notification.Audience), RoleIDs: notification.RoleIDs, Severity: string(notification.Severity), Title: notification.Title, Message: notification.Message, ActionLabel: notification.ActionLabel, ActionPath: notification.ActionPath, CreatedAt: notification.CreatedAt, ExpiresAt: notification.ExpiresAt}
+	return tables.TableNotification{ID: notification.ID, Audience: string(notification.Audience), RoleIDs: notification.RoleIDs, Severity: string(notification.Severity), Title: notification.Title, Message: notification.Message, ActionLabel: notification.ActionLabel, ActionPath: notification.ActionPath, SubjectType: notification.SubjectType, SubjectID: notification.SubjectID, ResolvedAt: notification.ResolvedAt, Resolution: notification.Resolution, CreatedAt: notification.CreatedAt, ExpiresAt: notification.ExpiresAt}
 }
 
 func notificationFromTable(row *tables.TableNotification) schemas.Notification {
-	return schemas.Notification{ID: row.ID, Audience: schemas.NotificationAudience(row.Audience), RoleIDs: row.RoleIDs, Severity: schemas.NotificationSeverity(row.Severity), Title: row.Title, Message: row.Message, ActionLabel: row.ActionLabel, ActionPath: row.ActionPath, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt}
+	return schemas.Notification{ID: row.ID, Audience: schemas.NotificationAudience(row.Audience), RoleIDs: row.RoleIDs, Severity: schemas.NotificationSeverity(row.Severity), Title: row.Title, Message: row.Message, ActionLabel: row.ActionLabel, ActionPath: row.ActionPath, SubjectType: row.SubjectType, SubjectID: row.SubjectID, ResolvedAt: row.ResolvedAt, Resolution: row.Resolution, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt}
 }

@@ -1,12 +1,16 @@
 package lib
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/network"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/valyala/fasthttp"
 )
 
 func enabledGlobalProxy() *configstoreTables.GlobalProxyConfig {
@@ -26,14 +30,13 @@ func enabledGlobalProxy() *configstoreTables.GlobalProxyConfig {
 // turning it on changed nothing for provider traffic.
 func TestGetConfigForProvider_InheritsGlobalProxy(t *testing.T) {
 	ownProxy := &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar("http://own-proxy:8080")}
-	store := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Vertex: {},
-			schemas.Azure:  {ProxyConfig: &schemas.ProxyConfig{Type: schemas.NoProxy}},
-			schemas.OpenAI: {ProxyConfig: ownProxy},
-		},
+	store := withProviders(t, &Config{
 		ProxyConfig: enabledGlobalProxy(),
-	}
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Vertex: {},
+		schemas.Azure:  {ProxyConfig: &schemas.ProxyConfig{Type: schemas.NoProxy}},
+		schemas.OpenAI: {ProxyConfig: ownProxy},
+	}, nil)
 	account := NewBaseAccount(store)
 
 	for _, provider := range []schemas.ModelProvider{schemas.Vertex, schemas.Azure} {
@@ -76,6 +79,8 @@ func TestInheritGlobalProxy(t *testing.T) {
 	socks.URL = "socks5://10.0.0.9:1080"
 	skipTLS := enabledGlobalProxy()
 	skipTLS.SkipTLSVerify = true
+	withCA := enabledGlobalProxy()
+	withCA.CACertPEM = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
 
 	tests := []struct {
 		name     string
@@ -84,6 +89,7 @@ func TestInheritGlobalProxy(t *testing.T) {
 		wantOK   bool
 		wantType schemas.ProxyType
 		wantSkip bool
+		wantCA   string
 	}{
 		{name: "no global proxy", global: nil},
 		{name: "global disabled", global: disabled},
@@ -96,10 +102,14 @@ func TestInheritGlobalProxy(t *testing.T) {
 		{name: "empty type inherits", own: &schemas.ProxyConfig{}, global: enabledGlobalProxy(), wantOK: true, wantType: schemas.HTTPProxy},
 		{name: "socks5 maps across", global: socks, wantOK: true, wantType: schemas.Socks5Proxy},
 		{name: "skip_tls_verify carries over", global: skipTLS, wantOK: true, wantType: schemas.HTTPProxy, wantSkip: true},
+		{name: "ca_cert_pem carries over", global: withCA, wantOK: true, wantType: schemas.HTTPProxy, wantCA: withCA.CACertPEM},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := inheritGlobalProxy(tt.own, tt.global)
+			got, ok, err := inheritGlobalProxy(tt.own, tt.global)
+			if err != nil {
+				t.Fatalf("inheritGlobalProxy: %v", err)
+			}
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -114,7 +124,59 @@ func TestInheritGlobalProxy(t *testing.T) {
 			if got.proxy.SkipTLSVerify != tt.wantSkip {
 				t.Errorf("proxy.SkipTLSVerify = %v, want %v", got.proxy.SkipTLSVerify, tt.wantSkip)
 			}
+			// The provider stacks trust the global proxy's CA for the https:// proxy hop
+			// and for TLS through a TLS-inspecting proxy.
+			if gotCA := got.proxy.CACertPEM.GetValue(); gotCA != tt.wantCA {
+				t.Errorf("proxy.CACertPEM = %q, want %q", gotCA, tt.wantCA)
+			}
 		})
+	}
+}
+
+// TestInheritGlobalProxy_BareAddressKeepsTheProxy: the settings page accepts a bare
+// host:port and takes its scheme from the type. Providers parse the URL to add credentials,
+// and a bare address does not parse, so the inherited URL must carry the scheme or the
+// provider client is left without a proxy and inference goes direct.
+func TestInheritGlobalProxy_BareAddressKeepsTheProxy(t *testing.T) {
+	cases := []struct {
+		proxyType network.GlobalProxyType
+		url       string
+		want      string
+	}{
+		{network.GlobalProxyTypeSOCKS5, "10.0.0.9:1080", "socks5://10.0.0.9:1080"},
+		{network.GlobalProxyTypeHTTP, "10.0.0.9:3128", "http://10.0.0.9:3128"},
+		{network.GlobalProxyTypeSOCKS5, "proxy.corp:1080", "socks5://proxy.corp:1080"},
+		// Stored before the scheme had to match the type (config.json did not check it). The
+		// dialer follows the URL's scheme, so this proxy worked and must keep working.
+		{network.GlobalProxyTypeHTTP, "socks5://10.0.0.9:1080", "socks5://10.0.0.9:1080"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.proxyType)+" "+tc.url, func(t *testing.T) {
+			global := enabledGlobalProxy()
+			global.Type = tc.proxyType
+			global.URL = tc.url
+			got, ok, err := inheritGlobalProxy(nil, global)
+			if err != nil {
+				t.Fatalf("inheritGlobalProxy: %v", err)
+			}
+			if !ok {
+				t.Fatal("nothing inherited")
+			}
+			if got.proxy.URL.GetValue() != tc.want {
+				t.Errorf("url = %q, want %q", got.proxy.URL.GetValue(), tc.want)
+			}
+			client := providerUtils.ConfigureProxy(&fasthttp.Client{}, got.proxy, nil)
+			if client.Dial == nil {
+				t.Errorf("the provider client got no proxy dialer for %q with credentials: inference would go direct", tc.url)
+			}
+		})
+	}
+
+	invalid := enabledGlobalProxy()
+	invalid.Type = network.GlobalProxyTypeSOCKS5
+	invalid.URL = "socks5://10.0.0.9:bad"
+	if _, ok, err := inheritGlobalProxy(nil, invalid); ok || err == nil {
+		t.Errorf("an unparseable global proxy url (which the API and config.json both refuse) must be an error, not inherited or dropped: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -127,12 +189,11 @@ func TestGetConfigForProvider_InheritedSkipTLSVerifyDoesNotLeak(t *testing.T) {
 	global := enabledGlobalProxy()
 	global.SkipTLSVerify = true
 	stored := schemas.DefaultNetworkConfig
-	store := &Config{
-		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
-			schemas.Vertex: {NetworkConfig: &stored},
-		},
+	store := withProviders(t, &Config{
 		ProxyConfig: global,
-	}
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.Vertex: {NetworkConfig: &stored},
+	}, nil)
 
 	config, err := NewBaseAccount(store).GetConfigForProvider(schemas.Vertex)
 	if err != nil {
@@ -144,13 +205,13 @@ func TestGetConfigForProvider_InheritedSkipTLSVerifyDoesNotLeak(t *testing.T) {
 	if config.NetworkConfig.InsecureSkipVerify {
 		t.Error("inherited skip_tls_verify must not become network_config.insecure_skip_verify: that would also skip verification for direct no_proxy hosts")
 	}
-	if store.Providers[schemas.Vertex].NetworkConfig.InsecureSkipVerify {
+	if providersOf(store)[schemas.Vertex].NetworkConfig.InsecureSkipVerify {
 		t.Error("the stored network config must stay untouched")
 	}
 }
 
 func TestSetGlobalProxyConfig_StoresWithoutClient(t *testing.T) {
-	store := &Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {}}}
+	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {}}, nil)
 	global := enabledGlobalProxy()
 	if err := store.SetGlobalProxyConfig(global); err != nil {
 		t.Fatalf("SetGlobalProxyConfig: %v", err)
@@ -229,10 +290,9 @@ func TestGetConfigForProvider_ProxySourceMatrix(t *testing.T) {
 					for name, value := range vars {
 						t.Setenv(name, value)
 					}
-					store := &Config{
-						Providers:   map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {ProxyConfig: own.config}},
+					store := withProviders(t, &Config{
 						ProxyConfig: global.config(),
-					}
+					}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {ProxyConfig: own.config}}, nil)
 					config, err := NewBaseAccount(store).GetConfigForProvider(schemas.Vertex)
 					if err != nil {
 						t.Fatalf("GetConfigForProvider: %v", err)
@@ -259,5 +319,77 @@ func TestGetConfigForProvider_ProxySourceMatrix(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestGetConfigForProvider_CarriesInjectedTools pins the field-by-field bridge from the
+// stored provider config into core: a field missing here saves fine but never reaches
+// the request path.
+func TestGetConfigForProvider_CarriesInjectedTools(t *testing.T) {
+	injected := []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		{Name: "read_page", MCPClientName: "fetcher", ToolName: "fetch"},
+	}
+	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {InjectedTools: injected},
+	}, nil)
+
+	config, err := NewBaseAccount(store).GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	if !reflect.DeepEqual(config.InjectedTools, injected) {
+		t.Errorf("injected_tools must reach core; got %+v", config.InjectedTools)
+	}
+}
+
+// TestGetConfigForProvider_CarriesPassthrough pins the bridge for the passthrough policy:
+// without it the policy saves fine and core forwards every route.
+func TestGetConfigForProvider_CarriesPassthrough(t *testing.T) {
+	policy := &schemas.PassthroughPolicy{AllowedRoutes: []schemas.PassthroughRouteRule{{Methods: []string{"POST"}, Path: "/v1/chat/completions"}}}
+	store := withProviders(t, &Config{}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI:    {Passthrough: policy},
+		schemas.Anthropic: {},
+	}, nil)
+
+	config, err := NewBaseAccount(store).GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	if config.Passthrough != policy {
+		t.Errorf("passthrough must reach core; got %+v", config.Passthrough)
+	}
+	config, err = NewBaseAccount(store).GetConfigForProvider(schemas.Anthropic)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	if config.Passthrough != nil {
+		t.Errorf("a provider without a policy must reach core without one; got %+v", config.Passthrough)
+	}
+}
+
+// TestGetConfigForProvider_UnreadableGlobalProxyFailsClosed pins that a global proxy enabled
+// for inference whose URL cannot be read stops the provider from being configured. Dropping
+// it would send inference direct, around the proxy the admin turned on; a stored URL can
+// predate the validator. The error names the URL with its password masked.
+func TestGetConfigForProvider_UnreadableGlobalProxyFailsClosed(t *testing.T) {
+	for _, raw := range []string{"http://proxy.example:bad", "http://svc:s3cret@proxy.example:bad", "http://:3128", "socks5://proxy.example:0"} {
+		t.Run(raw, func(t *testing.T) {
+			global := enabledGlobalProxy()
+			global.URL = raw
+			if strings.HasPrefix(raw, "socks5://") {
+				global.Type = network.GlobalProxyTypeSOCKS5
+			}
+			store := withProviders(t, &Config{
+				ProxyConfig: global,
+			}, map[schemas.ModelProvider]configstore.ProviderConfig{schemas.Vertex: {}}, nil)
+			config, err := NewBaseAccount(store).GetConfigForProvider(schemas.Vertex)
+			if err == nil {
+				t.Fatalf("an unreadable global proxy was dropped, so inference would go direct (proxy_config %+v)", config.ProxyConfig)
+			}
+			if strings.Contains(err.Error(), "s3cret") {
+				t.Errorf("the error carries the proxy password: %v", err)
+			}
+		})
 	}
 }

@@ -1,7 +1,9 @@
 package routing
 
 import (
+	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -24,12 +26,54 @@ func decisionTestPlugin(decision *complexity.DecisionConfig, executor DecisionRe
 // decisionChoiceResponse builds a decision response carrying one complexity_tier answer.
 func decisionChoiceResponse(value interface{}) *schemas.BifrostDecisionResponse {
 	return &schemas.BifrostDecisionResponse{
-		Model: "jev-1.13.0",
-		Answers: map[string]schemas.DecisionAnswer{
-			decisionComplexityQuestion: {Kind: schemas.DecisionKindChoice, Value: value},
-		},
-		Usage: &schemas.BifrostLLMUsage{PromptTokens: 30, CompletionTokens: 1},
+		Model:   "jev-1.13.0",
+		Answers: []schemas.DecisionAnswer{decisionAnswer(decisionComplexityQuestion, schemas.DecisionTypeChoice, value)},
+		Usage:   &schemas.BifrostLLMUsage{PromptTokens: 30, CompletionTokens: 1},
 	}
+}
+
+// decisionAnswer builds a named answer of the given type choosing value: a
+// string, number, or boolean becomes the choice, and any other value leaves
+// the answer without one, as a malformed upstream answer would.
+func decisionAnswer(name string, answerType schemas.DecisionType, value interface{}) schemas.DecisionAnswer {
+	answer := schemas.DecisionAnswer{Type: answerType, Name: schemas.Ptr(name)}
+	switch typed := value.(type) {
+	case string:
+		answer.Choice = &schemas.DecisionScalar{Str: &typed}
+	case float64:
+		answer.Choice = &schemas.DecisionScalar{Num: &typed}
+	case bool:
+		answer.Choice = &schemas.DecisionScalar{Bool: &typed}
+	}
+	return answer
+}
+
+// choiceTiers lists a captured choice question's tiers in choice order.
+func choiceTiers(question schemas.DecisionQuestion) []string {
+	tiers := make([]string, 0, len(question.Choices))
+	for _, choice := range question.Choices {
+		tiers = append(tiers, *choice.Value.Str)
+	}
+	return tiers
+}
+
+// choiceDescriptions keys a captured choice question's descriptions by tier.
+func choiceDescriptions(question schemas.DecisionQuestion) map[string]interface{} {
+	descriptions := make(map[string]interface{}, len(question.Choices))
+	for _, choice := range question.Choices {
+		descriptions[*choice.Value.Str] = choice.Description.Value()
+	}
+	return descriptions
+}
+
+// conversationOf reads a captured request's input messages back as the
+// conversation window they were built from.
+func conversationOf(input schemas.DecisionInput) []complexity.ConversationMessage {
+	window := make([]complexity.ConversationMessage, len(input.Messages))
+	for i, message := range input.Messages {
+		window[i] = complexity.ConversationMessage{Role: message.Role, Content: *message.Content.Text}
+	}
+	return window
 }
 
 // decisionTestInput is a multi-turn conversation with assistant replies between user turns.
@@ -81,18 +125,16 @@ func TestClassifyDecisionComplexityRequestShape(t *testing.T) {
 		{Role: "user", Content: "older question"},
 		{Role: "user", Content: "previous question"},
 		{Role: "user", Content: "current question"},
-	}, captured.State)
+	}, conversationOf(captured.Input))
 	assert.Greater(t, remaining, time.Duration(0))
 	assert.LessOrEqual(t, remaining, 250*time.Millisecond)
 
 	require.Len(t, captured.Questions, 1)
-	question, ok := captured.Questions[decisionComplexityQuestion]
-	require.True(t, ok)
-	assert.Equal(t, schemas.DecisionKindChoice, question.Kind)
-	criteria, ok := question.Criteria.(map[string]interface{})
-	require.True(t, ok)
-	assert.ElementsMatch(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, mapKeys(criteria))
-	instructions, ok := question.Instructions.(map[string]interface{})
+	question := captured.Questions[0]
+	assert.Equal(t, decisionComplexityQuestion, *question.Name)
+	assert.Equal(t, schemas.DecisionTypeChoice, question.Type)
+	assert.Equal(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, choiceTiers(question))
+	instructions, ok := question.Instructions.Value().(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, []string{complexity.TierSimple, complexity.TierMedium, complexity.TierComplex}, instructions["tier_order"])
 
@@ -113,13 +155,13 @@ func TestClassifyDecisionComplexityGuidance(t *testing.T) {
 		})
 		p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
 		require.NotNil(t, captured)
-		return captured.Questions[decisionComplexityQuestion]
+		return captured.Questions[0]
 	}
 	defaults := configstore.DefaultComplexityDecisionGuidance()
 
 	shipped := capture(nil)
-	instructions := shipped.Instructions.(map[string]interface{})
-	criteria := shipped.Criteria.(map[string]interface{})
+	instructions := shipped.Instructions.Value().(map[string]interface{})
+	criteria := choiceDescriptions(shipped)
 	assert.Equal(t, map[string]interface{}{
 		"definition": defaults.Criteria[complexity.TierMedium].Definition,
 		"signals":    defaults.Criteria[complexity.TierMedium].Signals,
@@ -132,24 +174,24 @@ func TestClassifyDecisionComplexityGuidance(t *testing.T) {
 			complexity.TierComplex: {Signals: []string{"custom signal"}},
 		},
 	})
-	editedInstructions := edited.Instructions.(map[string]interface{})
+	editedInstructions := edited.Instructions.Value().(map[string]interface{})
 	assert.Equal(t, instructions["question"], editedInstructions["question"], "the question is fixed")
 	assert.Equal(t, instructions["decision_rule"], editedInstructions["decision_rule"], "the decision rule is fixed")
 	assert.Equal(t, instructions["context_rule"], editedInstructions["context_rule"], "the context rule is fixed")
-	simpleCriteria := edited.Criteria.(map[string]interface{})[complexity.TierSimple].(map[string]interface{})
+	simpleCriteria := choiceDescriptions(edited)[complexity.TierSimple].(map[string]interface{})
 	assert.Equal(t, "custom definition", simpleCriteria["definition"])
 	assert.Equal(t, defaults.Criteria[complexity.TierSimple].Signals, simpleCriteria["signals"])
-	complexCriteria := edited.Criteria.(map[string]interface{})[complexity.TierComplex].(map[string]interface{})
+	complexCriteria := choiceDescriptions(edited)[complexity.TierComplex].(map[string]interface{})
 	assert.Equal(t, []string{"custom signal"}, complexCriteria["signals"])
 	assert.Equal(t, defaults.Criteria[complexity.TierComplex].Examples, complexCriteria["examples"])
 	assert.Equal(t, defaults.Criteria[complexity.TierComplex].Definition, complexCriteria["definition"])
 	assert.NotContains(t, complexCriteria, "not_for")
 }
 
-// TestClassifyDecisionComplexityStateSerializesAsRoleContentArray pins the wire
-// shape of the state: Typesafe accepts only a JSON string, object, or array,
-// and reads each message by its lowercase role/content keys.
-func TestClassifyDecisionComplexityStateSerializesAsRoleContentArray(t *testing.T) {
+// TestClassifyDecisionComplexityInputSerializesAsRoleContentArray pins the wire
+// shape of the input: user messages, which OpenAI reads as is and which reach
+// Typesafe as the same role/content array its state has always been.
+func TestClassifyDecisionComplexityInputSerializesAsRoleContentArray(t *testing.T) {
 	var captured *schemas.BifrostDecisionRequest
 	p := decisionTestPlugin(nil, func(_ *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 		captured = req
@@ -159,7 +201,7 @@ func TestClassifyDecisionComplexityStateSerializesAsRoleContentArray(t *testing.
 	p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
 
 	require.NotNil(t, captured)
-	data, err := json.Marshal(captured.State)
+	data, err := json.Marshal(captured.Input)
 	require.NoError(t, err)
 	assert.JSONEq(t, `[{"role":"user","content":"previous question"},{"role":"user","content":"current question"}]`, string(data))
 }
@@ -186,7 +228,7 @@ func TestClassifyDecisionComplexityDefaultsWithoutDecisionBlock(t *testing.T) {
 			p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
 
 			require.NotNil(t, captured)
-			assert.Len(t, captured.State, configstore.DefaultComplexityDecisionPreviousMessageCount+1)
+			assert.Len(t, captured.Input.Messages, configstore.DefaultComplexityDecisionPreviousMessageCount+1)
 			assert.Greater(t, remaining, configstore.DefaultComplexityDecisionTimeout-200*time.Millisecond)
 			assert.LessOrEqual(t, remaining, configstore.DefaultComplexityDecisionTimeout)
 		})
@@ -205,7 +247,7 @@ func TestClassifyDecisionComplexityFallsBackToLastUserText(t *testing.T) {
 	proposal := p.classifyDecisionComplexity(decisionTestContext(t), complexity.ComplexityInput{LastUserText: "complete this sentence"})
 
 	require.NotNil(t, captured)
-	assert.Equal(t, []complexity.ConversationMessage{{Role: "user", Content: "complete this sentence"}}, captured.State)
+	assert.Equal(t, []complexity.ConversationMessage{{Role: "user", Content: "complete this sentence"}}, conversationOf(captured.Input))
 	require.NotNil(t, proposal.Result)
 }
 
@@ -285,10 +327,10 @@ func TestClassifyDecisionComplexityRejectsMalformedResponses(t *testing.T) {
 	cases := map[string]*schemas.BifrostDecisionResponse{
 		"nil response": nil,
 		"missing answer": {
-			Answers: map[string]schemas.DecisionAnswer{"other_question": {Kind: schemas.DecisionKindChoice, Value: "SIMPLE"}},
+			Answers: []schemas.DecisionAnswer{decisionAnswer("other_question", schemas.DecisionTypeChoice, "SIMPLE")},
 		},
 		"wrong kind": {
-			Answers: map[string]schemas.DecisionAnswer{decisionComplexityQuestion: {Kind: schemas.DecisionKindScore, Value: "SIMPLE"}},
+			Answers: []schemas.DecisionAnswer{decisionAnswer(decisionComplexityQuestion, schemas.DecisionTypeScore, "SIMPLE")},
 		},
 	}
 	for name, response := range cases {
@@ -312,9 +354,7 @@ func TestClassifyDecisionComplexityCarriesConfidence(t *testing.T) {
 	confidence := 0.87
 	p := decisionTestPlugin(nil, func(_ *schemas.BifrostContext, _ *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 		response := decisionChoiceResponse("COMPLEX")
-		answer := response.Answers[decisionComplexityQuestion]
-		answer.Confidence = &confidence
-		response.Answers[decisionComplexityQuestion] = answer
+		response.Answers[0].Confidence = &confidence
 		return response, nil
 	})
 
@@ -393,8 +433,8 @@ func TestClassifyDecisionComplexityUsesConfiguredModel(t *testing.T) {
 }
 
 // TestClassifyDecisionComplexityNimbleCriteriaAsText pins that a Nimble model,
-// whose server accepts only string descriptions, receives each tier's guidance as
-// one text description, while other models keep the structured object.
+// whose server accepts only string descriptions, receives each tier's guidance
+// as one text description, while other models keep the structured object.
 func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 	capture := func(decision *complexity.DecisionConfig) map[string]interface{} {
 		var captured *schemas.BifrostDecisionRequest
@@ -404,9 +444,7 @@ func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 		})
 		p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
 		require.NotNil(t, captured)
-		criteria, ok := captured.Questions[decisionComplexityQuestion].Criteria.(map[string]interface{})
-		require.True(t, ok)
-		return criteria
+		return choiceDescriptions(captured.Questions[0])
 	}
 
 	defaults := configstore.DefaultComplexityDecisionGuidance().Criteria[complexity.TierComplex]
@@ -418,9 +456,12 @@ func TestClassifyDecisionComplexityNimbleCriteriaAsText(t *testing.T) {
 		assert.Contains(t, text, "\nExamples:\n- "+defaults.Examples[0])
 	}
 
-	criteria := capture(nil)
-	_, isObject := criteria[complexity.TierComplex].(map[string]interface{})
-	assert.True(t, isObject, "the default Jev model keeps object criteria")
+	// OpenAI's request conversion renders an object description as text, so an
+	// OpenAI decisions model, like the default Jev model, keeps the object.
+	for _, decision := range []*complexity.DecisionConfig{nil, {Provider: schemas.OpenAI, Model: "gpt-6-luna"}} {
+		_, isObject := capture(decision)[complexity.TierComplex].(map[string]interface{})
+		assert.True(t, isObject, "%v keeps object criteria", decision)
+	}
 }
 
 func TestClassifyDecisionComplexityRecordsUsage(t *testing.T) {
@@ -533,11 +574,152 @@ func hasRoutingLog(ctx *schemas.BifrostContext, fragment string) bool {
 	return false
 }
 
-// mapKeys returns the keys of a criteria map.
-func mapKeys(m map[string]interface{}) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
+// TestClassifyDecisionComplexityMinConfidence pins the gate: an answer below
+// min_confidence publishes no tier, one at or above it does, and an answer that
+// reports no confidence is kept, since rejecting it would stop a model that
+// never reports one from routing at all.
+func TestClassifyDecisionComplexityMinConfidence(t *testing.T) {
+	tests := []struct {
+		name          string
+		minConfidence float64
+		confidence    *float64
+		probabilities []float64 // SIMPLE, MEDIUM, COMPLEX
+		wantTier      bool
+		wantLog       string
+	}{
+		{name: "unset keeps a low answer", confidence: schemas.Ptr(0.01), wantTier: true},
+		{name: "below is rejected", minConfidence: 0.8, confidence: schemas.Ptr(0.79), wantLog: "rejected: tier=COMPLEX confidence=0.79 below min_confidence=0.80"},
+		{name: "equal is kept", minConfidence: 0.8, confidence: schemas.Ptr(0.8), wantTier: true},
+		{name: "above is kept", minConfidence: 0.8, confidence: schemas.Ptr(0.95), wantTier: true},
+		{name: "no confidence or probabilities is kept", minConfidence: 0.8, wantTier: true, wantLog: "reported no usable confidence"},
+		{name: "derived below is rejected", minConfidence: 0.8, probabilities: []float64{0.1, 0.3, 0.6}, wantLog: "confidence=0.40 (derived from probabilities) below min_confidence=0.80"},
+		{name: "derived above is kept", minConfidence: 0.8, probabilities: []float64{0.02, 0.03, 0.95}, wantTier: true, wantLog: "confidence=0.92 (derived from probabilities)"},
+		{name: "derived from the chosen tier, not the likeliest", minConfidence: 0.5, probabilities: []float64{0.7, 0.2, 0.1}, wantLog: "confidence=0.00 (derived from probabilities) below min_confidence=0.50"},
+		{name: "reported confidence is never replaced", minConfidence: 0.92, confidence: schemas.Ptr(0.9029), probabilities: []float64{0.0136, 0.0196, 0.9668}, wantLog: "confidence=0.90 below min_confidence=0.92"},
+		{name: "distribution short of 1 is not derived", minConfidence: 0.8, probabilities: []float64{0.05, 0.05, 0.3}, wantTier: true, wantLog: "reported no usable confidence"},
+		{name: "threshold off derives nothing", probabilities: []float64{0.1, 0.3, 0.6}, wantTier: true},
+		{name: "confidence above 1 falls back to probabilities", minConfidence: 0.8, confidence: schemas.Ptr(1.5), probabilities: []float64{0.1, 0.3, 0.6}, wantLog: "confidence=0.40 (derived from probabilities) below min_confidence=0.80"},
+		{name: "negative confidence falls back to probabilities", minConfidence: 0.8, confidence: schemas.Ptr(-0.2), probabilities: []float64{0.02, 0.03, 0.95}, wantTier: true, wantLog: "confidence=0.92 (derived from probabilities)"},
+		{name: "out-of-range confidence alone is unusable", minConfidence: 0.8, confidence: schemas.Ptr(1.5), wantTier: true, wantLog: "reported no usable confidence"},
+		{name: "NaN confidence falls back to probabilities", minConfidence: 0.8, confidence: schemas.Ptr(math.NaN()), probabilities: []float64{0.1, 0.3, 0.6}, wantLog: "confidence=0.40 (derived from probabilities) below min_confidence=0.80"},
+		{name: "NaN confidence alone is unusable", minConfidence: 0.8, confidence: schemas.Ptr(math.NaN()), wantTier: true, wantLog: "reported no usable confidence"},
+		{name: "infinite confidence alone is unusable", minConfidence: 0.8, confidence: schemas.Ptr(math.Inf(1)), wantTier: true, wantLog: "reported no usable confidence"},
+		{name: "NaN probability derives nothing", minConfidence: 0.8, probabilities: []float64{0.1, math.NaN(), 0.6}, wantTier: true, wantLog: "reported no usable confidence"},
 	}
-	return keys
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := decisionChoiceResponse("COMPLEX")
+			response.Answers[0].Confidence = tt.confidence
+			for i, tier := range []string{"SIMPLE", "MEDIUM", "COMPLEX"} {
+				if tt.probabilities != nil {
+					response.Answers[0].Probabilities = append(response.Answers[0].Probabilities, schemas.DecisionProbability{Value: schemas.DecisionScalar{Str: schemas.Ptr(tier)}, Probability: tt.probabilities[i]})
+				}
+			}
+			p := decisionTestPlugin(&complexity.DecisionConfig{MinConfidence: tt.minConfidence}, func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return response, nil
+			})
+			proposal := p.classifyDecisionComplexity(decisionTestContext(t), decisionTestInput())
+			if tt.wantTier {
+				require.NotNil(t, proposal.Result)
+				assert.Equal(t, complexity.TierComplex, proposal.Result.Tier)
+				assert.Equal(t, complexity.MechanismDecision, proposal.Mechanism)
+			} else {
+				assert.Nil(t, proposal.Result)
+				assert.Equal(t, complexity.MechanismSkipped, proposal.Mechanism)
+				assert.Equal(t, schemas.LogLevelInfo, proposal.LogLevel, "a low-confidence answer is expected behaviour, not a failure")
+			}
+			assert.Contains(t, proposal.LogMessage, tt.wantLog)
+			if tt.minConfidence == 0 {
+				assert.NotContains(t, proposal.LogMessage, "derived")
+			}
+		})
+	}
+}
+
+// TestDecisionConfidenceFromProbabilities pins the formula's end points and the
+// distributions it must refuse.
+func TestDecisionConfidenceFromProbabilities(t *testing.T) {
+	distribution := func(values map[string]float64) []schemas.DecisionProbability {
+		out := make([]schemas.DecisionProbability, 0, len(values))
+		for tier, probability := range values {
+			out = append(out, schemas.DecisionProbability{Value: schemas.DecisionScalar{Str: schemas.Ptr(tier)}, Probability: probability})
+		}
+		return out
+	}
+	third := 1.0 / 3
+	value, ok := decisionConfidenceFromProbabilities("COMPLEX", distribution(map[string]float64{"SIMPLE": third, "MEDIUM": third, "COMPLEX": third}))
+	require.True(t, ok)
+	assert.InDelta(t, 0, value, 1e-9, "an even spread is no confidence")
+	value, ok = decisionConfidenceFromProbabilities("COMPLEX", distribution(map[string]float64{"SIMPLE": 0, "MEDIUM": 0, "COMPLEX": 1}))
+	require.True(t, ok)
+	assert.InDelta(t, 1, value, 1e-9)
+	value, ok = decisionConfidenceFromProbabilities("COMPLEX", distribution(map[string]float64{"SIMPLE": 0.1, "MEDIUM": 0.1, "COMPLEX": 0.8}))
+	require.True(t, ok)
+	assert.InDelta(t, 0.7, value, 1e-9)
+	value, ok = decisionConfidenceFromProbabilities("MEDIUM", distribution(map[string]float64{"SIMPLE": 0.1, "MEDIUM": 0.4, "COMPLEX": 0.5}))
+	require.True(t, ok)
+	assert.InDelta(t, 0.1, value, 1e-9, "a chosen tier that is not the likeliest scores its own probability")
+
+	for name, refused := range map[string][]schemas.DecisionProbability{
+		"empty":         nil,
+		"missing tier":  distribution(map[string]float64{"SIMPLE": 0.5, "MEDIUM": 0.5}),
+		"unknown tier":  distribution(map[string]float64{"SIMPLE": 0.5, "MEDIUM": 0.25, "OTHER": 0.25}),
+		"sums below 1":  distribution(map[string]float64{"SIMPLE": 0.1, "MEDIUM": 0.1, "COMPLEX": 0.3}),
+		"negative":      distribution(map[string]float64{"SIMPLE": -0.5, "MEDIUM": 0.5, "COMPLEX": 1}),
+		"NaN chosen":    distribution(map[string]float64{"SIMPLE": 0.1, "MEDIUM": 0.1, "COMPLEX": math.NaN()}),
+		"NaN other":     distribution(map[string]float64{"SIMPLE": math.NaN(), "MEDIUM": 0.1, "COMPLEX": 0.8}),
+		"infinite":      distribution(map[string]float64{"SIMPLE": math.Inf(-1), "MEDIUM": math.Inf(1), "COMPLEX": 0.8}),
+		"repeated tier": {{Value: schemas.DecisionScalar{Str: schemas.Ptr("SIMPLE")}, Probability: 0.5}, {Value: schemas.DecisionScalar{Str: schemas.Ptr("SIMPLE")}, Probability: 0.25}, {Value: schemas.DecisionScalar{Str: schemas.Ptr("COMPLEX")}, Probability: 0.25}},
+	} {
+		_, ok := decisionConfidenceFromProbabilities("COMPLEX", refused)
+		assert.False(t, ok, name)
+	}
+}
+
+// TestClassifyDecisionComplexityMinConfidenceKeepsUsage pins that a rejected
+// answer is still billed: the decision call happened and the provider charged it.
+func TestClassifyDecisionComplexityMinConfidenceKeepsUsage(t *testing.T) {
+	response := decisionChoiceResponse("COMPLEX")
+	response.Answers[0].Confidence = schemas.Ptr(0.1)
+	p := decisionTestPlugin(&complexity.DecisionConfig{MinConfidence: 0.8}, func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		return response, nil
+	})
+	ctx := decisionTestContext(t)
+	proposal := p.classifyDecisionComplexity(ctx, decisionTestInput())
+	require.Nil(t, proposal.Result)
+	usage, ok := schemas.RoutingMetadataFromContext(ctx)
+	require.True(t, ok)
+	require.Len(t, usage.Calls, 1)
+}
+
+// BenchmarkClassifyDecisionComplexity measures the classifier around a stubbed
+// decision call, so the numbers are the gateway's own cost, not the model's.
+func BenchmarkClassifyDecisionComplexity(b *testing.B) {
+	for _, bench := range []struct {
+		name          string
+		minConfidence float64
+		derive        bool
+	}{{"GateOff", 0, false}, {"GateKeeps", 0.5, false}, {"GateRejects", 0.95, false}, {"GateDerives", 0.5, true}} {
+		b.Run(bench.name, func(b *testing.B) {
+			confidence := 0.9
+			response := decisionChoiceResponse("MEDIUM")
+			response.Answers[0].Confidence = &confidence
+			if bench.derive {
+				response.Answers[0].Confidence = nil
+				for _, tier := range []string{"SIMPLE", "MEDIUM", "COMPLEX"} {
+					response.Answers[0].Probabilities = append(response.Answers[0].Probabilities, schemas.DecisionProbability{Value: schemas.DecisionScalar{Str: schemas.Ptr(tier)}, Probability: 1.0 / 3})
+				}
+			}
+			p := decisionTestPlugin(&complexity.DecisionConfig{MinConfidence: bench.minConfidence}, func(*schemas.BifrostContext, *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+				return response, nil
+			})
+			input := decisionTestInput()
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				p.classifyDecisionComplexity(ctx, input)
+				ctx.Cancel()
+			}
+		})
+	}
 }

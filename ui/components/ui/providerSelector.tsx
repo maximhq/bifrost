@@ -15,10 +15,18 @@ import { getProviderLabel, VisibleProviderNames } from "@/lib/constants/logs";
 import { useGetProvidersQuery } from "@/lib/store/apis/providersApi";
 import type { ModelProvider } from "@/lib/types/config";
 import { cn } from "@/lib/utils";
+import { isSentinelValue } from "@/lib/utils/strings";
 import { ChevronDownIcon, Loader2Icon, XIcon } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { normalizeValueOption, type ProviderSelectorOption, type ProviderSelectorValue } from "./providerSelector.utils";
+import { useTranslation } from "react-i18next";
+import {
+	customGroupHeading,
+	normalizeValueOption,
+	providerListClassName,
+	type ProviderSelectorOption,
+	type ProviderSelectorValue,
+} from "./providerSelector.utils";
 
 export type { ProviderSelectorOption, ProviderSelectorValue } from "./providerSelector.utils";
 
@@ -61,6 +69,8 @@ interface ProviderSelectorBaseProps {
 	allOption?: { value: string; label?: string };
 	/** Renders base and custom providers under separate headings. */
 	groupByCustom?: boolean;
+	/** Heading for the `isCustom` rows when `groupByCustom` is on, for a caller whose second group is not custom providers. */
+	customGroupLabel?: string;
 	placeholder?: string;
 	searchPlaceholder?: string;
 	emptyMessage?: string;
@@ -69,6 +79,8 @@ interface ProviderSelectorBaseProps {
 	size?: "sm" | "default";
 	className?: string;
 	contentClassName?: string;
+	/** Classes for the scrolling list, e.g. a taller max-h where the caller has room. */
+	listClassName?: string;
 	/**
 	 * Widens the dropdown past the trigger, for a narrow trigger with long provider names.
 	 * A number is px. Always clamped to the room radix reports, so it never leaves the
@@ -126,6 +138,7 @@ function matches(option: ProviderSelectorOption, term: string): boolean {
 }
 
 export function ProviderSelector(props: ProviderSelectorProps) {
+	const { t } = useTranslation("common");
 	const {
 		source = "configured",
 		values,
@@ -138,13 +151,15 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 		contentTestId,
 		allOption,
 		groupByCustom = false,
-		placeholder = "Select provider",
-		searchPlaceholder = "Search providers...",
+		customGroupLabel,
+		placeholder: placeholderProp,
+		searchPlaceholder: searchPlaceholderProp,
 		emptyMessage,
 		disabled = false,
 		size = "default",
 		className,
 		contentClassName,
+		listClassName,
 		contentWidth,
 		noPortal,
 		renderValueLabel,
@@ -154,6 +169,8 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 		ariaDescribedBy,
 		ariaInvalid,
 	} = props;
+	const placeholder = placeholderProp ?? t("providerSelect.select");
+	const searchPlaceholder = searchPlaceholderProp ?? t("providerSelect.search");
 
 	const isAdd = props.mode === "add";
 	const isMulti = !isAdd && props.multiple === true;
@@ -204,11 +221,11 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 	const term = search.trim().toLowerCase();
 	const visibleExtras = useMemo(() => (extraOptions ?? []).filter((o) => matches(o, term)), [extraOptions, term]);
 	const visibleFooters = useMemo(() => (footerOptions ?? []).filter((o) => matches(o, term)), [footerOptions, term]);
-	const visibleAll = useMemo<ProviderSelectorOption[]>(() => {
-		if (!allOption) return [];
-		const row = { value: allOption.value, label: allOption.label ?? "All Providers" };
-		return matches(row, term) ? [row] : [];
-	}, [allOption, term]);
+	const allRow = useMemo<ProviderSelectorOption[]>(
+		() => (allOption ? [{ value: allOption.value, label: allOption.label ?? t("providerSelect.all") }] : []),
+		[allOption],
+	);
+	const visibleAll = useMemo(() => allRow.filter((o) => matches(o, term)), [allRow, term]);
 	const visible = useMemo(() => options.filter((o) => matches(o, term)), [options, term]);
 
 	const base = useMemo(() => visible.filter((o) => !o.isCustom), [visible]);
@@ -217,14 +234,23 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 	// A saved value can sit outside the list: the provider was deleted, or the caller narrowed
 	// the list after it was picked. Pin it so the trigger says something and it stays
 	// deselectable, instead of the row silently vanishing.
+	const known = useMemo(
+		() => new Set([...options, ...(extraOptions ?? []), ...(footerOptions ?? []), ...allRow].map((o) => o.value)),
+		[options, extraOptions, footerOptions, allRow],
+	);
+	// A placeholder like "__none__" that no row claims is treated as no selection, never rendered raw.
+	const shown = useMemo(() => selected.filter((value) => known.has(value) || !isSentinelValue(value)), [selected, known]);
 	const pinned = useMemo<ProviderSelectorOption[]>(() => {
 		if (isAdd) return [];
-		const known = new Set([...options, ...(extraOptions ?? []), ...visibleAll].map((o) => o.value));
-		return selected
+		return shown
 			.filter((value) => value && !known.has(value))
-			.map((value) => ({ value, label: getProviderLabel(value), iconKey: resolveProviderIconKey(value) }))
+			.map((value) => ({
+				value,
+				label: getProviderLabel(value),
+				iconKey: resolveProviderIconKey(value),
+			}))
 			.filter((o) => matches(o, term));
-	}, [isAdd, options, extraOptions, visibleAll, selected, term]);
+	}, [isAdd, known, shown, term]);
 
 	// Every row the arrow keys can land on, in the order they are rendered.
 	const navigableValues = useMemo(() => {
@@ -303,12 +329,12 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 
 	const optionFor = useCallback(
 		(value: string): ProviderSelectorOption =>
-			[...(extraOptions ?? []), ...(footerOptions ?? []), ...visibleAll, ...options, ...pinned].find((o) => o.value === value) ?? {
+			[...(extraOptions ?? []), ...(footerOptions ?? []), ...allRow, ...options, ...pinned].find((o) => o.value === value) ?? {
 				value,
 				label: getProviderLabel(value),
 				iconKey: resolveProviderIconKey(value),
 			},
-		[extraOptions, footerOptions, visibleAll, options, pinned],
+		[extraOptions, footerOptions, allRow, options, pinned],
 	);
 
 	const renderOption = (option: ProviderSelectorOption) => (
@@ -369,16 +395,16 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 						className={cn(
 							"w-full justify-between !bg-transparent font-normal active:scale-none",
 							size === "sm" ? "h-auto min-h-8 py-1 text-xs" : "h-auto min-h-9 py-1.5",
-							selected.length === 0 && "text-muted-foreground",
+							shown.length === 0 && "text-muted-foreground",
 							className,
 						)}
 					>
 						{/* Multi keeps every chip on the trigger: the row wraps and the trigger grows to fit. */}
-						{selected.length === 0 ? (
+						{shown.length === 0 ? (
 							<span className="min-w-0 truncate">{placeholder}</span>
 						) : isMulti ? (
 							<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-								{selected.map((value) => (
+								{shown.map((value) => (
 									<span key={value} className="bg-accent dark:bg-card flex max-w-[180px] items-center gap-1 rounded-sm px-1 py-0.5 text-xs">
 										{renderTriggerValue(value)}
 										{/*
@@ -391,7 +417,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 										<span
 											role="button"
 											tabIndex={-1}
-											aria-label={`Remove ${optionFor(value).label}`}
+											aria-label={t("combobox.removeAria", { label: optionFor(value).label })}
 											className="text-muted-foreground hover:text-foreground flex shrink-0 cursor-pointer items-center"
 											onClick={(e) => {
 												e.preventDefault();
@@ -412,7 +438,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 								))}
 							</span>
 						) : (
-							<span className="flex min-w-0 items-center gap-2">{renderTriggerValue(selected[0])}</span>
+							<span className="flex min-w-0 items-center gap-2">{renderTriggerValue(shown[0])}</span>
 						)}
 						<ChevronDownIcon className="ml-2 size-4 shrink-0 opacity-50" />
 					</Button>
@@ -430,13 +456,18 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 				highlightedValue={highlighted}
 				onHighlightedValueChange={setHighlighted}
 			>
-				<ComboboxList searchPlaceholder={searchPlaceholder} showSearchIcon className="max-h-[300px]" onInputKeyDown={handleInputKeyDown}>
+				<ComboboxList
+					searchPlaceholder={searchPlaceholder}
+					showSearchIcon
+					className={providerListClassName(listClassName)}
+					onInputKeyDown={handleInputKeyDown}
+				>
 					{visibleExtras.map(renderOption)}
 					{visibleAll.map(renderOption)}
 
 					{pinned.length > 0 && (
 						<ComboboxGroup>
-							<ComboboxLabel>Selected</ComboboxLabel>
+							<ComboboxLabel>{t("entityAssociation.selected")}</ComboboxLabel>
 							{pinned.map(renderOption)}
 						</ComboboxGroup>
 					)}
@@ -447,7 +478,7 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 							{base.map(renderOption)}
 							{custom.length > 0 && (
 								<ComboboxGroup>
-									<ComboboxLabel>Custom Providers</ComboboxLabel>
+									<ComboboxLabel>{customGroupHeading(customGroupLabel, t("providerSelect.customProviders"))}</ComboboxLabel>
 									{custom.map(renderOption)}
 								</ComboboxGroup>
 							)}
@@ -461,11 +492,13 @@ export function ProviderSelector(props: ProviderSelectorProps) {
 					{isLoading ? (
 						<div className="text-muted-foreground flex items-center justify-center gap-2 py-6 text-sm">
 							<Loader2Icon className="size-3.5 animate-spin" />
-							Loading providers…
+							{t("providerSelect.loading")}
 						</div>
 					) : (
 						<ComboboxEmpty className="text-muted-foreground">
-							{isError ? "Couldn't load providers." : (emptyMessage ?? (search ? "No matching providers." : "No providers available."))}
+							{isError
+								? t("providerSelect.couldntLoad")
+								: (emptyMessage ?? (search ? t("providerSelect.noMatching") : t("providerSelect.noneAvailable")))}
 						</ComboboxEmpty>
 					)}
 				</ComboboxList>

@@ -7,6 +7,7 @@ import reducer, {
 	markAllNotificationsRead,
 	pruneExpiredNotifications,
 	removeNotification,
+	selectUnreadNotificationsCount,
 	setNotifications,
 } from "./appSlice";
 
@@ -89,5 +90,34 @@ describe("notification state", () => {
 	it("keeps rows whose expires_at is unparseable rather than hiding them", () => {
 		const state = reducer(undefined, setNotifications([notification("odd", "2026-08-17T10:00:00Z", "not-a-date")]));
 		expect(state.notifications.map(({ id }) => id)).toEqual(["odd"]);
+	});
+});
+describe("resolved notifications", () => {
+	it("stop counting as unread and update in place", () => {
+		let state = reducer(undefined, hydrateNotificationPreferences({ scope: "user-a", readIds: [], dismissedIds: [] }));
+		state = reducer(state, setNotifications([notification("open", "2026-08-17T10:00:00Z"), notification("req", "2026-08-17T11:00:00Z")]));
+		expect(selectUnreadNotificationsCount({ app: state })).toBe(2);
+		state = reducer(
+			state,
+			addNotification({
+				...notification("req", "2026-08-17T11:00:00Z"),
+				resolved_at: "2026-08-17T11:30:00Z",
+				resolution: "Approved by Ada",
+			}),
+		);
+		expect(state.notifications.map(({ id }) => id)).toEqual(["req", "open"]);
+		expect(state.notifications[0].resolution).toBe("Approved by Ada");
+		expect(selectUnreadNotificationsCount({ app: state })).toBe(1);
+	});
+
+	it("are not reopened by a stale list response", () => {
+		let state = reducer(
+			undefined,
+			addNotification({ ...notification("req", "2026-08-17T11:00:00Z"), resolved_at: "2026-08-17T11:30:00Z", resolution: "Denied by Bob" }),
+		);
+		state = reducer(state, setNotifications([notification("req", "2026-08-17T11:00:00Z")]));
+		expect(state.notifications[0].resolution).toBe("Denied by Bob");
+		state = reducer(state, addNotification(notification("req", "2026-08-17T11:00:00Z")));
+		expect(state.notifications[0].resolution).toBe("Denied by Bob");
 	});
 });

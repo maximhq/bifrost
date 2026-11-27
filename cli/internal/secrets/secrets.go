@@ -54,8 +54,6 @@ const (
 	AgentUser Kind = "agent-user"
 	// AgentVirtualKeyID stores the non-secret assigned-key selection for SSO inference.
 	AgentVirtualKeyID Kind = "agent-virtual-key-id"
-	// AgentDeviceID stores an opaque installation identifier used during SSO sign-in.
-	AgentDeviceID Kind = "agent-device-id"
 )
 
 // keyForProfile returns the keyring account name for a profile secret.

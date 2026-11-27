@@ -41,13 +41,13 @@ func seedAccessToken(store *testConfigStore, oauthConfigID, authMode, tokenID, a
 		OauthConfigID: oauthConfigID,
 		// Admin rows are looked up by mcp_client_id (the key every admin row
 		// carries); the tests reuse the same identifier for both lookups.
-		MCPClientID: oauthConfigID,
-		Status:      "active",
-		AccessToken:   accessToken,
-		RefreshToken:  refreshToken,
-		TokenType:     "Bearer",
-		ExpiresAt:     expiresAt,
-		Scopes:        "[]",
+		MCPClientID:  oauthConfigID,
+		Status:       "active",
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		TokenType:    "Bearer",
+		ExpiresAt:    expiresAt,
+		Scopes:       "[]",
 	}
 }
 
@@ -96,7 +96,7 @@ func TestAccessToken_ActiveToken_ReturnsItDirectly(t *testing.T) {
 			store, oauthConfigID := newAccessTokenTestStore(server.URL + "/token")
 			seedAccessToken(store, oauthConfigID, g.authMode, "tok-1", " current-access-token \n", "refresh-token", bifrost.Ptr(time.Now().Add(time.Hour)))
 
-			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			token, err := g.get(provider, context.Background(), oauthConfigID)
 			require.NoError(t, err)
 			assert.Equal(t, "current-access-token", token, "must return the sanitized (trimmed) access token")
@@ -124,7 +124,7 @@ func TestAccessToken_ExpiredTokenWithRefresh_RefreshesAndReturnsNewToken(t *test
 			store, oauthConfigID := newAccessTokenTestStore(server.URL + "/token")
 			seedAccessToken(store, oauthConfigID, g.authMode, "tok-1", "old-access-token", "refresh-token", bifrost.Ptr(time.Now().Add(-time.Minute)))
 
-			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			token, err := g.get(provider, context.Background(), oauthConfigID)
 			require.NoError(t, err)
 			assert.Equal(t, "refreshed-access-token", token)
@@ -152,12 +152,15 @@ func TestAccessToken_ExpiredTokenNoRefresh_ReturnsExpiredError(t *testing.T) {
 			store, oauthConfigID := newAccessTokenTestStore(server.URL + "/token")
 			seedAccessToken(store, oauthConfigID, g.authMode, "tok-1", "old-access-token", "", bifrost.Ptr(time.Now().Add(-time.Minute)))
 
-			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			token, err := g.get(provider, context.Background(), oauthConfigID)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, schemas.ErrOAuth2TokenExpired)
 			assert.Empty(t, token)
 			assert.False(t, refreshCalled, "no refresh token available must short-circuit locally, never reach the token endpoint")
+			// Nothing can renew it, so the credential is marked for re-authorization like a rejected refresh.
+			assert.Equal(t, "needs_reauth", store.oauthTokens["tok-1"].Status)
+			assert.Equal(t, unrenewableTokenReason, store.oauthTokens["tok-1"].StatusReason)
 		})
 	}
 }
@@ -181,7 +184,7 @@ func TestAccessToken_MissingToken_ReturnsError(t *testing.T) {
 			}
 			seedAccessToken(store, oauthConfigID, otherMode, "tok-other-mode", "other-mode-token", "refresh-token", bifrost.Ptr(time.Now().Add(time.Hour)))
 
-			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			token, err := g.get(provider, context.Background(), oauthConfigID)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "no")
@@ -209,7 +212,7 @@ func TestAccessToken_InactiveTokenStatus_ReturnsExpiredErrorWithoutNetworkCall(t
 			seedAccessToken(store, oauthConfigID, g.authMode, "tok-1", "old-access-token", "refresh-token", bifrost.Ptr(time.Now().Add(time.Hour)))
 			store.oauthTokens["tok-1"].Status = "needs_reauth"
 
-			provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 			token, err := g.get(provider, context.Background(), oauthConfigID)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, schemas.ErrOAuth2TokenExpired)
@@ -225,7 +228,7 @@ func TestAccessToken_InactiveTokenStatus_ReturnsExpiredErrorWithoutNetworkCall(t
 // returns the ErrOAuth2ConfigNotFound sentinel.
 func TestGetAccessToken_MissingConfig_ReturnsConfigNotFoundError(t *testing.T) {
 	store := newTestConfigStore()
-	provider := NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	provider := newCachingProvider(t, store, bifrost.NewDefaultLogger(schemas.LogLevelError))
 
 	token, err := provider.GetAccessToken(context.Background(), "does-not-exist")
 	require.Error(t, err)

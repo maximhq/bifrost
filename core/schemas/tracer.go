@@ -10,6 +10,14 @@ import (
 // Different Tracer implementations can use their own concrete types.
 type SpanHandle interface{}
 
+// StreamChoiceOutput is the accumulated output of one choice in a chat or text stream.
+type StreamChoiceOutput struct {
+	Index        int
+	Message      *ChatMessage
+	FinishReason *string
+	LogProbs     *BifrostLogProbs
+}
+
 // StreamAccumulatorResult contains the accumulated data from streaming chunks.
 // This is the return type for tracer's streaming accumulation methods.
 type StreamAccumulatorResult struct {
@@ -28,6 +36,7 @@ type StreamAccumulatorResult struct {
 	// Debug spelling is retained for the established Go contract.
 	CacheDebug            *BifrostCacheMetadata           // Semantic cache metadata if available
 	GuardrailDebug        *BifrostGuardrailMetadata       // Guardrail metadata if available
+	OutputChoices         []StreamChoiceOutput            // Every choice of a chat/text stream with n>1, by index; nil otherwise
 	ErrorDetails          *BifrostError                   // Error details if any
 	AudioOutput           *BifrostSpeechResponse          // For speech streaming
 	TranscriptionOutput   *BifrostTranscriptionResponse   // For transcription streaming
@@ -35,6 +44,7 @@ type StreamAccumulatorResult struct {
 	PassthroughOutput     *BifrostPassthroughResponse     // For passthrough streaming
 	FinishReason          *string                         // Finish reason
 	RawResponse           *string                         // Raw response
+	RawResponseFormat     RawResponseFormat               // Declared format of RawResponse's frames, if any
 	RawRequest            interface{}                     // Raw request
 }
 
@@ -75,6 +85,14 @@ type Tracer interface {
 	// Attributes provide additional context about the operation.
 	SetAttribute(handle SpanHandle, key string, value any)
 
+	// SetSpanStartTime moves a span's start time. A caller that opens a span only once
+	// the work has finished uses it so the span covers the work's real duration.
+	SetSpanStartTime(handle SpanHandle, start time.Time)
+
+	// MergeTraceDimensions adds dims to the trace's dimensions (TraceAttrDimensions), which
+	// connectors export with x-bf-dim-* labels. A name already there is overwritten.
+	MergeTraceDimensions(traceID string, dims map[string]string)
+
 	// SpanFromHandle resolves the *Span for a handle once, so a caller writing many
 	// attributes (e.g. the per-request LLM-call block) can call span.SetAttribute
 	// directly instead of paying a trace+span lookup on every attribute. Returns
@@ -104,6 +122,12 @@ type Tracer interface {
 	ClearTraceCompletionDeferral(traceID string)
 	// AwaitTransportHandoff blocks until the transport has attached its own logs.
 	AwaitTransportHandoff(traceID string)
+	// HoldTraceFlush keeps CompleteAndFlushTrace from exporting the trace until the
+	// returned release runs, so a background writer can still add spans to it. A
+	// flush requested while held runs on the last release. Take it while the
+	// request is still being handled, before the trace completes: a hold taken
+	// once completion has started does not delay the export.
+	HoldTraceFlush(traceID string) (release func())
 
 	// StoreDeferredSpan stores a span handle for later completion (used for streaming requests).
 	// The span handle is stored keyed by trace ID so it can be retrieved when the stream completes.
@@ -139,6 +163,10 @@ type Tracer interface {
 	// CleanupStreamAccumulator removes the stream accumulator for the given trace ID.
 	// This should be called after the streaming request is complete.
 	CleanupStreamAccumulator(traceID string)
+
+	// ResetStreamAccumulator drops the chunks accumulated for the given trace ID so a
+	// retried stream attempt starts clean.
+	ResetStreamAccumulator(traceID string)
 
 	// ProcessStreamingChunk processes a streaming chunk and accumulates it.
 	// Returns the accumulated result. IsFinal will be true when the stream is complete.
@@ -241,6 +269,12 @@ func (n *NoOpTracer) EndSpan(_ SpanHandle, _ SpanStatus, _ string) {}
 // SetAttribute does nothing.
 func (n *NoOpTracer) SetAttribute(_ SpanHandle, _ string, _ any) {}
 
+// SetSpanStartTime does nothing.
+func (n *NoOpTracer) SetSpanStartTime(_ SpanHandle, _ time.Time) {}
+
+// MergeTraceDimensions does nothing.
+func (n *NoOpTracer) MergeTraceDimensions(_ string, _ map[string]string) {}
+
 func (n *NoOpTracer) SpanFromHandle(_ SpanHandle) *Span { return nil }
 
 // GetSpanHandleByID returns nil.
@@ -268,6 +302,9 @@ func (n *NoOpTracer) ClearTraceCompletionDeferral(_ string) {}
 // AwaitTransportHandoff is a no-op.
 func (n *NoOpTracer) AwaitTransportHandoff(_ string) {}
 
+// HoldTraceFlush returns a no-op release.
+func (n *NoOpTracer) HoldTraceFlush(_ string) func() { return func() {} }
+
 // GetDeferredSpanHandle returns nil.
 func (n *NoOpTracer) GetDeferredSpanHandle(_ string) SpanHandle { return nil }
 
@@ -288,6 +325,9 @@ func (n *NoOpTracer) CreateStreamAccumulator(_ string, _ time.Time) {}
 
 // CleanupStreamAccumulator does nothing.
 func (n *NoOpTracer) CleanupStreamAccumulator(_ string) {}
+
+// ResetStreamAccumulator does nothing.
+func (n *NoOpTracer) ResetStreamAccumulator(_ string) {}
 
 // ProcessStreamingChunk returns nil.
 func (n *NoOpTracer) ProcessStreamingChunk(_ *BifrostContext, _ string, _ bool, _ *BifrostResponse, _ *BifrostError) *StreamAccumulatorResult {

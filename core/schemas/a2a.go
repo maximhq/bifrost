@@ -175,6 +175,7 @@ type BifrostA2ASendMessageResponse struct {
 	TaskID    string
 	ContextID string
 	MessageID string
+	State     string // Present when the send returned a task rather than a message.
 }
 
 // BifrostA2ATaskResponse describes the task returned by a lookup or

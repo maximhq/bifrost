@@ -1,12 +1,14 @@
 import FullPageLoader from "@/components/fullPageLoader";
-import { Button } from "@/components/ui/button";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { useToast } from "@/hooks/use-toast";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getErrorMessage } from "@/lib/store";
 import { useGetAgentsQuery } from "@/lib/store/apis/agentsApi";
 import type { AgentRegistrationView } from "@/lib/types/agents";
+import { showLoadError } from "@/lib/utils/loadError";
 import { parseAsArrayOf, parseAsBoolean, parseAsInteger, parseAsString, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { AgentsFilterSidebar, type AgentFilters } from "./views/agentsFilterSidebar";
 import AgentsTable from "./views/agentsTable";
 
@@ -37,6 +39,7 @@ function matchesFilters(agent: AgentRegistrationView, filters: AgentFilters): bo
 }
 
 export default function AgentGatewayPage() {
+	const { t: tCommon } = useTranslation("common");
 	const [urlState, setUrlState] = useQueryStates(
 		{
 			search: parseAsString.withDefault(""),
@@ -99,23 +102,23 @@ export default function AgentGatewayPage() {
 
 	useEffect(() => {
 		if (error) {
-			toast({ title: "Error", description: getErrorMessage(error), variant: "destructive" });
+			toast({ title: tCommon("error"), description: getErrorMessage(error), variant: "destructive" });
 		}
-	}, [error, toast]);
+	}, [error, toast, tCommon]);
 
 	if (isLoading) {
 		return <FullPageLoader />;
 	}
 
-	if (error && !data) {
+	if (showLoadError(error, data)) {
 		return (
-			<div className="flex h-full flex-col items-center justify-center gap-3 text-center" data-testid="agents-load-error">
-				<p className="text-sm font-medium">Failed to load agents.</p>
-				<p className="text-muted-foreground max-w-md text-sm">{getErrorMessage(error)}</p>
-				<Button variant="outline" size="sm" onClick={() => void refetch()}>
-					Retry
-				</Button>
-			</div>
+			<LoadErrorView
+				entity={tCommon("entities.agents")}
+				error={error}
+				onRetry={() => void refetch()}
+				testId="agents-load-error"
+				className="h-full py-0"
+			/>
 		);
 	}
 

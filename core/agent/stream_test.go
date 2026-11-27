@@ -132,7 +132,7 @@ func streamingGateway(t *testing.T, plugins ...*recordingA2APlugin) (*streamingU
 	mux.Handle(agentCardPath, a2asrv.NewStaticAgentCardHandler(card))
 	mux.Handle("/rpc", a2asrv.NewJSONRPCHandler(upstreamHandler))
 
-	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil)
+	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
 	if len(plugins) > 0 {

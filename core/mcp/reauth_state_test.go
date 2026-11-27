@@ -60,8 +60,10 @@ func newSharedOAuthClientConfig(id string) *schemas.MCPClientConfig {
 // client in MCPConnectionStateNeedsReauth, not the generic Disconnected the
 // entry was initialized to at the top of connectToMCPClient.
 func TestConnectToMCPClient_OAuth2TokenExpired_SetsNeedsReauth(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newSharedOAuthClientConfig("client-needs-reauth")
+	accountOf(m).set(config)
 
 	// Confirmed precondition: only shared-connection auth types (
 	// RequiresPerCallConnection()==false) ever reach connectToMCPClient in
@@ -73,7 +75,7 @@ func TestConnectToMCPClient_OAuth2TokenExpired_SetsNeedsReauth(t *testing.T) {
 
 	err := m.connectToMCPClient(context.Background(), config)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to connect MCP client")
+	assert.Contains(t, err.Error(), schemas.ErrOAuth2TokenExpired.Error(), "the error carries the dead credential as its reason")
 
 	m.mu.RLock()
 	state, exists := m.clientMap[config.ID]
@@ -116,8 +118,10 @@ func (genericFailureCredStore) AdminConnectionHeaders(_ context.Context, _ *sche
 }
 
 func TestConnectToMCPClient_GenericFailure_StaysDisconnected(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, genericFailureCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), genericFailureCredStore{}, nil, nil)
+	t.Cleanup(func() { _ = m.Cleanup() })
 	config := newSharedOAuthClientConfig("client-generic-failure")
+	accountOf(m).set(config)
 
 	err := m.connectToMCPClient(context.Background(), config)
 	require.Error(t, err)
@@ -139,16 +143,14 @@ func TestConnectToMCPClient_GenericFailure_StaysDisconnected(t *testing.T) {
 // connectToMCPClient success, which sets Connected unconditionally) should
 // move it out of this state.
 func TestSetState_PreservesNeedsReauth(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-health-cycle")
 
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateNeedsReauth,
-	}
-	m.mu.Unlock()
+	})
 
 	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
 
@@ -179,17 +181,15 @@ func TestSetState_PreservesNeedsReauth(t *testing.T) {
 // which dials with the already-known-dead credential for nothing. The tick
 // must be a complete no-op: state untouched.
 func TestPerformCheck_SkipsNeedsReauthClients(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-needs-reauth-healthcheck")
 
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateNeedsReauth,
 		Conn:            nil,
-	}
-	m.mu.Unlock()
+	})
 
 	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
 	checker.performCheck()
@@ -204,16 +204,14 @@ func TestPerformCheck_SkipsNeedsReauthClients(t *testing.T) {
 // pre-existing Disabled-preservation behavior setState had before this
 // change — the NeedsReauth branch must be additive, not a replacement.
 func TestSetState_StillPreservesDisabled(t *testing.T) {
-	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, expiredOAuthCredStore{}, nil, nil)
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, newTestAccount(), expiredOAuthCredStore{}, nil, nil)
 	config := newSharedOAuthClientConfig("client-disabled")
 
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{
+	putClient(m, &schemas.MCPClientState{
 		Name:            config.Name,
 		ExecutionConfig: config,
 		State:           schemas.MCPConnectionStateDisabled,
-	}
-	m.mu.Unlock()
+	})
 
 	checker := NewClientConnectionChecker(m, config.ID, DefaultConnectionCheckInterval, true, nil)
 	checker.setState(schemas.MCPConnectionStateHealthy, 0, "", nil)

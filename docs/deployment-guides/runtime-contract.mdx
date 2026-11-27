@@ -196,6 +196,8 @@ Bifrost serves the API, dashboard, health endpoint, and metrics from one HTTP li
 | API and dashboard | `8080/TCP`, HTTP | Clients, ingress, gateway, or load balancer |
 | Health check | `GET /health` on the HTTP port | Container platform, Kubernetes probes, and load balancer |
 | Prometheus metrics | `GET /metrics` on the HTTP port | Monitoring system when Prometheus telemetry is enabled |
+
+Under a path prefix (`server.base_path`), Bifrost answers both `/health` and `/<prefix>/health` (and likewise `/metrics`), so probes that reach the container directly stay unprefixed; a scraper or check that goes through a proxy routing only the prefix uses the prefixed path. See [Serving under a path prefix](/deployment-guides/how-to/nginx-reverse-proxy#serving-under-a-path-prefix).
 | Enterprise membership | `10101/TCP` and `10101/UDP` | Communication between Enterprise mesh replicas |
 | Enterprise application sync | `10102/TCP`, gRPC | Communication between Enterprise mesh replicas |
 
@@ -205,7 +207,7 @@ The HTTP frontend should:
 - Allow requests to remain open for the expected duration of streamed responses.
 - Support WebSocket upgrades when the Realtime or WebSocket APIs are used.
 - Preserve `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto` when it terminates TLS.
-- Accept the configured request size. `client.max_request_body_size_mb` defaults to `100` MB.
+- Accept the configured request size. `client.max_request_body_size_mb` defaults to `100` MB. Compressed request bodies are decompressed by Bifrost itself, bounded to 100 times their compressed size (1 MiB floor, the cap as ceiling) and to four times the cap of decompressed bytes in flight across the process (each body counts what it actually inflates to, not its ceiling), so a proxy does not need to inflate them first.
 
 Bifrost serves HTTP inside the container. Terminate TLS at the platform endpoint, ingress, gateway, or reverse proxy before exposing it to users.
 

@@ -7,11 +7,14 @@ import {
 	GetMCPLibraryResponse,
 	MCPLibraryEntry,
 	MCPLibraryFilterData,
+	MCPOpenAPIPreviewRequest,
+	MCPOpenAPIPreviewResponse,
 	OAuthFlowResponse,
 	OAuthStatusResponse,
 	UpdateMCPClientRequest,
 } from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
+import { textOrJSONError } from "./responseHandlers";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 type UpdateMCPClientResponse = { status: "success"; message: string };
@@ -142,6 +145,8 @@ export const mcpApi = baseApi.injectEndpoints({
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
+					// Library entries carry a server-computed "installed" flag.
+					dispatch(mcpApi.util.invalidateTags(["MCPLibrary"]));
 					// MCP create may return an OAuth flow response, so we can't optimistically
 					// add the client — just invalidate to refetch
 					const queries = (getState() as any).api.queries;
@@ -150,8 +155,28 @@ export const mcpApi = baseApi.injectEndpoints({
 						dispatch(mcpApi.util.invalidateTags(["MCPClients"]));
 						break;
 					}
-				} catch { }
+				} catch {}
 			},
+		}),
+
+		// Parse an OpenAPI/Swagger document into the tools Bifrost would synthesize.
+		// Nothing is persisted, so no cache tags are involved.
+		previewOpenAPISpec: builder.mutation<MCPOpenAPIPreviewResponse, MCPOpenAPIPreviewRequest>({
+			query: (body) => ({
+				url: "/mcp/openapi/preview",
+				method: "POST",
+				body,
+			}),
+		}),
+
+		// The stored document of an openapi client (client reads omit it).
+		getMCPClientOpenAPISpec: builder.query<string, string>({
+			query: (id) => ({
+				url: `/mcp/client/${id}/openapi-spec`,
+				responseHandler: textOrJSONError,
+			}),
+			// Per client: a replaced document or a deleted client refetches only this copy.
+			providesTags: (_result, _error, id) => [{ type: "MCPClientOpenAPISpec", id }],
 		}),
 
 		// Update existing MCP client
@@ -164,6 +189,14 @@ export const mcpApi = baseApi.injectEndpoints({
 			async onQueryStarted({ id, data }, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
+					// A rename or new target can change a library entry's "installed" flag.
+					dispatch(mcpApi.util.invalidateTags(["MCPLibrary"]));
+					// A replaced OpenAPI document changes the tool list, which the
+					// field-by-field patch below cannot reconstruct: refetch instead.
+					if (data.openapi_config !== undefined) {
+						dispatch(mcpApi.util.invalidateTags(["MCPClients", { type: "MCPClientOpenAPISpec", id }]));
+						return;
+					}
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;
@@ -175,11 +208,14 @@ export const mcpApi = baseApi.injectEndpoints({
 									// Merge the updated fields into the existing client
 									if (data.name !== undefined) draft.clients[index].config.name = data.name;
 									if (data.is_code_mode_client !== undefined) draft.clients[index].config.is_code_mode_client = data.is_code_mode_client;
+									if (data.server_type_on_slug !== undefined) draft.clients[index].config.server_type_on_slug = data.server_type_on_slug;
 									if (data.headers !== undefined) draft.clients[index].config.headers = data.headers;
 									if (data.per_user_header_keys !== undefined) draft.clients[index].config.per_user_header_keys = data.per_user_header_keys;
 									if (data.tools_to_execute !== undefined) draft.clients[index].config.tools_to_execute = data.tools_to_execute;
 									if (data.tools_to_auto_execute !== undefined)
 										draft.clients[index].config.tools_to_auto_execute = data.tools_to_auto_execute;
+									if (data.prompts_to_expose !== undefined) draft.clients[index].config.prompts_to_expose = data.prompts_to_expose;
+									if (data.resources_to_expose !== undefined) draft.clients[index].config.resources_to_expose = data.resources_to_expose;
 									if (data.is_ping_available !== undefined) draft.clients[index].config.is_ping_available = data.is_ping_available;
 									if (data.needs_session_stickiness !== undefined)
 										draft.clients[index].config.needs_session_stickiness = data.needs_session_stickiness;
@@ -199,7 +235,7 @@ export const mcpApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
-				} catch { }
+				} catch {}
 			},
 		}),
 
@@ -212,6 +248,9 @@ export const mcpApi = baseApi.injectEndpoints({
 			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
+					// A deleted client's stored document is gone; drop the cached copy.
+					// Library entries it installed are no longer "installed".
+					dispatch(mcpApi.util.invalidateTags([{ type: "MCPClientOpenAPISpec", id }, "MCPLibrary"]));
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;
@@ -227,7 +266,7 @@ export const mcpApi = baseApi.injectEndpoints({
 							}),
 						);
 					}
-				} catch { }
+				} catch {}
 			},
 		}),
 
@@ -349,6 +388,8 @@ export const {
 	useCreateMCPLibraryEntryMutation,
 	useDeleteMCPLibraryEntryMutation,
 	useCreateMCPClientMutation,
+	usePreviewOpenAPISpecMutation,
+	useLazyGetMCPClientOpenAPISpecQuery,
 	useUpdateMCPClientMutation,
 	useDeleteMCPClientMutation,
 	useReconnectMCPClientMutation,

@@ -11,7 +11,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -390,4 +390,48 @@ func TestTryStreamLargeResponse_AppliesRoutedIdentityHeaders(t *testing.T) {
 	assert.Equal(t, "tts-1", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoModel)))
 	assert.Equal(t, "openai-key", string(ctx.Response.Header.Peek(lib.HeaderBifrostRoutingInfoKey)))
 	assert.Equal(t, "req_upstream", string(ctx.Response.Header.Peek("x-request-id")))
+}
+
+// TestSendHelpers_ExtraFieldsPlacement pins client.extra_fields_placement on the integration
+// routes: body mode keeps extra_fields in success and error bodies, headers mode drops it.
+func TestSendHelpers_ExtraFieldsPlacement(t *testing.T) {
+	router := newTestGenericRouter()
+	converter := func(_ *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+		return err
+	}
+	resp := &schemas.BifrostChatResponse{
+		ID:          "chatcmpl-1",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI},
+	}
+	newErr := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			StatusCode:  ptr(fasthttp.StatusBadRequest),
+			Error:       &schemas.ErrorField{Message: "bad"},
+			ExtraFields: schemas.BifrostErrorExtraFields{Provider: schemas.OpenAI},
+		}
+	}
+
+	for _, inHeaders := range []bool{false, true} {
+		newCtx := func() *fasthttp.RequestCtx {
+			ctx := &fasthttp.RequestCtx{}
+			if inHeaders {
+				ctx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+			}
+			return ctx
+		}
+
+		success := newCtx()
+		router.sendSuccess(success, newTestBifrostContext(), converter, resp, nil)
+		assert.Contains(t, string(success.Response.Body()), `"id":"chatcmpl-1"`)
+		assert.Equal(t, !inHeaders, strings.Contains(string(success.Response.Body()), `"extra_fields"`), "success headers=%v", inHeaders)
+
+		errCtx := newCtx()
+		router.sendError(errCtx, newTestBifrostContext(), converter, newErr())
+		assert.Equal(t, !inHeaders, strings.Contains(string(errCtx.Response.Body()), `"extra_fields"`), "error headers=%v", inHeaders)
+
+		streamErrCtx := newCtx()
+		router.sendStreamError(streamErrCtx, newTestBifrostContext(), RouteConfig{ErrorConverter: converter}, newErr())
+		assert.Equal(t, !inHeaders, strings.Contains(string(streamErrCtx.Response.Body()), `"extra_fields"`), "stream error headers=%v", inHeaders)
+		assert.Equal(t, "openai", string(streamErrCtx.Response.Header.Peek(lib.HeaderBifrostProvider)))
+	}
 }

@@ -117,8 +117,8 @@ func TestReal_SidebandSteersAWebRTCSession(t *testing.T) {
 	primary := createWebRTCSession(t, realOptions(webrtcTransport, session))
 	sideband, _, err := attachSideband(t, primary.ProviderSessionID, realHeaders())
 	require.NoError(t, err)
-	assert.Equal(t, primary.ProviderSessionID, sideband.WaitWithin(realTurnWait, "session.started").Get("session.id").Str)
-
+	// OpenAI tells only the connections present at the start about session.started; a sideband
+	// that joins moments later is not replayed it. The ack of its first command proves it joined.
 	sideband.Send(`{"type":"session.instructions.append","event_id":"steer_1","delegation_id":null,"content":"Answer in one short sentence."}`)
 	assert.Equal(t, "steer_1", sideband.WaitWithin(realTurnWait, "session.instructions.appended").Get("client_event_id").Str)
 	sideband.Send(`{"type":"session.update","event_id":"switch","session":{"delegation":{"type":"responses","responses":{"model":"` + backendModel2 + `"}}}}`)

@@ -4,6 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"maps"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,15 +16,46 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 )
 
 const (
-	defaultUploadWorkers       = 10
-	defaultUploadQueueSize     = 5000
-	maxContentSummaryBytes     = 2048
+	defaultUploadWorkers   = 10
+	defaultUploadQueueSize = 5000
+	// MaxContentSummaryBytes caps the content_summary column, on write and in
+	// the list query; a summary that long may have been cut mid-message.
+	MaxContentSummaryBytes     = 2048
 	defaultMaxUploadQueueBytes = 1 << 30 // 1 GiB
+	// has_object flips are batched when the inner store implements
+	// hasObjectMarker: a batch is written at markBatchSize rows or every
+	// markFlushInterval, whichever comes first.
+	markBatchSize     = 512
+	markFlushInterval = 100 * time.Millisecond
+	markQueueSize     = 4096
+	markMaxAttempts   = 3
 )
+
+// hasObjectMarker is implemented by inner stores that set has_object on many
+// rows at once (ClickHouse, where a per-row update is a full-row re-insert).
+type hasObjectMarker interface {
+	MarkHasObject(ctx context.Context, table string, marks []HasObjectMark) (HasObjectMarkResult, error)
+}
+
+// The hybrid store finds the batched path with a type assertion, so a
+// signature drift would silently fall back to per-row flips.
+var _ hasObjectMarker = (*ClickHouseLogStore)(nil)
+
+// hasObjectMark is one pending has_object flip: the object at key is written.
+type hasObjectMark struct {
+	kind      uploadKind
+	logID     string
+	timestamp time.Time
+	key       string
+	attempts  int
+	retryAt   time.Time
+}
 
 type uploadKind uint8
 
@@ -28,6 +63,14 @@ const (
 	uploadKindLog uploadKind = iota
 	uploadKindMCP
 	uploadKindAgent
+	// uploadKindLogMerge overlays the payload onto the object the row already
+	// has (BatchUpdate's reconcile of a late completion) instead of replacing it.
+	uploadKindLogMerge
+	uploadKindRelay
+	// uploadKindRelayMerge overlays the bodies a reconcile carries onto the relay row's object at
+	// worker time, after the insert's own upload, so a reconcile that lands before that upload has
+	// run never replaces the full request body with the row's preview.
+	uploadKindRelayMerge
 )
 
 // uploadWork represents an async S3 upload job.
@@ -39,6 +82,7 @@ type uploadWork struct {
 	status    string
 	payload   []byte // JSON-encoded payload
 	tags      map[string]string
+	staleKey  string // object in the other format this upload replaces; deleted once the Put succeeds
 }
 
 // HybridLogStore wraps an existing LogStore and offloads large payload
@@ -54,7 +98,7 @@ type HybridLogStore struct {
 	objects        objectstore.ObjectStore
 	prefix         string
 	logger         schemas.Logger
-	uploadQueue    chan *uploadWork
+	uploadQueues   []chan *uploadWork // one per worker, sharded by log id so a row's uploads run in enqueue order
 	wg             sync.WaitGroup
 	closed         atomic.Bool
 	droppedUploads atomic.Int64
@@ -63,21 +107,54 @@ type HybridLogStore struct {
 	excludedPayloadFields map[string]struct{}
 	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
 	excludedRequestTypes map[string]struct{}
+	// offloadErrorRawBodies: error_details is DB-resident only through databaseResidentPayloadFields, so its raw bodies are offloaded.
+	offloadErrorRawBodies bool
+	objectExt             string             // suffix of new object keys; selects json or parquet encoding
+	parquetCompression    string             // parquet page codec, used when objectExt is parquetObjectExt
+	singleFormat          bool               // the backend can only hold json objects, so the other format is never probed or deleted
+	marker                hasObjectMarker    // nil: each upload worker flips has_object itself, one row at a time
+	markQueue             chan hasObjectMark // pending flips, read by markWorker; nil when marker is nil
+	markWG                sync.WaitGroup
 }
 
 type scopedDBLogStore interface {
 	ScopedDB(context.Context) *gorm.DB
 }
 
+// databaseResidentPayloadFields stay in the database whatever the configured
+// exclusions say. error_details backs the error_type, error_code and
+// status_code rankings and filters, which query the column directly, so
+// offloading it left every error breakdown empty. It is not request content,
+// except for the provider raw bodies it can carry, which
+// moveErrorRawBodiesToObject sends to object storage. Content-hidden rows
+// still offload it with everything else.
+//
+// guardrail_debug backs the guardrail outcome filter (the Guardrails incidents
+// list) the same way. It holds sanitized rule metadata - rule, guardrail,
+// phase, reason, policy categories - and never matched request text.
+//
+// This applies to logs written from this change on. Rows written before it
+// hold error_details only in their object, so they stay out of the error
+// breakdowns: restoring them means one object read per failed log, with no
+// bound on the count, and is not done automatically.
+var databaseResidentPayloadFields = []string{"error_details", "guardrail_debug"}
+
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
 // excludeFields lists payload field DB column names that should be kept in the
-// database rather than offloaded to object storage. Pass nil for the default
-// behaviour of offloading all payload fields. excludeRequestTypes lists log
+// database rather than offloaded to object storage, on top of
+// databaseResidentPayloadFields. Pass nil to offload every other payload field. excludeRequestTypes lists log
 // object types whose rows are written to the DB unchanged and never uploaded.
 func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string, excludeRequestTypes []string) *HybridLogStore {
-	excluded := make(map[string]struct{}, len(excludeFields))
+	excluded := make(map[string]struct{}, len(excludeFields)+len(databaseResidentPayloadFields))
+	for _, f := range databaseResidentPayloadFields {
+		excluded[f] = struct{}{}
+	}
+	offloadErrorRawBodies := true
 	for _, f := range excludeFields {
 		excluded[f] = struct{}{}
+		if f == "error_details" {
+			offloadErrorRawBodies = false
+		}
 	}
 	excludedTypes := make(map[string]struct{}, len(excludeRequestTypes))
 	for _, t := range excludeRequestTypes {
@@ -90,24 +167,52 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		objects:               objects,
 		prefix:                prefix,
 		logger:                logger,
-		uploadQueue:           make(chan *uploadWork, defaultUploadQueueSize),
+		uploadQueues:          make([]chan *uploadWork, defaultUploadWorkers),
 		excludedPayloadFields: excluded,
 		excludedRequestTypes:  excludedTypes,
+		offloadErrorRawBodies: offloadErrorRawBodies,
+		objectExt:             jsonObjectExt,
 	}
-	// Start upload workers.
-	for i := 0; i < defaultUploadWorkers; i++ {
+	// Start upload workers, one per queue shard. Uploads for one log id always
+	// land on the same shard (see uploadShard), so an insert's upload and a
+	// later reconcile's merge upload for that row cannot race on the object key.
+	for i := range h.uploadQueues {
+		h.uploadQueues[i] = make(chan *uploadWork, defaultUploadQueueSize/defaultUploadWorkers)
 		h.wg.Add(1)
-		go h.uploadWorker()
+		go h.uploadWorker(h.uploadQueues[i])
+	}
+	if marker, ok := inner.(hasObjectMarker); ok {
+		h.marker = marker
+		h.markQueue = make(chan hasObjectMark, markQueueSize)
+		h.markWG.Add(1)
+		go h.markWorker()
 	}
 	return h
 }
 
-// uploadWorker processes async S3 upload jobs from the queue.
-func (h *HybridLogStore) uploadWorker() {
+// uploadWorker processes async S3 upload jobs from one queue shard, in order.
+func (h *HybridLogStore) uploadWorker(queue chan *uploadWork) {
 	defer h.wg.Done()
-	for work := range h.uploadQueue {
+	for work := range queue {
 		h.processUpload(work)
 	}
+}
+
+// uploadShard picks the queue for a log id. The same id always maps to the
+// same shard, which is what orders a row's uploads.
+func (h *HybridLogStore) uploadShard(logID string) chan *uploadWork {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(logID))
+	return h.uploadQueues[int(hash.Sum32()%uint32(len(h.uploadQueues)))]
+}
+
+// queuedUploads reports how many uploads are waiting across all shards.
+func (h *HybridLogStore) queuedUploads() int {
+	n := 0
+	for _, q := range h.uploadQueues {
+		n += len(q)
+	}
+	return n
 }
 
 // processUpload uploads a single payload to object storage.
@@ -150,30 +255,104 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		if work.status != "" && current.Status != work.status {
 			return
 		}
+		// An update moved the row to a newer object while this upload waited, so
+		// this payload is no longer the row's and is not written.
+		if agentLogSuperseded(current, work.key) {
+			return
+		}
+	case uploadKindRelay, uploadKindRelayMerge:
+		// A row deleted while its upload waited in the queue uploads nothing.
+		if _, err := h.inner.FindRelayLog(ctx, work.logID); err != nil {
+			if !errors.Is(err, ErrNotFound) {
+				h.logger.Warn("objectstore: failed to check relay log %s before upload: %v", work.logID, err)
+				h.droppedUploads.Add(1)
+			}
+			return
+		}
 	}
 
-	if err := h.objects.Put(ctx, work.key, work.payload, work.tags); err != nil {
+	realtimeCorrection := work.kind == uploadKindLogMerge && gjson.GetBytes(work.payload, realtimeInputCorrectionField).Exists()
+	if work.kind == uploadKindLogMerge {
+		merged, ok := h.mergeIntoStoredObject(ctx, work)
+		if !ok {
+			return
+		}
+		work.payload = merged
+	}
+	if work.kind == uploadKindRelayMerge {
+		merged, ok := h.mergeIntoStoredRelayObject(ctx, work)
+		if !ok {
+			return
+		}
+		work.payload = merged
+	}
+
+	if err := h.putPayload(ctx, work.key, work.payload, work.tags); err != nil {
 		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, err)
 		h.droppedUploads.Add(1)
 		return
 	}
+	if realtimeCorrection {
+		var corrected Log
+		if err := MergePayloadFromJSON(&corrected, work.payload); err == nil && corrected.InputHistory != "" {
+			_ = corrected.DeserializeFields()
+			if err := h.inner.Update(withLogTimestamp(ctx, work.timestamp), work.logID, map[string]any{"content_summary": corrected.BuildContentSummary()}); err != nil {
+				h.logger.Warn("objectstore: failed to refresh realtime input summary for log %s: %v", work.logID, err)
+			}
+		}
+	}
+	// The new object carries everything the other-format copy held, so drop
+	// that copy: a later switch back must not find it first and serve or merge
+	// stale content.
+	if work.staleKey != "" {
+		if err := h.objects.Delete(ctx, work.staleKey); err != nil {
+			h.logger.Warn("objectstore: failed to delete replaced object %s for log %s: %v", work.staleKey, work.logID, err)
+		}
+	}
 
-	// Mark the DB row as having an object. Use a fresh context so that a slow
-	// Put doesn't starve the DB update of its deadline. Retry up to 3 times
-	// with exponential backoff to avoid orphaning the uploaded object.
+	// Mark the DB row as having an object. A batching store takes the flip off
+	// this worker, which goes straight on to its next Put; Close drains the
+	// queue after the upload workers exit, so the send cannot hit a closed channel.
+	if h.markQueue != nil {
+		h.markQueue <- hasObjectMark{kind: work.kind, logID: work.logID, timestamp: work.timestamp, key: work.key}
+		return
+	}
+	// Otherwise flip it here, with a fresh context so that a slow Put doesn't
+	// starve the DB update of its deadline. Retry up to 3 times with
+	// exponential backoff to avoid orphaning the uploaded object.
 	for attempt := 0; attempt < 3; attempt++ {
-		dbCtx, dbCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dbCtx, dbCancel := context.WithTimeout(withLogTimestamp(context.Background(), work.timestamp), 10*time.Second)
 		var err error
 		switch work.kind {
 		case uploadKindMCP:
 			err = h.inner.UpdateMCPToolLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
 		case uploadKindAgent:
-			err = h.inner.UpdateAgentLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+			// Same check as before the Put: an update that moved the row to a
+			// newer object since then must not have its flag set by this one.
+			var current *AgentLog
+			if current, err = h.inner.FindAgentLog(dbCtx, work.logID); err == nil {
+				if agentLogSuperseded(current, work.key) {
+					dbCancel()
+					h.deleteObject(work.key, work.logID)
+					return
+				}
+				err = h.inner.UpdateAgentLog(dbCtx, work.logID, map[string]interface{}{"has_object": true})
+			}
+		case uploadKindRelay, uploadKindRelayMerge:
+			err = h.inner.UpdateRelayLog(dbCtx, work.logID, map[string]any{"has_object": true})
 		default:
 			err = h.inner.Update(dbCtx, work.logID, map[string]interface{}{"has_object": true})
 		}
 		dbCancel()
 		if err == nil {
+			return
+		}
+		if (work.kind == uploadKindRelay || work.kind == uploadKindRelayMerge) && errors.Is(err, ErrNotFound) {
+			// The row was deleted while its body was uploading, and DeleteRelayLogs found no
+			// object to remove yet, so remove it here instead of leaving it orphaned.
+			if delErr := h.objects.Delete(ctx, work.key); delErr != nil {
+				h.logger.Warn("objectstore: failed to delete object %s of deleted relay log %s: %v", work.key, work.logID, delErr)
+			}
 			return
 		}
 		h.logger.Warn("objectstore: failed to set has_object for log %s (attempt %d/3): %v", work.logID, attempt+1, err)
@@ -183,6 +362,154 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 	}
 	h.logger.Error("objectstore: failed to set has_object for log %s after 3 attempts; payload orphaned in object store", work.logID)
 	h.droppedUploads.Add(1)
+}
+
+// markTable is the table whose has_object column an upload of kind sets.
+func markTable(kind uploadKind) string {
+	switch kind {
+	case uploadKindMCP:
+		return "mcp_tool_logs"
+	case uploadKindAgent:
+		return "agent_logs"
+	case uploadKindRelay, uploadKindRelayMerge:
+		return "relay_logs"
+	default:
+		return "logs"
+	}
+}
+
+// markWorker batches has_object flips for a hasObjectMarker store. A failed
+// batch, and a non-relay id with no row yet, is retried with the same 1s, 2s
+// backoff the per-row path uses, without holding up newer flips. On Close it
+// flushes what is left once and gives up on anything that still fails.
+func (h *HybridLogStore) markWorker() {
+	defer h.markWG.Done()
+	ticker := time.NewTicker(markFlushInterval)
+	defer ticker.Stop()
+	batch := make([]hasObjectMark, 0, markBatchSize)
+	var retries []hasObjectMark
+	for {
+		select {
+		case m, ok := <-h.markQueue:
+			if !ok {
+				h.flushMarks(append(batch, retries...), true)
+				return
+			}
+			batch = append(batch, m)
+			if len(batch) < markBatchSize {
+				continue
+			}
+		case <-ticker.C:
+		}
+		now := time.Now()
+		waiting := retries[:0]
+		for _, m := range retries {
+			if m.retryAt.After(now) {
+				waiting = append(waiting, m)
+			} else {
+				batch = append(batch, m)
+			}
+		}
+		retries = waiting
+		if len(batch) > 0 {
+			retries = append(retries, h.flushMarks(batch, false)...)
+			batch = batch[:0]
+		}
+	}
+}
+
+// flushMarks writes one batch of flips, one MarkHasObject call per table, and
+// returns the flips to retry later. When final is set nothing is retried.
+func (h *HybridLogStore) flushMarks(batch []hasObjectMark, final bool) []hasObjectMark {
+	if len(batch) == 0 {
+		return nil
+	}
+	byTable := make(map[string][]hasObjectMark, 1)
+	for _, m := range batch {
+		t := markTable(m.kind)
+		byTable[t] = append(byTable[t], m)
+	}
+	var retry []hasObjectMark
+	// missing means the row was not found, as opposed to the write failing.
+	// Every hybrid create inserts the row before it queues the upload, so a row
+	// still missing when the retries run out was deleted while its flip waited.
+	// The delete skipped the object because has_object was still false, so it
+	// is removed here rather than leaving a deleted log's content in storage.
+	giveUpOrRetry := func(m hasObjectMark, missing bool) {
+		m.attempts++
+		if final || m.attempts >= markMaxAttempts {
+			if missing {
+				h.deleteObject(m.key, m.logID)
+				return
+			}
+			h.logger.Error("objectstore: failed to set has_object for log %s after %d attempts; payload orphaned in object store", m.logID, m.attempts)
+			h.droppedUploads.Add(1)
+			return
+		}
+		m.retryAt = time.Now().Add(time.Duration(1<<(m.attempts-1)) * time.Second)
+		retry = append(retry, m)
+	}
+	for table, marks := range byTable {
+		rows := make([]HasObjectMark, len(marks))
+		for i, m := range marks {
+			rows[i] = HasObjectMark{ID: m.logID, Timestamp: m.timestamp, Key: m.key}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		result, err := h.marker.MarkHasObject(ctx, table, rows)
+		cancel()
+		if err != nil {
+			h.logger.Warn("objectstore: failed to set has_object for %d %s rows: %v", len(marks), table, err)
+			for _, m := range marks {
+				giveUpOrRetry(m, false)
+			}
+			continue
+		}
+		// A superseded object belongs to no row: the update that replaced it
+		// already pointed the row elsewhere and deleted what it could see.
+		for _, key := range result.Superseded {
+			h.deleteObject(key, "")
+		}
+		if len(result.Missing) == 0 {
+			continue
+		}
+		absent := make(map[string]struct{}, len(result.Missing))
+		for _, id := range result.Missing {
+			absent[id] = struct{}{}
+		}
+		for _, m := range marks {
+			if _, ok := absent[m.logID]; !ok {
+				continue
+			}
+			if m.kind == uploadKindRelay || m.kind == uploadKindRelayMerge {
+				// The row was deleted while its body was uploading, and DeleteRelayLogs found no
+				// object to remove yet, so remove it here instead of leaving it orphaned.
+				delCtx, delCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if delErr := h.objects.Delete(delCtx, m.key); delErr != nil {
+					h.logger.Warn("objectstore: failed to delete object %s of deleted relay log %s: %v", m.key, m.logID, delErr)
+				}
+				delCancel()
+				continue
+			}
+			giveUpOrRetry(m, true)
+		}
+	}
+	return retry
+}
+
+// deleteObject removes an object no row references any more, in both
+// formats. logID only labels the warning.
+func (h *HybridLogStore) deleteObject(key, logID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := h.objects.DeleteBatch(ctx, h.withAlternateKeys(key)); err != nil {
+		h.logger.Warn("objectstore: failed to delete unreferenced object %s (log %q): %v", key, logID, err)
+	}
+}
+
+// agentLogSuperseded reports whether row now references an object other than
+// key. Rows written before payload_reference existed reference nothing.
+func agentLogSuperseded(row *AgentLog, key string) bool {
+	return row != nil && row.PayloadReference != nil && *row.PayloadReference != "" && key != "" && *row.PayloadReference != key
 }
 
 // isPayloadEmpty returns true when the payload carries no offloadable content.
@@ -198,6 +525,224 @@ func isPayloadEmpty(payload map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// mergeIntoStoredObject prepares a merge upload: the row's object is read and
+// the work's non-empty payload fields are laid over it, so the result carries
+// everything the object held plus the late fields. It runs on the row's upload
+// shard, after any earlier upload for the same id, which is what lets a
+// reconcile queued before the insert's upload finished still see the full
+// input. The object store is always consulted, never the row's has_object flag:
+// a Put can succeed while every has_object update fails, leaving an object the
+// flag does not admit to. A definite not-found means there is nothing to
+// preserve and the payload is uploaded as is; any other read or decode failure
+// drops the upload and counts it, because a payload rebuilt without the stored
+// content must never replace an object that may exist (for a hidden row that
+// object is the only copy of the input).
+func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *uploadWork) ([]byte, bool) {
+	existing, foundKey, err := h.getPayload(ctx, work.key)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrNotFound) {
+			if gjson.GetBytes(work.payload, realtimeInputCorrectionField).Exists() {
+				h.logger.Warn("objectstore: cannot correct realtime input for missing object %s", work.logID)
+				h.droppedUploads.Add(1)
+				return nil, false
+			}
+			return work.payload, true
+		}
+		h.logger.Warn("objectstore: failed to fetch payload for log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	var base, overlay map[string]string
+	if err := sonic.Unmarshal(existing, &base); err != nil {
+		h.logger.Warn("objectstore: failed to decode payload for log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	if err := sonic.Unmarshal(work.payload, &overlay); err != nil {
+		h.logger.Warn("objectstore: failed to decode merge payload for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	if base == nil {
+		base = make(map[string]string, len(overlay))
+	}
+	if foundKey != work.key {
+		// The stored copy is in the other format; the merged object replaces it.
+		work.staleKey = foundKey
+	}
+	if err := mergeRealtimeInputCorrection(base, overlay); err != nil {
+		h.logger.Warn("objectstore: cannot merge realtime input correction for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	for k, v := range overlay {
+		if v != "" {
+			base[k] = v
+		}
+	}
+	merged, err := sonic.Marshal(base)
+	if err != nil {
+		h.logger.Warn("objectstore: failed to encode merged payload for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	return merged, true
+}
+
+// mergeIntoStoredRelayObject lays a relay reconcile's bodies over the row's stored object, read
+// at worker time so it runs after the insert's upload on the same shard. A missing object means
+// the row never offloaded a body; the reconcile's bodies then form the whole object. Any other
+// read or decode failure drops the upload, since a document rebuilt without the stored request
+// body must never replace an object that may exist.
+func (h *HybridLogStore) mergeIntoStoredRelayObject(ctx context.Context, work *uploadWork) ([]byte, bool) {
+	var overlay relayMergePayloadV1
+	if err := sonic.Unmarshal(work.payload, &overlay); err != nil {
+		h.logger.Warn("objectstore: failed to decode relay merge payload for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	base := &RelayLog{}
+	existing, foundKey, err := h.getPayload(ctx, work.key)
+	switch {
+	case err == nil:
+		if err := MergeRelayLogPayloadFromJSON(base, existing); err != nil {
+			h.logger.Warn("objectstore: failed to decode relay log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
+			h.droppedUploads.Add(1)
+			return nil, false
+		}
+		if foundKey != work.key {
+			work.staleKey = foundKey
+		}
+	case errors.Is(err, objectstore.ErrNotFound):
+	default:
+		h.logger.Warn("objectstore: failed to fetch relay log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	if overlay.SetRequestBody {
+		base.RequestBody = overlay.RequestBody
+	}
+	if overlay.SetResponseBody {
+		base.ResponseBody = overlay.ResponseBody
+	}
+	if overlay.Path != nil {
+		base.RetainedPath = overlay.Path
+	}
+	if overlay.ErrorDetails != nil {
+		base.RetainedErrorDetails = overlay.ErrorDetails
+	}
+	merged, err := MarshalRelayLogPayload(base)
+	if err != nil {
+		h.logger.Warn("objectstore: failed to encode merged relay payload for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	return merged, true
+}
+
+// setObjectFormat selects how new payload objects are encoded. "parquet"
+// writes single-row parquet files under .parquet keys with the given page
+// codec; anything else keeps JSON under .json.gz keys. Objects already in the
+// bucket stay readable either way (see getPayload).
+func (h *HybridLogStore) setObjectFormat(format, compression string) {
+	if format == objectstore.FormatParquet {
+		h.objectExt = parquetObjectExt
+		h.parquetCompression = compression
+		return
+	}
+	h.objectExt = jsonObjectExt
+	h.parquetCompression = ""
+}
+
+func (h *HybridLogStore) logKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "logs", timestamp, logID, h.objectExt)
+}
+
+func (h *HybridLogStore) mcpToolKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "mcp-logs", timestamp, logID, h.objectExt)
+}
+
+func (h *HybridLogStore) agentLogKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "agent-logs", timestamp, logID, h.objectExt)
+}
+
+// agentLogRevisionKey is a fresh object key for an updated A2A payload, in the
+// same hour directory as agentLogKey. The row's payload_reference names it, so
+// an object at this key only ever holds the one version written there.
+func (h *HybridLogStore) agentLogRevisionKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "agent-logs", timestamp, logID+".r"+strconv.FormatInt(time.Now().UnixNano(), 36), h.objectExt)
+}
+
+func (h *HybridLogStore) relayLogKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "relay-logs", timestamp, logID, h.objectExt)
+}
+
+// alternateKey returns the same object path in the other format (.parquet
+// for a .json.gz key and the reverse), or "" when the store only ever holds
+// JSON. A row's object stays under the key it was written with when
+// object_storage.format changes, so reads, merges and deletes also look there.
+func (h *HybridLogStore) alternateKey(key string) string {
+	if h.singleFormat {
+		return ""
+	}
+	if base, ok := strings.CutSuffix(key, parquetObjectExt); ok {
+		return base + jsonObjectExt
+	}
+	if base, ok := strings.CutSuffix(key, jsonObjectExt); ok {
+		return base + parquetObjectExt
+	}
+	return ""
+}
+
+// withAlternateKeys returns key plus its other-format key, if any, so
+// deletes also remove objects written before a format switch.
+func (h *HybridLogStore) withAlternateKeys(key string) []string {
+	if alt := h.alternateKey(key); alt != "" {
+		return []string{key, alt}
+	}
+	return []string{key}
+}
+
+// getPayload reads the object at key and returns it as JSON, along with the
+// key it was found under. A key with no object falls back to its other-format
+// key, and parquet bodies are decoded, so callers always receive the JSON the
+// payload was built from. The second lookup only happens on a not-found.
+func (h *HybridLogStore) getPayload(ctx context.Context, key string) ([]byte, string, error) {
+	found := key
+	data, err := h.objects.Get(ctx, key)
+	if err != nil && errors.Is(err, objectstore.ErrNotFound) {
+		if alt := h.alternateKey(key); alt != "" {
+			found = alt
+			data, err = h.objects.Get(ctx, alt)
+		}
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if objectstore.IsParquet(data) {
+		decoded, err := objectstore.DecodeParquetToJSONObject(data)
+		return decoded, found, err
+	}
+	return data, found, nil
+}
+
+// putPayload writes a JSON payload in the encoding its key names: parquet
+// keys get a parquet body (with no outer gzip, since parquet compresses its
+// pages), every other key gets the JSON as is.
+func (h *HybridLogStore) putPayload(ctx context.Context, key string, payload []byte, tags map[string]string) error {
+	if !strings.HasSuffix(key, parquetObjectExt) {
+		return h.objects.Put(ctx, key, payload, tags)
+	}
+	encoded, err := objectstore.EncodeJSONObjectToParquet(payload, h.parquetCompression)
+	if err != nil {
+		return err
+	}
+	return objectstore.PutWith(ctx, h.objects, key, encoded, tags, objectstore.PutOptions{
+		ContentType:     objectstore.ContentTypeParquet,
+		SkipCompression: true,
+	})
 }
 
 // enqueueUpload pushes an upload job onto the queue. If the queue is full,
@@ -220,7 +765,7 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 		h.droppedUploads.Add(1)
 		return
 	}
-	h.enqueueRawUpload(logID, timestamp, ObjectKey(h.prefix, timestamp, logID), uploadKindLog, "", data, tags)
+	h.enqueueRawUpload(logID, timestamp, h.logKey(timestamp, logID), uploadKindLog, "", data, tags)
 }
 
 // enqueueRawUpload submits a pre-serialized payload to the upload queue.
@@ -229,6 +774,13 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 // is full. Used by both regular log uploads (via enqueueUpload) and MCP tool
 // log uploads, which already hold raw JSON bytes.
 func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key string, kind uploadKind, status string, data []byte, tags map[string]string) {
+	h.enqueueReplacingUpload(logID, timestamp, key, "", kind, status, data, tags)
+}
+
+// enqueueReplacingUpload is enqueueRawUpload for a full rewrite whose stored
+// copy was read from staleKey (the other-format key); the worker deletes that
+// copy once the new object is written.
+func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Time, key, staleKey string, kind uploadKind, status string, data []byte, tags map[string]string) {
 	if h.closed.Load() || len(data) == 0 {
 		return
 	}
@@ -243,7 +795,7 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 		return
 	}
 	select {
-	case h.uploadQueue <- &uploadWork{
+	case h.uploadShard(logID) <- &uploadWork{
 		logID:     logID,
 		timestamp: timestamp,
 		key:       key,
@@ -251,6 +803,7 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 		status:    status,
 		payload:   data,
 		tags:      tags,
+		staleKey:  staleKey,
 	}:
 		h.pendingBytes.Add(int64(len(data)))
 	default:
@@ -291,15 +844,20 @@ func prepareDBEntry(dbEntry *Log, excluded map[string]struct{}) {
 
 	idx := findLastUserMessageIndex(dbEntry.InputHistoryParsed)
 
-	// Content summary: extract text from the found user message.
-	// Falls back to BuildInputContentSummary for non-chat inputs (speech, image, etc.).
+	// Content summary: text of the last user message. When there is none, or it
+	// has no text, BuildInputContentSummary falls back to the latest tool result
+	// or tool call, then to non-chat inputs (speech, image, etc.). The reset
+	// matters: SerializeFields already filled ContentSummary with the full-text
+	// search summary, which must not leak into the row.
+	dbEntry.ContentSummary = ""
 	if idx >= 0 {
 		dbEntry.ContentSummary = extractChatMessageText(&dbEntry.InputHistoryParsed[idx])
-	} else {
+	}
+	if dbEntry.ContentSummary == "" {
 		dbEntry.ContentSummary = dbEntry.BuildInputContentSummary()
 	}
 	// Bound content summary to prevent large prompts from bloating the DB row.
-	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, maxContentSummaryBytes)
+	dbEntry.ContentSummary = truncateTag(dbEntry.ContentSummary, MaxContentSummaryBytes)
 
 	// Serialize last user message before ClearPayload zeros everything.
 	// Attachment payloads (base64 images/files/audio, media URLs) are replaced
@@ -350,6 +908,41 @@ func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
 	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 }
 
+// errorRawBodyPaths are the error_details paths holding provider raw bodies,
+// present only when content logging and raw storage are both on.
+var errorRawBodyPaths = []string{"extra_fields.raw_request", "extra_fields.raw_response"}
+
+// moveErrorRawBodiesToObject keeps error_details in the DB row without the
+// provider raw bodies it carries, and puts the whole value in the upload
+// payload instead, which FindByID merges back over the row's copy. Without it,
+// keeping error_details DB-resident would keep raw bodies in the database even
+// though raw_request and raw_response are offloaded. An operator who lists
+// error_details in object_storage_exclude_fields keeps it whole in the DB.
+// Content-hidden rows already offload error_details in full.
+func (h *HybridLogStore) moveErrorRawBodiesToObject(dbEntry *Log, payload map[string]string) {
+	if !h.offloadErrorRawBodies || dbEntry.ContentHidden || dbEntry.ErrorDetails == "" {
+		return
+	}
+	stripped := dbEntry.ErrorDetails
+	for _, path := range errorRawBodyPaths {
+		if !gjson.Get(stripped, path).Exists() {
+			continue
+		}
+		next, err := sjson.Delete(stripped, path)
+		if err != nil {
+			return
+		}
+		stripped = next
+	}
+	if stripped == dbEntry.ErrorDetails {
+		return
+	}
+	payload["error_details"] = dbEntry.ErrorDetails
+	dbEntry.ErrorDetails = stripped
+	// SerializeFields on the write path would re-serialize a parsed copy over it.
+	dbEntry.ErrorDetailsParsed = nil
+}
+
 // skipsOffload reports whether entry's request type is excluded from object
 // storage. Excluded entries are written to the inner store unchanged, which
 // builds their content summary on write. Hidden entries are always offloaded:
@@ -358,7 +951,11 @@ func (h *HybridLogStore) skipsOffload(entry *Log) bool {
 	if entry.ContentHidden {
 		return false
 	}
-	_, ok := h.excludedRequestTypes[entry.Object]
+	if _, ok := h.excludedRequestTypes[entry.Object]; ok {
+		return true
+	}
+	// A passthrough row stored under its inferred type still honours an exclusion of passthrough.
+	_, ok := h.excludedRequestTypes[entry.PassthroughObjectType()]
 	return ok
 }
 
@@ -374,6 +971,7 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
 	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+	h.moveErrorRawBodiesToObject(&dbEntry, payload)
 	if err := h.inner.Create(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -397,6 +995,7 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
 	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+	h.moveErrorRawBodiesToObject(&dbEntry, payload)
 	if err := h.inner.CreateIfNotExists(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -439,6 +1038,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
 		prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+		h.moveErrorRawBodiesToObject(&dbEntry, payload)
 		dbEntries = append(dbEntries, &dbEntry)
 		origEntries = append(origEntries, entry)
 		uploads = append(uploads, pendingUpload{
@@ -490,8 +1090,8 @@ func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log, requestedFiel
 	if log == nil || !log.HasObject || log.ContentHidden {
 		return
 	}
-	key := ObjectKey(h.prefix, log.Timestamp, log.ID)
-	data, err := h.objects.Get(ctx, key)
+	key := h.logKey(log.Timestamp, log.ID)
+	data, _, err := h.getPayload(ctx, key)
 	if err != nil {
 		h.logger.Warn("objectstore: failed to fetch payload for log %s: %v", log.ID, err)
 		return // Graceful degradation
@@ -519,18 +1119,25 @@ func (h *HybridLogStore) hydrateMCPToolLog(ctx context.Context, log *MCPToolLog)
 // the update path where the payload must be loaded even when has_object has
 // not yet been set on the DB row.
 func (h *HybridLogStore) hydrateMCPToolLogFromObject(ctx context.Context, log *MCPToolLog) error {
+	_, err := h.hydrateMCPToolLogFromObjectKey(ctx, log)
+	return err
+}
+
+// hydrateMCPToolLogFromObjectKey is hydrateMCPToolLogFromObject that also
+// returns the key the payload was read from ("" when log is nil).
+func (h *HybridLogStore) hydrateMCPToolLogFromObjectKey(ctx context.Context, log *MCPToolLog) (string, error) {
 	if log == nil {
-		return nil
+		return "", nil
 	}
-	key := MCPToolObjectKey(h.prefix, log.Timestamp, log.ID)
-	data, err := h.objects.Get(ctx, key)
+	key := h.mcpToolKey(log.Timestamp, log.ID)
+	data, found, err := h.getPayload(ctx, key)
 	if err != nil {
-		return fmt.Errorf("objectstore: fetch MCP tool log payload for %s: %w", log.ID, err)
+		return "", fmt.Errorf("objectstore: fetch MCP tool log payload for %s: %w", log.ID, err)
 	}
 	if mergeErr := MergeMCPToolLogPayloadFromJSON(log, data); mergeErr != nil {
-		return fmt.Errorf("objectstore: merge MCP tool log payload for %s: %w", log.ID, mergeErr)
+		return "", fmt.Errorf("objectstore: merge MCP tool log payload for %s: %w", log.ID, mergeErr)
 	}
-	return nil
+	return found, nil
 }
 
 // Update passes the update through to the inner store for index/scalar field
@@ -551,16 +1158,23 @@ func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
 	if findErr != nil && !errors.Is(findErr, ErrNotFound) {
 		return findErr
 	}
-	if err := h.inner.DeleteLog(ctx, id); err != nil {
+	// A partial delete still removed the row, so its payload goes too.
+	err := h.inner.DeleteLog(ctx, id)
+	if err != nil && !errors.Is(err, ErrPartialLogDelete) {
 		return err
 	}
 	if log != nil && log.HasObject {
-		key := ObjectKey(h.prefix, log.Timestamp, log.ID)
-		if delErr := h.objects.Delete(ctx, key); delErr != nil {
+		var delErr error
+		if keys := h.withAlternateKeys(h.logKey(log.Timestamp, log.ID)); len(keys) == 1 {
+			delErr = h.objects.Delete(ctx, keys[0])
+		} else {
+			delErr = h.objects.DeleteBatch(ctx, keys)
+		}
+		if delErr != nil {
 			h.logger.Warn("objectstore: failed to delete object for log %s: %v", id, delErr)
 		}
 	}
-	return nil
+	return err
 }
 
 // DeleteLogs removes many log rows from the DB and batches a single
@@ -576,10 +1190,12 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 			return findErr
 		}
 		if log != nil && log.HasObject {
-			keys = append(keys, ObjectKey(h.prefix, log.Timestamp, log.ID))
+			keys = append(keys, h.withAlternateKeys(h.logKey(log.Timestamp, log.ID))...)
 		}
 	}
-	if err := h.inner.DeleteLogs(ctx, ids); err != nil {
+	// A partial delete still removed the rows, so their payloads go too.
+	err := h.inner.DeleteLogs(ctx, ids)
+	if err != nil && !errors.Is(err, ErrPartialLogDelete) {
 		return err
 	}
 	if len(keys) > 0 {
@@ -587,7 +1203,7 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 			h.logger.Warn("objectstore: failed to batch delete %d objects: %v", len(keys), delErr)
 		}
 	}
-	return nil
+	return err
 }
 
 // DeleteLogsBatch deletes old DB rows older than cutoff in batches of
@@ -597,6 +1213,11 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 func (h *HybridLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
 	// Delegate to inner — S3 objects will be cleaned up by lifecycle policies.
 	return h.inner.DeleteLogsBatch(ctx, cutoff, batchSize)
+}
+
+// RetentionInterval forwards to the inner store.
+func (h *HybridLogStore) RetentionInterval() time.Duration {
+	return h.inner.RetentionInterval()
 }
 
 // DeleteMCPToolLogsBatch deletes old MCP tool log rows in batches. Like
@@ -613,7 +1234,9 @@ func (h *HybridLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time
 // mid-flight.
 func (h *HybridLogStore) Close(ctx context.Context) error {
 	h.closed.Store(true)
-	close(h.uploadQueue)
+	for _, q := range h.uploadQueues {
+		close(q)
+	}
 	done := make(chan struct{})
 	go func() {
 		h.wg.Wait()
@@ -625,6 +1248,11 @@ func (h *HybridLogStore) Close(ctx context.Context) error {
 		h.logger.Warn("objectstore: shutdown cancelled before upload queue drained: %v", ctx.Err())
 		// Still wait for workers to finish so we don't close dependencies mid-flight.
 		<-done
+	}
+	// The upload workers were the only senders, so the flip queue can close now.
+	if h.markQueue != nil {
+		close(h.markQueue)
+		h.markWG.Wait()
 	}
 	if err := h.objects.Close(); err != nil {
 		h.logger.Warn("objectstore: error closing object store: %v", err)
@@ -889,7 +1517,7 @@ func (h *HybridLogStore) hydrateLogForBilling(ctx context.Context, log *Log) err
 		fields = append(fields, col)
 	}
 
-	data, err := h.objects.Get(ctx, ObjectKey(h.prefix, log.Timestamp, log.ID))
+	data, _, err := h.getPayload(ctx, h.logKey(log.Timestamp, log.ID))
 	if err != nil {
 		return fmt.Errorf("fetch payload: %w", err)
 	}
@@ -1022,6 +1650,18 @@ func (h *HybridLogStore) GetDimensionRankings(ctx context.Context, filters Searc
 	return h.inner.GetDimensionRankings(ctx, filters, dimension)
 }
 
+// GetDimensionUsage delegates to the inner store and returns each entity's usage
+// on a rollup dimension in one read.
+func (h *HybridLogStore) GetDimensionUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension, compare bool) ([]DimensionUsageEntry, error) {
+	return h.inner.GetDimensionUsage(ctx, filters, dimension, compare)
+}
+
+// GetDimensionModelUsage delegates to the inner store and returns usage per
+// (entity, model, provider) on a rollup dimension in one read.
+func (h *HybridLogStore) GetDimensionModelUsage(ctx context.Context, filters SearchFilters, dimension RankingDimension) ([]DimensionModelUsageEntry, error) {
+	return h.inner.GetDimensionModelUsage(ctx, filters, dimension)
+}
+
 // GetDimensionCostHistogram delegates to the inner store and returns a cost
 // histogram bucketed by bucketSizeSeconds and grouped by the given dimension.
 func (h *HybridLogStore) GetDimensionCostHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionCostHistogramResult, error) {
@@ -1041,6 +1681,140 @@ func (h *HybridLogStore) GetDimensionLatencyHistogram(ctx context.Context, filte
 	return h.inner.GetDimensionLatencyHistogram(ctx, filters, bucketSizeSeconds, dimension)
 }
 
+// BatchUpdate reconciles output fields onto existing rows the same way an
+// insert would have placed them: the DB row gets the scalar columns, and the
+// payload goes to object storage. The current row is read once per id (the
+// update carries no timestamp, which the object key needs), every entry for
+// that id is applied to the DB in batch order, and their non-empty payload
+// fields are folded, in that same order, into ONE merge upload that the upload
+// worker lays over the row's stored object (see mergeIntoStoredObject). The DB
+// row stays content-free. Hidden rows are handled identically, which is what
+// keeps a retained response from being lost: the hidden DB row must never hold
+// content, so the object is the only place the late output can go. Rows whose
+// request type is excluded from offloading pass through unchanged, and rows
+// that do not exist are skipped, as in the inner store.
+func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	type pendingUpload struct {
+		logID     string
+		timestamp time.Time
+		payload   map[string]string
+		tagRow    *Log // the saved row with every entry's non-zero fields applied, in batch order
+	}
+	uploadsByID := make(map[string]*pendingUpload)
+	var uploadOrder []string
+	rowsByID := make(map[string]*Log)
+	dbEntries := make([]*Log, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		row, seen := rowsByID[entry.ID]
+		if !seen {
+			var err error
+			row, err = h.inner.FindByID(ctx, entry.ID)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					rowsByID[entry.ID] = nil
+					continue
+				}
+				return err
+			}
+			rowsByID[entry.ID] = row
+		}
+		if row == nil {
+			continue
+		}
+		// The entry carries the request's final visibility decision, which may
+		// clear a hidden flag the row was saved with before that decision existed.
+		hidden := entry.ContentHidden
+		if _, excluded := h.excludedRequestTypes[row.Object]; excluded && !hidden {
+			dbEntries = append(dbEntries, entry)
+			continue
+		}
+		if err := entry.SerializeFields(); err != nil {
+			return fmt.Errorf("logstore: serialize before update: %w", err)
+		}
+		// Shallow copies so the caller's entry is preserved on DB failure.
+		payloadEntry := *entry
+		// The update carries no timestamp; without the row's, the payload would
+		// carry the zero time and the merge would overwrite the stored one.
+		payloadEntry.Timestamp = row.Timestamp
+		payloadEntry.ContentHidden = hidden
+		dbEntry := *entry
+		dbEntry.ContentHidden = hidden
+		prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+
+		upload := uploadsByID[entry.ID]
+		if upload == nil {
+			tagRow := *row
+			upload = &pendingUpload{logID: row.ID, timestamp: row.Timestamp, payload: make(map[string]string), tagRow: &tagRow}
+			uploadsByID[entry.ID] = upload
+			uploadOrder = append(uploadOrder, entry.ID)
+		}
+		// Later entries for the same id override earlier ones field by field,
+		// matching the order the DB applies them.
+		for k, v := range h.extractUploadPayload(&payloadEntry) {
+			if v != "" {
+				upload.payload[k] = v
+			}
+		}
+		h.moveErrorRawBodiesToObject(&dbEntry, upload.payload)
+		if entry.RealtimeInputCorrection != nil {
+			var corrections []*RealtimeInputCorrection
+			if prior := upload.payload[realtimeInputCorrectionField]; prior != "" {
+				if err := sonic.UnmarshalString(prior, &corrections); err != nil {
+					return err
+				}
+			}
+			corrections = append(corrections, entry.RealtimeInputCorrection)
+			encoded, err := sonic.MarshalString(corrections)
+			if err != nil {
+				return err
+			}
+			upload.payload[realtimeInputCorrectionField] = encoded
+		}
+		// Tags describe the row as the batch leaves it: the selected key, virtual
+		// key, routing rule and stream flag only arrive with the completion.
+		overlayNonZeroFields(upload.tagRow, entry)
+		dbEntries = append(dbEntries, &dbEntry)
+	}
+	if len(dbEntries) == 0 {
+		return nil
+	}
+	if err := h.inner.BatchUpdate(ctx, dbEntries); err != nil {
+		return err
+	}
+	for _, id := range uploadOrder {
+		u := uploadsByID[id]
+		if isPayloadEmpty(u.payload) {
+			continue
+		}
+		data, err := sonic.Marshal(u.payload)
+		if err != nil {
+			h.logger.Warn("objectstore: failed to marshal merge payload for log %s: %v", u.logID, err)
+			h.droppedUploads.Add(1)
+			continue
+		}
+		h.enqueueRawUpload(u.logID, u.timestamp, h.logKey(u.timestamp, u.logID), uploadKindLogMerge, "", data, BuildTags(u.tagRow))
+	}
+	return nil
+}
+
+// overlayNonZeroFields copies every non-zero field of src onto dst, the same
+// semantics the DB update applies (GORM Updates with a struct), so a row
+// assembled this way matches what the update leaves in the database.
+func overlayNonZeroFields(dst, src *Log) {
+	d := reflect.ValueOf(dst).Elem()
+	s := reflect.ValueOf(src).Elem()
+	for i := 0; i < s.NumField(); i++ {
+		field := s.Field(i)
+		if field.IsZero() || !d.Field(i).CanSet() {
+			continue
+		}
+		d.Field(i).Set(field)
+	}
+}
+
 // BulkUpdateCost delegates to the inner store and updates the cost columns
 // (total + input/output/additional split) for each (logID -> CostUpdate) pair
 // in a single round trip.
@@ -1051,8 +1825,8 @@ func (h *HybridLogStore) BulkUpdateCost(ctx context.Context, updates map[string]
 // GetNodeUsageAfter delegates to the inner store and returns usage
 // aggregates for the given node since cursor, used by the cluster gossip
 // path to ship incremental usage to peers.
-func (h *HybridLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error) {
-	return h.inner.GetNodeUsageAfter(ctx, nodeID, cursor)
+func (h *HybridLogStore) GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error) {
+	return h.inner.GetNodeUsageAfter(ctx, nodeID, cursor, windows)
 }
 
 // Flush delegates to the inner store and forces any buffered DB writes since
@@ -1148,6 +1922,11 @@ func (h *HybridLogStore) GetMCPHistogram(ctx context.Context, filters MCPToolLog
 	return h.inner.GetMCPHistogram(ctx, filters, bucketSizeSeconds)
 }
 
+// GetMCPLatencyHistogram delegates to the inner store.
+func (h *HybridLogStore) GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	return h.inner.GetMCPLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
 // GetMCPCostHistogram returns the cost histogram for MCP tool logs.
 func (h *HybridLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error) {
 	return h.inner.GetMCPCostHistogram(ctx, filters, bucketSizeSeconds)
@@ -1156,6 +1935,12 @@ func (h *HybridLogStore) GetMCPCostHistogram(ctx context.Context, filters MCPToo
 // GetMCPTopTools returns the top tools used in MCP tool logs.
 func (h *HybridLogStore) GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error) {
 	return h.inner.GetMCPTopTools(ctx, filters, limit)
+}
+
+// GetMCPToolCountsByDimension delegates to the inner store and returns each
+// entity's distinct tool count.
+func (h *HybridLogStore) GetMCPToolCountsByDimension(ctx context.Context, filters MCPToolLogSearchFilters, dimension RankingDimension) (map[string]int, error) {
+	return h.inner.GetMCPToolCountsByDimension(ctx, filters, dimension)
 }
 
 // applyMCPToolLogUpdate applies the updates from an entry to the target MCPToolLog entry.
@@ -1433,7 +2218,7 @@ func (h *HybridLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog
 	if err := h.inner.CreateMCPToolLog(ctx, &dbEntry); err != nil {
 		return err
 	}
-	h.enqueueRawUpload(entry.ID, entry.Timestamp, MCPToolObjectKey(h.prefix, entry.Timestamp, entry.ID), uploadKindMCP, entry.Status, payload, tags)
+	h.enqueueRawUpload(entry.ID, entry.Timestamp, h.mcpToolKey(entry.Timestamp, entry.ID), uploadKindMCP, entry.Status, payload, tags)
 	return nil
 }
 
@@ -1480,7 +2265,7 @@ func (h *HybridLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, 
 	}
 
 	for _, u := range uploads {
-		h.enqueueRawUpload(u.logID, u.timestamp, MCPToolObjectKey(h.prefix, u.timestamp, u.logID), uploadKindMCP, u.status, u.payload, u.tags)
+		h.enqueueRawUpload(u.logID, u.timestamp, h.mcpToolKey(u.timestamp, u.logID), uploadKindMCP, u.status, u.payload, u.tags)
 	}
 	return nil
 }
@@ -1503,7 +2288,8 @@ func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry 
 	if err != nil {
 		return err
 	}
-	if err := h.hydrateMCPToolLogFromObject(ctx, current); err != nil {
+	foundKey, err := h.hydrateMCPToolLogFromObjectKey(ctx, current)
+	if err != nil {
 		return err
 	}
 	if err := applyMCPToolLogUpdate(current, entry); err != nil {
@@ -1524,7 +2310,12 @@ func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry 
 	if err != nil {
 		return fmt.Errorf("logstore: serialize MCP tool log update before offload: %w", err)
 	}
-	h.enqueueRawUpload(current.ID, current.Timestamp, MCPToolObjectKey(h.prefix, current.Timestamp, current.ID), uploadKindMCP, current.Status, payload, BuildMCPToolTags(current))
+	key := h.mcpToolKey(current.Timestamp, current.ID)
+	staleKey := ""
+	if foundKey != key {
+		staleKey = foundKey
+	}
+	h.enqueueReplacingUpload(current.ID, current.Timestamp, key, staleKey, uploadKindMCP, current.Status, payload, BuildMCPToolTags(current))
 	return nil
 }
 
@@ -1550,7 +2341,7 @@ func (h *HybridLogStore) BatchCreateAgentLogsIfNotExists(ctx context.Context, en
 		seen[entry.ID] = struct{}{}
 		dbEntry := *entry
 		if AgentLogHasPayload(entry) {
-			key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+			key := h.agentLogKey(entry.Timestamp, entry.ID)
 			payload, err := MarshalAgentLogPayload(entry)
 			if err != nil {
 				return nil, fmt.Errorf("logstore: serialize A2A log before offload: %w", err)
@@ -1639,6 +2430,7 @@ func (h *HybridLogStore) hydrateAgentLogDetail(ctx context.Context, detail *Agen
 	}
 	entry := &AgentLog{ID: detail.ID, Timestamp: detail.Timestamp, HasObject: detail.hasObject, ContentHidden: detail.contentHidden, PayloadReference: detail.payloadReference}
 	h.hydrateAgentLog(ctx, entry)
+	detail.RawRequest, detail.RawResponse = entry.RawRequest, entry.RawResponse
 	detail.RequestBody = entry.RequestBody
 	detail.ResponseBody = entry.ResponseBody
 	detail.EventBody = entry.EventBody
@@ -1648,11 +2440,11 @@ func (h *HybridLogStore) hydrateAgentLog(ctx context.Context, entry *AgentLog) {
 	if entry == nil || !entry.HasObject || entry.ContentHidden {
 		return
 	}
-	key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+	key := h.agentLogKey(entry.Timestamp, entry.ID)
 	if entry.PayloadReference != nil && *entry.PayloadReference != "" {
 		key = *entry.PayloadReference
 	}
-	data, err := h.objects.Get(ctx, key)
+	data, _, err := h.getPayload(ctx, key)
 	if err != nil {
 		h.logger.Warn("objectstore: failed to hydrate A2A log %s: %v", entry.ID, err)
 		return
@@ -1684,11 +2476,11 @@ func (h *HybridLogStore) hydrateAgentLogFromObject(ctx context.Context, entry *A
 	if entry == nil {
 		return nil
 	}
-	key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+	key := h.agentLogKey(entry.Timestamp, entry.ID)
 	if entry.PayloadReference != nil && *entry.PayloadReference != "" {
 		key = *entry.PayloadReference
 	}
-	data, err := h.objects.Get(ctx, key)
+	data, _, err := h.getPayload(ctx, key)
 	if err != nil {
 		return fmt.Errorf("objectstore: fetch Agent log payload for %s: %w", entry.ID, err)
 	}
@@ -1716,6 +2508,10 @@ func applyAgentLogBodyUpdate(entry *AgentLog, field string, value any) error {
 		entry.ResponseBody = body
 	case "event_body":
 		entry.EventBody = body
+	case "raw_request":
+		entry.RawRequest = body
+	case "raw_response":
+		entry.RawResponse = body
 	}
 	return nil
 }
@@ -1726,7 +2522,7 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 		return h.inner.UpdateAgentLog(ctx, id, entry)
 	}
 	payloadUpdate := false
-	for _, field := range []string{"request_body", "response_body", "event_body"} {
+	for _, field := range []string{"request_body", "response_body", "event_body", "raw_request", "raw_response"} {
 		if _, ok := updates[field]; ok {
 			payloadUpdate = true
 			break
@@ -1740,8 +2536,19 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	if err != nil {
 		return err
 	}
+	// The payload written below carries every body, so the ones this update does
+	// not touch must come from the object, not the row's previews. Each update
+	// writes a new object, so the object the row references holds exactly the
+	// version the row describes, and only if that version's upload succeeded:
+	// with has_object still false it can be there with its flip queued, or
+	// missing because the upload failed or has not run, in which case the row
+	// is all there is.
 	if current.HasObject {
 		if err := h.hydrateAgentLogFromObject(ctx, current); err != nil {
+			return err
+		}
+	} else if current.PayloadReference != nil && *current.PayloadReference != "" {
+		if err := h.hydrateAgentLogFromObject(ctx, current); err != nil && !errors.Is(err, objectstore.ErrNotFound) {
 			return err
 		}
 	}
@@ -1749,7 +2556,7 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	dbUpdates := make(map[string]interface{}, len(updates)+1)
 	for field, value := range updates {
 		switch field {
-		case "request_body", "response_body", "event_body":
+		case "request_body", "response_body", "event_body", "raw_request", "raw_response":
 			if err := applyAgentLogBodyUpdate(current, field, value); err != nil {
 				return err
 			}
@@ -1757,10 +2564,11 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 			dbUpdates[field] = value
 		}
 	}
-	key := AgentLogObjectKey(h.prefix, current.Timestamp, current.ID)
+	previousKey := h.agentLogKey(current.Timestamp, current.ID)
 	if current.PayloadReference != nil && *current.PayloadReference != "" {
-		key = *current.PayloadReference
+		previousKey = *current.PayloadReference
 	}
+	key := h.agentLogRevisionKey(current.Timestamp, current.ID)
 	payload, err := MarshalAgentLogPayload(current)
 	if err != nil {
 		return fmt.Errorf("logstore: serialize Agent log update before offload: %w", err)
@@ -1770,11 +2578,16 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	dbUpdates["request_body"] = dbEntry.RequestBody
 	dbUpdates["response_body"] = dbEntry.ResponseBody
 	dbUpdates["event_body"] = dbEntry.EventBody
+	dbUpdates["raw_request"] = dbEntry.RawRequest
+	dbUpdates["raw_response"] = dbEntry.RawResponse
 	dbUpdates["payload_reference"] = dbEntry.PayloadReference
 	dbUpdates["has_object"] = false
 	if err := h.inner.UpdateAgentLog(ctx, id, dbUpdates); err != nil {
 		return err
 	}
+	// The row now references key, so the previous object is unreferenced. A
+	// queued upload or flip for it sees the new reference and stands down.
+	h.deleteObject(previousKey, current.ID)
 	h.enqueueRawUpload(current.ID, current.Timestamp, key, uploadKindAgent, current.Status, payload, BuildAgentLogTags(current))
 	return nil
 }
@@ -1797,11 +2610,11 @@ func (h *HybridLogStore) DeleteAgentLogs(ctx context.Context, ids []string) erro
 		if !entry.HasObject {
 			continue
 		}
-		key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+		key := h.agentLogKey(entry.Timestamp, entry.ID)
 		if entry.PayloadReference != nil && *entry.PayloadReference != "" {
 			key = *entry.PayloadReference
 		}
-		keys = append(keys, key)
+		keys = append(keys, h.withAlternateKeys(key)...)
 	}
 	if err := h.inner.DeleteAgentLogs(ctx, ids); err != nil {
 		return err
@@ -1838,7 +2651,7 @@ func (h *HybridLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string) er
 			return findErr
 		}
 		if log != nil && log.HasObject {
-			keys = append(keys, MCPToolObjectKey(h.prefix, log.Timestamp, log.ID))
+			keys = append(keys, h.withAlternateKeys(h.mcpToolKey(log.Timestamp, log.ID))...)
 		}
 	}
 	if err := h.inner.DeleteMCPToolLogs(ctx, ids); err != nil {
@@ -1881,6 +2694,11 @@ func (h *HybridLogStore) GetAvailableServerLabels(ctx context.Context, limit int
 // GetAvailableMCPVirtualKeys returns a list of MCP tool log virtual keys that match the given query.
 func (h *HybridLogStore) GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error) {
 	return h.inner.GetAvailableMCPVirtualKeys(ctx, limit, query)
+}
+
+// GetDistinctMCPKeyPairs delegates to the inner store.
+func (h *HybridLogStore) GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error) {
+	return h.inner.GetDistinctMCPKeyPairs(ctx, idCol, nameCol, limit, query)
 }
 
 // Async Job methods — delegated directly.
@@ -1971,6 +2789,11 @@ func (h *HybridLogStore) SetDistributedLocker(locker DistributedLocker) {
 	}
 }
 
+// SwapWarpQuestion replaces one message's stored question only if it still holds expected.
+func (h *HybridLogStore) SwapWarpQuestion(ctx context.Context, ownerID, conversationID, messageID, expected, replacement string) (bool, error) {
+	return h.inner.SwapWarpQuestion(ctx, ownerID, conversationID, messageID, expected, replacement)
+}
+
 // DeleteWarpConversationIfEmpty removes a thread only if it has no messages.
 func (h *HybridLogStore) DeleteWarpConversationIfEmpty(ctx context.Context, ownerID, id string) (bool, error) {
 	return h.inner.DeleteWarpConversationIfEmpty(ctx, ownerID, id)
@@ -1996,4 +2819,507 @@ func (h *HybridLogStore) CountWarpMessages(ctx context.Context, conversationIDs 
 // SumWarpMessageUsage returns each thread's total tokens and cost in one query.
 func (h *HybridLogStore) SumWarpMessageUsage(ctx context.Context, conversationIDs []string) (map[string]WarpUsageTotals, error) {
 	return h.inner.SumWarpMessageUsage(ctx, conversationIDs)
+}
+
+// Warp topic methods - delegated directly. Topics, assignments and the
+// unmatched pool are small rows with no payload to offload, and the log
+// columns ListLogsForWarpTopics reads are the ones that stay in the database.
+
+// UpsertWarpTopics writes topics whole.
+func (h *HybridLogStore) UpsertWarpTopics(ctx context.Context, topics []WarpTopic) error {
+	return h.inner.UpsertWarpTopics(ctx, topics)
+}
+
+// ListWarpTopics returns the selected topics, oldest first.
+func (h *HybridLogStore) ListWarpTopics(ctx context.Context, filter WarpTopicFilter) ([]WarpTopic, error) {
+	return h.inner.ListWarpTopics(ctx, filter)
+}
+
+// UpsertWarpTopicAssignments writes one row per request.
+func (h *HybridLogStore) UpsertWarpTopicAssignments(ctx context.Context, assignments []WarpTopicAssignment) error {
+	return h.inner.UpsertWarpTopicAssignments(ctx, assignments)
+}
+
+// DeleteWarpTopicAssignmentsUnmatchedSince removes the rows filed under no
+// topic at or after since.
+func (h *HybridLogStore) DeleteWarpTopicAssignmentsUnmatchedSince(ctx context.Context, since time.Time) error {
+	return h.inner.DeleteWarpTopicAssignmentsUnmatchedSince(ctx, since)
+}
+
+// DeleteWarpTopicAssignments removes the given requests' assignments.
+func (h *HybridLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
+	return h.inner.DeleteWarpTopicAssignments(ctx, logIDs)
+}
+
+// SummarizeWarpTopicAssignments adds up the selected assignments per topic.
+func (h *HybridLogStore) SummarizeWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter) ([]WarpTopicUsage, error) {
+	return h.inner.SummarizeWarpTopicAssignments(ctx, filter)
+}
+
+// ListWarpTopicAssignments returns the selected assignments newest first.
+func (h *HybridLogStore) ListWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter, limit int) ([]WarpTopicAssignment, error) {
+	return h.inner.ListWarpTopicAssignments(ctx, filter, limit)
+}
+
+// BucketWarpTopicAssignments adds up the selected assignments per topic and
+// per bucket.
+func (h *HybridLogStore) BucketWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter, bucketSizeSeconds int64) ([]WarpTopicBucket, error) {
+	return h.inner.BucketWarpTopicAssignments(ctx, filter, bucketSizeSeconds)
+}
+
+// DeleteWarpTopicAssignmentsBatch deletes expired assignments in batches.
+func (h *HybridLogStore) DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return h.inner.DeleteWarpTopicAssignmentsBatch(ctx, cutoff, batchSize)
+}
+
+// AddWarpTopicUnmatched puts requests in the unmatched pool.
+func (h *HybridLogStore) AddWarpTopicUnmatched(ctx context.Context, rows []WarpTopicUnmatched) error {
+	return h.inner.AddWarpTopicUnmatched(ctx, rows)
+}
+
+// ListWarpTopicUnmatched returns the pool for one embedding model.
+func (h *HybridLogStore) ListWarpTopicUnmatched(ctx context.Context, embeddingSignature string, limit int) ([]WarpTopicUnmatched, error) {
+	return h.inner.ListWarpTopicUnmatched(ctx, embeddingSignature, limit)
+}
+
+// CountWarpTopicUnmatched reports the pool's size for one embedding model.
+func (h *HybridLogStore) CountWarpTopicUnmatched(ctx context.Context, embeddingSignature string) (int64, error) {
+	return h.inner.CountWarpTopicUnmatched(ctx, embeddingSignature)
+}
+
+// DeleteWarpTopicUnmatched removes requests from the pool.
+func (h *HybridLogStore) DeleteWarpTopicUnmatched(ctx context.Context, logIDs []string) error {
+	return h.inner.DeleteWarpTopicUnmatched(ctx, logIDs)
+}
+
+// AddWarpVectorDeletes records deleted logs whose vector delete failed.
+func (h *HybridLogStore) AddWarpVectorDeletes(ctx context.Context, rows []WarpVectorDelete) error {
+	return h.inner.AddWarpVectorDeletes(ctx, rows)
+}
+
+// ListWarpVectorDeletes returns up to limit pending vector deletes.
+func (h *HybridLogStore) ListWarpVectorDeletes(ctx context.Context, limit int) ([]WarpVectorDelete, error) {
+	return h.inner.ListWarpVectorDeletes(ctx, limit)
+}
+
+// DeleteWarpVectorDeletes removes the rows of logs whose vector is gone.
+func (h *HybridLogStore) DeleteWarpVectorDeletes(ctx context.Context, logIDs []string) error {
+	return h.inner.DeleteWarpVectorDeletes(ctx, logIDs)
+}
+
+// PruneWarpTopicUnmatched bounds the pool by age and by count.
+func (h *HybridLogStore) PruneWarpTopicUnmatched(ctx context.Context, olderThan time.Time, keep int) (int64, error) {
+	return h.inner.PruneWarpTopicUnmatched(ctx, olderThan, keep)
+}
+
+// DeleteWarpTopicUnmatchedBatch deletes expired pool rows in batches.
+func (h *HybridLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return h.inner.DeleteWarpTopicUnmatchedBatch(ctx, cutoff, batchSize)
+}
+
+// DeleteWarpTopicUnmatchedExcept drops the pool rows of every other embedding
+// model.
+func (h *HybridLogStore) DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (int64, error) {
+	return h.inner.DeleteWarpTopicUnmatchedExcept(ctx, embeddingSignature)
+}
+
+// DeleteWarpTopics removes topic and theme rows outright.
+func (h *HybridLogStore) DeleteWarpTopics(ctx context.Context, ids []string) error {
+	return h.inner.DeleteWarpTopics(ctx, ids)
+}
+
+// ListLogsForWarpTopics returns the assignment columns of the given logs.
+func (h *HybridLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error) {
+	return h.inner.ListLogsForWarpTopics(ctx, logIDs, from, to)
+}
+
+// Relay Logs offload their bodies as Agent logs do: the database row keeps a preview and a
+// reference, the object holds the full bodies, and FindRelayLog reads them back for the detail
+// sheet. Lists, stats and charts read the database alone. The operator's exclusions apply as they
+// do to LLM rows: object_storage_exclude_request_types naming "relay" keeps every relay row whole
+// in the database, and object_storage_exclude_fields naming request_body or response_body keeps
+// that body resident while the other is offloaded.
+
+// skipsRelayOffload reports whether relay rows stay whole in the database. Hidden content is
+// always offloaded: it may only live in object storage, never in the row.
+func (h *HybridLogStore) skipsRelayOffload(hidden bool) bool {
+	if hidden {
+		return false
+	}
+	_, excluded := h.excludedRequestTypes[RelayLogObjectType]
+	return excluded
+}
+
+// prepareRelayDBEntry cuts a relay row to its database form and restores any body the operator
+// keeps resident, unless the content is hidden.
+func (h *HybridLogStore) prepareRelayDBEntry(dbEntry, full *RelayLog, key string) {
+	PrepareRelayLogDBEntry(dbEntry, key)
+	if dbEntry.ContentHidden {
+		return
+	}
+	if _, resident := h.excludedPayloadFields["request_body"]; resident {
+		dbEntry.RequestBody = full.RequestBody
+	}
+	if _, resident := h.excludedPayloadFields["response_body"]; resident {
+		dbEntry.ResponseBody = full.ResponseBody
+	}
+}
+
+// BatchCreateRelayLogsIfNotExists inserts the rows with their bodies cut to a preview and
+// uploads the full bodies of the rows it inserted, so a duplicate never overwrites an object.
+func (h *HybridLogStore) BatchCreateRelayLogsIfNotExists(ctx context.Context, entries []*RelayLog) ([]string, error) {
+	type pendingUpload struct {
+		id        string
+		timestamp time.Time
+		key       string
+		payload   []byte
+		tags      map[string]string
+	}
+	dbEntries := make([]*RelayLog, 0, len(entries))
+	uploads := make([]pendingUpload, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		if _, ok := seen[entry.ID]; ok {
+			continue
+		}
+		seen[entry.ID] = struct{}{}
+		dbEntry := *entry
+		if RelayLogHasPayload(entry) && !h.skipsRelayOffload(entry.ContentHidden) {
+			key := h.relayLogKey(entry.Timestamp, entry.ID)
+			payload, err := MarshalRelayLogPayload(entry)
+			if err != nil {
+				return nil, fmt.Errorf("logstore: serialize relay log before offload: %w", err)
+			}
+			h.prepareRelayDBEntry(&dbEntry, entry, key)
+			uploads = append(uploads, pendingUpload{
+				id: entry.ID, timestamp: entry.Timestamp,
+				key: key, payload: payload, tags: BuildRelayLogTags(entry),
+			})
+		}
+		dbEntries = append(dbEntries, &dbEntry)
+	}
+	if len(dbEntries) == 0 {
+		return nil, nil
+	}
+	insertedIDs, err := h.inner.BatchCreateRelayLogsIfNotExists(ctx, dbEntries)
+	if err != nil {
+		return nil, err
+	}
+	inserted := make(map[string]struct{}, len(insertedIDs))
+	for _, id := range insertedIDs {
+		inserted[id] = struct{}{}
+	}
+	for _, upload := range uploads {
+		if _, ok := inserted[upload.id]; !ok {
+			continue
+		}
+		h.enqueueRawUpload(upload.id, upload.timestamp, upload.key, uploadKindRelay, "", upload.payload, upload.tags)
+	}
+	return insertedIDs, nil
+}
+
+func (h *HybridLogStore) FindRelayLog(ctx context.Context, id string) (*RelayLog, error) {
+	entry, err := h.inner.FindRelayLog(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	h.hydrateRelayLog(ctx, entry)
+	return entry, nil
+}
+
+// hydrateRelayLog replaces the row's body previews with the full bodies from its object. A row
+// whose content is hidden keeps nothing to show, and a failed read leaves the previews.
+func (h *HybridLogStore) hydrateRelayLog(ctx context.Context, entry *RelayLog) {
+	if entry == nil || !entry.HasObject || entry.ContentHidden {
+		return
+	}
+	data, _, err := h.getPayload(ctx, h.relayObjectKey(entry))
+	if err != nil {
+		h.logger.Warn("objectstore: failed to hydrate relay log %s: %v", entry.ID, err)
+		return
+	}
+	if err := MergeRelayLogPayloadFromJSON(entry, data); err != nil {
+		h.logger.Warn("objectstore: failed to merge relay log %s: %v", entry.ID, err)
+	}
+}
+
+func (h *HybridLogStore) relayObjectKey(entry *RelayLog) string {
+	if entry.PayloadReference != nil && *entry.PayloadReference != "" {
+		return *entry.PayloadReference
+	}
+	return h.relayLogKey(entry.Timestamp, entry.ID)
+}
+
+func (h *HybridLogStore) FindRelayLogsForDeletion(ctx context.Context, ids []string) ([]*RelayLog, error) {
+	return h.inner.FindRelayLogsForDeletion(ctx, ids)
+}
+
+// UpdateRelayLog applies column updates to a relay row. An update that carries a body (a row
+// persisted as processing at eviction being reconciled with its reply) cuts the database columns
+// to previews and queues a merge upload that lays the bodies over the row's object at worker time,
+// as BatchUpdate does for an LLM row. The object is never read here: the insert's own upload may
+// still be queued, and reading the row's preview back as the body would lose the full request.
+func (h *HybridLogStore) UpdateRelayLog(ctx context.Context, id string, updates map[string]any) error {
+	retainedPath, retainedErr, updates := takeRelayRetainedUpdates(updates)
+	retained := retainedPath != nil || retainedErr != nil
+	// A hidden row's error is content too: it goes to the object, as on insert.
+	hiddenError, _ := updates["error_details"].(string)
+	if hiddenUpdate, _ := updates["content_hidden"].(bool); hiddenUpdate && hiddenError != "" {
+		retained = true
+	}
+	requestBody, hasRequest := relayBodyUpdate(updates, "request_body")
+	responseBody, hasResponse := relayBodyUpdate(updates, "response_body")
+	if !hasRequest && !hasResponse && !retained {
+		return h.inner.UpdateRelayLog(ctx, id, updates)
+	}
+	row, err := h.inner.FindRelayLog(ctx, id)
+	if err != nil {
+		return err
+	}
+	hidden := row.ContentHidden
+	if v, ok := updates["content_hidden"].(bool); ok {
+		hidden = v
+	}
+	if h.skipsRelayOffload(hidden) {
+		return h.inner.UpdateRelayLog(ctx, id, updates)
+	}
+	merge := relayMergePayloadV1{SchemaVersion: relayObjectSchemaVersion, RequestBody: requestBody, SetRequestBody: hasRequest, ResponseBody: responseBody, SetResponseBody: hasResponse}
+	if hidden {
+		// Hidden content is kept in the object alone, as an insert keeps it (MarshalRelayLogPayload):
+		// the full error retained with its raw payloads, else the sanitized one, and the database
+		// row keeps no error.
+		if retainedErr == nil && hiddenError != "" {
+			var sanitized schemas.BifrostError
+			if err := sonic.UnmarshalString(hiddenError, &sanitized); err == nil {
+				retainedErr = &sanitized
+			}
+		}
+		merge.Path, merge.ErrorDetails = retainedPath, retainedErr
+		retained = retainedPath != nil || retainedErr != nil
+		if _, has := updates["error_details"]; has {
+			cleared := make(map[string]any, len(updates))
+			maps.Copy(cleared, updates)
+			cleared["error_details"] = ""
+			updates = cleared
+		}
+	} else {
+		retained = false
+	}
+	if !hasRequest && responseBody == nil && !retained && (row.RequestBody == nil && !row.HasObject && row.PayloadReference == nil) {
+		// Nothing to hold in an object: the row had no body and the update clears the reply.
+		return h.inner.UpdateRelayLog(ctx, id, updates)
+	}
+	key := h.relayObjectKey(row)
+	payload, err := sonic.Marshal(merge)
+	if err != nil {
+		return fmt.Errorf("logstore: serialize relay log update before offload: %w", err)
+	}
+	// The database keeps previews of the bodies the update carries; a body it does not carry is
+	// left as the row has it.
+	preview := RelayLog{RequestBody: requestBody, ResponseBody: responseBody, ContentHidden: hidden}
+	h.prepareRelayDBEntry(&preview, &RelayLog{RequestBody: requestBody, ResponseBody: responseBody}, key)
+	dbUpdates := make(map[string]any, len(updates)+1)
+	for k, v := range updates {
+		dbUpdates[k] = v
+	}
+	if hasRequest {
+		dbUpdates["request_body"] = preview.RequestBody
+	}
+	if hasResponse {
+		dbUpdates["response_body"] = preview.ResponseBody
+	}
+	dbUpdates["payload_reference"] = key
+	if err := h.inner.UpdateRelayLog(ctx, id, dbUpdates); err != nil {
+		return err
+	}
+	tagRow := *row
+	tagRow.ContentHidden = hidden
+	if status, ok := updates["status"].(string); ok && status != "" {
+		tagRow.Status = status
+	}
+	h.enqueueRawUpload(row.ID, row.Timestamp, key, uploadKindRelayMerge, "", payload, BuildRelayLogTags(&tagRow))
+	return nil
+}
+
+// relayBodyUpdate reads a body column out of an update map: present or not, and its value when
+// present (nil clears it).
+func relayBodyUpdate(updates map[string]any, column string) (*string, bool) {
+	v, ok := updates[column]
+	if !ok {
+		return nil, false
+	}
+	switch body := v.(type) {
+	case nil:
+		return nil, true
+	case *string:
+		return body, true
+	case string:
+		return &body, true
+	}
+	return nil, false
+}
+
+func (h *HybridLogStore) FlushRelayLogs(ctx context.Context, since time.Time) error {
+	// Time-based row cleanup leaves objects to the bucket lifecycle policy, as FlushAgentLogs does.
+	return h.inner.FlushRelayLogs(ctx, since)
+}
+
+func (h *HybridLogStore) SearchRelayLogs(ctx context.Context, filters RelayLogFilters, pagination PaginationOptions) (*RelayLogSearchResult, error) {
+	return h.inner.SearchRelayLogs(ctx, filters, pagination)
+}
+
+func (h *HybridLogStore) GetRelayLogStats(ctx context.Context, filters RelayLogFilters) (*RelayLogStats, error) {
+	return h.inner.GetRelayLogStats(ctx, filters)
+}
+
+func (h *HybridLogStore) GetRelayHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*RelayHistogramResult, error) {
+	return h.inner.GetRelayHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+func (h *HybridLogStore) GetRelayLatencyHistogram(ctx context.Context, filters RelayLogFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error) {
+	return h.inner.GetRelayLatencyHistogram(ctx, filters, bucketSizeSeconds)
+}
+
+func (h *HybridLogStore) GetRelayTopEndpoints(ctx context.Context, filters RelayLogFilters, limit int) (*RelayTopResults, error) {
+	return h.inner.GetRelayTopEndpoints(ctx, filters, limit)
+}
+
+func (h *HybridLogStore) GetRelayFilterData(ctx context.Context, dimensions []string, limit int, search string) (*RelayFilterData, error) {
+	return h.inner.GetRelayFilterData(ctx, dimensions, limit, search)
+}
+
+func (h *HybridLogStore) HasRelayLogs(ctx context.Context) (bool, error) {
+	return h.inner.HasRelayLogs(ctx)
+}
+
+// DeleteRelayLogs deletes the identified rows, the job rows that settle them, and every
+// offloaded object belonging to those rows.
+func (h *HybridLogStore) DeleteRelayLogs(ctx context.Context, ids []string) error {
+	entries, err := h.inner.FindRelayLogsForDeletion(ctx, ids)
+	if err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.HasObject {
+			keys = append(keys, h.withAlternateKeys(h.relayObjectKey(entry))...)
+		}
+	}
+	if err := h.inner.DeleteRelayLogs(ctx, ids); err != nil {
+		return err
+	}
+	if len(keys) > 0 {
+		if delErr := h.objects.DeleteBatch(ctx, keys); delErr != nil {
+			h.logger.Warn("objectstore: failed to batch delete %d relay log objects: %v", len(keys), delErr)
+		}
+	}
+	return nil
+}
+
+func (h *HybridLogStore) DeleteRelayLogsBatch(ctx context.Context, cutoff time.Time, batchSize int) (int64, error) {
+	return h.inner.DeleteRelayLogsBatch(ctx, cutoff, batchSize)
+}
+
+// ReclaimSpace delegates to the inner store when it can release freed pages.
+func (h *HybridLogStore) ReclaimSpace(ctx context.Context, maxPages int) (int64, error) {
+	if reclaimer, ok := h.inner.(SpaceReclaimer); ok {
+		return reclaimer.ReclaimSpace(ctx, maxPages)
+	}
+	return 0, nil
+}
+
+// Complexity suggestion methods - delegated directly. Suggestions, runs and
+// pending vector deletes hold no payloads, so they stay in the database.
+
+// UpsertComplexitySuggestions writes suggestions whole.
+func (h *HybridLogStore) UpsertComplexitySuggestions(ctx context.Context, suggestions []ComplexitySuggestion) error {
+	return h.inner.UpsertComplexitySuggestions(ctx, suggestions)
+}
+
+// ReconcileComplexitySuggestions writes a run's outcome without overwriting a
+// decision made since the run read the rows.
+func (h *HybridLogStore) ReconcileComplexitySuggestions(ctx context.Context, writes []ComplexitySuggestionWrite) ([]string, error) {
+	return h.inner.ReconcileComplexitySuggestions(ctx, writes)
+}
+
+// ListComplexitySuggestions returns the selected suggestions.
+func (h *HybridLogStore) ListComplexitySuggestions(ctx context.Context, filter ComplexitySuggestionFilter) ([]ComplexitySuggestion, error) {
+	return h.inner.ListComplexitySuggestions(ctx, filter)
+}
+
+// CountComplexitySuggestionsByStatus counts suggestions per status.
+func (h *HybridLogStore) CountComplexitySuggestionsByStatus(ctx context.Context, filter ComplexitySuggestionFilter) (map[string]int, error) {
+	return h.inner.CountComplexitySuggestionsByStatus(ctx, filter)
+}
+
+// UpdateComplexitySuggestionStatus moves a suggestion between statuses.
+func (h *HybridLogStore) UpdateComplexitySuggestionStatus(ctx context.Context, id, from, to string, resolvedAt *time.Time) (bool, error) {
+	return h.inner.UpdateComplexitySuggestionStatus(ctx, id, from, to, resolvedAt)
+}
+
+// DeleteComplexitySuggestions removes suggestions outright.
+func (h *HybridLogStore) DeleteComplexitySuggestions(ctx context.Context, ids []string) error {
+	return h.inner.DeleteComplexitySuggestions(ctx, ids)
+}
+
+// UpsertComplexitySuggestionRun writes a run whole.
+func (h *HybridLogStore) UpsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) error {
+	return h.inner.UpsertComplexitySuggestionRun(ctx, run)
+}
+
+// InsertComplexitySuggestionRun writes a run unless one with its ID exists.
+func (h *HybridLogStore) InsertComplexitySuggestionRun(ctx context.Context, run *ComplexitySuggestionRun) (bool, error) {
+	return h.inner.InsertComplexitySuggestionRun(ctx, run)
+}
+
+// ListComplexitySuggestionRuns returns up to limit of the selected runs,
+// newest first.
+func (h *HybridLogStore) ListComplexitySuggestionRuns(ctx context.Context, filter ComplexitySuggestionRunFilter, limit int) ([]ComplexitySuggestionRun, error) {
+	return h.inner.ListComplexitySuggestionRuns(ctx, filter, limit)
+}
+
+// UpdateComplexitySuggestionRunStatus ends a run, only from the given statuses.
+func (h *HybridLogStore) UpdateComplexitySuggestionRunStatus(ctx context.Context, id string, from []string, to string, finishedAt *time.Time) (bool, error) {
+	return h.inner.UpdateComplexitySuggestionRunStatus(ctx, id, from, to, finishedAt)
+}
+
+// PruneComplexitySuggestionRuns keeps one router's newest keep runs.
+func (h *HybridLogStore) PruneComplexitySuggestionRuns(ctx context.Context, routerID string, keep int) (int64, error) {
+	return h.inner.PruneComplexitySuggestionRuns(ctx, routerID, keep)
+}
+
+// DeleteComplexityRouterSuggestions removes a router's suggestions and runs.
+func (h *HybridLogStore) DeleteComplexityRouterSuggestions(ctx context.Context, routerID string) error {
+	return h.inner.DeleteComplexityRouterSuggestions(ctx, routerID)
+}
+
+// AddComplexityVectorDeletes records deleted logs whose captured vector delete
+// failed.
+func (h *HybridLogStore) AddComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	return h.inner.AddComplexityVectorDeletes(ctx, rows)
+}
+
+// ListComplexityVectorDeletes returns up to limit pending vector deletes.
+func (h *HybridLogStore) ListComplexityVectorDeletes(ctx context.Context, limit int) ([]ComplexityVectorDelete, error) {
+	return h.inner.ListComplexityVectorDeletes(ctx, limit)
+}
+
+// DeleteComplexityVectorDeletes removes exactly the given (log, namespace)
+// rows.
+func (h *HybridLogStore) DeleteComplexityVectorDeletes(ctx context.Context, rows []ComplexityVectorDelete) error {
+	return h.inner.DeleteComplexityVectorDeletes(ctx, rows)
+}
+
+// ListComplexityReplayUsage reads the usage of the given logs.
+func (h *HybridLogStore) ListComplexityReplayUsage(ctx context.Context, logIDs []string) ([]ComplexityReplayUsage, error) {
+	return h.inner.ListComplexityReplayUsage(ctx, logIDs)
+}
+
+// EachComplexityRouterLog pages the requests a model router took; IDs and
+// timestamps live in the index store.
+func (h *HybridLogStore) EachComplexityRouterLog(ctx context.Context, routerID string, from, to time.Time, fn func([]ComplexityRouterLog) error) error {
+	return h.inner.EachComplexityRouterLog(ctx, routerID, from, to, fn)
 }

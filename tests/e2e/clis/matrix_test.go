@@ -512,6 +512,11 @@ func claudePreLaunch(_, _, model string) ([]string, func(), error) {
 // (config.toml, sessions, auth) -- the same reason claudePreLaunch redirects
 // HOME. codexResume reuses this directory so `resume --last` reads the same
 // config and session store.
+//
+// project_doc_max_bytes = 0 stops codex from loading the repo's AGENTS.md
+// (codex-rs/core/src/agents_md.rs returns early on 0). The file is larger than
+// codex's 32 KiB default budget, and codex 0.169+ reports the truncation as an
+// item.completed event of type "error", which detectError fails the cell on.
 func codexPreLaunch(baseURL, _, _ string) ([]string, func(), error) {
 	tempHome, err := os.MkdirTemp("", "bifrost-clis-codex-home-*")
 	if err != nil {
@@ -520,6 +525,7 @@ func codexPreLaunch(baseURL, _, _ string) ([]string, func(), error) {
 	cleanup := func() { _ = os.RemoveAll(tempHome) }
 
 	cfg := fmt.Sprintf(`model_provider = "bifrost"
+project_doc_max_bytes = 0
 
 [model_providers.bifrost]
 name = "Bifrost"

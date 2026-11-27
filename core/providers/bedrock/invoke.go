@@ -176,6 +176,7 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 		IsError   *bool           `json:"is_error,omitempty"`
 		Thinking  *string         `json:"thinking,omitempty"`
 		Signature *string         `json:"signature,omitempty"`
+		ToolName  *string         `json:"tool_name,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(b),
@@ -262,6 +263,11 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 			break
 		}
 		b.AnthropicToolSearchResult = res
+	case "tool_reference":
+		if aux.ToolName == nil {
+			return nil
+		}
+		b.AnthropicToolReference = aux.ToolName
 	case "thinking":
 		if aux.Thinking == nil {
 			return nil
@@ -280,7 +286,7 @@ func (b *BedrockContentBlock) UnmarshalJSON(data []byte) error {
 // normalizeAnthropicToolResultContent decodes an Anthropic-native tool_result's
 // "content" field, which per Anthropic's API is either a plain string or an
 // array of content blocks. Array elements are decoded as []BedrockContentBlock,
-// so a nested image or tool_use inside a tool_result is normalized recursively
+// so a nested image, tool_use or tool_reference inside a tool_result is normalized recursively
 // via BedrockContentBlock.UnmarshalJSON above.
 func normalizeAnthropicToolResultContent(raw json.RawMessage) ([]BedrockContentBlock, error) {
 	if len(raw) == 0 {
@@ -581,6 +587,14 @@ func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseReques
 	if r.OutputConfig != nil {
 		additionalFields.Set("output_config", r.OutputConfig)
 		hasAdditional = true
+	}
+
+	// Anthropic disable_parallel_tool_use has no typed Converse slot; this is the spelling Converse takes.
+	if choice, ok := r.ToolChoice.(map[string]interface{}); ok && converseReq.ToolConfig != nil && choice["type"] != "none" {
+		if disable, ok := choice["disable_parallel_tool_use"].(bool); ok {
+			additionalFields.Set("tool_choice", schemas.NewOrderedMapFromPairs(schemas.Pair{Key: "disable_parallel_tool_use", Value: disable}))
+			hasAdditional = true
+		}
 	}
 
 	// AI21-specific fields
@@ -1361,6 +1375,9 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 			inputSchemaBytes, _ := providerUtils.MarshalSorted(inputSchema)
 			spec.InputSchema = BedrockToolInputSchema{JSON: json.RawMessage(inputSchemaBytes)}
 		}
+		if strict, ok := toolMap["strict"].(bool); ok {
+			spec.Strict = new(strict)
+		}
 		if deferLoading, ok := toolMap["defer_loading"].(bool); ok {
 			spec.DeferLoading = new(deferLoading)
 		}
@@ -1514,7 +1531,7 @@ func bedrockInvokeGuardrailFields(resp *schemas.BifrostResponsesResponse) (strin
 			rawTrace = raw
 		}
 	}
-	intervened := resp.StopReason != nil && *resp.StopReason == "guardrail_intervened"
+	intervened := invokeGuardrailIntervened(resp)
 	switch {
 	case intervened:
 		return "INTERVENED", rawTrace
@@ -1877,20 +1894,14 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 		}
 	}
 
-	// Stop reason
-	stopReason := "end_turn"
-	if resp.IncompleteDetails != nil {
-		stopReason = resp.IncompleteDetails.Reason
-	} else {
-		// Check for tool_use
-		for _, block := range result.Content {
-			if block.Type == "tool_use" {
-				stopReason = "tool_use"
-				break
-			}
+	hasToolUse := false
+	for _, block := range result.Content {
+		if block.Type == "tool_use" {
+			hasToolUse = true
+			break
 		}
 	}
-	result.StopReason = stopReason
+	result.StopReason = anthropicInvokeTerminalStopReason(resp, hasToolUse)
 
 	// Usage
 	if resp.Usage != nil {
@@ -1900,6 +1911,7 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 			OutputTokens:             usage.OutputTokens,
 			CacheReadInputTokens:     usage.CacheReadInputTokens,
 			CacheCreationInputTokens: usage.CacheWriteInputTokens,
+			CacheCreation:            invokeCacheCreation(resp.Usage),
 		}
 		// Thinking tokens are already inside OutputTokens on both sides, so only the
 		// breakdown is added; OutputTokens is left untouched (#7649).
@@ -1909,6 +1921,19 @@ func toBedrockInvokeAnthropicResponse(resp *schemas.BifrostResponsesResponse, mo
 	}
 
 	return result
+}
+
+// invokeCacheCreation preserves the provider's cache-write TTL breakdown. A missing
+// breakdown stays absent: the flat write count alone does not identify its TTL.
+func invokeCacheCreation(usage *schemas.ResponsesResponseUsage) *BedrockInvokeMessagesCacheCreation {
+	if usage == nil || usage.InputTokensDetails == nil || usage.InputTokensDetails.CachedWriteTokenDetails == nil {
+		return nil
+	}
+	details := usage.InputTokensDetails.CachedWriteTokenDetails
+	return &BedrockInvokeMessagesCacheCreation{
+		Ephemeral5mInputTokens: details.CachedWriteTokens5m,
+		Ephemeral1hInputTokens: details.CachedWriteTokens1h,
+	}
 }
 
 // invokeThinkingTokens returns the extended-thinking token count Bifrost holds for a
@@ -2050,13 +2075,16 @@ var bedrockInvokeStreamStateKey = bedrockInvokeStreamStateKeyType{}
 // index after it. Copying each event's ContentIndex straight through therefore opens
 // block N and closes block N+1, leaving N open for the rest of the stream. The Anthropic
 // egress keeps the same bookkeeping for the same reason (blockIndexFor / allocBlockIndex
-// in providers/anthropic/responses.go).
+// in providers/anthropic/responses.go). It also records whether a client tool_use block
+// was streamed, so the terminal message_delta can report tool_use like the non-streaming
+// converter does.
 //
 // Only the pointer lives on the context: the map is bounded by the number of content
 // blocks in the stream rather than by its content, and it is released with the request.
 type bedrockInvokeStreamState struct {
 	mu           sync.Mutex
 	openedBlocks map[string]int // item key -> content index its content_block_start used
+	sawToolUse   bool           // a client tool_use block was streamed
 }
 
 func getOrCreateBedrockInvokeStreamState(ctx *schemas.BifrostContext) *bedrockInvokeStreamState {
@@ -2079,6 +2107,24 @@ func lookupBedrockInvokeStreamState(ctx *schemas.BifrostContext) *bedrockInvokeS
 	}
 	state, _ := ctx.Value(bedrockInvokeStreamStateKey).(*bedrockInvokeStreamState)
 	return state
+}
+
+func (s *bedrockInvokeStreamState) markToolUse() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sawToolUse = true
+}
+
+func (s *bedrockInvokeStreamState) hasToolUse() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sawToolUse
 }
 
 func (s *bedrockInvokeStreamState) rememberBlockIndex(key string, index int) {
@@ -2126,6 +2172,48 @@ func bedrockInvokeStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) st
 		return "oi:" + strconv.Itoa(*resp.OutputIndex)
 	}
 	return ""
+}
+
+// anthropicInvokeStopReason derives the Anthropic stop_reason for an InvokeModel response,
+// shared by the streaming and non-streaming converters so both report the same reason.
+// StopReason wins over IncompleteDetails: the Converse conversion folds guardrail_intervened
+// and content_filtered into one content_filter incomplete reason, and only StopReason keeps
+// them apart (a guardrail block is end_turn on InvokeModel, a model filter is refusal).
+// IncompleteDetails covers providers that report no StopReason. Returns "" when neither
+// field is set, leaving the default to the caller. The shared converter reports a guardrail
+// block as refusal; InvokeModel reports it as end_turn and carries the signal in
+// amazon-bedrock-guardrailAction instead (bedrockInvokeGuardrailFields).
+func anthropicInvokeStopReason(resp *schemas.BifrostResponsesResponse) string {
+	if resp == nil {
+		return ""
+	}
+	if invokeGuardrailIntervened(resp) {
+		return string(anthropic.AnthropicStopReasonEndTurn)
+	}
+	if resp.StopReason != nil && *resp.StopReason != "" {
+		return string(anthropic.ConvertBifrostFinishReasonToAnthropic(*resp.StopReason))
+	}
+	return string(anthropic.AnthropicStopReasonFromIncompleteDetails(resp.IncompleteDetails))
+}
+
+// anthropicInvokeTerminalStopReason is the stop_reason both InvokeModel converters report:
+// anthropicInvokeStopReason, defaulting to end_turn, upgraded to tool_use when the turn
+// carried a client tool_use block. Some providers (e.g. Gemini) report a plain stop on a
+// function-call turn. The upgrade never overrides max_tokens, refusal or a guardrail block.
+func anthropicInvokeTerminalStopReason(resp *schemas.BifrostResponsesResponse, hasToolUse bool) string {
+	stopReason := anthropicInvokeStopReason(resp)
+	if stopReason != "" && stopReason != string(anthropic.AnthropicStopReasonEndTurn) {
+		return stopReason
+	}
+	if hasToolUse && !invokeGuardrailIntervened(resp) {
+		return string(anthropic.AnthropicStopReasonToolUse)
+	}
+	return string(anthropic.AnthropicStopReasonEndTurn)
+}
+
+// invokeGuardrailIntervened reports whether a Bedrock guardrail blocked the turn.
+func invokeGuardrailIntervened(resp *schemas.BifrostResponsesResponse) bool {
+	return resp != nil && resp.StopReason != nil && *resp.StopReason == bedrockStopReasonGuardrailIntervened
 }
 
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing
@@ -2179,6 +2267,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 				}
 				if usage.CacheWriteInputTokens > 0 {
 					usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+				}
+				if creation := invokeCacheCreation(resp.Response.Usage); creation != nil {
+					usageMap["cache_creation"] = creation
 				}
 				if thinking, ok := invokeThinkingTokens(resp.Response.Usage); ok {
 					usageMap["output_tokens_details"] = map[string]interface{}{"thinking_tokens": thinking}
@@ -2234,7 +2325,11 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			}
 			// Remember where this item opened so its output_item.done closes this block
 			// and not whichever index the neutral stream happens to carry by then.
-			getOrCreateBedrockInvokeStreamState(ctx).rememberBlockIndex(bedrockInvokeStreamItemKey(resp), idx)
+			state := getOrCreateBedrockInvokeStreamState(ctx)
+			state.rememberBlockIndex(bedrockInvokeStreamItemKey(resp), idx)
+			if blockType == "tool_use" {
+				state.markToolUse()
+			}
 		} else {
 			// Skip — content_block_start is emitted on ContentPartAdded where we know the block type
 			return nil, nil
@@ -2358,18 +2453,7 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 	// with message_delta + message_stop, or the client never sees the stop reason.
 	case schemas.ResponsesStreamResponseTypeCompleted, schemas.ResponsesStreamResponseTypeIncomplete:
 		// Emit message_delta + message_stop as two separate events
-		stopReason := "end_turn"
-		if resp.Response != nil && resp.Response.IncompleteDetails != nil {
-			// Translate the Responses vocabulary into Anthropic stop reasons.
-			switch resp.Response.IncompleteDetails.Reason {
-			case schemas.ResponsesResponseIncompleteReasonMaxOutputTokens:
-				stopReason = "max_tokens"
-			case schemas.ResponsesResponseIncompleteReasonContentFilter:
-				stopReason = "refusal"
-			default:
-				stopReason = resp.Response.IncompleteDetails.Reason
-			}
-		}
+		stopReason := anthropicInvokeTerminalStopReason(resp.Response, lookupBedrockInvokeStreamState(ctx).hasToolUse())
 
 		// Build message_delta event
 		messageDelta := map[string]interface{}{
@@ -2395,6 +2479,9 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			}
 			if usage.CacheWriteInputTokens > 0 {
 				usageMap["cache_creation_input_tokens"] = usage.CacheWriteInputTokens
+			}
+			if creation := invokeCacheCreation(resp.Response.Usage); creation != nil {
+				usageMap["cache_creation"] = creation
 			}
 			// Native Anthropic reports the thinking breakdown on message_delta (#7649).
 			if thinking, ok := invokeThinkingTokens(resp.Response.Usage); ok {

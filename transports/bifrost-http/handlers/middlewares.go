@@ -13,16 +13,15 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
-	"net/url"
-	"runtime"
 	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -31,9 +30,10 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/sync/semaphore"
 )
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
@@ -53,6 +53,23 @@ func SecurityHeadersMiddleware() schemas.BifrostHTTPMiddleware {
 	}
 }
 
+// RequireConfigStoreMiddleware answers 503 on a configuration route when the config store is
+// disabled (store is nil). Configuration then comes only from config.json and changes only on a
+// restart, so every configuration route, reads included, refuses here instead of checking the
+// store itself. The store is fixed at boot, so the choice is made once, when the route is
+// registered. It goes after the auth middlewares, so an unauthenticated caller is refused before
+// it learns whether the store is enabled.
+func RequireConfigStoreMiddleware(store configstore.ConfigStore) schemas.BifrostHTTPMiddleware {
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		if store != nil {
+			return next
+		}
+		return func(ctx *fasthttp.RequestCtx) {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "config store not available")
+		}
+	}
+}
+
 // applySecurityHeaders sets the security headers. RecoveryMiddleware re-applies
 // them after resetting a panicked response.
 func applySecurityHeaders(ctx *fasthttp.RequestCtx) {
@@ -61,12 +78,12 @@ func applySecurityHeaders(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.Set("Referrer-Policy", "strict-origin-when-cross-origin")
 	ctx.Response.Header.Set("Content-Security-Policy", "frame-ancestors 'none'")
 	ctx.Response.Header.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-	// Only set HSTS when serving over HTTPS (detected via reverse proxy header or direct TLS)
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" || ctx.IsTLS() {
+	// Only set HSTS when serving over HTTPS (direct TLS or a proxy's forwarded-proto header)
+	if lib.RequestIsHTTPS(ctx) {
 		ctx.Response.Header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	}
 	// Keep CDNs from caching API responses; handlers may override.
-	if strings.HasPrefix(string(ctx.Path()), apiPathPrefix) {
+	if strings.HasPrefix(string(ctx.Request.URI().PathOriginal()), apiPathPrefix) {
 		ctx.Response.Header.Set("Cache-Control", "no-store")
 	}
 }
@@ -87,7 +104,7 @@ func RecoveryMiddleware(cors *CorsMiddleware) schemas.BifrostHTTPMiddleware {
 			defer func() {
 				if r := recover(); r != nil {
 					// Never format r with %v: a panic value can wrap request content or secrets.
-					logger.Error(fmt.Sprintf("recovered from panic in request handler: %s\n%s", panicSummary(r), debug.Stack()))
+					logger.Error(fmt.Sprintf("recovered from panic in request handler: %s\n%s", lib.PanicSummary(r), debug.Stack()))
 					// Reset drops partial handler output, including the headers the outer
 					// SecurityHeaders and CORS middlewares set before the panic, so re-apply them.
 					ctx.Response.Reset()
@@ -120,19 +137,259 @@ func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.Set(lib.HeaderBifrostTraceID, exportTraceID)
 }
 
-// panicSummary describes a recovered panic value without echoing arbitrary content.
-// Runtime errors keep their message (runtime-generated, no request data); any other
-// value is reduced to its type.
-func panicSummary(r any) string {
-	if rerr, ok := r.(runtime.Error); ok {
-		return rerr.Error()
+// recoverWebSocketSession is deferred first inside every WebSocket upgrade callback.
+// A hijacked connection is served on its own goroutine after the HTTP handler, and
+// therefore after RecoveryMiddleware, has returned, so a panic there would otherwise
+// end the whole process. The panic is logged the same way and only this connection is
+// dropped (the callback's own deferred conn.Close runs after this recover).
+func recoverWebSocketSession(conn *ws.Conn) {
+	if r := recover(); r != nil {
+		logWebSocketPanic(conn, r)
 	}
-	return fmt.Sprintf("%T", r)
 }
 
-// ServerRootHandler wraps the router with the server-level middlewares.
+// runWebSocketRelay runs one relay of a WebSocket session on the current goroutine and turns a
+// panic inside it into the error it returns, logged like recoverWebSocketSession. The relays
+// of a session run on their own goroutines, past the recover deferred by the upgrade callback,
+// so without this a panic in a plugin hook on the relay path would end the process rather
+// than the session. The error carries the panic summary only, never the panic value.
+func runWebSocketRelay(conn *ws.Conn, relay func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logWebSocketPanic(conn, r)
+			err = fmt.Errorf("websocket relay panicked: %T", r)
+		}
+	}()
+	return relay()
+}
+
+// logWebSocketPanic logs a recovered panic of a WebSocket session with the peer address and
+// the panic value's type only. Plugin hooks run on these paths, and a runtime.Error they raise
+// may carry whatever they put in its text, so unlike the request path the text is never kept.
+func logWebSocketPanic(conn *ws.Conn, r any) {
+	logger.Error(fmt.Sprintf("recovered from panic in websocket session (%s): %T\n%s", webSocketPeer(conn), r, debug.Stack()))
+}
+
+// webSocketPeer is the peer address of a connection, or empty when there is none to read: a
+// hijacked connection fasthttp has already recycled has no net.Conn underneath, and asking it
+// would panic inside the panic report.
+func webSocketPeer(conn *ws.Conn) (remote string) {
+	defer func() {
+		if recover() != nil {
+			remote = ""
+		}
+	}()
+	if conn == nil || conn.RemoteAddr() == nil {
+		return ""
+	}
+	return conn.RemoteAddr().String()
+}
+
+// ServerRootHandler wraps the router with the server-level middlewares. The
+// base-path middleware is added outermost only when server.base_path is
+// configured, so the default chain is unchanged.
 func ServerRootHandler(cors *CorsMiddleware, config *lib.Config, router fasthttp.RequestHandler) fasthttp.RequestHandler {
-	return SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router))))
+	return RequestBodyMiddleware(config)(BasePathRootHandler(config, SecurityHeadersMiddleware()(cors.Middleware()(RecoveryMiddleware(cors)(RequestDecompressionMiddleware(config)(router))))))
+}
+
+// drainRequestBodyStream discards what the handler left unread of a streamed request body, so the
+// connection can serve another request. The stream ends at the request's Content-Length, so this
+// reads at most that much, through io.Discard's pooled buffer; a fully read body costs one read
+// that returns EOF. It reports false when the body could not be drained, including a stream that
+// something else already released, since what that left unread is unknown.
+func drainRequestBodyStream(ctx *fasthttp.RequestCtx) bool {
+	stream := ctx.RequestBodyStream()
+	if stream == nil {
+		return false
+	}
+	_, err := io.Copy(io.Discard, stream)
+	return err == nil
+}
+
+// RequestBodyMiddleware enforces the request body limit and decides which bodies stay streamed
+// when the server streams request bodies (fasthttp StreamRequestBody, which the gateway turns on
+// so multipart uploads are not buffered). On a server that does not stream it does nothing.
+//
+// Only a plain multipart upload of known length stays a stream: the handler parses it from the
+// connection with an 8 KB in-memory limit, so files go straight to temp files. fasthttp's own
+// parse while reading the request buffered the first 16 MB of every file (~64 MB allocated per
+// upload) before spilling. Every other body is read here into the request's pooled buffer, which
+// leaves the request exactly as a buffering server would: no body stream, Body() in memory. Code
+// that reads a body stream as a large payload (GenAI request-type detection, streaming
+// decompression) therefore sees no change.
+//
+// A streaming server does not reject a body over MaxRequestBodySize (it streams it instead), so
+// the limit is enforced here with the same 413 the server's error handler sends: from
+// Content-Length, or while reading a chunked body.
+//
+// A streaming server also does not drain a body the handler left unread: the rest of it stays on
+// the keep-alive connection and is parsed as the next request. An upload answered before its form
+// is read (an auth failure, a rate limit) is therefore drained here after the handler, at most its
+// Content-Length, which is within the limit: a buffering server read it all before the handler, so
+// the client still gets the response and keeps the connection. A refused oversized body is not
+// drained; the response closes the connection, as the buffering server's 413 did.
+func RequestBodyMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	limit := requestBodyCap(config)
+	tooLarge := lib.RequestErrorHandler(limit>>20, func(format string, args ...any) {
+		if logger != nil {
+			logger.Warn(format, args...)
+		}
+	})
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if !ctx.Request.IsBodyStream() {
+				next(ctx)
+				return
+			}
+			contentLength := ctx.Request.Header.ContentLength()
+			if contentLength > limit {
+				tooLarge(ctx, fasthttp.ErrBodyTooLarge)
+				ctx.SetConnectionClose()
+				return
+			}
+			if contentLength >= 0 && len(ctx.Request.Header.MultipartFormBoundary()) > 0 && len(ctx.Request.Header.ContentEncoding()) == 0 {
+				next(ctx)
+				if !drainRequestBodyStream(ctx) {
+					ctx.SetConnectionClose()
+				}
+				return
+			}
+			if contentLength < 0 {
+				// Chunked: read at most one byte past the limit, so an oversized body is
+				// refused without being held.
+				body, err := io.ReadAll(io.LimitReader(ctx.RequestBodyStream(), int64(limit)+1))
+				if err != nil {
+					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to read request body: %v", err))
+					ctx.SetConnectionClose()
+					return
+				}
+				if len(body) > limit {
+					tooLarge(ctx, fasthttp.ErrBodyTooLarge)
+					ctx.SetConnectionClose()
+					return
+				}
+				ctx.Request.SetBodyRaw(body)
+			} else if body := ctx.Request.Body(); len(body) != contentLength {
+				// Body() reads the stream into the pooled body buffer; a short read means
+				// the connection failed mid-body.
+				SendError(ctx, fasthttp.StatusBadRequest, "failed to read request body: incomplete body")
+				ctx.SetConnectionClose()
+				return
+			}
+			next(ctx)
+		}
+	}
+}
+
+// BasePathRootHandler wraps a server's root handler with the base-path strip
+// when server.base_path is configured, and returns next unchanged otherwise.
+// ServerRootHandler applies it; a build that assembles its own root chain
+// instead of calling ServerRootHandler wraps that chain with it, once and
+// outermost. Wrapping a chain that already went through ServerRootHandler
+// would strip the prefix twice.
+func BasePathRootHandler(config *lib.Config, next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	if config == nil || config.ServerConfig == nil || config.ServerConfig.BasePath == "" {
+		return next
+	}
+	return basePathMiddleware(config.ServerConfig.BasePath)(next)
+}
+
+// basePathMiddleware strips basePath (normalized, e.g. "/bifrost") from the
+// request URI so every route, auth whitelist entry and path check downstream
+// sees the root-relative path. Requests that do not carry the prefix pass
+// through untouched, so proxies that already strip it, and unprefixed probes
+// such as /health, keep working. The match is on whole segments: "/bifrostx"
+// is not stripped. It is unexported so ServerRootHandler stays the only place
+// it is wired; a second wiring would strip the prefix twice.
+//
+// A same-origin Location on the response to a prefixed request gets the prefix
+// back (see prefixLocation): the router builds its trailing-slash and
+// fixed-path redirects from the stripped path, which would otherwise send the
+// browser out from under the proxy prefix.
+func basePathMiddleware(basePath string) schemas.BifrostHTTPMiddleware {
+	prefix := []byte(basePath)
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if !stripBasePath(ctx, prefix) {
+				next(ctx)
+				return
+			}
+			next(ctx)
+			prefixLocation(ctx, prefix)
+		}
+	}
+}
+
+// stripBasePath rewrites the raw request URI without the prefix and reports
+// whether it did. The URI is re-set, not just the path, so Path() and
+// PathOriginal() agree afterwards.
+func stripBasePath(ctx *fasthttp.RequestCtx, prefix []byte) bool {
+	uri := ctx.Request.URI()
+	rawPath := uri.PathOriginal()
+	if !bytes.HasPrefix(rawPath, prefix) {
+		return false
+	}
+	rest := rawPath[len(prefix):]
+	if len(rest) > 0 && rest[0] != '/' {
+		return false
+	}
+	var stack [512]byte
+	buf := stack[:0]
+	if len(rest) == 0 {
+		buf = append(buf, '/')
+	} else {
+		buf = append(buf, rest...)
+	}
+	if query := uri.QueryString(); len(query) > 0 {
+		buf = append(buf, '?')
+		buf = append(buf, query...)
+	}
+	ctx.Request.SetRequestURIBytes(buf)
+	return true
+}
+
+// prefixLocation puts prefix in front of the path of the response's Location
+// header when it points at this origin (a root-relative path, or an absolute
+// URL whose host is the request's Host) and is not already under prefix.
+// Protocol-relative and other-origin URLs are left alone, as is a Location the
+// handler marked with markLocationExternal.
+func prefixLocation(ctx *fasthttp.RequestCtx, prefix []byte) {
+	loc := ctx.Response.Header.Peek(fasthttp.HeaderLocation)
+	if len(loc) == 0 {
+		return
+	}
+	if external, _ := ctx.UserValue(locationExternalKey).(bool); external {
+		return
+	}
+	var pathStart int
+	if loc[0] == '/' {
+		if len(loc) > 1 && (loc[1] == '/' || loc[1] == '\\') {
+			return
+		}
+	} else {
+		sep := bytes.Index(loc, []byte("://"))
+		if sep <= 0 {
+			return
+		}
+		authorityStart := sep + len("://")
+		authority := loc[authorityStart:]
+		if end := bytes.IndexAny(authority, "/?#"); end >= 0 {
+			authority = authority[:end]
+		}
+		if !bytes.EqualFold(authority, ctx.Host()) {
+			return
+		}
+		pathStart = authorityStart + len(authority)
+	}
+	path := loc[pathStart:]
+	if bytes.HasPrefix(path, prefix) && (len(path) == len(prefix) || bytes.IndexByte([]byte("/?#"), path[len(prefix)]) >= 0) {
+		return
+	}
+	out := make([]byte, 0, len(loc)+len(prefix))
+	out = append(out, loc[:pathStart]...)
+	out = append(out, prefix...)
+	out = append(out, path...)
+	ctx.Response.Header.SetBytesV(fasthttp.HeaderLocation, out)
 }
 
 // InferenceOuterMiddlewares returns the middlewares that wrap every inference route
@@ -142,27 +399,6 @@ func InferenceOuterMiddlewares(tm *TracingMiddleware, cors *CorsMiddleware) []sc
 	return []schemas.BifrostHTTPMiddleware{tm.Middleware(), RecoveryMiddleware(cors)}
 }
 
-// clientForwardedIP returns the client-supplied originating IP from reverse-proxy
-// headers, or "" if none are present. X-Forwarded-For may be a comma-separated list
-// (client, proxy1, proxy2); the leftmost entry is the original client.
-//
-// These headers are caller-controlled and unauthenticated unless Bifrost sits behind
-// a trusted proxy that overwrites them. The value is logged as http.forwarded_for —
-// separate from the authoritative http.remote_addr (the real TCP peer) — so a forged
-// header cannot mask the true peer in the access log.
-func clientForwardedIP(ctx *fasthttp.RequestCtx) string {
-	if xff := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Forwarded-For"))); xff != "" {
-		if first, _, found := strings.Cut(xff, ","); found {
-			return strings.TrimSpace(first)
-		}
-		return xff
-	}
-	if xrip := strings.TrimSpace(string(ctx.Request.Header.Peek("X-Real-IP"))); xrip != "" {
-		return xrip
-	}
-	return ""
-}
-
 // corsMiddlewareConfig is an immutable snapshot of the CORS-relevant client config.
 // The slices are cloned at construction so a hot reload mutating the source
 // ClientConfig in place cannot race with in-flight requests reading these fields.
@@ -170,6 +406,25 @@ type corsMiddlewareConfig struct {
 	dumpErrorsInConsoleLogs bool
 	allowedOrigins          []string
 	allowedHeaders          []string
+	allowHeaders            string // Access-Control-Allow-Headers when nothing is reflected, joined once
+}
+
+// defaultCorsAllowedHeaders are allowed on every route. SetupTokenHeader is sent by the dashboard
+// on every call while the OSS setup lock is active, so a UI served from another origin must be able
+// to preflight it. The MCP Streamable HTTP headers ride on every request a browser MCP client makes
+// after initialize, and on every 2026-07-28 request.
+var defaultCorsAllowedHeaders = []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", "X-Bifrost-View-As", SetupTokenHeader,
+	"MCP-Protocol-Version", "Mcp-Session-Id", "Mcp-Method", "Mcp-Name", "Last-Event-ID"}
+
+// corsAllowHeaders joins the default headers with the configured extras, skipping duplicates.
+func corsAllowHeaders(configured []string) string {
+	headers := slices.Clone(defaultCorsAllowedHeaders)
+	for _, header := range configured {
+		if header != "*" && !slices.Contains(headers, header) {
+			headers = append(headers, header)
+		}
+	}
+	return strings.Join(headers, ", ")
 }
 
 // newCorsMiddlewareConfig builds an immutable snapshot from the live config,
@@ -182,6 +437,7 @@ func newCorsMiddlewareConfig(config *lib.Config) *corsMiddlewareConfig {
 		dumpErrorsInConsoleLogs: config.ClientConfig.DumpErrorsInConsoleLogs,
 		allowedOrigins:          slices.Clone(config.ClientConfig.AllowedOrigins),
 		allowedHeaders:          slices.Clone(config.ClientConfig.AllowedHeaders),
+		allowHeaders:            corsAllowHeaders(config.ClientConfig.AllowedHeaders),
 	}
 }
 
@@ -206,6 +462,26 @@ func NewCorsMiddleware(config *lib.Config) *CorsMiddleware {
 // client config is refreshed, mirroring how AuthMiddleware is updated.
 func (c *CorsMiddleware) UpdateConfig(config *lib.Config) {
 	c.config.Store(newCorsMiddlewareConfig(config))
+}
+
+// logRequestTarget is the request target for the access log with api-key and key query values redacted: the
+// Azure Voice Live JavaScript SDK always sends its key, a virtual key here, as api-key, and a Gemini Live
+// client may send its own as key. The parsed names are checked, so a percent-encoded name is redacted too.
+func logRequestTarget(ctx *fasthttp.RequestCtx) string {
+	uri := ctx.RequestURI()
+	if bytes.IndexByte(uri, '?') < 0 || (!ctx.QueryArgs().Has("api-key") && !ctx.QueryArgs().Has("key")) {
+		return string(uri)
+	}
+	// Args.Set would replace only the first of a repeated name, so every pair is rebuilt.
+	var args fasthttp.Args
+	for name, value := range ctx.QueryArgs().All() {
+		if string(name) == "api-key" || string(name) == "key" {
+			args.AddBytesK(name, schemas.RedactedAttrValue)
+			continue
+		}
+		args.AddBytesKV(name, value)
+	}
+	return string(ctx.Request.URI().PathOriginal()) + "?" + args.String()
 }
 
 // CorsMiddleware handles CORS headers for localhost and configured allowed origins
@@ -234,12 +510,12 @@ func (c *CorsMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 					}
 					logBuilder := logger.LogHTTPRequest(level, "request completed").
 						Str("http.method", string(ctx.Method())).
-						Str("http.target", string(ctx.RequestURI())).
+						Str("http.target", logRequestTarget(ctx)).
 						Int("http.status_code", statusCode).
 						Int64("http.request_duration_ms", time.Since(startTime).Milliseconds()).
 						Str("http.remote_addr", ctx.RemoteAddr().String()).
 						Str("http.user_agent", string(ctx.Request.Header.UserAgent()))
-					if forwarded := clientForwardedIP(ctx); forwarded != "" {
+					if forwarded := lib.ClientForwardedIP(ctx); forwarded != "" {
 						logBuilder = logBuilder.Str("http.forwarded_for", forwarded)
 					}
 					if traceID, ok := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
@@ -286,42 +562,83 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 		isLocalhostOrigin(origin) ||
 		slices.Contains(cfg.allowedOrigins, origin)
 
-	// SetupTokenHeader is sent by the dashboard on every call while the OSS setup lock is
-	// active, so a UI served from another origin must be able to preflight it.
-	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", SetupTokenHeader}
-	if slices.Contains(cfg.allowedHeaders, "*") {
-		if credentialed {
-			// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
-			// wildcard when Access-Control-Allow-Credentials: true is set — browsers
-			// interpret it as a literal header name. For credentialed preflight requests,
-			// reflect back the requested headers instead.
-			if requestedHeaders := string(ctx.Request.Header.Peek("Access-Control-Request-Headers")); requestedHeaders != "" {
-				allowedHeaders = []string{requestedHeaders}
-			}
-			// For non-preflight requests (no Access-Control-Request-Headers), keep defaults.
-		} else {
-			allowedHeaders = []string{"*"}
-		}
-	} else if len(cfg.allowedHeaders) > 0 {
-		// append allowed headers from config to the default headers
-		for _, header := range cfg.allowedHeaders {
-			if !slices.Contains(allowedHeaders, header) {
-				allowedHeaders = append(allowedHeaders, header)
-			}
-		}
-	}
 	// Check if origin is allowed (localhost always allowed + configured origins)
 	if allowed {
+		// Built only for an allowed origin: a refused one gets no CORS headers, so it costs nothing.
+		allowHeaders := cfg.allowHeaders
+		requested := ctx.Request.Header.Peek("Access-Control-Request-Headers")
+		if slices.Contains(cfg.allowedHeaders, "*") {
+			if credentialed {
+				// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
+				// wildcard when Access-Control-Allow-Credentials: true is set — browsers
+				// interpret it as a literal header name. For credentialed preflight requests,
+				// reflect back the requested headers instead.
+				if len(requested) > 0 {
+					allowHeaders = string(requested)
+				}
+				// For non-preflight requests (no Access-Control-Request-Headers), keep defaults.
+			} else {
+				// "*" never covers Authorization (Fetch standard), so it stays listed explicitly.
+				allowHeaders = cfg.allowHeaders + ", *"
+			}
+		} else if len(requested) > 0 {
+			// Mcp-Param-* names come from each tool's x-mcp-header annotations, so they are echoed from the preflight.
+			allowHeaders = appendMCPParamHeaders(allowHeaders, requested)
+		}
 		ctx.Response.Header.Set("Access-Control-Allow-Origin", origin)
 		ctx.Response.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD")
-		ctx.Response.Header.Set("Access-Control-Allow-Headers", strings.Join(allowedHeaders, ", "))
+		ctx.Response.Header.Set("Access-Control-Allow-Headers", allowHeaders)
 		if credentialed {
 			ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 		}
 		ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
+		// Lets browser clients read the x-bifrost-* headers, which carry extra_fields in headers mode.
+		ctx.Response.Header.Set("Access-Control-Expose-Headers", lib.ExposedResponseHeaders)
 		// Vary: Origin tells caches that the response varies based on the Origin
 		// request header, preventing incorrect CORS headers from being served.
 		ctx.Response.Header.Set("Vary", "Origin")
+	}
+	return allowed
+}
+
+const (
+	// requestDecompressionMaxRatio bounds how far a compressed request body may expand relative
+	// to the bytes received. Real JSON compresses a few times to a few tens of times; only a bomb
+	// does better than this.
+	requestDecompressionMaxRatio = 100
+	// requestDecompressionFloor is the expansion every body is allowed whatever its size, so a
+	// small, well-compressed request is never refused for compressing well.
+	requestDecompressionFloor = 1 << 20
+	// requestDecompressionBudgetFactor sizes the process-wide budget of decompressed bytes in
+	// flight, as a multiple of the request body cap. Bodies are charged what they inflate to.
+	requestDecompressionBudgetFactor = 4
+)
+
+// requestBodyCap is the configured request body cap in bytes, 100 MiB when unset.
+func requestBodyCap(config *lib.Config) int {
+	if config != nil && config.ClientConfig != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
+		return config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+	}
+	return 100 * 1024 * 1024
+}
+
+// decompressionAllowance is what a compressed body of compressedLen bytes may expand to: at
+// most requestDecompressionMaxRatio times its size, never below the floor, never above the cap.
+// A negative length (a chunked body, whose size is unknown) is allowed the cap.
+func decompressionAllowance(compressedLen, maxRequestBodyBytes int) int {
+	if compressedLen < 0 {
+		return maxRequestBodyBytes
+	}
+	// Compared before multiplying: a length past this would overflow int and wrap below the floor.
+	if compressedLen > maxRequestBodyBytes/requestDecompressionMaxRatio {
+		return maxRequestBodyBytes
+	}
+	allowed := compressedLen * requestDecompressionMaxRatio
+	if allowed < requestDecompressionFloor {
+		allowed = requestDecompressionFloor
+	}
+	if allowed > maxRequestBodyBytes {
+		allowed = maxRequestBodyBytes
 	}
 	return allowed
 }
@@ -333,7 +650,20 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 //     matching the response-side pattern in core/providers/utils.
 //   - Small (CL ≤ threshold): buffered decompression via io.ReadAll + SetBodyRaw,
 //     with decompression bomb protection via MaxRequestBodySizeMB.
+//
+// This middleware wraps the router, so it runs before route matching and before every auth
+// middleware, for anyone who can reach the listener. The work it does must therefore stay in
+// proportion to what the caller sent: the cap alone is the wire cap too, and lets a few hundred
+// bytes become a 100 MiB buffer. Two bounds keep it proportional. Each body may expand only to
+// its decompressionAllowance, and each buffered decompression charges the bytes it actually
+// inflates to a process-wide budget, as they are produced, for the life of the request, so
+// buffers cannot stack up without bound; a request that cannot be charged is answered 503 at
+// once. The allowance is not reserved up front: past cap/requestDecompressionMaxRatio
+// compressed it is the whole cap, and booking that for every multi-MB SDK body would refuse
+// the fifth concurrent one while the process holds a fraction of the budget. Streaming bodies
+// are not buffered here and take no charge.
 func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	budget := semaphore.NewWeighted(int64(requestDecompressionBudgetFactor) * int64(requestBodyCap(config)))
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			if len(ctx.Request.Header.ContentEncoding()) == 0 {
@@ -345,13 +675,25 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// bounds what any codec may expand to, and the zstd decoder itself refuses
 			// frames whose declared window or content size exceeds its bounds before
 			// allocating them (providerUtils.ZstdDecoderMaxWindow).
-			maxRequestBodyBytes := 100 * 1024 * 1024 // default 100 MB (matches decodeRequestBodyWithLimit fallback)
-			if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
-				maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+			maxRequestBodyBytes := requestBodyCap(config)
+			allowed := decompressionAllowance(ctx.Request.Header.ContentLength(), maxRequestBodyBytes)
+			refuseExpansion := func(compressedLen int) {
+				if allowed >= maxRequestBodyBytes {
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+					return
+				}
+				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds the expansion allowed for a %d-byte compressed body: at most %d bytes (%dx its size, never below %d bytes or above %d bytes)", compressedLen, allowed, requestDecompressionMaxRatio, requestDecompressionFloor, maxRequestBodyBytes))
 			}
 
 			if shouldStreamDecompress(config, ctx) {
-				cleanup, applied, err := streamingDecompress(ctx, maxRequestBodyBytes)
+				cleanup, applied, err := streamingDecompress(ctx, allowed, maxRequestBodyBytes)
+				if errors.Is(err, errCompressedBodyTooLarge) {
+					// Refused from its length without being read: close the connection so the
+					// unread body is not parsed as the next request.
+					ctx.SetConnectionClose()
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+					return
+				}
 				if providerUtils.IsDecompressionSizeLimitError(err) {
 					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
 					return
@@ -371,10 +713,17 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				// through to the buffered decompression path below.
 			}
 
-			// Buffered path: small compressed request — materialize fully.
-			body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
+			// Buffered path: small compressed request — materialize fully. The body is in hand
+			// now, so the allowance follows its real length rather than the declared one.
+			allowed = decompressionAllowance(len(ctx.Request.Body()), maxRequestBodyBytes)
+			body, charged, err := decodeRequestBodyWithLimit(&ctx.Request, allowed, budget)
+			defer budget.Release(charged)
+			if errors.Is(err, errDecompressionBudgetExhausted) {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "too many compressed request bodies are being decompressed at once; retry shortly or send the body uncompressed")
+				return
+			}
 			if errors.Is(err, errRequestBodyTooLarge) {
-				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+				refuseExpansion(len(ctx.Request.Body()))
 				return
 			}
 			if providerUtils.IsDecompressionSizeLimitError(err) {
@@ -412,27 +761,39 @@ func shouldStreamDecompress(config *lib.Config, ctx *fasthttp.RequestCtx) bool {
 	return int64(contentLength) > threshold
 }
 
-// streamingDecompress wraps the request body stream with a streaming decompression
-// reader, avoiding full body materialization for large compressed requests.
-// The decompressed stream is capped at maxRequestBodyBytes: once a handler has
-// read past the cap the stream fails with errRequestBodyTooLarge, so a
-// decompression bomb cannot expand beyond the configured request limit.
+// streamingDecompress replaces the request body with a streaming decompression reader, so a
+// large compressed request is never held in memory decompressed. The decompressed stream is
+// capped at maxRequestBodyBytes: once a handler has read past the cap the stream fails with
+// errRequestBodyTooLarge, so a decompression bomb cannot expand beyond the configured limit.
+//
+// The compressed bytes are read into memory first, up to maxCompressedBytes. The reader cannot
+// wrap the request's own body stream: under StreamRequestBody that stream is fasthttp's
+// connection reader, and SetBodyStream releases it, so the next read panicked with
+// "BUG: reading released body stream". Holding the compressed body is what the buffered path
+// costs too; only the decompressed body is streamed.
+//
 // Returns (cleanup, applied, err):
-//   - applied=true: body stream was wrapped; caller must invoke cleanup after the
+//   - applied=true: the body stream was replaced; caller must invoke cleanup after the
 //     handler chain completes and the body is fully consumed.
 //   - applied=false: no body stream available (StreamRequestBody not enabled on the
 //     server). Caller should fall back to the buffered decompression path.
-func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes int) (cleanup func(), applied bool, err error) {
+//   - err wraps errCompressedBodyTooLarge when the compressed body is over maxCompressedBytes.
+func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes, maxCompressedBytes int) (cleanup func(), applied bool, err error) {
 	bodyStream := ctx.RequestBodyStream()
 	if bodyStream == nil {
 		return func() {}, false, nil
+	}
+
+	compressed, err := readCompressedBody(bodyStream, ctx.Request.Header.ContentLength(), maxCompressedBytes)
+	if err != nil {
+		return nil, false, err
 	}
 
 	encoding := strings.ToLower(strings.TrimSpace(
 		string(ctx.Request.Header.ContentEncoding()),
 	))
 
-	decompReader, cleanup, err := newDecompressReader(bodyStream, encoding)
+	decompReader, cleanup, err := newDecompressReader(compressed, encoding)
 	if err != nil {
 		return nil, false, err
 	}
@@ -442,6 +803,122 @@ func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes int) (cle
 	ctx.Request.Header.Del(fasthttp.HeaderContentLength)
 
 	return cleanup, true, nil
+}
+
+var errCompressedBodyTooLarge = errors.New("compressed request body exceeds max allowed size")
+
+// compressedBodyChunkSize is the size of the pooled chunks a known-length compressed body is read
+// into, and so the most memory a client that declares a large body but sends little can pin.
+const compressedBodyChunkSize = 1 << 20
+
+type compressedBodyChunk [compressedBodyChunkSize]byte
+
+// compressedBodyChunkPool holds the chunks of known-length compressed bodies. Bodies on this path
+// are over the large-payload threshold, so reusing chunks avoids a fresh allocation of the whole
+// body per request. A chunk's bytes are not cleared on release: only the part a body filled is read.
+var compressedBodyChunkPool = sync.Pool{New: func() any { return new(compressedBodyChunk) }}
+
+// readCompressedBody reads a compressed request body of contentLength bytes (-1 when chunked)
+// from its stream, refusing one over maxBytes, and returns a reader over it. A known length is
+// read into pooled chunks of compressedBodyChunkSize, so a client that declares a large body but
+// sends little holds one chunk, not a buffer of the declared size, and each byte is copied once
+// (from the stream into its chunk). The reader returns each chunk to the pool once it has handed
+// out the chunk's last byte (see pooledChunkReader).
+func readCompressedBody(stream io.Reader, contentLength, maxBytes int) (io.Reader, error) {
+	if contentLength > maxBytes {
+		return nil, errCompressedBodyTooLarge
+	}
+	if contentLength >= 0 {
+		r := &pooledChunkReader{
+			chunks: make([]*compressedBodyChunk, 0, (contentLength+compressedBodyChunkSize-1)/compressedBodyChunkSize),
+			size:   contentLength,
+		}
+		for remaining := contentLength; remaining > 0; {
+			chunk := compressedBodyChunkPool.Get().(*compressedBodyChunk)
+			n := min(remaining, compressedBodyChunkSize)
+			if _, err := io.ReadFull(stream, chunk[:n]); err != nil {
+				compressedBodyChunkPool.Put(chunk)
+				r.release()
+				if err == io.EOF {
+					err = io.ErrUnexpectedEOF
+				}
+				return nil, fmt.Errorf("read compressed request body: %w", err)
+			}
+			r.chunks = append(r.chunks, chunk)
+			remaining -= n
+		}
+		return r, nil
+	}
+	b, err := io.ReadAll(io.LimitReader(stream, int64(maxBytes)+1))
+	if err != nil {
+		return nil, fmt.Errorf("read compressed request body: %w", err)
+	}
+	if len(b) > maxBytes {
+		return nil, errCompressedBodyTooLarge
+	}
+	return bytes.NewReader(b), nil
+}
+
+// pooledChunkReader reads size bytes held in pooled chunks, in order: every chunk is full except
+// the last. It returns a chunk to compressedBodyChunkPool as soon as the chunk's last byte has been
+// read or written out. Nothing else holds a chunk (Read copies out of it and an io.Writer must not
+// retain what it is given), so a chunk is never reused while it can still be read. A body that is
+// not read to the end keeps its unread chunks until the garbage collector frees them.
+type pooledChunkReader struct {
+	chunks []*compressedBodyChunk
+	off    int // read offset in chunks[0]
+	size   int // bytes not yet read
+}
+
+// current returns the unread bytes of the first chunk.
+func (r *pooledChunkReader) current() []byte {
+	return r.chunks[0][r.off:min(compressedBodyChunkSize, r.off+r.size)]
+}
+
+// advance marks n bytes of the first chunk read and releases the chunk once it is used up.
+func (r *pooledChunkReader) advance(n int) {
+	r.off += n
+	r.size -= n
+	if r.off == compressedBodyChunkSize || r.size == 0 {
+		compressedBodyChunkPool.Put(r.chunks[0])
+		r.chunks[0] = nil
+		r.chunks = r.chunks[1:]
+		r.off = 0
+	}
+}
+
+func (r *pooledChunkReader) Read(p []byte) (int, error) {
+	if r.size == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.current())
+	r.advance(n)
+	return n, nil
+}
+
+// WriteTo writes the unread bytes to w chunk by chunk, without an intermediate buffer.
+func (r *pooledChunkReader) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+	for r.size > 0 {
+		n, err := w.Write(r.current())
+		total += int64(n)
+		if n > 0 {
+			r.advance(n)
+		}
+		if err != nil {
+			return total, err
+		}
+	}
+	return total, nil
+}
+
+// release returns every chunk the reader still holds, on the error path before it is handed out.
+func (r *pooledChunkReader) release() {
+	for i, chunk := range r.chunks {
+		compressedBodyChunkPool.Put(chunk)
+		r.chunks[i] = nil
+	}
+	r.chunks, r.off, r.size = nil, 0, 0
 }
 
 var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")
@@ -476,27 +953,57 @@ func (l *limitedBodyReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body.
-func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
+var errDecompressionBudgetExhausted = errors.New("decompressed request bytes in flight exceed the process budget")
+
+// budgetedReader charges every byte it hands out to budget, failing with
+// errDecompressionBudgetExhausted once the budget cannot cover them. The caller releases charged.
+type budgetedReader struct {
+	r       io.Reader
+	budget  *semaphore.Weighted
+	charged int64
+}
+
+func (b *budgetedReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if n > 0 {
+		if !b.budget.TryAcquire(int64(n)) {
+			return 0, errDecompressionBudgetExhausted
+		}
+		b.charged += int64(n)
+	}
+	return n, err
+}
+
+// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body. With
+// a non-nil budget the decoded bytes are charged to it as they are produced; charged is what the
+// caller must release, whether or not decoding succeeded.
+func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int, budget *semaphore.Weighted) (body []byte, charged int64, err error) {
 	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
 	bodyReader := bytes.NewReader(req.Body())
 
 	var reader io.Reader = bodyReader
 	cleanup := func() {}
 	if encoding != "" {
-		var err error
 		reader, cleanup, err = newDecompressReader(bodyReader, encoding)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	defer cleanup()
 
-	body, err := io.ReadAll(newLimitedBodyReader(reader, maxRequestBodyBytes))
-	if err != nil {
-		return nil, err
+	var budgeted *budgetedReader
+	if budget != nil {
+		budgeted = &budgetedReader{r: reader, budget: budget}
+		reader = budgeted
 	}
-	return body, nil
+	body, err = io.ReadAll(newLimitedBodyReader(reader, maxRequestBodyBytes))
+	if budgeted != nil {
+		charged = budgeted.charged
+	}
+	if err != nil {
+		return nil, charged, err
+	}
+	return body, charged, nil
 }
 
 // newDecompressReader wraps r with a decompression reader for the given encoding.
@@ -603,6 +1110,7 @@ func TransportPreAuthInterceptorMiddleware(config *lib.Config) schemas.BifrostHT
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
 			}
+			retainRealtimeTurnValues(ctx, bifrostCtx)
 			next(ctx)
 		}
 	}
@@ -669,6 +1177,7 @@ func TransportInterceptorMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			for key, value := range bifrostCtx.GetUserValues() {
 				ctx.SetUserValue(key, value)
 			}
+			retainRealtimeTurnValues(ctx, bifrostCtx)
 			next(ctx)
 
 			deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
@@ -938,9 +1447,11 @@ func getBifrostContextFromFastHTTP(ctx *fasthttp.RequestCtx) *schemas.BifrostCon
 }
 
 // fasthttpToHTTPRequest populates a pooled HTTPRequest from fasthttp context.
+// Path is the raw request path (PathOriginal), the one fasthttp/router dispatched
+// on, so a plugin that decides by path sees the route that will actually run.
 func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	req.Method = string(ctx.Method())
-	req.Path = string(ctx.Path())
+	req.Path = string(ctx.Request.URI().PathOriginal())
 
 	// Copy headers
 	for key, value := range ctx.Request.Header.All() {
@@ -973,18 +1484,11 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 		req.PathParams[keyStr] = valueStr
 	})
 
-	// Skip body copy for large payloads.
-	// Check threshold first (set by RequestThresholdMiddleware before this middleware runs)
-	// because the large-payload-mode flag is only set later inside the handler hook.
-	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
-		cl := int64(ctx.Request.Header.ContentLength())
-		// Skip body copy when CL exceeds threshold OR CL is unknown (streaming/
-		// chunked, e.g. after streaming decompression deletes the header).
-		if cl > threshold || cl < 0 {
-			return
-		}
-	}
-	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+	switch pluginRequestBodyMode(ctx) {
+	case pluginBodySkip:
+		return
+	case pluginBodySource:
+		req.BodySource = multipartFormBodySource{ctx: ctx}
 		return
 	}
 	body := ctx.Request.Body()
@@ -994,16 +1498,81 @@ func fasthttpToHTTPRequest(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) {
 	}
 }
 
+// pluginBodyMode is how fasthttpToHTTPRequest gives the request body to transport plugins.
+type pluginBodyMode int
+
+const (
+	pluginBodyCopy   pluginBodyMode = iota // copied into HTTPRequest.Body
+	pluginBodySkip                         // a large payload streamed to the provider: not given
+	pluginBodySource                       // a multipart form: given as HTTPRequest.BodySource
+)
+
+// pluginRequestBodyMode picks how transport plugins see the request body.
+//
+// Large payloads are not given at all. The threshold is checked first (set by
+// RequestThresholdMiddleware before this middleware runs) because the large-payload-mode flag is
+// only set later inside the handler hook. A body over the threshold, or of unknown length
+// (streaming/chunked, e.g. after streaming decompression deletes the header), is skipped.
+//
+// Multipart forms are given as a stream. fasthttp parses a multipart body while reading the
+// request and keeps files over 16 MB in temp files, so copying it into HTTPRequest.Body means
+// rebuilding the whole form in memory, once per transport phase, and writing that copy back
+// deletes the temp files and makes the handler parse the form again fully in memory. A 55 MB
+// Files API upload cost ~500 MiB that way.
+func pluginRequestBodyMode(ctx *fasthttp.RequestCtx) pluginBodyMode {
+	if threshold, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64); ok && threshold > 0 {
+		cl := int64(ctx.Request.Header.ContentLength())
+		if cl > threshold || cl < 0 {
+			return pluginBodySkip
+		}
+	}
+	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
+		return pluginBodySkip
+	}
+	if len(ctx.Request.Header.MultipartFormBoundary()) > 0 {
+		return pluginBodySource
+	}
+	return pluginBodyCopy
+}
+
+// multipartFormBodySource streams a request's multipart form for transport plugins, through
+// schemas.NewMultipartFormBodySource: the parsed form is serialized as it is read, its files from
+// their temp files, so it is never held in memory as one body. The form is the request's shared
+// parse (lib.SharedMultipartForm): the one fasthttp parsed while reading the request, the one the
+// passthrough route already parsed, or one parsed on the first Open and cached on the request,
+// where the handler reuses it. Nothing is parsed until a plugin opens the body, so Size is unknown
+// (-1).
+type multipartFormBodySource struct {
+	ctx *fasthttp.RequestCtx
+}
+
+func (s multipartFormBodySource) Size() int64 { return -1 }
+
+func (s multipartFormBodySource) Open() (io.ReadCloser, error) {
+	form, types, err := lib.SharedMultipartForm(s.ctx)
+	if err != nil {
+		return nil, err
+	}
+	src, err := schemas.NewMultipartFormBodySource(form, string(s.ctx.Request.Header.MultipartFormBoundary()), types)
+	if err != nil {
+		return nil, err
+	}
+	return src.Open()
+}
+
 // applyHTTPRequestToCtx applies modifications from HTTPRequest back to fasthttp context.
 // Reports false when a plugin rewrote the method or path: the request has already been
 // failed with 409 and the caller must stop.
 func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) bool {
 	// If path/method is different, throw error
-	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Path()) {
-		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Path()))
+	if req.Method != string(ctx.Method()) || req.Path != string(ctx.Request.URI().PathOriginal()) {
+		logger.Error("request method/path mismatch: %s %s != %s %s", req.Method, req.Path, string(ctx.Method()), string(ctx.Request.URI().PathOriginal()))
 		SendError(ctx, fasthttp.StatusConflict, "request method/path was modified by a plugin, this is not allowed")
 		return false
 	}
+	// How the body reached the plugins, decided before their headers are applied: a plugin that
+	// rewrites Content-Type must not turn a multipart upload into a body compared byte by byte.
+	bodyMode := pluginRequestBodyMode(ctx)
 	// Apply headers
 	for key, value := range req.Headers {
 		ctx.Request.Header.Set(key, value)
@@ -1012,9 +1581,14 @@ func applyHTTPRequestToCtx(ctx *fasthttp.RequestCtx, req *schemas.HTTPRequest) b
 	for key, value := range req.Query {
 		ctx.Request.URI().QueryArgs().Set(key, value)
 	}
-	// Apply body if set
-	if req.Body != nil {
+	// Apply the body only when a plugin changed it: rewriting an unchanged body is a full copy,
+	// and on a multipart request it deletes the parsed form's temp files. Where the body was not
+	// copied into req.Body, a non-nil Body can only have been set by a plugin, and comparing
+	// would read the very body the copy was skipped for.
+	if req.Body != nil && (bodyMode != pluginBodyCopy || !bytes.Equal(req.Body, ctx.Request.Body())) {
 		ctx.Request.SetBody(req.Body)
+		// A form parsed from the old body (a plugin read the upload) describes bytes that are gone.
+		lib.ResetMultipartForm(ctx)
 	}
 	return true
 }
@@ -1109,6 +1683,9 @@ func validateSession(_ *fasthttp.RequestCtx, store configstore.ConfigStore, toke
 // isInferenceWSEndpoint returns true for WebSocket endpoints that should use
 // standard inference auth (Bearer/Basic/VK) rather than dashboard session tokens.
 func isInferenceWSEndpoint(path string) bool {
+	if path == integrations.ChatGPTCodexResponsesRoute {
+		return true
+	}
 	for strings.HasPrefix(path, "/openai/") {
 		path = strings.TrimPrefix(path, "/openai")
 	}
@@ -1117,7 +1694,9 @@ func isInferenceWSEndpoint(path string) bool {
 	case "/v1/responses",
 		"/responses",
 		"/v1/realtime",
-		"/realtime":
+		"/realtime",
+		"/v1/audio/speech/stream",
+		elevenlabsDialoguePath:
 		return true
 	default:
 		return false
@@ -1138,6 +1717,13 @@ func buildRealtimeTransportPathSet() map[string]struct{} {
 	for _, path := range integrations.OpenAIRealtimeWebRTCCallsPaths("/openai") {
 		paths[path] = struct{}{}
 	}
+	for _, path := range integrations.GenAIRealtimePaths("/genai") {
+		paths[path] = struct{}{}
+	}
+	for _, path := range integrations.GenAIVertexRealtimePaths("/genai") {
+		paths[path] = struct{}{}
+	}
+	paths[elevenlabsScribePath] = struct{}{}
 	return paths
 }
 
@@ -1168,7 +1754,7 @@ func virtualKeyFromHeaders(ctx *fasthttp.RequestCtx) string {
 		}
 	}
 
-	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key"} {
+	for _, header := range []string{"x-api-key", "x-goog-api-key", "api-key", "xi-api-key"} {
 		if apiKey := strings.TrimSpace(string(ctx.Request.Header.Peek(header))); apiKey != "" {
 			if strings.HasPrefix(strings.ToLower(apiKey), governance.VirtualKeyPrefix) {
 				return apiKey
@@ -1320,31 +1906,89 @@ func originExplicitlyAllowed(origin string, allowedOrigins []string) bool {
 	if isLocalhostOrigin(origin) {
 		return true
 	}
-	explicit := slices.DeleteFunc(slices.Clone(allowedOrigins), func(entry string) bool { return entry == "*" })
-	return IsOriginAllowed(origin, explicit)
+	for _, entry := range allowedOrigins {
+		if entry == "*" {
+			continue
+		}
+		if entry == origin || (strings.Contains(entry, "*") && matchesWildcardPattern(origin, entry)) {
+			return true
+		}
+	}
+	return false
 }
 
 // isSameOrigin reports whether origin names the host the request was sent to. Browsers send
 // Origin on same-origin writes too, so the bundled dashboard served from any address carries its
 // own origin on PUT /api/config and similar calls; that is not a cross-origin request. Hosts are
-// compared case-insensitively with default ports (80 for http, 443 for https) made explicit.
+// compared case-insensitively with default ports (80 for http, 443 for https) made explicit. It
+// runs on every dashboard write, so it splits the strings in place rather than parsing a URL.
 func isSameOrigin(origin, host string) bool {
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Host == "" || host == "" {
+	scheme, rest, ok := strings.Cut(origin, "://")
+	if !ok || host == "" {
 		return false
 	}
-	defaultPort := map[string]string{"http": "80", "https": "443"}[strings.ToLower(parsed.Scheme)]
-	if defaultPort == "" {
+	var defaultPort string
+	switch {
+	case strings.EqualFold(scheme, "http"):
+		defaultPort = "80"
+	case strings.EqualFold(scheme, "https"):
+		defaultPort = "443"
+	default:
 		return false
 	}
-	withPort := func(hostport string) string {
-		hostport = strings.ToLower(hostport)
-		if _, _, err := net.SplitHostPort(hostport); err == nil {
-			return hostport
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		rest = rest[:end]
+	}
+	if at := strings.LastIndexByte(rest, '@'); at >= 0 {
+		rest = rest[at+1:]
+	}
+	originHost, originPort, ok := splitOriginHostPort(rest, defaultPort)
+	if !ok {
+		return false
+	}
+	requestHost, requestPort, ok := splitOriginHostPort(host, defaultPort)
+	return ok && originPort == requestPort && strings.EqualFold(originHost, requestHost)
+}
+
+// splitOriginHostPort splits a host[:port] (an IPv6 host in brackets) into the host and its port,
+// defaultPort when none is given. ok is false for an empty host or a port that is not a number.
+func splitOriginHostPort(hostport, defaultPort string) (host, port string, ok bool) {
+	host, port = hostport, defaultPort
+	if strings.HasPrefix(hostport, "[") {
+		end := strings.IndexByte(hostport, ']')
+		if end < 0 {
+			return "", "", false
 		}
-		return net.JoinHostPort(strings.Trim(hostport, "[]"), defaultPort)
+		host, rest := hostport[1:end], hostport[end+1:]
+		switch {
+		case rest == "":
+		case strings.HasPrefix(rest, ":"):
+			port = rest[1:]
+		default:
+			return "", "", false
+		}
+		return host, port, host != "" && isPortNumber(port)
 	}
-	return withPort(parsed.Host) == withPort(host)
+	if colon := strings.LastIndexByte(hostport, ':'); colon >= 0 {
+		host, port = hostport[:colon], hostport[colon+1:]
+		if strings.IndexByte(host, ':') >= 0 {
+			return "", "", false
+		}
+	}
+	return host, port, host != "" && isPortNumber(port)
+}
+
+// isPortNumber reports a non-empty run of ASCII digits.
+func isPortNumber(port string) bool {
+	if port == "" {
+		return false
+	}
+	for i := 0; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // refuseCrossOriginWhileAuthDisabled closes the one browser path into the open
@@ -1358,15 +2002,22 @@ func isSameOrigin(origin, host string) bool {
 // dashboard navigation) and inference routes are unaffected. Returns true if the
 // request was refused (the error response has already been written).
 func (m *AuthMiddleware) refuseCrossOriginWhileAuthDisabled(ctx *fasthttp.RequestCtx) bool {
-	origin := string(ctx.Request.Header.Peek("Origin"))
-	if origin == "" {
-		return false
-	}
 	var allowed []string
 	if stored := m.allowedOrigins.Load(); stored != nil {
 		allowed = *stored
 	}
-	if originExplicitlyAllowed(origin, allowed) || isSameOrigin(origin, string(ctx.Host())) {
+	return refuseCrossOriginOnOpenAPI(ctx, allowed)
+}
+
+// refuseCrossOriginOnOpenAPI is the rule behind refuseCrossOriginWhileAuthDisabled with the
+// allowed origins passed in, so the no-config-store path, which has no AuthMiddleware to read
+// them from, applies the same one. Returns true if the request was refused.
+func refuseCrossOriginOnOpenAPI(ctx *fasthttp.RequestCtx, allowedOrigins []string) bool {
+	origin := string(ctx.Request.Header.Peek("Origin"))
+	if origin == "" {
+		return false
+	}
+	if originExplicitlyAllowed(origin, allowedOrigins) || isSameOrigin(origin, string(ctx.Host())) {
 		return false
 	}
 	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Cross-origin requests to the management API from %q are refused while dashboard auth is disabled; enable dashboard authentication, or list the origin explicitly in client_config.allowed_origins (localhost origins are always allowed).", origin))
@@ -1464,6 +2115,8 @@ var apiSystemWhitelistedRoutes = []string{
 	// not a session token is present, so a repeat logout must not 401 here.
 	"/api/session/logout",
 	"/api/oauth/callback",
+	// Client ID Metadata Document
+	"/api/oauth/client-metadata.json",
 	"/health",
 	"/login",
 	"/favicon.ico",
@@ -1504,24 +2157,28 @@ var apiWhitelistedPrefixes = []string{
 // a system route, a system prefix, or an operator-configured whitelisted route. Shared by
 // APIMiddleware and SetupLockMiddleware so both agree on what never needs a credential.
 func (m *AuthMiddleware) isAPIRouteWhitelisted(url string) bool {
+	var configuredRoutes []string
+	if stored := m.whitelistedRoutes.Load(); stored != nil {
+		configuredRoutes = *stored
+	}
+	return isAPIRouteWhitelistedAmong(url, configuredRoutes)
+}
+
+// isAPIRouteWhitelistedAmong is isAPIRouteWhitelisted with the operator-configured routes passed
+// in, for the no-config-store path that has no AuthMiddleware holding them.
+func isAPIRouteWhitelistedAmong(url string, configuredRoutes []string) bool {
 	if slices.Contains(apiSystemWhitelistedRoutes, url) ||
 		slices.IndexFunc(apiWhitelistedPrefixes, func(prefix string) bool {
 			return strings.HasPrefix(url, prefix)
 		}) != -1 {
 		return true
 	}
-	// Check user-configured whitelisted routes
-	if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
-		if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-			if before, ok := strings.CutSuffix(route, "*"); ok {
-				return strings.HasPrefix(url, before)
-			}
-			return false
-		}) != -1 {
-			return true
+	return slices.Contains(configuredRoutes, url) || slices.IndexFunc(configuredRoutes, func(route string) bool {
+		if before, ok := strings.CutSuffix(route, "*"); ok {
+			return strings.HasPrefix(url, before)
 		}
-	}
-	return false
+		return false
+	}) != -1
 }
 
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.
@@ -1758,7 +2415,7 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			authorization := string(ctx.Request.Header.Peek("Authorization"))
 			if authorization == "" {
 				if string(ctx.Request.Header.Peek("Upgrade")) == "websocket" {
-					path := string(ctx.Path())
+					path := url
 					if isInferenceWSEndpoint(path) {
 						// Inference WS endpoints (/v1/responses, /v1/realtime) use the same
 						// auth as HTTP inference: Bearer/Basic headers or governance VK validation.
@@ -1852,7 +2509,8 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 					SendError(ctx, fasthttp.StatusUnauthorized, "Unauthorized")
 					return
 				}
-				// Continue with the next handler
+				// Basic authenticates the caller but does not mark the local admin: admin-only
+				// handlers need a session or the Bearer-encoded credentials.
 				next(ctx)
 				return
 			}
@@ -2046,6 +2704,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			parentSpanID := tracing.ExtractTraceParentSpanID(&ctx.Request.Header)
 			if parentSpanID != "" {
 				ctx.SetUserValue(schemas.BifrostContextKeyParentSpanID, parentSpanID)
+				// Vendor trace state, for connectors that rebuild the parent context. Only
+				// alongside a parent span ID, since there is nothing to parent to without one.
+				if traceState := tracing.ExtractTraceState(&ctx.Request.Header); traceState != "" {
+					tracer.SetTraceAttribute(traceID, schemas.TraceAttrTraceState, traceState)
+				}
 			}
 			// Store a trace completion callback for streaming handlers to use.
 			// Accepts transport plugin logs as a parameter so it never reads from
@@ -2090,7 +2753,7 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// The query string is dropped, not redacted: it can carry session
 				// credentials and nothing downstream needs it.
 				scheme := "http"
-				if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+				if lib.RequestIsHTTPS(ctx) {
 					scheme = "https"
 				}
 				method, originalMethod := normalizeHTTPMethod(rawMethod)
@@ -2208,9 +2871,24 @@ func GetObservabilityPlugins(plugins []schemas.BasePlugin) []schemas.Observabili
 // (and so no auth at all), so handlers that require genuine auth for dangerous changes - which
 // key off BifrostContextKeyAuthBypassed - still refuse them in that mode instead of reading an
 // unmarked request as authenticated and failing open.
-func AuthBypassedMiddleware() schemas.BifrostHTTPMiddleware {
+//
+// The management API is as open here as with dashboard auth disabled, so the same browser rule
+// applies: a request carrying an Origin reaches a non-whitelisted route only from a localhost
+// origin, its own origin, or one listed by name in allowedOrigins (see
+// refuseCrossOriginWhileAuthDisabled). Both lists are snapshots: without a config store the
+// configuration only changes with a restart.
+func AuthBypassedMiddleware(allowedOrigins, whitelistedRoutes []string) schemas.BifrostHTTPMiddleware {
+	allowedOrigins = slices.Clone(allowedOrigins)
+	whitelistedRoutes = slices.Clone(whitelistedRoutes)
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			// Only a request carrying an Origin can be refused, so CLI and SDK calls, which send
+			// none, skip the route and origin checks entirely.
+			if len(ctx.Request.Header.Peek("Origin")) > 0 &&
+				!isAPIRouteWhitelistedAmong(string(ctx.Request.URI().PathOriginal()), whitelistedRoutes) &&
+				refuseCrossOriginOnOpenAPI(ctx, allowedOrigins) {
+				return
+			}
 			// Mirror the auth-disabled branch of the real middleware: the request
 			// acts as the local admin for ordinary handlers, and the bypass marker
 			// keeps the guards on dangerous changes closed.
@@ -2219,4 +2897,44 @@ func AuthBypassedMiddleware() schemas.BifrostHTTPMiddleware {
 			next(ctx)
 		}
 	}
+}
+
+// appendMCPParamHeaders appends the Mcp-Param-* names a preflight asks for to allowed, which is
+// returned unchanged when it asks for none.
+func appendMCPParamHeaders(allowed string, requested []byte) string {
+	isParam := func(name []byte) bool {
+		return len(name) > len("mcp-param-") && bytes.EqualFold(name[:len("mcp-param-")], []byte("mcp-param-"))
+	}
+	// Sized first so the list is built in one allocation: appending to a string copies it per name.
+	size := 0
+	for name := range bytes.SplitSeq(requested, []byte(",")) {
+		if name = bytes.TrimSpace(name); isParam(name) {
+			size += len(", ") + len(name)
+		}
+	}
+	if size == 0 {
+		return allowed
+	}
+	var out strings.Builder
+	out.Grow(len(allowed) + size)
+	out.WriteString(allowed)
+	for name := range bytes.SplitSeq(requested, []byte(",")) {
+		if name = bytes.TrimSpace(name); isParam(name) {
+			out.WriteString(", ")
+			out.Write(name)
+		}
+	}
+	return out.String()
+}
+
+// locationExternalKey is the request user value a handler sets when its Location
+// header is a third party's URL that may share this host, such as an OAuth client's
+// redirect_uri, so prefixLocation leaves it alone.
+const locationExternalKey = "bf-location-external"
+
+// markLocationExternal records that the response's Location leaves Bifrost: the
+// base-path middleware will not pull it under server.base_path even when it is
+// root-relative or on this host.
+func markLocationExternal(ctx *fasthttp.RequestCtx) {
+	ctx.SetUserValue(locationExternalKey, true)
 }

@@ -30,8 +30,8 @@ func (f *fakeSharedOAuthProvider) GetUserAccessTokenByMode(_ context.Context, _ 
 func (f *fakeSharedOAuthProvider) InitiateUserOAuthFlow(_ context.Context, _ string, _ string, _ string, _ schemas.MCPAuthMode) (*schemas.OAuth2FlowInitiation, string, error) {
 	return nil, "", nil
 }
-func (f *fakeSharedOAuthProvider) CompleteUserOAuthFlow(_ context.Context, _ string, _ string) (string, error) {
-	return "", nil
+func (f *fakeSharedOAuthProvider) CompleteUserOAuthFlow(_ context.Context, _ string, _ string) (*schemas.UserOAuthCompletion, error) {
+	return nil, nil
 }
 func (f *fakeSharedOAuthProvider) RefreshAccessToken(_ context.Context, _ string) error { return nil }
 func (f *fakeSharedOAuthProvider) ForceRefreshAccessToken(_ *schemas.BifrostContext, _ *schemas.MCPClientConfig) error {

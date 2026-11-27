@@ -15,11 +15,13 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/agent"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/livestore"
+	"github.com/maximhq/bifrost/framework/livestore/registry"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
@@ -66,19 +68,7 @@ type AgentGatewayIdentityResolver func(context.Context, string) (string, bool)
 // AgentGatewayVirtualKeyValidator is the narrow governance-cache contract used
 // by Agent Gateway authentication middleware. Authentication remains DB-free.
 type AgentGatewayVirtualKeyValidator interface {
-	VirtualKeyCache
-	GetVirtualKey(ctx context.Context, value string) (*tables.TableVirtualKey, bool)
-}
-
-// VirtualKeyReloader refreshes one virtual key in the governance plugin's
-// in-memory store. The Agent Gateway needs it because the agent-side
-// virtual_key_ids field writes the same grant rows the virtual-key-side
-// agent_grants field writes, and the governance authorization decision reads
-// those rows from the cached virtual key; the virtual-key APIs already reload
-// after their own writes, so the agent APIs must do the same for the virtual keys
-// they touch, exactly as the MCP client APIs do after changing VK assignments.
-type VirtualKeyReloader interface {
-	ReloadVirtualKey(ctx context.Context, id string) (*tables.TableVirtualKey, error)
+	GetVirtualKey(ctx context.Context, value string) (*registry.VirtualKey, bool)
 }
 
 // AgentRegistrationManager owns registration mutations and the local runtime
@@ -87,6 +77,9 @@ type VirtualKeyReloader interface {
 type AgentRegistrationManager interface {
 	CreateAgentRegistration(ctx context.Context, req agent.CreateRequest) (schemas.AgentRegistrationView, error)
 	UpdateAgentRegistration(ctx context.Context, name string, req agent.UpdateRequest) (schemas.AgentRegistrationView, error)
+	// DeleteAgentRegistration deletes a registration. When the delete is saved but an in-memory
+	// follow-up fails, it returns an error wrapping ErrSavedButNotReloaded, which the handler answers
+	// as a saved delete whose memory is stale.
 	DeleteAgentRegistration(ctx context.Context, name string) error
 }
 
@@ -114,71 +107,62 @@ type AgentGatewayHandler struct {
 	manager             *agent.Manager
 	registrationManager AgentRegistrationManager
 	config              *lib.Config
-	// vkReloader refreshes the governance in-memory copy of every virtual key an
-	// agent mutation granted or revoked. Optional: without it, agent-side grant
-	// changes would only be observed after the next virtual-key reload.
-	vkReloader VirtualKeyReloader
+	// governanceManager reloads every virtual key an agent mutation granted or revoked, as the MCP
+	// client APIs do after changing VK assignments: the agent-side virtual_key_ids field writes the
+	// same grant rows the virtual-key-side agent_grants field writes, and the governance decision
+	// reads them from the cached key. Optional: without it, agent-side grant changes would only be
+	// observed after the next virtual-key reload.
+	governanceManager GovernanceManager
 }
 
 // NewAgentGatewayHandler returns nil when a required dependency is missing. The
 // handler owns protocol dispatch and management only; request authentication is
 // supplied independently when protocol routes are registered.
-func NewAgentGatewayHandler(manager *agent.Manager, registrationManager AgentRegistrationManager, config *lib.Config, vkReloader VirtualKeyReloader) *AgentGatewayHandler {
+func NewAgentGatewayHandler(manager *agent.Manager, registrationManager AgentRegistrationManager, config *lib.Config, governanceManager GovernanceManager) *AgentGatewayHandler {
 	if manager == nil || config == nil {
 		return nil
 	}
 	if registrationManager == nil {
 		registrationManager = localAgentRegistrationManager{manager: manager}
 	}
-	return &AgentGatewayHandler{manager: manager, registrationManager: registrationManager, config: config, vkReloader: vkReloader}
+	return &AgentGatewayHandler{manager: manager, registrationManager: registrationManager, config: config, governanceManager: governanceManager}
 }
 
-// ResyncFromStore rebuilds every agent runtime from persisted registrations and
-// refreshes the enabled-agent policy map.
+// ResyncFromStore rebuilds every agent runtime from persisted registrations and re-reads every
+// registration into the live store, which governance reads the enabled agents from.
 func (h *AgentGatewayHandler) ResyncFromStore(ctx context.Context) error {
 	if err := h.manager.Reload(ctx); err != nil {
 		return err
 	}
-	return h.SyncEnabledAgents(ctx)
+	return h.config.LiveStore.RefreshKind(ctx, livestore.KindAgent)
 }
 
-// GetRegistration returns one redacted persisted registration.
-func (h *AgentGatewayHandler) GetRegistration(ctx context.Context, name string) (schemas.AgentRegistrationView, error) {
-	return h.manager.Get(ctx, name)
-}
-
-// ReloadRegistration replaces one runtime and its enabled-agent policy from the
-// persisted registration.
+// ReloadRegistration replaces one runtime and its enabled-agent policy from the persisted
+// registration, for a write made outside this handler. Its row may not be readable yet, so the
+// refresh waits for it; an error is returned and the record keeps its previous state.
 func (h *AgentGatewayHandler) ReloadRegistration(ctx context.Context, name string) error {
 	view, err := h.manager.ReloadRegistration(ctx, name)
 	if err != nil {
 		return err
 	}
-	h.config.SetEnabledAgent(view.Name, view.Enabled, view.AllowByDefault)
-	return nil
+	return h.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindAgent, ID: view.Name}}, lib.DBLookupRetry()...)
 }
 
-// RemoveRegistration unpublishes one runtime and removes its enabled-agent policy.
+// RemoveRegistration unpublishes one runtime and removes its enabled-agent policy. A failure to
+// drop the record is logged: there is no caller to return it to.
 func (h *AgentGatewayHandler) RemoveRegistration(name string) {
 	h.manager.RemoveRuntime(name)
-	h.config.DeleteEnabledAgent(name)
+	if err := h.refreshAgent(context.Background(), name, true); err != nil {
+		logger.Error("failed to remove agent %s from memory after its deletion: %v", name, err)
+	}
 }
 
-// SyncEnabledAgents replaces the HTTP-owned enabled-agent policy map from
-// persisted registrations at startup or an explicit reload boundary.
-func (h *AgentGatewayHandler) SyncEnabledAgents(ctx context.Context) error {
-	views, err := h.manager.List(ctx)
-	if err != nil {
-		return err
-	}
-	agents := make(map[string]bool, len(views))
-	for _, view := range views {
-		if view.Enabled {
-			agents[view.Name] = view.AllowByDefault
-		}
-	}
-	h.config.ReplaceEnabledAgents(agents)
-	return nil
+// refreshAgent brings one registration's row into the live store after this handler wrote it, or
+// drops its record after a delete. A row gone by the time it is read was deleted meanwhile, so its
+// record is dropped. A failed read is retried with lib.AdminRetry; when the retries run out the
+// previous record stays and the error is returned, for the caller to report.
+func (h *AgentGatewayHandler) refreshAgent(ctx context.Context, name string, removed bool) error {
+	return h.config.LiveStore.Refresh(ctx, []livestore.Ref{{Kind: livestore.KindAgent, ID: name, Remove: removed}}, lib.AdminRetry()...)
 }
 
 // Close shuts the gateway down during server teardown, draining upstream clients.
@@ -235,6 +219,7 @@ func (h *AgentGatewayHandler) RegisterManagementRoutes(r *router.Router, middlew
 // RegisterProtocolRoutes mounts all A2A endpoints through the supplied transport
 // middleware and the Agent Gateway authentication boundary.
 func (h *AgentGatewayHandler) RegisterProtocolRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	middlewares = append([]schemas.BifrostHTTPMiddleware{h.requireAgentGatewayURL}, middlewares...)
 	r.GET("/agents/a2a/{name}/.well-known/agent-card.json", lib.ChainMiddlewares(h.card, middlewares...))
 	r.POST("/agents/a2a/{name}"+agent.GatewayJSONRPCPathSuffix, lib.ChainMiddlewares(h.protocol, middlewares...))
 	for _, method := range []string{fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodDelete} {
@@ -247,21 +232,39 @@ func (h *AgentGatewayHandler) RegisterProtocolRoutes(r *router.Router, middlewar
 // agent authenticates with the per-config token Bifrost minted at push-config
 // registration, never with a downstream virtual key.
 func (h *AgentGatewayHandler) RegisterPushIngressRoute(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	middlewares = append([]schemas.BifrostHTTPMiddleware{h.requireAgentGatewayURL}, middlewares...)
 	r.POST("/agents/a2a/{name}"+agent.GatewayPushCallbackPathSuffix, lib.ChainMiddlewares(h.pushCallback, middlewares...))
+}
+
+// requireAgentGatewayURL rejects disabled protocol endpoints before authentication or plugin short-circuits.
+func (h *AgentGatewayHandler) requireAgentGatewayURL(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		if h.config.GetA2AExternalClientURL() == "" {
+			sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "agent gateway disabled: configure a2a_external_client_url")
+			return
+		}
+		next(ctx)
+	}
 }
 
 // pushCallback accepts one upstream push event. Authentication, task
 // verification, and durable enqueueing are the manager's responsibility; the
 // transport only carries the token header and body across.
 func (h *AgentGatewayHandler) pushCallback(ctx *fasthttp.RequestCtx) {
+	if h.config.GetA2AExternalClientURL() == "" {
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "agent gateway disabled: configure a2a_external_client_url")
+		return
+	}
 	token := string(ctx.Request.Header.Peek(agent.PushNotificationTokenHeader))
-	status, err := h.manager.AcceptPushCallback(ctx, pathName(ctx), token, ctx.PostBody())
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	status, err := h.manager.AcceptPushCallback(workCtx, pathName(ctx), token, ctx.PostBody())
 	if err != nil {
 		if status >= fasthttp.StatusInternalServerError {
-			SendError(ctx, status, "failed to accept push notification")
+			sendAgentGatewayError(ctx, status, "failed to accept push notification")
 			return
 		}
-		SendError(ctx, status, err.Error())
+		sendAgentGatewayError(ctx, status, err.Error())
 		return
 	}
 	ctx.SetStatusCode(status)
@@ -285,7 +288,9 @@ func (h *AgentGatewayHandler) listPushConfigs(ctx *fasthttp.RequestCtx) {
 	limit, _ := strconv.Atoi(string(ctx.QueryArgs().Peek("limit")))
 	offset, _ := strconv.Atoi(string(ctx.QueryArgs().Peek("offset")))
 	limit, offset = ClampPaginationParams(limit, offset)
-	configs, total, err := h.manager.ListStoredPushConfigs(ctx, schemas.AgentPushConfigQuery{
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	configs, total, err := h.manager.ListStoredPushConfigs(workCtx, schemas.AgentPushConfigQuery{
 		AgentNames: pushConfigAgentNames(ctx.QueryArgs().Peek("agent_names")),
 		TaskID:     string(ctx.QueryArgs().Peek("task_id")),
 		ConfigID:   string(ctx.QueryArgs().Peek("config_id")),
@@ -294,12 +299,12 @@ func (h *AgentGatewayHandler) listPushConfigs(ctx *fasthttp.RequestCtx) {
 		Offset:     offset,
 	})
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to list agent push configurations")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to list agent push configurations")
 		return
 	}
-	names, err := h.manager.ListStoredPushConfigAgentNames(ctx)
+	names, err := h.manager.ListStoredPushConfigAgentNames(workCtx)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to list agent push configuration filters")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to list agent push configuration filters")
 		return
 	}
 	SendJSON(ctx, map[string]any{
@@ -317,18 +322,21 @@ func (h *AgentGatewayHandler) deletePushConfig(ctx *fasthttp.RequestCtx) {
 	taskID, _ := ctx.UserValue("task").(string)
 	configID, _ := ctx.UserValue("config").(string)
 	if agentName == "" || taskID == "" || configID == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "agent, task, and config are required")
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, "agent, task, and config are required")
 		return
 	}
-	deleted, err := h.manager.DeleteStoredPushConfig(ctx, agentName, taskID, configID)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	deleted, err := h.manager.DeleteStoredPushConfig(workCtx, agentName, taskID, configID)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to delete agent push configuration")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to delete agent push configuration")
 		return
 	}
 	if !deleted {
-		SendError(ctx, fasthttp.StatusNotFound, "agent push configuration not found")
+		sendAgentGatewayError(ctx, fasthttp.StatusNotFound, "agent push configuration not found")
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent_push_config.deleted", "agent_push_config", configID, agentName, map[string]any{"agent": agentName, "task_id": taskID, "config_id": configID}, nil)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -337,16 +345,35 @@ func (h *AgentGatewayHandler) deletePushConfig(ctx *fasthttp.RequestCtx) {
 func (h *AgentGatewayHandler) create(ctx *fasthttp.RequestCtx) {
 	var req agent.CreateRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid agent registration")
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, "invalid agent registration")
 		return
 	}
-	view, err := h.registrationManager.CreateAgentRegistration(ctx, req)
+	if rejectAgentSecretReferencesIfAuthBypassed(ctx, req.DiscoveryAuth, req.RuntimeAuth) {
+		return
+	}
+	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed && len(req.CredentialOrigins) > 0 {
+		sendAgentGatewayError(ctx, fasthttp.StatusForbidden, "Changing credential origins requires dashboard authentication")
+		return
+	}
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	workCtx = agent.WithPublicTargetsOnly(workCtx, bypassed)
+	view, err := h.registrationManager.CreateAgentRegistration(workCtx, req)
 	if err != nil {
 		h.registrationMutationError(ctx, err)
 		return
 	}
-	h.config.SetEnabledAgent(view.Name, view.Enabled, view.AllowByDefault)
-	h.reloadGrantedVirtualKeys(ctx, view.VirtualKeyIDs)
+	lib.RecordAuditChange(ctx, "agent.created", "agent", view.Name, view.Name, nil, auditAgentRegistration(&view))
+	refreshErr := h.refreshAgent(workCtx, view.Name, false)
+	// The keys are reloaded even when the agent's own refresh failed: a retried create is refused
+	// as a duplicate, so it would never reload them.
+	reloadErr := reloadGrantingVirtualKeys(workCtx, h.governanceManager, view.VirtualKeyIDs)
+	if err := errors.Join(refreshErr, reloadErr); err != nil {
+		logger.Error("failed to reload in-memory state after creating agent %s: %v", view.Name, err)
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent created in database but failed to reload in-memory state")
+		return
+	}
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, view)
 }
@@ -354,11 +381,23 @@ func (h *AgentGatewayHandler) create(ctx *fasthttp.RequestCtx) {
 func (h *AgentGatewayHandler) inspect(ctx *fasthttp.RequestCtx) {
 	var req agent.InspectRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid agent inspection request")
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, "invalid agent inspection request")
 		return
 	}
-	result, err := h.manager.Inspect(ctx, req)
+	if rejectAgentSecretReferencesIfAuthBypassed(ctx, req.DiscoveryAuth) {
+		return
+	}
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	workCtx = agent.WithPublicTargetsOnly(workCtx, bypassed)
+	result, err := h.manager.Inspect(workCtx, req)
 	if err != nil {
+		var blocked *network.PrivateTargetNotAllowedError
+		if errors.As(err, &blocked) || errors.Is(err, agent.ErrInvalidRegistration) {
+			sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
@@ -370,18 +409,32 @@ func (h *AgentGatewayHandler) inspect(ctx *fasthttp.RequestCtx) {
 func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 	var req agent.UpdateRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "invalid agent replacement")
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, "invalid agent replacement")
+		return
+	}
+	if rejectAgentSecretReferencesIfAuthBypassed(ctx, req.DiscoveryAuth, req.RuntimeAuth) {
 		return
 	}
 	name := pathName(ctx)
+	if bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool); bypassed && len(req.CredentialOrigins) > 0 {
+		sendAgentGatewayError(ctx, fasthttp.StatusForbidden, "Changing credential origins requires dashboard authentication")
+		return
+	}
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	workCtx = agent.WithPublicTargetsOnly(workCtx, bypassed)
 	// The grants being replaced are read before the write so the virtual keys that
 	// lose access are refreshed too, not just the ones that gain it.
-	previous, err := h.manager.Get(ctx, name)
+	previous, err := h.manager.Get(workCtx, name)
 	if err != nil {
 		h.managementError(ctx, err)
 		return
 	}
-	view, err := h.registrationManager.UpdateAgentRegistration(ctx, name, req)
+	if bypassed {
+		req.CredentialOrigins = previous.CredentialOrigins
+	}
+	view, err := h.registrationManager.UpdateAgentRegistration(workCtx, name, req)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) || errors.Is(err, agent.ErrNotFound) {
 			h.managementError(ctx, configstore.ErrNotFound)
@@ -390,17 +443,27 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 		h.registrationMutationError(ctx, err)
 		return
 	}
-	h.config.SetEnabledAgent(view.Name, view.Enabled, view.AllowByDefault)
-	h.reloadGrantedVirtualKeys(ctx, previous.VirtualKeyIDs, view.VirtualKeyIDs)
+	lib.RecordAuditChange(ctx, "agent.updated", "agent", view.Name, view.Name, auditAgentRegistration(&previous), auditAgentRegistration(&view))
+	refreshErr := h.refreshAgent(workCtx, view.Name, false)
+	// The keys are reloaded even when the agent's own refresh failed: a retry reads the registration
+	// already written, which no longer names a key this update dropped.
+	reloadErr := reloadGrantingVirtualKeys(workCtx, h.governanceManager, previous.VirtualKeyIDs, view.VirtualKeyIDs)
+	if err := errors.Join(refreshErr, reloadErr); err != nil {
+		logger.Error("failed to reload in-memory state after updating agent %s: %v", view.Name, err)
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent updated in database but failed to reload in-memory state")
+		return
+	}
 	SendJSON(ctx, view)
 }
 
 // list returns redacted registration summaries with a count, including disabled
 // agents so administrators can see everything they have configured.
 func (h *AgentGatewayHandler) list(ctx *fasthttp.RequestCtx) {
-	views, err := h.manager.List(ctx)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	views, err := h.manager.List(workCtx)
 	if err != nil {
-		SendError(ctx, 500, "failed to list agents")
+		sendAgentGatewayError(ctx, 500, "failed to list agents")
 		return
 	}
 	SendJSON(ctx, map[string]any{"agents": views, "count": len(views)})
@@ -408,7 +471,9 @@ func (h *AgentGatewayHandler) list(ctx *fasthttp.RequestCtx) {
 
 // get returns one redacted registration; secrets are never included.
 func (h *AgentGatewayHandler) get(ctx *fasthttp.RequestCtx) {
-	view, err := h.manager.Get(ctx, pathName(ctx))
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	view, err := h.manager.Get(workCtx, pathName(ctx))
 	if err != nil {
 		h.managementError(ctx, err)
 		return
@@ -420,19 +485,30 @@ func (h *AgentGatewayHandler) get(ctx *fasthttp.RequestCtx) {
 // remaining representation to return.
 func (h *AgentGatewayHandler) delete(ctx *fasthttp.RequestCtx) {
 	name := pathName(ctx)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
 	// Read the grants before deleting so the virtual keys whose cascade-deleted
 	// rows just disappeared stop carrying a stale grant for this agent name.
-	previous, err := h.manager.Get(ctx, name)
+	previous, err := h.manager.Get(workCtx, name)
 	if err != nil {
 		h.managementError(ctx, err)
 		return
 	}
-	if err := h.registrationManager.DeleteAgentRegistration(ctx, name); err != nil {
-		h.managementError(ctx, err)
+	saveErr := h.registrationManager.DeleteAgentRegistration(workCtx, name)
+	if saveErr != nil && !errors.Is(saveErr, ErrSavedButNotReloaded) {
+		h.managementError(ctx, saveErr)
 		return
 	}
-	h.config.DeleteEnabledAgent(name)
-	h.reloadGrantedVirtualKeys(ctx, previous.VirtualKeyIDs)
+	lib.RecordAuditChange(ctx, "agent.deleted", "agent", name, name, auditAgentRegistration(&previous), nil)
+	refreshErr := h.refreshAgent(workCtx, name, true)
+	// The keys are reloaded even when the agent's own refresh failed: a retried delete finds no
+	// registration, so it would never reach the keys the agent was granted to.
+	reloadErr := reloadGrantingVirtualKeys(workCtx, h.governanceManager, previous.VirtualKeyIDs)
+	if err := errors.Join(refreshErr, reloadErr, saveErr); err != nil {
+		logger.Error("failed to reload in-memory state after deleting agent %s: %v", name, err)
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Agent deleted in database but failed to reload in-memory state")
+		return
+	}
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -440,12 +516,12 @@ const agentHistoryDefaultLimit = 50
 
 func (h *AgentGatewayHandler) listHistory(ctx *fasthttp.RequestCtx) {
 	if h.config.LogsStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
 		return
 	}
 	filter, pagination, err := parseAgentHistorySearch(ctx)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	logCtx := agentGatewayLogContext(ctx)
@@ -453,7 +529,7 @@ func (h *AgentGatewayHandler) listHistory(ctx *fasthttp.RequestCtx) {
 	if ctx.QueryArgs().GetBool("hydrate") {
 		result, err := h.config.LogsStore.ListAgentLogOperations(logCtx, filter, pagination)
 		if err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, "failed to list agent operations")
+			sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to list agent operations")
 			return
 		}
 		sanitizeAgentLogOperations(result.Logs)
@@ -462,7 +538,7 @@ func (h *AgentGatewayHandler) listHistory(ctx *fasthttp.RequestCtx) {
 	}
 	result, err := h.config.LogsStore.ListAgentLogHistory(logCtx, filter, pagination)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to list agent history")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to list agent history")
 		return
 	}
 	for i := range result.Logs {
@@ -475,32 +551,33 @@ func (h *AgentGatewayHandler) listHistory(ctx *fasthttp.RequestCtx) {
 // correlated stream-event rows sharing the deleted entries' request IDs.
 func (h *AgentGatewayHandler) deleteHistory(ctx *fasthttp.RequestCtx) {
 	if h.config.LogsStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
 		return
 	}
 	var req struct {
 		IDs []string `json:"ids"`
 	}
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid JSON")
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, "Invalid JSON")
 		return
 	}
 	if len(req.IDs) == 0 {
-		SendError(ctx, fasthttp.StatusBadRequest, "No log IDs provided")
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, "No log IDs provided")
 		return
 	}
 	logCtx := agentGatewayLogContext(ctx)
 	defer logCtx.Cancel()
 	if err := h.config.LogsStore.DeleteAgentLogs(logCtx, req.IDs); err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to delete agent logs")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "Failed to delete agent logs")
 		return
 	}
+	lib.RecordAuditChange(ctx, "agent_logs.deleted", "agent_logs", "agent_logs", "Agent logs", auditDeletedIDs(req.IDs), nil)
 	SendJSON(ctx, map[string]any{"message": "Agent logs deleted successfully"})
 }
 
 func (h *AgentGatewayHandler) historyFilterData(ctx *fasthttp.RequestCtx) {
 	if h.config.LogsStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
 		return
 	}
 	dimensions := strings.Split(strings.TrimSpace(string(ctx.QueryArgs().Peek("dimensions"))), ",")
@@ -511,7 +588,7 @@ func (h *AgentGatewayHandler) historyFilterData(ctx *fasthttp.RequestCtx) {
 	defer logCtx.Cancel()
 	result, err := h.config.LogsStore.GetAgentFilterData(logCtx, dimensions, 100, strings.TrimSpace(string(ctx.QueryArgs().Peek("q"))))
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history filter data")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history filter data")
 		return
 	}
 	SendJSON(ctx, result)
@@ -521,19 +598,19 @@ func (h *AgentGatewayHandler) historyFilterData(ctx *fasthttp.RequestCtx) {
 // endpoint's filter parsing so every sidebar filter narrows the totals too.
 func (h *AgentGatewayHandler) historyStats(ctx *fasthttp.RequestCtx) {
 	if h.config.LogsStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
 		return
 	}
 	filter, _, err := parseAgentHistorySearch(ctx)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	logCtx := agentGatewayLogContext(ctx)
 	defer logCtx.Cancel()
 	stats, err := h.config.LogsStore.GetAgentLogStats(logCtx, filter)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history stats")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history stats")
 		return
 	}
 	SendJSON(ctx, stats)
@@ -543,19 +620,19 @@ func (h *AgentGatewayHandler) historyStats(ctx *fasthttp.RequestCtx) {
 // with the most operations under the same filters as the list endpoint.
 func (h *AgentGatewayHandler) historyTopAgents(ctx *fasthttp.RequestCtx) {
 	if h.config.LogsStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
 		return
 	}
 	filter, _, err := parseAgentHistorySearch(ctx)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	logCtx := agentGatewayLogContext(ctx)
 	defer logCtx.Cancel()
 	result, err := h.config.LogsStore.GetAgentTopAgents(logCtx, filter, 10)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to get top agents")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to get top agents")
 		return
 	}
 	SendJSON(ctx, result)
@@ -565,19 +642,19 @@ func (h *AgentGatewayHandler) historyTopAgents(ctx *fasthttp.RequestCtx) {
 // source. Bucket size follows the same time-range ladder as the LLM histogram.
 func (h *AgentGatewayHandler) historyHistogram(ctx *fasthttp.RequestCtx) {
 	if h.config.LogsStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
 		return
 	}
 	filter, _, err := parseAgentHistorySearch(ctx)
 	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 	logCtx := agentGatewayLogContext(ctx)
 	defer logCtx.Cancel()
 	result, err := h.config.LogsStore.GetAgentHistogram(logCtx, filter, calculateBucketSize(filter.StartTime, filter.EndTime))
 	if err != nil {
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history histogram")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history histogram")
 		return
 	}
 	SendJSON(ctx, result)
@@ -585,12 +662,12 @@ func (h *AgentGatewayHandler) historyHistogram(ctx *fasthttp.RequestCtx) {
 
 func (h *AgentGatewayHandler) getHistoryEntry(ctx *fasthttp.RequestCtx) {
 	if h.config.LogsStore == nil {
-		SendError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "logs store is not available")
 		return
 	}
 	id, _ := ctx.UserValue("id").(string)
 	if id == "" {
-		SendError(ctx, fasthttp.StatusBadRequest, "history entry id is required")
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, "history entry id is required")
 		return
 	}
 	logCtx := agentGatewayLogContext(ctx)
@@ -599,10 +676,10 @@ func (h *AgentGatewayHandler) getHistoryEntry(ctx *fasthttp.RequestCtx) {
 		operation, err := h.config.LogsStore.FindAgentLogOperation(logCtx, id)
 		if err != nil {
 			if errors.Is(err, logstore.ErrNotFound) {
-				SendError(ctx, fasthttp.StatusNotFound, "agent history entry not found")
+				sendAgentGatewayError(ctx, fasthttp.StatusNotFound, "agent history entry not found")
 				return
 			}
-			SendError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history entry")
+			sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history entry")
 			return
 		}
 		sanitizeAgentLogOperation(operation)
@@ -612,10 +689,10 @@ func (h *AgentGatewayHandler) getHistoryEntry(ctx *fasthttp.RequestCtx) {
 	entry, err := h.config.LogsStore.FindAgentLog(logCtx, id)
 	if err != nil {
 		if errors.Is(err, logstore.ErrNotFound) {
-			SendError(ctx, fasthttp.StatusNotFound, "agent history entry not found")
+			sendAgentGatewayError(ctx, fasthttp.StatusNotFound, "agent history entry not found")
 			return
 		}
-		SendError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history entry")
+		sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "failed to get agent history entry")
 		return
 	}
 	detail := newSanitizedAgentLogDetail(entry)
@@ -667,8 +744,8 @@ func parseAgentHistorySearch(ctx *fasthttp.RequestCtx) (logstore.AgentLogHistory
 		VirtualKeyID: values("virtual_key_id"), TeamID: values("team_id"), CustomerID: values("customer_id"),
 		BusinessUnitID: values("business_unit_id"), ProjectID: values("project_id"), RequestID: value("request_id"), TraceID: value("trace_id"),
 		TaskID: value("task_id"), ContextID: value("context_id"), PushConfigID: value("push_config_id"),
-		DeliveryID: value("delivery_id"), AttemptID: value("attempt_id"), EventType: values("event_type"), TaskState: values("task_state"), Status: values("status"), RecordKind: values("record_kind"),
-		Search: value("search"),
+		DeliveryID: value("delivery_id"), AttemptID: value("attempt_id"), CallerCorrelationID: value("caller_correlation_id"), EventType: values("event_type"), TaskState: values("task_state"), Status: values("status"), RecordKind: values("record_kind"),
+		Search: value("search"), GroupSessions: args.GetBool("group_sessions"),
 	}
 	for name, target := range map[string]**time.Time{"start_time": &filter.StartTime, "end_time": &filter.EndTime} {
 		if raw := value(name); raw != "" {
@@ -754,48 +831,28 @@ func sanitizeAgentHistoryPayload(payload *string) *string {
 	return &result
 }
 
+// redactAgentHistorySecrets removes credentials while preserving public OAuth definitions.
 func redactAgentHistorySecrets(value any) {
+	redactAgentHistoryValue(value, false)
+}
+
+// redactAgentHistoryValue tracks OAuth scheme definitions to distinguish public authorization fields from credentials.
+func redactAgentHistoryValue(value any, oauthDefinition bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
 			normalized := strings.ToLower(strings.TrimSpace(key))
-			if schemas.IsSensitiveHeader(normalized) || normalized == "password" || normalized == "client_secret" || normalized == "access_token" || normalized == "refresh_token" {
+			_, flowDefinition := child.(map[string]any)
+			publicOAuthField := oauthDefinition && (key == "authorizationCode" && flowDefinition || key == "authorizationUrl")
+			if !publicOAuthField && (schemas.IsSensitiveHeader(normalized) || normalized == "password" || normalized == "client_secret" || normalized == "access_token" || normalized == "refresh_token") {
 				typed[key] = schemas.RedactedAttrValue
 				continue
 			}
-			redactAgentHistorySecrets(child)
+			redactAgentHistoryValue(child, oauthDefinition || key == "oauth2SecurityScheme")
 		}
 	case []any:
 		for _, child := range typed {
-			redactAgentHistorySecrets(child)
-		}
-	}
-}
-
-// reloadGrantedVirtualKeys refreshes the governance in-memory copy of every
-// virtual key whose agent grants an agent mutation just changed, so the
-// authorization decision observes the new rows on the very next protocol request
-// without reading them from the database. Each key is reloaded at most once, and
-// a failure is logged rather than failing the mutation, which is already durably
-// committed. This mirrors what the MCP client APIs do after changing virtual-key
-// assignments.
-func (h *AgentGatewayHandler) reloadGrantedVirtualKeys(ctx context.Context, virtualKeyIDSets ...[]string) {
-	if h.vkReloader == nil {
-		return
-	}
-	reloaded := make(map[string]struct{})
-	for _, virtualKeyIDs := range virtualKeyIDSets {
-		for _, id := range virtualKeyIDs {
-			if id == "" {
-				continue
-			}
-			if _, done := reloaded[id]; done {
-				continue
-			}
-			reloaded[id] = struct{}{}
-			if _, err := h.vkReloader.ReloadVirtualKey(ctx, id); err != nil {
-				logger.Error("failed to reload virtual key %s after agent grant change: %v", id, err)
-			}
+			redactAgentHistoryValue(child, oauthDefinition)
 		}
 	}
 }
@@ -803,10 +860,15 @@ func (h *AgentGatewayHandler) reloadGrantedVirtualKeys(ctx context.Context, virt
 // registrationMutationError exposes only errors that the caller can correct.
 func (h *AgentGatewayHandler) registrationMutationError(ctx *fasthttp.RequestCtx, err error) {
 	if errors.Is(err, agent.ErrInvalidRegistration) {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		var upstream *agent.UpstreamError
+		if errors.As(err, &upstream) {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		sendAgentGatewayError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
-	SendError(ctx, fasthttp.StatusInternalServerError, "agent operation failed")
+	sendAgentGatewayError(ctx, fasthttp.StatusInternalServerError, "agent operation failed")
 }
 
 // managementError maps store errors to responses, reporting 404 only for a genuine
@@ -814,10 +876,10 @@ func (h *AgentGatewayHandler) registrationMutationError(ctx *fasthttp.RequestCtx
 // leaked to API clients.
 func (h *AgentGatewayHandler) managementError(ctx *fasthttp.RequestCtx, err error) {
 	if errors.Is(err, configstore.ErrNotFound) || errors.Is(err, agent.ErrNotFound) {
-		SendError(ctx, 404, "agent not found")
+		sendAgentGatewayError(ctx, 404, "agent not found")
 		return
 	}
-	SendError(ctx, 500, "agent operation failed")
+	sendAgentGatewayError(ctx, 500, "agent operation failed")
 }
 
 // card serves the gateway agent card. It goes through the same authenticated path
@@ -840,13 +902,18 @@ func (h *AgentGatewayHandler) rest(ctx *fasthttp.RequestCtx) {
 // serveProtocol performs protocol dispatch after HTTP middleware has established
 // authentication. Authorization remains in PreA2A after SDK decoding.
 func (h *AgentGatewayHandler) serveProtocol(ctx *fasthttp.RequestCtx, binding agentBinding) {
+	baseURL := strings.TrimRight(h.config.GetA2AExternalClientURL(), "/")
+	if baseURL == "" {
+		sendAgentGatewayError(ctx, fasthttp.StatusServiceUnavailable, "agent gateway disabled: configure a2a_external_client_url")
+		return
+	}
 	authentication, _ := ctx.UserValue(agentGatewayAuthenticationContextKey).(agentAuthenticationResult)
 	name := pathName(ctx)
 	var handler http.Handler
 	var found bool
 	switch binding {
 	case agentBindingCard:
-		handler, found = h.manager.CardHandler(name, lib.BuildBaseURL(ctx, h.config.GetA2AExternalClientURL()))
+		handler, found = h.manager.CardHandler(name, baseURL)
 	case agentBindingREST:
 		handler, found = h.manager.RESTHandler(name)
 		if found {
@@ -884,7 +951,7 @@ func (h *AgentGatewayHandler) serveProtocol(ctx *fasthttp.RequestCtx, binding ag
 		}
 	}
 	downstreamTransport := binding.String()
-	requestOrigin := lib.BuildBaseURL(ctx, h.config.GetA2AExternalClientURL())
+	requestOrigin := baseURL
 	ctx.SetUserValue(schemas.BifrostContextKeyA2ADownstreamTransport, downstreamTransport)
 	ctx.SetUserValue(schemas.BifrostContextKeyA2ARequestOrigin, requestOrigin)
 	if bifrostCtx, ok := ctx.UserValue(agentGatewayBifrostContextKey).(*schemas.BifrostContext); ok {
@@ -913,11 +980,13 @@ func (h *AgentGatewayHandler) setCardCachingHeaders(ctx *fasthttp.RequestCtx, na
 		return
 	}
 	ctx.Response.Header.Set(fasthttp.HeaderCacheControl, "private, no-cache")
-	ctx.Response.Header.Set(fasthttp.HeaderVary, "Authorization, x-bf-vk, api-key, x-api-key, x-goog-api-key")
+	ctx.Response.Header.Set(fasthttp.HeaderVary, "Authorization, x-bf-vk, api-key, x-api-key, x-goog-api-key, xi-api-key")
 	sum := sha256.Sum256(ctx.Response.Body())
 	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 	ctx.Response.Header.Set(fasthttp.HeaderETag, etag)
-	if view, err := h.manager.Get(ctx, name); err == nil && !view.UpdatedAt.IsZero() {
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	if view, err := h.manager.Get(workCtx, name); err == nil && !view.UpdatedAt.IsZero() {
 		ctx.Response.Header.Set(fasthttp.HeaderLastModified, view.UpdatedAt.UTC().Format(http.TimeFormat))
 	}
 	if etagMatches(string(ctx.Request.Header.Peek(fasthttp.HeaderIfNoneMatch)), etag) {
@@ -1065,11 +1134,11 @@ func AgentGatewayAuthenticationMiddleware(config *lib.Config, validator AgentGat
 					return
 				}
 				vk, ok := validator.GetVirtualKey(ctx, rawVirtualKey)
-				if !ok || vk == nil || !vk.IsActiveValue() {
+				if !ok || vk == nil || !vk.Active {
 					writeProtocolDenial(ctx, binding)
 					return
 				}
-				authentication := agentAuthenticationResult{credentialSource: source, rawVirtualKey: vk.Value.GetValue()}
+				authentication := agentAuthenticationResult{credentialSource: source, rawVirtualKey: vk.Value}
 				if header := source.HeaderName(); header != "" {
 					authentication.acceptedCredential = &schemas.AcceptedBifrostCredential{
 						Header: header,
@@ -1372,4 +1441,25 @@ func bifrostIdentityContext(fastCtx *fasthttp.RequestCtx, parent context.Context
 	}
 	lib.SettleIdentity(bifrostCtx)
 	return bifrostCtx
+}
+
+// sendAgentGatewayError reports a gateway-generated failure without changing other transports' attribution.
+func sendAgentGatewayError(ctx *fasthttp.RequestCtx, statusCode int, message string) {
+	SendBifrostError(ctx, &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: message},
+	})
+}
+
+// auditAgentRegistration snapshots an already-redacted agent registration, also masking credentials embedded in its card URL.
+func auditAgentRegistration(view *schemas.AgentRegistrationView) json.RawMessage {
+	if view == nil {
+		return nil
+	}
+	c := *view
+	c.AgentCardURL = lib.RedactURLCredentials(c.AgentCardURL)
+	c.DiscoveryAuth = c.DiscoveryAuth.Redacted()
+	c.RuntimeAuth = c.RuntimeAuth.Redacted()
+	return lib.AuditSnapshot(c)
 }

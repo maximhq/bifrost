@@ -99,8 +99,42 @@ func (s *RDBConfigStore) ClaimSidekiqJob(ctx context.Context, id, runnerID strin
 // claimed) and is retried on the next dispatch tick. A stale (dead-owner) running
 // job does not block its key, so a crashed node cannot deadlock the queue.
 func (s *RDBConfigStore) ClaimPartitionedSidekiqJob(ctx context.Context, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error) {
+	var claimed bool
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Claims for one key run one at a time. Each claim's checks read the
+		// other jobs of the key in its own statement; under PostgreSQL's
+		// default READ COMMITTED level two concurrent claims (a stale running
+		// job's reclaim and a newer pending job's claim) can each pass on a
+		// snapshot that misses the other, and both run. The transaction-scoped
+		// advisory lock on the key lets one claim through at a time. A claim
+		// that finds the key busy writes nothing and reports not claimed, so
+		// the job stays claimable for the next dispatch tick; waiting instead
+		// would hold the caller's runner slot for as long as the other claim
+		// takes. SQLite allows one writer at a time.
+		if tx.Dialector.Name() == "postgres" {
+			var locked bool
+			if err := tx.Raw("SELECT pg_try_advisory_xact_lock(hashtext(?))", "sidekiq:"+partitioningKey).Scan(&locked).Error; err != nil {
+				return err
+			}
+			if !locked {
+				return nil
+			}
+		}
+		ok, err := claimPartitionedSidekiqJob(tx, id, runnerID, staleBefore, partitioningKey, createdAt)
+		claimed = ok
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	return claimed, nil
+}
+
+// claimPartitionedSidekiqJob runs the claim's conditional update on tx; see
+// ClaimPartitionedSidekiqJob.
+func claimPartitionedSidekiqJob(tx *gorm.DB, id, runnerID string, staleBefore time.Time, partitioningKey string, createdAt time.Time) (bool, error) {
 	now := time.Now()
-	res := s.DB().WithContext(ctx).
+	res := tx.
 		Model(&tables.TableSidekiqJob{}).
 		Where("id = ? AND (status = ? OR (status = ? AND updated_at < ?))",
 			id,
@@ -332,13 +366,20 @@ func (s *RDBConfigStore) GetLatestSidekiqJobByKind(ctx context.Context, kind str
 // terminal status at or after terminalSince, newest first, capped at limit. It feeds
 // the notification panel: active work stays visible however old it is, while finished
 // jobs age out of the window instead of accumulating forever.
-func (s *RDBConfigStore) ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int) ([]tables.TableSidekiqJob, error) {
+//
+// A completed job of one of quietKinds is left out - routine work queued on a
+// timer - in the query rather than after it, so those jobs never take the
+// places limit leaves for the rest. Its failures and cancellations are listed.
+func (s *RDBConfigStore) ListSidekiqJobs(ctx context.Context, terminalSince time.Time, limit int, quietKinds []string) ([]tables.TableSidekiqJob, error) {
 	var jobs []tables.TableSidekiqJob
 	q := s.DB().WithContext(ctx).
 		Where("status IN ? OR (status IN ? AND completed_at >= ?)",
 			[]string{tables.SidekiqStatusPending, tables.SidekiqStatusRunning},
-			tables.SidekiqTerminalStatuses, terminalSince).
-		Order("created_at DESC")
+			tables.SidekiqTerminalStatuses, terminalSince)
+	if len(quietKinds) > 0 {
+		q = q.Where("NOT (status = ? AND kind IN ?)", tables.SidekiqStatusCompleted, quietKinds)
+	}
+	q = q.Order("created_at DESC")
 	if limit > 0 {
 		q = q.Limit(limit)
 	}
@@ -363,5 +404,20 @@ func (s *RDBConfigStore) MarkStaleSidekiqJobsFailed(ctx context.Context, staleBe
 			"updated_at":   now,
 			"completed_at": now,
 		})
+	return res.RowsAffected, res.Error
+}
+
+// DeleteTerminalSidekiqJobs deletes up to limit jobs of kind whose status is
+// terminal and whose last update is before the cutoff. Pending and running
+// jobs are never touched. The ID subquery bounds each DELETE on every dialect,
+// since Postgres and SQLite lack DELETE ... LIMIT.
+func (s *RDBConfigStore) DeleteTerminalSidekiqJobs(ctx context.Context, kind string, before time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	ids := s.DB().WithContext(ctx).Model(&tables.TableSidekiqJob{}).Select("id").
+		Where("kind = ? AND status IN ? AND updated_at < ?", kind, tables.SidekiqTerminalStatuses, before).
+		Limit(limit)
+	res := s.DB().WithContext(ctx).Where("id IN (?)", ids).Delete(&tables.TableSidekiqJob{})
 	return res.RowsAffected, res.Error
 }

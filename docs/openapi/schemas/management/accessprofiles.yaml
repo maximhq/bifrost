@@ -196,6 +196,17 @@ MCPToolOverride:
         - include
         - exclude
 
+AccessProfileRelayGrant:
+  type: object
+  description: One relay the holder may call at /relay/{relay_name}/....
+  required:
+    - relay_name
+  properties:
+    relay_name:
+      type: string
+      description: Name of an existing relay.
+  additionalProperties: false
+
 AccessProfile:
   type: object
   properties:
@@ -230,6 +241,9 @@ AccessProfile:
     allow_all_providers:
       type: boolean
       description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'The profile''s content-logging decision. Absent or null inherits. A user''s own copy counts in the credential tier; a copy attached to a team or business unit counts as that entity''s decision. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     auto_rotation_interval:
       type: integer
       format: int64
@@ -250,6 +264,11 @@ AccessProfile:
       type: array
       items:
         $ref: '#/AccessProfileVirtualMCPLink'
+    relay_grants:
+      type: array
+      description: Relays that keys governed by this profile may call. With no grants, they may call no relay.
+      items:
+        $ref: '#/AccessProfileRelayGrant'
     mcp_configs:
       type: array
       items:
@@ -326,6 +345,9 @@ CreateAccessProfileRequest:
       type: boolean
       default: false
       description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'The profile''s content-logging decision. Omit or set null to inherit. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     auto_rotation_interval:
       oneOf:
         - $ref: '#/RotationIntervalString'
@@ -340,6 +362,11 @@ CreateAccessProfileRequest:
       type: array
       items:
         $ref: '#/AccessProfileVirtualMCPLink'
+    relay_grants:
+      type: array
+      description: Relays that keys governed by this profile may call. Each relay_name must name an existing relay.
+      items:
+        $ref: '#/AccessProfileRelayGrant'
     mcp_configs:
       type: array
       items:
@@ -400,6 +427,9 @@ UpdateAccessProfileRequest:
       type: boolean
       nullable: true
       description: When true, grants access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false, provider-wide access is disabled and access is deny-by-default via provider_configs. Omit to leave unchanged.
+    disable_content_logging:
+      type: [boolean, 'null']
+      description: 'Tri-state. Omit to leave the decision unchanged, null to clear it back to inherit, true or false to set it. A change is written to every user and entity copy of the profile on this save, without a propagate. Precedence, highest first: business unit, team, user, then the credential tier (virtual key, provider key, access profile; any that says true wins), then client.disable_content_logging. true also strips content from OpenTelemetry export for this traffic; false never loosens a connector''s own disable_content_logging. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. When client.allow_per_request_content_storage_override is on, the x-bf-disable-content-logging request header still takes precedence for the log store.'
     auto_rotation_interval:
       oneOf:
         - $ref: '#/RotationIntervalString'
@@ -416,6 +446,11 @@ UpdateAccessProfileRequest:
       type: array
       items:
         $ref: '#/AccessProfileVirtualMCPLink'
+    relay_grants:
+      type: array
+      description: Replaces the profile's relay grants. Omit to leave them unchanged; [] clears them. Each relay_name must name an existing relay.
+      items:
+        $ref: '#/AccessProfileRelayGrant'
     mcp_configs:
       type: array
       items:
@@ -513,9 +548,16 @@ PropagateRequest:
           - provider_configs
           - budgets
           - rate_limit
-          - mcp_tool_groups
+          - virtual_mcps
+          - mcp_configs
+          - agent_grants
+          - relay_grants
           - mcp_servers
           - mcp_tool_overrides
+        description: >-
+          mcp_configs is the current MCP field; mcp_servers and mcp_tool_overrides are
+          retired aliases for it, accepted for back-compat. An unrecognized value, including
+          the removed mcp_tool_groups, is refused.
       minItems: 1
     user_ids:
       type: array

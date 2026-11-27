@@ -16,12 +16,10 @@ func TestAgentRegistrationHashPreservesFieldBoundaries(t *testing.T) {
 	first := &schemas.AgentRegistration{
 		Name:         "fixture",
 		AgentCardURL: "https://example.com/tenant:b",
-		Tenant:       "c",
 	}
 	second := &schemas.AgentRegistration{
 		Name:         "fixture",
 		AgentCardURL: "https://example.com/",
-		Tenant:       "btenant:c",
 	}
 
 	firstHash, err := GenerateAgentRegistrationHash(first)
@@ -160,11 +158,10 @@ func TestUpdateAgentRegistrationReplacesMutableFieldsAndGrants(t *testing.T) {
 	created := time.Now().UTC().Add(-time.Hour)
 	require.NoError(t, store.CreateAgentRegistration(ctx, &schemas.AgentRegistration{Name: "fixture", AgentCardURL: "https://old.example", Enabled: true, ForwardAcceptedCredential: true, VirtualKeyIDs: []string{"old"}, CreatedAt: created, UpdatedAt: created}))
 	updated := time.Now().UTC()
-	require.NoError(t, store.UpdateAgentRegistration(ctx, &schemas.AgentRegistration{Name: "fixture", AgentCardURL: "https://new.example", Tenant: "new", Enabled: false, VirtualKeyIDs: []string{"new-1", "new-2"}, CreatedAt: updated, UpdatedAt: updated}))
+	require.NoError(t, store.UpdateAgentRegistration(ctx, &schemas.AgentRegistration{Name: "fixture", AgentCardURL: "https://new.example", Enabled: false, VirtualKeyIDs: []string{"new-1", "new-2"}, CreatedAt: updated, UpdatedAt: updated}))
 	got, err := store.GetAgentRegistration(ctx, "fixture")
 	require.NoError(t, err)
 	require.Equal(t, "https://new.example", got.AgentCardURL)
-	require.Equal(t, "new", got.Tenant)
 	require.False(t, got.Enabled)
 	require.False(t, got.ForwardAcceptedCredential)
 	require.False(t, got.ForwardAcceptedCredentialOverridesAuth)
@@ -249,4 +246,46 @@ func TestDeleteVirtualKeyCleansUpAgentGrants(t *testing.T) {
 	var count int64
 	require.NoError(t, store.DB().Model(&tables.TableVirtualKeyAgentGrant{}).Where("virtual_key_id = ?", vk.ID).Count(&count).Error)
 	require.Zero(t, count)
+}
+
+// TestAgentDestinationPolicyPersistence verifies reload and replacement of both destination policies.
+func TestAgentDestinationPolicyPersistence(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	reg := &schemas.AgentRegistration{Name: "destination-policy", AgentCardURL: "https://cards.example.com", Enabled: true, CredentialOrigins: []string{"https://runtime.example.com:9000"}, RequirePublicTarget: true}
+	require.NoError(t, store.CreateAgentRegistration(ctx, reg))
+	got, err := store.GetAgentRegistration(ctx, reg.Name)
+	require.NoError(t, err)
+	require.Equal(t, reg.CredentialOrigins, got.CredentialOrigins)
+	require.True(t, got.RequirePublicTarget)
+	view := got.Redacted()
+	view.CredentialOrigins[0] = "https://other.example.com"
+	require.Equal(t, reg.CredentialOrigins, got.CredentialOrigins)
+	got.CredentialOrigins = []string{}
+	got.RequirePublicTarget = false
+	require.NoError(t, store.UpdateAgentRegistration(ctx, got))
+	reloaded, err := store.GetAgentRegistration(ctx, reg.Name)
+	require.NoError(t, err)
+	require.Empty(t, reloaded.CredentialOrigins)
+	require.False(t, reloaded.RequirePublicTarget)
+}
+
+// TestAgentDestinationPolicyHash detects destination changes without depending on origin ordering.
+func TestAgentDestinationPolicyHash(t *testing.T) {
+	reg := &schemas.AgentRegistration{Name: "hash-policy", CredentialOrigins: []string{"https://a.example.com", "https://b.example.com"}}
+	initial, err := GenerateAgentRegistrationHash(reg)
+	require.NoError(t, err)
+	reg.CredentialOrigins[0], reg.CredentialOrigins[1] = reg.CredentialOrigins[1], reg.CredentialOrigins[0]
+	reordered, err := GenerateAgentRegistrationHash(reg)
+	require.NoError(t, err)
+	require.Equal(t, initial, reordered)
+	reg.RequirePublicTarget = true
+	restricted, err := GenerateAgentRegistrationHash(reg)
+	require.NoError(t, err)
+	require.NotEqual(t, initial, restricted)
+	reg.RequirePublicTarget = false
+	reg.CredentialOrigins = []string{"https://c.example.com"}
+	changed, err := GenerateAgentRegistrationHash(reg)
+	require.NoError(t, err)
+	require.NotEqual(t, initial, changed)
 }

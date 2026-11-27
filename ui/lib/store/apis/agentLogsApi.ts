@@ -12,7 +12,16 @@ import type {
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 
-const Agent_TEXT_FILTER_KEYS = ["request_id", "trace_id", "task_id", "context_id", "push_config_id", "delivery_id", "attempt_id"] as const;
+const Agent_TEXT_FILTER_KEYS = [
+	"request_id",
+	"trace_id",
+	"task_id",
+	"context_id",
+	"push_config_id",
+	"delivery_id",
+	"attempt_id",
+	"caller_correlation_id",
+] as const;
 
 const Agent_MULTI_FILTER_KEYS = [
 	"agent_name",
@@ -76,10 +85,14 @@ export interface AgentFilterData {
 export const agentLogsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// List Agent history rows (metadata only) with filters and pagination.
-		getAgentLogs: builder.query<AgentLogHistoryResponse, { filters: AgentLogFilters; pagination: AgentPagination; selectedId?: string }>({
-			query: ({ filters, pagination, selectedId }) => {
+		getAgentLogs: builder.query<
+			AgentLogHistoryResponse,
+			{ filters: AgentLogFilters; pagination: AgentPagination; selectedId?: string; groupSessions?: boolean }
+		>({
+			query: ({ filters, pagination, selectedId, groupSessions }) => {
 				const query = new URLSearchParams(buildAgentHistoryQuery(filters, pagination));
 				if (selectedId) query.set("selected_id", selectedId);
+				if (groupSessions) query.set("group_sessions", "true");
 				return `/agents/history?${query}`;
 			},
 			providesTags: ["AgentLogs"],

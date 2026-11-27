@@ -121,6 +121,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunPassthroughAPITest,
 		RunWebSocketResponsesTest,
 		RunRealtimeTest,
+		RunSpeechSessionTest,
 		RunCompactionTest,
 		RunToolSearchTest,
 		RunExternalCompactionTest,
@@ -128,6 +129,7 @@ func RunAllComprehensiveTests(t *testing.T, client *bifrost.Bifrost, ctx context
 		RunFastModeTest,
 		RunEagerInputStreamingTest,
 		RunServerToolsViaOpenAIEndpointTest,
+		RunWebSearchViaChatCompletionsTest,
 	}
 
 	// Execute all test scenarios without raw request/response (default behavior)
@@ -249,6 +251,7 @@ func printTestSummary(t *testing.T, testConfig ComprehensiveTestConfig) {
 		{"PassthroughAPI", testConfig.Scenarios.PassthroughAPI},
 		{"WebSocketResponses", testConfig.Scenarios.WebSocketResponses && testConfig.ChatModel != ""},
 		{"Realtime", testConfig.Scenarios.Realtime && testConfig.RealtimeModel != ""},
+		{"SpeechSession", testConfig.Scenarios.SpeechSession && testConfig.SpeechSessionModel != ""},
 		{"Compaction", testConfig.Scenarios.Compaction},
 		{"ToolSearch", testConfig.Scenarios.ToolSearch},
 		{"ExternalCompaction", testConfig.Scenarios.ExternalCompaction},

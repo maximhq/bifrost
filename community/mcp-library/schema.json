@@ -46,7 +46,7 @@
         "connection_type": {
           "type": "string",
           "description": "How clients connect to the server.",
-          "enum": ["http", "stdio", "sse", "inprocess"]
+          "enum": ["http", "stdio", "sse"]
         },
         "connection_url": {
           "type": "string",

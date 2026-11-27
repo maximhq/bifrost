@@ -304,3 +304,121 @@ func TestMixedReasoningSurvivesIngressThenEgress(t *testing.T) {
 	require.True(t, sawMarker,
 		"the replay token was lost across the round trip - ingress restored it but egress did not send it back")
 }
+
+// A replayed agent transcript can carry a second reasoning item after an
+// assistant text message (user, reasoning, message, reasoning, function_call,
+// function_call_output). Cohere rejects any assistant message whose thinking
+// blocks follow a text block ("content items of type 'thinking' ... must come
+// before items of other types"), so the later reasoning has to open a new
+// assistant turn instead of being appended to the finished one. Every message
+// must also survive: none of the assistant turns may be dropped.
+func TestCohereReplayKeepsThinkingBeforeText(t *testing.T) {
+	reasoning := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesOutputMessageContentTypeReasoning, Text: schemas.Ptr(text)},
+			}},
+			ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{}},
+		}
+	}
+	assistantText := func(text string) schemas.ResponsesMessage {
+		return schemas.ResponsesMessage{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr(text)},
+			}},
+		}
+	}
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Work out 17 * 23")},
+	}
+	functionCall := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:    schemas.Ptr("call_1"),
+			Name:      schemas.Ptr("add"),
+			Arguments: schemas.Ptr(`{"a":340,"b":51}`),
+		},
+	}
+	functionOutput := schemas.ResponsesMessage{
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_1"),
+			Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr(`{"sum":391}`)},
+		},
+	}
+
+	cases := []struct {
+		name  string
+		input []schemas.ResponsesMessage
+		texts []string
+	}{
+		{"reasoning after text then function call", []schemas.ResponsesMessage{user, reasoning("r1"), assistantText("391"), reasoning("r2"), functionCall, functionOutput}, []string{"391"}},
+		{"reasoning after text at end of input", []schemas.ResponsesMessage{user, reasoning("r1"), assistantText("391"), reasoning("r2")}, []string{"391"}},
+		{"reasoning after text then user", []schemas.ResponsesMessage{user, reasoning("r1"), assistantText("391"), reasoning("r2"), user}, []string{"391"}},
+		{"two reasoned assistant turns", []schemas.ResponsesMessage{user, reasoning("r1"), assistantText("first"), reasoning("r2"), assistantText("second")}, []string{"first", "second"}},
+		{"two plain assistant turns", []schemas.ResponsesMessage{user, reasoning("r1"), reasoning("r2"), assistantText("first"), assistantText("second")}, []string{"first", "second"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := ConvertBifrostMessagesToCohereMessages(tc.input, nil)
+			var gotTexts []string
+			var gotThinking []string
+			for i, m := range out {
+				if m.Content == nil || m.Content.BlocksContent == nil {
+					continue
+				}
+				seenOther := false
+				for j, b := range m.Content.BlocksContent {
+					if b.Type == CohereContentBlockTypeThinking {
+						require.Falsef(t, seenOther, "messages[%d].content[%d] is thinking after a non-thinking block", i, j)
+						gotThinking = append(gotThinking, *b.Thinking)
+						continue
+					}
+					seenOther = true
+					if b.Text != nil && m.Role == "assistant" {
+						gotTexts = append(gotTexts, *b.Text)
+					}
+				}
+			}
+			require.Equal(t, tc.texts, gotTexts, "an assistant text turn was dropped or duplicated")
+			require.Equal(t, []string{"r1", "r2"}, gotThinking, "reasoning was dropped or reordered")
+		})
+	}
+
+	// Cohere returns a reasoning + text + tool turn as one assistant message; the
+	// replay must fold the split items back into that shape, in transcript order.
+	t.Run("tool turn folds into one assistant message", func(t *testing.T) {
+		secondCall := functionCall
+		secondCall.ResponsesToolMessage = &schemas.ResponsesToolMessage{
+			CallID: schemas.Ptr("call_2"), Name: schemas.Ptr("add"), Arguments: schemas.Ptr(`{"a":1,"b":2}`),
+		}
+		out := ConvertBifrostMessagesToCohereMessages([]schemas.ResponsesMessage{
+			user, reasoning("r1"), assistantText("391"), reasoning("r2"), functionCall, secondCall, functionOutput,
+		}, nil)
+		require.Len(t, out, 4, "want user, assistant(r1+text), assistant(r2+tool_calls), tool")
+		require.Equal(t, "user", out[0].Role)
+		require.Equal(t, "assistant", out[1].Role)
+		require.Len(t, out[1].Content.BlocksContent, 2)
+		require.Empty(t, out[1].ToolCalls)
+		require.Equal(t, "assistant", out[2].Role)
+		require.Len(t, out[2].Content.BlocksContent, 1)
+		require.Equal(t, CohereContentBlockTypeThinking, out[2].Content.BlocksContent[0].Type)
+		require.Len(t, out[2].ToolCalls, 2, "parallel calls belong to one assistant turn")
+		require.Equal(t, "tool", out[3].Role)
+	})
+
+	t.Run("text then tool call stays ahead of the tool result", func(t *testing.T) {
+		out := ConvertBifrostMessagesToCohereMessages([]schemas.ResponsesMessage{
+			user, assistantText("let me add"), functionCall, functionOutput,
+		}, nil)
+		require.Len(t, out, 3, "want user, assistant(text+tool_calls), tool")
+		require.Equal(t, "assistant", out[1].Role)
+		require.Len(t, out[1].ToolCalls, 1)
+		require.Equal(t, "tool", out[2].Role)
+	})
+}

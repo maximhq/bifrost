@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unsafe"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // AnthropicRequestBuildConfig holds the dynamic, per-call inputs to
@@ -49,10 +51,10 @@ type AnthropicRequestBuildConfig struct {
 
 	// BetaHeaderOverrides / ProviderExtraHeaders feed into the body-side
 	// anthropic_beta injection when the provider's defaults set
-	// InjectBetaHeadersIntoBody = true (Vertex only). Both come from the
+	// InjectBetaHeadersIntoBody = true (Bedrock InvokeModel only). Both come from the
 	// caller's NetworkConfig at request time.
 	BetaHeaderOverrides  map[string]bool
-	ProviderExtraHeaders map[string]string
+	ProviderExtraHeaders map[string]schemas.SecretVar
 
 	// ShouldSendBackRawRequest / ShouldSendBackRawResponse control whether raw
 	// request/response bytes are attached to BifrostError.ExtraFields via
@@ -94,7 +96,7 @@ type AnthropicProviderRequestDefaults struct {
 	RemapToolVersions bool
 
 	// InjectBetaHeadersIntoBody serialises filtered beta headers into the JSON
-	// body as "anthropic_beta" (Vertex only — embeds in body, others use HTTP).
+	// body as "anthropic_beta" (Bedrock InvokeModel only; others use the HTTP header).
 	InjectBetaHeadersIntoBody bool
 
 	// InlineURLSources fetches URL-sourced images and documents and rewrites them
@@ -103,6 +105,11 @@ type AnthropicProviderRequestDefaults struct {
 	// for this model". Native Anthropic accepts URLs and fetches them itself, so
 	// it leaves this off and avoids a redundant download.
 	InlineURLSources bool
+
+	// KeepUnsignedThinking replays thinking blocks with an empty signature (self-hosted servers never sign).
+	KeepUnsignedThinking bool
+
+	CachePrefixKeysLast bool // emit tools, system, messages as the last body keys (Vertex prompt cache, see moveCachePrefixKeysLast)
 }
 
 // AnthropicProviderRequestDefaultsMap maps each Anthropic-family provider to
@@ -145,18 +152,22 @@ var AnthropicProviderRequestDefaultsMap = map[schemas.ModelProvider]AnthropicPro
 	},
 	schemas.DeepSeek: {},
 	// Vertex publisher endpoint: model + region in URL, anthropic_version
-	// required, beta headers in body (not HTTP), cache_control.scope stripped
-	// at marshal time, tool versions remapped.
+	// required, cache_control.scope stripped at marshal time, tool versions
+	// remapped. Betas go in the anthropic-beta header only: Vertex ignores the
+	// body field and rejects values it does not list (verified live 2026-11-11).
 	schemas.Vertex: {
-		DeleteModelField:          true,
-		DeleteRegionField:         true,
-		AddAnthropicVersion:       true,
-		AnthropicVersion:          "vertex-2023-10-16",
-		StripCacheControlScope:    true,
-		RemapToolVersions:         true,
-		InjectBetaHeadersIntoBody: true,
+		DeleteModelField:       true,
+		DeleteRegionField:      true,
+		AddAnthropicVersion:    true,
+		AnthropicVersion:       "vertex-2023-10-16",
+		StripCacheControlScope: true,
+		RemapToolVersions:      true,
+		CachePrefixKeysLast:    true,
 	},
-	schemas.SGL: {},
+	// vLLM and SGLang serve /v1/messages without signing their thinking; the model
+	// needs its own unsigned reasoning back on the next turn.
+	schemas.SGL:  {KeepUnsignedThinking: true},
+	schemas.VLLM: {KeepUnsignedThinking: true},
 }
 
 // BuildAnthropicResponsesRequestBody is the single implementation of the
@@ -411,6 +422,24 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		stripUnsupportedAnthropicFields(reqBody, cfg.Provider, capModel)
 		applyDefaultEagerInputStreaming(reqBody, cfg.Provider, capModel)
 
+		// stripUnsupportedAnthropicFields above rewrites thinking for the whole
+		// adaptive-only family one pass AFTER the conversion, so a
+		// converter-only restore of a caller's own thinking mode would be
+		// silently undone here. Re-assert it -- scoped exactly as the converter
+		// scopes it, to a recorded native Anthropic Messages ingress plus the
+		// model -- and leave that shared strip itself untouched, so every other
+		// caller of it keeps its existing behaviour, including the
+		// OpenAI-shaped chat path that promotes thinking out of ExtraParams.
+		//
+		// This runs BEFORE AddMissingBetaHeadersToContext, which DERIVES beta
+		// headers by reading this very body: deriving them first would describe
+		// a body that is about to be replaced, and would disagree with the raw
+		// path, whose derivation already reads a body the raw-body strip
+		// exemption left alone. Restoring first is what keeps one request's
+		// body and the headers describing it decided from the same bytes on
+		// both paths.
+		restoreNativeAnthropicRequestSurface(ctx, reqBody, request.Params, cfg.Provider, capModel)
+
 		AddMissingBetaHeadersToContext(ctx, reqBody, cfg.Provider)
 
 		mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
@@ -433,6 +462,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
+				addBetaHeadersForMergedExtraParams(ctx, jsonBody, cfg.Provider, capModel)
 			}
 		}
 
@@ -481,7 +511,7 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
@@ -527,6 +557,11 @@ func BuildAnthropicResponsesRequestBody(ctx *schemas.BifrostContext, request *sc
 				return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 			}
 		}
+	}
+
+	// Last, so no later edit appends a key after messages.
+	if defaults.CachePrefixKeysLast {
+		jsonBody = moveCachePrefixKeysLast(jsonBody)
 	}
 
 	return jsonBody, nil
@@ -752,6 +787,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 				if err != nil {
 					return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 				}
+				addBetaHeadersForMergedExtraParams(ctx, jsonBody, cfg.Provider, capModel)
 			}
 		}
 
@@ -790,7 +826,7 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
-	jsonBody, err = StripEmptyThinkingBlocks(jsonBody)
+	jsonBody, err = StripEmptyThinkingBlocks(jsonBody, defaults.KeepUnsignedThinking)
 	if err != nil {
 		return nil, newErr(schemas.ErrProviderRequestMarshal, err, jsonBody)
 	}
@@ -830,6 +866,11 @@ func BuildAnthropicChatRequestBody(ctx *schemas.BifrostContext, request *schemas
 		}
 	}
 
+	// Last, so no later edit appends a key after messages.
+	if defaults.CachePrefixKeysLast {
+		jsonBody = moveCachePrefixKeysLast(jsonBody)
+	}
+
 	return jsonBody, nil
 }
 
@@ -867,4 +908,108 @@ func setBedrockInvokeGuardrailOutcome(resp *schemas.BifrostResponsesResponse, ac
 	if len(trace) > 0 {
 		resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey] = trace
 	}
+}
+
+// cachePrefixKeys is the order Anthropic reads the prompt-cache prefix in.
+var cachePrefixKeys = [...]string{"tools", "system", "messages"}
+
+// cachePrefixKeySpan is the [start, end) byte range of one top-level member.
+type cachePrefixKeySpan struct{ start, end int }
+
+// moveCachePrefixKeysLast re-emits the top-level tools, system and messages
+// members as the last keys of body, in that order, leaving every other member
+// where it was. Member bytes are copied verbatim, so values are not re-encoded.
+//
+// Vertex's Anthropic prompt cache is sensitive to raw key order: when the growing
+// messages array precedes the stable tools/system prefix, turn-to-turn cache reads
+// miss on a per-request coin flip (#6406). Neither path controls that order on its
+// own: AnthropicMessageRequest declares Messages before System and Tools, and
+// clients such as Claude Code emit messages first in raw bodies.
+//
+// The body is returned unchanged when it is not an object, carries a duplicate
+// cache-prefix key, or is already ordered. Otherwise the cost is one parse of the
+// top level and one allocation no larger than body.
+func moveCachePrefixKeysLast(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+	root := gjson.Parse(unsafe.String(unsafe.SliceData(body), len(body)))
+	if !root.IsObject() {
+		return body
+	}
+
+	var prefix [len(cachePrefixKeys)]cachePrefixKeySpan
+	var othersBuf [16]cachePrefixKeySpan
+	others := othersBuf[:0]
+	ordered, seenPrefix, duplicate := true, false, false
+	lastRank := -1
+
+	root.ForEach(func(key, value gjson.Result) bool {
+		span := cachePrefixKeySpan{start: key.Index, end: value.Index + len(value.Raw)}
+		rank := -1
+		switch key.String() {
+		case "tools":
+			rank = 0
+		case "system":
+			rank = 1
+		case "messages":
+			rank = 2
+		}
+		if rank < 0 {
+			if seenPrefix {
+				ordered = false
+			}
+			others = append(others, span)
+			return true
+		}
+		if prefix[rank].end != 0 {
+			duplicate = true
+			return false
+		}
+		if rank <= lastRank {
+			ordered = false
+		}
+		seenPrefix, lastRank = true, rank
+		prefix[rank] = span
+		return true
+	})
+	if duplicate || ordered {
+		return body
+	}
+
+	out := make([]byte, 0, len(body))
+	out = append(out, '{')
+	first := true
+	appendMember := func(s cachePrefixKeySpan) {
+		if !first {
+			out = append(out, ',')
+		}
+		first = false
+		out = append(out, body[s.start:s.end]...)
+	}
+	for _, s := range others {
+		appendMember(s)
+	}
+	for _, s := range prefix {
+		if s.end != 0 {
+			appendMember(s)
+		}
+	}
+	return append(out, '}')
+}
+
+// addBetaHeadersForMergedExtraParams re-derives beta headers from the body after the
+// ExtraParams passthrough merge. The typed derivation runs before the merge, so a field
+// that only arrives through the merge (thinking.block_binding, for one) would otherwise
+// reach the wire without the beta it needs. It goes through the raw-body probe, which
+// scans messages for signals instead of decoding them, with model set to the canonical
+// name so capability gates match it rather than a Bifrost alias. Derivation dedupes by
+// prefix, so headers already added are not repeated. Only reached when passthrough is on
+// and there are extra params to merge.
+func addBetaHeadersForMergedExtraParams(ctx *schemas.BifrostContext, jsonBody []byte, provider schemas.ModelProvider, capModel string) {
+	probeBody, err := providerUtils.SetJSONField(jsonBody, "model", capModel)
+	if err != nil {
+		return
+	}
+	_ = AddMissingBetaHeadersToContextFromRawBody(ctx, probeBody, provider)
 }

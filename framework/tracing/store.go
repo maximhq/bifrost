@@ -199,22 +199,30 @@ func (s *TraceStore) ClearDeferredSpan(traceID string) {
 // accumulation for plugins (logging, maxim). This eliminates storing 1M+ BifrostResponse
 // objects in the old accumulator at high concurrency.
 func (s *TraceStore) AppendStreamingChunk(traceID string, chunk *schemas.BifrostResponse) {
+	s.appendStreamingChunk(traceID, chunk)
+}
+
+// Reports the first-chunk timestamp on the first chunk only, zero after, so the
+// caller derives end-to-end TTFT from the same instant time_to_first_chunk uses.
+func (s *TraceStore) appendStreamingChunk(traceID string, chunk *schemas.BifrostResponse) time.Time {
 	if chunk == nil {
-		return
+		return time.Time{}
 	}
 	info := s.GetDeferredSpan(traceID)
 	if info == nil {
-		return
+		return time.Time{}
 	}
 	info.mu.Lock()
 	defer info.mu.Unlock()
 
+	info.ChunkCount++
+
 	// Track first chunk time for TTFT calculation
 	if info.FirstChunkTime.IsZero() {
 		info.FirstChunkTime = time.Now()
+		return info.FirstChunkTime
 	}
-
-	info.ChunkCount++
+	return time.Time{}
 }
 
 // GetAccumulatedData returns TTFT and chunk count for a deferred span.

@@ -19,9 +19,11 @@ import (
 )
 
 const (
-	webrtcHandshakeTimeout   = 10 * time.Second
-	webrtcICEGatherTimeout   = 3 * time.Second
-	webrtcMaxPendingMessages = 1000
+	webrtcHandshakeTimeout       = 10 * time.Second
+	webrtcICEGatherTimeout       = 3 * time.Second
+	webrtcUpstreamDrainTimeout   = 10 * time.Second
+	webrtcDownstreamDrainTimeout = 10 * time.Second
+	webrtcMaxPendingMessages     = 1000
 )
 
 var defaultAudioCodec = webrtc.RTPCodecCapability{
@@ -81,6 +83,8 @@ type webrtcRelay struct {
 	setupState atomic.Int32 // relaySettingUp until establishment and a close race for it
 
 	channelMu                sync.Mutex
+	closing                  bool        // guarded by channelMu
+	upstreamDrainTimer       *time.Timer // terminal transport state waits for the channel reader
 	pendingToUpstream        []queuedDataChannelMessage
 	pendingToDownstream      []queuedDataChannelMessage
 	upstreamConnectedOrError chan error
@@ -232,30 +236,56 @@ func (setup webrtcRelaySetup) fail(status int, errorType, message string, err er
 // what the browser side ending means.
 func (r *webrtcRelay) installCloseHandlers() {
 	r.upstreamConnectedOrError = make(chan error, 1)
+	r.upstreamPC.OnConnectionStateChange(r.onUpstreamState)
+	r.downstreamPC.OnConnectionStateChange(r.onDownstreamState)
+}
 
-	r.upstreamPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		switch state {
-		case webrtc.PeerConnectionStateConnected:
-			select {
-			case r.upstreamConnectedOrError <- nil:
-			default:
-			}
-		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
-			select {
-			case r.upstreamConnectedOrError <- fmt.Errorf("peer connection state %s", state.String()):
-			default:
-			}
-			r.close()
-		case webrtc.PeerConnectionStateDisconnected:
-			r.close()
+// onUpstreamState and onDownstreamState end a leg only on failed or closed. Disconnected means ICE
+// consent checks lapsed and can recover (a busy host does this); pion moves a connection that does
+// not recover to failed after its failed timeout, so a dropped peer still ends the leg.
+func (r *webrtcRelay) onUpstreamState(state webrtc.PeerConnectionState) {
+	switch state {
+	case webrtc.PeerConnectionStateConnected:
+		select {
+		case r.upstreamConnectedOrError <- nil:
+		default:
 		}
-	})
-	r.downstreamPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		switch state {
-		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed, webrtc.PeerConnectionStateDisconnected:
-			r.handler.browserGone(r)
+	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+		select {
+		case r.upstreamConnectedOrError <- fmt.Errorf("peer connection state %s", state.String()):
+		default:
 		}
-	})
+		r.closeAfterUpstreamDrain()
+	}
+}
+
+// SCTP acknowledges data before OnMessage consumes it. Pion closes the peer on a
+// DTLS CloseNotify, but its channel reader can still drain received messages.
+// Closing the relay here would suppress those callbacks and lose final usage.
+// OnClose/OnError finalize after the reader drains; the timer bounds a channel
+// that never opened or a callback that does not return.
+func (r *webrtcRelay) closeAfterUpstreamDrain() {
+	r.channelMu.Lock()
+	if r.closing {
+		r.channelMu.Unlock()
+		return
+	}
+	if r.upstreamChannel == nil || r.setupState.Load() != relayEstablished {
+		r.channelMu.Unlock()
+		r.close()
+		return
+	}
+	if r.upstreamDrainTimer == nil {
+		r.upstreamDrainTimer = time.AfterFunc(webrtcUpstreamDrainTimeout, r.close)
+	}
+	r.channelMu.Unlock()
+}
+
+func (r *webrtcRelay) onDownstreamState(state webrtc.PeerConnectionState) {
+	switch state {
+	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+		r.handler.browserGone(r)
+	}
 }
 
 func (r *webrtcRelay) installTrackForwarders() {
@@ -460,9 +490,17 @@ func (r *webrtcRelay) flushPending() {
 
 func (r *webrtcRelay) close() {
 	r.closeOnce.Do(func() {
+		r.channelMu.Lock()
+		r.closing = true
+		if r.upstreamDrainTimer != nil {
+			r.upstreamDrainTimer.Stop()
+			r.upstreamDrainTimer = nil
+		}
+		r.channelMu.Unlock()
 		if r.handler != nil {
 			r.handler.closed()
 		}
+		r.drainDownstream(webrtcDownstreamDrainTimeout)
 		if r.onClose != nil {
 			r.onClose()
 		}
@@ -488,11 +526,41 @@ func (r *webrtcRelay) close() {
 	})
 }
 
+// Sending only queues SCTP data. Keep the browser leg alive until final events
+// (including errors produced by handler.closed) are acknowledged. A channel that
+// has not opened yet can still flush its pending events through OnOpen. A lost
+// browser cannot hold teardown beyond timeout.
+func (r *webrtcRelay) drainDownstream(timeout time.Duration) {
+	if !r.hasPendingDownstream() {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for r.hasPendingDownstream() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (r *webrtcRelay) hasPendingDownstream() bool {
+	r.channelMu.Lock()
+	defer r.channelMu.Unlock()
+	if r.downstreamChannel == nil {
+		return false
+	}
+	switch r.downstreamChannel.ReadyState() {
+	case webrtc.DataChannelStateConnecting:
+		return len(r.pendingToDownstream) > 0
+	case webrtc.DataChannelStateOpen:
+		return len(r.pendingToDownstream) > 0 || r.downstreamChannel.BufferedAmount() > 0
+	default:
+		return false
+	}
+}
+
 func (r *webrtcRelay) closeWithShutdownSignal() {
 	r.close()
 }
 
-// closeWithErrorEvent sends a final event to the browser, then closes the relay shortly after.
+// closeWithErrorEvent sends a final event to the browser, then drains and closes the relay.
 func (r *webrtcRelay) closeWithErrorEvent(payload []byte) {
 	r.channelMu.Lock()
 	dc := r.downstreamChannel
@@ -500,10 +568,7 @@ func (r *webrtcRelay) closeWithErrorEvent(payload []byte) {
 
 	if isDataChannelOpen(dc) && len(payload) > 0 {
 		sendDataChannelMessage(dc, payload, true)
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			r.close()
-		}()
+		go r.close()
 		return
 	}
 
@@ -550,8 +615,26 @@ func (reg *webrtcRelayRegistry) closeAll() {
 	}
 }
 
+// ICE timing for both relay legs, measured from the last packet a peer sent. A leg rides out a
+// disconnected stall and ends on failed (onUpstreamState / onDownstreamState), so a peer that
+// vanishes without closing is detected after webrtcICEDisconnectedTimeout + webrtcICEFailedTimeout
+// (10 s) instead of pion's default 30 s.
+const (
+	webrtcICEDisconnectedTimeout = 5 * time.Second
+	webrtcICEFailedTimeout       = 5 * time.Second
+	webrtcICEKeepaliveInterval   = 2 * time.Second
+)
+
+// webrtcRelayAPI is shared by every relay: NewAPI still registers pion's default codecs and
+// interceptors, and each peer connection copies the media engine and builds its own interceptors.
+var webrtcRelayAPI = func() *webrtc.API {
+	var se webrtc.SettingEngine
+	se.SetICETimeouts(webrtcICEDisconnectedTimeout, webrtcICEFailedTimeout, webrtcICEKeepaliveInterval)
+	return webrtc.NewAPI(webrtc.WithSettingEngine(se))
+}()
+
 func newWebRTCPeerConnection() (*webrtc.PeerConnection, error) {
-	return webrtc.NewPeerConnection(webrtc.Configuration{})
+	return webrtcRelayAPI.NewPeerConnection(webrtc.Configuration{})
 }
 
 // setRemoteDescription applies desc to pc and converts a panic raised inside the

@@ -10,7 +10,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -75,10 +75,10 @@ func TestHiddenRequestTypesRoutes(t *testing.T) {
 }
 
 func TestHiddenRequestTypesFilterCache(t *testing.T) {
-	h := &LoggingHandler{
+	h := withFilterDataCaches(t, &LoggingHandler{
 		logManager: &visibilityLogManager{t: t}, redactedKeysManager: noRedactedKeys{},
 		config: &lib.Config{ClientConfig: &configstore.ClientConfig{}, LogsStoreConfig: &logstore.Config{Type: logstore.LogStoreTypeSQLite}},
-	}
+	})
 	r := router.New()
 	h.RegisterRoutes(r)
 	// Populate the unrestricted cache first, then ensure hiding a type does not

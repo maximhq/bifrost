@@ -13,7 +13,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -41,6 +41,24 @@ func (h *SessionHandler) SetSetupLock(m *AuthMiddleware) {
 	h.setupLock = m
 }
 
+// setSessionTokenCookie writes (or, with an empty value in the past, expires) the HttpOnly
+// dashboard session cookie. Path stays "/" even under server.base_path: requests are
+// accepted with or without the prefix, so the cookie must ride both spellings.
+func setSessionTokenCookie(ctx *fasthttp.RequestCtx, value string, expires time.Time) {
+	cookie := fasthttp.AcquireCookie()
+	defer fasthttp.ReleaseCookie(cookie)
+	cookie.SetKey("token")
+	cookie.SetValue(value)
+	cookie.SetExpire(expires)
+	cookie.SetPath("/")
+	cookie.SetHTTPOnly(true)
+	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
+	if lib.RequestIsHTTPS(ctx) {
+		cookie.SetSecure(true)
+	}
+	ctx.Response.Header.SetCookie(cookie)
+}
+
 // setSetupSessionCookie writes (or, with an empty value, expires) the HttpOnly setup session
 // cookie. SameSite=Strict: it only ever needs to ride the dashboard's own requests.
 func setSetupSessionCookie(ctx *fasthttp.RequestCtx, value string, expires time.Time) {
@@ -52,7 +70,7 @@ func setSetupSessionCookie(ctx *fasthttp.RequestCtx, value string, expires time.
 	cookie.SetPath("/")
 	cookie.SetHTTPOnly(true)
 	cookie.SetSameSite(fasthttp.CookieSameSiteStrictMode)
-	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+	if lib.RequestIsHTTPS(ctx) {
 		cookie.SetSecure(true)
 	}
 	ctx.Response.Header.SetCookie(cookie)
@@ -227,20 +245,7 @@ func (h *SessionHandler) login(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	// Setting cookies
-	cookie := fasthttp.AcquireCookie()
-	defer fasthttp.ReleaseCookie(cookie)
-	cookie.SetKey("token")
-	cookie.SetValue(token)
-	cookie.SetExpire(time.Now().Add(time.Hour * 24 * 30))
-	cookie.SetPath("/")
-	cookie.SetHTTPOnly(true)
-	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
-	// Check if source is https then set secure
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		cookie.SetSecure(true)
-	}
-	ctx.Response.Header.SetCookie(cookie)
+	setSessionTokenCookie(ctx, token, time.Now().Add(time.Hour*24*30))
 
 	SendJSON(ctx, map[string]any{
 		"message": "Login successful",
@@ -263,19 +268,7 @@ func (h *SessionHandler) logout(ctx *fasthttp.RequestCtx) {
 	}
 
 	// clear token from cookies
-	cookie := fasthttp.AcquireCookie()
-	defer fasthttp.ReleaseCookie(cookie)
-	cookie.SetKey("token")
-	cookie.SetValue("")
-	cookie.SetExpire(time.Now().Add(-time.Hour * 24 * 30))
-	cookie.SetPath("/")
-	cookie.SetHTTPOnly(true)
-	cookie.SetSameSite(fasthttp.CookieSameSiteLaxMode)
-	// Check if source is https then set secure
-	if string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
-		cookie.SetSecure(true)
-	}
-	ctx.Response.Header.SetCookie(cookie)
+	setSessionTokenCookie(ctx, "", time.Now().Add(-time.Hour*24*30))
 
 	// Drop any setup session as well, so a later return to the setup lock (auth disabled
 	// again) cannot be re-entered with a cookie from before.

@@ -6,6 +6,8 @@ icon: "download"
 
 Use direct installation for a pilot, a test device, or a device that is not managed through MDM. The user or installer needs local administrator privileges to install the system service and establish certificate trust.
 
+Complete [Prepare identity and access](/edge/setup-bifrost) and [Configure Edge](/edge/setup-edge-control) first. The device user must be able to sign in to Bifrost with SSO.
+
 ## 1. Download the package
 
 Use the organization-specific Edge download location provided during onboarding. Select the package that matches the device:
@@ -94,10 +96,7 @@ The agent needs the HTTPS URL of your Bifrost deployment. For a direct installat
 
 ## 4. Sign in and establish certificate trust
 
-Open the Edge tray or menu-bar icon and select **Sign in**.
-
-- With an IdP, Edge opens the Bifrost sign-in flow in the default browser and returns the completed session to the local agent.
-- Without an IdP, the tray can offer **Use Virtual Key** when virtual-key sign-in is enabled in Edge Settings.
+Open the Edge tray or menu-bar icon and select **Sign in**. Edge opens the Bifrost SSO flow in the default browser and returns the completed session to the local agent.
 
 Certificate behavior differs by platform:
 

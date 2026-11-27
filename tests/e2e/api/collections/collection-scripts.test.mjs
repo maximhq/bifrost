@@ -20,6 +20,10 @@ const guardsCollection = JSON.parse(
   readFileSync(join(here, "bifrost-v1-request-guards.postman_collection.json"), "utf8"),
 );
 
+const routingWiring = JSON.parse(
+  readFileSync(join(here, "bifrost-routing-wiring.postman_collection.json"), "utf8"),
+);
+
 // Locate a request by "Folder / Request Name" and return one of its scripts.
 function scriptFor(path, listen, source = collection) {
   const wanted = path.split(" / ");
@@ -287,6 +291,113 @@ test("Get Proxy Config survives a non-JSON body without a script error", () => {
     variables: { proxy_attempted_url: "http://127.0.0.1:20001" },
   });
   assert.ok(ctx.state.tests.length > 0, "the script must reach its named assertions");
+});
+
+const disableProxyPrerequest = scriptFor("Proxy / Teardown - Disable Proxy Config", "prerequest");
+
+test("proxy teardown is skipped in the unauthenticated pass, which stored nothing", () => {
+  const ctx = run(disableProxyPrerequest, {});
+  assert.strictEqual(ctx.state.skipped, true, "expected skipRequest()");
+});
+
+test("proxy teardown is skipped when no snapshot was taken, since the folder made no writes", () => {
+  const ctx = run(disableProxyPrerequest, { variables: { admin_auth_header: "Bearer x" } });
+  assert.strictEqual(ctx.state.skipped, true, "expected skipRequest() without proxy_original_config");
+});
+
+test("proxy teardown runs in the authenticated pass and disables the proxy for every surface", () => {
+  const proxy_original_config = JSON.stringify({ enabled: false });
+  for (const variables of [{ admin_auth_header: "Bearer x", proxy_original_config }, { setup_token: "t", proxy_original_config }]) {
+    const ctx = run(disableProxyPrerequest, { variables });
+    assert.strictEqual(ctx.state.skipped, false, `unexpected skipRequest() for ${JSON.stringify(variables)}`);
+  }
+  const proxyFolder = collection.item.find((f) => f.name === "Proxy");
+  const teardown = proxyFolder.item.find((i) => i.name === "Teardown - Disable Proxy Config");
+  const writes = proxyFolder.item.filter((i) => i.request.method === "PUT");
+  assert.strictEqual(writes.at(-1).name, "Update Proxy Config (restore original)", "the restore must be the folder's last write");
+  const body = JSON.parse(teardown.request.body.raw);
+  assert.strictEqual(body.enabled, false);
+  assert.strictEqual(body.enable_for_inference, false);
+  assert.strictEqual(body.enable_for_api, false);
+});
+
+// GET answers "<redacted>" for a stored password, and PUT takes that marker as "keep the
+// stored password" while an absent one stores an empty password. The restore can only put
+// back the password if no earlier write in the folder replaced it.
+test("every proxy write in the authenticated pass keeps the stored password", () => {
+  const proxyFolder = collection.item.find((f) => f.name === "Proxy");
+  const snapshot = JSON.stringify({ enabled: true, type: "http", url: "http://corp:3128", username: "u", password: "<redacted>", timeout: 30, enable_for_scim: false, enable_for_inference: true, enable_for_api: true });
+  for (const item of proxyFolder.item.filter((i) => i.request.method === "PUT")) {
+    const ctx = sandbox({ variables: { admin_auth_header: "Bearer x", proxy_original_config: snapshot } });
+    ctx.pm.request.body.raw = item.request.body.raw;
+    const prerequest = (item.event || []).find((e) => e.listen === "prerequest");
+    if (prerequest) new Function("pm", prerequest.script.exec.join("\n"))(ctx.pm);
+    const body = JSON.parse(ctx.pm.request.body.raw.replace(/\{\{[^}]+\}\}/g, "x"));
+    assert.strictEqual(body.password, "<redacted>", `${item.name} does not keep the stored password: ${ctx.pm.request.body.raw}`);
+  }
+});
+
+// ── Governance - VK Allow All Providers / per-provider catalog counts ─────────
+function modelsBody(provider, n) {
+  const models = Array.from({ length: n }, (_, i) => ({ name: `${provider}-m${i}`, provider }));
+  return JSON.stringify({ models, total: n });
+}
+
+test("allow-all baselines store each provider's filtered count, not a share of one capped page", () => {
+  for (const provider of ["anthropic", "openai"]) {
+    const src = scriptFor(`Governance - VK Allow All Providers / Baseline - ${provider} catalog size with no VK`, "test");
+    const ctx = run(src, { responseBody: modelsBody(provider, 26) });
+    assert.strictEqual(ctx.vars[`vkall_base_${provider}`], "26");
+  }
+});
+
+test("allow-all baselines and VK checks survive a non-JSON body without a script error", () => {
+  for (const name of [
+    "Baseline - anthropic catalog size with no VK",
+    "Baseline - openai catalog size with no VK",
+    "/api/models/details - unnamed provider is granted in full",
+    "/api/models/details - overridden provider stays narrowed",
+  ]) {
+    const ctx = run(scriptFor(`Governance - VK Allow All Providers / ${name}`, "test"), {
+      responseBody: SPA_FALLBACK,
+      variables: { vkall_base_anthropic: "26", vkall_base_openai: "163" },
+    });
+    assert.ok(ctx.state.tests.length > 0, `${name} must reach its named assertions`);
+  }
+});
+
+test("allow-all VK checks query one provider each", () => {
+  const folder = collection.item.find((f) => f.name === "Governance - VK Allow All Providers");
+  for (const [name, provider] of [
+    ["Baseline - anthropic catalog size with no VK", "anthropic"],
+    ["Baseline - openai catalog size with no VK", "openai"],
+    ["/api/models/details - unnamed provider is granted in full", "anthropic"],
+    ["/api/models/details - overridden provider stays narrowed", "openai"],
+  ]) {
+    const item = folder.item.find((i) => i.name === name);
+    assert.ok(item, `request not found: ${name}`);
+    const q = Object.fromEntries(item.request.url.query.map((p) => [p.key, p.value]));
+    assert.strictEqual(q.provider, provider, `${name} must filter by provider`);
+  }
+});
+
+// ── Request guards / cases the OSS setup lock must refuse ─────────────────────
+test("request-guard lock cases drop the setup token and expect the lock's 401", () => {
+  for (const name of [
+    "MCP client registration / A target host that does not resolve is refused without a setup token",
+    "MCP client registration / A loopback target is refused without a setup token",
+    "Provider endpoint changes / Changing the proxy URL is refused without a setup token",
+    "Provider endpoint changes / A custom provider with a base URL is refused without a setup token",
+    "Provider endpoint changes / A provider key carrying an endpoint is refused without a setup token",
+    "Webhook delivery test gate / A test delivery is refused without a setup token",
+    "Dashboard auth update / Re-enabling auth without a setup token is refused",
+    "Dashboard auth update / Re-enabling auth with a wrong current_password and no setup token is refused",
+  ]) {
+    const pre = guardsScriptFor(name, "prerequest");
+    assert.match(pre, /pm\.request\.headers\.remove\('X-Bifrost-Setup-Token'\)/, `${name} must send no setup token`);
+    const post = guardsScriptFor(name, "test");
+    assert.match(post, /to\.eql\(401\)/, `${name} must expect the lock's 401`);
+  }
 });
 
 // ── MCP Clients / Add MCP Client and its dependents ───────────────────────────
@@ -689,6 +800,10 @@ const standardProviders = [...standardBlock.matchAll(/^\s*(\w+),/gm)].map((m) =>
 const redactionRef = "env.BIFROST_SECRET_REDACTION_CANARY";
 const redactionCanary = "synthetic-secretvar-harness-canary-0123456789";
 const redactionMask = "synt" + "*".repeat(24) + "6789";
+// Key server URLs are validated as http(s) URLs once resolved, so they use a URL canary.
+const redactionUrlRef = "env.BIFROST_SECRET_REDACTION_URL_CANARY";
+const redactionUrlMask = "http" + "*".repeat(24) + "6789";
+const redactionUrlFields = new Set(["OllamaKeyConfig.url", "SGLKeyConfig.url", "VLLMKeyConfig.url"]);
 
 test("redaction folder authenticates the initial request as well as callback requests", () => {
   let header;
@@ -728,14 +843,18 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
     if (!fields.length) continue; // Replicate has no secret-bearing key config.
     const fixture = redactionFixtures.find((f) => f.key[property]);
     assert.ok(fixture, `no fixture covers ${type}`);
-    for (const field of fields) assert.strictEqual(fixture.key[property][field], redactionRef, `${type}.${field}`);
-    if (structBody(type).includes("*BedrockEndpoints")) {
-      for (const field of secretFields("BedrockEndpoints")) {
-        assert.strictEqual(fixture.key[property].endpoints[field], redactionRef, `${type}.endpoints.${field}`);
+    for (const field of fields) {
+      const ref = redactionUrlFields.has(`${type}.${field}`) ? redactionUrlRef : redactionRef;
+      assert.strictEqual(fixture.key[property][field], ref, `${type}.${field}`);
+    }
+    const endpoints = structBody(type).match(/\*(\w+Endpoints)\s+`json:"endpoints[,"]/);
+    if (endpoints) {
+      for (const field of secretFields(endpoints[1])) {
+        assert.strictEqual(fixture.key[property].endpoints?.[field], redactionRef, `${type}.endpoints.${field}`);
       }
     }
   }
-  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"]]) {
+  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"], ["baseten", "BasetenAliasCfg"]]) {
     const fixture = redactionFixtures.find((f) => f.provider === provider);
     for (const field of secretFields(type)) assert.strictEqual(fixture.key.aliases.probe[field], redactionRef, `${type}.${field}`);
   }
@@ -764,6 +883,9 @@ function simulateRedaction(fixture, mode = "masked", existing = false, auth = fa
   function wire(value) {
     if (value === redactionRef || (value && value.ref === redactionRef)) {
       return { ref: redactionRef, type: "env", value: redactionMask };
+    }
+    if (value === redactionUrlRef || (value && value.ref === redactionUrlRef)) {
+      return { ref: redactionUrlRef, type: "env", value: redactionUrlMask };
     }
     if (Array.isArray(value)) return value.map(wire);
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, wire(val)]));
@@ -945,6 +1067,251 @@ test("proxy restore skips unless a leak was flagged and a raw snapshot exists", 
   const live = run(proxyRestorePre, { variables: { rg_proxy_leaked: "1", rg_proxy_before_raw: proxyBefore } });
   assert.strictEqual(live.state.skipped, false);
   assert.strictEqual(live.pm.request.body.raw, proxyBefore, "the earlier config is resent byte for byte");
+});
+
+// requestsIn lists the requests of the routing-wiring scenario folder whose name starts with title.
+function requestsIn(title) {
+  const folder = routingWiring.item.find((item) => item.name.startsWith(title));
+  assert.ok(folder, `no routing-wiring scenario named ${title}`);
+  return folder.item.filter((item) => !item.item);
+}
+
+// Each key's alias target is checked on a request pinned to that key: an unpinned request picks its
+// key at random, so a check that needs both keys to serve fails whenever every sample lands on one.
+test("routing-wiring: the alias-collision case checks each key's alias target on a pinned request", () => {
+  const checks = requestsIn("An alias defined on two keys").filter((item) =>
+    (item.event || []).some((e) => e.script.exec.join("\n").includes("resolved_key_alias")),
+  );
+  assert.ok(checks.length > 0, "no request checks the resolved alias");
+  const pinned = new Set();
+  for (const item of checks) {
+    const pin = (item.request.header || []).find((h) => h.key === "x-bf-api-key-id");
+    assert.ok(pin, `${item.name} checks the resolved alias on an unpinned request`);
+    pinned.add(pin.value);
+  }
+  assert.deepStrictEqual([...pinned].sort(), ["k1-{{run_id}}", "k2-{{run_id}}"]);
+});
+
+// With two equal keys, n samples all land on one key one run in 2^(n-1): 8 samples fail one run in
+// 128, 24 about one in eight million.
+test("routing-wiring: the weighted key split takes enough samples that a fair split shows both keys", () => {
+  const samples = requestsIn("Both keys serve under weighted key selection").filter((item) => / sample \d+\/\d+ /.test(item.name));
+  assert.ok(samples.length >= 24, `only ${samples.length} samples`);
+});
+
+// routingWiringRequests lists every request of the routing-wiring collection, in order.
+function routingWiringRequests() {
+  const out = [];
+  (function walk(items) {
+    for (const item of items) {
+      if (item.item) walk(item.item);
+      else out.push(item);
+    }
+  })(routingWiring.item);
+  return out;
+}
+
+// listenScript returns one of a request's scripts as source text.
+function listenScript(item, listen) {
+  const event = (item.event || []).find((e) => e.listen === listen);
+  return event ? event.script.exec.join("\n") : "";
+}
+
+// A virtual key update's provider configs are written as object literals inside the one
+// JSON.stringify that builds the body, never built up and changed field by field, so the payload's
+// field order is fixed (the repository's rule for E2E payloads).
+test("routing-wiring: a virtual key update builds its provider configs as literals", () => {
+  const updates = routingWiringRequests().filter((item) => listenScript(item, "prerequest").includes("provider_configs"));
+  assert.ok(updates.length > 0, "no virtual key update found");
+  for (const item of updates) {
+    const src = listenScript(item, "prerequest");
+    assert.ok(!/\bcfg\.\w+\s*=[^=]/.test(src) && !/\.push\(/.test(src), `${item.name} builds its payload by mutation:\n${src}`);
+    let body = null;
+    const pm = {
+      collectionVariables: { get: () => "{}" },
+      variables: { get: () => "run", replaceIn: (v) => v },
+      request: { body: { update: (raw) => { body = raw; } } },
+    };
+    new Function("pm", src)(pm);
+    const configs = JSON.parse(body).provider_configs;
+    assert.ok(Array.isArray(configs) && configs.length > 0, `${item.name} sent no provider configs: ${body}`);
+    for (const cfg of configs) {
+      const order = ["provider", "allowed_models", "key_ids", "id", "weight"];
+      const keys = Object.keys(cfg);
+      assert.deepStrictEqual(keys, order.filter((k) => keys.includes(k)), `${item.name} config fields out of order: ${JSON.stringify(cfg)}`);
+    }
+  }
+});
+
+// Every entry of a trail check's expectAbsent is resolved like its expectSubstrings, so an entry
+// naming the run's resources ({{run_id}}) is checked against what the trail really says.
+test("routing-wiring: a trail check resolves run variables in the lines it expects absent", () => {
+  const check = routingWiringRequests().find((item) => /var absent = \[/.test(listenScript(item, "test")));
+  assert.ok(check, "no trail check with expectAbsent found");
+  let src = listenScript(check, "test");
+  const body = src.slice(src.indexOf("function assertNow() {") + "function assertNow() {".length, src.indexOf("\n}\nvar ok = true"));
+  const probe = body.replace(/var expected = \[[^\]]*\]/, "var expected = []").replace(/var absent = \[[^\]]*\]/, 'var absent = ["foo-{{run_id}}"]');
+  const pm = {
+    response: { code: 200, json: () => ({ routing_engine_logs: "picked foo-run7 for the request" }) },
+    variables: { replaceIn: (v) => v.split("{{run_id}}").join("run7") },
+  };
+  assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
+});
+
+// Execute the collection's own folder scripts, not a copied implementation.
+const registrationFolder = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8")).item.find(
+  (item) => item.name === "378. Management-created provider prefixes route immediately (provider-prefix-registration)",
+);
+assert.ok(registrationFolder, "provider-prefix-registration folder is missing");
+function registrationSandbox({ failStep = -1, setupFailure = "http", fixtureEnabled = true, caseIndex = 0, failCleanupStep = -1, lingeringProvider = false } = {}) {
+  const values = new Map([
+    ["baseUrl", "http://gateway-fixture"], ["providerErrorFixture", fixtureEnabled ? "1" : "0"],
+    ["providerErrorFixtureUrl", "http://upstream-fixture"], ["setupToken", "fixture-token"],
+    ["admin_auth_header", "Bearer fixture-admin"],
+  ]);
+  const state = { calls: [], failures: [], headers: new Map(), skipped: false };
+  let step = 0;
+  let cleanupStep = 0;
+  const pm = {
+    info: { requestName: registrationFolder.item[caseIndex].name },
+    variables: { get: (key) => values.get(key), set: (key, value) => values.set(key, value), unset: (key) => values.delete(key) },
+    execution: { skipRequest: () => { state.skipped = true; } },
+    request: { headers: { upsert: (header) => state.headers.set(header.key, header.value) } },
+    expect: (actual, message) => ({ to: { eql: (expected) => assert.strictEqual(actual, expected, message) } }),
+    test: (name, fn) => { try { fn(); } catch (error) { state.failures.push({ name, error }); } },
+    sendRequest: (request, callback) => {
+      state.calls.push(request);
+      if (request.method === "GET") {
+        // A provider lookup after cleanup: 404 once removed, 200 if DELETE silently left it in place.
+        callback(null, { code: lingeringProvider ? 200 : 404, text: () => "{}", json: () => ({}) });
+        return;
+      }
+      const fail = request.method !== "DELETE" && step++ === failStep;
+      const networkError = fail && setupFailure === "network";
+      const badJSON = fail && setupFailure === "json";
+      const badCredential = fail && setupFailure === "credential";
+      const cleanupFailure = request.method === "DELETE" && cleanupStep++ === failCleanupStep;
+      const body = badJSON ? SPA_FALLBACK : JSON.stringify({ virtual_key: { id: "fixture-vk", value: badCredential ? undefined : "fixture-key" } });
+      callback(networkError ? new Error("connection refused") : null, networkError ? null : {
+        code: (fail && !badJSON && !badCredential) || cleanupFailure ? 500 : 200, text: () => body, json: () => JSON.parse(body),
+      });
+    },
+    response: {
+      code: registrationFolder.item[caseIndex].name.includes("[EXPECT-400]") ? 400 : 503,
+      text: () => JSON.stringify(pm.response.json()),
+      json: () => ({ error: { message: "service unavailable", type: "no_key_supports_model" }, extra_fields: { provider: values.get("registrationTarget") } }),
+      headers: { get: () => null },
+    },
+  };
+  const run = (listen) => new Function("pm", listenScript(registrationFolder, listen))(pm);
+  return { pm, state, values, run };
+}
+
+test("provider-prefix-registration: only fixture-enabled runs create providers", () => {
+  const ctx = registrationSandbox({ fixtureEnabled: false });
+  ctx.run("prerequest");
+  assert.strictEqual(ctx.state.skipped, true);
+  assert.deepStrictEqual(ctx.state.calls, []);
+});
+
+test("provider-prefix-registration: every case creates a fresh target without discovery or inference warm-up", () => {
+  for (let caseIndex = 0; caseIndex < registrationFolder.item.length; caseIndex++) {
+    const ctx = registrationSandbox({ caseIndex });
+    ctx.run("prerequest");
+    assert.deepStrictEqual(ctx.state.failures, []);
+    assert.deepStrictEqual(ctx.state.calls.map((call) => call.method), ["POST", "POST", "POST"]);
+    const competitor = JSON.parse(ctx.state.calls[0].body.raw);
+    const target = JSON.parse(ctx.state.calls[1].body.raw);
+    assert.notStrictEqual(competitor.provider, target.provider);
+    for (const body of [competitor, target]) {
+      assert.strictEqual(body.network_config.base_url, "http://upstream-fixture");
+      assert.ok(!body.custom_provider_config.allowed_requests.list_models, "discovery must not warm the target");
+    }
+    const keyed = registrationFolder.item[caseIndex].name.includes("[EXPECT-400]");
+    assert.strictEqual(target.custom_provider_config.is_key_less, !keyed);
+    const vk = JSON.parse(ctx.state.calls[2].body.raw);
+    assert.strictEqual(vk.provider_configs[0].provider, target.provider);
+    assert.strictEqual(vk.provider_configs[1].provider, competitor.provider);
+    assert.strictEqual(vk.provider_configs[1].weight, 1);
+    assert.strictEqual(ctx.state.headers.get("x-bf-vk"), "fixture-key");
+    ctx.run("test");
+    assert.deepStrictEqual(ctx.state.failures, []);
+    const deletes = ctx.state.calls.filter((call) => call.method === "DELETE");
+    assert.strictEqual(deletes.length, 3);
+    assert.ok(deletes[0].url.includes("/virtual-keys/"), "remove references before providers");
+    for (const call of ctx.state.calls) {
+      assert.strictEqual(call.header["X-Bifrost-Setup-Token"], "fixture-token");
+      assert.strictEqual(call.header.Authorization, "Bearer fixture-admin");
+    }
+  }
+});
+
+test("provider-prefix-registration: failed setup stops and cleans only successfully created resources", () => {
+  for (const setupFailure of ["http", "network"]) {
+    for (let failStep = 0; failStep < 3; failStep++) {
+      const ctx = registrationSandbox({ failStep, setupFailure });
+      ctx.run("prerequest");
+      assert.strictEqual(ctx.state.failures.length, 1);
+      assert.strictEqual(ctx.state.calls.length, failStep + 1);
+      assert.ok(!ctx.state.headers.has("x-bf-vk"));
+      ctx.run("test");
+      const owned = JSON.parse(ctx.values.get("registrationProviders"));
+      const deletes = ctx.state.calls.filter((call) => call.method === "DELETE");
+      assert.strictEqual(deletes.length, owned.length);
+      for (const call of deletes) assert.ok(owned.some((name) => call.url.endsWith(encodeURIComponent(name))));
+    }
+  }
+  const ctx = registrationSandbox({ failStep: 2, setupFailure: "json" });
+  ctx.run("prerequest");
+  assert.strictEqual(ctx.state.failures.length, 1, "non-JSON VK responses must fail a named assertion, not throw");
+  ctx.run("test");
+  assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 2);
+  const invalidCredential = registrationSandbox({ failStep: 2, setupFailure: "credential" });
+  invalidCredential.run("prerequest");
+  assert.strictEqual(invalidCredential.state.failures.length, 1);
+  assert.ok(!invalidCredential.state.headers.has("x-bf-vk"));
+  invalidCredential.run("test");
+  assert.strictEqual(invalidCredential.state.calls.filter((call) => call.method === "DELETE").length, 3, "a returned VK id still belongs to this case");
+});
+
+test("provider-prefix-registration: failed cleanup is reported and remaining resources are still removed", () => {
+  const ctx = registrationSandbox({ failCleanupStep: 0 });
+  ctx.run("prerequest");
+  ctx.run("test");
+  assert.strictEqual(ctx.state.failures.length, 1);
+  assert.ok(ctx.state.failures[0].name.includes("cleanup"));
+  assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 3);
+});
+
+test("provider-prefix-registration: cleanup confirms each provider is gone, not only that DELETE answered 200", () => {
+  const ctx = registrationSandbox();
+  ctx.run("prerequest");
+  ctx.run("test");
+  assert.deepStrictEqual(ctx.state.failures, []);
+  const lookups = ctx.state.calls.filter((call) => call.method === "GET");
+  assert.strictEqual(lookups.length, 2, "each created provider is looked up after its DELETE");
+  for (const call of lookups) assert.ok(call.url.includes("/api/providers/"));
+  const lingering = registrationSandbox({ lingeringProvider: true });
+  lingering.run("prerequest");
+  lingering.run("test");
+  assert.strictEqual(lingering.state.failures.length, 2, "a provider still present after a 200 DELETE must fail cleanup");
+  for (const failure of lingering.state.failures) assert.ok(failure.name.includes("cleanup removed"));
+});
+
+test("provider-prefix-registration: wrong provider, unexpected status, and non-JSON replies fail and still clean up", () => {
+  for (const failure of ["provider", "status", "json"]) {
+    const ctx = registrationSandbox();
+    ctx.run("prerequest");
+    if (failure === "provider") ctx.pm.response.json = () => ({ error: { message: "service unavailable" }, extra_fields: { provider: "wrong-provider" } });
+    if (failure === "status") ctx.pm.response.code = 200;
+    if (failure === "json") {
+      ctx.pm.response.text = () => SPA_FALLBACK;
+      ctx.pm.response.json = () => { throw new Error("not JSON"); };
+    }
+    ctx.run("test");
+    assert.ok(ctx.state.failures.length > 0, `${failure} silently passed`);
+    assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 3);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

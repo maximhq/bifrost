@@ -1,8 +1,6 @@
 package rules
 
 import (
-	"sync"
-
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common"
 	celast "github.com/google/cel-go/common/ast"
@@ -22,40 +20,28 @@ import (
 // complexity-aware rules enable partial evaluation for the unavailable/unknown
 // complexity_tier path.
 
-var celExpressionIdentifierRefCache sync.Map
-
+// celExpressionReferencesIdentifier reports whether expr reads identifier. It parses expr on every
+// call: a routing rule's answer is computed once when its program is compiled and kept with it,
+// and model router conditions are checked when they are saved and compiled.
 func celExpressionReferencesIdentifier(expr string, identifier string) bool {
 	if expr == "" || identifier == "" {
 		return false
 	}
-
-	cacheKey := identifier + "\x00" + expr
-	if cached, ok := celExpressionIdentifierRefCache.Load(cacheKey); ok {
-		if result, ok := cached.(bool); ok {
-			return result
-		}
-	}
-
-	result := false
 	p, err := parser.NewParser(parser.Macros(parser.AllMacros...))
 	if err != nil {
-		celExpressionIdentifierRefCache.Store(cacheKey, result)
-		return result
+		return false
 	}
-
 	parsed, errs := p.Parse(common.NewTextSource(expr))
 	if errs != nil && len(errs.GetErrors()) > 0 {
-		celExpressionIdentifierRefCache.Store(cacheKey, result)
-		return result
+		return false
 	}
-	if parsed != nil {
-		result = celExprReferencesIdentifier(parsed.Expr(), identifier, nil)
+	if parsed == nil {
+		return false
 	}
-
-	celExpressionIdentifierRefCache.Store(cacheKey, result)
-	return result
+	return celExprReferencesIdentifier(parsed.Expr(), identifier, nil)
 }
 
+// celASTReferencesIdentifier reports whether a compiled expression reads identifier.
 func celASTReferencesIdentifier(ast *cel.Ast, identifier string) bool {
 	if ast == nil || ast.NativeRep() == nil || identifier == "" {
 		return false

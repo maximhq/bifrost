@@ -1,6 +1,8 @@
 package utils
 
 import (
+	"fmt"
+	"math/bits"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -66,6 +68,92 @@ func KnownClaudeMaxOutputTokens(model string) int {
 		return 0
 	}
 	return knownAnthropicMaxOutputTokens[normalizeClaudeModelName(model)]
+}
+
+// claudeMinThinkingBudget is Anthropic's floor on thinking.budget_tokens.
+const claudeMinThinkingBudget = 1024
+
+// geminiBudgetRanges are the published thinking-budget limits. Longest prefix
+// first, since "gemini-2.5-flash" also prefixes "gemini-2.5-flash-lite".
+var geminiBudgetRanges = []struct {
+	prefix   string
+	min, max int
+}{
+	{"gemini-2.5-flash-lite", 512, 24576},
+	{"gemini-2.5-pro", 128, 32768},
+	{"gemini-2.5-flash", 0, 24576},
+}
+
+// KnownGeminiReasoningBudget returns the published Gemini thinking-budget range, or nil when the model publishes none.
+func KnownGeminiReasoningBudget(model string) *schemas.BudgetControl {
+	modelLower := strings.ToLower(model)
+	for _, entry := range geminiBudgetRanges {
+		if strings.Contains(modelLower, entry.prefix) {
+			return &schemas.BudgetControl{Min: new(entry.min), Max: new(entry.max)}
+		}
+	}
+	return nil
+}
+
+// knownReasoningBudget returns the static thinking-budget range for a model whose datasheet row publishes none.
+func knownReasoningBudget(model string) *schemas.BudgetControl {
+	if strings.Contains(model, "claude") {
+		return &schemas.BudgetControl{Min: new(claudeMinThinkingBudget)}
+	}
+	return KnownGeminiReasoningBudget(model)
+}
+
+// FitOutputTokens fits a sent output cap and thinking budget into the model's limits, returning one "param: from -> to" entry per change.
+// defaultMax is the output limit used when caps has none; the Claude table backs it up.
+func FitOutputTokens(caps schemas.ModelCaps, defaultMax int, maxParam string, maxTokens, budget *int) (*int, *int, []string) {
+	var changes []string
+	if defaultMax <= 0 {
+		defaultMax = KnownClaudeMaxOutputTokens(caps.Model())
+	}
+	ceiling := caps.MaxOutputTokens(defaultMax)
+	// limit is the cap a budget must stay under; zero when the caller's own cap stands.
+	limit := ceiling
+	lowered := false
+	fittedMax := maxTokens
+	if maxTokens != nil {
+		limit = 0
+		v := *maxTokens
+		if ceiling > 0 && v > ceiling {
+			v, limit, lowered = ceiling, ceiling, true
+		} else if floor := caps.MinOutputTokens(0); floor > 0 && v < floor {
+			v = floor
+		}
+		if v != *maxTokens {
+			changes = append(changes, fmt.Sprintf("%s: %d -> %d", maxParam, *maxTokens, v))
+			fittedMax = new(v)
+		}
+	}
+	if budget == nil || *budget <= 0 {
+		return fittedMax, budget, changes
+	}
+	b := *budget
+	if lowered {
+		// Scale with the cap so the budget keeps the share of output the caller gave it.
+		// 128-bit product so a huge budget cannot overflow; the quotient is below b, so it fits.
+		hiProd, loProd := bits.Mul64(uint64(b), uint64(limit))
+		scaled, _ := bits.Div64(hiProd, loProd, uint64(*maxTokens))
+		b = max(1, int(scaled))
+	}
+	lo, hi, ranged := caps.ReasoningBudgetRange(0, knownReasoningBudget(caps.Model()))
+	if ranged {
+		if hi > 0 && b > hi {
+			b = hi
+		}
+		b = max(b, lo)
+	}
+	if limit > 1 && b >= limit && (!ranged || limit-1 >= lo) {
+		b = limit - 1
+	}
+	if b != *budget {
+		changes = append(changes, fmt.Sprintf("reasoning.max_tokens: %d -> %d", *budget, b))
+		budget = new(b)
+	}
+	return fittedMax, budget, changes
 }
 
 // IsVertexMultiRegionOnlyModel reports whether the given model is flagged in the

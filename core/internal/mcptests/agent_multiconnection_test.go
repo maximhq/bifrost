@@ -104,8 +104,9 @@ func TestAgent_MultiConnection_MixedPermissions(t *testing.T) {
 	clients := manager.GetClients()
 	for i := range clients {
 		if clients[i].ExecutionConfig.ID == "go-test-server" {
-			clients[i].ExecutionConfig.ToolsToAutoExecute = []string{} // Empty = no auto-execute
-			require.NoError(t, manager.UpdateClient(clients[i].ExecutionConfig.ID, clients[i].ExecutionConfig))
+			require.NoError(t, editClient(manager, clients[i].ExecutionConfig.ID, func(c *schemas.MCPClientConfig) {
+				c.ToolsToAutoExecute = []string{} // Empty = no auto-execute
+			}))
 			break
 		}
 	}

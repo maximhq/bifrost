@@ -54,6 +54,9 @@ export interface Team {
 	rate_limit_id?: string;
 	// Team-wide: applies to all team budgets and the team rate limit
 	calendar_aligned?: boolean;
+	// The team's own content-logging decision: absent/null inherits, true forces content off, false
+	// forces it on. Outranks the virtual key and provider key.
+	disable_content_logging?: boolean | null;
 	// Number of virtual keys assigned to this team (server-computed via a
 	// correlated subquery; the list endpoints report this instead of embedding
 	// the virtual keys themselves)
@@ -105,6 +108,7 @@ export interface VirtualKey {
 	provider_configs?: VirtualKeyProviderConfig[];
 	mcp_configs?: VirtualKeyMCPConfig[];
 	agent_grants?: VirtualKeyAgentGrant[];
+	relay_grants?: { relay_name: string }[];
 	// Virtual MCPs this key is assigned to. Populated by the single-VK GET, not the list.
 	virtual_mcp_ids?: number[];
 	team_id?: string;
@@ -122,6 +126,9 @@ export interface VirtualKey {
 	// Tri-state: absent/null inherits client.disable_content_logging, true forces content off for
 	// this key's traffic, false forces it on for the log store.
 	disable_content_logging?: boolean | null;
+	// Custom key/value attribution (cost center, owner, ...). Snapshotted onto each log row, so logs
+	// can be filtered by it. Absent when the key has none.
+	metadata?: Record<string, string>;
 	created_at: string;
 	updated_at: string;
 	// The third owner a key can have, alongside a team and a customer. Business units are an
@@ -246,6 +253,7 @@ export interface CreateVirtualKeyRequest {
 	provider_configs?: VirtualKeyProviderConfigRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	agent_grants?: { agent_name: string }[];
+	relay_grants?: { relay_name: string }[];
 	team_id?: string;
 	customer_id?: string;
 	// Third owner, mutually exclusive with team_id and customer_id (enterprise).
@@ -257,6 +265,7 @@ export interface CreateVirtualKeyRequest {
 	allow_all_providers?: boolean; // When true, all providers are allowed
 	expires_at?: string; // RFC3339 UTC timestamp; omit for a key that never expires
 	disable_content_logging?: boolean; // Omit to inherit the client setting; true forces content off, false forces it on
+	metadata?: Record<string, string>; // Custom key/value attribution; omit for none
 	delete_after_expire?: boolean; // Omit to inherit client.delete_expired_virtual_keys; true/false override it; requires expires_at
 }
 
@@ -266,6 +275,7 @@ export interface UpdateVirtualKeyRequest {
 	provider_configs?: VirtualKeyProviderConfigUpdateRequest[];
 	mcp_configs?: VirtualKeyMCPConfigRequest[];
 	agent_grants?: { agent_name: string }[];
+	relay_grants?: { relay_name: string }[];
 	team_id?: string | null;
 	customer_id?: string | null;
 	// Third owner, mutually exclusive with team_id and customer_id (enterprise); null clears it.
@@ -278,6 +288,7 @@ export interface UpdateVirtualKeyRequest {
 	reset_budget_usage?: boolean;
 	expires_at?: string; // RFC3339 UTC timestamp sets a new expiry, "" clears it, omit to leave unchanged
 	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
+	metadata?: Record<string, string>; // Replaces the metadata as a whole: {} clears it, omit to leave unchanged
 	delete_after_expire?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged; a value requires an expiry
 }
 
@@ -289,6 +300,7 @@ export interface BulkRotateVirtualKeysResponse {
 	message: string;
 	virtual_keys: VirtualKey[];
 	errors?: Record<string, string>;
+	warnings?: Record<string, string>; // saved, but not loaded into memory
 }
 
 export interface CreateTeamRequest {
@@ -297,6 +309,7 @@ export interface CreateTeamRequest {
 	budgets?: CreateBudgetRequest[]; // Multi-budget: each must have a unique reset_duration
 	rate_limit?: CreateRateLimitRequest;
 	calendar_aligned?: boolean; // Team-wide: applies to all team budgets and the team rate limit
+	disable_content_logging?: boolean; // Omit to inherit; true forces content off, false forces it on
 }
 
 export interface UpdateTeamRequest {
@@ -307,6 +320,7 @@ export interface UpdateTeamRequest {
 	calendar_aligned?: boolean;
 	/** Zero current usage on the reconciled budgets. The reset window is unchanged. */
 	reset_budget_usage?: boolean;
+	disable_content_logging?: boolean | null; // null clears back to inherit, true/false set it, omit to leave unchanged
 }
 
 export interface CreateCustomerRequest {
@@ -377,6 +391,8 @@ export interface GetVirtualKeysParams {
 	sort_by?: "name" | "budget_spent" | "created_at" | "status";
 	order?: "asc" | "desc";
 	export?: boolean;
+	/** Exact-match metadata filters, sent as metadata_<key>=<value> and AND-ed server-side. */
+	metadata?: Record<string, string>;
 }
 
 // Response types
@@ -544,6 +560,8 @@ export interface PricingOverridePatch {
 	output_cost_per_token_ultrafast?: number;
 	input_cost_per_token_flex?: number;
 	output_cost_per_token_flex?: number;
+	input_cost_per_token_decisions?: number;
+	output_cost_per_token_decisions?: number;
 	input_cost_per_character?: number;
 	input_cost_per_token_fast?: number;
 	output_cost_per_token_fast?: number;
@@ -599,6 +617,14 @@ export interface PricingOverridePatch {
 	cache_creation_input_token_cost_ultrafast?: number;
 	cache_creation_input_token_cost_fast?: number;
 	cache_creation_input_token_cost_above_1hr_fast?: number;
+	cache_creation_input_token_cost_above_12hr?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens?: number;
+	cache_creation_input_token_cost_above_12hr_priority?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_priority?: number;
+	cache_creation_input_token_cost_above_12hr_flex?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_flex?: number;
+	cache_creation_input_token_cost_above_12hr_ultrafast?: number;
+	cache_creation_input_token_cost_above_12hr_above_272k_tokens_ultrafast?: number;
 	cache_read_input_token_cost_fast?: number;
 	// Image
 	input_cost_per_image_token?: number;
@@ -650,6 +676,17 @@ export interface PricingOverridePatch {
 	output_cost_per_video_per_second_1024p?: number;
 	output_cost_per_video_per_second_1080p?: number;
 	output_cost_per_video_per_second_4k?: number;
+	output_cost_per_video_token?: number;
+	// Azure Voice Live
+	input_cost_per_token_voice_live?: number;
+	output_cost_per_token_voice_live?: number;
+	cache_read_input_token_cost_voice_live?: number;
+	input_cost_per_audio_token_voice_live?: number;
+	output_cost_per_audio_token_voice_live?: number;
+	input_cost_per_standard_speech_audio_token_voice_live?: number;
+	output_cost_per_standard_speech_audio_token_voice_live?: number;
+	input_cost_per_custom_speech_audio_token_voice_live?: number;
+	output_cost_per_custom_speech_audio_token_voice_live?: number;
 	// Other
 	web_search_cost_per_request?: number;
 	input_cost_per_query?: number;

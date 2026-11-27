@@ -9,7 +9,6 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 )
 
@@ -27,14 +26,33 @@ func newServedModelPlugin(t *testing.T) *LoggerPlugin {
 	if err := os.WriteFile(path, []byte(servedModelPricingJSON), 0o600); err != nil {
 		t.Fatalf("write pricing file: %v", err)
 	}
-	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	ds := datasheetForTest(t, nil, testLogger{}, datasheet.Config{URL: "file://" + path})
 	if err := ds.LoadFromURLIntoMemory(context.Background()); err != nil {
 		t.Fatalf("load pricing datasheet: %v", err)
 	}
 	return &LoggerPlugin{
 		store:          newTestStore(t),
-		pricingManager: modelcatalog.NewTestCatalogWithDatasheet(ds),
+		pricingManager: catalogWithDatasheetForTest(t, ds),
 		logger:         testLogger{},
+	}
+}
+
+// An Interactions poll names no model on the request; the record takes the agent the upstream
+// reports running, so Deep Research polls are filterable and priced by agent. A request that did
+// name a model keeps it.
+func TestApplyServedModelPassthroughFillsMissingModel(t *testing.T) {
+	poll := &schemas.BifrostResponse{PassthroughResponse: &schemas.BifrostPassthroughResponse{ServedModel: "deep-research-preview-04-2026"}}
+
+	entry := &logstore.Log{Provider: string(schemas.Gemini)}
+	applyServedModel(entry, poll)
+	if entry.Model != "deep-research-preview-04-2026" || entry.ServedModel != nil {
+		t.Fatalf("model=%q served_model=%v, want the agent as the model", entry.Model, entry.ServedModel)
+	}
+
+	named := &logstore.Log{Provider: string(schemas.Gemini), Model: "deep-research-max-preview-04-2026"}
+	applyServedModel(named, poll)
+	if named.Model != "deep-research-max-preview-04-2026" {
+		t.Fatalf("model=%q, a named model is never replaced", named.Model)
 	}
 }
 

@@ -47,7 +47,7 @@ Every model limit has a **scope** that determines the audience it applies to.
 <Tabs>
 <Tab title="Web UI">
 
-Navigate to **Budget & Limits → Model Limits** in the Bifrost dashboard.
+Navigate to **Models → Budgets & Limits** in the Bifrost dashboard.
 
 ### Table view
 
@@ -59,11 +59,13 @@ The table shows all configured model limits with their current usage. Use the to
 
 The **Scope Target** column links directly back to the parent entity (e.g. clicking a virtual key badge takes you to that VK).
 
-![Model Limits Table](../../media/ui-model-limits-table.png)
+<Frame>
+  <img src="/media/ui-model-limits-table.png" alt="Budgets & Limits table filtered to Virtual Key scope and the Anthropic provider" />
+</Frame>
 
 ### Adding a model limit
 
-Click **Add Model Limit** to open the configuration sheet.
+Click **Add Limit** to open the configuration sheet.
 
 1. **Provider** — select a specific provider or leave as _All Providers_
 2. **Model Name** — search and select a model, or pick _All Models_ to cover every model for the chosen provider/scope
@@ -74,7 +76,9 @@ Click **Add Model Limit** to open the configuration sheet.
 
 Click **Create Limit** to save.
 
-![Model Limit Sheet](../../media/ui-model-limits-sheet.png)
+<Frame>
+  <img src="/media/ui-model-limits-sheet.png" alt="Create Limit sheet with provider, model, scope, budget and rate limit fields" />
+</Frame>
 
 <Note>
 Model name and scope are locked after creation. To change them, delete the limit and recreate it.
@@ -286,7 +290,7 @@ Model limits are declared under `governance.model_configs`. Each entry reference
 
 ### Global provider cap
 
-Prevent OpenAI from exceeding $1,000/month regardless of which virtual key triggered the request:
+Prevent OpenAI from exceeding \$1,000/month regardless of which virtual key triggered the request:
 
 ```bash
 curl -X POST "http://localhost:8080/api/governance/model-configs" \
@@ -326,7 +330,7 @@ curl -X POST "http://localhost:8080/api/governance/model-configs" \
 
 ### Virtual key per-provider budget
 
-Let the staging VK use Anthropic up to $50/month independently of its OpenAI spend:
+Let the staging VK use Anthropic up to \$50/month independently of its OpenAI spend:
 
 ```bash
 curl -X POST "http://localhost:8080/api/governance/model-configs" \

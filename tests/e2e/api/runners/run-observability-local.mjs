@@ -508,10 +508,18 @@ async function assertOtelMetricsReceived() {
 		"provider",
 		providerName,
 		"model",
-		requestedModel,
 		"method",
 		"chat_completion",
 	]);
+	// AnyValue.string_value is field 1 (tag 0x0A): match the length-prefixed value so
+	// "hello-world" cannot pass as a suffix of "<provider>/hello-world".
+	const exactModel = Buffer.concat([Buffer.from([0x0a, Buffer.byteLength(modelName)]), Buffer.from(modelName)]);
+	if (!entry.body.includes(exactModel)) {
+		throw new Error(`OTEL metrics export has no model attribute equal to ${JSON.stringify(modelName)}`);
+	}
+	if (entry.body.includes(Buffer.from(requestedModel))) {
+		throw new Error(`OTEL metrics export carries the provider-prefixed model ${JSON.stringify(requestedModel)}`);
+	}
 }
 
 // abortMidFlight sends a request against the stalling upstream and drops the client
@@ -536,18 +544,24 @@ async function abortMidFlight(id) {
 	await pending.catch(() => {});
 }
 
-// assertOtelAbandonedTrace is the end-to-end guard for the abandoned-request path: the
-// worker writes cost and model after the handler has already returned, so a trace
-// flushed at handler return reaches every connector without them.
+// assertOtelAbandonedTrace is the end-to-end guard for the abandoned-request path: a
+// request whose client left mid-flight must still export its trace, with the
+// cancellation recorded, rather than being dropped or flushed half-written.
 async function assertOtelAbandonedTrace(id) {
 	const entry = await poll("OTEL abandoned trace receiver", 20000, () =>
 		state.otelTraceRequests.find((item) => item.body.includes(Buffer.from(id))),
 	);
+	// The client disconnect watcher (#7106) cancels the request context once it sees
+	// the close, which aborts the upstream call: the attempt ends as a 499 with no
+	// usage. What must survive is the export itself, carrying the request id, the
+	// model and the cancellation. The late-writer path, where the provider answers
+	// after the caller left, is pinned in Go by TestRequestWorkerCompletesEveryAbandonedTrace.
 	assertBufferContainsAll("OTEL abandoned trace export", entry.body, [
 		id,
 		"gen_ai.request.model",
-		"gen_ai.usage.input_tokens",
-		"gen_ai.usage.output_tokens",
+		"error.type",
+		"request_cancelled",
+		"http.response.status_code",
 	]);
 }
 
@@ -684,7 +698,7 @@ async function assertPrometheusScrape() {
 		return null;
 	});
 
-	const labels = { provider: providerName, model: requestedModel, method: "chat_completion" };
+	const labels = { provider: providerName, model: modelName, method: "chat_completion" };
 	const successLine = findPrometheusSample(metrics, "bifrost_success_requests_total", labels);
 	const upstreamLine = findPrometheusSample(metrics, "bifrost_upstream_requests_total", labels);
 	const inputLine = findPrometheusSample(metrics, "bifrost_input_tokens_total", labels);
@@ -776,7 +790,7 @@ async function assertLoggingTrace() {
 // threshold. assertPrometheusScrape and assertLoggingTrace check each side in isolation;
 // only this cross-check catches a drift where both sides individually look "present".
 function assertMetricsMatchLogs(metrics, log) {
-	const labels = { provider: providerName, model: requestedModel, method: "chat_completion" };
+	const labels = { provider: providerName, model: modelName, method: "chat_completion" };
 	const inputLine = findPrometheusSample(metrics, "bifrost_input_tokens_total", labels);
 	const outputLine = findPrometheusSample(metrics, "bifrost_output_tokens_total", labels);
 	if (!inputLine || !outputLine) {
@@ -905,7 +919,7 @@ async function main() {
 
 		console.log(`  OTEL trace exports received: ${state.otelTraceRequests.length}`);
 		console.log(`  OTEL metric exports received: ${state.otelMetricRequests.length}`);
-		console.log(`  Prometheus scrape includes provider="${providerName}" model="${requestedModel}"`);
+		console.log(`  Prometheus scrape includes provider="${providerName}" model="${modelName}"`);
 		console.log(`  Metrics/logs token usage reconciled (scrape == logs)`);
 		console.log(`  Logging trace API returned id="${requestID}"`);
 		console.log(`  Error spans carry gen_ai.error.* and error counter has status_code (non-stream and stream).`);
