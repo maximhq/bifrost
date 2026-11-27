@@ -365031,6 +365031,238 @@
           }
         }
       ]
+    },
+    {
+      "name": "390. clear_tool_uses keeps clear_at_least on every Anthropic route (#10460 / PR #10556) (clear_at_least)",
+      "description": "A clear_tool_uses_20250919 context edit takes clear_at_least: the minimum number of tokens one clear must free, so Anthropic does not throw away the prompt cache for a tiny gain.\n\nBefore the fix CompactManagementEditClearToolUses tagged the field clear_at_last, so decoding the request into the Anthropic ContextManagement type dropped clear_at_least, and the edit reached Anthropic with only trigger and keep. Anthropic then cleared tool results as soon as the trigger fired.\n\nThe decode happens on every typed route: /anthropic/v1/messages (AnthropicMessageRequest -> ExtraParams context_management), /v1/responses and /v1/chat/completions (raw context_management JSON -> ContextManagement in responses.go / chat.go). Each case sends the same edit with no anthropic-beta header (the gateway derives context-management-2025-06-27 from the edit) and asks for raw_request, then checks the outgoing edit still carries clear_at_least, trigger and keep with the values sent. All three are red before the fix (clear_at_least missing) and green after.\n\nThe Claude Code passthrough route is not covered: it forwards the caller's raw body, so clear_at_least was never decoded or dropped there.",
+      "item": [
+        {
+          "name": "390.1 anthropic claude-haiku-4-5 /anthropic/v1/messages: clear_tool_uses clear_at_least reaches Anthropic - clear_at_least - #10460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('390.1 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200 (/anthropic/v1/messages): ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('390.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var wire = JSON.stringify(rr);",
+                  "var edits = (rr.context_management || {}).edits || [];",
+                  "var edit = null;",
+                  "for (var i = 0; i < edits.length; i++) { if (edits[i] && edits[i].type === 'clear_tool_uses_20250919') { edit = edits[i]; } }",
+                  "pm.test('390.1 clear_tool_uses edit reaches Anthropic', function () {",
+                  "  pm.expect(edit, 'clear_tool_uses_20250919 edit missing from context_management: ' + wire.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!edit) { return; }",
+                  "var editStr = JSON.stringify(edit);",
+                  "// Before the fix the field was tagged clear_at_last, so decode dropped clear_at_least",
+                  "// and this edit reached Anthropic with only trigger and keep.",
+                  "pm.test('390.1 clear_at_least reaches Anthropic unchanged', function () {",
+                  "  pm.expect(edit.clear_at_least, 'clear_at_least dropped before the provider: ' + editStr).to.eql({ type: 'input_tokens', value: 5000 });",
+                  "  pm.expect(edit, 'misspelled clear_at_last leaked onto the wire: ' + editStr).to.not.have.property('clear_at_last');",
+                  "});",
+                  "pm.test('390.1 trigger and keep reach Anthropic unchanged', function () {",
+                  "  pm.expect(edit.trigger, 'trigger: ' + editStr).to.eql({ type: 'input_tokens', value: 30000 });",
+                  "  pm.expect(edit.keep, 'keep: ' + editStr).to.eql({ type: 'tool_uses', value: 3 });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_tool_uses_20250919\",\n        \"trigger\": {\n          \"type\": \"input_tokens\",\n          \"value\": 30000\n        },\n        \"keep\": {\n          \"type\": \"tool_uses\",\n          \"value\": 3\n        },\n        \"clear_at_least\": {\n          \"type\": \"input_tokens\",\n          \"value\": 5000\n        }\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "390.2 anthropic claude-haiku-4-5 /v1/responses: clear_tool_uses clear_at_least reaches Anthropic - clear_at_least - #10460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('390.2 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200 (/v1/responses): ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('390.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var wire = JSON.stringify(rr);",
+                  "var edits = (rr.context_management || {}).edits || [];",
+                  "var edit = null;",
+                  "for (var i = 0; i < edits.length; i++) { if (edits[i] && edits[i].type === 'clear_tool_uses_20250919') { edit = edits[i]; } }",
+                  "pm.test('390.2 clear_tool_uses edit reaches Anthropic', function () {",
+                  "  pm.expect(edit, 'clear_tool_uses_20250919 edit missing from context_management: ' + wire.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!edit) { return; }",
+                  "var editStr = JSON.stringify(edit);",
+                  "// Before the fix the field was tagged clear_at_last, so decode dropped clear_at_least",
+                  "// and this edit reached Anthropic with only trigger and keep.",
+                  "pm.test('390.2 clear_at_least reaches Anthropic unchanged', function () {",
+                  "  pm.expect(edit.clear_at_least, 'clear_at_least dropped before the provider: ' + editStr).to.eql({ type: 'input_tokens', value: 5000 });",
+                  "  pm.expect(edit, 'misspelled clear_at_last leaked onto the wire: ' + editStr).to.not.have.property('clear_at_last');",
+                  "});",
+                  "pm.test('390.2 trigger and keep reach Anthropic unchanged', function () {",
+                  "  pm.expect(edit.trigger, 'trigger: ' + editStr).to.eql({ type: 'input_tokens', value: 30000 });",
+                  "  pm.expect(edit.keep, 'keep: ' + editStr).to.eql({ type: 'tool_uses', value: 3 });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_output_tokens\": 16,\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_tool_uses_20250919\",\n        \"trigger\": {\n          \"type\": \"input_tokens\",\n          \"value\": 30000\n        },\n        \"keep\": {\n          \"type\": \"tool_uses\",\n          \"value\": 3\n        },\n        \"clear_at_least\": {\n          \"type\": \"input_tokens\",\n          \"value\": 5000\n        }\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "390.3 anthropic claude-haiku-4-5 /v1/chat/completions: clear_tool_uses clear_at_least reaches Anthropic - clear_at_least - #10460",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('390.3 status 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200 (/v1/chat/completions): ' + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('390.3 raw_request captured', function () {",
+                  "  pm.expect(rr, 'x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "if (!rr || typeof rr !== 'object') { return; }",
+                  "var wire = JSON.stringify(rr);",
+                  "var edits = (rr.context_management || {}).edits || [];",
+                  "var edit = null;",
+                  "for (var i = 0; i < edits.length; i++) { if (edits[i] && edits[i].type === 'clear_tool_uses_20250919') { edit = edits[i]; } }",
+                  "pm.test('390.3 clear_tool_uses edit reaches Anthropic', function () {",
+                  "  pm.expect(edit, 'clear_tool_uses_20250919 edit missing from context_management: ' + wire.slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "if (!edit) { return; }",
+                  "var editStr = JSON.stringify(edit);",
+                  "// Before the fix the field was tagged clear_at_last, so decode dropped clear_at_least",
+                  "// and this edit reached Anthropic with only trigger and keep.",
+                  "pm.test('390.3 clear_at_least reaches Anthropic unchanged', function () {",
+                  "  pm.expect(edit.clear_at_least, 'clear_at_least dropped before the provider: ' + editStr).to.eql({ type: 'input_tokens', value: 5000 });",
+                  "  pm.expect(edit, 'misspelled clear_at_last leaked onto the wire: ' + editStr).to.not.have.property('clear_at_last');",
+                  "});",
+                  "pm.test('390.3 trigger and keep reach Anthropic unchanged', function () {",
+                  "  pm.expect(edit.trigger, 'trigger: ' + editStr).to.eql({ type: 'input_tokens', value: 30000 });",
+                  "  pm.expect(edit.keep, 'keep: ' + editStr).to.eql({ type: 'tool_uses', value: 3 });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"max_tokens\": 16,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ],\n  \"context_management\": {\n    \"edits\": [\n      {\n        \"type\": \"clear_tool_uses_20250919\",\n        \"trigger\": {\n          \"type\": \"input_tokens\",\n          \"value\": 30000\n        },\n        \"keep\": {\n          \"type\": \"tool_uses\",\n          \"value\": 3\n        },\n        \"clear_at_least\": {\n          \"type\": \"input_tokens\",\n          \"value\": 5000\n        }\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

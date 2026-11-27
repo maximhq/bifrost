@@ -907,7 +907,7 @@ func (ct *ClearToolInputs) UnmarshalJSON(data []byte) error {
 
 type CompactManagementEditClearToolUses struct {
 	ClearToolInputs *ClearToolInputs                   `json:"clear_tool_inputs,omitempty"`
-	ClearAtLast     *CompactManagementEditTypeAndValue `json:"clear_at_last,omitempty"`
+	ClearAtLeast    *CompactManagementEditTypeAndValue `json:"clear_at_least,omitempty"`
 	Keep            *CompactManagementEditTypeAndValue `json:"keep,omitempty"`
 	ExcludeTools    []string                           `json:"exclude_tools,omitempty"`
 	Trigger         *CompactManagementEditTypeAndValue `json:"trigger,omitempty"`

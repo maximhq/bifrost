@@ -1,0 +1,1 @@
+- fix: anthropic - the `clear_tool_uses_20250919` context edit keeps its `clear_at_least` field on `/anthropic/v1/messages`, `/v1/responses` and `/v1/chat/completions` (it was read as `clear_at_last` and dropped)
