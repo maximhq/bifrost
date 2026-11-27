@@ -1364,8 +1364,12 @@ type TokenEndpointError struct {
 	Body       string
 }
 
+func is2xxStatus(status int) bool {
+	return status >= http.StatusOK && status < http.StatusMultipleChoices
+}
+
 func (e *TokenEndpointError) Error() string {
-	if e.StatusCode == http.StatusOK {
+	if is2xxStatus(e.StatusCode) {
 		return "token response missing access_token, body: " + e.Body
 	}
 	return fmt.Sprintf("token request failed with status %d: %s", e.StatusCode, e.Body)
@@ -1446,7 +1450,7 @@ func classifyTokenRejection(status int, body []byte) tokenRejection {
 		return rejectionClient
 	case status >= 500, status == http.StatusTooManyRequests, status == http.StatusRequestTimeout:
 		return rejectionTransient
-	case status == http.StatusOK, status == http.StatusBadRequest, code != "":
+	case is2xxStatus(status), status == http.StatusBadRequest, code != "":
 		return rejectionRequest
 	default:
 		// An unexplained 4xx such as a proxy's 403 page: retry, as before.
@@ -1582,25 +1586,36 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 			continue
 		}
 
-		if resp.StatusCode == http.StatusOK {
+		var decodeErr error
+		if is2xxStatus(resp.StatusCode) {
 			// Try to parse as JSON first
 			var tokenResponse schemas.OAuth2TokenExchangeResponse
 			if err := json.Unmarshal(body, &tokenResponse); err != nil {
 				// Fall back to URL-encoded form data (GitHub's OAuth endpoint returns this format)
 				formValues, parseErr := url.ParseQuery(string(body))
 				if parseErr != nil {
-					return nil, fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
-				}
-				tokenResponse.AccessToken = formValues.Get("access_token")
-				tokenResponse.RefreshToken = formValues.Get("refresh_token")
-				tokenResponse.TokenType = formValues.Get("token_type")
-				tokenResponse.Scope = formValues.Get("scope")
-				if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
-					fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
+					decodeErr = fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
+					tokenResponse = schemas.OAuth2TokenExchangeResponse{}
+				} else {
+					tokenResponse.AccessToken = formValues.Get("access_token")
+					tokenResponse.RefreshToken = formValues.Get("refresh_token")
+					tokenResponse.TokenType = formValues.Get("token_type")
+					tokenResponse.Scope = formValues.Get("scope")
+					if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
+						fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
+					}
 				}
 			}
 			if tokenResponse.AccessToken != "" {
 				return &tokenResponse, nil
+			}
+			// Preserve existing HTTP 200 decode-failure error only when no OAuth
+			// error code can be classified; non-200 2xx responses always continue
+			// through classifyTokenRejection.
+			if decodeErr != nil && resp.StatusCode == http.StatusOK {
+				if code, _ := parseOAuthErrorBody(body); code == "" {
+					return nil, decodeErr
+				}
 			}
 		}
 

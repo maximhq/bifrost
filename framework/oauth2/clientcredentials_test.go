@@ -362,6 +362,7 @@ func TestClientCredentialsErrorsHideUpstreamText(t *testing.T) {
 		"unclassified status": {http.StatusTeapot, "the token endpoint answered status 418"},
 		"transient status":    {http.StatusBadGateway, "the token endpoint answered status 502"},
 		"200 without a token": {http.StatusOK, "the token response has no access_token"},
+		"201 without a token": {http.StatusCreated, "the token response has no access_token"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			status, body = tc.status, "<html>internal diagnostics</html>"
@@ -405,4 +406,74 @@ func TestClientCredentialsErrorsHideUpstreamText(t *testing.T) {
 			assert.NotContains(t, err.Error(), "SECRET")
 		})
 	}
+}
+
+// TestClientCredentialsAccepts2xxTokenResponses verifies that token endpoints
+// returning 201 Created (such as CrowdStrike Falcon's /oauth2/token) succeed
+// on both save-time credential resolution and runtime token minting when the
+// response carries a valid access_token, while still classifying OAuth errors
+// sent with a 2xx status as rejections.
+func TestClientCredentialsAccepts2xxTokenResponses(t *testing.T) {
+	var status int
+	var body string
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(upstream.Close)
+
+	p := newCCProvider()
+	cfg := ccSecretConfig()
+	cfg.TokenURL = upstream.URL + "/token"
+
+	status = http.StatusCreated
+	body = `{"access_token":"falcon-201-token","token_type":"bearer","expires_in":1799}`
+
+	resolved, err := p.ResolveClientCredentials(context.Background(), upstream.URL+"/mcp", false, cfg)
+	require.NoError(t, err)
+	assert.Equal(t, upstream.URL+"/token", resolved.TokenURL)
+	assert.Equal(t, 1, calls)
+
+	config := &schemas.MCPClientConfig{
+		ID:                "cc-crowdstrike-201",
+		Name:              "test_falcon",
+		AuthType:          schemas.MCPAuthTypeClientCredentials,
+		ConnectionString:  schemas.NewSecretVar(upstream.URL + "/mcp"),
+		ClientCredentials: resolved,
+	}
+	token, err := p.GetClientCredentialsAccessToken(context.Background(), config)
+	require.NoError(t, err)
+	assert.Equal(t, "falcon-201-token", token)
+	assert.Equal(t, 2, calls)
+
+	cached, err := p.GetClientCredentialsAccessToken(context.Background(), config)
+	require.NoError(t, err)
+	assert.Equal(t, "falcon-201-token", cached)
+	assert.Equal(t, 2, calls, "the cached 201 token serves subsequent runtime calls")
+
+	require.NoError(t, p.ForceRefreshAccessToken(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), config))
+	assert.Equal(t, 3, calls)
+
+	// A 201 carrying an RFC/alias error without an access_token must still be
+	// classified as a permanent client refusal rather than retried, even when an
+	// unrelated field fails token-response struct decoding and percent-decoding.
+	status = http.StatusCreated
+	body = `{"error":"invalid_client","error_description":"100% invalid","expires_in":"0"}`
+	calls = 0
+	_, err = p.ResolveClientCredentials(context.Background(), upstream.URL+"/mcp", false, cfg)
+	require.ErrorContains(t, err, "the token endpoint refused the client credentials: invalid_client: 100% invalid")
+	assert.Equal(t, 1, calls)
+
+	// A response whose JSON body partially populates access_token before failing
+	// on a malformed expires_in (and also failing form parsing) must clear
+	// tokenResponse instead of returning the partially decoded token.
+	status = http.StatusCreated
+	body = `{"access_token":"partial-token","expires_in":"100% bad"}`
+	calls = 0
+	_, err = p.ResolveClientCredentials(context.Background(), upstream.URL+"/mcp", false, cfg)
+	require.ErrorContains(t, err, "the token response has no access_token")
+	assert.Equal(t, 1, calls)
 }

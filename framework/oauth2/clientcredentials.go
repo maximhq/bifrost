@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -241,7 +240,7 @@ func tokenRequestFailure(err error) string {
 	if !errors.As(err, &endpointErr) {
 		return redactedURLError(err, "")
 	}
-	if endpointErr.StatusCode == http.StatusOK {
+	if is2xxStatus(endpointErr.StatusCode) {
 		return "the token response has no access_token"
 	}
 	return fmt.Sprintf("the token endpoint answered status %d: %s", endpointErr.StatusCode, sanitizeTokenExchangeRejection(endpointErr.Body))
