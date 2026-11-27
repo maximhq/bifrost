@@ -1624,6 +1624,12 @@ bifrost:
       # # bulk sync).
       # bulkSyncInterval: "24h"
       #
+      # # Minimum session lifetime (Enterprise). Shared across every provider above: the shortest
+      # # time a sign-in stays trusted before Bifrost re-checks it with the IdP. A session lasts the
+      # # longer of this and the IdP token's expiry. Whole days or h/m/s pairs ("30m", "8h", "1d"),
+      # # 5m-7d; default 30m. Applies with SCIM on or off.
+      # minSessionDuration: "30m"
+      #
       # # Token exchange hosts (Enterprise). Shared across every provider above: hosts besides the
       # # issuer's own that an MCP client's token exchange may be sent to through its
       # # tokenExchange.authorizationServerUrl. Bare host names, with a port only when needed.

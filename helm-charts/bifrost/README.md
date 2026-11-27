@@ -4,7 +4,7 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.50
+**Latest Version:** 2.1.51
 
 ## Changelog
 
@@ -16,6 +16,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - Added `client_credentials` to `bifrost.mcp.clientConfigs[].authType`, with a `clientCredentials` block that renders into `client_credentials`: Bifrost requests one token with credentials registered at the server's authorization server.
 - Added `aws_sigv4` to `bifrost.mcp.clientConfigs[].authType`, with an `awsSigV4` block (`region`, `service`, `roleArn`, `externalId`, `sessionName`) that renders into `aws_sigv4`: Bifrost signs requests with its own AWS identity, for Amazon Bedrock AgentCore Gateway and other IAM-protected servers.
 - `aws_sigv4` is accepted for `http`, `sse` and `openapi` clients, and `client_credentials` for `http` and `sse`. The chart refuses both on `stdio`.
+- Added `bifrost.scim.config.minSessionDuration` (default `30m`, every SSO provider), which renders into `scim_config.config.minSessionDuration`. It is the shortest time a sign-in stays trusted before Bifrost re-checks it with the IdP: whole days or h/m/s pairs (`30m`, `8h`, `1d`), between 5m and 7d. It applies with SCIM on or off.
 
 ### 2.1.49
 
