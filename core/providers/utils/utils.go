@@ -580,6 +580,18 @@ func (b *upstreamTimingBody) Close() error { return b.inner.Close() }
 // runs on a child context that the abort cancels, so a missed deadline ends
 // both the header wait and the body read without cancelling the request.
 func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, error) {
+	_, guarded := physicalSendGuardFromContext(req.Context())
+	if physicalSendGuardRequiredFromContext(req.Context()) && !guarded {
+		return nil, NewPhysicalSendAuthorizationError(http.StatusForbidden, "GUARD_REQUIRED", nil)
+	}
+	if guarded {
+		if client == nil {
+			return nil, NewPhysicalSendAuthorizationError(http.StatusNotImplemented, "UNSUPPORTED_TRANSPORT", nil)
+		}
+		if _, supported := client.Transport.(*fasthttpRoundTripper); !supported {
+			return nil, NewPhysicalSendAuthorizationError(http.StatusNotImplemented, "UNSUPPORTED_TRANSPORT", nil)
+		}
+	}
 	if abort := AttemptAbortFromContext(req.Context()); abort != nil {
 		if abort.Fired() {
 			return nil, ErrStreamFirstTokenTimeout
@@ -3636,6 +3648,29 @@ func IsInvalidRequestError(err error) bool {
 // client-side bad-request errors. Mirrors NewBifrostTimeoutError; IsBifrostError
 // is false because the upstream provider is the cause.
 func NewBifrostUpstreamConnectionError(message string, err error) *schemas.BifrostError {
+	var physicalSendError *PhysicalSendAuthorizationError
+	if errors.As(err, &physicalSendError) {
+		statusCode := physicalSendError.StatusCode
+		if statusCode == 0 {
+			statusCode = http.StatusForbidden
+		}
+		reasonCode := physicalSendError.ReasonCode
+		if reasonCode == "" {
+			reasonCode = "PHYSICAL_SEND_DENIED"
+		}
+		allowFallbacks := false
+		return &schemas.BifrostError{
+			IsBifrostError: true,
+			StatusCode:     &statusCode,
+			Type:           &reasonCode,
+			AllowFallbacks: &allowFallbacks,
+			Error: &schemas.ErrorField{
+				Type:    &reasonCode,
+				Message: physicalSendError.Error(),
+				Error:   physicalSendError,
+			},
+		}
+	}
 	// A dial the network policy refused is a configuration problem the operator can fix, so
 	// its message (which names the setting) replaces the generic one.
 	var blocked *DialBlockedError

@@ -8560,6 +8560,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// alias while this attempt's provider goroutine is still emitting chunks.
 				attemptResolvedModel := resolvedModel
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				req.Context.SetPhysicalSendRoute(schemas.PhysicalSendRoute{Provider: provider.GetProviderKey(), Model: resolvedModel})
 				// Layer fallback identity here — the reliable write point. The orchestrator's
 				// post-hand-off ctx write (handleStreamRequest) races the streaming response's
 				// async per-chunk post-hooks, so set IsFallback/Primary on the per-attempt
@@ -8702,6 +8703,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				applyRawCaptureSignals(req.Context, config)
 				applyProviderProxySignal(req.Context, config)
 				attemptRoutingInfo = schemas.BuildRoutingInfo(req.Context, provider.GetProviderKey(), originalModelRequested, k)
+				req.Context.SetPhysicalSendRoute(schemas.PhysicalSendRoute{Provider: provider.GetProviderKey(), Model: resolvedModel})
 				if injectedTools != nil {
 					return bifrost.runInjectedTools(provider, config, req, k, injectedTools)
 				}

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -123,6 +124,48 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	if abort.Fired() {
 		return false, ErrStreamFirstTokenTimeout
 	}
+	guard, guarded := physicalSendGuardFromContext(ctx)
+	if physicalSendGuardRequiredFromContext(ctx) && !guarded {
+		return false, NewPhysicalSendAuthorizationError(403, "GUARD_REQUIRED", nil)
+	}
+	if guarded && physicalSendAuthorizationExpired(guard) {
+		return false, NewPhysicalSendAuthorizationError(403, "AUTHORIZATION_EXPIRED", nil)
+	}
+	var stagedRequest []byte
+	var authorizedBody []byte
+	if guarded {
+		var body []byte
+		var stageErr error
+		stagedRequest, body, stageErr = stagePhysicalSendRequest(req, guard.MaxSerializedRequestBytes)
+		if stageErr != nil {
+			return false, stageErr
+		}
+		defer func() { zeroBytes(stagedRequest) }()
+		authorizedBody = body
+		attempt, attemptErr := physicalSendAttempt(ctx, req, body)
+		if attemptErr != nil {
+			return false, attemptErr
+		}
+		if err = guard.Authorize(ctx, attempt); err != nil {
+			var authorizationError *PhysicalSendAuthorizationError
+			if errors.As(err, &authorizationError) {
+				return false, err
+			}
+			return false, NewPhysicalSendAuthorizationError(503, "AUTHORIZER_UNAVAILABLE", err)
+		}
+		if !physicalSendBodyMatches(body, attempt.BodySHA256) {
+			return false, NewPhysicalSendAuthorizationError(403, "GUARDED_BODY_CHANGED", nil)
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		if abort.Fired() {
+			return false, ErrStreamFirstTokenTimeout
+		}
+		if physicalSendAuthorizationExpired(guard) {
+			return false, NewPhysicalSendAuthorizationError(403, "AUTHORIZATION_EXPIRED", nil)
+		}
+	}
 
 	customSkipBody := resp.SkipBody
 
@@ -152,16 +195,43 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		req.SetConnectionClose()
 		resetConnection = true
 	}
-
-	bw := hc.AcquireWriter(conn)
-	err = req.Write(bw)
-	if resetConnection {
+	if guarded && resetConnection {
+		finalWire, finalBody, restageErr := stagePhysicalSendRequest(req, guard.MaxSerializedRequestBytes)
 		req.Header.ResetConnectionClose()
+		if restageErr != nil {
+			hc.CloseConn(cc)
+			return false, restageErr
+		}
+		if !bytes.Equal(finalBody, authorizedBody) {
+			zeroBytes(finalWire)
+			hc.CloseConn(cc)
+			return false, NewPhysicalSendAuthorizationError(403, "GUARDED_BODY_CHANGED", nil)
+		}
+		zeroBytes(stagedRequest)
+		stagedRequest = finalWire
 	}
-	if err == nil {
-		err = bw.Flush()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		hc.CloseConn(cc)
+		return false, ctxErr
 	}
-	hc.ReleaseWriter(bw)
+	if guarded && physicalSendAuthorizationExpired(guard) {
+		hc.CloseConn(cc)
+		return false, NewPhysicalSendAuthorizationError(403, "AUTHORIZATION_EXPIRED", nil)
+	}
+	if guarded {
+		err = writeStagedPhysicalSendRequest(conn, stagedRequest)
+		zeroBytes(stagedRequest)
+	} else {
+		bw := hc.AcquireWriter(conn)
+		err = req.Write(bw)
+		if resetConnection {
+			req.Header.ResetConnectionClose()
+		}
+		if err == nil {
+			err = bw.Flush()
+		}
+		hc.ReleaseWriter(bw)
+	}
 	if err != nil {
 		hc.CloseConn(cc)
 		return retryOn(err), watcher.classify(err)

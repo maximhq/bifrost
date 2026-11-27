@@ -960,6 +960,11 @@ func TestClearContextForInternalRequestShedsEveryKeyOnFreshChild(t *testing.T) {
 	}
 
 	caller := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	guard := schemas.PhysicalSendGuard{
+		MaxSerializedRequestBytes: 1024,
+		Authorize:                 func(context.Context, schemas.PhysicalSendAttempt) error { return nil },
+	}
+	require.True(t, caller.SetPhysicalSendGuard(guard))
 	for k, v := range sensitive {
 		caller.SetValue(k, v)
 	}
@@ -967,6 +972,9 @@ func TestClearContextForInternalRequestShedsEveryKeyOnFreshChild(t *testing.T) {
 	// No write of any kind on the child before the shed: this is what
 	// NewBifrostContext hands a plugin.
 	internal := schemas.NewBifrostContext(caller, schemas.NoDeadline)
+	if _, ok := internal.PhysicalSendGuard(); ok {
+		t.Fatal("a derived internal request inherited the caller's physical-send guard")
+	}
 	for k := range sensitive {
 		require.NotNil(t, internal.Value(k),
 			"a derived context reads the caller's value through to the parent; that is the state under test")
@@ -981,6 +989,9 @@ func TestClearContextForInternalRequestShedsEveryKeyOnFreshChild(t *testing.T) {
 	for k, v := range sensitive {
 		assert.Equal(t, v, caller.Value(k),
 			"shedding %s on the derived context must not disarm the caller's own request", k)
+	}
+	if _, ok := caller.PhysicalSendGuard(); !ok {
+		t.Fatal("shedding an internal request disarmed the caller's physical-send guard")
 	}
 }
 
