@@ -61,6 +61,7 @@ import {
 	Wallet,
 	WalletCards,
 	Waypoints,
+	Workflow,
 	Webhook,
 } from "lucide-react";
 
@@ -140,6 +141,7 @@ export function useNavItems(): NavItem[] {
 	const hasAgentLogsAccess = useRbac(RbacResource.AgentLogs, RbacOperation.View);
 	const hasRelaysAccess = useRbac(RbacResource.Relays, RbacOperation.View);
 	const hasRelayLogsAccess = useRbac(RbacResource.RelayLogs, RbacOperation.View);
+	const hasTracingAccess = useRbac(RbacResource.Tracing, RbacOperation.View);
 	const hasVirtualMCPsAccess = useRbac(RbacResource.VirtualMCPs, RbacOperation.View);
 	const hasMCPLogsAccess = useRbac(RbacResource.MCPLogs, RbacOperation.View);
 	const hasPluginsAccess = useRbac(RbacResource.Plugins, RbacOperation.View);
@@ -213,6 +215,7 @@ export function useNavItems(): NavItem[] {
 					hasMCPLogsAccess ||
 					hasAgentLogsAccess ||
 					hasRelayLogsAccess ||
+					hasTracingAccess ||
 					hasObservabilityAccess ||
 					hasSettingsAccess,
 				subItems: [
@@ -252,6 +255,14 @@ export function useNavItems(): NavItem[] {
 						icon: Waypoints,
 						description: t("navDesc.relayLogs"),
 						hasAccess: hasRelayLogsAccess,
+					},
+					{
+						id: "observability.tracing",
+						title: t("nav.tracing"),
+						url: "/workspace/tracing",
+						icon: Workflow,
+						description: t("navDesc.tracing"),
+						hasAccess: hasTracingAccess,
 					},
 					{
 						id: "observability.connectors",
@@ -979,6 +990,7 @@ export function useNavItems(): NavItem[] {
 			hasMCPLogsAccess,
 			hasRelaysAccess,
 			hasRelayLogsAccess,
+			hasTracingAccess,
 			hasPluginsAccess,
 			hasUsersAccess,
 			hasUserProvisioningAccess,
