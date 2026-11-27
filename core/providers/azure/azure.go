@@ -1706,9 +1706,14 @@ func (provider *AzureProvider) FileUpload(ctx *schemas.BifrostContext, key schem
 
 	// The file is streamed from its source while the request is written, never copied into a
 	// buffer: uploads run to hundreds of MB. ReleaseRequest closes the body stream.
-	upload, err := providerUtils.NewMultipartFileUpload(
-		[]providerUtils.MultipartField{{Name: "purpose", Value: string(request.Purpose)}},
-		"file", filename, providerUtils.FileUploadSource(request))
+	fields := []providerUtils.MultipartField{{Name: "purpose", Value: string(request.Purpose)}}
+	if request.ExpiresAfter != nil {
+		fields = append(fields,
+			providerUtils.MultipartField{Name: "expires_after[anchor]", Value: request.ExpiresAfter.Anchor},
+			providerUtils.MultipartField{Name: "expires_after[seconds]", Value: strconv.Itoa(request.ExpiresAfter.Seconds)},
+		)
+	}
+	upload, err := providerUtils.NewMultipartFileUpload(fields, "file", filename, providerUtils.FileUploadSource(request))
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError("failed to build multipart upload body", err)
 	}
@@ -2248,9 +2253,10 @@ func (provider *AzureProvider) BatchCreate(ctx *schemas.BifrostContext, key sche
 
 	// Build request body
 	openAIReq := &openai.OpenAIBatchRequest{
-		Endpoint:         string(request.Endpoint),
-		CompletionWindow: request.CompletionWindow,
-		Metadata:         request.Metadata,
+		Endpoint:           string(request.Endpoint),
+		CompletionWindow:   request.CompletionWindow,
+		Metadata:           request.Metadata,
+		OutputExpiresAfter: request.OutputExpiresAfter,
 	}
 
 	// Azure requires either input_file_id OR (input_blob + output_folder), not both.

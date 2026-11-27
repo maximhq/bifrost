@@ -1005,3 +1005,73 @@ func TestAzureOnYourDataKeepsCitationContext(t *testing.T) {
 		}
 	})
 }
+// TestAzureFileUploadSendsExpiresAfter pins that a file upload with expires_after sends Azure the
+// expires_after[anchor] and expires_after[seconds] form fields beside purpose, and that an upload
+// without it sends neither.
+func TestAzureFileUploadSendsExpiresAfter(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		expiresAfter *schemas.FileExpiresAfter
+	}{
+		{name: "with expires_after", expiresAfter: &schemas.FileExpiresAfter{Anchor: "created_at", Seconds: 1209600}},
+		{name: "without expires_after"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var path string
+			var form map[string][]string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := r.ParseMultipartForm(1 << 20); err != nil {
+					t.Errorf("parse multipart form: %v", err)
+				}
+				mu.Lock()
+				path, form = r.URL.Path, r.MultipartForm.Value
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"id":"file-abc","object":"file","bytes":3,"created_at":1,"filename":"batch.jsonl","purpose":"batch","status":"processed"}`)
+			}))
+			defer server.Close()
+
+			provider := newAzureDecisionProvider(t)
+			ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			resp, bifrostErr := provider.FileUpload(ctx, newAzureDecisionKey(server.URL), &schemas.BifrostFileUploadRequest{
+				Provider:     schemas.Azure,
+				File:         []byte("{}\n"),
+				Filename:     "batch.jsonl",
+				Purpose:      "batch",
+				ExpiresAfter: tc.expiresAfter,
+			})
+			if bifrostErr != nil {
+				t.Fatalf("FileUpload: %+v", bifrostErr.Error)
+			}
+			if resp == nil || resp.ID != "file-abc" {
+				t.Fatalf("FileUpload response = %+v, want file-abc", resp)
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if path != "/openai/v1/files" {
+				t.Fatalf("path = %q, want /openai/v1/files", path)
+			}
+			if got := form["purpose"]; !reflect.DeepEqual(got, []string{"batch"}) {
+				t.Fatalf("purpose = %v, want [batch]", got)
+			}
+			anchor, seconds := form["expires_after[anchor]"], form["expires_after[seconds]"]
+			if tc.expiresAfter == nil {
+				if anchor != nil || seconds != nil {
+					t.Fatalf("expires_after fields sent without expires_after: %v", form)
+				}
+				return
+			}
+			if !reflect.DeepEqual(anchor, []string{"created_at"}) || !reflect.DeepEqual(seconds, []string{"1209600"}) {
+				t.Fatalf("expires_after[anchor] = %v, expires_after[seconds] = %v, want [created_at] and [1209600]", anchor, seconds)
+			}
+		})
+	}
+}

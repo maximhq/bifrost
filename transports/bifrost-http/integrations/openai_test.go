@@ -1366,3 +1366,49 @@ func TestOpenAISpeechRouteLabelsTheAudioItReturns(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenAIBatchCreateProviderResolution pins how batch create on the OpenAI SDK
+// routes picks its provider: a provider in the body wins, then the provider query
+// parameter the other batch routes read, then the Azure SDK mount or user agent,
+// and OpenAI only when none of them names one.
+func TestOpenAIBatchCreateProviderResolution(t *testing.T) {
+	var create *RouteConfig
+	for _, route := range CreateOpenAIBatchRouteConfigs("/openai", &mockHandlerStore{}) {
+		if route.Path == "/openai/v1/batches" && route.Method == "POST" {
+			rc := route
+			create = &rc
+		}
+	}
+	require.NotNil(t, create, "POST /openai/v1/batches not registered")
+
+	cases := []struct {
+		name      string
+		uri       string
+		userAgent string
+		body      schemas.ModelProvider
+		want      schemas.ModelProvider
+	}{
+		{name: "query parameter", uri: "/openai/v1/batches?provider=azure", want: schemas.Azure},
+		{name: "body provider wins over the query parameter", uri: "/openai/v1/batches?provider=azure", body: schemas.Gemini, want: schemas.Gemini},
+		{name: "query parameter wins over the Azure SDK user agent", uri: "/openai/v1/batches?provider=openai", userAgent: "AzureOpenAI/Python 2.8.1", want: schemas.OpenAI},
+		{name: "Azure SDK user agent", uri: "/openai/v1/batches", userAgent: "AzureOpenAI/Python 2.8.1", want: schemas.Azure},
+		{name: "Azure OpenAI mount", uri: "/azure/openai/batches", want: schemas.Azure},
+		{name: "no provider anywhere", uri: "/openai/v1/batches", want: schemas.OpenAI},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.SetRequestURI(tc.uri)
+			if tc.userAgent != "" {
+				ctx.Request.Header.SetUserAgent(tc.userAgent)
+			}
+			ctx.Request.SetBodyString(`{"input_file_id":"file-abc","endpoint":"/v1/chat/completions"}`)
+			req := &schemas.BifrostBatchCreateRequest{Provider: tc.body, InputFileID: "file-abc"}
+			bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+			require.NoError(t, create.PreCallback(ctx, bifrostCtx, req))
+			assert.Equal(t, tc.want, req.Provider)
+		})
+	}
+}
