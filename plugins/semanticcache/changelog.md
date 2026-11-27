@@ -1,0 +1,2 @@
+- feat: a request with `prompt_cache_options.prewarm` gets its own cache key
+- chore: upgraded core to v1.17.0 and framework to v1.14.0
