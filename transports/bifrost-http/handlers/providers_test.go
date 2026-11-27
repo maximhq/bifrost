@@ -1626,6 +1626,53 @@ func TestListModels_DecisionsResolvesKeyAliases(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsUnfilteredAliases pins what the decisions guide states: an
+// unfiltered decisions listing is the provider catalog, which holds no key aliases, and
+// include_aliases=true brings back the aliases that point at decision models.
+func TestListModels_DecisionsUnfilteredAliases(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	key := schemas.Key{ID: "key-a", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+		"complexity-judge": {ModelID: "gpt-6-luna"},
+		"fast-chat":        {ModelID: "gpt-4o"},
+	}}
+	catalogModels := []string{"gpt-4o", "gpt-6-luna"}
+	h := providerHandlerForTest(t, schemas.OpenAI, []schemas.Key{key}, catalogModels, catalogModels)
+	catalog := modelCatalogForPricingJSON(t, []byte(`{"openai/gpt-4o": {"provider":"openai","mode":"chat"}}`))
+	catalog.SetKeyConfigForProvider(schemas.OpenAI, []schemas.Key{key})
+	h.config.ModelCatalog = catalog
+
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{"unfiltered=true", []string{"gpt-6-luna"}},
+		{"unfiltered=true&include_aliases=true", []string{"complexity-judge", "gpt-6-luna"}},
+	} {
+		ctx := newBareRequestCtx()
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=openai&decisions=true&limit=10&" + tc.query)
+
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", tc.query, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("%s: failed to unmarshal response: %v", tc.query, err)
+		}
+		names := make([]string, 0, len(resp.Models))
+		for _, model := range resp.Models {
+			names = append(names, model.Name)
+		}
+		slices.Sort(names)
+		if !slices.Equal(names, tc.want) {
+			t.Fatalf("%s: expected %v, got %v", tc.query, tc.want, names)
+		}
+	}
+}
+
 // TestListModels_DecisionsKeepsTypesafeBasedModels pins that decisions=true
 // lists every model of a Typesafe-based provider, which serves whichever model
 // it is given, without a datasheet row: Typesafe itself and a custom provider
@@ -1876,6 +1923,49 @@ func TestListModels_DecisionsGeminiListsDecisionModels(t *testing.T) {
 		if want := []string{"gemini-decision-1"}; !slices.Equal(names, want) {
 			t.Fatalf("%s: expected %v, got %v", provider, want, names)
 		}
+	}
+}
+
+// TestListModels_DecisionsCustomGeminiFollowsDatasheet pins that decisions=true
+// gates a custom provider on the Gemini base as its Decision call does
+// (core/providers/gemini Decision): a supports_decisions row decides in either
+// direction, and only a model with no row falls back to the gemini-decision- name.
+func TestListModels_DecisionsCustomGeminiFollowsDatasheet(t *testing.T) {
+	SetLogger(&mockLogger{})
+	rows := map[string]bool{"gemini-decision-retired": false, "gemini-judge-tuned": true}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if supports, ok := rows[model]; ok && provider == "my-gemini" {
+			return &schemas.ModelCapabilities{SupportsDecisions: &supports}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"gemini-decision-1", "gemini-decision-retired", "gemini-judge-tuned", "gemini-3-flash"}
+	h := providerHandlerForTest(t, "my-gemini", []schemas.Key{{ID: "key-a"}}, models, models)
+	config := libtest.Providers(h.config)["my-gemini"]
+	config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.Gemini, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
+	libtest.SetProvider(t, h.config, "my-gemini", config, nil)
+
+	ctx := newBareRequestCtx()
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=my-gemini&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"gemini-decision-1", "gemini-judge-tuned"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
 	}
 }
 
