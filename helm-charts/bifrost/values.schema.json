@@ -1047,6 +1047,11 @@
               "description": "Allow callers to bypass the registered key pool by supplying x-bf-direct-key: true with an Authorization header carrying the provider key. Maps to client.allow_direct_keys.",
               "default": false
             },
+            "sendBackCost": {
+              "type": "boolean",
+              "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost and the x-bifrost-cost response header. A request can override it with x-bf-send-back-cost: true|false. Maps to client.send_back_cost.",
+              "default": false
+            },
             "vkRotationCooldown": {
               "type": ["string", "integer"],
               "minimum": 0,
