@@ -705,6 +705,15 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 			}
 			return true
 		}
+		// Per-request override of client.send_back_cost, in either direction. Not gated:
+		// the cost carries no request or response content. Read before the allowlist
+		// checks below, which would otherwise consume the header and drop the override.
+		if keyStr == "x-bf-send-back-cost" {
+			if b, err := strconv.ParseBool(string(value)); err == nil {
+				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackCost, b)
+			}
+			return true
+		}
 		// Direct header forwarding: when allowlist is configured, any header explicitly
 		// in the allowlist can be forwarded directly without the x-bf-eh- prefix.
 		// This enables forwarding arbitrary headers like "anthropic-beta" directly.
@@ -757,14 +766,6 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		if keyStr == "x-bf-send-back-raw-response" {
 			if b, err := strconv.ParseBool(string(value)); err == nil {
 				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackRawResponse, b)
-			}
-			return true
-		}
-		// Per-request override of client.send_back_cost, in either direction. Not gated:
-		// the cost carries no request or response content.
-		if keyStr == "x-bf-send-back-cost" {
-			if b, err := strconv.ParseBool(string(value)); err == nil {
-				bifrostCtx.SetValue(schemas.BifrostContextKeySendBackCost, b)
 			}
 			return true
 		}
