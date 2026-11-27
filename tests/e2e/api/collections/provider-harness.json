@@ -352480,7 +352480,18 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('Rapid-MLX returns 200', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "pm.test('Rapid-MLX stream contains answer text and completes', function () { var text = pm.response.text(); pm.expect(text).to.include('[DONE]'); pm.expect(text).to.match(/\\\"content\\\"\\s*:\\s*\\\"[^\\\"]+/); });"
+                  "pm.test('Rapid-MLX stream contains answer text and completes', function () {",
+                  "  var payloads = [];",
+                  "  pm.response.text().split(/\\r?\\n/).forEach(function (line) {",
+                  "    if (line.indexOf('data:') !== 0) { return; }",
+                  "    payloads.push(line.slice(5).trim());",
+                  "  });",
+                  "  pm.expect(payloads.indexOf('[DONE]'), pm.response.text()).to.be.above(-1);",
+                  "  var chunks = payloads.filter(function (data) { return data && data !== '[DONE]'; }).map(function (data) { return JSON.parse(data); });",
+                  "  pm.expect(chunks.some(function (chunk) {",
+                  "    return (chunk.choices || []).some(function (choice) { return choice.delta && typeof choice.delta.content === 'string' && choice.delta.content.length > 0; });",
+                  "  }), pm.response.text()).to.eql(true);",
+                  "});"
                 ]
               }
             }
