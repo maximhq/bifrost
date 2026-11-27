@@ -352,30 +352,49 @@ export function TraceViewer({
 							</SheetClose>
 						</div>
 					</div>
-					{trace && (
-						<div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-4 pb-3 text-xs" data-testid="trace-viewer-summary">
-							<Summary label={t("agentLogs.trace.latency")} value={formatDuration(trace.duration_ms)} />
-							<Summary label={t("agentLogs.trace.tokens")} value={formatTokens(trace.total_tokens)} />
-							<Summary label={t("agentLogs.trace.cost")} value={`${trace.estimated_cost ? "~" : ""}${formatCost(trace.cost)}`} />
-							<span className="bg-border h-3.5 w-px" aria-hidden="true" />
-							<Summary label={t("tracing.viewer.spansLabel")} value={trace.span_count} />
-							{counts.agent > 0 && <Summary label={t("agentLogs.trace.agents")} value={counts.agent} />}
-							<Summary label={t("agentLogs.trace.llmCalls")} value={counts.llm} />
-							{counts.tool > 0 && <Summary label={t("tracing.viewer.toolCalls")} value={counts.tool} />}
-							{trace.llm_span_count > 0 && (
+					{/* The same counters in the same order on every trace, zeros included, so moving between
+					    traces never reflows the header. The row keeps its height while a trace loads. */}
+					<div className="flex min-h-5 flex-wrap items-center gap-x-4 gap-y-1.5 px-4 pb-3 text-xs" data-testid="trace-viewer-summary">
+						{trace && (
+							<>
+								<Summary label={t("agentLogs.trace.latency")} value={formatDuration(trace.duration_ms)} />
+								<Summary label={t("agentLogs.trace.tokens")} value={formatTokens(trace.total_tokens)} />
+								<Summary
+									label={t("agentLogs.trace.cost")}
+									value={
+										trace.unpriced_span_count > 0 && !trace.cost ? (
+											<Tooltip>
+												<TooltipTrigger className="underline decoration-dotted">{t("tracing.unpriced")}</TooltipTrigger>
+												<TooltipContent>{t("tracing.unpricedCalls", { count: trace.unpriced_span_count })}</TooltipContent>
+											</Tooltip>
+										) : (
+											`${trace.estimated_cost ? "~" : ""}${formatCost(trace.cost)}`
+										)
+									}
+								/>
+								<span className="bg-border h-3.5 w-px" aria-hidden="true" />
+								<Summary label={t("tracing.viewer.spansLabel")} value={trace.span_count} />
+								<Summary label={t("agentLogs.trace.agents")} value={counts.agent} />
+								<Summary label={t("agentLogs.trace.llmCalls")} value={counts.llm} />
+								<Summary label={t("tracing.viewer.toolCalls")} value={counts.tool} />
 								<Summary label={t("tracing.viewer.viaGateway")} value={`${trace.linked_span_count}/${trace.llm_span_count}`} />
-							)}
-							{trace.unpriced_span_count > 0 && (
-								<span className="text-muted-foreground">{t("tracing.unpricedCalls", { count: trace.unpriced_span_count })}</span>
-							)}
-							{trace.error_count > 0 && (
-								<span className="bg-chart-error/10 text-chart-error-ink border-chart-error/30 inline-flex items-center gap-1.5 rounded-sm border px-1.5 py-0.5 font-medium">
-									<span className="bg-chart-error size-1.5 rounded-sm" aria-hidden="true" />
-									{t("agentLogs.trace.errors")} {trace.error_count}
+								<span
+									className={cn(
+										"inline-flex items-baseline gap-1.5",
+										trace.error_count > 0 ? "text-chart-error-ink" : "text-muted-foreground",
+									)}
+									data-testid="trace-viewer-errors"
+								>
+									<span
+										className={cn("size-1.5 self-center rounded-sm", trace.error_count > 0 ? "bg-chart-error" : "bg-border")}
+										aria-hidden="true"
+									/>
+									{t("agentLogs.trace.errors")}
+									<b className="font-semibold tabular-nums">{trace.error_count}</b>
 								</span>
-							)}
-						</div>
-					)}
+							</>
+						)}
+					</div>
 				</div>
 				<div className="flex h-11 shrink-0 items-center gap-1 border-b px-3" role="tablist" data-testid="trace-viewer-views">
 					{(
@@ -637,6 +656,14 @@ function SpanDetail({
 	const links = (detail.links ?? []).filter((link) => link.span_id === span.span_id);
 	const scores = (detail.scores ?? []).filter((score) => (score.span_id || detail.trace.root_span_id) === span.span_id);
 	const model = span.link_snapshot?.model || span.model;
+	const hasMetadata = !!span.metadata && Object.keys(span.metadata).length > 0;
+	// The Details tab shows content only. A span with none (an OTLP span with only numbers) opens on Raw.
+	const hasDetails = !!(span.error || span.input || span.output || span.expected || span.tags?.length) || scores.length > 0 || hasMetadata;
+	const [tab, setTab] = useState("details");
+	const activeTab = tab === "details" && !hasDetails ? "raw" : tab;
+	const unpriced =
+		(usage.cost === undefined || usage.cost === null) && usage.tokens > 0 && (span.kind === "llm" || span.kind === "embedding");
+	const hasCost = (usage.cost !== undefined && usage.cost !== null) || unpriced;
 	return (
 		<div className="space-y-4" data-testid="trace-span-detail">
 			<div className="flex items-center justify-between gap-2">
@@ -674,30 +701,31 @@ function SpanDetail({
 					))}
 			</div>
 
-			<div className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-sm border p-4 md:grid-cols-4">
+			{/* Only the numbers this span has: a missing value is left out, not shown as "-". */}
+			<div className="grid grid-cols-2 gap-x-6 gap-y-3 rounded-sm border p-4 md:grid-cols-4" data-testid="trace-span-metrics">
 				<Metric label={t("tracing.columns.duration")} value={formatDuration(span.duration_ms)} />
-				<Metric label={t("tracing.columns.tokens")} value={formatTokens(usage.tokens)} />
-				<Metric
-					label={t("tracing.columns.cost")}
-					value={
-						usage.cost === undefined || usage.cost === null ? (
-							usage.tokens > 0 && (span.kind === "llm" || span.kind === "embedding") ? (
+				{usage.tokens > 0 && <Metric label={t("tracing.columns.tokens")} value={formatTokens(usage.tokens)} />}
+				{hasCost && (
+					<Metric
+						label={t("tracing.columns.cost")}
+						value={
+							unpriced ? (
 								<Tooltip>
 									<TooltipTrigger className="underline decoration-dotted">{t("tracing.unpriced")}</TooltipTrigger>
 									<TooltipContent>{t("tracing.unpricedHint")}</TooltipContent>
 								</Tooltip>
 							) : (
-								"-"
+								<>
+									{formatCost(usage.cost)}
+									{usage.estimated && <span className="text-muted-foreground ml-1 text-xs">{t("tracing.estimated")}</span>}
+								</>
 							)
-						) : (
-							<>
-								{formatCost(usage.cost)}
-								{usage.estimated && <span className="text-muted-foreground ml-1 text-xs">{t("tracing.estimated")}</span>}
-							</>
-						)
-					}
-				/>
-				<Metric label={t("tracing.viewer.firstToken")} value={formatDuration(span.time_to_first_token_ms)} />
+						}
+					/>
+				)}
+				{span.time_to_first_token_ms !== undefined && span.time_to_first_token_ms !== null && (
+					<Metric label={t("tracing.viewer.firstToken")} value={formatDuration(span.time_to_first_token_ms)} />
+				)}
 			</div>
 
 			{links.length > 0 && (
@@ -729,11 +757,13 @@ function SpanDetail({
 				</div>
 			)}
 
-			<Tabs defaultValue="details">
+			<Tabs value={activeTab} onValueChange={setTab}>
 				<TabsList>
-					<TabsTrigger value="details" data-testid="trace-span-details-tab">
-						{t("tracing.viewer.detailsTab")}
-					</TabsTrigger>
+					{hasDetails && (
+						<TabsTrigger value="details" data-testid="trace-span-details-tab">
+							{t("tracing.viewer.detailsTab")}
+						</TabsTrigger>
+					)}
 					<TabsTrigger value="raw" data-testid="trace-span-raw-tab">
 						{t("tracing.viewer.rawTab")}
 					</TabsTrigger>
@@ -771,7 +801,7 @@ function SpanDetail({
 							))}
 						</div>
 					)}
-					{span.metadata && Object.keys(span.metadata).length > 0 && (
+					{hasMetadata && (
 						<ValueBlock label={t("tracing.viewer.metadata")} value={JSON.stringify(span.metadata)} testId="trace-span-metadata" />
 					)}
 				</TabsContent>
