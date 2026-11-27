@@ -109,7 +109,7 @@ func (provider *SGLProvider) Decision(ctx *schemas.BifrostContext, key schemas.K
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
+		func() (*SGLDecisionRequest, error) {
 			return ToSGLDecisionRequest(request)
 		})
 	if bifrostErr != nil {

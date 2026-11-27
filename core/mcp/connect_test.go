@@ -151,7 +151,7 @@ func newConnectTestManager(t *testing.T, creds *connectCredStore, upstreamURL st
 	t.Helper()
 	perUser := newFakePerUserDiscoveryStore()
 	mcpConfig.PerUserDiscoveryStore = perUser
-	m := NewMCPManager(context.Background(), mcpConfig, creds, &MockLogger{}, nil)
+	m := NewMCPManager(context.Background(), mcpConfig, newTestAccount(), creds, &MockLogger{}, nil)
 	config := &schemas.MCPClientConfig{
 		ID:               "notes-id",
 		Name:             "notes",
@@ -161,9 +161,7 @@ func newConnectTestManager(t *testing.T, creds *connectCredStore, upstreamURL st
 		ToolsToExecute:   []string{"*"},
 		PerUserDiscovery: schemas.Ptr(true),
 	}
-	m.mu.Lock()
-	m.clientMap[config.ID] = &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy}
-	m.mu.Unlock()
+	putClient(m, &schemas.MCPClientState{Name: config.Name, ExecutionConfig: config, State: schemas.MCPConnectionStateHealthy})
 	return m, perUser, config
 }
 
@@ -187,9 +185,7 @@ func toolNames(tools []schemas.ChatTool) []string {
 func TestCallerDiscoveryConnectTools_StandsInForTheClientUntilTheCallerConnects(t *testing.T) {
 	m, perUser, notes := newConnectTestManager(t, &connectCredStore{}, "http://upstream.invalid", schemas.MCPConfig{})
 	shared := sharedClient()
-	m.mu.Lock()
-	m.clientMap[shared.ID] = &schemas.MCPClientState{Name: shared.Name, ExecutionConfig: shared, State: schemas.MCPConnectionStateHealthy}
-	m.mu.Unlock()
+	putClient(m, &schemas.MCPClientState{Name: shared.Name, ExecutionConfig: shared, State: schemas.MCPConnectionStateHealthy})
 
 	connect := m.GetCallerDiscovery(userContext("alice"), false).ConnectTools
 	require.Len(t, connect, 1, "only the per-user discovery client stands in with connect")
@@ -239,9 +235,14 @@ func TestCallerDiscoveryConnectTools_OnlyCallersWhoCanReachTheClientSeeIt(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			m, _, notes := newConnectTestManager(t, &connectCredStore{}, "http://upstream.invalid", schemas.MCPConfig{})
 			if tc.edit != nil {
-				m.mu.Lock()
-				tc.edit(m.clientMap[notes.ID])
-				m.mu.Unlock()
+				// Edit a snapshot holding a copy of the record, then seed the client from it.
+				m.mu.RLock()
+				state := m.snapshot(notes.ID, m.clientMap[notes.ID])
+				m.mu.RUnlock()
+				record := *state.ExecutionConfig
+				state.ExecutionConfig = &record
+				tc.edit(state)
+				putClient(m, state)
 			}
 			got := toolNames(m.GetCallerDiscovery(tc.ctx(), false).ConnectTools)
 			if tc.offered {
@@ -255,9 +256,9 @@ func TestCallerDiscoveryConnectTools_OnlyCallersWhoCanReachTheClientSeeIt(t *tes
 
 func TestGetAvailableTools_OffersConnectDirectlyOnACodeModeClient(t *testing.T) {
 	m, _, notes := newConnectTestManager(t, &connectCredStore{}, "http://upstream.invalid", schemas.MCPConfig{})
-	m.mu.Lock()
-	notes.IsCodeModeClient = true
-	m.mu.Unlock()
+	record := *notes
+	record.IsCodeModeClient = true
+	accountOf(m).set(&record)
 
 	assert.Contains(t, toolNames(m.GetAvailableTools(userContext("alice"))), "notes-connect", "connect is answered by Bifrost, so it is never left to a code-mode binding")
 }
@@ -468,9 +469,12 @@ func TestConnect_IsBifrostsWhenAPolicyPluginNamesACallerWithoutADiscovery(t *tes
 // awaitVerification puts the notes client back to awaiting its admin verification, as turning
 // per_user_discovery off and on again does.
 func awaitVerification(m *MCPManager, notes *schemas.MCPClientConfig, awaiting bool) {
+	record := *m.config(notes.ID)
+	record.PendingVerification = awaiting
+	accountOf(m).set(&record)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	notes.PendingVerification = awaiting
+	m.clientMap[notes.ID].pendingVerification = awaiting
 	if awaiting {
 		m.clientMap[notes.ID].State = schemas.MCPConnectionStatePendingVerification
 	} else {

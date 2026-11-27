@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -403,4 +404,316 @@ func TestResponsesMarshalFoldsFileTypeIntoFileData(t *testing.T) {
 	assert.Equal(t, "data:application/pdf;base64,"+barePDFBase64, wire.Get("file_data").String())
 	assert.False(t, wire.Get("file_type").Exists())
 	assert.Equal(t, barePDFBase64, *file.FileData, "the caller's request must not change")
+}
+
+// An empty text document beside other content is dropped on OpenAI-shaped chat egress:
+// "data:text/plain;base64," is rejected upstream and the document carries no bytes. Alone in
+// its message it stays, so the message never goes out empty.
+func TestChatMarshalDropsEmptyTextDocumentBesideContent(t *testing.T) {
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+		}},
+	}}}
+
+	body, err := req.MarshalJSON()
+	require.NoError(t, err)
+
+	content := gjson.GetBytes(body, "messages.0.content").Array()
+	require.Len(t, content, 1, "the empty document must be dropped: %s", body)
+	assert.Equal(t, "Say ok.", content[0].Get("text").String())
+	assert.Len(t, req.Messages[0].Content.ContentBlocks, 2, "the caller's request is reused by fallbacks and must not change")
+}
+
+// The empty-document drop must fire for a block that needs no other rewrite (the empty data URL
+// with a filename and no file_type), must never take a file reference with it, and must leave a
+// message whose only block is the empty document unchanged.
+func TestMarshalEmptyTextDocumentShapes(t *testing.T) {
+	emptyURL := "data:text/plain;base64,"
+	cases := []struct {
+		name     string
+		chat     schemas.ChatInputFile
+		resp     *schemas.ResponsesInputMessageContentBlockFile // nil: no Responses equivalent
+		alone    bool
+		wantKept bool
+	}{
+		{name: "formed empty data url with a filename is dropped beside text",
+			chat: schemas.ChatInputFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+		{name: "formed empty data url alone stays", alone: true, wantKept: true,
+			chat: schemas.ChatInputFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+		{name: "empty file_data beside a file_id keeps the reference", wantKept: true,
+			chat: schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileID: schemas.Ptr("file-abc")}},
+		{name: "empty file_data beside a file_url keeps the reference", wantKept: true,
+			chat: schemas.ChatInputFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileURL: schemas.Ptr("https://example.org/a.txt")},
+			resp: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain"), FileURL: schemas.Ptr("https://example.org/a.txt")}},
+	}
+	for _, tc := range cases {
+		t.Run("chat/"+tc.name, func(t *testing.T) {
+			file := tc.chat
+			blocks := []schemas.ChatContentBlock{{Type: schemas.ChatContentBlockTypeFile, File: &file}}
+			if !tc.alone {
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Say ok.")})
+			}
+			req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+				Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+			}}}
+			body, err := req.MarshalJSON()
+			require.NoError(t, err)
+			kept := false
+			for _, b := range gjson.GetBytes(body, "messages.0.content").Array() {
+				kept = kept || b.Get("type").String() == "file"
+			}
+			assert.Equal(t, tc.wantKept, kept, "file block kept: %s", body)
+		})
+		if tc.resp == nil {
+			continue
+		}
+		t.Run("responses/"+tc.name, func(t *testing.T) {
+			file := *tc.resp
+			blocks := []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &file}}
+			if !tc.alone {
+				blocks = append(blocks, schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Say ok.")})
+			}
+			input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: blocks},
+			}}}
+			body, err := input.MarshalJSON()
+			require.NoError(t, err)
+			kept := false
+			for _, b := range gjson.GetBytes(body, "0.content").Array() {
+				kept = kept || b.Get("type").String() == "input_file"
+			}
+			assert.Equal(t, tc.wantKept, kept, "file block kept: %s", body)
+		})
+	}
+
+	// Responses carries file_id on the block, not inside the file object.
+	t.Run("responses/empty file_data beside a block file_id keeps the reference", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, FileID: schemas.Ptr("file-abc"),
+					ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+			}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "file-abc", gjson.GetBytes(body, `0.content.#(type=="input_file").file_id`).String(), "file reference dropped: %s", body)
+	})
+
+	// rendered_content is always removed, so it is not content the empty document can be dropped beside.
+	t.Run("responses/empty document beside only rendered_content stays", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileData: &emptyURL, Filename: schemas.Ptr("empty.txt")}},
+				{Type: schemas.ResponsesOutputMessageContentTypeRenderedContent},
+			}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		content := gjson.GetBytes(body, "0.content").Array()
+		require.Len(t, content, 1, "the message must not go out empty: %s", body)
+		assert.Equal(t, "input_file", content[0].Get("type").String())
+	})
+}
+
+// file_content (custom document chunks for Anthropic/Bedrock citations) is not part of any
+// OpenAI-shaped wire. A block whose only source it is goes out as text, so a request routed or
+// falling back to an OpenAI-compatible provider keeps the document; beside another source it is
+// dropped. Either way the key never reaches the wire, and the caller's request is not changed.
+func TestMarshalCustomDocumentContentShapes(t *testing.T) {
+	chunks := json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]`)
+	const joined = "Budget: $4.2M.\nAudit: March."
+
+	t.Run("chat", func(t *testing.T) {
+		only := &schemas.ChatInputFile{FileContent: chunks, Filename: schemas.Ptr("pack")}
+		withData := &schemas.ChatInputFile{FileContent: json.RawMessage(`"Budget."`), FileData: schemas.Ptr("data:text/plain;base64,QnVkZ2V0Lg=="), Filename: schemas.Ptr("pack.txt")}
+		req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeFile, File: only, Citations: &schemas.Citations{Enabled: schemas.Ptr(true)}},
+				{Type: schemas.ChatContentBlockTypeFile, File: withData},
+			}},
+		}}}
+		body, err := req.MarshalJSON()
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), "file_content")
+		assert.Equal(t, "text", gjson.GetBytes(body, "messages.0.content.0.type").String(), "%s", body)
+		assert.Equal(t, joined, gjson.GetBytes(body, "messages.0.content.0.text").String())
+		assert.Equal(t, "data:text/plain;base64,QnVkZ2V0Lg==", gjson.GetBytes(body, "messages.0.content.1.file.file_data").String())
+		assert.Equal(t, string(chunks), string(only.FileContent), "the caller's request is reused by fallbacks and must not change")
+		assert.Equal(t, schemas.ChatContentBlockTypeFile, req.Messages[0].Content.ContentBlocks[0].Type)
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		fileBlock := func(content json.RawMessage, data *string) schemas.ResponsesMessageContentBlock {
+			return schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: content, FileData: data, Filename: schemas.Ptr("pack")}}
+		}
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+					fileBlock(chunks, nil), fileBlock(chunks, schemas.Ptr("data:text/plain;base64,QnVkZ2V0Lg==")),
+				}},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{fileBlock(chunks, nil), fileBlock(chunks, schemas.Ptr("data:text/plain;base64,QnVkZ2V0Lg=="))},
+				}},
+			},
+		}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		assert.NotContains(t, string(body), "file_content", "%s", body)
+		assert.Equal(t, "input_text", gjson.GetBytes(body, "0.content.0.type").String(), "%s", body)
+		assert.Equal(t, joined, gjson.GetBytes(body, "0.content.0.text").String())
+		assert.Equal(t, "input_file", gjson.GetBytes(body, "0.content.1.type").String())
+		assert.Equal(t, "input_text", gjson.GetBytes(body, "1.output.0.type").String(), "%s", body)
+		assert.Equal(t, joined, gjson.GetBytes(body, "1.output.0.text").String())
+		assert.Equal(t, "input_file", gjson.GetBytes(body, "1.output.1.type").String())
+		assert.Equal(t, string(chunks), string(input.OpenAIResponsesRequestInputArray[0].Content.ContentBlocks[0].FileContent), "the caller's request must not change")
+	})
+}
+
+// The file_content rewrite runs ahead of the empty-text-document drop, keeps a prompt cache
+// breakpoint on the text block it creates, and leaves a tool output that is now text-only to the
+// string flattening OpenAI's function_call_output requires.
+func TestMarshalCustomDocumentContentEdgeShapes(t *testing.T) {
+	chunks := json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`)
+	breakpoint := &schemas.PromptCacheBreakpoint{Mode: schemas.Ptr("explicit")}
+
+	t.Run("chat: empty text/plain file_data beside file_content is not an empty document", func(t *testing.T) {
+		req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileContent: chunks, FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+			}},
+		}}}
+		body, err := req.MarshalJSON()
+		require.NoError(t, err)
+		require.Len(t, gjson.GetBytes(body, "messages.0.content").Array(), 2, "the document was dropped: %s", body)
+		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "messages.0.content.0.text").String(), "%s", body)
+	})
+
+	t.Run("responses: empty text/plain file_data beside file_content is not an empty document", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: chunks, FileData: schemas.Ptr(""), FileType: schemas.Ptr("text/plain")}},
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Say ok.")},
+			}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		require.Len(t, gjson.GetBytes(body, "0.content").Array(), 2, "the document was dropped: %s", body)
+		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "0.content.0.text").String(), "%s", body)
+	})
+
+	t.Run("the empty text data URL is no source beside file_content", func(t *testing.T) {
+		req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileContent: chunks, FileData: schemas.Ptr("data:text/plain;base64,")}},
+			}},
+		}}}
+		body, err := req.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "messages.0.content.0.text").String(), "chat: %s", body)
+
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: chunks, FileData: schemas.Ptr("data:text/plain;base64,")}},
+			}},
+		}}}
+		body, err = input.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "Budget: $4.2M.", gjson.GetBytes(body, "0.content.0.text").String(), "responses: %s", body)
+	})
+
+	t.Run("prompt cache breakpoint survives the rewrite", func(t *testing.T) {
+		req := &OpenAIChatRequest{Model: "gpt-5.6", Messages: []OpenAIMessage{{
+			Role: schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileContent: chunks}, PromptCacheBreakpoint: breakpoint},
+			}},
+		}}}
+		body, err := req.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "explicit", gjson.GetBytes(body, "messages.0.content.0.prompt_cache_breakpoint.mode").String(), "chat: %s", body)
+
+		fileBlock := schemas.ResponsesMessageContentBlock{Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+			ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: chunks}, PromptCacheBreakpoint: breakpoint}
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{fileBlock}}},
+			{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{fileBlock}}}},
+		}}
+		body, err = input.MarshalJSON()
+		require.NoError(t, err)
+		assert.Equal(t, "explicit", gjson.GetBytes(body, "0.content.0.prompt_cache_breakpoint.mode").String(), "responses input: %s", body)
+		assert.True(t, gjson.GetBytes(body, "1.output").IsArray(), "a breakpoint keeps the array form: %s", body)
+		assert.Equal(t, "explicit", gjson.GetBytes(body, "1.output.0.prompt_cache_breakpoint.mode").String(), "tool output: %s", body)
+	})
+
+	t.Run("a tool output that becomes text-only is flattened to a string", func(t *testing.T) {
+		input := OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{FileContent: chunks},
+				}}}},
+		}}}
+		body, err := input.MarshalJSON()
+		require.NoError(t, err)
+		output := gjson.GetBytes(body, "0.output")
+		require.Equal(t, gjson.String, output.Type, "output must be a string: %s", body)
+		assert.Equal(t, "Budget: $4.2M.", output.String())
+	})
+}
+
+// Cost of the file_content probe on the common path: a file block with no file_content.
+func BenchmarkChatMarshalFileBlockWithoutFileContent(b *testing.B) {
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("Summarize.")},
+			{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileData: schemas.Ptr("data:text/plain;base64,QnVkZ2V0Lg=="), Filename: schemas.Ptr("pack.txt")}},
+		}},
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := req.MarshalJSON(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// Cost of rewriting a file_content-only block into text.
+func BenchmarkChatMarshalCustomDocumentContent(b *testing.B) {
+	req := &OpenAIChatRequest{Model: "gpt-4o", Messages: []OpenAIMessage{{
+		Role: schemas.ChatMessageRoleUser,
+		Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileContent: json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]`), Filename: schemas.Ptr("pack")}},
+		}},
+	}}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := req.MarshalJSON(); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

@@ -149,9 +149,9 @@ func TestWarpCanChatRequiresGatewayClient(t *testing.T) {
 	executor := func(*schemas.BifrostContext, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		return TextTurn("ok"), nil
 	}
-	require.False(t, NewService(nil, WithLogReader(&fakeLogReader{})).CanChat())
-	require.True(t, NewService(nil, WithLogReader(&fakeLogReader{}), WithResponsesExecutor(executor)).CanChat())
-	require.NotNil(t, NewService(nil, WithLogReader(&fakeLogReader{}), WithResponsesExecutor(executor)).chatFuncFor(context.Background(), &schemas.WarpConfig{}, ""))
+	require.False(t, serviceForTest(t, nil, WithLogReader(&fakeLogReader{})).CanChat())
+	require.True(t, serviceForTest(t, nil, WithLogReader(&fakeLogReader{}), WithResponsesExecutor(executor)).CanChat())
+	require.NotNil(t, serviceForTest(t, nil, WithLogReader(&fakeLogReader{}), WithResponsesExecutor(executor)).chatFuncFor(context.Background(), &schemas.WarpConfig{}, ""))
 }
 
 // Governance refuses a request with no grant ("the transport did not settle who
@@ -189,7 +189,7 @@ func TestWarpChatStampsIdentityOnEveryCall(t *testing.T) {
 		// grant nothing resolved yet.
 		if g := ctx.Grant(); g != nil && g.Access() == nil {
 			ctx.SetValue(schemas.BifrostContextKeyUserName, "Suresh")
-			g.SetAccess(grant.NewAccess(nil, nil, grant.Union, nil))
+			g.SetAccess(grant.NewAccess(nil, "", nil, grant.Union, nil))
 		}
 		name, _ := ctx.Value(schemas.BifrostContextKeyUserName).(string)
 		stamped = append(stamped, name)

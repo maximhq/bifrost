@@ -213,7 +213,7 @@ func TestCalendarAlignedOverrideSurvivesConfigReload(t *testing.T) {
 	require.Equal(t, 1, budget.OverrideCyclesRemaining, "two midnights closed, so one period should remain")
 
 	// The reload replays the pristine grant onto the advanced boundary, exactly as
-	// UpsertBudgetConfig does: grant from config, LastReset preserved, then derive.
+	// a reload of the row does: grant from the row, LastReset preserved, then derive.
 	reloaded := pristine
 	reloaded.LastReset = budget.LastReset
 	reloaded.RefreshOverrideCyclesRemaining()

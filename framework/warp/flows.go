@@ -948,6 +948,7 @@ var rankingDimensions = []struct {
 	{logstore.RankingDimensionApp, "the client app that sent the request"},
 	{logstore.RankingDimensionUserAgent, "the raw User-Agent string"},
 	{logstore.RankingDimensionRoutingRule, "the routing rule that handled the request, by name - requests no rule handled are left out, so compare against count_logs for the share"},
+	{logstore.RankingDimensionModelRouter, "the model router that classified the request for its complexity tier, by name - only requests a router classified"},
 	{logstore.RankingDimensionRoutingEngine, "the routing engines a request passed through, e.g. routing-rule, governance, loadbalancing - one request can pass through several, so totals can exceed the request count"},
 	{logstore.RankingDimensionSelectedKey, "the provider API key Bifrost sent the request with, by name - not the provider and not a virtual key; pair with status error to find a failing key"},
 	{logstore.RankingDimensionAlias, "the model alias the request was addressed to before Bifrost resolved it - empty when a request named its model directly - never a stand-in for the model; for which models were involved use query_model_performance"},

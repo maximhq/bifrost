@@ -1,7 +1,6 @@
 package datasheet
 
 import (
-	"context"
 	"fmt"
 	"reflect"
 	"slices"
@@ -9,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
@@ -328,7 +326,7 @@ func buildCustomPricingData(overrides []Override) *customPricingData {
 // mapped to a known pricing mode.
 func (s *Store) applyPricingOverrides(model string, requestType schemas.RequestType, pricing configstoreTables.TableModelPricing, scopes LookupScopes) (configstoreTables.TableModelPricing, bool) {
 	s.overridesMu.RLock()
-	custom := s.customPricing
+	custom := s.customPricing.load()
 	s.overridesMu.RUnlock()
 
 	if custom == nil {
@@ -414,8 +412,8 @@ type CatalogPricingOverrides struct {
 // still returned in Matching so the UI can show them as informational.
 func (s *Store) CatalogPricingOverrides(model string, provider schemas.ModelProvider, mode string) CatalogPricingOverrides {
 	s.overridesMu.RLock()
-	custom := s.customPricing
-	raw := s.rawOverrides
+	custom := s.customPricing.load()
+	raw := s.rawOverrides.load()
 	s.overridesMu.RUnlock()
 
 	if custom == nil || len(raw) == 0 {
@@ -559,6 +557,14 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 		{dst: &patched.CacheCreationInputTokenCostAbove272kTokensUltrafast, src: override.CacheCreationInputTokenCostAbove272kTokensUltrafast},
 		{dst: &patched.CacheCreationInputTokenCostFast, src: override.CacheCreationInputTokenCostFast},
 		{dst: &patched.CacheCreationInputTokenCostAbove1hrFast, src: override.CacheCreationInputTokenCostAbove1hrFast},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hr, src: override.CacheCreationInputTokenCostAbove12hr},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokens, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokens},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrPriority, src: override.CacheCreationInputTokenCostAbove12hrPriority},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokensPriority},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrFlex, src: override.CacheCreationInputTokenCostAbove12hrFlex},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokensFlex},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrUltrafast, src: override.CacheCreationInputTokenCostAbove12hrUltrafast},
+		{dst: &patched.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast, src: override.CacheCreationInputTokenCostAbove12hrAbove272kTokensUltrafast},
 		{dst: &patched.CacheReadInputTokenCostFast, src: override.CacheReadInputTokenCostFast},
 		{dst: &patched.InferenceGeoUSMultiplier, src: override.InferenceGeoUSMultiplier},
 
@@ -623,19 +629,6 @@ func patchPricing(pricing configstoreTables.TableModelPricing, override Options)
 	return patched
 }
 
-// LoadOverridesFromStore reloads all overrides from the config store. Called
-// at bootstrap and after force-reload paths.
-func (s *Store) LoadOverridesFromStore(ctx context.Context) error {
-	if s.configStore == nil {
-		return nil
-	}
-	rows, err := s.configStore.GetPricingOverrides(ctx, configstore.PricingOverrideFilters{})
-	if err != nil {
-		return err
-	}
-	return s.SetOverrides(rows)
-}
-
 // SetOverrides replaces the full in-memory override set. Duplicate IDs in
 // the input keep the last-seen entry (matching today's behavior).
 func (s *Store) SetOverrides(rows []configstoreTables.TablePricingOverride) error {
@@ -654,55 +647,8 @@ func (s *Store) SetOverrides(rows []configstoreTables.TablePricingOverride) erro
 		}
 	}
 	s.overridesMu.Lock()
-	s.rawOverrides = overrides
-	s.customPricing = buildCustomPricingData(overrides)
+	s.rawOverrides.store(overrides)
+	s.customPricing.store(buildCustomPricingData(overrides))
 	s.overridesMu.Unlock()
 	return nil
-}
-
-// UpsertOverrides inserts or replaces one or more overrides, rebuilding the
-// lookup map exactly once at the end.
-func (s *Store) UpsertOverrides(rows ...*configstoreTables.TablePricingOverride) error {
-	seenIncoming := make(map[string]int, len(rows))
-	overrides := make([]Override, 0, len(rows))
-	for _, row := range rows {
-		o, err := convertTableOverride(row)
-		if err != nil {
-			return err
-		}
-		if idx, exists := seenIncoming[o.ID]; exists {
-			overrides[idx] = o
-		} else {
-			seenIncoming[o.ID] = len(overrides)
-			overrides = append(overrides, o)
-		}
-	}
-
-	s.overridesMu.Lock()
-	defer s.overridesMu.Unlock()
-
-	updated := make([]Override, 0, len(s.rawOverrides)+len(overrides))
-	for _, o := range s.rawOverrides {
-		if _, replacing := seenIncoming[o.ID]; !replacing {
-			updated = append(updated, o)
-		}
-	}
-	updated = append(updated, overrides...)
-	s.rawOverrides = updated
-	s.customPricing = buildCustomPricingData(updated)
-	return nil
-}
-
-// DeleteOverride removes an override by ID.
-func (s *Store) DeleteOverride(id string) {
-	s.overridesMu.Lock()
-	defer s.overridesMu.Unlock()
-	updated := make([]Override, 0, len(s.rawOverrides))
-	for _, o := range s.rawOverrides {
-		if o.ID != id {
-			updated = append(updated, o)
-		}
-	}
-	s.rawOverrides = updated
-	s.customPricing = buildCustomPricingData(updated)
 }

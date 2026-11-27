@@ -50,7 +50,8 @@
 			"budgetLimits": "予算上限",
 			"updateAction": "顧客を更新",
 			"createAction": "顧客を作成",
-			"calendarAlignHelp": "カレンダー整合を有効にすると、この顧客の予算使用量が <bold0>$0.00</bold0> に、トークン/リクエストのレート制限カウンターが <bold1>0</bold1> にリセットされ、各リセット日が現在の期間の開始（例: 日・週・月・年の開始）に揃えられます。使用量のリセットは元に戻せませんが、カレンダー整合は後からオフにできます。保存時に反映されます。"
+			"calendarAlignHelp": "カレンダー整合を有効にすると、この顧客の予算使用量が <bold0>$0.00</bold0> に、トークン/リクエストのレート制限カウンターが <bold1>0</bold1> にリセットされ、各リセット日が現在の期間の開始（例: 日・週・月・年の開始）に揃えられます。使用量のリセットは元に戻せませんが、カレンダー整合は後からオフにできます。保存時に反映されます。",
+			"limitsCheckFailed": "この顧客の支出を管理しているものを確認できなかったため、予算とレート制限をまだ表示できません。"
 		},
 		"detail": {
 			"title": "顧客の詳細",
@@ -408,6 +409,24 @@
 		"unlockTitle": "スコープ付きアクセスと支出のためプロジェクトをアンロック",
 		"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。プロジェクトはリクエストが選択するもので、呼び出し元が既に持つ権限に加えてアクセスを付与し、支出をどの台帳に計上するかを決めます。"
 	},
+	"finops": {
+		"overview": {
+			"unlockTitle": "すべてのプロバイダーの AI 支出を一か所で確認",
+			"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。FinOps はプロバイダーアカウントから請求済みコストを読み取り、そのうちどれだけが Bifrost を経由したかを示します。"
+		},
+		"connections": {
+			"unlockTitle": "プロバイダーの請求アカウントを接続",
+			"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。OpenAI、Anthropic、AWS Bedrock、Vertex AI、Azure OpenAI の請求情報を読み取り専用アクセスで接続します。"
+		},
+		"explorer": {
+			"unlockTitle": "AI 支出をモデル別・アカウント別に分析",
+			"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。請求済みの支出と Bifrost が記録した内容をモデルごとに比較します。"
+		},
+		"forecast": {
+			"unlockTitle": "AI 支出を予測し異常を検知",
+			"unlockDescription": "この機能は Bifrost エンタープライズライセンスの一部です。予算に対する当月の支出を予測し、支出が急増したときにアラートを受け取ります。"
+		}
+	},
 	"userRankings": {
 		"unlockTitle": "可視性向上のためユーザーランキングをアンロック"
 	},
@@ -474,7 +493,12 @@
 		"maximumSpend": "最大支出（USD）",
 		"noBudgetLimits": "予算の上限は設定されていません。",
 		"removeBudgetAria": "予算 {{number}} を削除",
-		"duplicateResetPeriod": "リセット期間が重複しています。各予算行は異なる間隔を使用する必要があります。"
+		"duplicateResetPeriod": "リセット期間が重複しています。各予算行は異なる間隔を使用する必要があります。",
+		"contentLogging": "コンテンツログ",
+		"contentLoggingInherit": "継承",
+		"contentLoggingOff": "このチームではオフ",
+		"contentLoggingOn": "このチームではオン",
+		"contentLoggingHelp": "このチームのトラフィックについて、リクエストとレスポンスの内容をログに保存するかどうかです。チームはその仮想キーとプロバイダーキーより優先されるため、チームがオフにした内容をキーで再びオンにすることはできません。「オフ」はコネクターのエクスポートからも内容を除きます。リクエストごとの上書きが許可されている場合、リクエスト単位のヘッダーは引き続き適用されます。"
 	},
 	"filters": {
 		"filters": "フィルター",

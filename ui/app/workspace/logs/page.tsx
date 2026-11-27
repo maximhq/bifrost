@@ -91,6 +91,7 @@ export default function LogsPage() {
 			selected_key_ids: parseAsSafeArrayOf.withDefault([]),
 			virtual_key_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_rule_ids: parseAsSafeArrayOf.withDefault([]),
+			model_router_ids: parseAsSafeArrayOf.withDefault([]),
 			routing_engine_used: parseAsSafeArrayOf.withDefault([]),
 			apps: parseAsSafeArrayOf.withDefault([]),
 			user_agents: parseAsSafeArrayOf.withDefault([]),
@@ -158,6 +159,7 @@ export default function LogsPage() {
 			selected_key_ids: urlState.selected_key_ids,
 			virtual_key_ids: urlState.virtual_key_ids,
 			routing_rule_ids: urlState.routing_rule_ids,
+			model_router_ids: urlState.model_router_ids,
 			routing_engine_used: urlState.routing_engine_used,
 			apps: urlState.apps,
 			user_agents: urlState.user_agents,
@@ -203,6 +205,7 @@ export default function LogsPage() {
 			urlState.selected_key_ids,
 			urlState.virtual_key_ids,
 			urlState.routing_rule_ids,
+			urlState.model_router_ids,
 			urlState.routing_engine_used,
 			urlState.apps,
 			urlState.user_agents,
@@ -277,6 +280,7 @@ export default function LogsPage() {
 				selected_key_ids: newFilters.selected_key_ids || [],
 				virtual_key_ids: newFilters.virtual_key_ids || [],
 				routing_rule_ids: newFilters.routing_rule_ids || [],
+				model_router_ids: newFilters.model_router_ids || [],
 				routing_engine_used: newFilters.routing_engine_used || [],
 				apps: newFilters.apps || [],
 				user_agents: newFilters.user_agents || [],
@@ -718,6 +722,7 @@ export default function LogsPage() {
 		() => ({
 			timestamp: t("labels.time"),
 			request_type: t("labels.type"),
+			stop_reason: t("logs.detail.stopReason"),
 			input: t("labels.message"),
 			provider: t("labels.provider"),
 			model: t("labels.model"),
@@ -739,7 +744,19 @@ export default function LogsPage() {
 	);
 
 	const DEFAULT_HIDDEN_COLUMNS = useMemo(
-		() => ["session", "service_tier", "virtual_key", "routing_rule", "team", "customer", "user", "business_unit", "project", "client_ip"],
+		() => [
+			"stop_reason",
+			"session",
+			"service_tier",
+			"virtual_key",
+			"routing_rule",
+			"team",
+			"customer",
+			"user",
+			"business_unit",
+			"project",
+			"client_ip",
+		],
 		[],
 	);
 

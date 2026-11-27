@@ -458,6 +458,7 @@ export interface ToolCall {
 	type?: string;
 	id?: string;
 	function: FunctionCall;
+	custom?: { name?: string; input?: string };
 }
 
 // Model parameters types
@@ -614,6 +615,11 @@ export interface GuardrailJudgeCall {
 	prompt_tokens?: number;
 	completion_tokens?: number;
 	total_tokens?: number;
+	// External guardrail service calls report vendor usage units instead of
+	// tokens, plus their USD cost at the vendor's list price. The cost is
+	// display-only: it is never part of the request cost or budgets.
+	usage_units?: Record<string, number>;
+	estimated_cost?: number;
 }
 
 // GuardrailMatch is one rule match recorded in guardrail_debug: a detect-only
@@ -623,6 +629,7 @@ export interface GuardrailMatch {
 	phase?: string;
 	rule_id?: number;
 	rule_name?: string;
+	profile_id?: number; // Guardrail profile that matched; guardrail_name is its name.
 	guardrail_name?: string;
 	guardrail_provider?: string;
 	reason?: string;
@@ -642,8 +649,9 @@ export interface GuardrailMetadata {
 	interventions?: GuardrailMatch[];
 }
 
-// GuardrailOutcome values accepted by the logs API's guardrail_outcomes filter.
-export type GuardrailOutcome = "blocked" | "detected";
+// GuardrailMatchAction is what a guardrail did for one recorded match, as shown
+// to users; the logs API's guardrail_actions filter takes the same values.
+export type GuardrailMatchAction = "blocked" | "redacted" | "monitored" | "detected";
 
 export interface RoutingCall {
 	request_type?: string;
@@ -802,6 +810,8 @@ export interface LogEntry {
 	routing_engines_used?: string[];
 	routing_rule_id?: string;
 	routing_rule_name?: string;
+	model_router_id?: string; // The model router that took the request after the routing rules
+	model_router_name?: string;
 	complexity_tier?: string; // Complexity tier used for routing ("SIMPLE", "MEDIUM", "COMPLEX"); absent when no routing rule referenced complexity_tier
 	complexity_mechanism?: string; // How the complexity tier was classified ("semantic", "decision", "llm", "session", "skipped"); absent when no routing rule referenced complexity_tier
 	complexity_score?: number; // Classifier score: the semantic classifier's similarity to the nearest reference phrase
@@ -914,11 +924,17 @@ export interface LogFilters {
 	selected_key_ids?: string[];
 	virtual_key_ids?: string[];
 	routing_rule_ids?: string[];
+	model_router_ids?: string[]; // Requests a model router took
 	routing_engine_used?: string[]; // For filtering by routing engine (routing-rule, governance, loadbalancing)
 	status?: string[];
 	stop_reasons?: string[]; // For filtering by stop reason (stop, length, content_filter, refusal, tool_calls, etc.)
 	tool_call_names?: string[]; // Requests whose response called any of these function names
-	guardrail_outcomes?: GuardrailOutcome[]; // Requests a guardrail blocked and/or flagged (detect-only)
+	// Requests with one recorded guardrail match meeting every guardrail filter set: what the guardrail did,
+	// its rule and profile ids, and the phase. Values within one filter are OR-ed.
+	guardrail_actions?: GuardrailMatchAction[];
+	guardrail_rule_ids?: string[];
+	guardrail_profile_ids?: string[];
+	guardrail_phases?: string[];
 	complexity_tiers?: string[]; // For filtering by routing complexity tier (SIMPLE, MEDIUM, COMPLEX)
 	complexity_mechanisms?: string[]; // For filtering by complexity decision mechanism (semantic, decision, llm, session, skipped)
 	agent_names?: string[]; // Registered Agents whose context IDs correlate the matching logs
@@ -1552,9 +1568,19 @@ export interface MCPToolLogFilters {
 // MCP Tool Log Statistics
 export interface MCPToolLogStats {
 	total_executions: number;
+	success_count: number;
+	error_count: number;
+	cancelled_count: number;
+	/** Over finished calls, cancelled ones counted, as the LLM logs stats measure it. */
 	success_rate: number;
 	average_latency: number;
 	total_cost: number; // Total cost in dollars
+}
+
+/** GET /api/mcp-logs/stats with compare_to_previous=true: the window's stats plus the preceding window's. */
+export interface MCPToolLogStatsResponse extends MCPToolLogStats {
+	previous?: MCPToolLogStats;
+	has_previous_period?: boolean;
 }
 
 // MCP Tool Log Search Response
@@ -1565,12 +1591,23 @@ export interface MCPToolLogsResponse {
 }
 
 // MCP Tool Log Filter Data Response
+// An id and its display name, as an MCP log filter dimension offers it.
+export interface MCPToolLogFilterEntity {
+	id: string;
+	name: string;
+}
+
 export interface MCPToolLogFilterData {
 	tool_names: string[];
 	server_labels: string[];
 	apps: string[];
 	user_agents: string[];
 	virtual_keys: VirtualKey[];
+	users: MCPToolLogFilterEntity[];
+	teams: MCPToolLogFilterEntity[];
+	customers: MCPToolLogFilterEntity[];
+	business_units: MCPToolLogFilterEntity[];
+	projects: MCPToolLogFilterEntity[];
 }
 
 // WebSocket message types for MCP tool logs
@@ -1662,7 +1699,17 @@ export interface UserRankingsResponse {
 	rankings: UserRankingEntry[];
 }
 
-export type RankingDimension = "team" | "customer" | "business_unit" | "project" | "user" | "app" | "user_agent" | "virtual_key";
+export type RankingDimension =
+	| "team"
+	| "customer"
+	| "business_unit"
+	| "project"
+	| "user"
+	| "app"
+	| "user_agent"
+	| "virtual_key"
+	| "model_router"
+	| "complexity_tier";
 
 export interface DimensionRankingTrend {
 	has_previous_period: boolean;

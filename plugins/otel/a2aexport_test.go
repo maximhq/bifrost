@@ -72,7 +72,7 @@ func TestA2AExportContentPolicy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			trace.RootSpan.SetAttribute(schemas.AttrBifrostContentLoggingDisabled, tc.vk)
 			filtered := schemas.StripTraceAttributes(trace, tc.excluded)
-			rs := p.convertTraceToResourceSpan("fixture", filtered, nil, tc.disabled, tc.raw, false, tc.root)
+			rs := p.convertTraceToResourceSpan("fixture", filtered, convertOptions{disableContentLogging: tc.disabled, exportRawPayloads: tc.raw, disableRootSpanContent: tc.root})
 			stripExcludedFromResourceSpan(rs, tc.excluded)
 			for _, span := range rs.ScopeSpans[0].Spans {
 				attrs := kvMap(span.Attributes)

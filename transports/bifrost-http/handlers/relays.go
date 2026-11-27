@@ -28,9 +28,9 @@ type RelaysHandler struct {
 	manager      *relay.Manager
 	relayManager RelayManager
 	config       *lib.Config
-	// vkReloader refreshes the governance in-memory copy of every virtual key a relay delete
-	// took a grant from, as the Agent Gateway handler does for agent grants. Optional.
-	vkReloader VirtualKeyReloader
+	// governanceManager reloads every virtual key a relay delete took a grant from, as the Agent
+	// Gateway handler does for agent grants. Optional.
+	governanceManager GovernanceManager
 	// redactedKeys resolves the virtual keys the filter data names, so a deleted key is dropped or
 	// labelled as the LLM logs filter data does; nil leaves the stored names as they are.
 	redactedKeys RedactedKeysManager
@@ -50,7 +50,9 @@ func (h *RelaysHandler) SetRedactedKeysManager(manager RedactedKeysManager) {
 type RelayManager interface {
 	CreateRelay(ctx context.Context, cfg *schemas.RelayConfig) (*schemas.RelayConfig, error)
 	UpdateRelay(ctx context.Context, name string, cfg *schemas.RelayConfig) (*schemas.RelayConfig, error)
-	// DeleteRelay returns the ids of the virtual keys whose grants the delete took away.
+	// DeleteRelay returns the ids of the virtual keys whose grants the delete took away. When the
+	// delete is saved but an in-memory follow-up fails, it returns those ids with an error wrapping
+	// ErrSavedButNotReloaded, which the handler answers as a saved delete whose memory is stale.
 	DeleteRelay(ctx context.Context, name string) ([]string, error)
 }
 
@@ -71,14 +73,14 @@ func (m localRelayManager) DeleteRelay(ctx context.Context, name string) ([]stri
 }
 
 // NewRelaysHandler builds the handler. A nil relayManager mutates the manager directly.
-func NewRelaysHandler(manager *relay.Manager, relayManager RelayManager, config *lib.Config, vkReloader VirtualKeyReloader) *RelaysHandler {
+func NewRelaysHandler(manager *relay.Manager, relayManager RelayManager, config *lib.Config, governanceManager GovernanceManager) *RelaysHandler {
 	if manager == nil {
 		return nil
 	}
 	if relayManager == nil {
 		relayManager = localRelayManager{manager: manager}
 	}
-	return &RelaysHandler{manager: manager, relayManager: relayManager, config: config, vkReloader: vkReloader}
+	return &RelaysHandler{manager: manager, relayManager: relayManager, config: config, governanceManager: governanceManager}
 }
 
 // ReloadRelay brings the live relay named in line with its stored row. It is what another node
@@ -254,30 +256,21 @@ func (h *RelaysHandler) delete(ctx *fasthttp.RequestCtx) {
 	}
 	// The keys whose cascade-deleted grants just disappeared stop carrying them in memory.
 	granted, err := h.relayManager.DeleteRelay(workCtx, name)
-	if err != nil {
+	followUpErr := err
+	if err != nil && !errors.Is(err, ErrSavedButNotReloaded) {
 		h.storeError(ctx, err)
 		return
 	}
-	h.reloadGrantedVirtualKeys(workCtx, granted)
 	lib.RecordAuditChange(ctx, "relay.deleted", "relay", name, name, endpointView(previous), nil)
-	ctx.SetStatusCode(fasthttp.StatusNoContent)
-}
-
-// reloadGrantedVirtualKeys refreshes the in-memory copy of each key whose grant a delete took
-// away, as the Agent Gateway handler does after an agent grant change. A failed reload is
-// logged; the key is refreshed on its next reload.
-func (h *RelaysHandler) reloadGrantedVirtualKeys(ctx context.Context, ids []string) {
-	if h.vkReloader == nil {
+	if err := reloadGrantingVirtualKeys(workCtx, h.governanceManager, granted); err != nil {
+		followUpErr = errors.Join(followUpErr, err)
+	}
+	if followUpErr != nil {
+		logger.Error("failed to reload in-memory state after deleting relay %s: %v", name, followUpErr)
+		SendError(ctx, fasthttp.StatusInternalServerError, "Relay deleted in database but failed to reload in-memory state")
 		return
 	}
-	for _, id := range ids {
-		if id == "" {
-			continue
-		}
-		if _, err := h.vkReloader.ReloadVirtualKey(ctx, id); err != nil {
-			logger.Error("failed to reload virtual key %s after relay delete: %v", id, err)
-		}
-	}
+	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
 func (h *RelaysHandler) storeError(ctx *fasthttp.RequestCtx, err error) {
@@ -463,7 +456,7 @@ func (h *RelaysHandler) fetchOpenAPISpec(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "spec_url must be an absolute http(s) URL")
 		return
 	}
-	data, finalURL, status, err := fetchOpenAPISpecForCaller(ctx, specURL)
+	data, finalURL, status, err := fetchOpenAPISpecForCaller(ctx, specURL, h.config.MCPOpenAPIMaxSpecBytes())
 	if err != nil {
 		SendError(ctx, status, err.Error())
 		return

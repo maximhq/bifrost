@@ -120,6 +120,50 @@ test.describe('Dashboard', () => {
     }
   })
 
+  test.describe('Refresh', () => {
+    test('should refetch dashboard data and keep the URL', async ({ dashboardPage }) => {
+      await dashboardPage.waitForChartsToLoad()
+      const urlBefore = dashboardPage.page.url()
+
+      const histogram = dashboardPage.page.waitForRequest((req) => req.url().includes('/logs/histogram'), { timeout: 15000 })
+      const mcpFilterData = dashboardPage.page.waitForRequest((req) => req.url().includes('/mcp-logs/filterdata'), { timeout: 15000 })
+
+      await dashboardPage.refreshButton.click()
+
+      await histogram
+      await mcpFilterData
+      expect(dashboardPage.page.url()).toBe(urlBefore)
+    })
+
+    test('should stay disabled until the refetches settle', async ({ dashboardPage }) => {
+      await dashboardPage.waitForChartsToLoad()
+
+      // Hold the histogram replies so the in-flight window is long enough to observe.
+      await dashboardPage.page.route('**/logs/histogram**', async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 1500))
+        await route.continue()
+      })
+
+      await dashboardPage.refreshButton.click()
+      await expect(dashboardPage.refreshButton).toBeDisabled()
+      await expect(dashboardPage.refreshButton).toBeEnabled({ timeout: 15000 })
+
+      await dashboardPage.page.unroute('**/logs/histogram**')
+    })
+
+    test('should be disabled while an export runs', async ({ dashboardPage }) => {
+      await dashboardPage.waitForChartsToLoad()
+      await expect(dashboardPage.refreshButton).toBeEnabled()
+
+      const download = dashboardPage.page.waitForEvent('download', { timeout: 60000 })
+      await dashboardPage.startPdfExportAllTabs()
+
+      await expect(dashboardPage.refreshButton).toBeDisabled()
+      await download
+      await expect(dashboardPage.refreshButton).toBeEnabled({ timeout: 10000 })
+    })
+  })
+
   test.describe('Chart Type Toggling', () => {
     test('should toggle volume chart type', async ({ dashboardPage }) => {
       // Get initial toggle state from DOM
@@ -406,6 +450,85 @@ test.describe('Dashboard', () => {
       const errorAlert = dashboardPage.page.locator('[role="alert"][data-variant="destructive"], .text-destructive, [data-sonner-toast][data-type="error"]')
       const hasErrorAlert = await errorAlert.count() > 0
       expect(hasErrorAlert).toBe(false)
+    })
+  })
+
+  // The dashboard reuses the logs filter sidebar, so every section it renders must also be
+  // carried by the dashboard's own URL state, or ticking it is silently dropped.
+  test.describe('Sidebar Complexity and Topic Filters', () => {
+    async function openSection(page: Page, toggleTestId: string): Promise<void> {
+      const toggle = page.getByTestId(toggleTestId)
+      await expect(toggle).toBeVisible()
+      if ((await toggle.getAttribute('data-state')) !== 'open') {
+        await toggle.click()
+      }
+      await expect(toggle).toHaveAttribute('data-state', 'open')
+    }
+
+    function histogramRequestWith(page: Page, param: string, value: string) {
+      return page.waitForRequest(
+        (req) => {
+          const url = new URL(req.url())
+          return url.pathname.includes('/logs/histogram') && url.searchParams.get(param) === value
+        },
+        { timeout: 15000 },
+      )
+    }
+
+    test('should apply a complexity tier filter to the URL and the chart queries', async ({ dashboardPage }) => {
+      const page = dashboardPage.page
+      await dashboardPage.waitForChartsToLoad()
+      await openSection(page, 'complexity-tier-filter-toggle')
+
+      const filteredRequest = histogramRequestWith(page, 'complexity_tiers', 'COMPLEX')
+      const row = page.getByTestId('complexity-tier-filter-checkbox-complex')
+      await row.click()
+
+      await expect(row.getByRole('checkbox')).toHaveAttribute('data-state', 'checked')
+      await expect(page).toHaveURL(/complexity_tiers=COMPLEX/)
+      await filteredRequest
+
+      await row.click()
+      await expect(row.getByRole('checkbox')).toHaveAttribute('data-state', 'unchecked')
+      await expect(page).not.toHaveURL(/complexity_tiers=/)
+    })
+
+    test('should apply a complexity mechanism filter to the URL and the chart queries', async ({ dashboardPage }) => {
+      const page = dashboardPage.page
+      await dashboardPage.waitForChartsToLoad()
+      await openSection(page, 'complexity-mechanism-filter-toggle')
+
+      const filteredRequest = histogramRequestWith(page, 'complexity_mechanisms', 'session')
+      const row = page.getByTestId('complexity-mechanism-filter-checkbox-session')
+      await row.click()
+
+      await expect(row.getByRole('checkbox')).toHaveAttribute('data-state', 'checked')
+      await expect(page).toHaveURL(/complexity_mechanisms=session/)
+      await filteredRequest
+    })
+
+    test('should restore complexity and topic filters from the URL', async ({ dashboardPage }) => {
+      const page = dashboardPage.page
+      const topicId = `e2e-topic-${Date.now()}`
+      const tierRequest = histogramRequestWith(page, 'complexity_tiers', 'SIMPLE')
+      const topicRequest = histogramRequestWith(page, 'topic_ids', topicId)
+
+      await page.goto(`/workspace/dashboard?complexity_tiers=SIMPLE&topic_ids=${topicId}`)
+      await Promise.all([tierRequest, topicRequest])
+
+      // An active filter opens its section, so the restored tier and topic show as ticked.
+      await expect(page.getByTestId('complexity-tier-filter-checkbox-simple').getByRole('checkbox')).toHaveAttribute(
+        'data-state',
+        'checked',
+      )
+      // The server does not list this topic, so its row is the one kept for the selected id.
+      const topicRow = page.getByTestId(`topics-filter-checkbox-${topicId}`)
+      await expect(topicRow.getByRole('checkbox')).toHaveAttribute('data-state', 'checked')
+
+      await topicRow.click()
+      await expect(topicRow).toHaveCount(0)
+      await expect(page).not.toHaveURL(/topic_ids=/)
+      await expect(page).toHaveURL(/complexity_tiers=SIMPLE/)
     })
   })
 

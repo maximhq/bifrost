@@ -70,7 +70,8 @@
 			"decision": "Modello decisionale",
 			"llm": "LLM",
 			"skipped": "Saltato"
-		}
+		},
+		"modelRouter": "Router"
 	},
 	"dashboard": {
 		"tabs": {
@@ -370,6 +371,7 @@
 			"outputCost": "Costo di output",
 			"additionalCost": "Costo aggiuntivo",
 			"guardrailCost": "Costo dei guardrail",
+			"externalGuardrailCostNote": "Include {{cost}} di costo stimato dei guardrail esterni, non conteggiato nel costo totale né nei budget.",
 			"semanticCacheCost": "Costo della cache semantica",
 			"routingCost": "Costo di routing",
 			"inputTextTokens": "Token di testo in input",
@@ -403,6 +405,9 @@
 			"judgeProvider": "Provider judge",
 			"judgeModel": "Modello judge",
 			"promptTokens": "Token del prompt",
+			"usageUnits": "Unità di utilizzo",
+			"estimatedCost": "Costo stimato",
+			"estimatedCostTooltip": "Stimato al prezzo di listino del fornitore del guardrail. Non conteggiato nel costo totale né nei budget.",
 			"reason": "Motivo",
 			"routingClassificationDetails": "Dettagli della classificazione di routing",
 			"mechanism": "Meccanismo",
@@ -516,7 +521,6 @@
 				"allowed": "Consentito",
 				"blocked": "Bloccato",
 				"redacted": "Oscurato",
-				"transformed": "Trasformato",
 				"monitored": "Monitorato",
 				"detected": "Rilevato"
 			},
@@ -572,11 +576,9 @@
 			"toolTypeCount_other": "{{type}} · {{count}} strumenti",
 			"guardrailHints": {
 				"blocked": "La regola ha interrotto la richiesta.",
-				"redacted": "La regola ha rimosso il contenuto corrispondente e la richiesta è proseguita.",
-				"transformed": "La regola ha riscritto il contenuto corrispondente e la richiesta è proseguita.",
+				"redacted": "La regola ha mascherato o riscritto il contenuto corrispondente e la richiesta è proseguita.",
 				"monitoredWouldBlock": "La regola è solo in monitoraggio: avrebbe bloccato la richiesta, che invece è proseguita senza modifiche.",
 				"monitoredWouldRedact": "La regola è solo in monitoraggio: avrebbe oscurato il contenuto, ma la richiesta è proseguita senza modifiche.",
-				"monitoredWouldTransform": "La regola è solo in monitoraggio: avrebbe trasformato il contenuto, ma la richiesta è proseguita senza modifiche.",
 				"monitored": "La regola è solo in monitoraggio: la richiesta è proseguita senza modifiche.",
 				"detected": "La regola ha segnalato la richiesta, che è proseguita senza modifiche."
 			},
@@ -945,6 +947,9 @@
 		"copyToClipboard": "Copia negli appunti",
 		"stats": {
 			"totalExecutions": "Totale esecuzioni",
+			"executions": "Esecuzioni",
+			"ofAllExecutions": "Di tutte le chiamate ai tool MCP in questo intervallo",
+			"perExecution": "{{value}}/chiamata",
 			"successRate": "Tasso di successo",
 			"avgLatency": "Latenza media",
 			"totalCost": "Costo totale"
@@ -974,7 +979,6 @@
 			"toolName": "Nome strumento",
 			"server": "Server",
 			"virtualKey": "Chiave virtuale",
-			"llmRequestId": "ID richiesta LLM",
 			"metadata": "Metadati",
 			"deleteFailed": "Eliminazione log non riuscita",
 			"invalidDate": "Data non valida",
@@ -1025,6 +1029,7 @@
 		"rounds": "Round",
 		"execution": "Esecuzione",
 		"errorDetails": "Dettagli errore",
+		"errorNoMessage": "La chiamata al tool non è riuscita e non ha restituito alcun messaggio di errore.",
 		"pluginLogs": "Log dei plugin",
 		"loading": "Caricamento log MCP...",
 		"native": "Nativo",
@@ -1046,8 +1051,7 @@
 			"blockedDescription": "Bloccato prima dell'esecuzione.",
 			"observedDescription": "L'attività del tool è stata acquisita, ma l'esito dell'esecuzione non è noto.",
 			"inputRequiredDescription": "Il server MCP ha chiesto un input al chiamante prima di completare. Il nuovo tentativo che risponde è una voce separata.",
-			"retryLaterDescription": "Il server MCP ha chiesto al chiamante di riprovare più tardi, senza richiedere alcun input. Il nuovo tentativo è una voce separata.",
-			"executionDescription": "Esito dell'esecuzione del tool registrato."
+			"retryLaterDescription": "Il server MCP ha chiesto al chiamante di riprovare più tardi, senza richiedere alcun input. Il nuovo tentativo è una voce separata."
 		},
 		"noResults": "Nessun risultato trovato. Prova a modificare i filtri e/o l'intervallo di tempo.",
 		"observedRoundTrip": "Round trip osservato"
@@ -1118,6 +1122,8 @@
 			"groupTracesBySessionHelp": "Quando abilitata, le richieste che condividono la stessa intestazione x-bf-session-id vengono raggruppate in una singola traccia, con ciascuna richiesta che compare come span sibling di primo livello. Una richiesta con un traceparent W3C in ingresso rimane nella propria traccia distribuita e non viene influenzata.",
 			"disableRootSpanContent": "Disabilita il contenuto del root span",
 			"disableRootSpanContentHelp": "Quando abilitata, il contenuto dei messaggi di input/output viene escluso solo dal root span; lo span di generazione sottostante (llm.call) mantiene il contenuto completo.",
+			"applyTraceDimensionsToChildSpans": "Applica le dimensioni agli span figli",
+			"applyTraceDimensionsToChildSpansHelp": "Quando abilitata, le dimensioni della richiesta (header x-bf-dim-*) vengono unite in ogni span esportato, non solo nello span radice, così gli span figli possono essere filtrati o raggruppati per dimensione. path, method e i namespace riservati come gen_ai.* vengono ignorati. Ogni dimensione viene aggiunta a ogni span, quindi valori ad alta cardinalità aumentano il costo di ingestione del collector.",
 			"enableMetricsExport": "Abilita esportazione metriche",
 			"enableMetricsExportHelp": "Invia le metriche a un collector OTEL per una corretta aggregazione nei deployment in cluster",
 			"overheadBreakdown": "Suddivisione dell'overhead",
@@ -1231,7 +1237,10 @@
 		"exactRoundTripID": "ID di andata e ritorno esatto",
 		"nothingRecorded": "Nulla registrato in questo intervallo di tempo",
 		"topics": "Argomenti",
-		"searchTopics": "Cerca argomenti"
+		"searchTopics": "Cerca argomenti",
+		"modelRouters": "Router",
+		"searchModelRouters": "Cerca router",
+		"loadFailed": "Impossibile caricare questo elenco."
 	},
 	"requestTypes": {
 		"chat_completion": "Chat",
@@ -1260,6 +1269,7 @@
 		"decisions": "Decisioni",
 		"speech": "Voce",
 		"speech_stream": "Stream voce",
+		"speech_session": "Sessione vocale",
 		"transcription": "Trascrizione",
 		"transcription_stream": "Stream trascrizione",
 		"image_generation": "Generazione immagini",
@@ -1630,6 +1640,70 @@
 				"publicAgentCardFetched": "Agent card pubblica recuperata",
 				"extendedAgentCardFetched": "Agent card estesa recuperata"
 			}
+		},
+		"trace": {
+			"title": "Traccia dell'agente",
+			"loading": "Caricamento traccia…",
+			"partial": "Alcuni log collegati non sono stati caricati, quindi questa traccia potrebbe essere incompleta.",
+			"timeline": "Cronologia",
+			"findSpan": "Cerca span",
+			"treeLabel": "Span della traccia",
+			"noMatches": "Nessuno span corrisponde.",
+			"artifacts": "Artefatti",
+			"latency": "Latenza",
+			"tokens": "Token",
+			"cost": "Costo",
+			"agents": "Agenti",
+			"llmCalls": "Chiamate LLM",
+			"mcpCalls": "Chiamate MCP",
+			"errors": "Errori",
+			"tokensShort": "{{value}} tok",
+			"errorsShort": "{{value}} errori",
+			"followUps": "+{{value}} chiamate successive",
+			"producedBy": "Prodotto da {{agent}}",
+			"artifactKind": {
+				"data": "dati",
+				"text": "testo"
+			},
+			"expand": "Espandi {{name}}",
+			"collapse": "Comprimi {{name}}",
+			"openInLLMLogs": "Apri nei log LLM",
+			"openInMCPLogs": "Apri nei log MCP",
+			"a2a": "A2A",
+			"error": "Errore",
+			"scopeTrace": "Traccia",
+			"scopeSession": "Sessione",
+			"sessionName": "Sessione {{value}}",
+			"turn": "Turno {{value}}",
+			"turnCount": "Turni {{value}}",
+			"turns": "Turni",
+			"sessionId": "Sessione",
+			"taskId": "Attività",
+			"copyLink": "Copia link",
+			"linkCopied": "Link copiato",
+			"guardrails": "Guardrail",
+			"guard": {
+				"guardrail": "Guardrail",
+				"rule": "Regola",
+				"provider": "Provider",
+				"phase": "Fase",
+				"outcome": "Esito",
+				"reason": "Motivo",
+				"judgeModel": "Modello giudice",
+				"assessments": "Valutazioni"
+			},
+			"turnsLoaded": "{{loaded}} di {{total}} turni caricati",
+			"loadMoreTurns": "Carica altri turni",
+			"userMessage": "Utente",
+			"viewSpans": "Mostra span",
+			"noReply": "Nessuna risposta registrata.",
+			"spansTab": "Span",
+			"threadTab": "Thread",
+			"llmShort": "{{value}} LLM",
+			"mcpShort": "{{value}} MCP",
+			"guardShort": "{{value}} guardrail",
+			"agentSpan": "Span agente",
+			"conversationEnd": "Fine"
 		},
 		"logSheet": {
 			"localOperationNote": "Questa operazione viene gestita da Bifrost senza una richiesta upstream. I payload di protocollo riportati sotto sono dati serializzati, non acquisizioni del trasporto.",

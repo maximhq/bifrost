@@ -135,30 +135,24 @@ func (m *MCPManager) GetClientForTool(ctx context.Context, toolName string) (*sc
 	if firstHyphen <= 0 {
 		return nil, nil
 	}
-	m.mu.RLock()
-	var match *schemas.MCPClientState
-	for _, client := range m.clientMap {
-		if client.ExecutionConfig == nil {
-			continue
-		}
-		name := client.ExecutionConfig.Name
-		if len(name) == firstHyphen && toolName[:firstHyphen] == name {
-			match = client
-			break
-		}
-		if len(name) > firstHyphen && len(toolName) > len(name) && toolName[len(name)] == '-' && strings.HasPrefix(toolName, name) &&
-			(match == nil || len(name) > len(match.ExecutionConfig.Name)) {
-			match = client
-		}
+	// The client is the one named by the text before the first hyphen; a name that skipped
+	// validation and holds a hyphen falls back to the longest name that, followed by the
+	// separator, starts the tool name. Each is one lookup by name, not a scan of every client.
+	config := m.configByName(toolName[:firstHyphen])
+	for i := strings.LastIndexByte(toolName, '-'); config == nil && i > firstHyphen; i = strings.LastIndexByte(toolName[:i], '-') {
+		config = m.configByName(toolName[:i])
 	}
+	if config == nil {
+		return nil, nil
+	}
+	m.mu.RLock()
 	var clientCopy *schemas.MCPClientState
-	if match != nil {
-		// Return a copy to prevent TOCTOU race conditions
-		snapshot := *match
-		clientCopy = &snapshot
+	if entry, ok := m.clientMap[config.ID]; ok {
+		// A copy, to prevent TOCTOU race conditions
+		clientCopy = m.snapshot(config.ID, entry)
 	}
 	m.mu.RUnlock()
-	if clientCopy == nil {
+	if clientCopy == nil || clientCopy.ExecutionConfig == nil {
 		return nil, nil
 	}
 	// Read outside m.mu: a per-user store may read through to a database.
@@ -207,13 +201,20 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 	m.logger.Debug("%s GetToolPerClient: Total clients in manager: %d, Filter: %v", MCPLogPrefix, len(m.clientMap), includeClients)
 
 	// Collect and sort client names for deterministic tool ordering
+	// A client the Account no longer serves is left out. Whether each client is withheld from
+	// callers is read here too, since it depends on the entry.
 	clientNames := make([]string, 0, len(m.clientMap))
 	clientsByName := make(map[string]*schemas.MCPClientState, len(m.clientMap))
-	for _, client := range m.clientMap {
-		name := client.ExecutionConfig.Name
+	withheldByName := make(map[string]bool, len(m.clientMap))
+	for id, entry := range m.clientMap {
+		snapshot := m.snapshot(id, entry)
+		if snapshot.ExecutionConfig == nil {
+			continue
+		}
+		name := snapshot.ExecutionConfig.Name
 		clientNames = append(clientNames, name)
-		snapshot := *client
-		clientsByName[name] = &snapshot
+		clientsByName[name] = snapshot
+		withheldByName[name] = withheldFromCallers(entry.State, m.awaitingVerification(id, entry), snapshot.ExecutionConfig)
 	}
 	m.mu.RUnlock()
 	slices.Sort(clientNames)
@@ -229,7 +230,7 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 		m.logger.Debug("%s Evaluating client %s (ID: %s) for tools", MCPLogPrefix, clientName, clientID)
 
 		// Skip intentionally disabled clients, and per-caller clients awaiting admin verification
-		if withheldFromCallers(client.State, client.ExecutionConfig) {
+		if withheldByName[clientName] {
 			m.logger.Debug("%s Skipping MCP client %s: disabled or awaiting admin verification", MCPLogPrefix, clientName)
 			continue
 		}
@@ -292,7 +293,7 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 			// A client with a visible tool is one the caller can reach, so its
 			// instructions apply. A code mode client's ride in its stub instead
 			// (see GetAggregatedServerInstructions for the scoping rule).
-			if withInstructions && !client.ExecutionConfig.IsCodeModeClient {
+			if withInstructions && !client.ExecutionConfig.CodeModeFor(ctx) {
 				if instructions := discovery.GetInstructions(); instructions != "" {
 					if result.Instructions == nil {
 						result.Instructions = make([]schemas.MCPServerInstructions, 0, len(clientNames))
@@ -306,7 +307,7 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 			}
 		}
 
-		if offerConnect && discovery == nil && perUserDiscoveryOn(client.ExecutionConfig) && connectAccessible(ctx, client, m.logger) {
+		if offerConnect && discovery == nil && perUserDiscoveryOn(client.ExecutionConfig) && connectAccessible(ctx, client, withheldByName[clientName], m.logger) {
 			result.ConnectTools = append(result.ConnectTools, connectTool(client.ExecutionConfig))
 		}
 	}
@@ -321,23 +322,35 @@ func (m *MCPManager) resolveCallerDiscovery(ctx context.Context, withConnect, wi
 //   - clientName: Name of the client to get
 //
 // Returns:
-//   - *schemas.MCPClientState: Client state if found, nil otherwise
+//   - *schemas.MCPClientState: Client state if found, nil otherwise. A client the Account
+//     stops serving between the lookup by name and the snapshot is not found, as in
+//     GetClientForTool, so a returned state always has its ExecutionConfig.
 func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState {
+	config := m.configByName(clientName)
+	if config == nil {
+		return nil
+	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	m.logger.Debug("%s GetClientByName: Looking for client '%s' among %d clients", MCPLogPrefix, clientName, len(m.clientMap))
-	for _, client := range m.clientMap {
-		m.logger.Debug("%s Checking client with Name: %s, ID: %s", MCPLogPrefix, client.ExecutionConfig.Name, client.ExecutionConfig.ID)
-		if client.ExecutionConfig.Name == clientName {
-			// Return a copy to prevent TOCTOU race conditions
-			// The caller receives a snapshot of the client state at this point in time
-			m.logger.Debug("%s Found client '%s' with IsCodeModeClient=%v", MCPLogPrefix, clientName, client.ExecutionConfig.IsCodeModeClient)
-			clientCopy := *client
-			return &clientCopy
-		}
+	entry, ok := m.clientMap[config.ID]
+	if !ok {
+		return nil
 	}
-	m.logger.Debug("%s Client '%s' not found", MCPLogPrefix, clientName)
-	return nil
+	// A copy, to prevent TOCTOU race conditions: the caller receives a snapshot of the client
+	// state at this point in time.
+	state := m.snapshot(config.ID, entry)
+	if state.ExecutionConfig == nil {
+		return nil
+	}
+	return state
+}
+
+// configID is config's ID, or "" for a nil config.
+func configID(config *schemas.MCPClientConfig) string {
+	if config == nil {
+		return ""
+	}
+	return config.ID
 }
 
 // GetInjectedTool resolves a provider-injected tool by client name and unprefixed tool
@@ -351,16 +364,13 @@ func (m *MCPManager) GetClientByName(clientName string) *schemas.MCPClientState 
 func (m *MCPManager) GetInjectedTool(ctx context.Context, clientName, toolName string) (schemas.ChatTool, error) {
 	// Find the client under the lock, then read its tools outside it: a ctx-aware
 	// discovery store may read through to slower backing, which must not run under m.mu.
-	var config *schemas.MCPClientConfig
+	config := m.configByName(clientName)
 	var disabled bool
 	m.mu.RLock()
-	for _, client := range m.clientMap {
-		if client.ExecutionConfig == nil || client.ExecutionConfig.Name != clientName {
-			continue
-		}
-		config = client.ExecutionConfig
+	if client, ok := m.clientMap[configID(config)]; ok {
 		disabled = client.State == schemas.MCPConnectionStateDisabled
-		break
+	} else {
+		config = nil
 	}
 	m.mu.RUnlock()
 	if config == nil {
@@ -789,8 +799,9 @@ var relayedClientCapabilities = mcp.ClientCapabilities{
 
 // BifrostContextKeyMCPToolListing values.
 const (
-	listModelTools = "model"
-	listAllTools   = "all"
+	listModelTools   = "model"
+	listAllTools     = "all"
+	listGatewayTools = "gateway"
 )
 
 // WithModelToolsOnly hides app-only tools from listings on ctx. Code mode uses it, since a model writes its scripts.
@@ -802,6 +813,22 @@ func WithModelToolsOnly(ctx context.Context) context.Context {
 // WithAllTools lists app-only tools on ctx too. Only for the gateway's sync; calls still follow AppToolsAllowed.
 func WithAllTools(ctx context.Context) context.Context {
 	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listAllTools)
+}
+
+// WithGatewayTools is WithAllTools plus every tool either /mcp or a client's /mcp/<slug> may serve, for
+// the gateway's install. Each request still sees only what CodeModeFor gives it.
+func WithGatewayTools(ctx context.Context) context.Context {
+	return context.WithValue(ctx, schemas.BifrostContextKeyMCPToolListing, listGatewayTools)
+}
+
+// codeModeListing reports whether a listing on ctx shows the client's own tools directly, and whether
+// the client needs the code-mode tools listed.
+func codeModeListing(ctx context.Context, client *schemas.MCPClientConfig) (direct, codeMode bool) {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listGatewayTools {
+		return client.ServesOwnToolsGlobalOrSlug(), client.UsesCodeModeGlobalOrSlug()
+	}
+	codeMode = client.CodeModeFor(ctx)
+	return !codeMode, codeMode
 }
 
 // AppToolsAllowed reports whether the request may see and call app-only tools: a /mcp/<slug> request for
@@ -900,7 +927,7 @@ func CallerDeclaresApps(ctx context.Context) bool {
 
 // listsAppTools reports whether a tool listing on ctx includes app-only tools.
 func listsAppTools(ctx context.Context) bool {
-	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listAllTools {
+	if listing, _ := ctx.Value(schemas.BifrostContextKeyMCPToolListing).(string); listing == listAllTools || listing == listGatewayTools {
 		return true
 	}
 	return AppToolsAllowed(ctx)

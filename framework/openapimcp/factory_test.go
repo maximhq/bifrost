@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -53,6 +54,35 @@ func TestBuildServer_ToolsAndInstructions(t *testing.T) {
 	require.ErrorContains(t, err, "no tools")
 }
 
+// oneClientAccount serves one MCP client's configuration to the core manager, the way a gateway's
+// account serves its configured clients. It answers nothing else, so only its MCP methods may be
+// called.
+type oneClientAccount struct {
+	schemas.Account
+	client *schemas.MCPClientConfig
+}
+
+// GetConfiguredMCPClients lists the one client's ID.
+func (a oneClientAccount) GetConfiguredMCPClients() ([]string, error) {
+	return []string{a.client.ID}, nil
+}
+
+// GetConfigForMCPClient returns the client when the ID is its own.
+func (a oneClientAccount) GetConfigForMCPClient(id string) (*schemas.MCPClientConfig, error) {
+	if id != a.client.ID {
+		return nil, errors.New("MCP client is not configured")
+	}
+	return a.client, nil
+}
+
+// GetConfigForMCPClientByName returns the client when the name is its own.
+func (a oneClientAccount) GetConfigForMCPClientByName(name string) (*schemas.MCPClientConfig, error) {
+	if name != a.client.Name {
+		return nil, errors.New("MCP client is not configured")
+	}
+	return a.client, nil
+}
+
 func TestFactory_EndToEndThroughCoreManager(t *testing.T) {
 	var got struct {
 		path, query, auth, static string
@@ -65,7 +95,6 @@ func TestFactory_EndToEndThroughCoreManager(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 
-	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: Factory()}, nil, nil, nil)
 	config := &schemas.MCPClientConfig{
 		ID:             "petstore-id",
 		Name:           "petstore",
@@ -79,7 +108,8 @@ func TestFactory_EndToEndThroughCoreManager(t *testing.T) {
 			SecurityCredentials: map[string]schemas.MCPOpenAPICredential{"ApiKeyAuth": {Value: schemas.NewSecretVar("k-123")}},
 		},
 	}
-	require.NoError(t, manager.AddClient(context.Background(), config))
+	manager := coremcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: Factory()}, oneClientAccount{client: config}, nil, nil, nil)
+	require.NoError(t, manager.AddClient(context.Background(), config.ID))
 	t.Cleanup(func() { _ = manager.RemoveClient(config.ID) })
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
@@ -123,6 +153,32 @@ func TestFactory_SpecURLAndFile(t *testing.T) {
 	assert.NotNil(t, srv)
 }
 
+// TestFactory_SpecFetchTimeoutScalesWithLimit: the connect-time spec_url fetch
+// gets the same size-scaled deadline as preview, on a copy of core's client, so
+// the client the upstream calls use keeps its own (zero) timeout.
+func TestFactory_SpecFetchTimeoutScalesWithLimit(t *testing.T) {
+	specServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(fixture(t, "petstore-3.1.json"))
+	}))
+	t.Cleanup(specServer.Close)
+	var deadline time.Time
+	var hasDeadline bool
+	base := specServer.Client()
+	inner := base.Transport
+	base.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		deadline, hasDeadline = r.Context().Deadline()
+		return inner.RoundTrip(r)
+	})
+	limit := 256 << 20
+	start := time.Now()
+	_, err := Factory(WithMaxSpecBytes(func() int { return limit }))(context.Background(), &schemas.MCPClientConfig{Name: "u", OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str(specServer.URL + "/openapi.json")}}, schemas.InProcessServerDeps{HTTPClient: base})
+	require.NoError(t, err)
+	require.True(t, hasDeadline)
+	assert.Greater(t, deadline.Sub(start), SpecFetchTimeout(limit)-time.Second, "the fetch must get the scaled deadline, not the 15s default")
+	assert.LessOrEqual(t, deadline.Sub(start), SpecFetchTimeout(limit)+time.Second)
+	assert.Zero(t, base.Timeout, "core's client must not be mutated")
+}
+
 func TestFactory_ErrorClassification(t *testing.T) {
 	factory := Factory()
 	deps := schemas.InProcessServerDeps{}
@@ -159,6 +215,29 @@ func TestFactory_ErrorClassification(t *testing.T) {
 	_, err = factory(context.Background(), &schemas.MCPClientConfig{Name: "x", OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str(huge.URL)}}, schemas.InProcessServerDeps{HTTPClient: huge.Client()})
 	require.ErrorIs(t, err, schemas.ErrMCPOpenAPIConfigInvalid)
 	require.ErrorIs(t, err, ErrSpecTooLarge)
+}
+
+// TestFactory_MaxSpecBytes: the configured limit is read on every connect, and
+// a spec above it fails permanently.
+func TestFactory_MaxSpecBytes(t *testing.T) {
+	spec := `{"openapi":"3.0.0","info":{"title":"t","version":"1"},"servers":[{"url":"https://api.example"}],
+"paths":{"/a":{"get":{"operationId":"getA","responses":{"200":{"description":"ok"}}}}}}`
+	limit := len(spec) - 1
+	factory := Factory(WithMaxSpecBytes(func() int { return limit }))
+	cfg := &schemas.MCPClientConfig{Name: "sized", OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}}
+	deps := schemas.InProcessServerDeps{HTTPClient: &http.Client{}}
+
+	_, err := factory(context.Background(), cfg, deps)
+	require.ErrorIs(t, err, schemas.ErrMCPOpenAPIConfigInvalid)
+	require.ErrorIs(t, err, ErrSpecTooLarge)
+
+	limit = len(spec)
+	_, err = factory(context.Background(), cfg, deps)
+	require.NoError(t, err)
+
+	limit = 0 // unset: MaxSpecBytes
+	_, err = factory(context.Background(), cfg, deps)
+	require.NoError(t, err)
 }
 
 // TestFactory_SpecURLConfigErrorsArePermanent: a spec_url that is not an
@@ -221,7 +300,7 @@ func TestFactory_RedirectedSpecURLResolvesServersAgainstTheDocument(t *testing.T
 	}))
 	t.Cleanup(ts.Close)
 
-	data, finalURL, err := LoadURL(context.Background(), ts.Client(), ts.URL+"/openapi.json")
+	data, finalURL, err := LoadURL(context.Background(), ts.Client(), ts.URL+"/openapi.json", 0)
 	require.NoError(t, err)
 	assert.NotEmpty(t, data)
 	assert.Equal(t, ts.URL+"/v2/openapi.json", finalURL)

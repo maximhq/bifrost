@@ -485,6 +485,11 @@ type OpenAIMessage struct {
 	Role    schemas.ChatMessageRole     `json:"role,omitempty"`
 	Content *schemas.ChatMessageContent `json:"content,omitempty"`
 
+	// CacheControl is a breakpoint set on the message object itself, the shape
+	// OpenAI-compatible SDKs send. Read on ingress only; outgoing messages carry
+	// their markers on content blocks.
+	CacheControl *schemas.CacheControl `json:"cache_control,omitempty"`
+
 	// Embedded pointer structs - when non-nil, their exported fields are flattened into the top-level JSON object
 	// IMPORTANT: Only one of the following can be non-nil at a time, otherwise the JSON marshalling will override the common fields
 	*schemas.ChatToolMessage
@@ -593,8 +598,13 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Strip CacheControl and FileType from content blocks if needed
 			if msg.Content != nil && msg.Content.ContentBlocks != nil {
 				contentCopy := *msg.Content
-				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, len(msg.Content.ContentBlocks))
-				for j, block := range msg.Content.ContentBlocks {
+				contentCopy.ContentBlocks = make([]schemas.ChatContentBlock, 0, len(msg.Content.ContentBlocks))
+				dropEmptyTextFiles := chatEmptyTextFilesToDrop(msg.Content.ContentBlocks)
+				for _, block := range msg.Content.ContentBlocks {
+					if dropEmptyTextFiles && isEmptyChatTextFile(block.File) {
+						continue
+					}
+					block = openAIChatFileContentBlock(block)
 					stripBlockCacheControl := block.CacheControl != nil && !keepCacheControl
 					needsBlockCopy := stripBlockCacheControl || block.Citations != nil || (block.File != nil && (block.File.FileURL != nil || fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType)))
 					if needsBlockCopy {
@@ -618,9 +628,9 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 							fileCopy.FileType = nil
 							blockCopy.File = &fileCopy
 						}
-						contentCopy.ContentBlocks[j] = blockCopy
+						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, blockCopy)
 					} else {
-						contentCopy.ContentBlocks[j] = block
+						contentCopy.ContentBlocks = append(contentCopy.ContentBlocks, block)
 					}
 				}
 				processedMessages[i].Content = &contentCopy
@@ -924,11 +934,21 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				contentCopy := *msg.Content
 				contentCopy.ContentBlocks = make([]schemas.ResponsesMessageContentBlock, 0, len(msg.Content.ContentBlocks))
 				hasContentModification := false
+				dropEmptyTextFiles := responsesEmptyTextFilesToDrop(msg.Content.ContentBlocks)
 				for _, block := range msg.Content.ContentBlocks {
 					// Skip rendered_content blocks entirely - OpenAI doesn't support them
 					if block.Type == schemas.ResponsesOutputMessageContentTypeRenderedContent {
 						hasContentModification = true
 						continue
+					}
+					// An empty text document has nothing to send, and its empty data URL is rejected.
+					if dropEmptyTextFiles && isEmptyResponsesTextFile(&block) {
+						hasContentModification = true
+						continue
+					}
+					if rewritten, changed := openAIResponsesFileContentBlock(block); changed {
+						block = rewritten
+						hasContentModification = true
 					}
 
 					needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) || (block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0)
@@ -1023,6 +1043,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				if msg.ResponsesToolMessage.Output != nil {
 					outputBlocks, hadToolReferences = withoutToolReferenceBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
 				}
+				// Custom documents become text before the flatten check below.
+				outputBlocks, rewroteFileContent := rewriteResponsesFileContentBlocks(outputBlocks)
 				if hadToolReferences && len(outputBlocks) == 0 {
 					empty := ""
 					outputCopy := *msg.ResponsesToolMessage.Output
@@ -1039,9 +1061,9 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 					toolMsgModified = true
 				} else if outputBlocks != nil {
 					// Strip CacheControl and FileType from tool message output blocks if needed
-					hasToolModification := hadToolReferences
+					hasToolModification := hadToolReferences || rewroteFileContent
 					for _, block := range outputBlocks {
-						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) {
+						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || responsesBlockHasFileContent(&block) || (block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType)) {
 							hasToolModification = true
 							break
 						}
@@ -1266,6 +1288,13 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 			if block.File != nil && fileNeedsWireRewrite(block.File.FileData, block.File.Filename, block.File.FileType) {
 				return true
 			}
+			if chatBlockHasFileContent(&block) {
+				return true
+			}
+		}
+		// An empty text document needs no wire rewrite of its own, but is dropped beside other content.
+		if chatEmptyTextFilesToDrop(msg.Content.ContentBlocks) {
+			return true
 		}
 	}
 	if msg.OpenAIChatAssistantMessage != nil {
@@ -1306,6 +1335,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
 				return true
 			}
+			if responsesBlockHasFileContent(&block) {
+				return true
+			}
 			if block.ResponsesOutputMessageContentText != nil && len(block.ResponsesOutputMessageContentText.Annotations) > 0 {
 				return true
 			}
@@ -1313,6 +1345,10 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 			if block.Type == schemas.ResponsesOutputMessageContentTypeRenderedContent {
 				return true
 			}
+		}
+		// An empty text document needs no wire rewrite of its own, but is dropped beside other content.
+		if responsesEmptyTextFilesToDrop(msg.Content.ContentBlocks) {
+			return true
 		}
 	}
 	if msg.ResponsesToolMessage != nil {
@@ -1349,6 +1385,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 					return true
 				}
 				if block.ResponsesInputMessageContentBlockFile != nil && fileNeedsWireRewrite(block.ResponsesInputMessageContentBlockFile.FileData, block.ResponsesInputMessageContentBlockFile.Filename, block.ResponsesInputMessageContentBlockFile.FileType) {
+					return true
+				}
+				if responsesBlockHasFileContent(&block) {
 					return true
 				}
 			}

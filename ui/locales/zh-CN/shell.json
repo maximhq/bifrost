@@ -14,13 +14,21 @@
 		"logsSettings": "日志设置",
 		"models": "模型",
 		"modelCatalog": "模型目录",
+		"datasheet": "数据表编辑器",
 		"modelProviders": "模型提供商",
 		"budgetsLimits": "预算与限额",
 		"routingRules": "路由规则",
 		"complexityRouter": "复杂度路由器",
+		"routers": "路由器",
 		"circuitBreaker": "熔断器",
 		"pricingOverrides": "定价覆盖",
 		"modelSettings": "模型设置",
+		"finops": "FinOps",
+		"finopsOverview": "概览",
+		"finopsConnections": "连接",
+		"finopsExplorer": "成本浏览器",
+		"finopsForecast": "预测",
+		"finopsAnomalies": "异常",
 		"mcpGateway": "MCP 服务器",
 		"mcpCatalog": "MCP 目录",
 		"mcpLibrary": "MCP 库",
@@ -65,6 +73,7 @@
 		"caching": "缓存",
 		"security": "安全",
 		"warp": "Warp",
+		"gateways": "网关",
 		"proxy": "代理",
 		"apiKeys": "API 密钥",
 		"performanceTuning": "性能调优",
@@ -96,6 +105,7 @@
 		"logsSettings": "日志配置",
 		"models": "配置模型",
 		"modelCatalog": "提供商、密钥与用量总览",
+		"datasheet": "编辑模型限制、能力和价格",
 		"modelProviders": "配置模型",
 		"budgetsLimits": "预算与速率限制",
 		"routingRules": "智能路由规则",
@@ -103,6 +113,7 @@
 		"circuitBreaker": "主端点失败时自动回退",
 		"pricingOverrides": "作用域定价覆盖",
 		"modelSettings": "模型与路由配置",
+		"finops": "所有提供商账户的 AI 支出",
 		"mcpGateway": "MCP 配置",
 		"mcpCatalog": "MCP 工具目录",
 		"mcpLibrary": "安装精选 MCP 服务器",
@@ -147,6 +158,7 @@
 		"caching": "缓存配置",
 		"security": "安全设置",
 		"warp": "Warp 代理配置",
+		"gateways": "编码客户端登录",
 		"proxy": "代理配置",
 		"apiKeys": "API 密钥管理",
 		"performanceTuning": "性能调优设置",
@@ -351,6 +363,12 @@
 		"descriptionStuckEnterprise": "更新仍在进行中。请稍后一分钟重新加载以再次检查。如果仍无法完成，请联系 Bifrost 部署管理员。",
 		"waitingEnterprise": "等待更新完成…"
 	},
+	"assetLoadFailed": {
+		"bannerTitle": "部分控制台内容无法加载",
+		"bannerDescription": "请检查网络、代理或浏览器扩展，然后重新加载。",
+		"screenTitle": "此页面无法加载",
+		"screenDescription": "浏览器无法下载部分控制台文件，可能是代理、防火墙或浏览器扩展拦截了它们。请检查网络后重新加载。"
+	},
 	"onboarding": {
 		"expandSetupChecklist": "展开设置清单",
 		"setupChecklist": "设置清单",
@@ -421,6 +439,10 @@
 			"indexStatusUnavailable": "索引状态不可用",
 			"askAdminTurnOn": "请联系管理员启用 Warp。",
 			"askAdminSetUp": "请联系管理员设置 Warp。",
+			"needsBifrostMCP": "Warp 需要 Bifrost MCP",
+			"needsBifrostMCPHint": "设置 Bifrost URL，以便 Warp 读取此部署的配置。",
+			"setUpBifrostMCP": "设置",
+			"askAdminBifrostMCP": "请联系管理员为 Warp 设置 Bifrost MCP。",
 			"sendsWhenFinished": "此回答完成后发送",
 			"remove": "移除"
 		},
@@ -444,7 +466,15 @@
 			"label": "问题",
 			"skip": "跳过",
 			"orType": "或在下方输入你自己的回答。",
-			"skipAnswer": "请自行判断，并说明你的假设。"
+			"skipAnswer": "请自行判断，并说明你的假设。",
+			"confirm": {
+				"subtitle": "确认后，Warp 将执行此更改。",
+				"destructiveSubtitle": "确认后，Warp 将执行此更改。请仔细检查。",
+				"cannotUndo": "此操作无法撤销。",
+				"noArguments": "无参数。",
+				"cancel": "取消",
+				"confirm": "确认"
+			}
 		},
 		"message": {
 			"whatThisCovers": "涵盖内容",
@@ -535,6 +565,11 @@
 			}
 		},
 		"errors": {
+			"no_bifrost_mcp": {
+				"summary": "此部署尚未设置 Warp。",
+				"cause": "Warp 需要 Bifrost MCP 才能读取此部署的配置，但它尚未加载。",
+				"suggestions": ["请联系管理员在客户端设置中设置 Bifrost URL。"]
+			},
 			"not_configured": {
 				"summary": "Warp 尚未配置。",
 				"cause": "未设置供应商和模型，或在设置中关闭了 Warp。",

@@ -230,7 +230,8 @@ The `path` label contains the matched route template (e.g. `/genai/v1beta/models
 | Metric | Type | Description |
 |--------|------|-------------|
 | `bifrost_upstream_requests_total` | Counter | Total requests to LLM providers |
-| `bifrost_upstream_latency_seconds` | Histogram | Provider request latency |
+| `bifrost_upstream_latency_seconds` | Histogram | Time one attempt spent in outbound HTTP calls and reading the provider's stream, retries included. Excludes provider queue wait. WebSocket and realtime turns are timed from the pre-hook to the post-hook |
+| `bifrost_provider_queue_wait_seconds` | Histogram | Time one attempt waited for a provider worker, including a blocking enqueue on a full queue |
 | `bifrost_overhead_latency_microseconds` | Histogram | Total Bifrost overhead per request in microseconds (Bifrost's own work, excluding upstream provider time) |
 | `bifrost_overhead_component_microseconds` | Histogram | That same overhead broken down by internal component via the `overhead_component` label. Opt-in, and populated only when tracing is active — see [Overhead Breakdown](#overhead-breakdown) |
 | `bifrost_success_requests_total` | Counter | Successful provider requests |
@@ -284,7 +285,7 @@ The set is closed, so this list is exhaustive. **Declared** values are stated by
 | `caller_cancelled` | The caller hung up before the response completed | Declared or Inferred (status 499) |
 | `policy_model_blocked` | The grant does not permit this model on this provider | Declared |
 | `policy_provider_blocked` | The grant does not permit this provider | Declared |
-| `policy_access_denied` | The credential did not resolve, or the grant refuses the caller | Declared |
+| `policy_access_denied` | No credential was presented where one is required, the credential did not resolve, or the grant refuses the caller | Declared |
 | `policy_budget_exceeded` | A configured budget is spent | Declared |
 | `policy_rate_limited` | A configured governance limit refused the request | Declared |
 | `policy_tool_blocked` | The grant does not permit this MCP tool | Declared |

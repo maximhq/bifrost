@@ -92,3 +92,51 @@ func TestValidateRegexEntries(t *testing.T) {
 		t.Fatal("duplicate regex entries are still duplicates")
 	}
 }
+
+// TestValidateRegexTemplateUnicodeGroupName pins that the validator reads a group name the way regexp.Expand does.
+func TestValidateRegexTemplateUnicodeGroupName(t *testing.T) {
+	if err := ValidateRegexTemplate("regex:(foo)", "id-$1é"); err == nil {
+		t.Error("ValidateRegexTemplate accepted $1é, which Expand reads as the undefined group 1é")
+	}
+	if err := ValidateRegexTemplate("regex:(foo)", "id-${1}é"); err != nil {
+		t.Errorf("ValidateRegexTemplate rejected ${1}é: %v", err)
+	}
+	if got, ok := ExpandRegexEntry("regex:(foo)", "foo", "id-${1}é"); !ok || got != "id-fooé" {
+		t.Errorf("ExpandRegexEntry = %q, %v, want id-fooé", got, ok)
+	}
+}
+
+// TestValidateRegexTemplateNumberRule pins that only digits without a leading zero name a group by number, as in regexp.Expand.
+func TestValidateRegexTemplateNumberRule(t *testing.T) {
+	for _, template := range []string{"id-$01", "id-${01}", "id-${+1}", "id-${1 }"} {
+		if err := ValidateRegexTemplate("regex:(foo)", template); err == nil {
+			t.Errorf("ValidateRegexTemplate accepted %q, which Expand reads as an undefined group name", template)
+		}
+	}
+	for _, template := range []string{"id-$0", "id-$1", "id-${1}"} {
+		if err := ValidateRegexTemplate("regex:(foo)", template); err != nil {
+			t.Errorf("ValidateRegexTemplate rejected %q: %v", template, err)
+		}
+	}
+	// A group may be named 01, and then $01 is that group.
+	if err := ValidateRegexTemplate("regex:(?P<01>foo)", "id-$01"); err != nil {
+		t.Errorf("ValidateRegexTemplate rejected a reference to the group named 01: %v", err)
+	}
+	if got, ok := ExpandRegexEntry("regex:(?P<01>foo)", "foo", "id-$01"); !ok || got != "id-foo" {
+		t.Errorf("ExpandRegexEntry = %q, %v, want id-foo", got, ok)
+	}
+	// Nine digits are still a number to Expand, so $123456789 does not read the group of that name.
+	if got, _ := ExpandRegexEntry("regex:(?P<123456789>foo)", "foo", "id-$123456789"); got != "id-" {
+		t.Errorf("ExpandRegexEntry = %q, want id- for a nine-digit reference", got)
+	}
+	if err := ValidateRegexTemplate("regex:(?P<123456789>foo)", "id-$123456789"); err == nil {
+		t.Error("ValidateRegexTemplate accepted a nine-digit reference, which Expand reads as a missing group number")
+	}
+	// Ten digits are a name.
+	if err := ValidateRegexTemplate("regex:(?P<1234567890>foo)", "id-$1234567890"); err != nil {
+		t.Errorf("ValidateRegexTemplate rejected a reference to the group named 1234567890: %v", err)
+	}
+	if got, ok := ExpandRegexEntry("regex:(?P<1234567890>foo)", "foo", "id-$1234567890"); !ok || got != "id-foo" {
+		t.Errorf("ExpandRegexEntry = %q, %v, want id-foo", got, ok)
+	}
+}

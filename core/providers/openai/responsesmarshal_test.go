@@ -1431,8 +1431,10 @@ func TestToOpenAIResponsesRequest_AnthropicIngressToolResultImageDetail(t *testi
 }
 
 // The #8849 request through Anthropic ingress to an OpenAI-shaped fallback (OpenRouter): the
-// user turn stays one message, the empty text document leaves as a parseable data URL instead
-// of file_data "", and each untitled document gets a filename here, at the egress that needs it.
+// user turn stays one message, the empty text document is dropped (OpenRouter rejects the empty
+// data URL with "Invalid base64 data URL: missing mime type or base64 content", and an empty
+// document carries nothing to lose), and the untitled document gets a filename here, at the
+// egress that needs it.
 func TestToOpenAIResponsesRequest_AnthropicIngressEmptyTextDocument(t *testing.T) {
 	var anthropicReq anthropic.AnthropicMessageRequest
 	if err := sonic.Unmarshal([]byte(`{"model":"claude-haiku-4-5","max_tokens":16,"messages":[{"role":"user","content":[
@@ -1454,14 +1456,15 @@ func TestToOpenAIResponsesRequest_AnthropicIngressEmptyTextDocument(t *testing.T
 		t.Fatalf("want the user turn as one input item, got %d: %s", len(input), data)
 	}
 	content := input[0].Get("content").Array()
-	if len(content) != 3 {
-		t.Fatalf("want 3 content blocks, got %d: %s", len(content), input[0].Raw)
+	if len(content) != 2 {
+		t.Fatalf("want the document and the text, the empty document dropped; got %d: %s", len(content), input[0].Raw)
 	}
-	for i, want := range []string{"data:text/plain;base64,U29tZSB0ZXh0Lg==", "data:text/plain;base64,"} {
-		if content[i].Get("type").String() != "input_file" || content[i].Get("file_data").String() != want ||
-			content[i].Get("filename").String() != "document.txt" {
-			t.Fatalf("document %d: want input_file %q named document.txt, got %s", i, want, content[i].Raw)
-		}
+	if content[0].Get("type").String() != "input_file" || content[0].Get("file_data").String() != "data:text/plain;base64,U29tZSB0ZXh0Lg==" ||
+		content[0].Get("filename").String() != "document.txt" {
+		t.Fatalf("want input_file named document.txt, got %s", content[0].Raw)
+	}
+	if content[1].Get("type").String() != "input_text" || content[1].Get("text").String() != "Say ok." {
+		t.Fatalf("want the text block, got %s", content[1].Raw)
 	}
 }
 
@@ -2441,6 +2444,217 @@ func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 				t.Errorf("unmarked block must not receive a breakpoint; raw=%s", raw)
 			}
 		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_CacheBreakpointTTLPreserved pins that a client's
+// prompt_cache_breakpoint.ttl ("12h", gpt-5.6+) reaches the wire; the field used to
+// be dropped at ingress, so every breakpoint fell back to the 30m default.
+func TestToOpenAIResponsesRequest_CacheBreakpointTTL(t *testing.T) {
+	inputJSON := `[{"role":"developer","content":[{"type":"input_text","text":"STABLE","prompt_cache_breakpoint":{"mode":"explicit","ttl":"12h"}}]},` +
+		`{"type":"function_call","call_id":"call_1","name":"echo","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"hello","prompt_cache_breakpoint":{"mode":"explicit","ttl":"30m"}}]},` +
+		`{"role":"user","content":[{"type":"input_text","text":"go"}]}]`
+	// Bedrock Mantle rejects ttl on every model (live 400 "Unknown parameter"), so
+	// it is dropped there and on Bedrock, which routes OpenAI models to Mantle.
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		keepTTL  bool
+	}{
+		{"openai", schemas.OpenAI, "gpt-5.6-sol", true},
+		{"azure", schemas.Azure, "gpt-6.1-luna", true},
+		{"bedrock mantle", schemas.BedrockMantle, "openai.gpt-5.6-terra", false},
+		{"bedrock", schemas.Bedrock, "openai.gpt-5.6-terra", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var input []schemas.ResponsesMessage
+			if err := sonic.Unmarshal([]byte(inputJSON), &input); err != nil {
+				t.Fatal(err)
+			}
+			req := &schemas.BifrostResponsesRequest{Provider: tc.provider, Model: tc.model, Input: input, Params: &schemas.ResponsesParameters{}}
+			_, raw := marshalResponses(t, req)
+			want12h, want30m := "12h", "30m"
+			if !tc.keepTTL {
+				want12h, want30m = "", ""
+			}
+			if got := gjson.Get(raw, "input.0.content.0.prompt_cache_breakpoint.mode").String(); got != "explicit" {
+				t.Errorf("developer block breakpoint dropped; raw=%s", raw)
+			}
+			if got := gjson.Get(raw, "input.0.content.0.prompt_cache_breakpoint.ttl").String(); got != want12h {
+				t.Errorf("developer block breakpoint ttl = %q, want %q; raw=%s", got, want12h, raw)
+			}
+			if got := gjson.Get(raw, "input.2.output.0.prompt_cache_breakpoint.ttl").String(); got != want30m {
+				t.Errorf("function_call_output block breakpoint ttl = %q, want %q; raw=%s", got, want30m, raw)
+			}
+			if input[0].Content.ContentBlocks[0].PromptCacheBreakpoint.TTL == nil {
+				t.Error("caller input must not be mutated")
+			}
+		})
+	}
+}
+
+// Bedrock Mantle accepts only "30m" for prompt_cache_options.ttl (live 400 "Invalid
+// value: '12h'"), so a request-level 12h is dropped there and on Bedrock; 30m passes.
+func TestToOpenAIResponsesRequest_RequestLevelCacheTTL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		ttl      string
+		wantTTL  string
+	}{
+		{"openai 12h", schemas.OpenAI, "gpt-5.6-sol", "12h", "12h"},
+		{"azure 12h", schemas.Azure, "gpt-6.1-luna", "12h", "12h"},
+		{"bedrock mantle 12h", schemas.BedrockMantle, "openai.gpt-5.6-terra", "12h", ""},
+		{"bedrock mantle 30m", schemas.BedrockMantle, "openai.gpt-5.6-terra", "30m", "30m"},
+		{"bedrock 12h", schemas.Bedrock, "openai.gpt-5.6-terra", "12h", ""},
+		{"bedrock 30m", schemas.Bedrock, "openai.gpt-5.6-terra", "30m", "30m"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit"), TTL: schemas.Ptr(tc.ttl)}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+				Params:   &schemas.ResponsesParameters{PromptCacheOptions: opts},
+			}
+			_, raw := marshalResponses(t, req)
+			if got := gjson.Get(raw, "prompt_cache_options.ttl").String(); got != tc.wantTTL {
+				t.Errorf("prompt_cache_options.ttl = %q, want %q; raw=%s", got, tc.wantTTL, raw)
+			}
+			if got := gjson.Get(raw, "prompt_cache_options.mode").String(); got != "explicit" {
+				t.Errorf("prompt_cache_options.mode dropped; raw=%s", raw)
+			}
+			if opts.TTL == nil || *opts.TTL != tc.ttl {
+				t.Error("caller PromptCacheOptions must not be mutated")
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_PreGPT56DropsPromptCacheOptions pins that every host
+// drops prompt_cache_options below gpt-5.6, the first generation documented to accept
+// it, and keeps it on any host serving gpt-5.6 or later.
+func TestToOpenAIResponsesRequest_PreGPT56DropsPromptCacheOptions(t *testing.T) {
+	for _, tc := range []struct {
+		provider schemas.ModelProvider
+		model    string
+		keep     bool
+	}{
+		{schemas.OpenAI, "gpt-5-mini", false},
+		{schemas.OpenAI, "gpt-5.5", false},
+		{schemas.Azure, "gpt-4o", false},
+		{schemas.OpenAI, "gpt-5.6-luna", true},
+		{schemas.Azure, "gpt-6-luna", true},
+		{schemas.OpenRouter, "openai/gpt-4o-mini", false},
+		{schemas.BedrockMantle, "openai.gpt-5.6-luna", true},
+		{schemas.BedrockMantle, "openai.gpt-oss-120b", false},
+		{schemas.Bedrock, "openai.gpt-oss-120b", false},
+		{schemas.Groq, "openai/gpt-oss-20b", false},
+		{schemas.XAI, "grok-4", false},
+	} {
+		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
+			opts := &schemas.PromptCacheOptions{Mode: new("implicit")}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: tc.provider,
+				Model:    tc.model,
+				Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+				Params:   &schemas.ResponsesParameters{PromptCacheOptions: opts},
+			}
+			_, raw := marshalResponses(t, req)
+			if got := gjson.Get(raw, "prompt_cache_options").Exists(); got != tc.keep {
+				t.Errorf("prompt_cache_options present = %v, want %v; raw=%s", got, tc.keep, raw)
+			}
+			if req.Params.PromptCacheOptions != opts {
+				t.Error("caller PromptCacheOptions must not be mutated")
+			}
+		})
+	}
+
+	// A custom provider reports its own name; the model gate applies all the same.
+	for _, base := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure, schemas.Groq} {
+		t.Run("custom "+string(base)+" base", func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, base)
+			for _, tc := range []struct {
+				model string
+				keep  bool
+			}{{"gpt-5-mini", false}, {"gpt-5.6-luna", true}} {
+				out := ToOpenAIResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+					Provider: "my-" + base,
+					Model:    tc.model,
+					Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+					Params:   &schemas.ResponsesParameters{PromptCacheOptions: &schemas.PromptCacheOptions{Mode: new("implicit")}},
+				})
+				if got := out.PromptCacheOptions != nil; got != tc.keep {
+					t.Errorf("%s: prompt_cache_options present = %v, want %v", tc.model, got, tc.keep)
+				}
+			}
+		})
+	}
+}
+
+// TestToOpenAIResponsesRequest_PromptCacheOptionsCatalogRow is the Responses counterpart
+// of TestToOpenAIChatRequest_PromptCacheOptionsCatalogRow.
+func TestToOpenAIResponsesRequest_PromptCacheOptionsCatalogRow(t *testing.T) {
+	installCapabilityRecord(t, "gpt-5.6-luna", &schemas.ModelCapabilities{
+		UnsupportedFields: map[string]bool{schemas.FieldPromptCacheOptions: true},
+	})
+	_, raw := marshalResponses(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6-luna",
+		Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+		Params:   &schemas.ResponsesParameters{PromptCacheOptions: &schemas.PromptCacheOptions{Mode: new("implicit")}},
+	})
+	if gjson.Get(raw, "prompt_cache_options").Exists() {
+		t.Errorf("catalog row ignored; raw=%s", raw)
+	}
+}
+
+// TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode pins that OpenRouter's
+// Responses endpoint, which accepts only mode "explicit" (live 400 "expected
+// \"explicit\""), never receives mode "implicit". Implicit is OpenAI's default when
+// mode is absent, so omitting it is lossless; ttl and explicit mode still pass through.
+func TestToOpenAIResponsesRequest_OpenRouterOmitsImplicitCacheMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts *schemas.PromptCacheOptions
+		want string
+	}{
+		{"implicit only", &schemas.PromptCacheOptions{Mode: new("implicit")}, ""},
+		{"implicit with ttl", &schemas.PromptCacheOptions{Mode: new("implicit"), TTL: new("30m")}, `{"ttl":"30m"}`},
+		{"explicit", &schemas.PromptCacheOptions{Mode: new("explicit")}, `{"mode":"explicit"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenRouter,
+				Model:    "openai/gpt-5.6",
+				Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+				Params:   &schemas.ResponsesParameters{PromptCacheOptions: tc.opts},
+			}
+			_, raw := marshalResponses(t, req)
+			if got := gjson.Get(raw, "prompt_cache_options").Raw; got != tc.want {
+				t.Errorf("prompt_cache_options = %s, want %s; raw=%s", got, tc.want, raw)
+			}
+			if req.Params.PromptCacheOptions != tc.opts || tc.opts.Mode == nil {
+				t.Error("caller PromptCacheOptions must not be mutated")
+			}
+		})
+	}
+
+	// OpenAI itself keeps the explicit default it was sent.
+	_, raw := marshalResponses(t, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.6-luna",
+		Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+		Params:   &schemas.ResponsesParameters{PromptCacheOptions: &schemas.PromptCacheOptions{Mode: new("implicit")}},
+	})
+	if got := gjson.Get(raw, "prompt_cache_options.mode").String(); got != "implicit" {
+		t.Errorf("openai: mode = %q, want implicit; raw=%s", got, raw)
 	}
 }
 

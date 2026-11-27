@@ -300,8 +300,14 @@ test("proxy teardown is skipped in the unauthenticated pass, which stored nothin
   assert.strictEqual(ctx.state.skipped, true, "expected skipRequest()");
 });
 
+test("proxy teardown is skipped when no snapshot was taken, since the folder made no writes", () => {
+  const ctx = run(disableProxyPrerequest, { variables: { admin_auth_header: "Bearer x" } });
+  assert.strictEqual(ctx.state.skipped, true, "expected skipRequest() without proxy_original_config");
+});
+
 test("proxy teardown runs in the authenticated pass and disables the proxy for every surface", () => {
-  for (const variables of [{ admin_auth_header: "Bearer x" }, { setup_token: "t" }]) {
+  const proxy_original_config = JSON.stringify({ enabled: false });
+  for (const variables of [{ admin_auth_header: "Bearer x", proxy_original_config }, { setup_token: "t", proxy_original_config }]) {
     const ctx = run(disableProxyPrerequest, { variables });
     assert.strictEqual(ctx.state.skipped, false, `unexpected skipRequest() for ${JSON.stringify(variables)}`);
   }
@@ -848,7 +854,7 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
       }
     }
   }
-  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"]]) {
+  for (const [provider, type] of [["azure", "AzureAliasCfg"], ["vertex", "VertexAliasCfg"], ["bedrock", "BedrockAliasCfg"], ["baseten", "BasetenAliasCfg"]]) {
     const fixture = redactionFixtures.find((f) => f.provider === provider);
     for (const field of secretFields(type)) assert.strictEqual(fixture.key.aliases.probe[field], redactionRef, `${type}.${field}`);
   }
@@ -1150,6 +1156,162 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
     variables: { replaceIn: (v) => v.split("{{run_id}}").join("run7") },
   };
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
+});
+
+// Execute the collection's own folder scripts, not a copied implementation.
+const registrationFolder = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8")).item.find(
+  (item) => item.name === "378. Management-created provider prefixes route immediately (provider-prefix-registration)",
+);
+assert.ok(registrationFolder, "provider-prefix-registration folder is missing");
+function registrationSandbox({ failStep = -1, setupFailure = "http", fixtureEnabled = true, caseIndex = 0, failCleanupStep = -1, lingeringProvider = false } = {}) {
+  const values = new Map([
+    ["baseUrl", "http://gateway-fixture"], ["providerErrorFixture", fixtureEnabled ? "1" : "0"],
+    ["providerErrorFixtureUrl", "http://upstream-fixture"], ["setupToken", "fixture-token"],
+    ["admin_auth_header", "Bearer fixture-admin"],
+  ]);
+  const state = { calls: [], failures: [], headers: new Map(), skipped: false };
+  let step = 0;
+  let cleanupStep = 0;
+  const pm = {
+    info: { requestName: registrationFolder.item[caseIndex].name },
+    variables: { get: (key) => values.get(key), set: (key, value) => values.set(key, value), unset: (key) => values.delete(key) },
+    execution: { skipRequest: () => { state.skipped = true; } },
+    request: { headers: { upsert: (header) => state.headers.set(header.key, header.value) } },
+    expect: (actual, message) => ({ to: { eql: (expected) => assert.strictEqual(actual, expected, message) } }),
+    test: (name, fn) => { try { fn(); } catch (error) { state.failures.push({ name, error }); } },
+    sendRequest: (request, callback) => {
+      state.calls.push(request);
+      if (request.method === "GET") {
+        // A provider lookup after cleanup: 404 once removed, 200 if DELETE silently left it in place.
+        callback(null, { code: lingeringProvider ? 200 : 404, text: () => "{}", json: () => ({}) });
+        return;
+      }
+      const fail = request.method !== "DELETE" && step++ === failStep;
+      const networkError = fail && setupFailure === "network";
+      const badJSON = fail && setupFailure === "json";
+      const badCredential = fail && setupFailure === "credential";
+      const cleanupFailure = request.method === "DELETE" && cleanupStep++ === failCleanupStep;
+      const body = badJSON ? SPA_FALLBACK : JSON.stringify({ virtual_key: { id: "fixture-vk", value: badCredential ? undefined : "fixture-key" } });
+      callback(networkError ? new Error("connection refused") : null, networkError ? null : {
+        code: (fail && !badJSON && !badCredential) || cleanupFailure ? 500 : 200, text: () => body, json: () => JSON.parse(body),
+      });
+    },
+    response: {
+      code: registrationFolder.item[caseIndex].name.includes("[EXPECT-400]") ? 400 : 503,
+      text: () => JSON.stringify(pm.response.json()),
+      json: () => ({ error: { message: "service unavailable", type: "no_key_supports_model" }, extra_fields: { provider: values.get("registrationTarget") } }),
+      headers: { get: () => null },
+    },
+  };
+  const run = (listen) => new Function("pm", listenScript(registrationFolder, listen))(pm);
+  return { pm, state, values, run };
+}
+
+test("provider-prefix-registration: only fixture-enabled runs create providers", () => {
+  const ctx = registrationSandbox({ fixtureEnabled: false });
+  ctx.run("prerequest");
+  assert.strictEqual(ctx.state.skipped, true);
+  assert.deepStrictEqual(ctx.state.calls, []);
+});
+
+test("provider-prefix-registration: every case creates a fresh target without discovery or inference warm-up", () => {
+  for (let caseIndex = 0; caseIndex < registrationFolder.item.length; caseIndex++) {
+    const ctx = registrationSandbox({ caseIndex });
+    ctx.run("prerequest");
+    assert.deepStrictEqual(ctx.state.failures, []);
+    assert.deepStrictEqual(ctx.state.calls.map((call) => call.method), ["POST", "POST", "POST"]);
+    const competitor = JSON.parse(ctx.state.calls[0].body.raw);
+    const target = JSON.parse(ctx.state.calls[1].body.raw);
+    assert.notStrictEqual(competitor.provider, target.provider);
+    for (const body of [competitor, target]) {
+      assert.strictEqual(body.network_config.base_url, "http://upstream-fixture");
+      assert.ok(!body.custom_provider_config.allowed_requests.list_models, "discovery must not warm the target");
+    }
+    const keyed = registrationFolder.item[caseIndex].name.includes("[EXPECT-400]");
+    assert.strictEqual(target.custom_provider_config.is_key_less, !keyed);
+    const vk = JSON.parse(ctx.state.calls[2].body.raw);
+    assert.strictEqual(vk.provider_configs[0].provider, target.provider);
+    assert.strictEqual(vk.provider_configs[1].provider, competitor.provider);
+    assert.strictEqual(vk.provider_configs[1].weight, 1);
+    assert.strictEqual(ctx.state.headers.get("x-bf-vk"), "fixture-key");
+    ctx.run("test");
+    assert.deepStrictEqual(ctx.state.failures, []);
+    const deletes = ctx.state.calls.filter((call) => call.method === "DELETE");
+    assert.strictEqual(deletes.length, 3);
+    assert.ok(deletes[0].url.includes("/virtual-keys/"), "remove references before providers");
+    for (const call of ctx.state.calls) {
+      assert.strictEqual(call.header["X-Bifrost-Setup-Token"], "fixture-token");
+      assert.strictEqual(call.header.Authorization, "Bearer fixture-admin");
+    }
+  }
+});
+
+test("provider-prefix-registration: failed setup stops and cleans only successfully created resources", () => {
+  for (const setupFailure of ["http", "network"]) {
+    for (let failStep = 0; failStep < 3; failStep++) {
+      const ctx = registrationSandbox({ failStep, setupFailure });
+      ctx.run("prerequest");
+      assert.strictEqual(ctx.state.failures.length, 1);
+      assert.strictEqual(ctx.state.calls.length, failStep + 1);
+      assert.ok(!ctx.state.headers.has("x-bf-vk"));
+      ctx.run("test");
+      const owned = JSON.parse(ctx.values.get("registrationProviders"));
+      const deletes = ctx.state.calls.filter((call) => call.method === "DELETE");
+      assert.strictEqual(deletes.length, owned.length);
+      for (const call of deletes) assert.ok(owned.some((name) => call.url.endsWith(encodeURIComponent(name))));
+    }
+  }
+  const ctx = registrationSandbox({ failStep: 2, setupFailure: "json" });
+  ctx.run("prerequest");
+  assert.strictEqual(ctx.state.failures.length, 1, "non-JSON VK responses must fail a named assertion, not throw");
+  ctx.run("test");
+  assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 2);
+  const invalidCredential = registrationSandbox({ failStep: 2, setupFailure: "credential" });
+  invalidCredential.run("prerequest");
+  assert.strictEqual(invalidCredential.state.failures.length, 1);
+  assert.ok(!invalidCredential.state.headers.has("x-bf-vk"));
+  invalidCredential.run("test");
+  assert.strictEqual(invalidCredential.state.calls.filter((call) => call.method === "DELETE").length, 3, "a returned VK id still belongs to this case");
+});
+
+test("provider-prefix-registration: failed cleanup is reported and remaining resources are still removed", () => {
+  const ctx = registrationSandbox({ failCleanupStep: 0 });
+  ctx.run("prerequest");
+  ctx.run("test");
+  assert.strictEqual(ctx.state.failures.length, 1);
+  assert.ok(ctx.state.failures[0].name.includes("cleanup"));
+  assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 3);
+});
+
+test("provider-prefix-registration: cleanup confirms each provider is gone, not only that DELETE answered 200", () => {
+  const ctx = registrationSandbox();
+  ctx.run("prerequest");
+  ctx.run("test");
+  assert.deepStrictEqual(ctx.state.failures, []);
+  const lookups = ctx.state.calls.filter((call) => call.method === "GET");
+  assert.strictEqual(lookups.length, 2, "each created provider is looked up after its DELETE");
+  for (const call of lookups) assert.ok(call.url.includes("/api/providers/"));
+  const lingering = registrationSandbox({ lingeringProvider: true });
+  lingering.run("prerequest");
+  lingering.run("test");
+  assert.strictEqual(lingering.state.failures.length, 2, "a provider still present after a 200 DELETE must fail cleanup");
+  for (const failure of lingering.state.failures) assert.ok(failure.name.includes("cleanup removed"));
+});
+
+test("provider-prefix-registration: wrong provider, unexpected status, and non-JSON replies fail and still clean up", () => {
+  for (const failure of ["provider", "status", "json"]) {
+    const ctx = registrationSandbox();
+    ctx.run("prerequest");
+    if (failure === "provider") ctx.pm.response.json = () => ({ error: { message: "service unavailable" }, extra_fields: { provider: "wrong-provider" } });
+    if (failure === "status") ctx.pm.response.code = 200;
+    if (failure === "json") {
+      ctx.pm.response.text = () => SPA_FALLBACK;
+      ctx.pm.response.json = () => { throw new Error("not JSON"); };
+    }
+    ctx.run("test");
+    assert.ok(ctx.state.failures.length > 0, `${failure} silently passed`);
+    assert.strictEqual(ctx.state.calls.filter((call) => call.method === "DELETE").length, 3);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

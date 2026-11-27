@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -83,15 +84,17 @@ func (p *GovernancePlugin) PostRelayHook(ctx *schemas.BifrostContext, resp *sche
 	if rateLimitIDs := limitIDsOf(rateLimits); len(rateLimitIDs) > 0 {
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRateLimitIDs, rateLimitIDs)
 	}
+	requestStartedAt, _ := ctx.Value(schemas.BifrostContextKeyRequestStartTime).(time.Time)
 	usageUpdate := &UsageUpdate{
-		Success:      true, // a reply was received; the error, if any, is how the stream ended
-		Cost:         cost,
-		RequestID:    bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID),
-		BillingNonce: bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce),
-		IsFinalChunk: true,
-		HasUsageData: cost > 0,
-		Budgets:      budgets,
-		RateLimits:   rateLimits,
+		RequestStartedAt: requestStartedAt,
+		Success:          true, // a reply was received; the error, if any, is how the stream ended
+		Cost:             cost,
+		RequestID:        bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID),
+		BillingNonce:     bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyBillingNonce),
+		IsFinalChunk:     true,
+		HasUsageData:     cost > 0,
+		Budgets:          budgets,
+		RateLimits:       rateLimits,
 	}
 	p.wg.Add(1)
 	go func() {

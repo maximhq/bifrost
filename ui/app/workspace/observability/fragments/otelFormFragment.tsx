@@ -44,6 +44,7 @@ interface StoredOtelProfile {
 	export_timeout?: number;
 	request_headers?: string[];
 	disable_content_logging?: boolean;
+	apply_trace_dimensions_to_child_spans?: boolean;
 	export_raw_payloads?: boolean;
 	group_traces_by_session?: boolean;
 	disable_root_span_content?: boolean;
@@ -116,6 +117,7 @@ const emptyProfile = (): ProfileForm => ({
 	export_timeout: 5,
 	request_headers: [],
 	disable_content_logging: false,
+	apply_trace_dimensions_to_child_spans: false,
 	export_raw_payloads: false,
 	group_traces_by_session: false,
 	disable_root_span_content: false,
@@ -141,6 +143,7 @@ const toProfileForm = (p?: StoredOtelProfile): ProfileForm => ({
 	export_timeout: p?.export_timeout ?? 5,
 	request_headers: p?.request_headers ?? [],
 	disable_content_logging: p?.disable_content_logging ?? false,
+	apply_trace_dimensions_to_child_spans: p?.apply_trace_dimensions_to_child_spans ?? false,
 	export_raw_payloads: p?.export_raw_payloads ?? false,
 	group_traces_by_session: p?.group_traces_by_session ?? false,
 	disable_root_span_content: p?.disable_root_span_content ?? false,
@@ -768,6 +771,26 @@ function OtelProfileSection({ form, control, index, hasOtelAccess, canRemove, op
 														onCheckedChange={field.onChange}
 														disabled={!hasOtelAccess}
 														data-testid={`otel-profile-${index}-disable-root-span-content-toggle`}
+													/>
+												</FormControl>
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name={`${base}.apply_trace_dimensions_to_child_spans`}
+										render={({ field }) => (
+											<FormItem className="flex flex-row items-center justify-between">
+												<div className="space-y-0.5">
+													<FormLabel className="text-base">{t("connectors.otel.applyTraceDimensionsToChildSpans")}</FormLabel>
+													<FormDescription>{t("connectors.otel.applyTraceDimensionsToChildSpansHelp")}</FormDescription>
+												</div>
+												<FormControl>
+													<Switch
+														checked={field.value}
+														onCheckedChange={field.onChange}
+														disabled={!hasOtelAccess}
+														data-testid={`otel-profile-${index}-apply-trace-dimensions-to-child-spans-toggle`}
 													/>
 												</FormControl>
 											</FormItem>

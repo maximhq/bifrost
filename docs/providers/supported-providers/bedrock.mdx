@@ -14,7 +14,7 @@ AWS Bedrock supports multiple model families (Claude, Nova, Mistral, Llama, Cohe
 - **Tool restructuring** - Function definitions converted to Bedrock's ToolConfig format
 - **Message conversion** - System message extraction, tool message grouping, image format adaptation (base64 only)
 - **AWS authentication** - Automatic SigV4 request signing with credential chain support
-- **Structured output** - `response_format` converted to specialized tool definitions
+- **Structured output** - `response_format` sent natively as Converse `outputConfig.textFormat` on supported models, otherwise as a synthetic tool
 - **Service tier & guardrails** - Support for Bedrock-specific performance and safety configurations
 
 ### Model Family Support
@@ -466,6 +466,52 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `aliases`                         | No       | Map model names to inference profile IDs or Bedrock model IDs (v1.5.0-prerelease2+)                                                          |
 | `aliases.*.inference_profile_arn` | No       | Per-deployment ARN prefix; overrides `bedrock_key_config.arn` (see [Inference Profiles](#inference-profiles--arn-configuration))              |
 | `models`                          | Yes      | Models this key can serve; use `["*"]` to allow all                                                                                          |
+| `bedrock_key_config.endpoints`    | No       | Per-service hosts to dial instead of the public regional endpoints (see [Private and Custom Endpoints](#private-and-custom-endpoints))       |
+
+### Private and Custom Endpoints
+
+By default Bifrost dials the public regional hosts (`bedrock-runtime.<region>.amazonaws.com` and so on). For AWS PrivateLink, air-gapped networks, or an internal proxy, point Bifrost at your own hosts in either of two ways:
+
+- **`network_config.base_url`** on the Bedrock provider sets the **bedrock-runtime** host for every key. All inference (Converse, InvokeModel, the OpenAI-compatible runtime surface, Nova Sonic realtime, and ApplyGuardrail passthrough) goes there.
+- **`bedrock_key_config.endpoints`** on a key sets hosts per service: `runtime`, `control_plane` (model listing, batch jobs), `mantle`, `agent_runtime` (rerank, InvokeAgent, Retrieve), and `s3` (batch files). Values accept the `env.` prefix.
+
+For bedrock-runtime, a key's `endpoints.runtime` wins over `network_config.base_url`, which wins over the public host. Other services never use `base_url`, because a single URL cannot serve them all. Configure those through `endpoints` if they must stay private too.
+
+Only the host (and port) of either value is used. Bifrost always connects over HTTPS and builds the path itself, so a scheme or path in the value is ignored. `region` is still required: it sets the SigV4 credential scope.
+
+<Warning>
+Private endpoints need `network_config.allow_private_network: true` on the Bedrock provider. Bifrost checks every address a Bedrock host resolves to before connecting, the same check the other providers apply. Without the flag it refuses private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, IPv6 unique-local), and the request fails with `connection to private IP <ip> is not allowed: set network_config.allow_private_network to true ...`.
+
+This applies whenever the host resolves to a private address, not only when you set an override: an interface VPC endpoint resolves to private IPs, and with **private DNS** enabled so does the default `bedrock-runtime.<region>.amazonaws.com` inside the VPC. Loopback is always allowed. Link-local and cloud metadata addresses (`169.254.0.0/16`, `fe80::/10`) are always refused, even with the flag. Connections to a proxy from `proxy_config` or `HTTPS_PROXY` are not checked; the proxy connects to Bedrock.
+</Warning>
+
+```json
+{
+  "providers": {
+    "bedrock": {
+      "network_config": {
+        "base_url": "https://bedrock-runtime.internal.example.com",
+        "allow_private_network": true
+      },
+      "keys": [
+        {
+          "name": "bedrock-private",
+          "models": ["*"],
+          "weight": 1.0,
+          "bedrock_key_config": {
+            "region": "us-east-1",
+            "endpoints": {
+              "control_plane": "env.AWS_ENDPOINT_URL_BEDROCK"
+            }
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Bifrost does not read the AWS SDK's `AWS_ENDPOINT_URL*` environment variables. Reference them explicitly with the `env.` prefix as above.
 
 ---
 
@@ -499,7 +545,7 @@ You can override these defaults per provider via the **Beta Headers** tab in pro
 | `max_completion_tokens` | → `inferenceConfig.maxTokens`                                                     | Required field in Bedrock  |
 | `temperature`, `top_p`  | Direct pass-through to `inferenceConfig`                                          |                            |
 | `stop`                  | → `inferenceConfig.stopSequences`                                                 | Array of strings           |
-| `response_format`       | → Structured output tool (see [Structured Output](#structured-output))            | Creates `bf_so_*` tool     |
+| `response_format`       | → `outputConfig.textFormat`, or a structured output tool (see [Structured Output](#structured-output)) | Native, or `bf_so_*` tool |
 | `tools`                 | Schema restructured (see [Tool Conversion](#tool-conversion))                     |                            |
 | `tool_choice`           | Type mapped (see [Tool Conversion](#tool-conversion))                             |                            |
 | `parallel_tool_calls`   | `false` → `additionalModelRequestFields.tool_choice.disable_parallel_tool_use`    | Anthropic models only      |
@@ -879,6 +925,30 @@ Note: `file_data` is raw base64-encoded content (no `data:` URI prefix, unlike `
 
 Formats currently supported by Bifrost's Bedrock document conversion path: `pdf`, `txt`, `md`, `html`, `csv`, `doc`, `docx`, `xls`, `xlsx`.
 
+### Custom Documents with Citations
+
+For custom-content documents, use `file_content` instead of `file_data` or `file_url`. On `/v1/responses`, a document content block looks like:
+
+```json
+{
+  "type": "input_file",
+  "filename": "pack",
+  "file_content": [
+    { "type": "text", "text": "The approved budget is $4.2M." },
+    { "type": "text", "text": "The audit committee met in March." }
+  ],
+  "citations": { "enabled": true }
+}
+```
+
+On Chat Completions, put `file_content` and `filename` inside a `type: "file"` block's `file` object; keep `citations` on the block. A string is also accepted as `file_content`. Array boundaries are preserved for chunk citations.
+
+`file_content` cannot be combined with `file_data` or `file_url` on Bedrock; such a block returns HTTP 400. When the same request reaches Anthropic directly, `file_content` takes precedence and the other sources are ignored. On OpenAI-compatible providers (for example after a fallback), a block whose only source is `file_content` is sent as a text block holding the document, and `file_content` is dropped beside any other source.
+
+Bifrost also accepts native Converse `document.source.content` and Anthropic `source.type: "content"` documents routed to Bedrock. The Converse conversion requires `citations.enabled: true`; missing or disabled citations and non-text content return HTTP 400 before dispatch.
+
+Unary and streaming Responses replies include generated text and document-location annotations. Native Converse and Anthropic replies render those annotations in their respective citation formats. Chat Completions returns the generated text, without document-location annotations.
+
 ### Standalone Cache Point Example (Bedrock-specific)
 
 ```json
@@ -896,7 +966,7 @@ This standalone `cachePoint` block is a Bifrost/Bedrock extension (not OpenAI-st
 ### Unsupported Block Notes
 
 - `input_audio` blocks are not supported by Bedrock Converse and return an error.
-- For chat content conversion, use `file.file_data` for document payloads. `file_url` and `file_id` are not the documented Bedrock chat-content path here.
+- For chat content conversion, use `file.file_data` for file bytes or `file.file_content` for custom documents with citations. `file_id` alone is not a Bedrock document source.
 
 ### Cache Control Locations
 
@@ -933,42 +1003,77 @@ Tool calls are converted between formats:
 
 ## Structured Output
 
-Structured output uses a special tool-based approach:
+A `json_schema` `response_format` (Chat Completions), `text.format` (Responses API) or `output_config.format` (`/anthropic/v1/messages`) is sent to Converse as native structured output whenever the model supports it:
 
 ```json
-// Request with structured output
+// Request
 {
   "response_format": {
     "type": "json_schema",
     "json_schema": {
-      "name": "response",
+      "name": "person",
       "schema": {
         "type": "object",
         "properties": {
           "name": {"type": "string"},
           "age": {"type": "number"}
-        }
+        },
+        "required": ["name", "age"]
       }
     }
   }
 }
 
+// Bedrock Converse request (internal)
+{
+  "outputConfig": {
+    "textFormat": {
+      "type": "json_schema",
+      "structure": {
+        "jsonSchema": {
+          "name": "person",
+          "schema": "{\"type\":\"object\",\"properties\":{...},\"required\":[\"name\",\"age\"],\"additionalProperties\":false}"
+        }
+      }
+    }
+  }
+}
+```
+
+Bedrock constrains decoding to the schema, the reply is a plain text block holding the JSON, and your own `tools` and `tool_choice` are left untouched.
+
+**Which models use native structured output.** The model's `supports_native_structured_output` entry in the Bifrost model catalog decides. Without an entry, Claude Haiku, Sonnet and Opus 4.5 and later and OpenAI GPT models (not `gpt-oss`) use it. Every other model keeps the synthetic tool described below. For models other than Claude, the schema must also have `"type": "object"` at the top level; any other schema, such as a top-level array, uses the synthetic tool, so your `tools` and `tool_choice` are handled as described under [Synthetic tool fallback](#synthetic-tool-fallback).
+
+**GPT models.** Bifrost also sends `additionalModelRequestFields.text.format.strict: true`. Without it, GPT on Bedrock treats the schema as a hint rather than a constraint.
+
+**Claude schema rules.** Claude requires every object in the schema to set `additionalProperties: false`, so Bifrost adds it to any object that leaves it unset. A schema that Claude's structured output cannot accept falls back to the synthetic tool instead of failing. That includes:
+- `minimum`, `maximum`, `multipleOf`, `maxItems`, `uniqueItems`, `minItems` above 1
+- `oneOf`, `not`, `patternProperties`
+- an object with `additionalProperties` set to `true` or a schema, or with no `properties`
+- `allOf` next to the same object's own `properties`, an `allOf` with several branches where one contains a `$ref`, and `if`, `then` or `else` on an object
+- a `$ref` that does not name a `$defs` or `definitions` entry directly (for example `#/properties/node`), and recursive `$ref`s
+- unsupported string formats
+- more than 10 optional or 16 union-typed properties, counted across the response schema and any tools you mark `strict`
+
+<Note>
+The first request with a new schema can take up to about 90 seconds while Bedrock compiles it. Later requests with the same schema reuse the compiled grammar for 24 hours.
+</Note>
+
+### Synthetic tool fallback
+
+Models without native structured output receive the schema as a `bf_so_*` tool, forced with `toolChoice` where the model allows it:
+
+```json
 // Bedrock conversion (internal)
 {
-  "tools": [{
-    "name": "bf_so_response",
-    "description": "Structured output tool",
-    "inputSchema": {
-      "type": "object",
-      "properties": {...}
-    }
-  }],
-  "toolChoice": {"type": "tool", "name": "bf_so_response"}
+  "toolConfig": {
+    "tools": [{"toolSpec": {"name": "bf_so_person", "inputSchema": {"json": {...}}}}],
+    "toolChoice": {"tool": {"name": "bf_so_person"}}
+  }
 }
-
-// Response extraction
-// Tool use input is extracted and returned as contentStr
 ```
+
+The tool call's input is returned as the message content, and the `tool_calls` finish reason is reported as `stop`.
 
 ## Response Conversion
 
@@ -985,7 +1090,7 @@ Structured output uses a special tool-based approach:
 
 ### Structured Output Response
 
-When structured output is detected:
+Native structured output comes back as an ordinary text block. On the synthetic tool fallback:
 
 - Tool call with name `bf_so_*` is treated as structured output
 - `input` object is extracted and returned as `contentStr`
@@ -2078,9 +2183,10 @@ type BifrostError struct {
 </Accordion>
 
 <Accordion title="Structured Output via Tool">
-  **Severity**: Low **Behavior**: `response_format` converted to special
-  `bf_so_*` tool **Impact**: Tool call count and structure changes internally
-  **Code**: `chat.go:structured output handling`
+  **Severity**: Low **Behavior**: on models without native structured output,
+  or with a schema Claude cannot enforce natively, `response_format` is
+  converted to a special `bf_so_*` tool **Impact**: Tool call count and
+  structure changes internally **Code**: `utils.go:structured output handling`
 </Accordion>
 
 <Accordion title="Deployment Region Prefix Handling">

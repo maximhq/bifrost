@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"cmp"
+	"context"
 	"fmt"
 	"slices"
 	"strconv"
@@ -58,7 +59,7 @@ func (h *ProviderHandler) listNewestModels(ctx *fasthttp.RequestCtx) {
 		limit = parsed
 	}
 
-	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.inMemoryStore)
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel()
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
@@ -76,27 +77,37 @@ func (h *ProviderHandler) listNewestModels(ctx *fasthttp.RequestCtx) {
 		}) {
 			continue
 		}
-		out = append(out, h.newestModelsForProvider(provider, query, limit)...)
+		newest, err := h.newestModelsForProvider(ctx, provider, query, limit)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get providers: %v", err))
+			return
+		}
+		out = append(out, newest...)
 	}
 	SendJSON(ctx, ListNewestModelsResponse{Models: out})
 }
 
 // newestModelsForProvider returns up to limit of one provider's non-deprecated
-// models, newest cached creation time first; ties keep catalog order.
-func (h *ProviderHandler) newestModelsForProvider(provider schemas.ModelProvider, query modelListQuery, limit int) []NewestModel {
+// models, newest cached creation time first; ties keep catalog order. It fails
+// when the provider's keys cannot be read for the key filter.
+func (h *ProviderHandler) newestModelsForProvider(ctx context.Context, provider schemas.ModelProvider, query modelListQuery, limit int) ([]NewestModel, error) {
 	var created map[string]int64
-	if h.inMemoryStore != nil {
-		created = h.inMemoryStore.ModelCatalog.GetModelCreatedTimes(provider, query.Unfiltered)
+	if h.config != nil {
+		created = h.config.ModelCatalog.GetModelCreatedTimes(provider, query.Unfiltered)
+	}
+	listed, err := h.listManagementModelsForProvider(ctx, provider, query)
+	if err != nil {
+		return nil, err
 	}
 	models := make([]NewestModel, 0)
-	for _, model := range h.listManagementModelsForProvider(provider, query) {
+	for _, model := range listed {
 		if h.isModelDeprecated(model.Name, provider) {
 			continue
 		}
 		models = append(models, NewestModel{Name: model.Name, Provider: string(provider), Created: created[model.Name]})
 	}
 	slices.SortStableFunc(models, func(a, b NewestModel) int { return cmp.Compare(b.Created, a.Created) })
-	return models[:min(len(models), limit)]
+	return models[:min(len(models), limit)], nil
 }
 
 // parseNewestModelsProviders splits the providers parameter, dropping blanks

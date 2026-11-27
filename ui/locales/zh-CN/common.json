@@ -77,7 +77,8 @@
 		"modelLimits": "模型限额",
 		"agent": "Agent",
 		"relay": "中继",
-		"relays": "中继"
+		"relays": "中继",
+		"modelRouters": "路由器"
 	},
 	"aboutField": "关于{{field}}",
 	"thisField": "此字段",
@@ -121,7 +122,8 @@
 		"searching": "正在搜索…",
 		"loadingMore": "正在加载更多…",
 		"useModel": "使用 <name>{{name}}</name>",
-		"grantSummaryBlocked": "{{allowed}} · 已阻止 {{blocked}}"
+		"grantSummaryBlocked": "{{allowed}} · 已阻止 {{blocked}}",
+		"templateUnknownGroup": "引用了模式中未定义的捕获组 {{group}}"
 	},
 	"providerSelect": {
 		"select": "选择供应商",
@@ -189,8 +191,7 @@
 		"toggle": "切换侧边栏"
 	},
 	"sheet": {
-		"collapse": "折叠",
-		"expand": "展开"
+		"resizeHandle": "调整面板大小"
 	},
 	"tabs": {
 		"showMore_one": "再显示 {{count}} 个标签页",
@@ -261,7 +262,8 @@
 	"budgetDisplay": {
 		"usageAria": "预算用量",
 		"override": "覆盖",
-		"baseTooltip": "基础 {{base}} + 覆盖 {{override}}"
+		"baseTooltip": "基础 {{base}} + 覆盖 {{override}}",
+		"sharedTag": "共享"
 	},
 	"rateLimit": {
 		"tokens": "token",
@@ -300,6 +302,11 @@
 	},
 	"configSyncAlert": {
 		"message": "此配置已从 <code0>config.json</code0> 同步。今后对 config.json 的任何更新都会覆盖在界面中所做的更改。如果你只是用 config.json 引导初始配置，可以忽略此提示。"
+	},
+	"configIssuesAlert": {
+		"title": "config.json 声明的部分内容未被应用",
+		"badge": "配置问题",
+		"hint": "声明的其余部分已应用。上面的每一项会在其引用的对象存在后自动消失，例如注册缺失的 MCP 客户端之后。"
 	},
 	"breadcrumb": {
 		"label": "面包屑导航",
@@ -344,6 +351,10 @@
 		"removeAria": "移除 {{label}}"
 	},
 	"validation": {
+		"modeIsRequired": "模式为必填项",
+		"valueMustBeAPositiveWholeNumber": "必须是正整数",
+		"mustBeAJsonObject": "必须是 JSON 对象",
+		"providerCannotBePatched": "provider 用于标识条目，不能修改",
 		"customProviderNameIsRequired": "自定义提供商名称为必填项",
 		"endpointIsRequired": "端点为必填项",
 		"clientIdClientSecretAndTenantIdAreAllRequired": "Entra ID 认证需要同时提供 Client ID、Client Secret 和 Tenant ID",
@@ -503,10 +514,14 @@
 		"maxNumber": "不得大于 {{maximum}}",
 		"maxChars": "不得超过 {{maximum}} 个字符",
 		"validUrl": "必须是有效的 URL",
+		"publicUrlNoUserinfoQueryOrFragment": "不得包含用户信息、查询参数或片段",
+		"openapiUrlMustBeHttpUrlOrRelativePath": "必须是 http(s) URL 或相对于应用目录的路径",
+		"openapiUrlMustStayInAppDir": "必须是相对于应用目录且不超出该目录的路径",
 		"validEmail": "必须是有效的邮箱",
 		"grpcHostPortFormat": "gRPC 地址必须采用 <host>:<port> 格式（例如 {{example}}）",
 		"invalidInput": "输入无效",
 		"vertexEndpointId": "请输入 Vertex 端点 ID，或粘贴受支持的端点 URL",
+		"basetenDeploymentUrl": "部署 URL 必须是不含凭据、查询参数或片段的绝对 https URL",
 		"mcp": {
 			"privateKeyRequired": "private_key_jwt 需要私钥",
 			"secretRequiredForMethod": "选择发送方式需要客户端密钥",
@@ -576,7 +591,8 @@
 		"baseUrlIsRequiredForThisProvider": "此提供商需要填写基础 URL",
 		"baseUrlMustStartWithHttpOrHttps": "基础 URL 必须以 http:// 或 https:// 开头",
 		"atLeastOneApiKeyIsRequired": "至少需要一个 API 密钥",
-		"apiKeyValueCannotBeEmpty": "API 密钥值不能为空"
+		"apiKeyValueCannotBeEmpty": "API 密钥值不能为空",
+		"deploymentPatternInvalid": "部署模式无效，或其模型 ID 使用了模式中未定义的捕获组"
 	},
 	"permissionDenied": {
 		"create": "你没有创建{{entity}}的权限。",

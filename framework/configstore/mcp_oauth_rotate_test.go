@@ -389,13 +389,14 @@ func TestRotateMCPOAuthConfig_IssuerOnlyChangeRotates(t *testing.T) {
 }
 
 // KeepBinding carries the stored binding into an edit that does not set it: the issuer stays while the
-// endpoints stay, and the dynamic-registration flag stays with its client_id.
+// endpoints stay, and the dynamic-registration and metadata-document flags stay with their client_id.
 func TestMCPOAuthConfigFields_KeepBinding(t *testing.T) {
 	stored := &tables.TableOauthConfig{
 		ClientID:     schemas.NewSecretVar("client"),
 		AuthorizeURL: "https://auth.example.com/authorize",
 		TokenURL:     "https://auth.example.com/token",
 		Issuer:       "https://auth.example.com", IssParameterSupported: true, DynamicallyRegistered: true,
+		ClientMetadataDocument: true,
 	}
 	t.Run("scope-only edit keeps everything", func(t *testing.T) {
 		fields := baseRotateFields("client", "secret")
@@ -404,11 +405,13 @@ func TestMCPOAuthConfigFields_KeepBinding(t *testing.T) {
 		assert.Equal(t, "https://auth.example.com", fields.Issuer)
 		assert.True(t, fields.IssParameterSupported)
 		assert.True(t, fields.DynamicallyRegistered)
+		assert.True(t, fields.ClientMetadataDocument)
 	})
 	t.Run("a new client_id drops the binding", func(t *testing.T) {
 		fields := baseRotateFields("entered-by-admin", "secret")
 		fields.KeepBinding(stored)
 		assert.False(t, fields.DynamicallyRegistered)
+		assert.False(t, fields.ClientMetadataDocument, "a hand-entered client_id is not Bifrost's document")
 		assert.Empty(t, fields.Issuer, "replacement credentials re-bind at the next sign-in")
 		assert.False(t, fields.IssParameterSupported)
 	})
@@ -419,6 +422,30 @@ func TestMCPOAuthConfigFields_KeepBinding(t *testing.T) {
 		assert.Empty(t, fields.Issuer)
 		assert.False(t, fields.IssParameterSupported)
 	})
+}
+
+// RotateMCPOAuthConfig writes the metadata-document flag with the client_id, and it reads back.
+func TestRotateMCPOAuthConfig_PersistsClientMetadataDocument(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+	cfg := seedRotateOauthConfig(t, s, "cfg-cimd-flag", "old-client", "")
+	fields := baseRotateFields("https://public.example.com/bifrost/client.json", "")
+	fields.ClientSecret = nil
+	fields.ClientMetadataDocument = true
+	rotated, err := s.RotateMCPOAuthConfig(ctx, cfg, fields)
+	require.NoError(t, err)
+	require.True(t, rotated)
+	stored, err := s.GetOauthConfigByID(ctx, cfg.ID)
+	require.NoError(t, err)
+	assert.True(t, stored.ClientMetadataDocument)
+
+	fields = baseRotateFields("entered-by-admin", "secret")
+	rotated, err = s.RotateMCPOAuthConfig(ctx, stored, fields)
+	require.NoError(t, err)
+	require.True(t, rotated)
+	stored, err = s.GetOauthConfigByID(ctx, cfg.ID)
+	require.NoError(t, err)
+	assert.False(t, stored.ClientMetadataDocument, "a new client_id that is not Bifrost's document clears the flag")
 }
 
 // A rebind applies only while the stored issuer is still the one it moved from: of two replicas

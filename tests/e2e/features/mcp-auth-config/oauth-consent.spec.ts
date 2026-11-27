@@ -41,3 +41,39 @@ test('OAuth consent shows where a metadata-document client is published and warn
   await expect(page.getByTestId('oauth-consent-redirect-host')).toHaveText('127.0.0.1')
   await expect(page.getByTestId('oauth-consent-localhost-warning')).toBeVisible()
 })
+
+// An expired SSO session is refreshed by the auth probe while the flow GET is in
+// flight, so the first flow read misses the signed-in user. The page must re-read
+// the flow instead of rendering a card with no way to continue.
+test('OAuth consent re-reads the flow when the auth probe reports a session the flow missed', async ({ page }) => {
+  let flowReads = 0
+  await page.route('**/api/**', async route => {
+    if (route.request().url().includes('/oauth2/consent/flows/sso-flow')) {
+      flowReads++
+      await route.fulfill({ json: {
+        client_name: 'Claude Desktop', redirect_uri: 'http://127.0.0.1:53280/callback', redirect_host: '127.0.0.1',
+        available_modes: ['user'], expires_at: '2099-01-01T00:00:00Z',
+        ...(flowReads > 1 ? { logged_in_user: { id: 'user-1', name: 'Ada' } } : {}),
+      } })
+    } else {
+      await route.fulfill({ json: { is_auth_enabled: true, has_valid_token: true } })
+    }
+  })
+  await page.goto('/oauth/consent?flow=sso-flow#t=consent-token')
+  await expect(page.getByTestId('oauth-consent-continue-user-btn')).toHaveText('Continue as Ada')
+})
+
+test('OAuth consent offers sign-in when user mode is the only option and the flow never sees the session', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    if (route.request().url().includes('/oauth2/consent/flows/sso-stuck-flow')) {
+      await route.fulfill({ json: {
+        client_name: 'Claude Desktop', redirect_uri: 'http://127.0.0.1:53280/callback', redirect_host: '127.0.0.1',
+        available_modes: ['user'], expires_at: '2099-01-01T00:00:00Z',
+      } })
+    } else {
+      await route.fulfill({ json: { is_auth_enabled: true, has_valid_token: true } })
+    }
+  })
+  await page.goto('/oauth/consent?flow=sso-stuck-flow#t=consent-token')
+  await expect(page.getByTestId('oauth-consent-signin-link')).toBeVisible()
+})

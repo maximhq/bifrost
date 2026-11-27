@@ -90,14 +90,14 @@ type GovernanceStore interface {
 }
 
 type Engine struct {
-	rules         Store
+	rules         *Store
 	governance    GovernanceStore
 	logger        schemas.Logger
 	chainMaxDepth *int // pointer to live config value; changes are reflected immediately
 }
 
 // NewEngine creates a new Engine
-func NewEngine(rules Store, governanceStore GovernanceStore, logger schemas.Logger, chainMaxDepth *int) (*Engine, error) {
+func NewEngine(rules *Store, governanceStore GovernanceStore, logger schemas.Logger, chainMaxDepth *int) (*Engine, error) {
 	if rules == nil {
 		return nil, fmt.Errorf("rule store cannot be nil")
 	}
@@ -235,9 +235,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 				}
 				re.logger.Debug("[Engine] Evaluating rule: name=%s, expression=%s", rule.Name, rule.CelExpression)
 
-				referencesComplexity := celExpressionReferencesIdentifier(rule.CelExpression, "complexity_tier")
-
-				program, err := re.rules.GetProgram(ctx, rule)
+				compiled, err := re.rules.compile(rule)
 				if err != nil {
 					re.logger.Warn("[Engine] Failed to compile rule %s: %v", rule.Name, err)
 					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelError, fmt.Sprintf("Rule '%s' skipped: compile error: %v", rule.Name, err))
@@ -245,6 +243,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 				}
 
 				// Lazy complexity: compute only when the rule's outcome depends on complexity and it hasn't been computed yet
+				program, referencesComplexity := compiled.program, compiled.referencesComplexity
 				if complexityResult == nil && ComputeComplexity != nil && referencesComplexity && celOutcomeDependsOn(program, variables, "complexity_tier") {
 					complexityResult = ComputeComplexity()
 					ComputeComplexity = nil // compute at most once
@@ -350,33 +349,39 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 	return finalDecision, nil
 }
 
-// selectWeightedTarget picks one target from the slice using weighted random selection.
-// Each target's Weight contributes proportionally to its probability of being chosen.
+// selectWeightedTarget picks one routing rule target by weight; see pickWeighted.
+func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (configstoreTables.TableRoutingTarget, bool) {
+	return pickWeighted(targets, func(t configstoreTables.TableRoutingTarget) float64 { return t.Weight })
+}
+
+// pickWeighted picks one target from the slice using weighted random selection.
+// Each target's weight contributes proportionally to its probability of being chosen.
 // Weights do not need to be normalised to 100; the function normalises internally.
 // Returns ok=false only when len(targets)==0 or all targets have negative weights (filtered out).
 // When all valid targets have weight==0 the function falls back to uniform random selection
 // and still returns ok=true, so zero-weight targets are valid and handled.
-func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (configstoreTables.TableRoutingTarget, bool) {
+func pickWeighted[T any](targets []T, weight func(T) float64) (T, bool) {
+	var zero T
 	if len(targets) == 0 {
-		return configstoreTables.TableRoutingTarget{}, false
+		return zero, false
 	}
 
 	// Filter out negative weights as a precaution against malformed DB data.
 	// Negative weights are blocked at write time by validateRoutingTargets, but
 	// we guard here defensively so a bad row cannot corrupt the cumulative range.
-	valid := make([]configstoreTables.TableRoutingTarget, 0, len(targets))
+	valid := make([]T, 0, len(targets))
 	for _, t := range targets {
-		if t.Weight >= 0 {
+		if weight(t) >= 0 {
 			valid = append(valid, t)
 		}
 	}
 	if len(valid) == 0 {
-		return configstoreTables.TableRoutingTarget{}, false
+		return zero, false
 	}
 
 	total := 0.0
 	for _, t := range valid {
-		total += t.Weight
+		total += weight(t)
 	}
 
 	// All weights are 0 — select uniformly at random among valid targets.
@@ -391,7 +396,7 @@ func selectWeightedTarget(targets []configstoreTables.TableRoutingTarget) (confi
 	r := rand.Float64() * total
 	cumulative := 0.0
 	for _, t := range valid {
-		cumulative += t.Weight
+		cumulative += weight(t)
 		if r < cumulative {
 			return t, true
 		}

@@ -408,6 +408,9 @@ func geminiContentToEmbeddingContent(content *Content) (schemas.EmbeddingContent
 	}
 	result := make(schemas.EmbeddingContent, 0, len(content.Parts))
 	for _, part := range content.Parts {
+		if part == nil {
+			continue
+		}
 		converted, err := geminiPartToEmbeddingContentPart(part)
 		if err != nil {
 			return nil, err

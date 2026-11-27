@@ -67,6 +67,15 @@ func logTimestampFromContext(ctx context.Context) (time.Time, bool) {
 	return ts, ok && !ts.IsZero()
 }
 
+// withLogTimestamp attaches ts as the row timestamp hint (LogTimestampContextKey)
+// when it is set, so a store can bound the id lookup an update or read makes.
+func withLogTimestamp(ctx context.Context, ts time.Time) context.Context {
+	if ts.IsZero() {
+		return ctx
+	}
+	return context.WithValue(ctx, LogTimestampContextKey, ts)
+}
+
 // LogStore is the interface for the log store.
 type LogStore interface {
 	// WarpConversationStore is Warp's saved-chat surface. Transcripts live here
@@ -76,6 +85,10 @@ type LogStore interface {
 	// WarpTopicStore is where Warp's topics, and each request's place among
 	// them, are kept. See warptopics.go.
 	WarpTopicStore
+	// ComplexitySuggestionStore is where the complexity router's phrase
+	// suggestions, and the runs that wrote them, are kept. See
+	// complexitysuggestions.go.
+	ComplexitySuggestionStore
 
 	Ping(ctx context.Context) error
 	Create(ctx context.Context, entry *Log) error
@@ -160,10 +173,10 @@ type LogStore interface {
 	GetDimensionTokenHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionTokenHistogramResult, error)
 	// GetDimensionLatencyHistogram returns time-bucketed latency percentiles grouped by the specified dimension.
 	GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error)
-	// GetNodeUsageAfter returns cumulative usage for rows after the provided stable
+	// GetNodeUsageAfter filters actual-reset windows and returns cumulative usage after the stable
 	// cursor. When the cursor has both timestamp and log ID, rows with the same
 	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
-	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
+	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor, windows NodeUsageWindows) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
 	// BatchUpdate applies the non-zero fields of each entry onto the existing row
 	// with that ID; rows that do not exist are skipped, never inserted.
@@ -201,6 +214,8 @@ type LogStore interface {
 
 	// MCP Tool Log histogram methods
 	GetMCPHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPHistogramResult, error)
+	// GetMCPLatencyHistogram returns time-bucketed latency percentiles of finished MCP tool calls.
+	GetMCPLatencyHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*LatencyHistogramResult, error)
 	GetMCPCostHistogram(ctx context.Context, filters MCPToolLogSearchFilters, bucketSizeSeconds int64) (*MCPCostHistogramResult, error)
 	GetMCPTopTools(ctx context.Context, filters MCPToolLogSearchFilters, limit int) (*MCPTopToolsResult, error)
 	// GetMCPToolCountsByDimension returns how many distinct tools each user,
@@ -227,6 +242,8 @@ type LogStore interface {
 	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
 	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
+	// GetDistinctMCPKeyPairs returns one MCP tool log dimension's id/name pairs for the filter sidebar.
+	GetDistinctMCPKeyPairs(ctx context.Context, idCol, nameCol string, limit int, query string) ([]KeyPairResult, error)
 
 	// Agent Gateway log methods.
 	BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error)
