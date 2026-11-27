@@ -625,6 +625,11 @@ func (m *memoryRollupStore) ListTraceSpans(context.Context, string, string) ([]*
 	return []*logstore.TraceSpan{{ProjectID: "p1", TraceID: "t1", SpanID: "llm", Kind: logstore.TraceSpanKindLLM, Model: "gpt-4o", StartTime: *at(0), EndTime: at(10), TotalTokens: 100}}, nil
 }
 
+// ListTraceSpanSummaries serves the same span: the matcher reads summaries, not whole spans.
+func (m *memoryRollupStore) ListTraceSpanSummaries(ctx context.Context, projectID, traceID string, _ bool) ([]*logstore.TraceSpan, error) {
+	return m.ListTraceSpans(ctx, projectID, traceID)
+}
+
 func (m *memoryRollupStore) ListTraceSpanLinks(context.Context, string, string) ([]*logstore.TraceSpanLink, error) {
 	return nil, nil
 }
