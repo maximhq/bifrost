@@ -393,7 +393,7 @@
                 "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
               },
               "x-bifrost-cost": {
-                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on for the request (x-bf-send-back-cost when sent, else client.send_back_cost) and the request cost something; never sent as 0, and not on streams.",
                 "schema": {
                   "type": "number"
                 }
@@ -786,7 +786,7 @@
                 "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
               },
               "x-bifrost-cost": {
-                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on for the request (x-bf-send-back-cost when sent, else client.send_back_cost) and the request cost something; never sent as 0, and not on streams.",
                 "schema": {
                   "type": "number"
                 }
@@ -1176,7 +1176,7 @@
                 "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
               },
               "x-bifrost-cost": {
-                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on for the request (x-bf-send-back-cost when sent, else client.send_back_cost) and the request cost something; never sent as 0, and not on streams.",
                 "schema": {
                   "type": "number"
                 }
@@ -2425,7 +2425,7 @@
                 "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
               },
               "x-bifrost-cost": {
-                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+                "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on for the request (x-bf-send-back-cost when sent, else client.send_back_cost) and the request cost something; never sent as 0, and not on streams.",
                 "schema": {
                   "type": "number"
                 }
@@ -128243,7 +128243,7 @@
             "$ref": "#/components/headers/BifrostResolvedModel"
           },
           "x-bifrost-cost": {
-            "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+            "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on for the request (x-bf-send-back-cost when sent, else client.send_back_cost) and the request cost something; never sent as 0, and not on streams.",
             "schema": {
               "type": "number"
             }
@@ -128318,7 +128318,7 @@
             "$ref": "#/components/headers/BifrostResolvedModel"
           },
           "x-bifrost-cost": {
-            "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams.",
+            "description": "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on for the request (x-bf-send-back-cost when sent, else client.send_back_cost) and the request cost something; never sent as 0, and not on streams.",
             "schema": {
               "type": "number"
             }
@@ -132053,7 +132053,7 @@
       },
       "BifrostCost": {
         "type": "object",
-        "description": "Cost breakdown in USD. input_cost + output_cost + additional_cost == total_cost. Zero\nfields are omitted. On usage.cost it is the provider's own figure (OpenRouter, Perplexity,\nxAI); on extra_fields.cost it is the cost Bifrost computed (send back cost).\n",
+        "description": "Cost breakdown in USD. total_cost is the cost; when the categories are filled in,\ninput_cost + output_cost + additional_cost add up to it, and a provider that reports only\na total (OpenRouter, Runware) gives total_cost alone. Zero fields are omitted. On usage.cost it is the provider's own figure (OpenRouter, Perplexity,\nxAI); on extra_fields.cost it is the cost Bifrost computed (send back cost).\n",
         "properties": {
           "input_cost": {
             "type": "number"
@@ -145674,7 +145674,7 @@
               "send_back_cost": {
                 "type": "boolean",
                 "default": false,
-                "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header on every route. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
+                "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header on non-streaming responses and errors on every route. Streams carry it only in extra_fields, so with extra_fields_placement set to headers they carry none. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
               },
               "enforce_auth_on_inference": {
                 "type": "boolean",
@@ -146574,7 +146574,7 @@
               "send_back_cost": {
                 "type": "boolean",
                 "default": false,
-                "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header on every route. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
+                "description": "Return Bifrost's computed cost of each request to the caller, in extra_fields.cost on native /v1 responses, errors and final stream chunks, and in the x-bifrost-cost response header on non-streaming responses and errors on every route. Streams carry it only in extra_fields, so with extra_fields_placement set to headers they carry none. A request can turn it on or off for itself with the x-bf-send-back-cost header, which applies regardless of this setting."
               },
               "enforce_auth_on_inference": {
                 "type": "boolean",

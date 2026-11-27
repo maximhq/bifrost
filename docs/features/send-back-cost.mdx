@@ -21,7 +21,7 @@ Open **Settings > Client Settings** and turn on **Send Back Cost**, then save.
 [`PUT /api/config`](/api-reference/configuration/update-configuration) saves the `client_config` you send, so read the current one, change the field, and send it back whole:
 
 ```bash
-curl -s -u admin:your-password http://localhost:8080/api/config \
+curl -sf -u admin:your-password http://localhost:8080/api/config \
   | jq '{client_config: (.client_config + {send_back_cost: true})}' \
   | curl -X PUT http://localhost:8080/api/config \
       -u admin:your-password \
@@ -49,7 +49,8 @@ In the Go SDK, set `SendBackCost` on `schemas.BifrostConfig`, call `client.Updat
 |---|---|
 | `/v1/*`, normal response | `extra_fields.cost` in the body, and the `x-bifrost-cost` header |
 | `/v1/*` stream | `extra_fields.cost` on the final chunk only |
-| SDK routes (`/openai`, `/anthropic`, `/bedrock`, `/genai`, ...), normal response | The `x-bifrost-cost` header |
+| SDK routes (`/anthropic`, `/bedrock`, `/genai`, ...), normal response | The `x-bifrost-cost` header |
+| OpenAI-compatible routes (`/openai`, and the OpenAI routes of `/azure`, `/litellm`, `/langchain`, `/pydanticai`) | The header. In `body` mode, also `extra_fields.cost` in the body and on the final stream chunk, unless OpenAI served the request and its response is passed through as is |
 | Error that cost something, `/v1` | `extra_fields.cost` and the header; a mid-stream error carries it in its error chunk, including one a plugin raises to stop the stream |
 | Error that cost something, SDK routes | The header |
 | Async jobs (`x-bf-async`) | `extra_fields.cost` inside the stored result |
@@ -71,7 +72,7 @@ In the Go SDK, set `SendBackCost` on `schemas.BifrostConfig`, call `client.Updat
 }
 ```
 
-When nothing is billable, or the model has no price in the catalog, there is no field and no header. Bifrost never sends a cost of `0`.
+When nothing is billable, there is no field and no header. Bifrost never sends a cost of `0`. A model with no price in the catalog adds nothing of its own, but the request's side calls, such as guardrail judge calls, are still priced.
 
 With [`extra_fields_placement`](/providers/response-headers) set to `headers`, bodies carry no `extra_fields`; the `x-bifrost-cost` header is still sent.
 
@@ -80,7 +81,7 @@ With [`extra_fields_placement`](/providers/response-headers) set to `headers`, b
 - **The request's own usage**, at the rates of the provider and model that served it, including cache reads and writes, reasoning, and any per-request surcharge.
 - **Side calls the request made**: the semantic cache's embedding lookup, guardrail judge calls, and routing classification calls that count toward budgets. These appear under `additional_cost_details`.
 - **Failed requests**: the usage the provider billed before failing (`billed_usage`), priced at the model that ran, plus the side calls. This matches the error's log entry.
-- **Agent mode**: when Bifrost runs MCP tools for the model, the final response carries the sum of every turn's cost plus the cost of every tool it executed. Request-level side calls (routing, guardrails) are counted in each turn, as they are in each turn's log entry.
+- **Agent mode**: when Bifrost runs MCP tools for the model, the final response carries the sum of every turn's cost plus the cost of every tool it executed. Routing classification runs once per request, so it is counted once, on the first turn. Guardrail calls are counted in each turn that made them.
 
 ## MCP tool calls
 
@@ -97,9 +98,9 @@ A successful call of a tool with a price in the client's `tool_pricing` carries 
 ## Not covered
 
 - Earlier fallback attempts that failed: a response covers the attempt that served it.
-- Streams on the SDK routes, and their mid-stream errors: the headers are sent before the cost exists.
+- Streams on the SDK routes other than the OpenAI-compatible ones, and mid-stream errors on any SDK route: the headers are sent before the cost exists.
 - An SDK-route request that succeeds upstream but then fails inside Bifrost while its response is converted: the error carries no cost.
-- `/v1` streams with `extra_fields_placement` set to `headers`.
+- Streams with `extra_fields_placement` set to `headers`.
 - Tools injected by a provider integration: their cost is not added to the response.
 - Realtime and WebSocket sessions, batch jobs, files and containers.
 - MCP calls other than tool execution, failed tool calls, tools without a price, and calls a plugin answers itself.

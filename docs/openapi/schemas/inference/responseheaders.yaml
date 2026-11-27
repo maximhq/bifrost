@@ -135,7 +135,7 @@ BifrostCacheInputTokens:
   schema: {type: integer}
 
 BifrostCost:
-  description: "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on (client.send_back_cost or x-bf-send-back-cost: true) and the request cost something; never sent as 0, and not on streams."
+  description: "Bifrost's computed cost of the request in USD, the same total as extra_fields.cost.total_cost. Sent when send back cost is on for the request (x-bf-send-back-cost when sent, else client.send_back_cost) and the request cost something; never sent as 0, and not on streams."
   schema: {type: number}
 
 # Sent on errors. /v1 error responses never carry x-bifrost-fallback-index or
