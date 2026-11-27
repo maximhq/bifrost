@@ -89,3 +89,17 @@ test("upstream-520-once answers a model's first hit with a plain-text 520 and it
   assert.equal(second.status, 200);
   assert.equal((await second.json()).status, "completed");
 });
+
+test("upstream-zero-cost reports a zero usage.cost", async (t) => {
+  const post = await startFixture(t);
+  const plain = await post({ model: "upstream-zero-cost", messages: [{ role: "user", content: "hi" }] });
+  assert.equal(plain.status, 200);
+  assert.equal((await plain.json()).usage.cost, 0);
+  const streamed = await post({ model: "upstream-zero-cost", messages: [{ role: "user", content: "hi" }], stream: true, stream_options: { include_usage: true } });
+  assert.equal(streamed.status, 200);
+  const usage = (await streamed.text()).split("\n")
+    .filter((line) => line.startsWith("data: {"))
+    .map((line) => JSON.parse(line.slice(6)))
+    .find((chunk) => chunk.usage);
+  assert.equal(usage && usage.usage.cost, 0);
+});
