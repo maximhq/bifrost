@@ -36,7 +36,7 @@
 		"dumpErrors": "Despejar erros nos registos da consola",
 		"dumpErrorsHelp": "Se ativado, os detalhes completos dos erros são escritos nos registos da consola do servidor. Útil para depuração, mas pode ser ruidoso em produção.",
 		"sendBackCost": "Retornar o custo",
-		"sendBackCostHelp": "Retorna ao chamador o custo de cada solicitação calculado pelo Bifrost, para solicitações de modelo e chamadas de ferramentas MCP com preço, em <b>extra_fields.cost</b> e no cabeçalho de resposta <b>x-bifrost-cost</b>. Uma solicitação pode ativá-lo ou desativá-lo para si mesma com o cabeçalho <b>x-bf-send-back-cost</b>.",
+		"sendBackCostHelp": "Retorna ao chamador o custo de cada solicitação calculado pelo Bifrost, para solicitações de modelo e chamadas de ferramentas MCP com preço, em <b>extra_fields.cost</b> e no cabeçalho de resposta <b>x-bifrost-cost</b>. Com a localização dos campos extra definida como <b>Cabeçalhos</b>, o corpo não traz extra_fields, então leia o custo em <b>x-bifrost-cost</b>. Chamadas de ferramentas em <b>/mcp</b> o trazem em <b>_meta[\"bifrost/cost\"]</b>. Uma solicitação pode ativá-lo ou desativá-lo para si mesma com o cabeçalho <b>x-bf-send-back-cost</b>.",
 		"asyncJobTtl": "TTL do resultado de tarefas assíncronas (segundos)",
 		"asyncJobTtlHelp": "Tempo de vida predefinido dos resultados de tarefas assíncronas, em segundos. Os resultados são limpos automaticamente após expirarem.",
 		"bifrostUrl": "URL do Bifrost",

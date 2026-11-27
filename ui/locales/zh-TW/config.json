@@ -36,7 +36,7 @@
 		"dumpErrors": "在控制台日誌中輸出錯誤",
 		"dumpErrorsHelp": "啟用後，完整錯誤詳情會寫入伺服器控制台日誌。便於除錯，但在生產環境可能噪音較大。",
 		"sendBackCost": "回傳費用",
-		"sendBackCostHelp": "將 Bifrost 計算出的每個請求的費用回傳給呼叫方，適用於模型請求和已定價的 MCP 工具呼叫，透過 <b>extra_fields.cost</b> 和 <b>x-bifrost-cost</b> 回應標頭回傳。單一請求可以使用 <b>x-bf-send-back-cost</b> 請求標頭為自身開啟或關閉此功能。",
+		"sendBackCostHelp": "將 Bifrost 計算出的每個請求的費用回傳給呼叫方，適用於模型請求和已定價的 MCP 工具呼叫，透過 <b>extra_fields.cost</b> 和 <b>x-bifrost-cost</b> 回應標頭回傳。當額外欄位位置設為 <b>Headers</b> 時，回應主體中沒有 extra_fields，請從 <b>x-bifrost-cost</b> 讀取費用。<b>/mcp</b> 上的工具呼叫則透過 <b>_meta[\"bifrost/cost\"]</b> 回傳費用。單一請求可以使用 <b>x-bf-send-back-cost</b> 請求標頭為自身開啟或關閉此功能。",
 		"asyncJobTtl": "非同步任務結果 TTL（秒）",
 		"asyncJobTtlHelp": "非同步任務結果的預設存活時間（秒）。過期後結果會自動清理。",
 		"bifrostUrl": "Bifrost URL",

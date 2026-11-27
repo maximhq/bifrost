@@ -36,7 +36,7 @@
 		"dumpErrors": "Dump Errors in Console Logs",
 		"dumpErrorsHelp": "If enabled, full error details are written to the server console logs. Useful for debugging, but may be noisy in production.",
 		"sendBackCost": "Send Back Cost",
-		"sendBackCostHelp": "Return Bifrost's computed cost of each request to the caller, for model requests and priced MCP tool calls, in <b>extra_fields.cost</b> and the <b>x-bifrost-cost</b> response header. A request can turn it on or off for itself with the <b>x-bf-send-back-cost</b> header.",
+		"sendBackCostHelp": "Return Bifrost's computed cost of each request to the caller, for model requests and priced MCP tool calls, in <b>extra_fields.cost</b> and the <b>x-bifrost-cost</b> response header. With Extra Fields Placement set to <b>Headers</b>, the body has no extra_fields, so read the cost from <b>x-bifrost-cost</b>. Tool calls on <b>/mcp</b> carry it in <b>_meta[\"bifrost/cost\"]</b> instead. A request can turn it on or off for itself with the <b>x-bf-send-back-cost</b> header.",
 		"asyncJobTtl": "Async Job Result TTL (seconds)",
 		"asyncJobTtlHelp": "Default time-to-live for async job results in seconds. Results are automatically cleaned up after expiry.",
 		"bifrostUrl": "Bifrost URL",

@@ -36,7 +36,7 @@
 		"dumpErrors": "コンソールログにエラーを出力",
 		"dumpErrorsHelp": "有効にすると、詳細なエラーがサーバーのコンソールログに書き込まれます。デバッグに便利ですが、本番ではノイズが多くなることがあります。",
 		"sendBackCost": "コストを返す",
-		"sendBackCostHelp": "Bifrost が計算した各リクエストのコストを、モデルリクエストと料金設定済みの MCP ツール呼び出しについて、<b>extra_fields.cost</b> と <b>x-bifrost-cost</b> レスポンスヘッダーで呼び出し元に返します。リクエストごとに <b>x-bf-send-back-cost</b> ヘッダーでオンまたはオフにできます。",
+		"sendBackCostHelp": "Bifrost が計算した各リクエストのコストを、モデルリクエストと料金設定済みの MCP ツール呼び出しについて、<b>extra_fields.cost</b> と <b>x-bifrost-cost</b> レスポンスヘッダーで呼び出し元に返します。Extra Fields の配置が <b>Headers</b> の場合、本文に extra_fields は含まれないため、コストは <b>x-bifrost-cost</b> から読み取ってください。<b>/mcp</b> のツール呼び出しでは、代わりに <b>_meta[\"bifrost/cost\"]</b> で返されます。リクエストごとに <b>x-bf-send-back-cost</b> ヘッダーでオンまたはオフにできます。",
 		"asyncJobTtl": "非同期ジョブ結果の TTL（秒）",
 		"asyncJobTtlHelp": "非同期ジョブ結果のデフォルト有効期間（秒）。期限後に結果は自動削除されます。",
 		"bifrostUrl": "Bifrost の URL",
