@@ -323,15 +323,14 @@ func (h *TraceIngestHandler) receiveUpload(ctx *fasthttp.RequestCtx) {
 }
 
 // uploadMatchesID checks the bytes of an upload whose id is derived from its content. A Langfuse
-// media id ("lf" + the base64 SHA-256 without +, / and =, cut short, then "-" + the project) can be
-// computed by anyone who knows the file, so the bytes must hash to it. Other ids are random tokens.
+// upload id is "lf-" + the project + "-" + the media id, which is the file's SHA-256 in URL-safe
+// base64 cut to 22 characters (langfuseMediaID). Anyone who knows the file can compute it, so the
+// bytes must hash to it. Other ids are random tokens.
 func uploadMatchesID(id string, body []byte) bool {
-	hashed, ok := strings.CutPrefix(id, "lf")
-	if !ok {
+	if !strings.HasPrefix(id, "lf-") {
 		return true
 	}
-	prefix, _, _ := strings.Cut(hashed, "-")
 	sum := sha256.Sum256(body)
-	encoded := strings.NewReplacer("+", "", "/", "", "=", "").Replace(base64.StdEncoding.EncodeToString(sum[:]))
-	return prefix != "" && strings.HasPrefix(encoded, prefix)
+	media := langfuseMediaID(base64.StdEncoding.EncodeToString(sum[:]))
+	return strings.HasSuffix(id, "-"+media)
 }
