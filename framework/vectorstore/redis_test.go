@@ -3,6 +3,7 @@ package vectorstore
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -444,6 +445,7 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
+	inTransaction, queuedCommands := false, 0
 
 	for {
 		command, err := readRESPCommand(reader)
@@ -459,6 +461,17 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 		s.mu.Lock()
 		s.commands = append(s.commands, command)
 		s.mu.Unlock()
+
+		// Between MULTI and EXEC every command is queued, and EXEC replies
+		// with one result per queued command.
+		if inTransaction && !strings.EqualFold(command[0], "EXEC") {
+			queuedCommands++
+			_, _ = writer.WriteString("+QUEUED\r\n")
+			if err := writer.Flush(); err != nil {
+				return
+			}
+			continue
+		}
 
 		switch strings.ToUpper(command[0]) {
 		case "HELLO":
@@ -487,9 +500,13 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 			_, _ = writer.WriteString("*2\r\n$1\r\n0\r\n*0\r\n")
 		case "HGETALL":
 			_, _ = writer.WriteString("*0\r\n")
-		case "EVALSHA":
-			_, _ = writer.WriteString("-NOSCRIPT No matching script\r\n")
-		case "EVAL", "HSET":
+		case "MULTI":
+			inTransaction, queuedCommands = true, 0
+			_, _ = writer.WriteString("+OK\r\n")
+		case "EXEC":
+			inTransaction = false
+			_, _ = fmt.Fprintf(writer, "*%d\r\n%s", queuedCommands, strings.Repeat(":1\r\n", queuedCommands))
+		case "HSET":
 			_, _ = writer.WriteString(":1\r\n")
 		default:
 			_, _ = writer.WriteString("+OK\r\n")
@@ -498,6 +515,34 @@ func (s *fakeRedisSearchServer) handleConn(t *testing.T, conn net.Conn) {
 		if err := writer.Flush(); err != nil {
 			return
 		}
+	}
+}
+
+func TestRedisTransactionError(t *testing.T) {
+	refused := errors.New("NOPERM User has no permissions to run the 'hset' command")
+	aborted := errors.New("EXECABORT Transaction discarded because of previous errors.")
+	execDenied := errors.New("EXECABORT Transaction discarded because of: NOPERM User has no permissions to run the 'exec' command")
+	wrongType := errors.New("WRONGTYPE Operation against a key holding the wrong kind of value")
+	for _, tc := range []struct {
+		name       string
+		err        error
+		hsetErr    error
+		expireErr  error
+		wantReport error
+	}{
+		// Standalone clients return EXECABORT; cluster clients return the first command error.
+		{"standalone expireat refused", aborted, aborted, refused, refused},
+		{"cluster hset refused", refused, refused, aborted, refused},
+		{"exec refused", execDenied, execDenied, execDenied, execDenied},
+		{"wrong type", wrongType, wrongType, nil, wrongType},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hset := redis.NewIntCmd(context.Background())
+			hset.SetErr(tc.hsetErr)
+			expire := redis.NewBoolCmd(context.Background())
+			expire.SetErr(tc.expireErr)
+			require.Equal(t, tc.wantReport, redisTransactionError(tc.err, []redis.Cmder{hset, expire}))
+		})
 	}
 }
 
@@ -516,7 +561,8 @@ func TestRedisStore_AddExpiryCommands(t *testing.T) {
 			defer server.mu.Unlock()
 			var writes [][]string
 			for _, cmd := range server.commands {
-				if cmd[0] == "hset" || cmd[0] == "evalsha" || cmd[0] == "eval" {
+				switch cmd[0] {
+				case "multi", "hset", "expireat", "exec", "eval", "evalsha":
 					writes = append(writes, cmd)
 				}
 			}
@@ -525,12 +571,13 @@ func TestRedisStore_AddExpiryCommands(t *testing.T) {
 				require.Equal(t, "hset", writes[0][0])
 				return
 			}
-			require.Len(t, writes, 2, "NOSCRIPT must retry with EVAL, never a bare HSET")
-			require.Equal(t, "evalsha", writes[0][0])
-			require.Equal(t, "eval", writes[1][0])
-			require.Equal(t, []string{"1", "custom:ns:id", "123"}, writes[1][2:5], "script must operate on one cluster key")
+			require.Len(t, writes, 4, "expiry must be one MULTI/EXEC transaction and never a script")
+			require.Equal(t, []string{"multi"}, writes[0])
+			require.Equal(t, []string{"hset", "custom:ns:id"}, writes[1][:2])
+			require.Equal(t, []string{"expireat", "custom:ns:id", "123"}, writes[2], "the transaction must touch one cluster key")
+			require.Equal(t, []string{"exec"}, writes[3])
 			fields := map[string]string{}
-			for i := 5; i < len(writes[1]); i += 2 {
+			for i := 2; i < len(writes[1]); i += 2 {
 				fields[writes[1][i]] = writes[1][i+1]
 			}
 			require.Equal(t, "123", fields["expires_at"])
@@ -1482,7 +1529,7 @@ func TestRedisStore_ExpiryWriteSafety(t *testing.T) {
 		require.ErrorContains(t, store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"response": "bad", "expires_at": invalid}), "invalid expires_at")
 		require.Equal(t, before, store.client.HGetAll(ctx, key).Val())
 	}
-	// Metadata must be fully serialized before the script mutates Redis.
+	// Metadata must be fully serialized before the transaction mutates Redis.
 	require.Error(t, store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"expires_at": expiresAt, "bad": make(chan int)}))
 	require.Equal(t, before, store.client.HGetAll(ctx, key).Val())
 	cancelled, cancel := context.WithCancel(ctx)
@@ -1507,17 +1554,12 @@ func TestRedisStore_ExpiryWriteSafety(t *testing.T) {
 	defer store.client.Del(ctx, wrongKey)
 	require.ErrorContains(t, store.Add(ctx, TestNamespace, wrongID, nil, map[string]interface{}{"expires_at": expiresAt}), "WRONGTYPE")
 	require.Equal(t, "not a hash", store.client.Get(ctx, wrongKey).Val())
-	require.Equal(t, time.Duration(-1), store.client.PTTL(ctx, wrongKey).Val())
+	// Documented trade-off: MULTI/EXEC has no rollback, so EXPIREAT still
+	// applies to a foreign non-hash key that occupies a cache key.
+	require.Positive(t, store.client.PTTL(ctx, wrongKey).Val())
 	// A stream completing after its first-chunk deadline must not persist.
 	require.NoError(t, store.Add(ctx, TestNamespace, id, nil, map[string]interface{}{"expires_at": int64(1)}))
 	require.Zero(t, store.client.Exists(ctx, key).Val())
-	// Large metadata maps cannot overflow Lua's unpack stack.
-	metadata := map[string]interface{}{"expires_at": expiresAt}
-	for i := range 5000 {
-		metadata[fmt.Sprintf("field%d", i)] = "value"
-	}
-	require.NoError(t, store.Add(ctx, TestNamespace, id, nil, metadata))
-	require.Equal(t, "value", store.client.HGet(ctx, key, "field4999").Val())
 	// Concurrent rewrites must leave matching hash metadata and native expiry.
 	var wg sync.WaitGroup
 	errors := make(chan error, 32)
@@ -1549,24 +1591,49 @@ func TestRedisStore_ExpiryPermissionDenied(t *testing.T) {
 	if _, ok := setup.Store.client.(*redis.Client); !ok {
 		t.Skip("ACL fixture requires standalone Redis; expiry writes are tested separately on clusters")
 	}
-	for _, denied := range []string{"expireat", "evalsha"} {
-		t.Run(denied, func(t *testing.T) {
+	for _, tc := range []struct {
+		denied     string
+		wantErr    bool
+		wantStored bool
+	}{
+		// Redis rejects these while queueing, so EXEC discards the whole write.
+		{denied: "expireat", wantErr: true},
+		{denied: "hset", wantErr: true},
+		{denied: "exec", wantErr: true},
+		// Without MULTI, Redis runs HSET and EXPIREAT as plain commands: the
+		// write reports an error, but the entry still carries its deadline.
+		{denied: "multi", wantErr: true, wantStored: true},
+		// Expiring writes must not depend on scripting permissions.
+		{denied: "@scripting", wantStored: true},
+	} {
+		t.Run(tc.denied, func(t *testing.T) {
 			user := "expiry-" + generateUUID()
 			key := buildKey(TestNamespace, user)
-			require.NoError(t, setup.Store.client.Do(setup.ctx, "ACL", "SETUSER", user, "on", ">expiry-test-password", "~"+key, "+@all", "-"+denied).Err())
+			require.NoError(t, setup.Store.client.Do(setup.ctx, "ACL", "SETUSER", user, "on", ">expiry-test-password", "~"+key, "+@all", "-"+tc.denied).Err())
 			defer setup.Store.client.Do(setup.ctx, "ACL", "DELUSER", user)
+			defer setup.Store.client.Del(setup.ctx, key)
 			config := setup.Config
 			config.Username = schemas.NewSecretVar(user)
 			config.Password = schemas.NewSecretVar("expiry-test-password")
 			limited, err := newRedisStore(setup.ctx, config, setup.Logger)
 			require.NoError(t, err)
 			defer limited.Close(setup.ctx, TestNamespace)
-			require.ErrorContains(t, limited.Add(setup.ctx, TestNamespace, user, nil, map[string]interface{}{"expires_at": time.Now().Add(time.Minute).Unix(), "response": "denied"}), "NOPERM")
-			require.Zero(t, setup.Store.client.Exists(setup.ctx, key).Val(), "permission errors must not leave immortal hashes")
-			// Existing cached entries must also remain unchanged on denial.
+			metadata := map[string]interface{}{"expires_at": time.Now().Add(time.Minute).Unix(), "response": "limited"}
+
+			err = limited.Add(setup.ctx, TestNamespace, user, nil, metadata)
+			if tc.wantErr {
+				require.ErrorContains(t, err, "NOPERM")
+			} else {
+				require.NoError(t, err)
+			}
+			if tc.wantStored {
+				require.Positive(t, setup.Store.client.PTTL(setup.ctx, key).Val(), "a stored entry must carry its deadline")
+				return
+			}
+			require.Zero(t, setup.Store.client.Exists(setup.ctx, key).Val(), "a rejected write must not leave an immortal hash")
+			// A rejected write must also leave an existing entry unchanged.
 			require.NoError(t, setup.Store.client.HSet(setup.ctx, key, "response", "original").Err())
-			defer setup.Store.client.Del(setup.ctx, key)
-			require.Error(t, limited.Add(setup.ctx, TestNamespace, user, nil, map[string]interface{}{"expires_at": time.Now().Add(time.Minute).Unix(), "response": "denied"}))
+			require.Error(t, limited.Add(setup.ctx, TestNamespace, user, nil, metadata))
 			require.Equal(t, "original", setup.Store.client.HGet(setup.ctx, key, "response").Val())
 		})
 	}

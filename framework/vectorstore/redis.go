@@ -28,25 +28,6 @@ const (
 	RedisMaxSearchResults = 10000
 )
 
-// A script keeps each hash and its deadline together, including concurrent
-// rewrites. Unlike MULTI/EXEC, a failed HSET must not expire a wrong-type key.
-// Check expiry permission before writing; do not leave an immortal hash on an
-// ACL failure. Legacy Redis has no ACL helper, so check command availability.
-var redisAddWithExpiry = redis.NewScript(`
-if redis.acl_check_cmd then
-    if not redis.acl_check_cmd('EXPIREAT', KEYS[1], ARGV[1]) then
-        return redis.error_reply('NOPERM EXPIREAT not allowed')
-    end
-elseif not redis.call('COMMAND', 'INFO', 'EXPIREAT')[1] then
-    return redis.error_reply('ERR EXPIREAT not available')
-end
--- Bound unpack's stack usage to 512 field/value pairs per call.
-for first = 2, #ARGV, 1024 do
-    redis.call('HSET', KEYS[1], unpack(ARGV, first, math.min(first + 1023, #ARGV)))
-end
-return redis.call('EXPIREAT', KEYS[1], ARGV[1])
-`)
-
 type RedisConfig struct {
 	// Connection settings
 	Addr     *schemas.SecretVar `json:"addr"`               // Redis server address (host:port) - REQUIRED
@@ -1540,13 +1521,20 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 		case string, float64:
 			fields["expires_at"] = strconv.FormatInt(expiresAt, 10)
 		}
-		args := make([]interface{}, 1, 1+2*len(fields))
-		args[0] = expiresAt
-		for field, value := range fields {
-			args = append(args, field, value)
-		}
-		if err := redisAddWithExpiry.Run(ctx, s.client, []string{key}, args...).Err(); err != nil {
-			return fmt.Errorf("failed to store semantic cache entry with expiry: %w", err)
+		// Write the hash and its native deadline in one MULTI/EXEC transaction.
+		// Redis checks every queued command before EXEC runs any of them, so a
+		// denied or unavailable EXPIREAT discards the whole write instead of
+		// leaving a hash that never expires. A deadline already in the past
+		// deletes the key immediately.
+		// Transactions do not roll back: if a non-hash key already occupies
+		// this key, HSET fails with WRONGTYPE but EXPIREAT still applies to it.
+		cmds, err := s.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, key, fields)
+			pipe.ExpireAt(ctx, key, time.Unix(expiresAt, 0))
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("failed to store semantic cache entry with expiry: %w", redisTransactionError(err, cmds))
 		}
 		return nil
 	}
@@ -1559,8 +1547,23 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 	return nil
 }
 
-// redisExpirySeconds validates Redis's seconds-to-milliseconds conversion
-// before HSET, since scripts do not roll back runtime errors.
+// redisTransactionError returns the error of the command Redis refused, such
+// as NOPERM or OOM. A refused command makes EXEC fail with a generic EXECABORT
+// that go-redis copies to the other commands, and that standalone clients (but
+// not cluster clients) also return as err.
+func redisTransactionError(err error, cmds []redis.Cmder) error {
+	for _, cmd := range cmds {
+		if cmdErr := cmd.Err(); cmdErr != nil && !strings.HasPrefix(cmdErr.Error(), "EXECABORT") {
+			return cmdErr
+		}
+	}
+	return err
+}
+
+// redisExpirySeconds parses expires_at as Unix seconds and rejects values
+// Redis cannot convert to milliseconds. Redis reports that range error only
+// when EXPIREAT runs, after HSET has already written the hash, so it must be
+// caught here.
 func redisExpirySeconds(value interface{}) (int64, error) {
 	var seconds int64
 	switch v := value.(type) {
