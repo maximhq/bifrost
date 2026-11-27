@@ -352257,6 +352257,515 @@
           }
         }
       ]
+    },
+    {
+      "name": "394. Chat thinking content blocks replay as signed reasoning (thinking content block replay) (#8954 / PR #8955)",
+      "description": "LiteLLM-based clients, including the OpenAI Agents SDK, replay Anthropic thinking as {\"type\":\"thinking\",\"thinking\",\"signature\"} blocks in the assistant message content. Chat ingress kept them as content blocks: the Bedrock chat converter rejected the request with \"unsupported content block type: thinking\" and the Anthropic converter dropped them, so signed thinking never reached the model between tool turns. Case 1 gets a signed thinking block and a tool call. Cases 2 and 3 replay that turn as a thinking content block on the native and /openai routes, whose ingress paths differ, and read the outbound Converse body via x-bf-send-back-raw-request to check the first assistant block is reasoningContent carrying the same signature. The prerequest scripts build the replay body from the collection variables case 1 sets. Case 4 replays the same turn on /litellm, the other drop-in route. Case 5 asks Anthropic for a turn with redacted thinking (the API's documented trigger string) and a tool call; case 6 replays it as thinking and redacted_thinking content blocks and checks that each block reaches Anthropic unchanged and in order.",
+      "item": [
+        {
+          "name": "394.1 bedrock/claude-haiku-4-5 /v1/chat/completions turn 1 returns signed thinking and a tool call (thinking content block replay) - #8954",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('tcbThinking');",
+                  "pm.collectionVariables.unset('tcbSignature');",
+                  "pm.collectionVariables.unset('tcbToolCall');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var msg = ((body.choices || [])[0] || {}).message || {};",
+                  "var signed = (msg.reasoning_details || []).filter(function (d) { return d.signature; });",
+                  "var calls = msg.tool_calls || [];",
+                  "",
+                  "pm.test('394.1 bedrock/claude-haiku-4-5 /v1/chat/completions turn 1 returns signed thinking and a tool call (thinking content block replay): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('394.1 bedrock/claude-haiku-4-5 /v1/chat/completions turn 1 returns signed thinking and a tool call (thinking content block replay): returns signed thinking and a tool call for 394.2 and 394.3 to replay', function () {",
+                  "  pm.expect(signed.length, 'no signed reasoning_details: ' + txt.slice(0, 600)).to.be.at.least(1);",
+                  "  pm.expect(calls.length, 'no tool call: ' + txt.slice(0, 600)).to.be.at.least(1);",
+                  "});",
+                  "",
+                  "if (signed.length && calls.length) {",
+                  "  pm.collectionVariables.set('tcbThinking', signed[0].text || '');",
+                  "  pm.collectionVariables.set('tcbSignature', signed[0].signature);",
+                  "  pm.collectionVariables.set('tcbToolCall', JSON.stringify(calls[0]));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 2048,\n  \"reasoning\": {\n    \"max_tokens\": 1024\n  },\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"submit\",\n        \"description\": \"Submit the product.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": \"integer\"\n            }\n          },\n          \"required\": [\n            \"value\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Compute 17 * 23 carefully, then call submit with the product.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "394.2 bedrock/claude-haiku-4-5 /v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay) - #8954",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var call = JSON.parse(pm.collectionVariables.get('tcbToolCall') || 'null') || { id: 'missing_turn_one', type: 'function', function: { name: 'submit', arguments: '{}' } };",
+                  "var body = {",
+                  "  model: 'bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0',",
+                  "  max_tokens: 2048,",
+                  "  reasoning: { max_tokens: 1024 },",
+                  "  tools: [{\"type\":\"function\",\"function\":{\"name\":\"submit\",\"description\":\"Submit the product.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},\"required\":[\"value\"]}}}],",
+                  "  messages: [",
+                  "    {\"role\":\"user\",\"content\":\"Compute 17 * 23 carefully, then call submit with the product.\"},",
+                  "    { role: 'assistant', content: [{ type: 'thinking', thinking: pm.collectionVariables.get('tcbThinking') || '', signature: pm.collectionVariables.get('tcbSignature') || '' }], tool_calls: [call] },",
+                  "    { role: 'tool', tool_call_id: call.id, content: 'accepted' }",
+                  "  ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var sig = pm.collectionVariables.get('tcbSignature');",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// The OpenAI Agents SDK replays thinking through LiteLLM as content blocks on the assistant",
+                  "// message; before the fix Bedrock chat rejected them with \"unsupported content block type: thinking\".",
+                  "pm.test('394.2 bedrock/claude-haiku-4-5 /v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('394.2 bedrock/claude-haiku-4-5 /v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): thinking reaches Converse as the signed first assistant block', function () {",
+                  "  pm.expect(sig, '394.1 left no signature to replay').to.be.a('string').and.not.empty;",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var assistant = (rr.messages || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "  var first = (assistant.content || [])[0] || {};",
+                  "  var text = (first.reasoningContent || {}).reasoningText || {};",
+                  "  pm.expect(text.signature, 'assistant turn reached Converse without the signed thinking: ' + JSON.stringify(assistant).slice(0, 600)).to.eql(sig);",
+                  "  pm.expect(text.text, 'thinking text changed on the way to Converse').to.eql(pm.collectionVariables.get('tcbThinking'));",
+                  "});",
+                  "",
+                  "pm.test('394.2 bedrock/claude-haiku-4-5 /v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): the replayed tool call reaches Converse as a toolUse block', function () {",
+                  "  var call = JSON.parse(pm.collectionVariables.get('tcbToolCall') || 'null') || {};",
+                  "  var name = (call.function || {}).name || 'submit';",
+                  "  var assistant = ((rr && rr.messages) || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "  var block = (assistant.content || []).filter(function (b) { return b.toolUse; })[0] || {};",
+                  "  pm.expect(block.toolUse, 'assistant turn reached Converse without the replayed tool call: ' + JSON.stringify(assistant).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(block.toolUse.name).to.eql(name);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "394.3 bedrock/claude-haiku-4-5 /openai/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay) - #8954",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var call = JSON.parse(pm.collectionVariables.get('tcbToolCall') || 'null') || { id: 'missing_turn_one', type: 'function', function: { name: 'submit', arguments: '{}' } };",
+                  "var body = {",
+                  "  model: 'bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0',",
+                  "  max_tokens: 2048,",
+                  "  reasoning: { max_tokens: 1024 },",
+                  "  tools: [{\"type\":\"function\",\"function\":{\"name\":\"submit\",\"description\":\"Submit the product.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},\"required\":[\"value\"]}}}],",
+                  "  messages: [",
+                  "    {\"role\":\"user\",\"content\":\"Compute 17 * 23 carefully, then call submit with the product.\"},",
+                  "    { role: 'assistant', content: [{ type: 'thinking', thinking: pm.collectionVariables.get('tcbThinking') || '', signature: pm.collectionVariables.get('tcbSignature') || '' }], tool_calls: [call] },",
+                  "    { role: 'tool', tool_call_id: call.id, content: 'accepted' }",
+                  "  ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var sig = pm.collectionVariables.get('tcbSignature');",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// The OpenAI Agents SDK replays thinking through LiteLLM as content blocks on the assistant",
+                  "// message; before the fix Bedrock chat rejected them with \"unsupported content block type: thinking\".",
+                  "pm.test('394.3 bedrock/claude-haiku-4-5 /openai/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('394.3 bedrock/claude-haiku-4-5 /openai/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): thinking reaches Converse as the signed first assistant block', function () {",
+                  "  pm.expect(sig, '394.1 left no signature to replay').to.be.a('string').and.not.empty;",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var assistant = (rr.messages || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "  var first = (assistant.content || [])[0] || {};",
+                  "  var text = (first.reasoningContent || {}).reasoningText || {};",
+                  "  pm.expect(text.signature, 'assistant turn reached Converse without the signed thinking: ' + JSON.stringify(assistant).slice(0, 600)).to.eql(sig);",
+                  "  pm.expect(text.text, 'thinking text changed on the way to Converse').to.eql(pm.collectionVariables.get('tcbThinking'));",
+                  "});",
+                  "",
+                  "pm.test('394.3 bedrock/claude-haiku-4-5 /openai/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): the replayed tool call reaches Converse as a toolUse block', function () {",
+                  "  var call = JSON.parse(pm.collectionVariables.get('tcbToolCall') || 'null') || {};",
+                  "  var name = (call.function || {}).name || 'submit';",
+                  "  var assistant = ((rr && rr.messages) || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "  var block = (assistant.content || []).filter(function (b) { return b.toolUse; })[0] || {};",
+                  "  pm.expect(block.toolUse, 'assistant turn reached Converse without the replayed tool call: ' + JSON.stringify(assistant).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(block.toolUse.name).to.eql(name);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "394.4 bedrock/claude-haiku-4-5 /litellm/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay) - #8954",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var call = JSON.parse(pm.collectionVariables.get('tcbToolCall') || 'null') || { id: 'missing_turn_one', type: 'function', function: { name: 'submit', arguments: '{}' } };",
+                  "var body = {",
+                  "  model: 'bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0',",
+                  "  max_tokens: 2048,",
+                  "  reasoning: { max_tokens: 1024 },",
+                  "  tools: [{\"type\":\"function\",\"function\":{\"name\":\"submit\",\"description\":\"Submit the product.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},\"required\":[\"value\"]}}}],",
+                  "  messages: [",
+                  "    {\"role\":\"user\",\"content\":\"Compute 17 * 23 carefully, then call submit with the product.\"},",
+                  "    { role: 'assistant', content: [{ type: 'thinking', thinking: pm.collectionVariables.get('tcbThinking') || '', signature: pm.collectionVariables.get('tcbSignature') || '' }], tool_calls: [call] },",
+                  "    { role: 'tool', tool_call_id: call.id, content: 'accepted' }",
+                  "  ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var sig = pm.collectionVariables.get('tcbSignature');",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "// The OpenAI Agents SDK replays thinking through LiteLLM as content blocks on the assistant",
+                  "// message; before the fix Bedrock chat rejected them with \"unsupported content block type: thinking\".",
+                  "pm.test('394.4 bedrock/claude-haiku-4-5 /litellm/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('394.4 bedrock/claude-haiku-4-5 /litellm/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): thinking reaches Converse as the signed first assistant block', function () {",
+                  "  pm.expect(sig, '394.1 left no signature to replay').to.be.a('string').and.not.empty;",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var assistant = (rr.messages || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "  var first = (assistant.content || [])[0] || {};",
+                  "  var text = (first.reasoningContent || {}).reasoningText || {};",
+                  "  pm.expect(text.signature, 'assistant turn reached Converse without the signed thinking: ' + JSON.stringify(assistant).slice(0, 600)).to.eql(sig);",
+                  "  pm.expect(text.text, 'thinking text changed on the way to Converse').to.eql(pm.collectionVariables.get('tcbThinking'));",
+                  "});",
+                  "",
+                  "pm.test('394.4 bedrock/claude-haiku-4-5 /litellm/v1/chat/completions replays a thinking content block as signed reasoningContent (thinking content block replay): the replayed tool call reaches Converse as a toolUse block', function () {",
+                  "  var call = JSON.parse(pm.collectionVariables.get('tcbToolCall') || 'null') || {};",
+                  "  var name = (call.function || {}).name || 'submit';",
+                  "  var assistant = ((rr && rr.messages) || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "  var block = (assistant.content || []).filter(function (b) { return b.toolUse; })[0] || {};",
+                  "  pm.expect(block.toolUse, 'assistant turn reached Converse without the replayed tool call: ' + JSON.stringify(assistant).slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(block.toolUse.name).to.eql(name);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "394.5 anthropic/claude-sonnet-4-5 /v1/chat/completions turn 1 returns redacted thinking and a tool call (thinking content block replay) - #8954",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('tcbAnthBlocks');",
+                  "pm.collectionVariables.unset('tcbAnthToolCall');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var msg = ((body.choices || [])[0] || {}).message || {};",
+                  "var details = msg.reasoning_details || [];",
+                  "var redacted = details.filter(function (d) { return d.type === 'reasoning.encrypted' && d.data; });",
+                  "var calls = msg.tool_calls || [];",
+                  "",
+                  "pm.test('394.5 anthropic/claude-sonnet-4-5 /v1/chat/completions turn 1 returns redacted thinking and a tool call (thinking content block replay): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('394.5 anthropic/claude-sonnet-4-5 /v1/chat/completions turn 1 returns redacted thinking and a tool call (thinking content block replay): returns redacted thinking and a tool call for 394.6 to replay', function () {",
+                  "  pm.expect(redacted.length, 'no redacted thinking in reasoning_details: ' + txt.slice(0, 600)).to.be.at.least(1);",
+                  "  pm.expect(calls.length, 'no tool call: ' + txt.slice(0, 600)).to.be.at.least(1);",
+                  "});",
+                  "",
+                  "// Rebuild the turn as the content blocks a LiteLLM client replays.",
+                  "var blocks = details.map(function (d) {",
+                  "  if (d.type === 'reasoning.encrypted') { return { type: 'redacted_thinking', data: d.data }; }",
+                  "  return { type: 'thinking', thinking: d.text || '', signature: d.signature || '' };",
+                  "});",
+                  "if (redacted.length && calls.length) {",
+                  "  pm.collectionVariables.set('tcbAnthBlocks', JSON.stringify(blocks));",
+                  "  pm.collectionVariables.set('tcbAnthToolCall', JSON.stringify(calls[0]));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-4-5\",\n  \"max_tokens\": 4096,\n  \"reasoning\": {\n    \"max_tokens\": 2048\n  },\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"submit\",\n        \"description\": \"Submit the product.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"value\": {\n              \"type\": \"integer\"\n            }\n          },\n          \"required\": [\n            \"value\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB Compute 17 * 23 carefully, then call submit with the product.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "394.6 anthropic/claude-sonnet-4-5 /v1/chat/completions replays thinking and redacted_thinking content blocks unchanged (thinking content block replay) - #8954",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var call = JSON.parse(pm.collectionVariables.get('tcbAnthToolCall') || 'null') || { id: 'missing_turn_one', type: 'function', function: { name: 'submit', arguments: '{}' } };",
+                  "var blocks = JSON.parse(pm.collectionVariables.get('tcbAnthBlocks') || '[]');",
+                  "var body = {",
+                  "  model: 'anthropic/claude-sonnet-4-5',",
+                  "  max_tokens: 4096,",
+                  "  reasoning: { max_tokens: 2048 },",
+                  "  tools: [{\"type\":\"function\",\"function\":{\"name\":\"submit\",\"description\":\"Submit the product.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}},\"required\":[\"value\"]}}}],",
+                  "  messages: [",
+                  "    { role: 'user', content: \"ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB Compute 17 * 23 carefully, then call submit with the product.\" },",
+                  "    { role: 'assistant', content: blocks, tool_calls: [call] },",
+                  "    { role: 'tool', tool_call_id: call.id, content: 'accepted' }",
+                  "  ]",
+                  "};",
+                  "pm.request.body.raw = JSON.stringify(body);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var sent = JSON.parse(pm.collectionVariables.get('tcbAnthBlocks') || '[]');",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var assistant = ((rr && rr.messages) || []).filter(function (m) { return m.role === 'assistant'; })[0] || {};",
+                  "var outbound = (assistant.content || []).filter(function (b) { return b.type === 'thinking' || b.type === 'redacted_thinking'; });",
+                  "",
+                  "pm.test('394.6 anthropic/claude-sonnet-4-5 /v1/chat/completions replays thinking and redacted_thinking content blocks unchanged (thinking content block replay): request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('394.6 anthropic/claude-sonnet-4-5 /v1/chat/completions replays thinking and redacted_thinking content blocks unchanged (thinking content block replay): every thinking block reaches Anthropic unchanged and in order', function () {",
+                  "  pm.expect(sent.length, '394.5 left no thinking blocks to replay').to.be.at.least(1);",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(outbound.length, 'thinking blocks missing from the Anthropic request: ' + JSON.stringify(assistant).slice(0, 600)).to.eql(sent.length);",
+                  "  sent.forEach(function (b, i) {",
+                  "    pm.expect(outbound[i].type).to.eql(b.type);",
+                  "    if (b.type === 'redacted_thinking') { pm.expect(outbound[i].data, 'redacted data changed').to.eql(b.data); }",
+                  "    else {",
+                  "      pm.expect(outbound[i].signature, 'signature changed').to.eql(b.signature);",
+                  "      pm.expect(outbound[i].thinking, 'thinking text changed').to.eql(b.thinking);",
+                  "    }",
+                  "  });",
+                  "});",
+                  "",
+                  "pm.test('394.6 anthropic/claude-sonnet-4-5 /v1/chat/completions replays thinking and redacted_thinking content blocks unchanged (thinking content block replay): the replayed tool call reaches Anthropic as a tool_use block', function () {",
+                  "  var call = JSON.parse(pm.collectionVariables.get('tcbAnthToolCall') || 'null') || {};",
+                  "  var name = (call.function || {}).name || 'submit';",
+                  "  var block = (assistant.content || []).filter(function (b) { return b.type === 'tool_use'; })[0] || {};",
+                  "  pm.expect(block.name, 'assistant turn reached Anthropic without the replayed tool call: ' + JSON.stringify(assistant).slice(0, 600)).to.eql(name);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

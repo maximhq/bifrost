@@ -1298,6 +1298,19 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
+	// The client's reasoning_details are reread raw: assistantMsg also holds the
+	// entry synthesized from reasoning text, which the client never sent.
+	cm.MoveThinkingBlocksToReasoningDetails(func() []ChatReasoningDetails {
+		raw := gjson.GetBytes(data, "reasoning_details")
+		if !raw.IsArray() {
+			return nil
+		}
+		var sent []ChatReasoningDetails
+		if err := Unmarshal([]byte(raw.Raw), &sent); err != nil {
+			return nil
+		}
+		return sent
+	})
 	cm.AttachMessageCacheControl(base.CacheControl)
 	return nil
 }
@@ -1341,6 +1354,55 @@ func (cm *ChatMessage) AttachMessageCacheControl(marker *CacheControl) {
 			cm.ChatAssistantMessage = &assistant
 		}
 	}
+}
+
+// MoveThinkingBlocksToReasoningDetails moves an assistant message's thinking and
+// redacted_thinking content blocks onto ReasoningDetails, which every provider
+// converter replays. sentDetails returns the reasoning_details the client sent and
+// runs only when a thinking block is found. If any of them carries a payload they are
+// kept and the blocks are dropped; otherwise the blocks replace any details derived
+// from reasoning text.
+func (cm *ChatMessage) MoveThinkingBlocksToReasoningDetails(sentDetails func() []ChatReasoningDetails) {
+	if cm.Role != ChatMessageRoleAssistant || cm.Content == nil {
+		return
+	}
+	blocks := cm.Content.ContentBlocks
+	first := slices.IndexFunc(blocks, func(block ChatContentBlock) bool { return block.reasoning != nil })
+	if first < 0 {
+		return
+	}
+	var details []ChatReasoningDetails
+	kept := slices.Clone(blocks[:first])
+	for _, block := range blocks[first:] {
+		if block.reasoning == nil {
+			kept = append(kept, block)
+			continue
+		}
+		detail := *block.reasoning
+		detail.Index = len(details)
+		details = append(details, detail)
+	}
+	if len(kept) == 0 {
+		cm.Content = nil
+	} else {
+		cm.Content = &ChatMessageContent{ContentBlocks: kept}
+	}
+	if slices.ContainsFunc(sentDetails(), hasReasoningPayload) {
+		return
+	}
+	if cm.ChatAssistantMessage == nil {
+		cm.ChatAssistantMessage = &ChatAssistantMessage{}
+	}
+	cm.ChatAssistantMessage.ReasoningDetails = details
+}
+
+func hasReasoningPayload(d ChatReasoningDetails) bool {
+	for _, field := range []*string{d.Text, d.Summary, d.Signature, d.Data} {
+		if field != nil && *field != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // ChatMessageContent represents a content in a message.
@@ -1407,6 +1469,11 @@ const (
 	ChatContentBlockTypeInputAudio ChatContentBlockType = "input_audio"
 	ChatContentBlockTypeFile       ChatContentBlockType = "file"
 	ChatContentBlockTypeRefusal    ChatContentBlockType = "refusal"
+
+	// JSON ingress only: MoveThinkingBlocksToReasoningDetails lifts these off assistant
+	// messages. A Go caller cannot build one; set ChatAssistantMessage.ReasoningDetails.
+	ChatContentBlockTypeThinking         ChatContentBlockType = "thinking"
+	ChatContentBlockTypeRedactedThinking ChatContentBlockType = "redacted_thinking"
 )
 
 // ChatContentBlock represents a content block in a message.
@@ -1431,6 +1498,8 @@ type ChatContentBlock struct {
 
 	// GuardContent marks this text or image block for selective guardrail evaluation (Bedrock).
 	GuardContent *GuardContent `json:"guard_content,omitempty"`
+
+	reasoning *ChatReasoningDetails
 }
 
 // UnmarshalJSON normalizes Anthropic-style document content blocks
@@ -1465,6 +1534,25 @@ func (c *ChatContentBlock) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*c = ChatContentBlock(a)
+	c.reasoning = thinkingBlockReasoning(c.Type, data)
+	return nil
+}
+
+// thinkingBlockReasoning reads an Anthropic thinking or redacted_thinking block,
+// the shape LiteLLM-based clients use to replay assistant reasoning.
+func thinkingBlockReasoning(blockType ChatContentBlockType, data []byte) *ChatReasoningDetails {
+	field := func(path string) *string {
+		if value := gjson.GetBytes(data, path); value.Type == gjson.String {
+			return Ptr(value.String())
+		}
+		return nil
+	}
+	switch blockType {
+	case ChatContentBlockTypeThinking:
+		return &ChatReasoningDetails{Type: BifrostReasoningDetailsTypeText, Text: field("thinking"), Signature: field("signature")}
+	case ChatContentBlockTypeRedactedThinking:
+		return &ChatReasoningDetails{Type: BifrostReasoningDetailsTypeEncrypted, Data: field("data")}
+	}
 	return nil
 }
 

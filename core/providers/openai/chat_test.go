@@ -3862,6 +3862,58 @@ func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	require.Equal(t, 3, strings.Count(string(body), `"cache_control"`), "all three breakpoints must reach OpenRouter: %s", body)
 }
 
+func TestConvertOpenAIMessagesToBifrostMessages_ThinkingContentBlocks(t *testing.T) {
+	var msg OpenAIMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","content":[
+		{"type":"thinking","thinking":"I multiply.","signature":"SIG1"}],
+		"tool_calls":[{"id":"c1","type":"function","function":{"name":"submit","arguments":"{}"}}]}`), &msg))
+
+	converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+	require.Len(t, converted, 1)
+	require.Nil(t, converted[0].Content, "the thinking block must leave content")
+	require.NotNil(t, converted[0].ChatAssistantMessage)
+	require.Len(t, converted[0].ChatAssistantMessage.ToolCalls, 1)
+	require.Len(t, converted[0].ChatAssistantMessage.ReasoningDetails, 1)
+	detail := converted[0].ChatAssistantMessage.ReasoningDetails[0]
+	require.Equal(t, schemas.BifrostReasoningDetailsTypeText, detail.Type)
+	require.Equal(t, "I multiply.", *detail.Text)
+	require.Equal(t, "SIG1", *detail.Signature)
+	require.NotNil(t, converted[0].ChatAssistantMessage.Reasoning,
+		"moved thinking text must reach Reasoning like reasoning_details text does")
+	require.Equal(t, "I multiply.", *converted[0].ChatAssistantMessage.Reasoning)
+}
+
+func TestConvertOpenAIMessagesToBifrostMessages_NullReasoningDetailsKeepThinkingBlocks(t *testing.T) {
+	var msg OpenAIMessage
+	require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","reasoning_details":null,
+		"content":[{"type":"thinking","thinking":"t","signature":"s"}],
+		"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}`), &msg))
+
+	converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+	require.Len(t, converted, 1)
+	require.NotNil(t, converted[0].ChatAssistantMessage)
+	require.Len(t, converted[0].ChatAssistantMessage.ReasoningDetails, 1)
+	require.Equal(t, "s", *converted[0].ChatAssistantMessage.ReasoningDetails[0].Signature)
+}
+
+func TestConvertOpenAIMessagesToBifrostMessages_EmptyReasoningDetailsKeepThinkingBlocks(t *testing.T) {
+	for name, sent := range map[string]string{"empty list": `[]`, "only empty entries": `[{"type":"reasoning.text","text":""}]`, "only empty strings": `[{"type":"reasoning.encrypted","data":""},{"type":"reasoning.text","signature":""}]`} {
+		t.Run(name, func(t *testing.T) {
+			var msg OpenAIMessage
+			require.NoError(t, sonic.Unmarshal([]byte(`{"role":"assistant","reasoning_details":`+sent+`,
+				"content":[{"type":"thinking","thinking":"t","signature":"s"},{"type":"text","text":"hi"}]}`), &msg))
+
+			converted := ConvertOpenAIMessagesToBifrostMessages([]OpenAIMessage{msg})
+			require.Len(t, converted, 1)
+			require.NotNil(t, converted[0].ChatAssistantMessage)
+			require.Len(t, converted[0].ChatAssistantMessage.ReasoningDetails, 1)
+			require.Equal(t, "s", *converted[0].ChatAssistantMessage.ReasoningDetails[0].Signature)
+			require.Len(t, converted[0].Content.ContentBlocks, 1)
+			require.Equal(t, schemas.ChatContentBlockTypeText, converted[0].Content.ContentBlocks[0].Type)
+		})
+	}
+}
+
 func zeroCostUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

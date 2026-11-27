@@ -19,6 +19,7 @@ package schemas
 //	go test ./core/schemas/ -bench 'Chat|Tool' -benchmem
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -284,5 +285,33 @@ func BenchmarkChatMessagesUnmarshal(b *testing.B) {
 		if err := Unmarshal(data, &messages); err != nil {
 			b.Fatalf("unmarshal messages: %v", err)
 		}
+	}
+}
+
+// BenchmarkChatMessagesUnmarshalByShape measures decoding a chat request's messages: a user turn
+// with a large inline payload, assistant turns with text blocks only, and assistant turns
+// replaying thinking blocks. Only the last carries thinking blocks to move.
+func BenchmarkChatMessagesUnmarshalByShape(b *testing.B) {
+	repeat := func(n int, message string) []byte {
+		return []byte("[" + strings.TrimSuffix(strings.Repeat(message+",", n), ",") + "]")
+	}
+	textBlocks := `{"role":"assistant","content":[{"type":"text","text":"Calling submit."},{"type":"text","text":"Done."}]}`
+	thinkingBlocks := `{"role":"assistant","content":[{"type":"thinking","thinking":"I multiply.","signature":"SIG1"},{"type":"text","text":"Calling submit."}],` +
+		`"tool_calls":[{"id":"c1","type":"function","function":{"name":"submit","arguments":"{}"}}]}`
+	cases := map[string][]byte{
+		"user_1MB":                  repeat(1, `{"role":"user","content":"`+strings.Repeat("a", 1<<20)+`"}`),
+		"assistant_text_blocks":     repeat(100, textBlocks),
+		"assistant_thinking_blocks": repeat(100, thinkingBlocks),
+	}
+	for name, data := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				var messages []ChatMessage
+				if err := Unmarshal(data, &messages); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
