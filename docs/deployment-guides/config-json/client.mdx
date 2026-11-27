@@ -149,13 +149,15 @@ Controls which `x-bf-eh-*` extra headers are forwarded to upstream LLM providers
 
 When both `allowlist` and `denylist` are empty, all `x-bf-eh-*` headers pass through. Specifying an `allowlist` enables strict whitelist mode - only listed headers are forwarded.
 
+The direct `User-Agent` header is not forwarded by default. A prefixed `x-bf-eh-user-agent` still passes through when both lists are empty and is forwarded as `User-Agent`; with an allowlist configured, list `user-agent` to forward the direct header (entries are written without the `x-bf-eh-` prefix). When nothing sets a user agent, the transport supplies one: fasthttp sends `User-Agent: fasthttp`, while provider paths built on `net/http` (for example Bedrock Converse) use that stack's default. Some providers set their own value regardless (GitHub Copilot, Azure speech), and `network_config.extra_headers` does not replace an existing header, so it cannot override those.
+
 ```json
 {
   "client": {
     "header_filter_config": {
       "allowlist": [
-        "x-bf-eh-anthropic-version",
-        "x-bf-eh-openai-beta"
+        "anthropic-version",
+        "openai-beta"
       ],
       "denylist": []
     },
