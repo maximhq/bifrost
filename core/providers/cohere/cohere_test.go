@@ -226,6 +226,13 @@ func TestCohereChatStreamMessageEndCachedTokensWithoutTokens(t *testing.T) {
 	require.NotNil(t, streamResp.Usage.PromptTokensDetails)
 	assert.Equal(t, 96, streamResp.Usage.PromptTokensDetails.CachedReadTokens)
 	assert.Equal(t, 0, streamResp.Usage.TotalTokens)
+
+	// Same usage as the non-streaming conversion of the same Cohere usage.
+	nonStream := (&cohere.CohereChatResponse{
+		FinishReason: schemas.Ptr(cohere.FinishReasonComplete),
+		Usage:        &cohere.CohereUsage{CachedTokens: schemas.Ptr(96)},
+	}).ToBifrostChatResponse("command-a-03-2025")
+	assert.Equal(t, nonStream.Usage, streamResp.Usage)
 }
 
 func BenchmarkCohereChatStreamMessageEnd(b *testing.B) {
