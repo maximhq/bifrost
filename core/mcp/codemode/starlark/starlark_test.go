@@ -1867,6 +1867,108 @@ func TestReadToolFileClientCapOverridesConfiguredGlobal(t *testing.T) {
 	}
 }
 
+// The "# Total lines: N" header is what a model uses to decide whether it already holds the
+// whole file, so N must equal the number of lines readToolFile actually returns (#9841), and
+// startLine/endLine must page over the same N lines: line N is the last def, and a startLine
+// past N clamps to it instead of returning the empty string after the final newline.
+func TestReadToolFileTotalLinesHeaderMatchesLinesReturned(t *testing.T) {
+	cases := []struct {
+		name     string
+		level    schemas.CodeModeBindingLevel
+		fileName string
+	}{
+		{name: "server with instructions", level: schemas.CodeModeBindingLevelServer, fileName: "servers/codey.pyi"},
+		{name: "server without instructions", level: schemas.CodeModeBindingLevelServer, fileName: "servers/plain.pyi"},
+		{name: "single tool file", level: schemas.CodeModeBindingLevelTool, fileName: "servers/codey/add.pyi"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mode := newInstructionsCodeMode(tc.level)
+			read := func(extraArgs string) string {
+				msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+					ID:       schemas.Ptr("tool-call-1"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"` + tc.fileName + `"` + extraArgs + `}`},
+				})
+				return instructionsToolResponse(t, msg, err)
+			}
+			content := read("")
+
+			header, _, _ := strings.Cut(content, "\n")
+			countText, ok := strings.CutPrefix(header, "# Total lines: ")
+			if !ok {
+				t.Fatalf("first line is not the Total lines header, got:\n%s", content)
+			}
+			countText, _, _ = strings.Cut(countText, " ")
+			claimed, err := strconv.Atoi(countText)
+			if err != nil {
+				t.Fatalf("header %q does not carry a line count: %v", header, err)
+			}
+
+			returned := len(strings.Split(strings.TrimSuffix(content, "\n"), "\n"))
+			if claimed != returned {
+				t.Fatalf("header claims %d lines but readToolFile returned %d, got:\n%s", claimed, returned, content)
+			}
+
+			n := strconv.Itoa(claimed)
+			last := read(`,"startLine":` + n + `,"endLine":` + n)
+			if !strings.HasPrefix(last, "def ") {
+				t.Fatalf("line %d (the header count) should be the last def line, got %q from:\n%s", claimed, last, content)
+			}
+			if past := read(`,"startLine":` + strconv.Itoa(claimed+1)); past != last {
+				t.Fatalf("startLine %d should clamp to the last line %q, got %q", claimed+1, last, past)
+			}
+		})
+	}
+}
+
+// BenchmarkReadToolFile measures one readToolFile call (stub generation, the Total lines header
+// and the startLine/endLine split) on a server stub with 1, 100 and 1000 tools, read whole and
+// paged.
+func BenchmarkReadToolFile(b *testing.B) {
+	for _, toolCount := range []int{1, 100, 1000} {
+		tools := make([]schemas.ChatTool, toolCount)
+		for i := range tools {
+			tools[i] = schemas.ChatTool{Function: &schemas.ChatToolFunction{
+				Name:        "bench-tool" + strconv.Itoa(i),
+				Description: schemas.Ptr("Benchmark tool number " + strconv.Itoa(i)),
+			}}
+		}
+		mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
+			BindingLevel:         schemas.CodeModeBindingLevelServer,
+			ToolExecutionTimeout: time.Second,
+		}, nil)
+		mode.clientManager = &testClientManager{
+			clients: map[string]*schemas.MCPClientState{
+				"bench": {
+					Name:            "bench",
+					ExecutionConfig: &schemas.MCPClientConfig{ID: "bench-id", Name: "bench", IsCodeModeClient: true},
+				},
+			},
+			tools: map[string][]schemas.ChatTool{"bench": tools},
+		}
+		for _, read := range []struct {
+			name string
+			args string
+		}{
+			{"full", `{"fileName":"servers/bench.pyi"}`},
+			{"paged", `{"fileName":"servers/bench.pyi","startLine":2,"endLine":10}`},
+		} {
+			call := schemas.ChatAssistantMessageToolCall{
+				ID:       schemas.Ptr("bench-call"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: read.args},
+			}
+			b.Run("tools="+strconv.Itoa(toolCount)+"/"+read.name, func(b *testing.B) {
+				b.ReportAllocs()
+				for b.Loop() {
+					if _, err := mode.handleReadToolFile(context.Background(), call); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
 // A per-call client (per-user OAuth, per-user headers, token exchange) gets its tools back from
 // the config store after a restart instead of from a live tools/list. That decode turns every
 // nested schema object into *OrderedMap, where live discovery keeps plain maps, and the stubs

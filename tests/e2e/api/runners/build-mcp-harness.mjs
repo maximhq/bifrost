@@ -2922,11 +2922,33 @@ const INF51 = folder("INF-51 readToolFile success and slicing", `Setup: ${CM_TEX
   execBody("INF-51", "readToolFile servers/cm.pyi", toolCall("readToolFile", { fileName: "servers/cm.pyi" }), [A.status(200), noIsError(), A.custom("line 1 is \"# Total lines: N (this is the complete file, no need to paginate)\"", [
     "var first = pm.response.json().content.split('\\n')[0];",
     "pm.expect(first, 'body: ' + pm.response.text()).to.match(/^# Total lines: \\d+ \\(this is the complete file, no need to paginate\\)$/);",
-  ]), contentHas("# cm server tools")], { extraTests: ["pm.collectionVariables.set('inf51_line2', pm.response.json().content.split('\\n')[1]);"] }),
+  ]), A.custom("N in the header equals the number of lines returned", [
+    "var c = pm.response.json().content;",
+    "var n = parseInt(c.split('\\n')[0].replace('# Total lines: ', ''), 10);",
+    "pm.expect(n, 'body: ' + pm.response.text()).to.equal(c.replace(/\\n$/, '').split('\\n').length);",
+  ]), contentHas("# cm server tools")], { extraTests: [
+    "var c = pm.response.json().content;",
+    "var lines = c.replace(/\\n$/, '').split('\\n');",
+    "var n = parseInt(lines[0].replace('# Total lines: ', ''), 10);",
+    "pm.collectionVariables.set('inf51_line2', lines[1]);",
+    "pm.collectionVariables.set('inf51_n', String(n));",
+    "pm.collectionVariables.set('inf51_n_plus_1', String(n + 1));",
+    "pm.collectionVariables.set('inf51_last', lines[lines.length - 1]);",
+  ] }),
   meta("INF-51", "readToolFile servers/cm.pyi lines 2 to 2", "readToolFile", { fileName: "servers/cm.pyi", startLine: 2, endLine: 2 }, [A.status(200), A.custom("content is exactly line 2 of the full read", [
     "var c = pm.response.json().content;",
     "pm.expect(c, 'body: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
     "pm.expect(c).to.equal(pm.collectionVariables.get('inf51_line2'));",
+  ])]),
+  meta("INF-51", "readToolFile servers/cm.pyi lines N to N, N from the header", "readToolFile", '{"fileName":"servers/cm.pyi","startLine":{{inf51_n}},"endLine":{{inf51_n}}}', [A.status(200), A.custom("content is the last def line of the full read", [
+    "var c = pm.response.json().content;",
+    "pm.expect(c, 'body: ' + pm.response.text()).to.match(/^def /);",
+    "pm.expect(c).to.equal(pm.collectionVariables.get('inf51_last'));",
+  ])]),
+  meta("INF-51", "readToolFile servers/cm.pyi from line N+1 clamps to line N", "readToolFile", '{"fileName":"servers/cm.pyi","startLine":{{inf51_n_plus_1}}}', [A.status(200), A.custom("content is the last def line, not the empty string after the final newline", [
+    "var c = pm.response.json().content;",
+    "pm.expect(c, 'body: ' + pm.response.text()).to.not.equal('');",
+    "pm.expect(c).to.equal(pm.collectionVariables.get('inf51_last'));",
   ])]),
   cmTeardown("INF-51"),
 ]);
