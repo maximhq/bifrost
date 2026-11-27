@@ -432,18 +432,6 @@ bifrost:
     # webhookConfig:
     #   deliveryHistoryRetentionDays: 30   # How long delivery history records are kept before being reaped.
     logRetentionDays: 365
-    # vectorRetentionDays -- Upper bound, in days, on vector store entries tied to logs (Warp's log
-    # index, the complexity router's captured requests). While log cleanup runs (a logs store under
-    # storage.logsStore), 0 follows logRetentionDays and a larger value is capped at it. Without a
-    # logs store, a positive value applies on its own and 0 sets no retention limit. A complexity
-    # router still drops its captured requests after its own suggestions lookback (7 days unless set).
-    # Renders into client.vector_retention_days.
-    # vectorRetentionDays: 30
-    # vectorMaxSizeMB -- Storage limit in MB for all log-derived vectors together (estimated). Past 80%
-    # of it, the hourly sweep deletes the oldest down to 65%. 0 sets no limit; at most
-    # 8796093022207 (the largest whose size in bytes fits in an int64). Renders into
-    # client.vector_max_size_mb.
-    # vectorMaxSizeMB: 2048
     # Deprecated: use enforceAuthOnInference instead.
     enforceGovernanceHeader: false
     # Require auth (VK, API key, or user token) on inference endpoints.
@@ -2423,11 +2411,25 @@ postgresql:
   metrics:
     enabled: false
 
-# Vector store configuration
+# Vector store configuration: the primary store, which semantic caching, the complexity
+# router and Warp use unless they select another store from vectorStores below.
 vectorStore:
   # Enable vector store for semantic caching and semantic complexity routing
   enabled: false
   type: none # Options: none, weaviate, redis, qdrant, pinecone, chromem
+  # name -- The name this store is selected by; defaults to its type (e.g. "weaviate").
+  # Renders into vector_store.name.
+  # name: ""
+  # retentionDays -- Upper bound, in days, on vectors built from logs in this store (Warp's log
+  # index, the complexity router's captured requests). While log cleanup runs, 0 follows
+  # bifrost.client.logRetentionDays and a larger value is capped at it; without a logs store a
+  # positive value applies on its own. Seeds the setting Settings > Vector Stores edits; a value
+  # changed here wins at the next restart. Renders into vector_store.retention_days.
+  # retentionDays: 30
+  # maxSizeMB -- Storage limit in MB for the vectors built from logs in this store (estimated).
+  # Past 80% of it the hourly sweep deletes the oldest down to 65%. 0 sets no limit; at most
+  # 8796093022207. Seeds the setting like retentionDays. Renders into vector_store.max_size_mb.
+  # maxSizeMB: 2048
 
   # Weaviate configuration
   weaviate:
@@ -2659,6 +2661,23 @@ vectorStore:
   chromem:
     path: ""       # Directory for file persistence; empty keeps an in-memory store that re-populates on restart
     compress: false # Gzip-compress persisted documents (only used when path is set)
+
+# vectorStores -- More vector stores alongside vectorStore, each selected by its name. Rendered
+# as written into config.json's vector_stores: each entry is {name, enabled, type, config,
+# retention_days, max_size_mb}, with config in config.json's shape for that type (snake_case
+# keys); retention_days and max_size_mb work as vectorStore's. Stores reaching the same
+# endpoint share one connection. One that cannot be reached at startup leaves only what selects
+# it unavailable. Keep credentials out of values with "env.VAR" references and env below.
+vectorStores: []
+  # - name: warp-qdrant
+  #   enabled: true
+  #   type: qdrant
+  #   config:
+  #     host: qdrant.internal
+  #     port: "6334"
+  #     api_key: env.WARP_QDRANT_API_KEY
+  #   retention_days: 14
+  #   max_size_mb: 4096
 
 # Environment variables
 env: []

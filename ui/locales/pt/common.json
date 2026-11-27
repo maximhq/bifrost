@@ -355,6 +355,8 @@
 		"valueMustBeAPositiveWholeNumber": "Deve ser um número inteiro positivo",
 		"vectorRetentionDaysAtMost106751": "A retenção de vetores pode ser de no máximo 106751 dias.",
 		"vectorMaxSizeMustBeAWholeNumber": "O limite de armazenamento deve ser um número inteiro de MB.",
+		"vectorRetentionDaysMustBeAWholeNumber": "A retenção deve ser um número inteiro de dias.",
+		"vectorMaxSizeAtMost8796093022207": "O limite de tamanho pode ser no máximo de 8796093022207 MB.",
 		"mustBeAJsonObject": "Deve ser um objeto JSON",
 		"providerCannotBePatched": "provider não pode ser alterado; ele identifica a entrada",
 		"customProviderNameIsRequired": "O nome do fornecedor personalizado é obrigatório",

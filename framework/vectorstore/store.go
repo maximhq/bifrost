@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -239,18 +241,27 @@ func IsScanFallbackDisabled(ctx context.Context) bool {
 
 // Config represents the configuration for the vector store.
 type Config struct {
+	Name    string          `json:"name,omitempty"` // how consumers select the store; see Registry
 	Enabled bool            `json:"enabled"`
 	Type    VectorStoreType `json:"type"`
 	Config  any             `json:"config"`
+	// RetentionDays and MaxSizeMB seed this store's settings, which the dashboard can then edit:
+	// how long vectors built from logs are kept in it (0 follows the logs) and its storage limit
+	// (0 sets none).
+	RetentionDays int `json:"retention_days,omitempty"`
+	MaxSizeMB     int `json:"max_size_mb,omitempty"`
 }
 
 // UnmarshalJSON unmarshals the config from JSON.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	// First, unmarshal into a temporary struct to get the basic fields
 	type TempConfig struct {
-		Enabled bool            `json:"enabled"`
-		Type    string          `json:"type"`
-		Config  json.RawMessage `json:"config"` // Keep as raw JSON
+		Name          string          `json:"name"`
+		RetentionDays int             `json:"retention_days"`
+		MaxSizeMB     int             `json:"max_size_mb"`
+		Enabled       bool            `json:"enabled"`
+		Type          string          `json:"type"`
+		Config        json.RawMessage `json:"config"` // Keep as raw JSON
 	}
 
 	var temp TempConfig
@@ -259,6 +270,9 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 
 	// Set basic fields
+	c.Name = temp.Name
+	c.RetentionDays = temp.RetentionDays
+	c.MaxSizeMB = temp.MaxSizeMB
 	c.Enabled = temp.Enabled
 	c.Type = VectorStoreType(temp.Type)
 
@@ -303,6 +317,59 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// Location names where a store keeps its data: its type and endpoint, never its
+// credentials. Two configurations with the same Location reach the same data, so
+// a caller can tell a moved store from a rotated key. Each part is the one the
+// client connects with, defaults filled in: an omitted Qdrant port is 6334 and
+// an omitted Redis database is 0, as the clients use them, and the Weaviate
+// scheme is kept, since http and https on one host are different endpoints. An
+// unknown type, or a config that does not match its type, has no location.
+func (c *Config) Location() string {
+	if c == nil {
+		return ""
+	}
+	value := func(v *schemas.SecretVar) string {
+		if v == nil {
+			return ""
+		}
+		return strings.TrimSpace(v.GetValue())
+	}
+	switch cfg := c.Config.(type) {
+	case WeaviateConfig:
+		return "weaviate+" + strings.ToLower(strings.TrimSpace(cfg.Scheme)) + "://" + value(cfg.Host)
+	case QdrantConfig:
+		return "qdrant://" + value(&cfg.Host) + ":" + strconv.Itoa(cfg.Port.CoerceInt(qdrantDefaultPort))
+	case RedisConfig:
+		// The database number as the client parses it, so "0", "00" and an omitted one are one database.
+		db := 0
+		if cfg.DB != nil {
+			db = cfg.DB.CoerceInt(0)
+		}
+		return "redis://" + value(cfg.Addr) + "/" + strconv.Itoa(db)
+	case PineconeConfig:
+		return "pinecone://" + value(&cfg.IndexHost)
+	case ChromemConfig:
+		// One directory written two ways ("/data/vectors/", "/data/./vectors",
+		// or "vectors" run from /data) is one store. No path is memory-only.
+		return "chromem://" + chromemPath(cfg.Path)
+	case nil:
+		if c.Type == VectorStoreTypeChromem {
+			return "chromem://"
+		}
+	}
+	return ""
+}
+
+// InMemory reports whether the store keeps nothing across a restart: Chromem
+// with no path. Each start of one is a new, empty store, whatever its Location.
+func (c *Config) InMemory() bool {
+	if c == nil || c.Type != VectorStoreTypeChromem {
+		return false
+	}
+	cfg, _ := c.Config.(ChromemConfig)
+	return strings.TrimSpace(cfg.Path) == ""
 }
 
 // NewVectorStore returns a new vector store based on the configuration.

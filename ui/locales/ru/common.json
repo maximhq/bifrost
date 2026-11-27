@@ -373,6 +373,8 @@
 		"valueMustBeAPositiveWholeNumber": "Должно быть целым положительным числом",
 		"vectorRetentionDaysAtMost106751": "Срок хранения векторов не может превышать 106751 дня.",
 		"vectorMaxSizeMustBeAWholeNumber": "Лимит хранилища должен быть целым числом в МБ.",
+		"vectorRetentionDaysMustBeAWholeNumber": "Срок хранения должен быть целым числом дней.",
+		"vectorMaxSizeAtMost8796093022207": "Ограничение размера не может превышать 8796093022207 МБ.",
 		"mustBeAJsonObject": "Должен быть объект JSON",
 		"providerCannotBePatched": "provider нельзя изменить: он определяет запись",
 		"customProviderNameIsRequired": "Укажите название пользовательского провайдера",

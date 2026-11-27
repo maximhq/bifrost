@@ -245,6 +245,7 @@ export const baseApi = createApi({
 		"AgentLogs",
 		"Relays",
 		"RelayLogs",
+		"VectorStores",
 	],
 	endpoints: () => ({}),
 });

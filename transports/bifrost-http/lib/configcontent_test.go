@@ -43,13 +43,14 @@ const configContentJSON = `"providers": {"openai": {"keys": [
 	"model_routers": [{"id": "support", "name": "Support",
 		"keywords": {"simple_keywords": ["hello"], "medium_keywords": ["refactor"], "complex_keywords": ["design"]}}],
 	"datasheet_overrides": [{"provider": "openai", "model": "gpt-4o", "mode": "chat", "pricing_patch": {"input_cost_per_token": 0.000001}}],
-	"feature_flags": {"flags": {"config-content-flag": {"enabled": true}}}`
+	"feature_flags": {"flags": {"config-content-flag": {"enabled": true}}},
+	"vector_stores": [{"name": "log-vectors", "enabled": true, "type": "chromem", "retention_days": 7, "max_size_mb": 512}]`
 
 // TestConfigJSONContentPerMode pins, in one place, which config.json content kinds each mode
 // loads. With a config store every kind does, through the database. Without one only providers
 // and governance reach the live store, routing rules excepted, and MCP clients, virtual MCPs,
 // webhooks, agents, relays, model routers and routing rules are skipped as their loaders have
-// always done. Relays have no collection, so they are read from the config store the relay
+// always done. Vector store settings load in both modes. Relays have no collection, so they are read from the config store the relay
 // manager is built from. Datasheet overrides and feature flags are tables their owners fill in
 // both modes, read through the model catalog and the feature flag store. It also pins that the
 // boot struct is gone once LoadConfig returns and that the governance settings stay on Config
@@ -98,6 +99,11 @@ func TestConfigJSONContentPerMode(t *testing.T) {
 			relays = len(stored)
 		}
 		require.Equal(t, want, relays, "%s: relays load only with a config store", tc.mode)
+
+		vectorSettings, vectorSettingsLoaded := c.VectorStoreSettings.Get("log-vectors")
+		require.True(t, vectorSettingsLoaded, "%s: vector store settings load in both modes", tc.mode)
+		require.Equal(t, 7, vectorSettings.RetentionDays, tc.mode)
+		require.Equal(t, 512, vectorSettings.MaxSizeMB, tc.mode)
 
 		require.NotNil(t, tc.config.ModelCatalog.FindDatasheetOverride("openai", "gpt-4o", "chat"),
 			"%s: datasheet overrides load in both modes", tc.mode)

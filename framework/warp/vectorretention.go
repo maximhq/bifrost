@@ -160,7 +160,7 @@ func (s *Service) retryVectorDeletes(ctx context.Context) (int, error) {
 // retentionCutoff is now less a retention of days. A retention too long for a
 // time.Duration would wrap into a cutoff after now and sweep everything, so it
 // is held at the longest that fits, which keeps every vector a real
-// deployment has. Validation bounds vector_retention_days the same way; this
+// deployment has. Validation bounds retention_days the same way; this
 // also covers a long log retention, which the effective retention follows.
 func retentionCutoff(now time.Time, days int) time.Time {
 	return now.Add(-time.Duration(min(days, configstore.MaxVectorRetentionDays)) * 24 * time.Hour)

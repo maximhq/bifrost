@@ -3185,88 +3185,53 @@ func TestValidateClientConfig_MCPOpenAPIMaxSpecMB(t *testing.T) {
 	}
 }
 
-// TestValidateClientConfig_VectorRetentionDays: PUT /api/config refuses a
-// negative vector_retention_days, and config.json reaches the runtime through
-// validateClientConfig, so the same bound holds there. 0 follows the logs.
-func TestValidateClientConfig_VectorRetentionDays(t *testing.T) {
-	for _, days := range []int{0, 1, 30, 365} {
-		require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: days}), "days=%d", days)
+// config.json's schema and the Helm chart's values schema publish the retention_days and
+// max_size_mb maximums the code enforces, for the primary store and each vector_stores entry.
+func TestVectorStoreSettingsSchemaMaximumsMatchTheCode(t *testing.T) {
+	type bounded struct {
+		Maximum int `json:"maximum"`
 	}
-	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: -1}), "vector_retention_days")
-	// The longest whose span fits in a time.Duration is accepted; one day more
-	// would wrap the vector sweep's cutoff into the future.
-	require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: configstore.MaxVectorRetentionDays}))
-	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorRetentionDays: configstore.MaxVectorRetentionDays + 1}), "vector_retention_days")
-}
-
-// config.schema.json publishes the same maximum the code enforces.
-func TestVectorRetentionDaysSchemaMaximumMatchesTheCode(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), "transports", "config.schema.json"))
 	require.NoError(t, err)
 	var schema struct {
 		Properties struct {
-			Client struct {
+			VectorStore struct {
 				Properties struct {
-					VectorRetentionDays struct {
-						Maximum int `json:"maximum"`
-					} `json:"vector_retention_days"`
+					RetentionDays bounded `json:"retention_days"`
+					MaxSizeMB     bounded `json:"max_size_mb"`
 				} `json:"properties"`
-			} `json:"client"`
+			} `json:"vector_store"`
 		} `json:"properties"`
 	}
 	require.NoError(t, json.Unmarshal(data, &schema))
-	require.Equal(t, configstore.MaxVectorRetentionDays, schema.Properties.Client.Properties.VectorRetentionDays.Maximum)
-}
-
-func TestValidateClientConfig_VectorMaxSizeMB(t *testing.T) {
-	for _, mb := range []int{0, 1, 2048} {
-		require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: mb}), "mb=%d", mb)
-	}
-	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: -1}), "vector_max_size_mb")
-	// The largest whose byte count fits in an int64 is accepted; one MB more
-	// would overflow the sweep's limit into a negative number.
-	require.NoError(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: configstore.MaxVectorMaxSizeMB}))
-	require.ErrorContains(t, validateClientConfig(&configstore.ClientConfig{VectorMaxSizeMB: configstore.MaxVectorMaxSizeMB + 1}), "vector_max_size_mb")
-}
-
-// config.schema.json and the Helm chart's values.schema.json publish the same
-// vector_max_size_mb maximum the code enforces.
-func TestVectorMaxSizeMBSchemaMaximumMatchesTheCode(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(repoRoot(t), "transports", "config.schema.json"))
-	require.NoError(t, err)
-	var schema struct {
-		Properties struct {
-			Client struct {
-				Properties struct {
-					VectorMaxSizeMB struct {
-						Maximum int `json:"maximum"`
-					} `json:"vector_max_size_mb"`
-				} `json:"properties"`
-			} `json:"client"`
-		} `json:"properties"`
-	}
-	require.NoError(t, json.Unmarshal(data, &schema))
-	require.Equal(t, configstore.MaxVectorMaxSizeMB, schema.Properties.Client.Properties.VectorMaxSizeMB.Maximum)
+	require.Equal(t, configstore.MaxVectorRetentionDays, schema.Properties.VectorStore.Properties.RetentionDays.Maximum)
+	require.Equal(t, configstore.MaxVectorMaxSizeMB, schema.Properties.VectorStore.Properties.MaxSizeMB.Maximum)
 
 	data, err = os.ReadFile(filepath.Join(repoRoot(t), "helm-charts", "bifrost", "values.schema.json"))
 	require.NoError(t, err)
 	var values struct {
 		Properties struct {
-			Bifrost struct {
+			VectorStore struct {
 				Properties struct {
-					Client struct {
-						Properties struct {
-							VectorMaxSizeMB struct {
-								Maximum int `json:"maximum"`
-							} `json:"vectorMaxSizeMB"`
-						} `json:"properties"`
-					} `json:"client"`
+					RetentionDays bounded `json:"retentionDays"`
+					MaxSizeMB     bounded `json:"maxSizeMB"`
 				} `json:"properties"`
-			} `json:"bifrost"`
+			} `json:"vectorStore"`
+			VectorStores struct {
+				Items struct {
+					Properties struct {
+						RetentionDays bounded `json:"retention_days"`
+						MaxSizeMB     bounded `json:"max_size_mb"`
+					} `json:"properties"`
+				} `json:"items"`
+			} `json:"vectorStores"`
 		} `json:"properties"`
 	}
 	require.NoError(t, json.Unmarshal(data, &values))
-	require.Equal(t, configstore.MaxVectorMaxSizeMB, values.Properties.Bifrost.Properties.Client.Properties.VectorMaxSizeMB.Maximum)
+	require.Equal(t, configstore.MaxVectorRetentionDays, values.Properties.VectorStore.Properties.RetentionDays.Maximum)
+	require.Equal(t, configstore.MaxVectorMaxSizeMB, values.Properties.VectorStore.Properties.MaxSizeMB.Maximum)
+	require.Equal(t, configstore.MaxVectorRetentionDays, values.Properties.VectorStores.Items.Properties.RetentionDays.Maximum)
+	require.Equal(t, configstore.MaxVectorMaxSizeMB, values.Properties.VectorStores.Items.Properties.MaxSizeMB.Maximum)
 }
 
 // TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot: an out-of-range
@@ -3286,44 +3251,207 @@ func TestLoadConfig_MCPOpenAPIMaxSpecMBOutOfRangeFailsBoot(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_NegativeVectorRetentionDaysOnRestartFailsBoot: a file that
-// changes vector_retention_days from 0 to a negative value between restarts is
-// refused, not hashed like 0 and passed over in favour of the stored row.
-func TestLoadConfig_NegativeVectorRetentionDaysOnRestartFailsBoot(t *testing.T) {
-	initTestLogger()
-	tempDir := createTempDir(t)
-	ctx := context.Background()
-	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorRetentionDays: 0}})
-	first, err := LoadConfig(ctx, tempDir)
-	require.NoError(t, err)
-	first.Close(ctx)
+// config.json's vector_stores are parsed with their names, the same shape as vector_store,
+// which may carry a name too.
+func TestConfigDataParsesNamedVectorStores(t *testing.T) {
+	var cd ConfigData
+	require.NoError(t, json.Unmarshal([]byte(`{
+		"vector_store": {"enabled": true, "type": "chromem"},
+		"vector_stores": [
+			{"name": "warp-qdrant", "enabled": true, "type": "qdrant", "config": {"host": "q.internal"}},
+			{"name": "archive", "enabled": false, "type": "chromem", "config": {"path": "/data/archive"}}
+		]
+	}`), &cd))
+	require.NotNil(t, cd.VectorStoreConfig)
+	assert.Empty(t, cd.VectorStoreConfig.Name, "the primary store is named after its type when unnamed")
+	require.Len(t, cd.VectorStoresConfig, 2)
+	assert.Equal(t, "warp-qdrant", cd.VectorStoresConfig[0].Name)
+	assert.Equal(t, vectorstore.VectorStoreTypeQdrant, cd.VectorStoresConfig[0].Type)
+	qdrant := cd.VectorStoresConfig[0].Config.(vectorstore.QdrantConfig)
+	assert.Equal(t, "q.internal", qdrant.Host.GetValue())
+	assert.False(t, cd.VectorStoresConfig[1].Enabled)
+	assert.True(t, cd.sectionPresent("vector_stores"))
 
-	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorRetentionDays: -5}})
-	second, err := LoadConfig(ctx, tempDir)
-	if second != nil {
-		second.Close(ctx)
-	}
-	require.ErrorContains(t, err, "vector_retention_days")
+	var unknown ConfigData
+	assert.ErrorContains(t, json.Unmarshal([]byte(`{"vector_stores": [{"name": "x", "enabled": true, "type": "nope"}]}`), &unknown), "unknown vector store type")
 }
 
-// TestLoadConfig_NegativeVectorMaxSizeMBOnRestartFailsBoot: a file that
-// changes vector_max_size_mb from 0 to a negative value between restarts is
-// refused, not hashed like 0 and passed over in favour of the stored row.
-func TestLoadConfig_NegativeVectorMaxSizeMBOnRestartFailsBoot(t *testing.T) {
+// LoadConfig connects every configured store and keeps the primary one as Config.VectorStore,
+// which every consumer still uses. A vector_stores entry that cannot be reached is kept as
+// failed and the gateway starts; closing the config closes each store.
+func TestLoadConfigConnectsNamedVectorStores(t *testing.T) {
+	initTestLogger()
+	down := errors.New("connection refused")
+	previous := connectVectorStore
+	connectVectorStore = func(ctx context.Context, config *vectorstore.Config, logger schemas.Logger) (vectorstore.VectorStore, error) {
+		if config.Name == "down" {
+			return nil, down
+		}
+		return previous(ctx, config, logger)
+	}
+	t.Cleanup(func() { connectVectorStore = previous })
+
+	tempDir := createTempDir(t)
+	createConfigFile(t, tempDir, &ConfigData{
+		VectorStoreConfig: &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{}},
+		VectorStoresConfig: []vectorstore.Config{
+			{Name: "warp-store", Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{Path: filepath.Join(tempDir, "warp-vectors")}},
+			{Name: "down", Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{Path: filepath.Join(tempDir, "down-vectors")}},
+		},
+	})
+	ctx := context.Background()
+	config, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err, "a vector_stores entry failing does not stop startup")
+	defer config.Close(ctx)
+
+	require.NotNil(t, config.VectorStores)
+	primary := config.VectorStores.Primary()
+	require.NotNil(t, primary)
+	assert.Equal(t, "chromem", primary.Name)
+	assert.Same(t, primary.Store, config.VectorStore, "consumers keep using the primary store")
+	warp, ok := config.VectorStores.Get("warp-store")
+	require.True(t, ok)
+	assert.Equal(t, vectorstore.StoreConnected, warp.Status)
+	assert.NotSame(t, primary.Store, warp.Store)
+	failed, ok := config.VectorStores.Get("down")
+	require.True(t, ok)
+	assert.Equal(t, vectorstore.StoreFailed, failed.Status)
+	assert.ErrorIs(t, failed.Err, down)
+}
+
+// A vector_stores entry without a name, or two stores with one name, stops startup with an
+// error naming them, before anything connects.
+func TestLoadConfigRefusesUnusableVectorStoreNames(t *testing.T) {
+	initTestLogger()
+	chromem := func(name string) vectorstore.Config {
+		return vectorstore.Config{Name: name, Enabled: true, Type: vectorstore.VectorStoreTypeChromem, Config: vectorstore.ChromemConfig{}}
+	}
+	primary := chromem("")
+	for name, tc := range map[string]struct {
+		data *ConfigData
+		want string
+	}{
+		"no name":                   {&ConfigData{VectorStoresConfig: []vectorstore.Config{chromem("")}}, "vector_stores[0]: name is required"},
+		"the primary store's name":  {&ConfigData{VectorStoreConfig: &primary, VectorStoresConfig: []vectorstore.Config{chromem("chromem")}}, `name "chromem" is already used by vector_store`},
+		"two entries with one name": {&ConfigData{VectorStoresConfig: []vectorstore.Config{chromem("a"), chromem("a")}}, `vector_stores[1]: name "a" is already used by vector_stores[0]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tempDir := createTempDir(t)
+			createConfigFile(t, tempDir, tc.data)
+			ctx := context.Background()
+			config, err := LoadConfig(ctx, tempDir)
+			if config != nil {
+				config.Close(ctx)
+			}
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
+}
+
+// vectorStoreSettingsFile is a config.json with a primary Chromem store and one named store,
+// with the given primary retention.
+func vectorStoreSettingsFile(primaryRetentionDays int) *ConfigData {
+	return &ConfigData{
+		VectorStoreConfig: &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeChromem, RetentionDays: primaryRetentionDays},
+		VectorStoresConfig: []vectorstore.Config{
+			{Name: "warp-store", Enabled: true, Type: vectorstore.VectorStoreTypeChromem, MaxSizeMB: 100},
+		},
+	}
+}
+
+// With a config store, config.json seeds each store's settings into its row; a dashboard edit
+// stays across a restart that leaves config.json as it was, and a value changed in config.json
+// is written over the edit at the next restart. The live store holds what the rows hold.
+func TestLoadConfigSyncsVectorStoreSettings(t *testing.T) {
 	initTestLogger()
 	tempDir := createTempDir(t)
 	ctx := context.Background()
-	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorMaxSizeMB: 0}})
+	boot := func(data *ConfigData) *Config {
+		t.Helper()
+		createConfigFile(t, tempDir, data)
+		config, err := LoadConfig(ctx, tempDir)
+		require.NoError(t, err)
+		return config
+	}
+	settings := func(config *Config, name string) (int, int) {
+		t.Helper()
+		record, ok := config.LiveStore.Collections.VectorStoreSettings.Get(name)
+		require.True(t, ok, "%s is loaded", name)
+		return record.RetentionDays, record.MaxSizeMB
+	}
+
+	first := boot(vectorStoreSettingsFile(7))
+	retention, _ := settings(first, "chromem")
+	assert.Equal(t, 7, retention, "config.json seeds the primary store")
+	_, size := settings(first, "warp-store")
+	assert.Equal(t, 100, size, "and each vector_stores entry")
+	// A dashboard edit: the value changes, the hash of what config.json gave stays.
+	row, err := first.ConfigStore.GetVectorStoreSettings(ctx, "chromem")
+	require.NoError(t, err)
+	row.RetentionDays = 3
+	require.NoError(t, first.ConfigStore.UpsertVectorStoreSettings(ctx, row))
+	first.Close(ctx)
+
+	second := boot(vectorStoreSettingsFile(7))
+	retention, _ = settings(second, "chromem")
+	assert.Equal(t, 3, retention, "an unchanged config.json leaves the dashboard edit")
+	second.Close(ctx)
+
+	third := boot(vectorStoreSettingsFile(14))
+	defer third.Close(ctx)
+	retention, _ = settings(third, "chromem")
+	assert.Equal(t, 14, retention, "a value changed in config.json wins over the edit")
+	_, size = settings(third, "warp-store")
+	assert.Equal(t, 100, size, "an unchanged store keeps its row")
+}
+
+// With config.json as the source of truth, its values are applied on every boot: a dashboard
+// edit lasts until the next restart even when config.json is unchanged.
+func TestLoadConfigAppliesVectorStoreSettingsEveryBootWhenConfigJSONIsTheSourceOfTruth(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+	ctx := context.Background()
+	file := vectorStoreSettingsFile(7)
+	file.SourceOfTruth = SourceOfTruthConfigJSON
+	createConfigFile(t, tempDir, file)
 	first, err := LoadConfig(ctx, tempDir)
+	require.NoError(t, err)
+	edited := 3
+	_, _, err = first.ConfigStore.UpdateVectorStoreSettings(ctx, "chromem", &edited, nil)
 	require.NoError(t, err)
 	first.Close(ctx)
 
-	createConfigFile(t, tempDir, &ConfigData{Client: &configstore.ClientConfig{VectorMaxSizeMB: -5}})
 	second, err := LoadConfig(ctx, tempDir)
-	if second != nil {
-		second.Close(ctx)
+	require.NoError(t, err)
+	defer second.Close(ctx)
+	record, ok := second.LiveStore.Collections.VectorStoreSettings.Get("chromem")
+	require.True(t, ok)
+	assert.Equal(t, 7, record.RetentionDays, "the file's value is restored")
+}
+
+// A retention_days or max_size_mb out of range in config.json stops startup, naming the store's
+// entry.
+func TestLoadConfigRefusesOutOfRangeVectorStoreSettings(t *testing.T) {
+	initTestLogger()
+	for name, tc := range map[string]struct {
+		data *ConfigData
+		want string
+	}{
+		"negative primary retention": {&ConfigData{VectorStoreConfig: &vectorstore.Config{Enabled: true, Type: vectorstore.VectorStoreTypeChromem, RetentionDays: -1}}, "vector_store: retention_days -1"},
+		"retention too long":         {&ConfigData{VectorStoresConfig: []vectorstore.Config{{Name: "a", Enabled: true, Type: vectorstore.VectorStoreTypeChromem, RetentionDays: configstore.MaxVectorRetentionDays + 1}}}, "vector_stores[0]: retention_days"},
+		"size too large":             {&ConfigData{VectorStoresConfig: []vectorstore.Config{{Name: "a", Enabled: true, Type: vectorstore.VectorStoreTypeChromem, MaxSizeMB: configstore.MaxVectorMaxSizeMB + 1}}}, "vector_stores[0]: max_size_mb"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tempDir := createTempDir(t)
+			createConfigFile(t, tempDir, tc.data)
+			ctx := context.Background()
+			config, err := LoadConfig(ctx, tempDir)
+			if config != nil {
+				config.Close(ctx)
+			}
+			require.ErrorContains(t, err, tc.want)
+		})
 	}
-	require.ErrorContains(t, err, "vector_max_size_mb")
 }
 
 // TestLoadConfig_OpenAPIURLOutsideAppDirFailsBoot: PUT /api/config refuses an

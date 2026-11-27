@@ -53,25 +53,30 @@ z.config({
 
 // Known provider schema
 // MAX_VECTOR_RETENTION_DAYS mirrors configstore.MaxVectorRetentionDays: the
-// longest vector_retention_days whose span fits in a Go time.Duration. The
+// longest per-store retention_days whose span fits in a Go time.Duration. The
 // server refuses anything longer.
 export const MAX_VECTOR_RETENTION_DAYS = 106751;
 
-// vectorRetentionDaysSchema checks client_config.vector_retention_days, where 0
-// is "same as the logs".
+// MAX_VECTOR_MAX_SIZE_MB is the largest per-store max_size_mb the server
+// accepts: the most MB whose byte count fits in an int64.
+export const MAX_VECTOR_MAX_SIZE_MB = 8796093022207;
+
+// vectorRetentionDaysSchema checks a vector store's retention_days, where 0 (a
+// blank field) follows the log retention.
 export const vectorRetentionDaysSchema = z
 	.number()
-	.int()
-	.min(0)
+	.int(msg("validation.vectorRetentionDaysMustBeAWholeNumber"))
+	.min(0, msg("validation.vectorRetentionDaysMustBeAWholeNumber"))
 	.max(MAX_VECTOR_RETENTION_DAYS, msg("validation.vectorRetentionDaysAtMost106751"));
 
-// vectorMaxSizeMBSchema checks client_config.vector_max_size_mb, where 0 (a
-// blank field) is no limit. A fraction is refused rather than read as 0, which
-// would turn the limit off without a word.
+// vectorMaxSizeMBSchema checks a vector store's max_size_mb, where 0 (a blank
+// field) is no limit. A fraction is refused rather than read as 0, which would
+// turn the limit off without a word.
 export const vectorMaxSizeMBSchema = z
 	.number()
 	.int(msg("validation.vectorMaxSizeMustBeAWholeNumber"))
-	.min(0, msg("validation.vectorMaxSizeMustBeAWholeNumber"));
+	.min(0, msg("validation.vectorMaxSizeMustBeAWholeNumber"))
+	.max(MAX_VECTOR_MAX_SIZE_MB, msg("validation.vectorMaxSizeAtMost8796093022207"));
 
 export const knownProviderSchema = z.enum(KnownProvidersNames as unknown as [string, ...string[]]);
 

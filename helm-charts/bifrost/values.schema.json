@@ -844,20 +844,6 @@
               "description": "Number of days to retain logs",
               "default": 365
             },
-            "vectorRetentionDays": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 106751,
-              "default": 0,
-              "description": "Upper bound, in days, on how long vector store entries tied to logs are kept (Warp's log index, the complexity router's captured requests). While log cleanup runs (a logs store is configured), 0 follows logRetentionDays and a larger value is capped at it. Without a logs store, a positive value applies on its own and 0 sets no retention limit. A complexity router also drops its captured requests after its own suggestions lookback (7 days unless set), whichever comes first."
-            },
-            "vectorMaxSizeMB": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 8796093022207,
-              "default": 0,
-              "description": "Storage limit in MB for all vectors built from logs together (Warp's log index, every complexity router's captured requests), estimated from counts. Past 80% of it the hourly sweep deletes the oldest vectors first, down to 65%. 0 sets no limit."
-            },
             "enforceGovernanceHeader": {
               "type": "boolean",
               "description": "Deprecated: use enforceAuthOnInference"
@@ -6945,6 +6931,41 @@
         }
       }
     },
+    "vectorStores": {
+      "type": "array",
+      "description": "More vector stores alongside vectorStore, each selected by its name; rendered as written into config.json's vector_stores.",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["weaviate", "redis", "qdrant", "pinecone", "chromem"]
+          },
+          "config": {
+            "type": "object"
+          },
+          "retention_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 106751
+          },
+          "max_size_mb": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 8796093022207
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "vectorStore": {
       "type": "object",
       "properties": {
@@ -6954,6 +6975,22 @@
         "type": {
           "type": "string",
           "enum": ["none", "weaviate", "redis", "qdrant", "pinecone", "chromem"]
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^([A-Za-z0-9][A-Za-z0-9._-]{0,63})?$"
+        },
+        "retentionDays": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 106751,
+          "description": "Upper bound, in days, on vectors built from logs in this store; 0 follows the log retention. Seeds the setting Settings > Vector Stores edits."
+        },
+        "maxSizeMB": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8796093022207,
+          "description": "Storage limit in MB for the vectors built from logs in this store, estimated; 0 sets no limit. Seeds the setting Settings > Vector Stores edits."
         },
         "weaviate": {
           "type": "object",

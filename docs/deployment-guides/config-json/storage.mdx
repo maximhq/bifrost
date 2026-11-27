@@ -757,6 +757,53 @@ Pinecone is external-only.
 | `api_key` | Pinecone API key (supports `env.` prefix) |
 | `index_host` | Index host from Pinecone console (e.g. `your-index.svc.us-east1-gcp.pinecone.io`) |
 
+### More than one store: `vector_stores`
+
+`vector_store` is the primary store. To configure more, list them in `vector_stores`, each with the same shape as `vector_store` and a required `name`. A feature that lets you choose a store selects it by that name; anything that selects no store uses the primary one.
+
+```json
+{
+  "vector_store": {
+    "name": "shared",
+    "enabled": true,
+    "type": "weaviate",
+    "config": { "scheme": "http", "host": "weaviate:8080" }
+  },
+  "vector_stores": [
+    {
+      "name": "warp-qdrant",
+      "enabled": true,
+      "type": "qdrant",
+      "config": { "host": "qdrant.internal", "api_key": "env.WARP_QDRANT_API_KEY" }
+    }
+  ]
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes in `vector_stores`, optional in `vector_store` | The name the store is selected by: 1-64 letters, digits, `.`, `_` or `-`, starting with a letter or digit, unique across both sections. The primary store is named after its type (`"weaviate"`, `"redis"`, ...) when `name` is unset. |
+| `enabled`, `type`, `config` | As for `vector_store` | |
+| `retention_days`, `max_size_mb` | No | As for `vector_store`, below |
+
+- Stores are read from `config.json` at startup only.
+- Entries that reach the same data (the same endpoint, or the same Chromem directory, a relative path being resolved against Bifrost's working directory and symbolic links followed) with the same TLS settings share one connection, and a store that shares another's connection follows that store's retention and storage limit. Credentials are not part of that comparison, so two entries for one endpoint with different keys use the first entry's connection; entries whose TLS settings differ (for example, one skips certificate verification) each open their own.
+- If a `vector_stores` entry cannot be reached at startup, only what selects it is unavailable and the rest of Bifrost starts. The primary `vector_store` failing still stops startup.
+- A missing, malformed or repeated name stops startup with an error naming the entries.
+
+### Retention and storage limit per store
+
+Each store, `vector_store` and every `vector_stores` entry, bounds the vectors built from logs that it holds: Warp's log index and the complexity router's captured requests.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `retention_days` | `0` | Upper bound, in days, on how long those vectors are kept. `0` bounds them by `log_retention_days` alone, and a larger value is capped at it. Where logs are kept forever (no logs store or no log cleanup), a positive value applies on its own. |
+| `max_size_mb` | `0` | Storage limit for those vectors, estimated from counts (each vector's embedding plus 1 KB). Once they pass 80% of it, the hourly sweep deletes the oldest first, down to 65%. `0` sets no limit. On Pinecone the sweep reads through the vectors to count them, so it is slower there. |
+
+Whichever of the two removes a vector first applies. A store that shares another's connection follows that store's settings.
+
+Both can also be changed on **Settings > Vector Stores**, which lists every configured store with its status. With the default `source_of_truth` (`"split"`), a change made there lasts across restarts until `config.json` changes that store's value, which then wins at the next restart. With `source_of_truth: "config.json"`, every restart applies the values in `config.json` again and replaces changes made on the page, even when the file has not changed. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth). Without a config store the page is read-only and the values come from `config.json`.
+
 ---
 
 ## Mixed Backend Examples

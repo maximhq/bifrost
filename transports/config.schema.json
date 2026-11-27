@@ -198,20 +198,6 @@
           "description": "Number of days to retain logs",
           "default": 365
         },
-        "vector_retention_days": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 106751,
-          "default": 0,
-          "description": "Upper bound, in days, on how long vector store entries tied to logs are kept: Warp's log index and the complexity router's captured requests. 0 bounds them by log_retention_days alone, and a larger value is capped at it. Where logs are kept forever (no log store or no log cleanup), a positive value applies on its own. A router also drops its captured requests after its own suggestions lookback (7 days unless set), whichever comes first. Takes effect at the next hourly sweep, without a restart."
-        },
-        "vector_max_size_mb": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 8796093022207,
-          "default": 0,
-          "description": "Storage limit, in MB, for every vector built from logs together: Warp's log index and all complexity routers' captured requests. The size is estimated from counts (each vector's embedding plus 1 KB for its metadata and index), not read from the store. Once the total passes 80% of the limit, the hourly sweep deletes the oldest vectors first across all of them, down to 65%, so the limit itself is rarely reached. Vectors written in the same second are kept or deleted together. 0 sets no limit. Works alongside vector_retention_days: whichever removes a vector first applies."
-        },
         "enforce_governance_header": {
           "type": "boolean",
           "description": "Deprecated: use enforce_auth_on_inference"
@@ -2678,8 +2664,27 @@
     },
     "vector_store": {
       "type": "object",
-      "description": "Vector store configuration for caching",
+      "description": "The primary vector store: what semantic caching, the complexity router and Warp use unless they select another store from vector_stores",
       "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+          "description": "The name this store is selected by. Defaults to its type (\"weaviate\", \"redis\", ...). Must be unique across vector_store and vector_stores"
+        },
+        "retention_days": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 106751,
+          "default": 0,
+          "description": "Upper bound, in days, on how long vectors built from logs are kept in this store: Warp's log index and the complexity router's captured requests. 0 bounds them by log_retention_days alone, and a larger value is capped at it. Where logs are kept forever (no log store or no log cleanup), a positive value applies on its own. A router also drops its captured requests after its own suggestions lookback (7 days unless set), whichever comes first. Seeds the store's setting, which Settings > Vector Stores can then edit; a value changed here wins over that edit at the next restart."
+        },
+        "max_size_mb": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 8796093022207,
+          "default": 0,
+          "description": "Storage limit, in MB, for the vectors built from logs that this store holds: Warp's log index and the complexity routers' captured requests. The size is estimated from counts (each vector's embedding plus 1 KB for its metadata and index), not read from the store. Once the total passes 80% of the limit, the hourly sweep deletes the oldest vectors first across all of them, down to 65%, so the limit itself is rarely reached. Vectors written in the same second are kept or deleted together. 0 sets no limit. Works alongside retention_days: whichever removes a vector first applies. A store that shares another's connection (the same endpoint) follows that store's limit. Seeds the store's setting, which Settings > Vector Stores can then edit; a value changed here wins over that edit at the next restart."
+        },
         "enabled": {
           "type": "boolean",
           "description": "Enable vector store"
@@ -2826,6 +2831,23 @@
         }
       ],
       "additionalProperties": false
+    },
+    "vector_stores": {
+      "type": "array",
+      "description": "More vector stores, each selected by its name, alongside the primary vector_store. Each entry has the shape of vector_store with a required name. Stores reaching the same data (the same endpoint, or the same Chromem path) share one connection. If one cannot be reached at startup, what selects it is unavailable and the rest of Bifrost starts; the primary vector_store failing still stops startup. Read at startup only",
+      "items": {
+        "allOf": [
+          {
+            "$ref": "#/properties/vector_store"
+          },
+          {
+            "required": [
+              "name",
+              "type"
+            ]
+          }
+        ]
+      }
     },
     "config_store": {
       "type": "object",

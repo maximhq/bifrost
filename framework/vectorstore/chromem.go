@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -78,17 +79,55 @@ func chromemStubEmbeddingFunc(ctx context.Context, text string) ([]float32, erro
 	return nil, fmt.Errorf("chromem backend requires precomputed embeddings")
 }
 
+// chromemPath is the directory a Chromem path names: absolute, resolved against the working
+// directory, cleaned, and with symbolic links followed, so a relative path, its absolute form and
+// a link to it are one directory. "" (no path) is memory-only and stays "". A working directory
+// that cannot be read leaves it relative, cleaned.
+func chromemPath(raw string) string {
+	path := strings.TrimSpace(raw)
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return followLinks(abs)
+}
+
+// followLinks resolves the links in an absolute path through its deepest part that exists, and
+// keeps the rest as written. A directory Chromem has not created yet then names the same place
+// before and after it is created, so a store's location, and the ID backfill checkpoints carry,
+// do not change on the boot after the one that created it.
+func followLinks(abs string) string {
+	dir, rest := abs, ""
+	for {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, rest)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+}
+
 func newChromemStore(_ context.Context, config *ChromemConfig, logger schemas.Logger) (*ChromemStore, error) {
 	if config == nil {
 		return nil, fmt.Errorf("chromem config is required")
 	}
 
+	// Resolved as Config.Location resolves it, so the directory opened is the one two entries are
+	// compared by when the registry decides whether they are one store.
+	path := chromemPath(config.Path)
 	var db *chromem.DB
 	var err error
-	if strings.TrimSpace(config.Path) != "" {
-		db, err = chromem.NewPersistentDB(config.Path, config.Compress)
+	if path != "" {
+		db, err = chromem.NewPersistentDB(path, config.Compress)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open chromem persistent db at %s: %w", config.Path, err)
+			return nil, fmt.Errorf("failed to open chromem persistent db at %s: %w", path, err)
 		}
 	} else {
 		db = chromem.NewDB()

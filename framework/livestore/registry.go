@@ -51,6 +51,9 @@ const KindPricingOverride Kind = "pricing_override"
 // KindWebhookEndpoint names the webhook endpoint collection.
 const KindWebhookEndpoint Kind = "webhook_endpoint"
 
+// KindVectorStoreSettings names the collection of configured vector stores' settings.
+const KindVectorStoreSettings Kind = "vector_store_settings"
+
 // KindPrompt and KindPromptVersion name the prompt collections: prompts, and their versions with
 // their messages.
 const (
@@ -84,6 +87,9 @@ type Collections struct {
 	// WebhookEndpoints holds every webhook endpoint, by ID and by name, for async job submissions
 	// and the delivery worker.
 	WebhookEndpoints *Collection[registry.WebhookEndpoint]
+	// VectorStoreSettings holds each configured vector store's retention and storage limit, by
+	// the store's name, for the hourly sweeps.
+	VectorStoreSettings *Collection[registry.VectorStoreSettings]
 	// PromptVersions holds every prompt version, by prompt and number and as each prompt's latest;
 	// a prompt's refresh re-reads its versions and its removal removes them.
 	PromptVersions *Collection[registry.PromptVersion]
@@ -132,6 +138,9 @@ func (c *Collections) FileRecords(fc *registry.FileRecords) []Record {
 	}
 	for _, o := range fc.PricingOverrides {
 		recs = append(recs, Rec(c.PricingOverrides, o))
+	}
+	for _, v := range fc.VectorStoreSettings {
+		recs = append(recs, Rec(c.VectorStoreSettings, v))
 	}
 	return recs
 }
@@ -277,6 +286,13 @@ func registerCollections(s *Store, o *storeOptions) (*Collections, error) {
 		Page: registry.WebhookEndpointsPage,
 		ByID: registry.WebhookEndpointsByID,
 	}, UniqueIndex(registry.WebhookEndpointByName, registry.WebhookEndpointName)); err != nil {
+		return nil, err
+	}
+	if c.VectorStoreSettings, err = s.Register(KindVectorStoreSettings, nil, Loader[registry.VectorStoreSettings]{
+		ID:   registry.VectorStoreSettingsName,
+		Page: registry.VectorStoreSettingsPage,
+		ByID: registry.VectorStoreSettingsByName,
+	}); err != nil {
 		return nil, err
 	}
 	if c.Prompts, err = s.Register(KindPrompt, nil, Loader[registry.Prompt]{

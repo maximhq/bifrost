@@ -281,6 +281,7 @@ type ConfigData struct {
 	ModelRouters       []configstore.ModelRouter             `json:"model_routers,omitempty"`
 	Governance         *configstore.GovernanceConfig         `json:"governance,omitempty"`
 	VectorStoreConfig  *vectorstore.Config                   `json:"vector_store,omitempty"`
+	VectorStoresConfig []vectorstore.Config                  `json:"vector_stores,omitempty"` // more stores, each selected by its name
 	ConfigStoreConfig  *configstore.Config                   `json:"config_store,omitempty"`
 	LogsStoreConfig    *logstore.Config                      `json:"logs_store,omitempty"`
 	Plugins            []*schemas.PluginConfig               `json:"plugins,omitempty"`
@@ -550,6 +551,8 @@ func (cd *ConfigData) sectionPresent(name string) bool {
 		return cd.FrameworkConfig != nil
 	case "vector_store":
 		return cd.VectorStoreConfig != nil
+	case "vector_stores":
+		return cd.VectorStoresConfig != nil
 	case "logs_store":
 		return cd.LogsStoreConfig != nil
 	case "config_store":
@@ -641,6 +644,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		ModelRouters       []configstore.ModelRouter      `json:"model_routers,omitempty"`
 		Governance         *configstore.GovernanceConfig  `json:"governance,omitempty"`
 		VectorStoreConfig  json.RawMessage                `json:"vector_store,omitempty"`
+		VectorStoresConfig []vectorstore.Config           `json:"vector_stores,omitempty"`
 		ConfigStoreConfig  json.RawMessage                `json:"config_store,omitempty"`
 		LogsStoreConfig    json.RawMessage                `json:"logs_store,omitempty"`
 		Plugins            []*schemas.PluginConfig        `json:"plugins,omitempty"`
@@ -724,6 +728,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		}
 		cd.VectorStoreConfig = &vectorStoreConfig
 	}
+	cd.VectorStoresConfig = temp.VectorStoresConfig
 
 	// Parse FrameworkConfig using its internal unmarshaler
 	if len(temp.FrameworkConfig) > 0 {
@@ -795,9 +800,12 @@ type Config struct {
 	// LiveStore is the in-memory store of configuration and runtime state, with a typed collection
 	// per config store table in LiveStore.Collections. LoadConfig fills it from ConfigStore, or
 	// from config.json when the config store is disabled.
-	LiveStore   *livestore.Store
-	VectorStore vectorstore.VectorStore
-	LogsStore   logstore.LogStore
+	LiveStore *livestore.Store
+	// VectorStore is the primary store (config.json's vector_store), which a consumer that
+	// selects no store uses. VectorStores is every configured store by name, the primary included.
+	VectorStore  vectorstore.VectorStore
+	VectorStores *vectorstore.Registry
+	LogsStore    logstore.LogStore
 	// LogsStoreConfig is the effective logs store configuration used to create LogsStore.
 	LogsStoreConfig *logstore.Config
 	// ConfigStoreConfig is the config.json config store configuration used to
@@ -1343,6 +1351,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	// 7. Webhook endpoints
 	loadWebhooksConfig(ctx, config, &configData)
+	if err := loadVectorStoreSettings(ctx, config, &configData); err != nil {
+		return nil, err
+	}
 	// 7a. Relays (before governance, whose virtual keys may grant them)
 	loadRelaysConfig(ctx, config, &configData)
 	// 8. Governance config
@@ -1562,21 +1573,101 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 
 	attachWarpHistoryLock(config)
 
-	// Initialize vector store (only if explicitly configured)
-	if configData.VectorStoreConfig != nil && configData.VectorStoreConfig.Enabled {
+	return initVectorStores(ctx, config, configData)
+}
+
+// initVectorStores connects every vector store config.json configures: the primary
+// vector_store and each vector_stores entry. A name that is missing, malformed or taken
+// stops startup, and so does the primary store failing to connect, as it always has. Any
+// other store that fails is logged and kept as failed, so only what selects it is affected.
+func initVectorStores(ctx context.Context, config *Config, configData *ConfigData) error {
+	primary := configData.VectorStoreConfig
+	if primary == nil && len(configData.VectorStoresConfig) == 0 {
+		return nil
+	}
+	if err := vectorstore.ValidateStoreNames(primary, configData.VectorStoresConfig); err != nil {
+		return fmt.Errorf("invalid vector store configuration: %w", err)
+	}
+	if primary != nil && primary.Enabled {
 		logger.Info("connecting to vectorstore")
-		config.VectorStore, err = vectorstore.NewVectorStore(ctx, configData.VectorStoreConfig, logger)
-		if err != nil {
-			logger.Fatal("failed to connect to vector store: %v", err)
+	}
+	registry, err := vectorstore.OpenRegistry(ctx, primary, configData.VectorStoresConfig, logger, vectorstore.RegistryOptions{Connect: connectVectorStore})
+	if err != nil {
+		logger.Fatal("failed to connect to vector store: %v", err)
+		return err
+	}
+	config.VectorStores = registry
+	for _, entry := range registry.All() {
+		if !entry.Primary && entry.Status == vectorstore.StoreConnected {
+			logger.Info("vector store %q (%s) connected", entry.Name, entry.Type)
 		}
+	}
+	if entry := registry.Primary(); entry != nil && entry.Store != nil {
+		config.VectorStore = entry.Store
 		if config.ConfigStore != nil {
-			if err = config.ConfigStore.UpdateVectorStoreConfig(ctx, configData.VectorStoreConfig); err != nil {
+			if err := config.ConfigStore.UpdateVectorStoreConfig(ctx, primary); err != nil {
 				logger.Warn("failed to update vector store config: %v", err)
 			}
 		}
 	}
 	return nil
 }
+
+// loadVectorStoreSettings syncs each configured vector store's retention_days and max_size_mb
+// from config.json. A value out of range stops startup. With a config store, a store with no row
+// gets one, and a store whose config.json values changed since they were last applied (by hash)
+// has them written over its row; otherwise the row, and a dashboard edit in it, stays. With
+// config.json as the source of truth (source_of_truth), its values are written on every boot,
+// over any dashboard edit. Without a config store, the values are loaded as they are. The live
+// store loads the result once LoadConfig has written everything.
+func loadVectorStoreSettings(ctx context.Context, config *Config, configData *ConfigData) error {
+	var declared []configstoreTables.TableVectorStoreSettings
+	add := func(store *vectorstore.Config, name, where string) error {
+		if err := configstore.ValidateVectorStoreSettings(store.RetentionDays, store.MaxSizeMB); err != nil {
+			return fmt.Errorf("%s: %w", where, err)
+		}
+		declared = append(declared, configstoreTables.TableVectorStoreSettings{
+			Name: name, RetentionDays: store.RetentionDays, MaxSizeMB: store.MaxSizeMB,
+			ConfigHash: configstore.GenerateVectorStoreSettingsHash(store.RetentionDays, store.MaxSizeMB),
+		})
+		return nil
+	}
+	if primary := configData.VectorStoreConfig; primary != nil {
+		if err := add(primary, vectorstore.PrimaryStoreName(primary), "vector_store"); err != nil {
+			return err
+		}
+	}
+	for i := range configData.VectorStoresConfig {
+		store := &configData.VectorStoresConfig[i]
+		if err := add(store, store.Name, fmt.Sprintf("vector_stores[%d]", i)); err != nil {
+			return err
+		}
+	}
+	if config.ConfigStore == nil {
+		if config.boot != nil {
+			config.boot.vectorStoreSettings = declared
+		}
+		return nil
+	}
+	for i := range declared {
+		row := declared[i]
+		stored, err := config.ConfigStore.GetVectorStoreSettings(ctx, row.Name)
+		switch {
+		case errors.Is(err, configstore.ErrNotFound):
+		case err != nil:
+			return fmt.Errorf("failed to read the settings of vector store %q: %w", row.Name, err)
+		case stored.ConfigHash == row.ConfigHash && !configData.isConfigJSONSourceOfTruth():
+			continue // config.json is unchanged: the row, and any dashboard edit, stays
+		}
+		if err := config.ConfigStore.UpsertVectorStoreSettings(ctx, &row); err != nil {
+			return fmt.Errorf("failed to save the settings of vector store %q: %w", row.Name, err)
+		}
+	}
+	return nil
+}
+
+// connectVectorStore opens one store; a test replaces it to connect without a backend.
+var connectVectorStore = vectorstore.NewVectorStore
 
 // attachWarpHistoryLock gives a ClickHouse logs store the config-store lock, so
 // Warp history writes from every replica sharing that ClickHouse serialize.
@@ -1693,17 +1784,8 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	if oc := cc.OAuth2ServerConfig; oc != nil && oc.AuthCodeTTL > configstoreTables.MaxAuthCodeTTL {
 		return fmt.Errorf("oauth2_server_config.auth_code_ttl %d exceeds the maximum of %d seconds (15 minutes)", oc.AuthCodeTTL, configstoreTables.MaxAuthCodeTTL)
 	}
-	// config.json and pre-existing DB rows reach the runtime through here too:
-	// a retention too long for a time.Duration would wrap the vector sweep's
-	// cutoff into the future.
-	if cc.VectorRetentionDays < 0 || cc.VectorRetentionDays > configstore.MaxVectorRetentionDays {
-		return fmt.Errorf("vector_retention_days %d must be between 0 and %d", cc.VectorRetentionDays, configstore.MaxVectorRetentionDays)
-	}
-	if cc.VectorMaxSizeMB < 0 || cc.VectorMaxSizeMB > configstore.MaxVectorMaxSizeMB {
-		return fmt.Errorf("vector_max_size_mb %d must be between 0 and %d", cc.VectorMaxSizeMB, configstore.MaxVectorMaxSizeMB)
-	}
-	// Same reasoning for the rotation grace period: PUT /api/config bounds it,
-	// but config.json and pre-existing DB rows reach the runtime through here.
+	// The rotation grace period: PUT /api/config bounds it, but config.json and
+	// pre-existing DB rows reach the runtime through here.
 	// An out-of-range cooldown would keep a retired virtual key authenticating
 	// past the ceiling the API promises.
 	if cd := cc.VKRotationCooldown.D(); cd < 0 {
@@ -9184,7 +9266,9 @@ func (c *Config) Close(ctx context.Context) {
 			logger.Warn("failed to close object store: %v", err)
 		}
 	}
-	if c.VectorStore != nil {
+	if c.VectorStores != nil {
+		c.VectorStores.Close(ctx)
+	} else if c.VectorStore != nil {
 		c.VectorStore.Close(ctx, "")
 	}
 }

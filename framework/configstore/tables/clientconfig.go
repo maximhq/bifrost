@@ -61,8 +61,6 @@ type TableClientConfig struct {
 	DisableDBPingsInHealth                  bool                           `gorm:"default:false" json:"disable_db_pings_in_health"`
 	DumpErrorsInConsoleLogs                 bool                           `gorm:"default:false" json:"dump_errors_in_console_logs"`       // Dump full error details to the server console logs
 	LogRetentionDays                        int                            `gorm:"default:365" json:"log_retention_days" validate:"min=1"` // Number of days to retain logs (minimum 1 day)
-	VectorRetentionDays                     int                            `gorm:"default:0" json:"vector_retention_days"`                 // Days to keep vector store entries; 0 = same as logs, capped at log retention
-	VectorMaxSizeMB                         int                            `gorm:"default:0" json:"vector_max_size_mb"`                    // Storage limit in MB for all log-derived vectors together, oldest deleted first; 0 = no cap
 	EnforceAuthOnInference                  bool                           `gorm:"default:false" json:"enforce_auth_on_inference"`
 	EnforceGovernanceHeader                 bool                           `gorm:"" json:"enforce_governance_header"`
 	EnforceSCIMAuth                         bool                           `gorm:"default:false" json:"enforce_scim_auth"`

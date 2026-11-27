@@ -18,6 +18,7 @@ import { RelayLogsPage } from "../../features/relay-logs/pages/relay-logs.page";
 import { PluginsPage } from "../../features/plugins/pages/plugins.page";
 import { ObservabilityPage } from "../../features/observability/pages/observability.page";
 import { ConfigSettingsPage } from "../../features/config/pages/config-settings.page";
+import { VectorStoresPage } from "../../features/config/pages/vector-stores.page";
 import { GovernancePage } from "../../features/governance/pages/governance.page";
 import { MCPAuthConfigPage } from "../../features/mcp-auth-config/pages/mcp-auth-config.page";
 import { MCPSettingsPage } from "../../features/mcp-settings/pages/mcp-settings.page";
@@ -49,6 +50,7 @@ type BifrostFixtures = {
 	relayLogsPage: RelayLogsPage;
 	observabilityPage: ObservabilityPage;
 	configSettingsPage: ConfigSettingsPage;
+	vectorStoresPage: VectorStoresPage;
 	governancePage: GovernancePage;
 	modelLimitsPage: ModelLimitsPage;
 	datasheetPage: DatasheetPage;
@@ -238,6 +240,10 @@ export const test = base.extend<BifrostFixtures>({
 
 	modelLimitsPage: async ({ page }, use) => {
 		await use(new ModelLimitsPage(page));
+	},
+
+	vectorStoresPage: async ({ page }, use) => {
+		await use(new VectorStoresPage(page));
 	},
 
 	datasheetPage: async ({ page }, use) => {

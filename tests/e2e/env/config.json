@@ -31,6 +31,10 @@
       "ssl_mode": "disable"
     }
   },
+  "vector_store": { "name": "e2e-primary", "enabled": true, "type": "chromem" },
+  "vector_stores": [
+    { "name": "e2e-chromem-b", "enabled": true, "type": "chromem", "retention_days": 7 }
+  ],
   "governance": {
     "auth_config": {
       "admin_username": "env.BIFROST_ADMIN_USERNAME",
