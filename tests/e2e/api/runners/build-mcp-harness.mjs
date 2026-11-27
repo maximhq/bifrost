@@ -7627,6 +7627,55 @@ const GOV43 = folder("GOV-43 A model budget neither charges nor refuses tool cal
   agentTeardown("GOV-43"),
 ]);
 
+// GOV-47's refusals: a budget spent by the priced echo, and the key's request limit of 3.
+const GOV47_BUDGET = budgetExceeded("0.0010");
+// Refused at admission, /mcp answers 402; refused once the tool is known (PreMCPHook), it answers the call
+// with a tool error.
+const GOV47_MCP_BUDGET = [A.status(402), A.msgContains("Budget exceeded:")];
+const GOV47_MCP_CALL_BUDGET = [A.status(200), A.custom("the call is a tool error naming the spent budget", [
+  "var r = pm.response.json().result;",
+  "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.equal(true);",
+  "pm.expect(r.content[0].text, 'body: ' + pm.response.text()).to.include('Budget exceeded:');",
+])];
+const GOV47_REQUESTS = [A.status(429), A.custom("type request_limited", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('request_limited');"]), A.msgContains("request limit exceeded (3/3, resets every 1h)")];
+const gov47Mcp = (title, tool, asserts) => rpc("GOV-47", title, call(tool, { text: "hi" }), { headers: [MCP_ACCEPT, ...vkUse("gov47_vk").headers], asserts });
+const GOV47 = folder("GOV-47 Free calls run over an exhausted budget when the client setting allows it", `Setup: ${ALPHA_EA}, ${ECHO_PRICED} and add unpriced; a VK with mcp_configs alpha ["*"], a budget of 0.001 per 1h, which the first echo spends, and a request limit of 3 per 1h. client.mcp_allow_free_calls_when_budget_exhausted starts off and is turned on through the API, live. Calls go through /v1/mcp/tool/execute and /mcp tools/call. A config.json boot with the setting is pinned by the transport's config tests rather than here, since the harness boots one config for every case.`, [
+  ...alphaEA("GOV-47"),
+  priceAlpha("GOV-47", "setup: price echo at 0.001", "gov-47-alpha", { echo: 0.001 }),
+  govKey("GOV-47", "gov47_vk", ALPHA_ALL, { budgets: [{ max_limit: 0.001, reset_duration: "1h" }], request_limits: [{ max_limit: 3, reset_duration: "1h" }] }),
+  readConfig("GOV-47"),
+  execTool("GOV-47", "the priced echo spends the budget (request 1)", "alpha-echo", [A.status(200), contentIs('echo:{"text":"hi"}')], vkUse("gov47_vk")),
+  execTool("GOV-47", "setting off: a free add is refused on the spent budget", "alpha-add", GOV47_BUDGET, vkUse("gov47_vk")),
+  gov47Mcp("setting off: a free /mcp add is refused on the spent budget", "alpha-add", GOV47_MCP_BUDGET),
+  putConfig("GOV-47", "setup: turn client.mcp_allow_free_calls_when_budget_exhausted on", ["cc.mcp_allow_free_calls_when_budget_exhausted = true;"], [A.status(200)]),
+  execTool("GOV-47", "setting on: the priced echo is still refused on the spent budget", "alpha-echo", GOV47_BUDGET, vkUse("gov47_vk")),
+  gov47Mcp("setting on: a priced /mcp echo is still refused on the spent budget, once its price is known", "alpha-echo", GOV47_MCP_CALL_BUDGET),
+  execTool("GOV-47", "setting on: a free add runs over the spent budget (request 2)", "alpha-add", [A.status(200), contentIs(ADD_RAN)], vkUse("gov47_vk")),
+  gov47Mcp("setting on: a free /mcp add runs over the spent budget (request 3)", "alpha-add", [A.status(200), ADD_RAN_ON_MCP]),
+  execTool("GOV-47", "setting on: the request limit still refuses a free add", "alpha-add", GOV47_REQUESTS, vkUse("gov47_vk")),
+  gov47Mcp("setting on: the request limit still refuses a free /mcp add", "alpha-add", GOV47_REQUESTS),
+  mockGet("GOV-47", "alpha", "alpha ran echo once and add twice", [callsIs("echo", 1), callsIs("add", 2)]),
+  restoreConfig("GOV-47"),
+  vkDelete("GOV-47", "teardown: delete the VK", "gov47_vk"),
+  agentTeardown("GOV-47"),
+]);
+
+const GOV48 = folder("GOV-48 Code mode runs free nested calls over an exhausted budget when the client setting allows it", `Setup: ${CM_TEXT}, cm's echo priced 0.001 and add unpriced; a VK with mcp_configs cm ["*"] and a budget of 0.001 per 1h, which the first executeToolCode spends. The executeToolCode meta call itself is charged nothing, so with client.mcp_allow_free_calls_when_budget_exhausted on it runs, and each nested call is held to the budget by its own price.`, [
+  ...cmSetup("GOV-48"),
+  priceAlpha("GOV-48", "setup: price cm's echo at 0.001", "gov-48-cm", { echo: 0.001 }),
+  govKey("GOV-48", "gov48_vk", [{ mcp_client_name: "cm", tools_to_execute: ["*"] }], { budgets: [{ max_limit: 0.001, reset_duration: "1h" }] }),
+  readConfig("GOV-48"),
+  metaWith("GOV-48", "executeToolCode calling the priced cm.echo spends the budget", "executeToolCode", { code: "result = cm.echo(text=\"hi\")" }, [A.status(200)], vkUse("gov48_vk")),
+  metaWith("GOV-48", "setting off: executeToolCode calling the free cm.add is refused on the spent budget", "executeToolCode", { code: "result = cm.add(text=\"hi\")" }, budgetExceeded("0.0010"), vkUse("gov48_vk")),
+  putConfig("GOV-48", "setup: turn client.mcp_allow_free_calls_when_budget_exhausted on", ["cc.mcp_allow_free_calls_when_budget_exhausted = true;"], [A.status(200)]),
+  metaWith("GOV-48", "setting on: executeToolCode calling the free cm.add runs over the spent budget", "executeToolCode", { code: "result = cm.add(text=\"hi\")" }, [A.status(200), A.custom("the result is add's output", ["pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.include('add:');", "pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('udget exceeded');"])], vkUse("gov48_vk")),
+  metaWith("GOV-48", "setting on: the nested priced cm.echo is still refused on the spent budget", "executeToolCode", { code: "result = cm.echo(text=\"hi\")" }, [A.status(200), A.custom("the nested call names the spent budget", ["var r = pm.response.json();", "pm.expect(r.is_error, 'body: ' + pm.response.text()).to.equal(true);", "pm.expect(r.content, 'body: ' + pm.response.text()).to.include('budget exceeded: 0.0010 >= 0.0010 dollars');"])], vkUse("gov48_vk")),
+  mockGet("GOV-48", "cm", "cm ran echo once and add once", [callsIs("echo", 1), callsIs("add", 1)]),
+  restoreConfig("GOV-48"),
+  vkDelete("GOV-48", "teardown: delete the VK", "gov48_vk"),
+  cmTeardown("GOV-48"),
+]);
+
 const GOV44 = folder("GOV-44 A team's MCP budget charges and refuses its key's tool calls, and its model budget does neither", `Setup: ${ALPHA_EA}, ${ECHO_PRICED}; a team with an mcp budget of 0.002 per 1h and a model budget of 0.001 per 1h; a VK of that team with mcp_configs alpha ["*"] and no budgets of its own. Were the model budget charged by tool calls, the second call would be refused on it.`, [
   ...alphaEA("GOV-44"),
   priceAlpha("GOV-44", "setup: price echo at 0.001", "gov-44-alpha", { echo: 0.001 }),
@@ -13712,7 +13761,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39, GOV40, GOV41, GOV42, GOV43, GOV44, GOV45, GOV46]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39, GOV40, GOV41, GOV42, GOV43, GOV44, GOV45, GOV46, GOV47, GOV48]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),
