@@ -27,13 +27,13 @@ Mistral is an **OpenAI-compatible provider** with custom compatibility handling 
 | List Models          | ✅            | -         | `/v1/models`               |
 | Image Generation     | ❌            | ❌        | -                          |
 | Text Completions     | ❌            | ❌        | -                          |
-| Speech (TTS)         | ❌            | ❌        | -                          |
+| Speech (TTS)         | ✅            | ❌        | `/v1/audio/speech`         |
 | Files                | ❌            | ❌        | -                          |
 | Batch                | ❌            | ❌        | -                          |
 
 <Note>
-  **Unsupported Operations** (❌): Text Completions, Speech (TTS), Files, and
-  Batch are not supported by the upstream Mistral API. Image Generation is not
+  **Unsupported Operations** (❌): Text Completions, Files, and Batch are not
+  supported by the upstream Mistral API. Streaming speech is not implemented. Image Generation is not
   currently supported by Bifrost's Mistral integration (Mistral API supports
   image generation, but Bifrost has not yet implemented this feature). These
   return `UnsupportedOperationError`.
@@ -339,13 +339,31 @@ Lists available Mistral models with context length and capabilities.
 
 ---
 
+# 7. Speech (TTS)
+
+`/v1/audio/speech` requests go to Mistral's `POST /v1/audio/speech` (Voxtral TTS models such as `voxtral-mini-tts-latest`). `voice` is sent as `voice_id`: a preset slug such as `gb_jane_neutral` or the ID of a saved voice. `response_format` accepts `mp3` (default), `wav`, `pcm`, `flac` or `opus`. Mistral returns the audio base64-encoded in `audio_data`, and Bifrost returns the decoded bytes.
+
+Other Mistral fields such as `ref_audio`, `expressiveness` and `phoneme_hints` are forwarded only with the `x-bf-passthrough-extra-params: true` header; without it Bifrost leaves them out of the request to Mistral. On the native `/v1/audio/speech` route they can be sent as top-level fields. On the OpenAI drop-in `/openai/v1/audio/speech` they must be nested in an `extra_params` object, because top-level fields Bifrost does not know are dropped there:
+
+```bash
+curl http://localhost:8080/openai/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -H "x-bf-passthrough-extra-params: true" \
+  -d '{"model": "mistral/voxtral-mini-tts-latest", "input": "Hello.", "voice": "gb_jane_neutral", "extra_params": {"expressiveness": 2}}' \
+  -o out.mp3
+```
+
+Speech requests staged for large-payload passthrough are refused with a 400, because the staged OpenAI-shaped body cannot be converted to Mistral's schema in flight.
+
+---
+
 ## Unsupported Features
 
 | Feature          | Reason                                                                 |
 | ---------------- | ---------------------------------------------------------------------- |
 | Text Completions | Not offered by Mistral API                                             |
 | Image Generation | Not yet implemented in Bifrost integration (Mistral API supports this) |
-| Speech/TTS       | Not offered by Mistral API                                             |
+| Speech/TTS streaming | Not yet implemented in Bifrost integration                          |
 | File Management  | Not offered by Mistral API                                             |
 | Batch Operations | Not offered by Mistral API                                             |
 
