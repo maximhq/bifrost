@@ -23,3 +23,4 @@
 - fix: jobaccounting - Seedance video settlements record output tokens
 - fix: openapimcp - every tool argument gets a name clients accept
 - chore: upgraded Go to 1.27.4 and core to v1.16.0
+- fix: Redis/Valkey semantic cache entries now expire natively at their `expires_at` deadline, so entries that are never read again no longer accumulate; existing hashes need the one-time expiry repair described in the Redis docs

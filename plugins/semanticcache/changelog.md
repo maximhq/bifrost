@@ -1,3 +1,4 @@
 - chore: upgraded Go to 1.27.4, core to v1.16.0 and framework to v1.13.0
 - fix: a follow-up turn no longer matches an earlier turn of the same conversation; earlier messages must match exactly and only the newest message is compared by meaning
 - fix: requests that offer tools or carry tool calls or tool results are served only exact cache matches; semantic matching no longer returns another prompt's answer to an agent turn
+- fix: cache entries are treated as expired at their deadline second instead of one second later; requires a framework release with Redis native expiry for Redis/Valkey entries to be removed without another lookup

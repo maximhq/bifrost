@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -26,6 +27,11 @@ const (
 	// RedisMaxSearchResults is the maximum number of results Redis Search returns in a single query.
 	// This is the default MAXSEARCHRESULTS configuration in Redis Search.
 	RedisMaxSearchResults = 10000
+	// redisCleanupTimeout bounds waiting for a connection for the DEL that
+	// removes an entry written outside a transaction, independently of the
+	// caller's context. Its socket I/O is bounded by the client's read and
+	// write timeouts, like every other command.
+	redisCleanupTimeout = 5 * time.Second
 )
 
 type RedisConfig struct {
@@ -1446,13 +1452,25 @@ func (s *RedisStore) GetNearest(ctx context.Context, namespace string, vector []
 	return results, nil
 }
 
-// Add stores a new chunk in the Redis vector store.
+// Add stores a new chunk. A non-nil expires_at is an absolute Unix-second
+// deadline, applied to the hash itself as well as stored in its metadata.
 func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embedding []float32, metadata map[string]interface{}) error {
 	ctx, cancel := withTimeout(ctx, time.Duration(s.config.ContextTimeout))
 	defer cancel()
 
 	if strings.TrimSpace(id) == "" {
 		return fmt.Errorf("id is required")
+	}
+
+	var expiresAt int64
+	rawExpiry, hasExpiry := metadata["expires_at"]
+	hasExpiry = hasExpiry && rawExpiry != nil
+	if hasExpiry {
+		var err error
+		expiresAt, err = redisExpirySeconds(rawExpiry)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Create key with namespace
@@ -1501,12 +1519,121 @@ func (s *RedisStore) Add(ctx context.Context, namespace string, id string, embed
 		}
 	}
 
+	if hasExpiry {
+		// Keep normalization off the no-expiry path and leave caller metadata
+		// untouched. Integers are already canonical; floats must not become
+		// scientific notation in the hash.
+		switch rawExpiry.(type) {
+		case string, float64:
+			fields["expires_at"] = strconv.FormatInt(expiresAt, 10)
+		}
+		// Write the hash and its native deadline in one MULTI/EXEC transaction.
+		// Once MULTI is accepted, Redis checks every queued command before EXEC
+		// runs any of them, so a denied or unavailable EXPIREAT discards the
+		// whole write instead of leaving a hash that never expires. If MULTI
+		// itself is refused, Redis runs HSET (and EXPIREAT, if allowed) as plain
+		// commands, so Add deletes the key afterwards. A deadline already in the
+		// past deletes the key immediately.
+		// Transactions do not roll back: if a non-hash key already occupies
+		// this key, HSET fails with WRONGTYPE but EXPIREAT still applies to it.
+		cmds, err := s.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, key, fields)
+			pipe.ExpireAt(ctx, key, time.Unix(expiresAt, 0))
+			return nil
+		})
+		if err != nil {
+			err = redisTransactionError(err, cmds)
+			if redisMultiRefused(cmds) {
+				// The entry may have been written without its deadline. Removing
+				// it only costs a cache miss. The caller's context may already be
+				// done, so the cleanup gets its own bounded one.
+				cleanupCtx, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), redisCleanupTimeout)
+				delErr := s.client.Del(cleanupCtx, key).Err()
+				cancelCleanup()
+				if delErr != nil {
+					err = errors.Join(err, fmt.Errorf("failed to delete entry written outside a transaction: %w", delErr))
+				}
+			}
+			return fmt.Errorf("failed to store semantic cache entry with expiry: %w", err)
+		}
+		return nil
+	}
+
 	// Store as hash for efficient native vector search
 	if err := s.client.HSet(ctx, key, fields).Err(); err != nil {
 		return fmt.Errorf("failed to store semantic cache entry: %w", err)
 	}
 
 	return nil
+}
+
+// redisTransactionError returns the error of the command Redis refused, such
+// as NOPERM or OOM. A refused command makes EXEC fail with a generic EXECABORT
+// that go-redis copies to the other commands, and that standalone clients (but
+// not cluster clients) also return as err.
+func redisTransactionError(err error, cmds []redis.Cmder) error {
+	for _, cmd := range cmds {
+		if cmdErr := cmd.Err(); cmdErr != nil && !strings.HasPrefix(cmdErr.Error(), "EXECABORT") {
+			return cmdErr
+		}
+	}
+	return err
+}
+
+// redisMultiRefused reports whether Redis refused MULTI itself, in which case
+// it ran the queued commands outside a transaction. go-redis then reports
+// MULTI's error on every command. Other transaction failures leave different
+// errors (a refused command next to EXECABORT, or WRONGTYPE next to a
+// successful EXPIREAT) or EXECABORT on all of them (a refused EXEC). The
+// shared error must be a Redis reply: a cancelled context or a broken
+// connection also sets one error on every command, but then Redis discards
+// the unfinished transaction and nothing needs removing.
+func redisMultiRefused(cmds []redis.Cmder) bool {
+	var reply redis.Error
+	if len(cmds) == 0 || !errors.As(cmds[0].Err(), &reply) {
+		return false
+	}
+	first := cmds[0].Err().Error()
+	if strings.HasPrefix(first, "EXECABORT") {
+		return false
+	}
+	for _, cmd := range cmds[1:] {
+		if cmd.Err() == nil || cmd.Err().Error() != first {
+			return false
+		}
+	}
+	return true
+}
+
+// redisExpirySeconds parses expires_at as Unix seconds and rejects values
+// Redis cannot convert to milliseconds. Redis reports that range error only
+// when EXPIREAT runs, after HSET has already written the hash, so it must be
+// caught here.
+func redisExpirySeconds(value interface{}) (int64, error) {
+	var seconds int64
+	switch v := value.(type) {
+	case int:
+		seconds = int64(v)
+	case int64:
+		seconds = v
+	case string:
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid expires_at: expected integer Unix seconds: %w", err)
+		}
+		seconds = parsed
+	case float64:
+		if math.IsNaN(v) || math.IsInf(v, 0) || math.Trunc(v) != v || v < math.MinInt64/1000 || v > math.MaxInt64/1000 {
+			return 0, fmt.Errorf("invalid expires_at: expected integer Unix seconds in Redis range")
+		}
+		seconds = int64(v)
+	default:
+		return 0, fmt.Errorf("invalid expires_at: expected integer Unix seconds, got %T", value)
+	}
+	if seconds < math.MinInt64/1000 || seconds > math.MaxInt64/1000 {
+		return 0, fmt.Errorf("invalid expires_at: Unix seconds outside Redis range")
+	}
+	return seconds, nil
 }
 
 // Delete deletes a chunk from the Redis vector store.

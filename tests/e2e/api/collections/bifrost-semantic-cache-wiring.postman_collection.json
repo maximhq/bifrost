@@ -12316,7 +12316,7 @@
         },
         {
           "id": "scw-246",
-          "name": "H1 ttl 3s has expired",
+          "name": "H1 expiry without another cache lookup",
           "event": [
             {
               "listen": "prerequest",
@@ -12334,46 +12334,33 @@
                 "type": "text/javascript",
                 "exec": [
                   "eval(pm.collectionVariables.get('scw_lib'));",
-                  "scw.run({",
-                  "  \"name\": \"H1 ttl 3s has expired\",",
+                  "if (scw.run({",
+                  "  \"name\": \"H1 expiry without another cache lookup\",",
                   "  \"status\": 200,",
-                  "  \"outcome\": \"miss\",",
-                  "  \"same\": \"h1\"",
-                  "});"
+                  "  \"fields\": [",
+                  "    {",
+                  "      \"path\": \"status\",",
+                  "      \"eq\": \"ok\"",
+                  "    }",
+                  "  ]",
+                  "})) {",
+                  "  console.log('SCW_EXPIRED_CACHE_KEY=' + pm.variables.replaceIn(\"ScwDirect{{ns}}\") + ':' + pm.collectionVariables.get(\"cid_h1\"));",
+                  "}"
                 ]
               }
             }
           ],
           "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "x-bf-cache-key",
-                "value": "h1-{{run_id}}"
-              },
-              {
-                "key": "x-bf-cache-no-store",
-                "value": "true"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
+            "method": "GET",
+            "header": [],
             "url": {
-              "raw": "{{base_url}}/v1/chat/completions",
+              "raw": "{{base_url}}/health",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "v1",
-                "chat",
-                "completions"
+                "health"
               ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"H1: reply with one word: ready.\"}],\"max_tokens\":8,\"temperature\":0}"
             }
           }
         },

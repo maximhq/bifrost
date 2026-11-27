@@ -157,6 +157,46 @@ if err != nil {
 
 ### Redis-Specific Features
 
+#### Native cache expiration
+
+`RedisStore.Add` treats a non-null `expires_at` metadata value as an absolute Unix-second deadline. It writes the hash and applies `EXPIREAT` together in one `MULTI`/`EXEC` transaction on that single key. It uses no Lua scripting, so it behaves the same on every Redis and Valkey version, in standalone and cluster mode. Entries whose deadline has already passed are deleted immediately, including streams that finish after their first-chunk deadline. Rewrites update the deadline; reads do not extend it.
+
+The deadline accepts integer Go values (`int`, `int64`), integer-valued `float64`, or decimal integer strings. Invalid or out-of-range deadlines fail before any write. Generic vector entries with missing/null `expires_at` retain the existing `HSET` behavior: new keys have no expiry and an existing key's TTL is left untouched. This does not add retention to Warp's log index, which has its own log-retention cleanup.
+
+The cache writer needs `HSET`, `EXPIREAT`, `MULTI`, and `EXEC` permission on its namespace keys; scripting permission is not required. Once `MULTI` is accepted, Redis validates every command in the transaction before running any of them. If `EXPIREAT` is denied or unavailable, the whole write is discarded and logged with the refused command's error (for example `NOPERM`), and the request is not cached. Bifrost never falls back to a hash without expiry, and a failed cache write never fails the LLM response. Redis transactions do not roll back, which leads to two edge cases:
+
+- If `MULTI` itself is denied, Redis runs `HSET` (and `EXPIREAT`, if allowed) as plain commands. Bifrost then deletes the key, so no hash is left without expiry, but nothing is cached, every write logs an error and the client discards a pooled connection. `MULTI` and `EXEC` (the `@transaction` category) are therefore required, not optional.
+- If a non-hash key already occupies a cache key, `HSET` fails with `WRONGTYPE` but `EXPIREAT` still applies to that key. This can only happen when something other than Bifrost writes under the cache namespace prefix, so keep that prefix reserved for the cache.
+
+Bifrost also checks `expires_at` on every lookup, so an expired entry is never served even if native expiry is delayed. Keep the Redis/Valkey host clock synchronized with Bifrost: a store clock that runs ahead removes entries early (cache misses), and one that runs behind keeps expired entries in memory longer.
+
+#### Repairing existing cache entries
+
+Upgrading fixes new writes, not hashes left by older writers. Keep any expiry-repair CronJob until every writer has upgraded and existing entries have been repaired. Use a bounded `SCAN` over explicitly selected cache namespaces, including previously used namespaces; do not wipe a shared database or scan unrelated tenants' data.
+
+The following loop attaches native expiry to cache hashes that do not have it yet. It uses only standard commands (`SCAN`, `TTL`, `TYPE`, `HMGET`, `EXPIREAT`), so it works on any Redis or Valkey version without scripting. It skips keys that already expire, non-hashes, entries without the cache marker and entries with a missing or malformed deadline. Already-past deadlines delete the hash immediately. If a request rewrites an entry while the loop runs, the loop may apply the older deadline, so that entry is removed earlier or later than its new `expires_at`. Lookups still check the stored `expires_at`, so the entry is never served after it.
+
+```bash
+export REDIS_URL=redis://localhost:6379/0
+export CACHE_NAMESPACE=BifrostSemanticCachePlugin
+# For authentication, use REDISCLI_AUTH and your service's username/TLS options.
+rc() { redis-cli -c -u "$REDIS_URL" "$@" </dev/null; }
+
+redis-cli -u "$REDIS_URL" --scan --pattern "$CACHE_NAMESPACE:*" |
+  while IFS= read -r key; do
+    # Only cache hashes that have no native expiry yet.
+    [ "$(rc TTL "$key")" = "-1" ] || continue
+    [ "$(rc TYPE "$key")" = "hash" ] || continue
+    { read -r marker; read -r at; } < <(rc --raw HMGET "$key" from_bifrost_semantic_cache_plugin expires_at)
+    [ "$marker" = "true" ] || [ "$marker" = "74727565" ] || continue
+    [[ "$at" =~ ^-?[0-9]+$ ]] || continue
+    printf '%s: ' "$key"
+    rc EXPIREAT "$key" "$at"
+  done
+```
+
+Run this with `bash` for each selected namespace and, on a cluster, against each primary's connection URL: `SCAN` on one seed node does not enumerate the whole cluster. Only repaired keys are printed: `1` means expiry was applied and `0` means the key disappeared before it could be repaired. Out-of-range deadlines or denied commands print an error and leave the hash unchanged; inspect the output and repeat the scan if it was interrupted. Verify that retained entries have a positive `PTTL` and that expired hashes disappear. Index garbage collection and allocator memory reclamation may lag key deletion; TTL is not a fixed memory-size limit.
+
 **Vector Search Algorithm:**
 Redis uses the **HNSW (Hierarchical Navigable Small World)** algorithm for vector similarity search, which provides:
 

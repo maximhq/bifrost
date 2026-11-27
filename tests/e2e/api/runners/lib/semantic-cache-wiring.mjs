@@ -18,6 +18,37 @@ export function scwNamespaceSuffix(runId) {
   return String(runId || "").replace(/[^A-Za-z0-9]/g, "");
 }
 
+// HTTP hit/miss checks alone pass with logical expiry but leaking Redis hashes.
+// Inspect only this run's namespaces after Newman, before any cleanup. The
+// injected redis-cli call keeps this check testable without another dependency.
+export function verifyRedisExpiry(runRedis, pattern, expiredKeys = []) {
+  const keys = runRedis("--scan", "--pattern", pattern).trim().split("\n").filter(Boolean);
+  let checked = 0;
+  for (const key of keys) {
+    const ttl = runRedis("PTTL", key).trim();
+    if (ttl === "-2") continue; // expired after SCAN
+    if (!/^\d+$/.test(ttl)) throw new Error(`${key} has no native expiry (PTTL=${ttl})`);
+    const expiresAt = runRedis("HGET", key, "expires_at").trim();
+    if (!expiresAt && runRedis("EXISTS", key).trim() === "0") continue;
+    if (!/^-?\d+$/.test(expiresAt)) throw new Error(`${key} has invalid expires_at: ${expiresAt}`);
+    const serverTime = runRedis("TIME").trim().split(/\s+/);
+    if (serverTime.length !== 2 || !/^\d+$/.test(serverTime[0]) || !/^\d+$/.test(serverTime[1])) {
+      throw new Error(`${key} received invalid Redis TIME: ${serverTime.join(" ")}`);
+    }
+    const expectedTTL = BigInt(expiresAt) * 1000n - BigInt(serverTime[0]) * 1000n - BigInt(Math.floor(Number(serverTime[1]) / 1000));
+    const ttlDifference = BigInt(ttl) - expectedTTL;
+    if (ttlDifference < -1000n || ttlDifference > 1000n) {
+      throw new Error(`${key} PTTL ${ttl}ms differs from expires_at ${expiresAt} by ${ttlDifference}ms`);
+    }
+    checked++;
+  }
+  if (!checked) throw new Error("no retained cache entries verified; check the Redis endpoint or rerun a narrower cache scope");
+  for (const key of expiredKeys) {
+    if (runRedis("EXISTS", key).trim() !== "0") throw new Error(`${key} remains after TTL without a matching cache lookup`);
+  }
+  return checked;
+}
+
 // The sandbox library. pm is the Postman sandbox object (or a fake in the unit tests).
 export function scwLib(pm) {
   var MAX_ATTEMPTS = 8;
