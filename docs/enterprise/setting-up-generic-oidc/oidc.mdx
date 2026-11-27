@@ -201,7 +201,7 @@ Enter the credentials you copied in Step 3:
 | **Issuer URL** | Your IdP's OIDC issuer URL (no trailing slash) |
 | **Client ID** | Application Client ID |
 | **Client Secret** | Application Client Secret |
-| **Audience** | Optional - the expected `aud` claim. Defaults to Client ID. |
+| **Audiences** | Optional - one or more expected `aud` values; a token naming any of them is accepted. Defaults to Client ID. |
 
 Click **Discover endpoints** to auto-fill the authorize, token, and userinfo endpoints from your issuer's discovery document. Then click **Verify & Next**.
 
@@ -300,7 +300,7 @@ For providers that support it, see [SCIM with Generic OIDC](./scim) to enable re
 
 **JWKS validation fails** - Bifrost fetches `<issuer>/.well-known/openid-configuration` to discover the JWKS endpoint. Ensure this URL is reachable from your Bifrost host.
 
-**Audience mismatch** - set the **Audience** field in Bifrost to match the `aud` claim in the JWT. Leave blank to default to the Client ID.
+**Audience mismatch** - add the `aud` claim in the JWT to the **Audiences** field in Bifrost. Leave it empty to default to the Client ID.
 
 **Claims are present in Discover Claims but role mapping is not working** - confirm the claim name matches exactly what the IdP sends (case-sensitive, including namespacing). Dotted paths (e.g. `realm_access.roles`) are supported.
 

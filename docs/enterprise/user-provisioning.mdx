@@ -146,7 +146,8 @@ Shared fields across providers:
 | --- | --- | --- |
 | `clientId` | Yes | OAuth client ID from the identity provider. |
 | `clientSecret` | Usually | Client secret. Required for confidential clients and (where applicable) token revocation. |
-| `audience` | Optional | JWT audience to validate against. Defaults vary per provider. |
+| `audience` | Optional | JWT audience to validate against. Defaults vary per provider. Still accepted alongside `allowedAudiences`. |
+| `allowedAudiences` | Optional | More accepted JWT audiences, as plain strings. A token naming `audience` or any entry is accepted. Where one audience is requested from the identity provider, `audience` is used, else the first entry. Put an `env.` or `vault.` reference in `audience`. Saving from the dashboard writes plain audiences here. |
 | `attributeRoleMappings` | Optional | List of `{ attribute, value, role }` rules. A user gets one role; `roleResolutionStrategy` picks it when several rules match. |
 | `roleResolutionStrategy` | Optional | `highestPermissionCount` (default): the matching role with the most permissions, ties by list order. `order`: the first matching rule. |
 | `attributeTeamMappings` | Optional | List of `{ attribute, value, team }` rules (all matches apply). |
@@ -178,6 +179,7 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Client Secret | `clientSecret` | No | Yes | Required for token revocation |
 | API Token | `apiToken` | No | Yes | Required for bulk user sync, team sync, and 24-hour Okta background reconciliation |
 | Audience | `audience` | No | Yes | Only applies to Custom Authorization Server |
+| Allowed audiences | `allowedAudiences` | No | No | More accepted audiences, unioned with `audience` |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
 | Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team, attributeType, attributeValue }` objects |
@@ -194,6 +196,7 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Client Secret | `clientSecret` | Yes | Yes | Client secret for OAuth authentication |
 | Cloud | `cloud` | No | Yes | `"commercial"` (default) \| `"gcc-high"` \| `"dod"` |
 | Audience | `audience` | No | Yes | JWT audience override (default: `clientId`) |
+| Allowed audiences | `allowedAudiences` | No | No | More accepted audiences, unioned with `audience` |
 | App ID URI | `appIdUri` | No | Yes | App ID URI for v1.0 tokens (e.g. `api://{clientId}`) |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
@@ -211,6 +214,7 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Client ID | `clientId` | Yes | Yes | Application client ID |
 | Client Secret | `clientSecret` | No | Yes | For confidential clients |
 | Audience | `audience` | No | Yes | JWT audience for token validation |
+| Allowed audiences | `allowedAudiences` | No | No | More accepted audiences, unioned with `audience` |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
 | Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team, attributeType, attributeValue }` objects |
@@ -227,6 +231,7 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Client Secret | `clientSecret` | No | Yes | For confidential clients |
 | Project ID | `projectId` | No | Yes | For project-scoped role claims |
 | Audience | `audience` | No | Yes | Access-token audience override |
+| Allowed audiences | `allowedAudiences` | No | No | More accepted audiences, unioned with `audience` |
 | Service account client ID | `serviceAccountClientId` | No | Yes | Service account for provisioning API access |
 | Service account client secret | `serviceAccountClientSecret` | No | Yes | Service account secret |
 | Team IDs field | `teamIdsField` | No | Yes | JWT claim for group IDs |
@@ -250,6 +255,7 @@ Fields marked **env.\* supported** accept `"env.VAR_NAME"` in addition to a lite
 | Admin email | `adminEmail` | Conditional | Yes | Required for Directory API / domain-wide delegation |
 | Impersonate service account | `impersonateServiceAccount` | No | Yes | GCP SA email to impersonate when using ADC + Workload Identity |
 | Audience | `audience` | No | Yes | Optional JWT audience override |
+| Allowed audiences | `allowedAudiences` | No | No | More accepted audiences, unioned with `audience` |
 | Team IDs field | `teamIdsField` | No | Yes | Claim field for group IDs (default: `"groups"`) |
 | Role mappings | `attributeRoleMappings` | No | **Plain only** | Array of `{ attribute, value, role }` objects |
 | Team mappings | `attributeTeamMappings` | No | **Plain only** | Array of `{ attribute, value, team, attributeType, attributeValue }` objects |
