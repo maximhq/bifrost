@@ -4449,8 +4449,9 @@ func validateBudget(budget *configstoreTables.TableBudget) error {
 // Model Config CRUD Operations
 
 // modelConfigAppliesTo reports whether traffic of the given scope is charged by a model config: one of
-// its budgets is charged by it, and the row is holder-level when the traffic names no model
-// (NeedsAllModelsOwner). The in-memory counterpart of ModelConfigsQueryParams.AppliesTo.
+// its budgets or request limits is charged by it (a legacy combined rate limit's request limit included),
+// and the row is holder-level when the traffic names no model (NeedsAllModelsOwner). The in-memory
+// counterpart of ModelConfigsQueryParams.AppliesTo.
 func modelConfigAppliesTo(mc *configstoreTables.TableModelConfig, traffic configstoreTables.LimitScope) bool {
 	if traffic.NeedsAllModelsOwner() && !mc.IsHolderLevel() {
 		return false
@@ -4460,14 +4461,20 @@ func modelConfigAppliesTo(mc *configstoreTables.TableModelConfig, traffic config
 			return true
 		}
 	}
-	return false
+	for i := range mc.RequestLimits {
+		if mc.RequestLimits[i].Scope.AppliesTo(traffic) {
+			return true
+		}
+	}
+	// A Max Tokens-only rate limit counts model traffic alone and is left out here.
+	return mc.RateLimit != nil && mc.RateLimit.RequestMaxLimit != nil && mc.RateLimit.Scope.AppliesTo(traffic)
 }
 
 // getModelConfigs handles GET /api/governance/model-configs - Get all model configs
 func (h *GovernanceHandler) getModelConfigs(ctx *fasthttp.RequestCtx) {
 	fromMemory := string(ctx.QueryArgs().Peek("from_memory")) == "true"
 	// applies_to=mcp lists the rows MCP tool executions are charged by (the MCP Budgets & Limits
-	// page): holder-level rows (model "*", no provider) with a shared or mcp budget.
+	// page): holder-level rows (model "*", no provider) with a shared or mcp budget or request limit.
 	appliesTo := configstoreTables.LimitScope(ctx.QueryArgs().Peek("applies_to"))
 	if appliesTo != "" && appliesTo != configstoreTables.LimitScopeMCP {
 		SendError(ctx, 400, "Invalid applies_to parameter: must be mcp")
