@@ -1,0 +1,3 @@
+- feat: settled relay job costs are added to relay cost, without counting a relay call
+- fix: metric labels come from the enrichment registry, adding `alias`, `app`, `routing_engine_used`, `routing_rule_id`, `routing_rule_name` and `complexity_tier`
+- chore: upgraded core to v1.17.0 and framework to v1.14.0
