@@ -32,12 +32,10 @@ func (testLogger) LogHTTPRequest(schemas.LogLevel, string) schemas.LogEventBuild
 type fakeConfig struct {
 	mu       sync.Mutex
 	projects map[string]*tables.TableTraceProject
-	keys     map[string]*tables.TableTracingKey
-	lookups  int
 }
 
 func newFakeConfig() *fakeConfig {
-	return &fakeConfig{projects: map[string]*tables.TableTraceProject{}, keys: map[string]*tables.TableTracingKey{}}
+	return &fakeConfig{projects: map[string]*tables.TableTraceProject{}}
 }
 
 func (f *fakeConfig) GetTraceProject(_ context.Context, id string) (*tables.TableTraceProject, error) {
@@ -75,44 +73,6 @@ func (f *fakeConfig) CreateTraceProject(_ context.Context, project *tables.Table
 	return nil
 }
 
-func (f *fakeConfig) GetTracingKey(_ context.Context, id string) (*tables.TableTracingKey, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, key := range f.keys {
-		if key.ID == id {
-			return key, nil
-		}
-	}
-	return nil, configstore.ErrNotFound
-}
-
-func (f *fakeConfig) GetTracingKeyByHash(_ context.Context, hash string) (*tables.TableTracingKey, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.lookups++
-	if key, ok := f.keys[hash]; ok {
-		return key, nil
-	}
-	return nil, configstore.ErrNotFound
-}
-
-func (f *fakeConfig) UpdateTracingKey(_ context.Context, key *tables.TableTracingKey) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.keys[key.KeyHash] = key
-	return nil
-}
-
-func (f *fakeConfig) TouchTracingKey(context.Context, string, time.Time) error { return nil }
-
-func (f *fakeConfig) addKey(value string, key *tables.TableTracingKey) {
-	key.SetValue(value)
-	if key.ID == "" {
-		key.ID = "key-" + key.Name
-	}
-	f.keys[key.KeyHash] = key
-}
-
 type testEnv struct {
 	service *Service
 	store   logstore.LogStore
@@ -129,15 +89,15 @@ func newTestEnv(t *testing.T, cfg Config) *testEnv {
 	config := newFakeConfig()
 	project := &tables.TableTraceProject{ID: "p1", Name: "agent"}
 	config.projects[project.ID] = project
-	config.addKey("bf-tr-test", &tables.TableTracingKey{Name: "ci", ProjectIDs: []string{"p1"}, DefaultProjectID: "p1", LogContent: true, Enabled: true})
+	if cfg.DefaultProjectName == "" {
+		cfg.DefaultProjectName = project.Name
+	}
 	service := NewService(store, config, cfg, testLogger{})
 	t.Cleanup(func() {
 		service.Close()
 		_ = store.Close(ctx)
 	})
-	principal, err := service.Authenticate(ctx, "bf-tr-test")
-	require.NoError(t, err)
-	return &testEnv{service: service, store: store, config: config, project: project, key: principal}
+	return &testEnv{service: service, store: store, config: config, project: project, key: AdminPrincipal()}
 }
 
 func at(ms int) *time.Time {
@@ -158,7 +118,6 @@ func TestIngestStoresSpansBeforeItReturns(t *testing.T) {
 	stored, err := env.store.ListTraceSpans(ctx, "p1", "t1")
 	require.NoError(t, err)
 	require.Len(t, stored, 2, "both spans are stored when the ack is sent")
-	assert.Equal(t, "key-ci", stored[0].TracingKeyID)
 	parts, err := env.store.ListTraceSpanParts(ctx, "p1", "t1", "llm")
 	require.NoError(t, err)
 	require.Len(t, parts, 1)
@@ -272,52 +231,44 @@ func TestIngestAppliesContentSwitchAndMasking(t *testing.T) {
 	assert.NotContains(t, parts[0].Payload, "secret")
 }
 
-// TestKeysAreBoundToProjects pins isolation: no key is rejected, a disabled key is rejected, a key
-// cannot write outside its projects, and only a key allowed to create projects makes a new one.
-func TestKeysAreBoundToProjects(t *testing.T) {
+// TestProjectsResolveByNameAndScopedPrincipals pins project resolution: a request that names no
+// project goes to the default one, a name is created on first use, and a scoped principal (an
+// enterprise API key) writes only to its own projects.
+func TestProjectsResolveByNameAndScopedPrincipals(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t, Config{})
-	_, err := env.service.Authenticate(ctx, "")
-	assert.ErrorIs(t, err, ErrUnauthorized)
-	_, err = env.service.Authenticate(ctx, "bf-tr-unknown")
-	assert.ErrorIs(t, err, ErrUnauthorized)
-	env.config.addKey("bf-tr-off", &tables.TableTracingKey{Name: "off", ProjectIDs: []string{"p1"}, Enabled: false})
-	_, err = env.service.Authenticate(ctx, "bf-tr-off")
-	assert.ErrorIs(t, err, ErrUnauthorized)
+	admin := AdminPrincipal()
 
-	lookups := env.config.lookups
-	_, err = env.service.Authenticate(ctx, "bf-tr-test")
+	project, err := env.service.ResolveProject(ctx, admin, "")
 	require.NoError(t, err)
-	assert.Equal(t, lookups, env.config.lookups, "a verified key is served from the cache")
-
-	other := &tables.TableTraceProject{ID: "p2", Name: "billing"}
-	env.config.projects["p2"] = other
-	_, err = env.service.ResolveProject(ctx, env.key, "billing")
-	assert.ErrorIs(t, err, ErrForbidden)
-	assert.ErrorIs(t, env.service.Ingest(ctx, env.key, other, logstore.TraceSourceOTel, []*SpanPart{{TraceID: "t", SpanID: "s"}}), ErrForbidden)
-	_, err = env.service.ResolveProject(ctx, env.key, "brand-new")
-	assert.ErrorIs(t, err, ErrForbidden, "this key may not create projects")
-
-	project, err := env.service.ResolveProject(ctx, env.key, "")
-	require.NoError(t, err)
-	assert.Equal(t, "p1", project.ID, "no project named means the key's default")
-	byName, err := env.service.ResolveProject(ctx, env.key, "agent")
+	assert.Equal(t, "p1", project.ID, "no project named means the default project")
+	byName, err := env.service.ResolveProject(ctx, admin, "agent")
 	require.NoError(t, err)
 	assert.Equal(t, "p1", byName.ID)
+	created, err := env.service.ResolveProject(ctx, admin, "brand-new")
+	require.NoError(t, err)
+	assert.Equal(t, "brand-new", created.Name, "a project an SDK names is created on first use")
+	again, err := env.service.ResolveProject(ctx, admin, "brand-new")
+	require.NoError(t, err)
+	assert.Equal(t, created.ID, again.ID)
 
-	env.config.addKey("bf-tr-maker", &tables.TableTracingKey{Name: "maker", CanCreateProjects: true, LogContent: true, Enabled: true})
-	maker, err := env.service.Authenticate(ctx, "bf-tr-maker")
+	fresh := newTestEnv(t, Config{DefaultProjectName: DefaultProjectName})
+	defaulted, err := fresh.service.ResolveProject(ctx, admin, "")
 	require.NoError(t, err)
-	created, err := env.service.ResolveProject(ctx, maker, "brand-new")
+	assert.Equal(t, DefaultProjectName, defaulted.Name, "the default project is created on first use")
+
+	scoped := &Principal{ProjectIDs: []string{"p1"}, LogContent: true}
+	_, err = env.service.ResolveProject(ctx, scoped, "brand-new")
+	assert.ErrorIs(t, err, ErrForbidden, "a scoped principal cannot write to another project")
+	_, err = env.service.ResolveProject(ctx, scoped, "never-made")
+	assert.ErrorIs(t, err, ErrForbidden, "a scoped principal cannot create projects")
+	assert.ErrorIs(t, env.service.Ingest(ctx, scoped, created, logstore.TraceSourceOTel, []*SpanPart{{TraceID: "t", SpanID: "s"}}), ErrForbidden)
+	own, err := env.service.ResolveProject(ctx, scoped, "")
 	require.NoError(t, err)
-	assert.Equal(t, "brand-new", created.Name)
-	require.NoError(t, env.service.Ingest(ctx, maker, created, logstore.TraceSourceBraintrust, []*SpanPart{{TraceID: "t", SpanID: "s", StartTime: at(0)}}))
-	again, err := env.service.Authenticate(ctx, "bf-tr-maker")
-	require.NoError(t, err)
-	assert.Contains(t, again.ProjectIDs, created.ID, "the key is bound to the project it created")
+	assert.Equal(t, "p1", own.ID, "a principal scoped to one project defaults to it")
 }
 
-// TestRetentionAndRateLimit pins per-project retention and the per-key span cap.
+// TestRetentionAndRateLimit pins per-project retention and the span rate cap.
 func TestRetentionAndRateLimit(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t, Config{MaxSpansPerSecond: 2, RetentionDays: func() int { return 90 }})
