@@ -259,7 +259,11 @@ for chunk := range stream {
 
 ### Context and Cancellation
 
-Use context to control streaming duration:
+Streaming and non-streaming inference calls with a `nil` context each receive a fresh request ID and, when tracing is enabled, a fresh trace ID. Calling `client.Shutdown()` cancels active streams started this way.
+
+For `LiveSessionContentRequest`, read the recording body to EOF or close it when done. A download started with `nil` stays active until the body is finished or the client shuts down.
+
+Pass a `BifrostContext` to supply your own IDs or set a deadline for an individual stream.
 
 ```go
 ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
