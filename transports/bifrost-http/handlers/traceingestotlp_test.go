@@ -5,7 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
+	"google.golang.org/protobuf/types/known/emptypb"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -17,6 +21,12 @@ import (
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
+	_ "google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -245,4 +255,100 @@ func TestLangfuseOTLPIgnoresTheProjectHeader(t *testing.T) {
 	assert.Len(t, spans, 3, "the spans land in the key's default project")
 	_, err = env.config.GetTraceProjectByName(context.Background(), "elsewhere")
 	assert.Error(t, err, "no project is made from the header")
+}
+
+// TestOTLPOverGRPC pins the gRPC transport: an export with the key in call metadata is stored
+// through the same path as HTTP, and a missing key is Unauthenticated, which exporters do not retry.
+func TestOTLPOverGRPC(t *testing.T) {
+	env := newTraceIngestTestEnv(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := NewTraceIngestGRPCServer(env.handler, logger)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+	client := collectortrace.NewTraceServiceClient(conn)
+	var request collectortrace.ExportTraceServiceRequest
+	require.NoError(t, proto.Unmarshal(otlpTestExport(t), &request))
+
+	_, err = client.Export(context.Background(), &request)
+	require.Error(t, err)
+	assert.Equal(t, codes.Unauthenticated, status.Code(err))
+
+	// arize-otel sends the key as api_key metadata, with gzip.
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "api_key", traceTestKey, "space_id", "bifrost")
+	response, err := client.Export(ctx, &request, grpc.UseCompressor("gzip"))
+	require.NoError(t, err)
+	assert.Nil(t, response.PartialSuccess)
+	spans, err := env.store.ListTraceSpans(context.Background(), "p1", otlpTestTrace)
+	require.NoError(t, err)
+	assert.Len(t, spans, 3)
+
+	bearer := metadata.AppendToOutgoingContext(context.Background(), "authorization", "Bearer "+traceTestKey, "x-project-name", "grpc-project")
+	_, err = client.Export(bearer, &request)
+	require.NoError(t, err, "the test key may create the project it names")
+}
+
+// Stop waits for in-flight exports only up to its deadline, then closes them, so a slow export
+// cannot hold up shutdown.
+func TestTraceIngestGRPCStopForcesAfterDeadline(t *testing.T) {
+	started := make(chan struct{})
+	grpcServer := grpc.NewServer()
+	grpcServer.RegisterService(&grpc.ServiceDesc{
+		ServiceName: "test.Blocking",
+		HandlerType: (*any)(nil),
+		Streams: []grpc.StreamDesc{{
+			StreamName:    "Stream",
+			ServerStreams: true,
+			Handler: func(_ any, stream grpc.ServerStream) error {
+				close(started)
+				<-stream.Context().Done()
+				return stream.Context().Err()
+			},
+		}},
+	}, struct{}{})
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	go func() { _ = grpcServer.Serve(listener) }()
+	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	require.NoError(t, err)
+	defer conn.Close()
+	stream, err := conn.NewStream(t.Context(), &grpc.StreamDesc{ServerStreams: true}, "/test.Blocking/Stream")
+	require.NoError(t, err)
+	require.NoError(t, stream.SendMsg(&emptypb.Empty{}))
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the export never started")
+	}
+
+	server := &TraceIngestGRPCServer{server: grpcServer}
+	stopped := make(chan struct{})
+	go func() {
+		server.stop(10 * time.Millisecond)
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not close the in-flight export after its deadline")
+	}
+}
+
+// OTLP exporters retry RESOURCE_EXHAUSTED only when the status carries RetryInfo, so a rate-limited
+// export says when to come back instead of being dropped.
+func TestGRPCRateLimitCarriesRetryInfo(t *testing.T) {
+	st := status.Convert(grpcIngestError(traceingest.ErrRateLimited))
+	assert.Equal(t, codes.ResourceExhausted, st.Code())
+	var retry *errdetails.RetryInfo
+	for _, detail := range st.Details() {
+		if info, ok := detail.(*errdetails.RetryInfo); ok {
+			retry = info
+		}
+	}
+	require.NotNil(t, retry, "RetryInfo makes the exporter retry")
+	assert.Positive(t, retry.GetRetryDelay().AsDuration())
 }
