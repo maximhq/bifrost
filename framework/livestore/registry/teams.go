@@ -11,11 +11,12 @@ import (
 const CustomerByName = "name"
 
 // Team is one team as request handling reads it: its name, the customer it belongs to, its
-// budgets and rate limit by ID, and its own content-logging decision.
+// budgets, rate limit and request limits by ID, and its own content-logging decision.
 type Team struct {
 	ID, Name        string
 	CustomerID      string
 	RateLimitID     string
+	RequestLimitIDs []string // the request limits it owns (governance_rate_limits.team_id)
 	BudgetIDs       []string
 	CalendarAligned bool
 	// DisableContentLogging is the team's own say on content logging: nil inherits, true turns
@@ -23,11 +24,12 @@ type Team struct {
 	DisableContentLogging *bool
 }
 
-// Customer is one customer as request handling reads it: its name, and its budgets and rate
-// limit by ID.
+// Customer is one customer as request handling reads it: its name, and its budgets, rate limit and
+// request limits by ID.
 type Customer struct {
 	ID, Name        string
 	RateLimitID     string
+	RequestLimitIDs []string // the request limits it owns (governance_rate_limits.customer_id)
 	BudgetIDs       []string
 	CalendarAligned bool
 }
@@ -82,11 +84,16 @@ func readTeams(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.DB) 
 	if err != nil {
 		return nil, err
 	}
+	requestLimits, err := requestLimitIDsBy(ctx, db, "team_id", orgIDs(rows))
+	if err != nil {
+		return nil, err
+	}
 	out := make([]*Team, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, &Team{
 			ID: r.ID, Name: r.Name, CustomerID: deref(r.CustomerID), RateLimitID: deref(r.RateLimitID),
-			BudgetIDs: budgets[r.ID], CalendarAligned: r.CalendarAligned, DisableContentLogging: r.DisableContentLogging,
+			RequestLimitIDs: requestLimits[r.ID], BudgetIDs: budgets[r.ID], CalendarAligned: r.CalendarAligned,
+			DisableContentLogging: r.DisableContentLogging,
 		})
 	}
 	return out, nil
@@ -126,10 +133,15 @@ func readCustomers(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *gorm.
 	if err != nil {
 		return nil, err
 	}
+	requestLimits, err := requestLimitIDsBy(ctx, db, "customer_id", orgIDs(rows))
+	if err != nil {
+		return nil, err
+	}
 	out := make([]*Customer, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, &Customer{
-			ID: r.ID, Name: r.Name, RateLimitID: deref(r.RateLimitID), BudgetIDs: budgets[r.ID], CalendarAligned: r.CalendarAligned,
+			ID: r.ID, Name: r.Name, RateLimitID: deref(r.RateLimitID), RequestLimitIDs: requestLimits[r.ID],
+			BudgetIDs: budgets[r.ID], CalendarAligned: r.CalendarAligned,
 		})
 	}
 	return out, nil

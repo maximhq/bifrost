@@ -16,6 +16,7 @@ type ModelConfig struct {
 	Provider        *string // nil covers every provider
 	Scope, ScopeID  string
 	RateLimitID     string
+	RequestLimitIDs []string // the request limits it owns (governance_rate_limits.model_config_id)
 	BudgetIDs       []string
 	CalendarAligned bool
 	// BudgetID is the config's legacy single budget_id column. Nothing enforces it; owners of
@@ -98,9 +99,15 @@ func readModelConfigs(ctx context.Context, db *gorm.DB, where func(*gorm.DB) *go
 	if err != nil {
 		return nil, err
 	}
+	requestLimits, err := requestLimitIDsBy(ctx, db, "model_config_id", ids)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]*ModelConfig, 0, len(rows))
 	for i := range rows {
-		out = append(out, ModelConfigFromTable(&rows[i], budgets[rows[i].ID]))
+		rec := ModelConfigFromTable(&rows[i], budgets[rows[i].ID])
+		rec.RequestLimitIDs = requestLimits[rows[i].ID]
+		out = append(out, rec)
 	}
 	return out, nil
 }

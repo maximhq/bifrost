@@ -382,8 +382,8 @@ func TestReportUsage_ChargesPerModelBudgets(t *testing.T) {
 	assert.Equal(t, 30.0, f.budgetUsage("wildcard-budget"), "an already-charged budget must not be charged again per model")
 }
 
-// A batch is model traffic, so per-model settlement must skip an MCP-only budget on a tier it
-// collects, while still charging a model-scoped one there.
+// A batch is model traffic, so per-model settlement must skip an MCP-only budget or request limit on
+// a tier it collects, while still charging a model-scoped one there.
 func TestReportUsage_PerModelChargingSkipsMCPOnlyBudgets(t *testing.T) {
 	logger := NewMockLogger()
 	vkID := "vk-alice"
@@ -397,9 +397,14 @@ func TestReportUsage_PerModelChargingSkipsMCPOnlyBudgets(t *testing.T) {
 	modelOnly.Scope = configstoreTables.LimitScopeModel
 	modelOnly.ModelConfigID = &mc.ID
 	mc.Budgets = []configstoreTables.TableBudget{*mcpOnly, *modelOnly}
+	mcpRule := buildRequestLimit("mcp-rule", 100, 0, "1h", configstoreTables.LimitScopeMCP)
+	mcpRule.ModelConfigID = &mc.ID
+	modelRule := buildRequestLimit("model-rule", 100, 0, "1h", configstoreTables.LimitScopeModel)
+	modelRule.ModelConfigID = &mc.ID
 	store, err := newTestGovernanceStore(t, logger, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
 		Budgets:      []configstoreTables.TableBudget{*mcpOnly, *modelOnly},
+		RateLimits:   []configstoreTables.TableRateLimit{mcpRule, modelRule},
 	}, nil, nil)
 	require.NoError(t, err)
 	tracker := NewUsageTracker(context.Background(), store, budgetResolverForTest(t, store, nil, logger), nil, logger)
@@ -417,6 +422,8 @@ func TestReportUsage_PerModelChargingSkipsMCPOnlyBudgets(t *testing.T) {
 	budgets := store.GetGovernanceData(context.Background()).Budgets
 	assert.Equal(t, 0.0, budgets["mcp-budget"].CurrentUsage, "a batch must not spend an MCP-only budget")
 	assert.Equal(t, 12.0, budgets["model-only-budget"].CurrentUsage)
+	assert.Equal(t, int64(0), store.LoadRateLimit(context.Background(), "mcp-rule").RequestCurrentUsage, "a batch must not count against an MCP-only request limit")
+	assert.Equal(t, int64(1), store.LoadRateLimit(context.Background(), "model-rule").RequestCurrentUsage)
 }
 
 // A batch whose models carry no per-model config must behave exactly as before.

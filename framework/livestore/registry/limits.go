@@ -262,28 +262,42 @@ func appendNew[T any](rows, more []*T, id func(*T) string) []*T {
 	return rows
 }
 
-// RateLimitsByTeams reads the rate limits of these teams.
+// RateLimitsByTeams reads the rate limits of these teams: the one each names, and the request
+// limits each owns.
 func (lr LimitReads) RateLimitsByTeams(ctx context.Context, db *gorm.DB, teamIDs []string) ([]*RateLimit, error) {
-	return readRateLimits(ctx, db, lr.RateLimitOwners, func(q *gorm.DB) *gorm.DB {
-		cond, arg := queryscope.InStrings(q, "id", teamIDs)
-		return q.Where("id IN (SELECT rate_limit_id FROM governance_teams WHERE "+cond+")", arg)
-	})
+	return lr.rateLimitsByHolders(ctx, db, "governance_teams", "team_id", teamIDs)
 }
 
-// RateLimitsByCustomers reads the rate limits of these customers.
+// RateLimitsByCustomers reads the rate limits of these customers: the one each names, and the
+// request limits each owns.
 func (lr LimitReads) RateLimitsByCustomers(ctx context.Context, db *gorm.DB, customerIDs []string) ([]*RateLimit, error) {
-	return readRateLimits(ctx, db, lr.RateLimitOwners, func(q *gorm.DB) *gorm.DB {
-		cond, arg := queryscope.InStrings(q, "id", customerIDs)
-		return q.Where("id IN (SELECT rate_limit_id FROM governance_customers WHERE "+cond+")", arg)
-	})
+	return lr.rateLimitsByHolders(ctx, db, "governance_customers", "customer_id", customerIDs)
 }
 
-// RateLimitsByModelConfigs reads the rate limits of these model configs.
+// RateLimitsByModelConfigs reads the rate limits of these model configs: the one each names, and
+// the request limits each owns.
 func (lr LimitReads) RateLimitsByModelConfigs(ctx context.Context, db *gorm.DB, modelConfigIDs []string) ([]*RateLimit, error) {
-	return readRateLimits(ctx, db, lr.RateLimitOwners, func(q *gorm.DB) *gorm.DB {
-		cond, arg := queryscope.InStrings(q, "id", modelConfigIDs)
-		return q.Where("id IN (SELECT rate_limit_id FROM governance_model_configs WHERE "+cond+")", arg)
+	return lr.rateLimitsByHolders(ctx, db, "governance_model_configs", "model_config_id", modelConfigIDs)
+}
+
+// rateLimitsByHolders reads the rate limits holders of table name by ID, and the request limits
+// whose ownerColumn names one of them. Like RateLimitsByKeys it reads the two in separate queries,
+// so each uses an index rather than scanning every rate limit.
+func (lr LimitReads) rateLimitsByHolders(ctx context.Context, db *gorm.DB, table, ownerColumn string, holderIDs []string) ([]*RateLimit, error) {
+	named, err := readRateLimits(ctx, db, lr.RateLimitOwners, func(q *gorm.DB) *gorm.DB {
+		cond, arg := queryscope.InStrings(q, "id", holderIDs)
+		return q.Where("id IN (SELECT rate_limit_id FROM "+table+" WHERE "+cond+")", arg)
 	})
+	if err != nil {
+		return nil, err
+	}
+	owned, err := readRateLimits(ctx, db, lr.RateLimitOwners, func(q *gorm.DB) *gorm.DB {
+		return q.Where(queryscope.InStrings(q, ownerColumn, holderIDs))
+	})
+	if err != nil {
+		return nil, err
+	}
+	return appendNew(named, owned, RateLimitID), nil
 }
 
 // RateLimitsByProviders reads the rate limits these providers' rows name.
@@ -399,7 +413,9 @@ var budgetOwners = []LimitOwner{
 
 // rateLimitOwners are the holders the registry knows of a rate limit, in the order a rate limit two
 // of them name picks its holder. Each names its rate limit by ID; a provider config's holder is its
-// key.
+// key. A request limit names its one owner on its own row instead (team_id, customer_id or
+// model_config_id), so those owners start from the rate limit, after every holder that names a rate
+// limit by ID: a legacy combined row a holder names keeps that holder.
 var rateLimitOwners = []LimitOwner{
 	{From: "governance_virtual_keys o", Column: "o.rate_limit_id", Calendar: "o.calendar_aligned", HolderID: "o.id", kind: holderKey},
 	{From: "governance_virtual_key_provider_configs pc", Column: "pc.rate_limit_id", Joins: "JOIN governance_virtual_keys o ON o.id = pc.virtual_key_id", Calendar: "o.calendar_aligned", HolderID: "o.id", kind: holderProviderConfig},
@@ -407,6 +423,9 @@ var rateLimitOwners = []LimitOwner{
 	{From: "governance_customers o", Column: "o.rate_limit_id", Calendar: "o.calendar_aligned", HolderID: "o.id", kind: holderCustomer},
 	{From: "governance_model_configs o", Column: "o.rate_limit_id", Calendar: "o.calendar_aligned", HolderID: "o.id", kind: holderModelConfig},
 	{From: "config_providers o", Column: "o.rate_limit_id", HolderID: "o.name", kind: holderProvider},
+	{From: "governance_rate_limits l", Column: "l.id", Joins: "JOIN governance_teams o ON o.id = l.team_id", Calendar: "o.calendar_aligned", HolderID: "o.id", kind: holderTeam},
+	{From: "governance_rate_limits l", Column: "l.id", Joins: "JOIN governance_customers o ON o.id = l.customer_id", Calendar: "o.calendar_aligned", HolderID: "o.id", kind: holderCustomer},
+	{From: "governance_rate_limits l", Column: "l.id", Joins: "JOIN governance_model_configs o ON o.id = l.model_config_id", Calendar: "o.calendar_aligned", HolderID: "o.id", kind: holderModelConfig},
 }
 
 // ownerIndex is the index in owners of the owner of kind, -1 when owners has none.

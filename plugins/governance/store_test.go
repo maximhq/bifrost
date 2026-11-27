@@ -3610,8 +3610,107 @@ func TestReloadAdoptsCalendarWithNewDuration(t *testing.T) {
 			live := store.LoadBudget(ctx, budget.ID)
 			require.Equal(t, 7.0, live.CurrentUsage)
 			require.True(t, live.LastReset.Equal(monthStart))
+
 		})
 	}
+}
+
+// TestGovernanceStore_RequestLimitsLoadWithTheirHolder pins that a team's, a customer's and a model
+// config's request limits (rows naming the holder as owner) load with the holder and bind what it
+// governs: each is listed after the holder's own rate limit wherever its limits are gathered.
+func TestGovernanceStore_RequestLimitsLoadWithTheirHolder(t *testing.T) {
+	ctx := context.Background()
+	customer := buildCustomer("customer-1", "Customer", nil)
+	team := buildTeam("team-1", "Team", nil)
+	team.CustomerID = &customer.ID
+	team.Customer = customer
+	team.CalendarAligned = true
+	teamTokens := buildTokenLimit("team-tokens", 1000, 0)
+	team.RateLimitID = &teamTokens.ID
+	vk := buildVirtualKey("vk-1", "sk-bf-request-limits", "Key", true)
+	vk.ProviderConfigs = []configstoreTables.TableVirtualKeyProviderConfig{buildProviderConfig("openai", []string{"*"})}
+	vk.TeamID = &team.ID
+	vk.Team = team
+	mcTokens := buildTokenLimit("mc-tokens", 500, 0)
+	mc := buildModelConfig("mc-global", configstoreTables.ModelConfigAllModels, nil, nil, nil)
+	mc.RateLimitID = &mcTokens.ID
+
+	teamRule := buildRequestLimit("team-rule", 5, 0, "1h", configstoreTables.LimitScopeShared)
+	teamRule.TeamID = &team.ID
+	customerRule := buildRequestLimit("customer-rule", 7, 0, "1d", configstoreTables.LimitScopeMCP)
+	customerRule.CustomerID = &customer.ID
+	mcRule := buildRequestLimit("mc-rule", 9, 0, "1h", configstoreTables.LimitScopeModel)
+	mcRule.ModelConfigID = &mc.ID
+
+	h := newLiveHarness(t, &configstore.GovernanceConfig{
+		VirtualKeys:  []configstoreTables.TableVirtualKey{*vk},
+		Teams:        []configstoreTables.TableTeam{*team},
+		Customers:    []configstoreTables.TableCustomer{*customer},
+		ModelConfigs: []configstoreTables.TableModelConfig{*mc},
+		RateLimits:   []configstoreTables.TableRateLimit{*teamTokens, *mcTokens, teamRule, customerRule, mcRule},
+	}, nil)
+	store := h.mustGovernanceStore(NewMockLogger(), nil)
+
+	ids := func(rateLimits []*configstoreTables.TableRateLimit) []string {
+		out := make([]string, 0, len(rateLimits))
+		for _, rl := range rateLimits {
+			out = append(out, rl.ID)
+		}
+		return out
+	}
+	assert.Equal(t, []string{"team-tokens", "team-rule"}, ids(store.CollectTeamRateLimits(ctx, team.ID)))
+	assert.Equal(t, []string{"customer-rule"}, ids(store.CollectCustomerRateLimits(ctx, customer.ID)))
+	assert.True(t, store.LoadRateLimit(ctx, "team-rule").IsCalendarAligned, "a request limit resets on its owner's calendar")
+	assert.False(t, store.LoadRateLimit(ctx, "customer-rule").IsCalendarAligned)
+
+	key, ok := store.GetVirtualKey(ctx, "sk-bf-request-limits")
+	require.True(t, ok)
+	reqCtx := emptyCtx()
+	_, rateLimits := store.HolderLimits(reqCtx, store.permitForVirtualKey(reqCtx, key))
+	assert.Subset(t, limitIDsOf(rateLimits), []string{"team-tokens", "team-rule", "customer-rule"}, "a key answers to its team's and customer's request limits")
+
+	_, holderLevel := store.GlobalHolderLevelLimits(ctx)
+	assert.Equal(t, []string{"mc-tokens", "mc-rule"}, limitIDsOf(holderLevel))
+}
+
+// TestGovernanceStore_RequestLimitsFollowTheirHolder pins that a holder's request limits follow its
+// refresh the way a write path drives it: a rule written and then the holder refreshed binds, a rule
+// deleted and the holder refreshed is gone, and removing the holder removes its rules.
+func TestGovernanceStore_RequestLimitsFollowTheirHolder(t *testing.T) {
+	ctx := context.Background()
+	team := buildTeam("team-1", "Team", nil)
+	h := newLiveHarness(t, &configstore.GovernanceConfig{Teams: []configstoreTables.TableTeam{*team}}, nil)
+	store := h.mustGovernanceStore(NewMockLogger(), nil)
+	teamRef := livestore.Ref{Kind: livestore.KindTeam, ID: team.ID}
+	ids := func() []string {
+		var out []string
+		for _, rl := range store.CollectTeamRateLimits(ctx, team.ID) {
+			out = append(out, rl.ID)
+		}
+		return out
+	}
+	require.Empty(t, ids())
+
+	rule := buildRequestLimit("added", 3, 0, "1h", configstoreTables.LimitScopeMCP)
+	rule.TeamID = &team.ID
+	h.putRateLimit(&rule)
+	h.refresh(teamRef)
+	assert.Equal(t, []string{"added"}, ids(), "a written rule binds once its holder is refreshed")
+
+	require.NoError(t, h.db.Delete(&configstoreTables.TableRateLimit{}, "id = ?", "added").Error)
+	h.refresh(teamRef)
+	assert.Empty(t, ids(), "a deleted rule is gone once its holder is refreshed")
+	_, held := h.live.Collections.RateLimits.Get("added")
+	assert.False(t, held)
+
+	kept := buildRequestLimit("kept", 3, 0, "1h", configstoreTables.LimitScopeShared)
+	kept.TeamID = &team.ID
+	h.putRateLimit(&kept)
+	h.refresh(teamRef)
+	require.Equal(t, []string{"kept"}, ids())
+	h.deleteTeam(team.ID)
+	_, held = h.live.Collections.RateLimits.Get("kept")
+	assert.False(t, held, "removing the holder removes its request limits")
 }
 
 // TestReloadKeepsDueCalendarReset checks that neither the first load of an owner that

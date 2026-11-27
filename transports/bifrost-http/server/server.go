@@ -791,7 +791,7 @@ func (s *BifrostHTTPServer) heldUnaligned(kind livestore.Kind, id string) bool {
 // owner it does not hold yet, has nothing to move. Memory holds each limit's previous settings
 // until the refresh, so a window whose duration the same write changes is moved by governance once
 // the refresh brings the new duration in.
-func adoptCalendarBeforeRefresh(ctx context.Context, store governance.GovernanceStore, switchedOn bool, budgets []tables.TableBudget, rateLimitID *string) {
+func adoptCalendarBeforeRefresh(ctx context.Context, store governance.GovernanceStore, switchedOn bool, budgets []tables.TableBudget, rateLimitID *string, requestLimits []tables.TableRateLimit) {
 	if !switchedOn {
 		return
 	}
@@ -801,11 +801,18 @@ func adoptCalendarBeforeRefresh(ctx context.Context, store governance.Governance
 			store.AdoptCalendarAlignmentInMemory(ctx, budgets[i].ID, now)
 		}
 	}
-	if rateLimitID == nil || *rateLimitID == "" {
-		return
+	// The owner's request limits take its flag too, as its rate limit does.
+	rateLimitIDs := make([]string, 0, len(requestLimits)+1)
+	if rateLimitID != nil && *rateLimitID != "" {
+		rateLimitIDs = append(rateLimitIDs, *rateLimitID)
 	}
-	if live := store.LoadRateLimit(ctx, *rateLimitID); live != nil && !live.IsCalendarAligned {
-		store.AdoptRateLimitCalendarAlignmentInMemory(ctx, *rateLimitID, now)
+	for i := range requestLimits {
+		rateLimitIDs = append(rateLimitIDs, requestLimits[i].ID)
+	}
+	for _, id := range rateLimitIDs {
+		if live := store.LoadRateLimit(ctx, id); live != nil && !live.IsCalendarAligned {
+			store.AdoptRateLimitCalendarAlignmentInMemory(ctx, id, now)
+		}
 	}
 }
 
@@ -875,10 +882,10 @@ func (s *BifrostHTTPServer) ReloadVirtualKey(ctx context.Context, id string) (*t
 	if pluginErr == nil {
 		store := governancePlugin.GetGovernanceStore()
 		switchedOn := virtualKey.CalendarAligned && s.heldUnaligned(livestore.KindVirtualKey, id)
-		adoptCalendarBeforeRefresh(ctx, store, switchedOn, virtualKey.Budgets, virtualKey.RateLimitID)
+		adoptCalendarBeforeRefresh(ctx, store, switchedOn, virtualKey.Budgets, virtualKey.RateLimitID, virtualKey.RequestLimits)
 		for i := range virtualKey.ProviderConfigs {
 			pc := &virtualKey.ProviderConfigs[i]
-			adoptCalendarBeforeRefresh(ctx, store, switchedOn, pc.Budgets, pc.RateLimitID)
+			adoptCalendarBeforeRefresh(ctx, store, switchedOn, pc.Budgets, pc.RateLimitID, pc.RequestLimits)
 		}
 	}
 	refreshErr := s.refreshRow(ctx, livestore.KindVirtualKey, id)
@@ -1061,7 +1068,7 @@ func (s *BifrostHTTPServer) ReloadTeam(ctx context.Context, id string) (*tables.
 	}
 	governancePlugin, pluginErr := s.getGovernancePlugin()
 	if pluginErr == nil && preloadedTeam != nil {
-		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedTeam.CalendarAligned && s.heldUnaligned(livestore.KindTeam, id), preloadedTeam.Budgets, preloadedTeam.RateLimitID)
+		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedTeam.CalendarAligned && s.heldUnaligned(livestore.KindTeam, id), preloadedTeam.Budgets, preloadedTeam.RateLimitID, preloadedTeam.RequestLimits)
 	}
 	refreshErr := s.refreshRow(ctx, livestore.KindTeam, id)
 	if pluginErr != nil {
@@ -1107,7 +1114,7 @@ func (s *BifrostHTTPServer) ReloadCustomer(ctx context.Context, id string) (*tab
 	}
 	governancePlugin, pluginErr := s.getGovernancePlugin()
 	if pluginErr == nil && preloadedCustomer != nil {
-		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedCustomer.CalendarAligned && s.heldUnaligned(livestore.KindCustomer, id), preloadedCustomer.Budgets, preloadedCustomer.RateLimitID)
+		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedCustomer.CalendarAligned && s.heldUnaligned(livestore.KindCustomer, id), preloadedCustomer.Budgets, preloadedCustomer.RateLimitID, preloadedCustomer.RequestLimits)
 	}
 	refreshErr := s.refreshRow(ctx, livestore.KindCustomer, id)
 	if pluginErr != nil {
@@ -1173,7 +1180,7 @@ func (s *BifrostHTTPServer) ReloadModelConfig(ctx context.Context, id string) (*
 	}
 	governancePlugin, pluginErr := s.getGovernancePlugin()
 	if pluginErr == nil && preloadedMC != nil {
-		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedMC.CalendarAligned && s.heldUnaligned(livestore.KindModelConfig, id), preloadedMC.Budgets, preloadedMC.RateLimitID)
+		adoptCalendarBeforeRefresh(ctx, governancePlugin.GetGovernanceStore(), preloadedMC.CalendarAligned && s.heldUnaligned(livestore.KindModelConfig, id), preloadedMC.Budgets, preloadedMC.RateLimitID, preloadedMC.RequestLimits)
 	}
 	refreshErr := s.refreshRow(readCtx, livestore.KindModelConfig, id)
 	if pluginErr != nil {

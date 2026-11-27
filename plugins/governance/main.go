@@ -966,6 +966,20 @@ func budgetSettingsOf(ctx context.Context, store GovernanceStore, id string) *co
 	return store.LoadBudget(ctx, id)
 }
 
+// rateLimitSettingsReader is budgetSettingsReader for rate limits.
+type rateLimitSettingsReader interface {
+	rateLimitSettings(id string) (*configstoreTables.TableRateLimit, bool)
+}
+
+// rateLimitSettingsOf is budgetSettingsOf for rate limits.
+func rateLimitSettingsOf(ctx context.Context, store GovernanceStore, id string) *configstoreTables.TableRateLimit {
+	if reader, ok := store.(rateLimitSettingsReader); ok {
+		settings, _ := reader.rateLimitSettings(id)
+		return settings
+	}
+	return store.LoadRateLimit(ctx, id)
+}
+
 // BudgetsForRequestKind drops the budgets that are not charged by traffic of the given scope, which a
 // request's type gives through configstoreTables.RequestScope.
 //
@@ -975,28 +989,29 @@ func budgetSettingsOf(ctx context.Context, store GovernanceStore, id string) *co
 // store, the way enforcement reads them; one the store cannot load is kept, since enforcement skips
 // it anyway. The common case, where every budget applies, returns the input without allocating.
 func BudgetsForRequestKind(ctx context.Context, store GovernanceStore, budgets []schemas.Limit, traffic configstoreTables.LimitScope) []schemas.Limit {
-	return filterLimits(budgets, func(id string) bool {
+	return filterLimits(budgets, func(id string) (bool, bool) {
 		budget := budgetSettingsOf(ctx, store, id)
-		return budget == nil || budget.Scope.AppliesTo(traffic)
+		return budget == nil || budget.Scope.AppliesTo(traffic), false
 	})
 }
 
-// filterLimits keeps the limits whose ID applies. Nothing is allocated when all do; on the first
-// drop it copies what was kept so far rather than filtering in place, since the gathered slice may
-// share a backing array with the store's.
-func filterLimits(limits []schemas.Limit, applies func(id string) bool) []schemas.Limit {
+// filterLimits keeps the limits whose ID applies, each with RequestsOnly as apply reports it.
+// Nothing is allocated when all apply unchanged; on the first drop or change it copies what was kept
+// so far rather than filtering in place, since the gathered slice may share a backing array with the
+// store's.
+func filterLimits(limits []schemas.Limit, apply func(id string) (applies, requestsOnly bool)) []schemas.Limit {
 	var kept []schemas.Limit
 	for i, limit := range limits {
-		ok := applies(limit.ID)
+		ok, requestsOnly := apply(limit.ID)
 		if kept == nil {
-			if ok {
+			if ok && requestsOnly == limit.RequestsOnly {
 				continue
 			}
-			kept = make([]schemas.Limit, i, len(limits)-1)
+			kept = make([]schemas.Limit, i, len(limits))
 			copy(kept, limits[:i])
-			continue
 		}
 		if ok {
+			limit.RequestsOnly = requestsOnly
 			kept = append(kept, limit)
 		}
 	}
@@ -1004,6 +1019,31 @@ func filterLimits(limits []schemas.Limit, applies func(id string) bool) []schema
 		return limits
 	}
 	return kept
+}
+
+// RateLimitsForRequestKind drops the rate limits that do not count traffic of the given scope (see
+// configstoreTables.RequestScope). It mirrors BudgetsForRequestKind:
+//   - a request limit counts the traffic its scope names (shared, model or mcp);
+//   - Max Tokens counts model traffic only, so other traffic drops a row that carries no request limit.
+//
+// A legacy combined row (tokens and requests on one row, which the migration leaves combined when
+// config.json wrote it or several holders share it) is scope shared and keeps counting every request,
+// but traffic Max Tokens does not count answers to its request limit only: it is marked RequestsOnly,
+// and CheckRateLimits skips its Max Tokens. A row the store cannot load is kept, since enforcement
+// skips it anyway. The common case, where nothing is dropped or marked, returns the input without
+// allocating.
+func RateLimitsForRequestKind(ctx context.Context, store GovernanceStore, rateLimits []schemas.Limit, traffic configstoreTables.LimitScope) []schemas.Limit {
+	tokensCount := configstoreTables.LimitScopeModel.AppliesTo(traffic)
+	return filterLimits(rateLimits, func(id string) (bool, bool) {
+		rateLimit := rateLimitSettingsOf(ctx, store, id)
+		if rateLimit == nil {
+			return true, false
+		}
+		if !rateLimit.Scope.AppliesTo(traffic) || (!tokensCount && rateLimit.RequestMaxLimit == nil) {
+			return false, false
+		}
+		return true, !tokensCount && rateLimit.TokenMaxLimit != nil
+	})
 }
 
 // PreRequestHook is the per-request governance phase: it resolves the request's access, completes
@@ -1866,6 +1906,10 @@ func (p *GovernancePlugin) reportBatchModelUsage(ctx context.Context, usage joba
 		}
 		for _, rateLimitID := range rateLimitIDs {
 			if alreadyCharged["rate-limit:"+rateLimitID] {
+				continue
+			}
+			// Likewise a request limit model traffic does not count.
+			if rateLimit := p.store.LoadRateLimit(ctx, rateLimitID); rateLimit != nil && !rateLimit.Scope.AppliesTo(configstoreTables.LimitScopeModel) {
 				continue
 			}
 			billingKey := fmt.Sprintf("%s:model-rate-limit:%s:%s", usage.RequestID, modelUsage.Model, rateLimitID)

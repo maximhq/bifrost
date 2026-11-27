@@ -7421,6 +7421,29 @@ const GOV25 = folder("GOV-25 Request rate limit counts tool calls", `Setup: ${AL
   agentTeardown("GOV-25"),
 ]);
 
+// ADD_RAN is the answer of alpha's add to { text: "hi" }, on /v1/mcp/tool/execute and on /mcp.
+const ADD_RAN = 'add:{"text":"hi"}';
+const ADD_RAN_ON_MCP = A.custom("result text is the add", [
+  "var r = pm.response.json().result;",
+  "pm.expect(r && r.isError, 'body: ' + pm.response.text()).to.not.equal(true);",
+  `pm.expect(r.content[0].text, 'body: ' + pm.response.text()).to.equal(${lit(ADD_RAN)});`,
+]);
+const GOV45_REFUSED = [A.status(429), A.custom("type request_limited", ["pm.expect(pm.response.json().type, 'body: ' + pm.response.text()).to.equal('request_limited');"]), A.msgContains("request limit exceeded (3/3, resets every 1h)")];
+const GOV45 = folder("GOV-45 A spent Max Tokens limit does not refuse tool calls; the request limit still does", `Setup: ${ALPHA_EA}; ${LLM_TEXT}; a VK with mcp_configs alpha ["*"], allowed openai with any model and key, and a rate limit of 1 token and 3 requests per 1h. One chat spends the token limit (the mock LLM reports 15 tokens) and counts one request; the chat refused after it counts none. Tool calls go through /v1/mcp/tool/execute and /mcp tools/call, which count on the same request limit.`, [
+  ...alphaEA("GOV-45"),
+  govKey("GOV-45", "gov45_vk", ALPHA_ALL, { provider_configs: OPENAI_GRANT, rate_limit: { token_max_limit: 1, token_reset_duration: "1h", request_max_limit: 3, request_reset_duration: "1h" } }),
+  llmScript("GOV-45", "gov-45", TEXT_OK),
+  infPost("GOV-45", "setup: a chat spends the token limit", "/v1/chat/completions", chatBody("gov-45"), [A.status(200)], vkUse("gov45_vk")),
+  infPost("GOV-45", "control: the next chat is refused on Max Tokens", "/v1/chat/completions", chatBody("gov-45"), [A.status(429), A.msgContains("token limit exceeded (")], vkUse("gov45_vk")),
+  execTool("GOV-45", "tool call 1 runs with Max Tokens spent", "alpha-add", [A.status(200), contentIs(ADD_RAN)], vkUse("gov45_vk")),
+  gwCall("GOV-45", "a /mcp tool call runs with Max Tokens spent: the request limit's third request", "alpha-add", [ADD_RAN_ON_MCP], vkUse("gov45_vk").headers),
+  execTool("GOV-45", "the next tool call is refused on the request limit", "alpha-add", GOV45_REFUSED, vkUse("gov45_vk")),
+  rpc("GOV-45", "the next /mcp tool call is refused on the request limit", call("alpha-add", { text: "hi" }), { headers: [MCP_ACCEPT, ...vkUse("gov45_vk").headers], asserts: GOV45_REFUSED }),
+  mockGet("GOV-45", "alpha", "alpha ran add for the two calls that were let through", [callsIs("add", 2)]),
+  vkDelete("GOV-45", "teardown: delete the VK", "gov45_vk"),
+  agentTeardown("GOV-45"),
+]);
+
 const GOV26 = folder("GOV-26 Code mode bills nested calls, not the meta call", `Setup: ${CM_TEXT}, cm's echo priced 0.001; a VK with mcp_configs cm ["*"] and a budget of 1 per 1h; executeToolCode calls cm.echo twice.`, [
   ...cmSetup("GOV-26"),
   priceAlpha("GOV-26", "setup: price cm's echo at 0.001", "gov-26-cm", { echo: 0.001 }),
@@ -13659,7 +13682,7 @@ const collection = {
     section("EP Bifrost MCP endpoint", "Bifrost MCP endpoint tests.", [EP01, EP02, EP03, EP04, EP05, EP06, EP07, EP08, EP09, EP11, EP12, EP13, EP14, EP15, EP16, EP17, EP18, EP19, EP20, EP21, EP22, EP23, EP24, EP25, EP26, EP27, EP28, EP29, EP30, EP31, EP32, EP33, EP34, EP35, EP36, EP37, EP38, EP39, EP40, EP41, EP42, EP43, EP44, EP45, EP46, EP47, EP48, EP49, EP50, EP51, EP52, EP53, EP54, EP55, EP56, EP57, EP58, EP59, EP60, EP61, EP62, EP63, EP64, EP65, EP66, EP67, EP68, EP69, EP70, EP71, EP72, EP73, EP74, EP75, EP76, EP77, EP78, EP79, EP80, EP81, EP82, EP83, GO01, GO02, GO03, GO06, GO07, GO08, GO09, GO10, GO11, GO12, GO13, GO14, GO33, GO35]),
     section("OAS Bifrost OAuth server", "Bifrost OAuth server tests.", [OAS01, OAS02, OAS03, OAS05, OAS06, OAS07, OAS08, OAS09, OAS10, OAS11, OAS12, OAS13, OAS14, OAS15, OAS16, OAS17, OAS18, OAS19, OAS20, OAS21, OAS23, OAS25, OAS27, OAS28, OAS29, OAS30, OAS31, OAS32, OAS33, OAS34, OAS35, OAS36, OAS38, OAS39, OAS40, OAS42, OAS43, OAS44, OAS45, OAS46]),
     section("SET Per-client settings", "Per-client setting tests.", [SET01, SET02, SET07, SET08, SET09, SET14, SET19, SET20, SET18, SET21, SET22, SET33, SET34, SET35, SET26, SET27, SET28, SET29, SET30, SET31, SET32, SET05, SET10, SET11, SET15, SET23]),
-    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39, GOV40, GOV41, GOV42, GOV43, GOV44]),
+    section("GOV Governance", "Virtual MCP and virtual key governance tests.", [GOV01, GOV02, GOV03, GOV04, GOV05, GOV06, GOV07, GOV08, GOV09, GOV10, GOV11, GOV12, GOV14, GOV15, GOV16, GOV17, GOV18, GOV19, GOV20, GOV21, GOV22, GOV23, GOV24, GOV25, GOV26, GOV28, GOV29, GOV30, GOV31, GOV32, GOV33, GOV34, GOV35, GOV36, GOV37, GOV38, GOV39, GOV40, GOV41, GOV42, GOV43, GOV44, GOV45]),
     section("INF Inference", "Inference tests.", [INF01, INF02, INF03, INF04, INF06, INF07, INF08, INF09, INF10, INF11, INF12, INF14, INF15, INF16, INF17, INF18, INF19, INF20, INF21, INF22, INF23, INF24, INF25, INF26, INF27, INF28, INF29, INF30, INF31, INF32, INF33, INF34, INF35, INF36, INF37, INF38, INF39, INF40, INF41, INF42, INF43, INF44, INF45, INF46, INF47, INF48, INF49, INF50, INF51, INF52, INF53, INF54, INF55, INF56, INF57, INF58, INF59, INF60, INF61, INF62, INF63, INF64, INF65, INF66, INF76, INF77, INF67, INF78, INF79, INF80]),
     section("LIB MCP library", "MCP library tests.", [LIB01, LIB02, LIB03, LIB05, LIB06, LIB07, LIB08, LIB09, LIB10, LIB11, LIB12, LIB13, LIB14, LIB15, LIB16, LIB17, LIB18, LIB19, LIB20, LIB21, LIB22, LIB23, LIB24, LIB25, LIB26, LIB27, LIB32, LIB33, LIB34, LIB36, LIB37]),
     section("LOG Logs and telemetry", "Logs and telemetry tests.", [LOG01, LOG02, LOG03, LOG04, LOG05, LOG06, LOG07, LOG08, LOG09, LOG10, LOG11, LOG12, LOG13, LOG14, LOG16, LOG17, LOG18, LOG19, LOG20, LOG21, LOG22, LOG23, LOG26, LOG27, LOG28, LOG29, LOG30, LOG31, LOG32, LOG33, LOG34, LOG35, LOG37, LOG38, LOG39, LOG40, LOG41, LOG43, LOG49]),

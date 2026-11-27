@@ -132,11 +132,41 @@ func governanceRecords(g *FileRecords, cfg *configstore.GovernanceConfig) (provi
 		return row.ID
 	}
 
+	// holdRequestLimits records the request limits one holder owns, nested on it or listed with it as
+	// owner, with the holder's calendar flag, and returns their IDs.
+	holdRequestLimits := func(nested []tables.TableRateLimit, owns func(*tables.TableRateLimit) bool, calendar bool, set func(*RateLimit)) []string {
+		var ids []string
+		hold := func(row tables.TableRateLimit) {
+			if slices.Contains(ids, row.ID) {
+				return
+			}
+			if listed, ok := listedRateLimits[row.ID]; ok {
+				row = listed
+			}
+			row.IsCalendarAligned = calendar
+			rec := &RateLimit{TableRateLimit: row}
+			set(rec)
+			rateLimits[row.ID] = rec
+			ids = append(ids, row.ID)
+		}
+		for _, row := range nested {
+			hold(row)
+		}
+		for i := range cfg.RateLimits {
+			if owns(&cfg.RateLimits[i]) {
+				hold(cfg.RateLimits[i])
+			}
+		}
+		return ids
+	}
+
 	for i := range cfg.Customers {
 		c := &cfg.Customers[i]
 		rec := &Customer{ID: c.ID, Name: c.Name, CalendarAligned: c.CalendarAligned}
 		rec.BudgetIDs = holdBudgets(c.Budgets, c.CalendarAligned, func(b *Budget) { b.CustomerID = &c.ID })
 		rec.RateLimitID = holdRateLimit(c.RateLimitID, c.RateLimit, c.CalendarAligned, func(r *RateLimit) { r.CustomerID = c.ID })
+		rec.RequestLimitIDs = holdRequestLimits(c.RequestLimits, func(r *tables.TableRateLimit) bool { return r.CustomerID != nil && *r.CustomerID == c.ID },
+			c.CalendarAligned, func(r *RateLimit) { r.CustomerID = c.ID })
 		g.Customers = append(g.Customers, rec)
 	}
 	for i := range cfg.Teams {
@@ -154,6 +184,8 @@ func governanceRecords(g *FileRecords, cfg *configstore.GovernanceConfig) (provi
 		rec := &Team{ID: t.ID, Name: t.Name, CustomerID: deref(t.CustomerID), CalendarAligned: t.CalendarAligned, DisableContentLogging: t.DisableContentLogging}
 		rec.BudgetIDs = holdBudgets(nested, t.CalendarAligned, func(b *Budget) { b.TeamID = &t.ID })
 		rec.RateLimitID = holdRateLimit(t.RateLimitID, t.RateLimit, t.CalendarAligned, func(r *RateLimit) { r.TeamID = t.ID })
+		rec.RequestLimitIDs = holdRequestLimits(t.RequestLimits, func(r *tables.TableRateLimit) bool { return r.TeamID != nil && *r.TeamID == t.ID },
+			t.CalendarAligned, func(r *RateLimit) { r.TeamID = t.ID })
 		g.Teams = append(g.Teams, rec)
 	}
 	for i := range cfg.ModelConfigs {
@@ -169,6 +201,8 @@ func governanceRecords(g *FileRecords, cfg *configstore.GovernanceConfig) (provi
 		ids := holdBudgets(nested, mc.CalendarAligned, func(b *Budget) { b.ModelConfigID = &mc.ID })
 		rec := ModelConfigFromTable(mc, ids)
 		rec.RateLimitID = holdRateLimit(mc.RateLimitID, mc.RateLimit, mc.CalendarAligned, func(r *RateLimit) { r.ModelConfigID = mc.ID })
+		rec.RequestLimitIDs = holdRequestLimits(mc.RequestLimits, func(r *tables.TableRateLimit) bool { return r.ModelConfigID != nil && *r.ModelConfigID == mc.ID },
+			mc.CalendarAligned, func(r *RateLimit) { r.ModelConfigID = mc.ID })
 		g.ModelConfigs = append(g.ModelConfigs, rec)
 	}
 	for i := range cfg.Providers {

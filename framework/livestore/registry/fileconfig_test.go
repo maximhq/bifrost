@@ -163,6 +163,41 @@ func TestFromConfigNestedRateLimitNeedsItsID(t *testing.T) {
 	require.Empty(t, g.RateLimits)
 }
 
+// TestFromConfigRequestLimitsJoinTheirOwner checks that a holder's request limits, nested on it or
+// listed in governance.rate_limits naming it as owner, become rate limit records it holds, each once,
+// with the holder's calendar flag, and that its record lists them.
+func TestFromConfigRequestLimitsJoinTheirOwner(t *testing.T) {
+	teamID, customerID, mcID := "team-1", "cust-1", "mc-1"
+	g := FromConfig(FileInput{Governance: &configstore.GovernanceConfig{
+		Teams: []tables.TableTeam{{ID: teamID, Name: "Platform", CalendarAligned: true, RequestLimits: []tables.TableRateLimit{
+			{ID: "team-nested", RequestMaxLimit: ptr(int64(2)), TeamID: &teamID},
+			{ID: "team-both", RequestMaxLimit: ptr(int64(3)), TeamID: &teamID},
+		}}},
+		Customers:    []tables.TableCustomer{{ID: customerID, Name: "Acme"}},
+		ModelConfigs: []tables.TableModelConfig{{ID: mcID, ModelName: tables.ModelConfigAllModels}},
+		RateLimits: []tables.TableRateLimit{
+			{ID: "team-both", RequestMaxLimit: ptr(int64(30)), TeamID: &teamID},
+			{ID: "team-listed", RequestMaxLimit: ptr(int64(4)), TeamID: &teamID},
+			{ID: "cust-listed", RequestMaxLimit: ptr(int64(5)), CustomerID: &customerID},
+			{ID: "mc-listed", RequestMaxLimit: ptr(int64(6)), ModelConfigID: &mcID},
+		},
+	}})
+	require.Len(t, g.Teams, 1)
+	require.Equal(t, []string{"team-nested", "team-both", "team-listed"}, g.Teams[0].RequestLimitIDs)
+	require.Equal(t, []string{"cust-listed"}, g.Customers[0].RequestLimitIDs)
+	require.Equal(t, []string{"mc-listed"}, g.ModelConfigs[0].RequestLimitIDs)
+	byID := map[string]*RateLimit{}
+	for _, r := range g.RateLimits {
+		byID[r.ID] = r
+	}
+	require.Len(t, byID, 5)
+	require.Equal(t, teamID, byID["team-both"].TeamID)
+	require.Equal(t, int64(30), *byID["team-both"].RequestMaxLimit, "a listed row wins over its nested copy")
+	require.True(t, byID["team-listed"].IsCalendarAligned, "the holder's calendar flag")
+	require.Equal(t, customerID, byID["cust-listed"].CustomerID)
+	require.Equal(t, mcID, byID["mc-listed"].ModelConfigID)
+}
+
 // TestFromConfigWithoutGovernance checks that no governance config builds no governance records,
 // and providers with no limits.
 func TestFromConfigWithoutGovernance(t *testing.T) {
