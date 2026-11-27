@@ -4853,8 +4853,8 @@ func BenchmarkToAnthropicResponsesRequest_ToolResultLookahead(b *testing.B) {
 	}
 }
 
-// TestToAnthropicResponsesRequest_PreservesExplicitEmptyRequired pins #6404 on the
-// /v1/responses route to Anthropic.
+// TestToAnthropicResponsesRequest_PreservesExplicitEmptyRequired checks that an
+// explicit required: [] reaches Anthropic on the /v1/responses route.
 func TestToAnthropicResponsesRequest_PreservesExplicitEmptyRequired(t *testing.T) {
 	var params schemas.ToolFunctionParameters
 	if err := schemas.Unmarshal([]byte(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`), &params); err != nil {

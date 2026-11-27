@@ -572,8 +572,8 @@ func TestChatToolChoiceAllowedTools_CustomEntryRoundTrip(t *testing.T) {
 	}
 }
 
-// TestChatToolRoundTripPreservesExplicitEmptyRequired pins #6404 on the
-// /v1/chat/completions ingress, the sibling of the Responses tool round trip.
+// TestChatToolRoundTripPreservesExplicitEmptyRequired checks that an explicit
+// required: [] survives decode and re-encode on the /v1/chat/completions ingress.
 func TestChatToolRoundTripPreservesExplicitEmptyRequired(t *testing.T) {
 	in := `{"type":"function","function":{"name":"run_tests","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"strict":true}}`
 	var tool ChatTool

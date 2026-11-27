@@ -1634,7 +1634,7 @@ func TestSonic_ToolFunctionParameters_DeepCopy_PreservesExplicitEmptyRequired(t 
 	assert.Empty(t, copied.Required)
 }
 
-// --- ToolFunctionParameters required: nil vs [] (#6404) ---
+// --- ToolFunctionParameters required: nil vs [] ---
 // Strict zero-argument tools need required: [] on the wire, so an explicit empty
 // slice is emitted while a nil one stays omitted.
 

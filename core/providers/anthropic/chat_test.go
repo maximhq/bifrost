@@ -3167,8 +3167,9 @@ func TestBuildAnthropicChatRequestBody_InvalidToolArgumentsReplayAsEmptyObject(t
 	}
 }
 
-// TestToAnthropicChatRequest_PreservesExplicitEmptyRequired pins #6404 on the chat
-// route, which deep-copies the tool schema before normalizing it.
+// TestToAnthropicChatRequest_PreservesExplicitEmptyRequired checks that an explicit
+// required: [] survives the chat route, which deep-copies the tool schema before
+// normalizing it.
 func TestToAnthropicChatRequest_PreservesExplicitEmptyRequired(t *testing.T) {
 	var params schemas.ToolFunctionParameters
 	require.NoError(t, schemas.Unmarshal([]byte(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`), &params))

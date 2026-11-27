@@ -68,8 +68,8 @@ func TestNormalizeAnthropicToolInputSchemaOtherRootCompositions(t *testing.T) {
 	}
 }
 
-// TestNormalizeAnthropicToolInputSchemaKeepsExplicitEmptyRequired pins #6404 through
-// a root composition: an explicit required: [] stays present, and an absent one stays absent.
+// TestNormalizeAnthropicToolInputSchemaKeepsExplicitEmptyRequired checks a root
+// composition: an explicit required: [] stays present, and an absent one stays absent.
 func TestNormalizeAnthropicToolInputSchemaKeepsExplicitEmptyRequired(t *testing.T) {
 	for _, test := range []struct {
 		name, raw    string

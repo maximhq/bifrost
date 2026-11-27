@@ -1748,8 +1748,9 @@ func BenchmarkConverseToolStrict(b *testing.B) {
 	}
 }
 
-// TestBedrockToolSpecPreservesExplicitEmptyRequired pins #6404 on both Converse
-// routes, which serialize the tool schema verbatim into toolSpec.inputSchema.json.
+// TestBedrockToolSpecPreservesExplicitEmptyRequired checks that an explicit required: []
+// reaches toolSpec.inputSchema.json on both Converse routes, which serialize the tool
+// schema verbatim.
 func TestBedrockToolSpecPreservesExplicitEmptyRequired(t *testing.T) {
 	newParams := func(t *testing.T) *schemas.ToolFunctionParameters {
 		var params schemas.ToolFunctionParameters

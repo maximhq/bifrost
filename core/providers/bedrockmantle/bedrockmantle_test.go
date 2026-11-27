@@ -507,9 +507,9 @@ func TestBedrockMantleKeepsHeldTextOnFinishWithoutDelta(t *testing.T) {
 	require.Equal(t, "this result is <", drainMantleText(t, stream))
 }
 
-// TestBedrockMantleResponsesKeepsExplicitEmptyRequired pins #6404 on the route where it was
-// reported: openai.gpt-5.6-* on Mantle /v1/responses rejects a strict zero-argument tool
-// whose schema arrives without required.
+// TestBedrockMantleResponsesKeepsExplicitEmptyRequired checks that an explicit required: []
+// reaches Mantle's native /v1/responses endpoint, whose strict validation rejects a
+// zero-argument tool schema sent without required.
 func TestBedrockMantleResponsesKeepsExplicitEmptyRequired(t *testing.T) {
 	var (
 		mu       sync.Mutex

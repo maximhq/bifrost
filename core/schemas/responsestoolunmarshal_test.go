@@ -259,9 +259,9 @@ func TestResponsesToolUnmarshalNullFunctionWrapper(t *testing.T) {
 	assert.NotNil(t, tool.ResponsesToolFunction)
 }
 
-// TestResponsesToolRoundTripPreservesExplicitEmptyRequired pins #6404 on the
-// /v1/responses ingress: strict validators reject a zero-argument schema without
-// required, so an explicit required: [] must survive decode and re-encode.
+// TestResponsesToolRoundTripPreservesExplicitEmptyRequired checks the /v1/responses
+// ingress: strict validators reject a zero-argument schema without required, so an
+// explicit required: [] must survive decode and re-encode.
 func TestResponsesToolRoundTripPreservesExplicitEmptyRequired(t *testing.T) {
 	const input = `{"type":"function","name":"run_tests","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"strict":true}`
 
