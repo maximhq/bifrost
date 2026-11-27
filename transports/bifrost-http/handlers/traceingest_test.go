@@ -19,9 +19,10 @@ import (
 
 // traceTestConfig is an in-memory tracing config store for handler tests.
 type traceTestConfig struct {
-	mu       sync.Mutex
-	projects map[string]*tables.TableTraceProject
-	keys     map[string]*tables.TableTracingKey
+	mu        sync.Mutex
+	projects  map[string]*tables.TableTraceProject
+	keys      map[string]*tables.TableTracingKey
+	lookupErr map[string]error // project names whose lookup fails, as a database error would
 }
 
 func (f *traceTestConfig) GetTraceProject(_ context.Context, id string) (*tables.TableTraceProject, error) {
@@ -34,6 +35,9 @@ func (f *traceTestConfig) GetTraceProject(_ context.Context, id string) (*tables
 }
 
 func (f *traceTestConfig) GetTraceProjectByName(_ context.Context, name string) (*tables.TableTraceProject, error) {
+	if err := f.lookupErr[name]; err != nil {
+		return nil, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, project := range f.projects {
@@ -98,6 +102,12 @@ type traceIngestTestEnv struct {
 // "agent" (id p1) and one key bound to it that may also create projects.
 func newTraceIngestTestEnv(t *testing.T) *traceIngestTestEnv {
 	t.Helper()
+	return newTraceIngestTestEnvWith(t, traceingest.Config{})
+}
+
+// newTraceIngestTestEnvWith is newTraceIngestTestEnv with the ingest service's settings.
+func newTraceIngestTestEnvWith(t *testing.T, cfg traceingest.Config) *traceIngestTestEnv {
+	t.Helper()
 	ctx := context.Background()
 	store, err := logstore.NewLogStore(ctx, &logstore.Config{Type: logstore.LogStoreTypeSQLite, Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "logs.db")}}, logger)
 	require.NoError(t, err)
@@ -105,7 +115,7 @@ func newTraceIngestTestEnv(t *testing.T) *traceIngestTestEnv {
 	key := &tables.TableTracingKey{ID: "k1", Name: "test", ProjectIDs: []string{"p1"}, DefaultProjectID: "p1", LogContent: true, CanCreateProjects: true, Enabled: true}
 	key.SetValue(traceTestKey)
 	config.keys[key.KeyHash] = key
-	service := traceingest.NewService(store, config, traceingest.Config{}, logger)
+	service := traceingest.NewService(store, config, cfg, logger)
 	t.Cleanup(func() {
 		service.Close()
 		_ = store.Close(ctx)
