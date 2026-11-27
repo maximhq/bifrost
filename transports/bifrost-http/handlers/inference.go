@@ -2531,15 +2531,23 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Allow plugins to modify/filter the chunk via StreamChunkInterceptor
 			if interceptor != nil {
 				var err error
+				replacedCost := streamChunkCost(chunk)
 				chunk, err = interceptor.InterceptChunk(bifrostCtx, httpReq, chunk)
 				if err != nil {
 					if chunk == nil {
 						var errorPayload interface{} = map[string]string{"error": err.Error()}
 						var structuredErr *schemas.StreamInterceptionError
 						if errors.As(err, &structuredErr) && structuredErr != nil {
-							// This error replaces the rest of the stream, including any error chunk
-							// core priced, so it carries the send-back cost itself.
-							priced := h.client.WithErrorCost(bifrostCtx, structuredErr.BifrostError)
+							// This error replaces the rest of the stream, so it carries the send-back
+							// cost: that of the chunk it replaces when core priced it (a buffered
+							// stream's final chunk, covering the tokens it used, or an error chunk),
+							// else a price of the error itself.
+							var priced *schemas.BifrostError
+							if replacedCost != nil && structuredErr.BifrostError != nil && structuredErr.BifrostError.ExtraFields.Cost == nil {
+								priced = structuredErr.BifrostError.WithCost(replacedCost)
+							} else {
+								priced = h.client.WithErrorCost(bifrostCtx, structuredErr.BifrostError)
+							}
 							if sanitized := lib.SanitizeBifrostErrorForClient(priced); sanitized != nil {
 								errorPayload = sanitized
 							}
@@ -5076,4 +5084,28 @@ func (h *CompletionHandler) containerFileDelete(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	SendJSON(ctx, resp)
+}
+
+// streamChunkCost returns the send-back cost core attached to a stream chunk, which it does
+// only on a stream's final chunk and on error chunks, or nil.
+func streamChunkCost(chunk *schemas.BifrostStreamChunk) *schemas.BifrostCost {
+	switch {
+	case chunk == nil:
+		return nil
+	case chunk.BifrostError != nil:
+		return chunk.BifrostError.ExtraFields.Cost
+	case chunk.BifrostTextCompletionResponse != nil:
+		return chunk.BifrostTextCompletionResponse.ExtraFields.Cost
+	case chunk.BifrostChatResponse != nil:
+		return chunk.BifrostChatResponse.ExtraFields.Cost
+	case chunk.BifrostResponsesStreamResponse != nil:
+		return chunk.BifrostResponsesStreamResponse.ExtraFields.Cost
+	case chunk.BifrostSpeechStreamResponse != nil:
+		return chunk.BifrostSpeechStreamResponse.ExtraFields.Cost
+	case chunk.BifrostTranscriptionStreamResponse != nil:
+		return chunk.BifrostTranscriptionStreamResponse.ExtraFields.Cost
+	case chunk.BifrostImageGenerationStreamResponse != nil:
+		return chunk.BifrostImageGenerationStreamResponse.ExtraFields.Cost
+	}
+	return nil
 }

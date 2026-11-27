@@ -297,6 +297,56 @@ func TestStreamingResponseInterceptionErrorCarriesSendBackCost(t *testing.T) {
 	}
 }
 
+// A plugin that buffers a stream stops it on the chunk core priced: the final chunk,
+// whose cost covers the tokens the stream consumed, or an error chunk. The plugin's
+// error replaces that chunk, so it carries that chunk's cost rather than a price of
+// the plugin's own error, which has no usage.
+func TestStreamingResponseInterceptionErrorKeepsTheReplacedChunksCost(t *testing.T) {
+	client, err := bifrost.Init(t.Context(), schemas.BifrostConfig{
+		Account:      inferenceSetupAccount{url: "http://127.0.0.1:1"},
+		Logger:       bifrost.NewDefaultLogger(schemas.LogLevelError),
+		SendBackCost: true,
+	})
+	if err != nil {
+		t.Fatalf("init bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	finalChunk := contentChunk("final")
+	finalChunk.BifrostChatResponse.ExtraFields.Cost = &schemas.BifrostCost{InputCost: 0.25, TotalCost: 0.25}
+	errorChunk := &schemas.BifrostStreamChunk{BifrostError: &schemas.BifrostError{
+		Error:       &schemas.ErrorField{Message: "upstream failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{Cost: &schemas.BifrostCost{InputCost: 0.1, TotalCost: 0.1}},
+	}}
+
+	for name, tc := range map[string]struct {
+		chunk *schemas.BifrostStreamChunk
+		want  string
+	}{
+		"final chunk": {chunk: finalChunk, want: `"total_cost":0.25`},
+		"error chunk": {chunk: errorChunk, want: `"total_cost":0.1`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			blockErr := &schemas.BifrostError{
+				StatusCode: schemas.Ptr(400),
+				Error:      &schemas.ErrorField{Message: "blocked by guardrail"},
+			}
+			config := responseHeadersTestConfig(t, &streamBlockingPlugin{fakeResponseHeadersPlugin{name: "stream-blocker"}, blockErr})
+
+			body := serveStreamingResponseWithClient(t, config, client, nil, func(ctx *schemas.BifrostContext) {
+				ctx.SetValue(schemas.BifrostContextKeyModelCatalog, errorCostCatalog{total: 0.0042})
+			}, []*schemas.BifrostStreamChunk{tc.chunk})
+
+			if !strings.Contains(body, "blocked by guardrail") || !strings.Contains(body, tc.want) {
+				t.Fatalf("want the plugin's error frame with %s, got:\n%s", tc.want, body)
+			}
+			if blockErr.ExtraFields.Cost != nil {
+				t.Errorf("the plugin's own error must not be written, got cost %+v", blockErr.ExtraFields.Cost)
+			}
+		})
+	}
+}
+
 // A panic in the producer's deferred teardown (the trace completer runs observability
 // plugins) happens after the producer's recover, so it is a new panic nothing else
 // catches. It must be contained: the stream still ends normally for the client.
