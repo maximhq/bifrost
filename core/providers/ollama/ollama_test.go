@@ -382,3 +382,68 @@ func TestOllamaDecision_PassesOllamaErrorsThrough(t *testing.T) {
 		require.Equal(t, tc.want, bifrostErr.Error.Message, name)
 	}
 }
+
+// Ollama's /v1/chat/completions reads reasoning_effort, not its native think
+// field, so a reasoning effort of "none" must reach Ollama as
+// reasoning_effort "none". A think field in extra params is dropped, and
+// forwarded unchanged only with passthrough on.
+func TestOllamaChatCompletion_ReasoningEffortNoneReachesOllama(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	var gotPath string
+	var gotBody []byte
+	var gotErr error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		mu.Lock()
+		gotPath, gotBody, gotErr = r.URL.Path, body, err
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"qwen3:0.6b","choices":[{"index":0,"message":{"role":"assistant","content":"2"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`)
+	}))
+	defer server.Close()
+
+	provider := newOllamaDecisionProvider(t, server.URL)
+	newRequest := func(params *schemas.ChatParameters) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.Ollama,
+			Model:    "qwen3:0.6b",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("1+1?")},
+			}},
+			Params: params,
+		}
+	}
+	send := func(ctx *schemas.BifrostContext, request *schemas.BifrostChatRequest) map[string]json.RawMessage {
+		t.Helper()
+		_, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{}, request)
+		require.Nil(t, bifrostErr)
+		mu.Lock()
+		path, body, err := gotPath, gotBody, gotErr
+		mu.Unlock()
+		require.NoError(t, err)
+		require.Equal(t, "/v1/chat/completions", path)
+		var fields map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(body, &fields), string(body))
+		return fields
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	fields := send(ctx, newRequest(&schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("none")}}))
+	require.JSONEq(t, `"none"`, string(fields["reasoning_effort"]))
+	require.NotContains(t, fields, "reasoning")
+	require.NotContains(t, fields, "think")
+
+	// Without passthrough, an unknown think extra param is not sent at all.
+	fields = send(ctx, newRequest(&schemas.ChatParameters{ExtraParams: map[string]interface{}{"think": false}}))
+	require.NotContains(t, fields, "think")
+	require.NotContains(t, fields, "reasoning_effort")
+
+	// With passthrough on, think is forwarded as given (Ollama's /v1 endpoint ignores it).
+	passthroughCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	passthroughCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	fields = send(passthroughCtx, newRequest(&schemas.ChatParameters{ExtraParams: map[string]interface{}{"think": false}}))
+	require.JSONEq(t, `false`, string(fields["think"]))
+	require.NotContains(t, fields, "reasoning_effort")
+}

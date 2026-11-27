@@ -51,6 +51,22 @@ Removed for Ollama compatibility:
 - `store` - Not supported
 - `service_tier` - Not supported
 
+### Reasoning Parameter
+
+Bifrost calls Ollama's OpenAI-compatible `/v1/chat/completions`. That endpoint controls thinking with `reasoning_effort`, not `think` (the native `/api/chat` field). Bifrost sends `reasoning_effort` or `reasoning.effort` to Ollama as `reasoning_effort`. If only `reasoning.max_tokens` is set, Bifrost estimates an effort from it; if an effort is set too, `max_tokens` is dropped. To turn thinking off, send `reasoning_effort: "none"` (or `reasoning: {"effort": "none"}`):
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ollama/qwen3:8b",
+    "messages": [{"role": "user", "content": "What is 19 * 23?"}],
+    "reasoning_effort": "none"
+  }'
+```
+
+`think` has no effect on this endpoint. Bifrost drops it unless [extra-parameter passthrough](/providers/request-options#passthrough-extra-parameters) is on, and Ollama ignores it when forwarded. Accepted effort values, and whether thinking can be turned off, vary by model. If Bifrost's model data marks a model as unable to turn thinking off, Bifrost sends the model's lowest supported effort instead of `none`. See Ollama's [OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility) notes and `/api/show`.
+
 Ollama supports all standard OpenAI message types, tools, responses, and streaming formats. For details on message handling, tool conversion, responses, and streaming, refer to [OpenAI Chat Completions](/providers/supported-providers/openai#1-chat-completions).
 
 ---
