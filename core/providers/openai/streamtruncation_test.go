@@ -5,16 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // An upstream that dies mid-SSE closes its connection on a chunk boundary, which
@@ -2213,4 +2217,578 @@ func TestStreamPanicOnProviderGoroutineEndsWithErrorChunk(t *testing.T) {
 			}
 		})
 	}
+}
+
+// openAIConnCounter tracks dialed and closed upstream TCP sockets, matching
+// the connCounter / countedConn pattern in core/providers/utils/streampoison_test.go.
+type openAIConnCounter struct {
+	mu     sync.Mutex
+	dialed int
+	closed int
+}
+
+func (c *openAIConnCounter) open() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dialed - c.closed
+}
+
+func (c *openAIConnCounter) totalDialed() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.dialed
+}
+
+type openAICountedConn struct {
+	net.Conn
+	counter *openAIConnCounter
+	once    sync.Once
+}
+
+func (c *openAICountedConn) Close() error {
+	c.once.Do(func() {
+		c.counter.mu.Lock()
+		c.counter.closed++
+		c.counter.mu.Unlock()
+	})
+	return c.Conn.Close()
+}
+
+func newOpenAITestStreamingClient(maxConnsPerHost int) (*fasthttp.Client, *openAIConnCounter) {
+	base := &fasthttp.Client{
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		MaxConnsPerHost:     maxConnsPerHost,
+		MaxIdleConnDuration: 30 * time.Second,
+		MaxConnWaitTimeout:  30 * time.Second,
+		MaxConnDuration:     300 * time.Second,
+		ConnPoolStrategy:    fasthttp.FIFO,
+	}
+	base = providerUtils.ConfigureDialer(base, true)
+
+	counter := &openAIConnCounter{}
+	inner := base.Dial
+	base.Dial = func(addr string) (net.Conn, error) {
+		conn, err := inner(addr)
+		if err != nil {
+			return nil, err
+		}
+		counter.mu.Lock()
+		counter.dialed++
+		counter.mu.Unlock()
+		return &openAICountedConn{Conn: conn, counter: counter}, nil
+	}
+	return providerUtils.BuildStreamingClient(base), counter
+}
+
+// TestOpenAIStreamingSequentialConnectionReuse verifies that sequential chunked
+// SSE streams ending with "data: [DONE]\n\n" drain the trailing 0-length chunk
+// terminator and reuse a single pooled keep-alive connection across both
+// HandleOpenAIChatCompletionStreaming and HandleOpenAITextCompletionStreaming.
+func TestOpenAIStreamingSequentialConnectionReuse(t *testing.T) {
+	const iterations = 15
+
+	t.Run("HandleOpenAIChatCompletionStreaming", func(t *testing.T) {
+		var reqCount atomic.Int32
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := reqCount.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Error("ResponseWriter does not implement http.Flusher")
+				return
+			}
+			flusher.Flush()
+
+			stop := "stop"
+			frames := []string{
+				chatChunk(fmt.Sprintf("turn-%d", n), nil),
+				chatChunk("", &stop),
+				chatUsageOnlyChunk,
+				"data: [DONE]\n\n",
+			}
+			for _, f := range frames {
+				if _, err := io.WriteString(w, f); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+			// Delay returning briefly after flushing [DONE] so the terminating 0-length
+			// chunk lands in a separate socket read after ReadDataLine stops on [DONE].
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Millisecond):
+			}
+		}))
+		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
+
+		client, counter := newOpenAITestStreamingClient(8)
+		auth := BearerAuthHeader(testKey())
+
+		for i := 1; i <= iterations; i++ {
+			ctx := newStreamTestContext()
+			stream, bifrostErr := HandleOpenAIChatCompletionStreaming(
+				ctx, client, srv.URL, basicChatRequest(), auth, nil, 30,
+				false, false, schemas.OpenAI, passthroughPostHook,
+				nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("iteration %d setup failed: %v", i, bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			var got strings.Builder
+			sawUsage := false
+			for idx, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("iteration %d chunk %d error: %+v", i, idx, c.BifrostError)
+				}
+				if c.BifrostChatResponse == nil {
+					continue
+				}
+				for _, choice := range c.BifrostChatResponse.Choices {
+					if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && choice.Delta.Content != nil {
+						got.WriteString(*choice.Delta.Content)
+					}
+				}
+				if c.BifrostChatResponse.Usage != nil && c.BifrostChatResponse.Usage.TotalTokens == 1100 {
+					sawUsage = true
+				}
+			}
+			want := fmt.Sprintf("turn-%d", i)
+			if got.String() != want {
+				t.Fatalf("iteration %d content = %q, want %q", i, got.String(), want)
+			}
+			if !sawUsage {
+				t.Fatalf("iteration %d missing expected usage chunk", i)
+			}
+		}
+
+		if got := reqCount.Load(); got != iterations {
+			t.Fatalf("server received %d requests, want %d", got, iterations)
+		}
+		if got := counter.totalDialed(); got != 1 {
+			t.Fatalf("totalDialed = %d across %d sequential chat streams, want 1", got, iterations)
+		}
+		if got := counter.open(); got != 1 {
+			t.Fatalf("open pooled connections = %d, want 1", got)
+		}
+	})
+
+	t.Run("HandleOpenAITextCompletionStreaming", func(t *testing.T) {
+		var reqCount atomic.Int32
+		release := make(chan struct{})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			n := reqCount.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.WriteHeader(http.StatusOK)
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Error("ResponseWriter does not implement http.Flusher")
+				return
+			}
+			flusher.Flush()
+
+			frames := []string{
+				fmt.Sprintf(`data: {"id":"cmpl-%d","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"turn-%d","finish_reason":null}]}`+"\n\n", n, n),
+				fmt.Sprintf(`data: {"id":"cmpl-%d","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n", n),
+				fmt.Sprintf(`data: {"id":"cmpl-%d","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`+"\n\n", n),
+				"data: [DONE]\n\n",
+			}
+			for _, f := range frames {
+				if _, err := io.WriteString(w, f); err != nil {
+					return
+				}
+				flusher.Flush()
+			}
+			// Delay returning briefly after flushing [DONE] so the terminating 0-length
+			// chunk lands in a separate socket read after ReadDataLine stops on [DONE],
+			// ensuring this subtest fails on base rather than riding a coalesced read.
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Millisecond):
+			}
+		}))
+		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
+
+		client, counter := newOpenAITestStreamingClient(8)
+		auth := BearerAuthHeader(testKey())
+		req := &schemas.BifrostTextCompletionRequest{
+			Provider: schemas.OpenAI,
+			Model:    "repro-model",
+			Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+		}
+
+		for i := 1; i <= iterations; i++ {
+			ctx := newStreamTestContext()
+			stream, bifrostErr := HandleOpenAITextCompletionStreaming(
+				ctx, client, srv.URL, req, auth, nil, 30,
+				false, false, schemas.OpenAI, nil, passthroughPostHook,
+				nil, nil, testNoopLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("iteration %d setup failed: %v", i, bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			var got strings.Builder
+			sawUsage := false
+			for idx, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("iteration %d chunk %d error: %+v", i, idx, c.BifrostError)
+				}
+				resp := c.BifrostTextCompletionResponse
+				if resp == nil {
+					continue
+				}
+				for _, choice := range resp.Choices {
+					if choice.TextCompletionResponseChoice != nil && choice.Text != nil {
+						got.WriteString(*choice.Text)
+					}
+				}
+				if resp.Usage != nil && resp.Usage.TotalTokens == 15 {
+					sawUsage = true
+				}
+			}
+			want := fmt.Sprintf("turn-%d", i)
+			if got.String() != want {
+				t.Fatalf("iteration %d text = %q, want %q", i, got.String(), want)
+			}
+			if !sawUsage {
+				t.Fatalf("iteration %d missing expected usage chunk", i)
+			}
+		}
+
+		if got := reqCount.Load(); got != iterations {
+			t.Fatalf("server received %d requests, want %d", got, iterations)
+		}
+		if got := counter.totalDialed(); got != 1 {
+			t.Fatalf("totalDialed = %d across %d sequential text streams, want 1", got, iterations)
+		}
+		if got := counter.open(); got != 1 {
+			t.Fatalf("open pooled connections = %d, want 1", got)
+		}
+	})
+
+	t.Run("LargeResponseThresholdClosesConnection", func(t *testing.T) {
+		const thresholdStreams = 20
+		var connCloseSeen atomic.Int32
+		stop := "stop"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.EqualFold(r.Header.Get("Connection"), "close") {
+				connCloseSeen.Add(1)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, chatChunk("hello", nil)+chatChunk("", &stop)+chatUsageOnlyChunk+"data: [DONE]\n\n")
+			flusher.Flush()
+		}))
+		t.Cleanup(srv.Close)
+
+		client, counter := newOpenAITestStreamingClient(32)
+		auth := BearerAuthHeader(testKey())
+
+		for i := 1; i <= thresholdStreams; i++ {
+			ctx := newStreamTestContext()
+			ctx.SetValue(schemas.BifrostContextKeyLargeResponseThreshold, int64(1024))
+			stream, bifrostErr := HandleOpenAIChatCompletionStreaming(
+				ctx, client, srv.URL, basicChatRequest(), auth, nil, 30,
+				false, false, schemas.OpenAI, passthroughPostHook,
+				nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("iteration %d setup failed: %v", i, bifrostErr)
+			}
+			for c := range stream {
+				if c != nil && c.BifrostError != nil {
+					t.Fatalf("iteration %d chunk error: %+v", i, c.BifrostError)
+				}
+			}
+		}
+
+		if got := connCloseSeen.Load(); got != thresholdStreams {
+			t.Fatalf("server observed Connection: close on %d requests, want %d", got, thresholdStreams)
+		}
+		if got := counter.totalDialed(); got != thresholdStreams {
+			t.Fatalf("totalDialed = %d, want %d", got, thresholdStreams)
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d after large-response streams, want 0 (leaked into per-request client pools)", got)
+		}
+	})
+}
+
+// TestOpenAIStreamingTrueEOFWithoutDoneMarker verifies that when an SSE body
+// hits true EOF without "data: [DONE]", BifrostContextKeyStreamBodyExhausted
+// prevents ReleaseStreamingResponse from blocking on an already-exhausted
+// keep-alive stream, while preserving completion (when finish_reason arrived)
+// and truncation detection (when neither finish_reason nor [DONE] arrived).
+func TestOpenAIStreamingTrueEOFWithoutDoneMarker(t *testing.T) {
+	t.Run("ChatCompletion_TrueEOFWithFinishReasonCompletesAndReusesConn", func(t *testing.T) {
+		stop := "stop"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, chatChunk("hello", nil)+chatChunk("", &stop))
+			flusher.Flush()
+		}))
+		t.Cleanup(srv.Close)
+
+		client, counter := newOpenAITestStreamingClient(4)
+		for i := range 3 {
+			ctx := newStreamTestContext()
+			stream, bifrostErr := HandleOpenAIChatCompletionStreaming(
+				ctx, client, srv.URL, basicChatRequest(), nil, nil, 30,
+				false, false, schemas.OpenAI, passthroughPostHook,
+				nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("attempt %d setup failed: %v", i, bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			for idx, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("attempt %d chunk %d unexpected error: %+v", i, idx, c.BifrostError)
+				}
+			}
+			final := chunks[len(chunks)-1].BifrostChatResponse
+			if final == nil || len(final.Choices) == 0 || final.Choices[0].FinishReason == nil || *final.Choices[0].FinishReason != stop {
+				t.Fatalf("attempt %d missing finish_reason=%q on terminal chunk: %+v", i, stop, final)
+			}
+		}
+		if got := counter.totalDialed(); got != 1 {
+			t.Fatalf("totalDialed = %d on true-EOF keep-alive chat streams, want 1", got)
+		}
+	})
+
+	t.Run("ChatCompletion_TrueEOFWithoutTerminalMarkerReportsTruncation", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, chatChunk("partial", nil))
+			flusher.Flush()
+		}))
+		t.Cleanup(srv.Close)
+
+		client, _ := newOpenAITestStreamingClient(4)
+		ctx := newStreamTestContext()
+		stream, bifrostErr := HandleOpenAIChatCompletionStreaming(
+			ctx, client, srv.URL, basicChatRequest(), nil, nil, 30,
+			false, false, schemas.OpenAI, passthroughPostHook,
+			nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			t.Fatalf("setup failed: %v", bifrostErr)
+		}
+		chunks := collectChunks(t, stream)
+		if len(chunks) != 2 {
+			t.Fatalf("got %d chunks, want content chunk + truncation error", len(chunks))
+		}
+		assertTruncationError(t, chunks[1].BifrostError)
+	})
+
+	t.Run("TextCompletion_TrueEOFWithFinishReasonCompletesAndReusesConn", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w,
+				`data: {"id":"cmpl-eof","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":null}]}`+"\n\n"+
+					`data: {"id":"cmpl-eof","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"","finish_reason":"stop"}]}`+"\n\n")
+			flusher.Flush()
+		}))
+		t.Cleanup(srv.Close)
+
+		client, counter := newOpenAITestStreamingClient(4)
+		req := &schemas.BifrostTextCompletionRequest{
+			Provider: schemas.OpenAI,
+			Model:    "repro-model",
+			Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+		}
+		for i := range 3 {
+			ctx := newStreamTestContext()
+			stream, bifrostErr := HandleOpenAITextCompletionStreaming(
+				ctx, client, srv.URL, req, nil, nil, 30,
+				false, false, schemas.OpenAI, nil, passthroughPostHook,
+				nil, nil, testNoopLogger{}, nil,
+			)
+			if bifrostErr != nil {
+				t.Fatalf("attempt %d setup failed: %v", i, bifrostErr)
+			}
+			chunks := collectChunks(t, stream)
+			for idx, c := range chunks {
+				if c.BifrostError != nil {
+					t.Fatalf("attempt %d chunk %d unexpected error: %+v", i, idx, c.BifrostError)
+				}
+			}
+			final := chunks[len(chunks)-1].BifrostTextCompletionResponse
+			if final == nil || len(final.Choices) == 0 || final.Choices[0].FinishReason == nil || *final.Choices[0].FinishReason != "stop" {
+				t.Fatalf("attempt %d missing finish_reason=stop on terminal chunk: %+v", i, final)
+			}
+		}
+		if got := counter.totalDialed(); got != 1 {
+			t.Fatalf("totalDialed = %d on true-EOF keep-alive chat streams, want 1", got)
+		}
+	})
+
+	t.Run("TextCompletion_TrueEOFWithoutTerminalMarkerReportsTruncation", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, `data: {"id":"cmpl-trunc","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"partial","finish_reason":null}]}`+"\n\n")
+			flusher.Flush()
+		}))
+		t.Cleanup(srv.Close)
+
+		client, _ := newOpenAITestStreamingClient(4)
+		req := &schemas.BifrostTextCompletionRequest{
+			Provider: schemas.OpenAI,
+			Model:    "repro-model",
+			Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+		}
+		ctx := newStreamTestContext()
+		stream, bifrostErr := HandleOpenAITextCompletionStreaming(
+			ctx, client, srv.URL, req, nil, nil, 30,
+			false, false, schemas.OpenAI, nil, passthroughPostHook,
+			nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			t.Fatalf("setup failed: %v", bifrostErr)
+		}
+		chunks := collectChunks(t, stream)
+		if len(chunks) != 2 {
+			t.Fatalf("got %d chunks, want content chunk + truncation error", len(chunks))
+		}
+		assertTruncationError(t, chunks[1].BifrostError)
+	})
+}
+
+// TestOpenAIStreamingDoneWithOpenBodyDoesNotHang verifies that when an upstream
+// sends "data: [DONE]" and holds the HTTP body open without sending the final
+// 0-length chunk, both HandleOpenAIChatCompletionStreaming and
+// HandleOpenAITextCompletionStreaming close their output channel within the
+// bounded release drain, discard the half-open socket rather than pooling it,
+// and remain usable for subsequent streams.
+func TestOpenAIStreamingDoneWithOpenBodyDoesNotHang(t *testing.T) {
+	t.Run("ChatCompletion_SilentOpenBodyAfterDone", func(t *testing.T) {
+		var holdOpen atomic.Bool
+		holdOpen.Store(true)
+		release := make(chan struct{})
+		stop := "stop"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, chatChunk("hello", nil)+chatChunk("", &stop)+chatUsageOnlyChunk+"data: [DONE]\n\n")
+			flusher.Flush()
+			if holdOpen.Load() {
+				select {
+				case <-release:
+				case <-r.Context().Done():
+				}
+			}
+		}))
+		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
+
+		client, counter := newOpenAITestStreamingClient(4)
+		start := time.Now()
+		stream, bifrostErr := HandleOpenAIChatCompletionStreaming(
+			newStreamTestContext(), client, srv.URL, basicChatRequest(), nil, nil, 30,
+			false, false, schemas.OpenAI, passthroughPostHook,
+			nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			t.Fatalf("setup failed: %v", bifrostErr)
+		}
+		chunks := collectChunks(t, stream)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("stream took %v to close after [DONE] on open body; expected bounded drain", elapsed)
+		}
+		for i, c := range chunks {
+			if c.BifrostError != nil {
+				t.Fatalf("chunk %d unexpected error: %+v", i, c.BifrostError)
+			}
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d, want 0 (unterminated socket must be discarded)", got)
+		}
+
+		// Next clean request dials fresh and pools normally.
+		holdOpen.Store(false)
+		stream2, bifrostErr := HandleOpenAIChatCompletionStreaming(
+			newStreamTestContext(), client, srv.URL, basicChatRequest(), nil, nil, 30,
+			false, false, schemas.OpenAI, passthroughPostHook,
+			nil, nil, nil, nil, nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			t.Fatalf("follow-up setup failed: %v", bifrostErr)
+		}
+		for _, c := range collectChunks(t, stream2) {
+			if c.BifrostError != nil {
+				t.Fatalf("follow-up unexpected error: %+v", c.BifrostError)
+			}
+		}
+		if got := counter.open(); got != 1 {
+			t.Fatalf("open connections after clean stream = %d, want 1", got)
+		}
+	})
+
+	t.Run("TextCompletion_SilentOpenBodyAfterDone", func(t *testing.T) {
+		release := make(chan struct{})
+		body := `data: {"id":"cmpl-open","object":"text_completion","created":1,"model":"repro-model","choices":[{"index":0,"text":"hello","finish_reason":"stop"}]}` + "\n\n" +
+			`data: {"id":"cmpl-open","object":"text_completion","created":1,"model":"repro-model","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n" +
+			"data: [DONE]\n\n"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			_, _ = io.WriteString(w, body)
+			flusher.Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}))
+		t.Cleanup(srv.Close)
+		t.Cleanup(func() { close(release) })
+
+		client, counter := newOpenAITestStreamingClient(4)
+		req := &schemas.BifrostTextCompletionRequest{
+			Provider: schemas.OpenAI,
+			Model:    "repro-model",
+			Input:    &schemas.TextCompletionInput{PromptStr: schemas.Ptr("hi")},
+		}
+		start := time.Now()
+		stream, bifrostErr := HandleOpenAITextCompletionStreaming(
+			newStreamTestContext(), client, srv.URL, req, nil, nil, 30,
+			false, false, schemas.OpenAI, nil, passthroughPostHook,
+			nil, nil, testNoopLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			t.Fatalf("setup failed: %v", bifrostErr)
+		}
+		chunks := collectChunks(t, stream)
+		if elapsed := time.Since(start); elapsed > 2*time.Second {
+			t.Fatalf("stream took %v to close after [DONE] on open body; expected bounded drain", elapsed)
+		}
+		for i, c := range chunks {
+			if c.BifrostError != nil {
+				t.Fatalf("chunk %d unexpected error: %+v", i, c.BifrostError)
+			}
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d, want 0 (unterminated socket must be discarded)", got)
+		}
+	})
 }

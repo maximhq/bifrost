@@ -4890,8 +4890,26 @@ func ReleaseStreamingResponse(ctx *schemas.BifrostContext, resp *fasthttp.Respon
 			closeBodyStream(bodyStream, errStreamParkedAfterFinish)
 			return
 		}
-		if _, err := io.Copy(io.Discard, bodyStream); err != nil {
-			getLogger().Warn("failed to drain streaming response body before release (may cause stale connection reuse): %v", err)
+		// Synchronous before CloseStream by design: on well-behaved upstreams 0\r\n\r\n
+		// drains immediately so the socket is back in HostClient's pool before the
+		// caller starts its next sequential stream, and before the caller's deferred
+		// ctx cancel runs on EOS. An upstream that sends [DONE]/message_stop without
+		// closing its chunked body pays at most min(250ms, stream_idle_timeout) here
+		// before the socket is closed and discarded.
+		drainTimeout := defaultStreamDrainTimeout
+		if idleTimeout := GetStreamIdleTimeout(ctx); idleTimeout > 0 && idleTimeout < drainTimeout {
+			drainTimeout = idleTimeout
+		}
+		var stdCtx context.Context = context.Background()
+		if ctx != nil {
+			stdCtx = ctx
+		}
+		abandoned, err := drainStreamingBody(stdCtx, drainTimeout, bodyStream)
+		if err != nil {
+			getLogger().Debug("failed to drain streaming response body before release (discarding connection): %v", err)
+		}
+		if abandoned {
+			return
 		}
 	}
 	// Close the body-stream wrapper exactly once HERE and detach it from resp

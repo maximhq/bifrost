@@ -640,7 +640,12 @@ func HandleOpenAITextCompletionStreaming(
 
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	// When PrepareResponseStreaming returns a one-shot per-request client clone, close the
+	// socket at EOS instead of returning an idle connection to a pool nothing reuses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	if activeClient != client {
+		req.SetConnectionClose()
+	}
 
 	startTime := time.Now()
 	// Make the request
@@ -785,7 +790,7 @@ func HandleOpenAITextCompletionStreaming(
 					if usage.TotalTokens == 0 {
 						logger.Warn("provider %s ended the stream on heartbeats after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
 					}
-				} else {
+				} else if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
 					// The body is fully consumed, so the deferred release must not drain it again.
 					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
 				}
@@ -1388,7 +1393,12 @@ func HandleOpenAIChatCompletionStreaming(
 
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	// When PrepareResponseStreaming returns a one-shot per-request client clone, close the
+	// socket at EOS instead of returning an idle connection to a pool nothing reuses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	if activeClient != client {
+		req.SetConnectionClose()
+	}
 
 	startTime := time.Now()
 	// Make the request
@@ -1585,7 +1595,7 @@ func HandleOpenAIChatCompletionStreaming(
 					if usage.TotalTokens == 0 {
 						logger.Warn("provider %s ended the stream on heartbeats after finish_reason without sending usage; token counts and cost are unavailable for this request", providerName)
 					}
-				} else {
+				} else if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
 					// The body is fully consumed, so the deferred release must not drain it again.
 					ctx.SetValue(schemas.BifrostContextKeyStreamBodyExhausted, true)
 				}
@@ -2322,7 +2332,12 @@ func HandleOpenAIResponsesStreaming(
 
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	// When PrepareResponseStreaming returns a one-shot per-request client clone, close the
+	// socket at EOS instead of returning an idle connection to a pool nothing reuses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	if activeClient != client {
+		req.SetConnectionClose()
+	}
 
 	startTime := time.Now()
 	// Make the request
@@ -2981,7 +2996,12 @@ func HandleOpenAISpeechStreamRequest(
 
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	// When PrepareResponseStreaming returns a one-shot per-request client clone, close the
+	// socket at EOS instead of returning an idle connection to a pool nothing reuses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	if activeClient != client {
+		req.SetConnectionClose()
+	}
 
 	startTime := time.Now()
 	// Make the request
@@ -4053,7 +4073,12 @@ func HandleOpenAIImageGenerationStreaming(
 
 	// Use streaming-aware client when large payload optimization is active — ensures
 	// MaxResponseBodySize > 0 so ErrBodyTooLarge triggers StreamBody for Content-Length responses.
+	// When PrepareResponseStreaming returns a one-shot per-request client clone, close the
+	// socket at EOS instead of returning an idle connection to a pool nothing reuses.
 	activeClient := providerUtils.PrepareResponseStreaming(ctx, client, resp)
+	if activeClient != client {
+		req.SetConnectionClose()
+	}
 
 	startTime := time.Now()
 	// Make the request

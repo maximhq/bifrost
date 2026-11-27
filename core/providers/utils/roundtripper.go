@@ -453,6 +453,170 @@ func (s *streamBody) CloseWithError(err error) error {
 	return nil
 }
 
+const (
+	// defaultStreamDrainTimeout caps how long ReleaseStreamingResponse waits for
+	// the trailing chunk terminator (0\r\n\r\n + optional trailer) after a
+	// semantic stream marker ([DONE], message_stop, response.completed). Back-to-
+	// back server writes arrive within milliseconds; an upstream that holds the
+	// body open after the marker expires this fixed deadline and has its socket
+	// closed and discarded instead of blocking stream closure forever.
+	defaultStreamDrainTimeout = 250 * time.Millisecond
+	// maxStreamDrainBytes caps trailing bytes read after a semantic stream marker
+	// so an upstream streaming heartbeats or garbage faster than the deadline
+	// cannot keep the drain running indefinitely.
+	maxStreamDrainBytes = 8 * 1024
+)
+
+var errStreamDrainIncomplete = errors.New("streaming response body did not reach EOF within release drain budget")
+
+// testHookStreamDrainStart runs in (*streamBody).drainForReuse right before the
+// bounded io.Copy begins. Nil outside tests; lets a test synchronize on drain entry.
+var testHookStreamDrainStart atomic.Pointer[func()]
+
+// drainForReuse consumes any unread chunk terminator / trailer within a fixed
+// wall-clock deadline and byte cap, while keeping ctx cancellation wired so a
+// caller disconnect interrupts the drain immediately. If the body reaches true
+// EOF within budget, the socket's read deadline is cleared so CloseWithError(nil)
+// can return the connection to the keep-alive pool; otherwise s.fullyRead stays
+// false and CloseWithError closes and discards the socket.
+func (s *streamBody) drainForReuse(ctx context.Context, timeout time.Duration, maxBytes int64) error {
+	if s.closed.Load() {
+		return io.ErrClosedPipe
+	}
+	s.readLock.Lock()
+	if s.closed.Load() {
+		s.readLock.Unlock()
+		return io.ErrClosedPipe
+	}
+	if s.fullyRead {
+		s.readLock.Unlock()
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		s.readLock.Unlock()
+		return ctxErr
+	}
+	if err := s.conn.SetReadDeadline(deadlineFor(timeout, ctx)); err != nil {
+		s.readLock.Unlock()
+		return err
+	}
+	s.readLock.Unlock()
+
+	var stopCancel func() bool
+	if ctx.Done() != nil {
+		stopCancel = context.AfterFunc(ctx, func() {
+			_ = s.CloseWithError(ctx.Err())
+		})
+	}
+	if hook := testHookStreamDrainStart.Load(); hook != nil {
+		(*hook)()
+	}
+	_, copyErr := io.Copy(io.Discard, io.LimitReader(s, maxBytes))
+	if stopCancel != nil {
+		stopCancel()
+	}
+
+	s.readLock.Lock()
+	defer s.readLock.Unlock()
+	if s.closed.Load() {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return io.ErrClosedPipe
+	}
+	if !s.fullyRead {
+		if copyErr != nil {
+			return copyErr
+		}
+		return errStreamDrainIncomplete
+	}
+	if err := s.conn.SetReadDeadline(time.Time{}); err != nil {
+		s.fullyRead = false
+		return err
+	}
+	return nil
+}
+
+// testHookGenericDrainGuardStart runs at the start of drainStreamingBody's
+// generic timeout/cancel callback before its ownership CAS. Nil outside tests;
+// lets a test pause an already-dispatched callback while io.Copy finishes.
+var testHookGenericDrainGuardStart atomic.Pointer[func()]
+
+// testHookGenericDrainCompleted runs immediately after drainStreamingBody wins
+// the completion CAS (drainRunning -> drainCompleted), before waiting on
+// guardDone. Nil outside tests; lets a test release a paused guard callback
+// only once completion ownership is established.
+var testHookGenericDrainCompleted atomic.Pointer[func()]
+
+// drainStreamingBody bounds the post-stream body drain by both wall-clock time
+// and byte count while honoring ctx cancellation. Returns abandoned=true when a
+// non-streamBody reader had to be force-closed with an error so the caller skips
+// fasthttp.ReleaseResponse (avoiding a second close callback on requestStream).
+func drainStreamingBody(ctx context.Context, timeout time.Duration, bodyStream io.Reader) (abandoned bool, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if sb, ok := bodyStream.(*streamBody); ok {
+		return false, sb.drainForReuse(ctx, timeout, maxStreamDrainBytes)
+	}
+
+	const (
+		drainRunning   = 0
+		drainCompleted = 1 // io.Copy returned first; caller owns close/release
+		drainAborted   = 2 // guard won; callback owns closeBodyStream
+	)
+	var state atomic.Int32
+	guardDone := make(chan struct{})
+	guardHook := testHookGenericDrainGuardStart.Load()
+	completedHook := testHookGenericDrainCompleted.Load()
+	closeOnce := sync.OnceFunc(func() {
+		defer close(guardDone)
+		if guardHook != nil {
+			(*guardHook)()
+		}
+		if !state.CompareAndSwap(drainRunning, drainAborted) {
+			return
+		}
+		closeErr := errStreamDrainIncomplete
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			closeErr = ctxErr
+		}
+		closeBodyStream(bodyStream, closeErr)
+	})
+	timer := time.AfterFunc(timeout, closeOnce)
+	var stopCancel func() bool
+	if ctx.Done() != nil {
+		stopCancel = context.AfterFunc(ctx, closeOnce)
+	}
+
+	n, copyErr := io.Copy(io.Discard, io.LimitReader(bodyStream, maxStreamDrainBytes+1))
+	timerStopped := timer.Stop()
+	cancelStopped := stopCancel == nil || stopCancel()
+
+	if !state.CompareAndSwap(drainRunning, drainCompleted) {
+		<-guardDone
+		return true, errStreamDrainIncomplete
+	}
+	if completedHook != nil {
+		(*completedHook)()
+	}
+	if !timerStopped || !cancelStopped {
+		<-guardDone
+	}
+	if copyErr != nil {
+		closeBodyStream(bodyStream, copyErr)
+		return true, copyErr
+	}
+	if n > maxStreamDrainBytes {
+		closeBodyStream(bodyStream, errStreamDrainIncomplete)
+		return true, errStreamDrainIncomplete
+	}
+	return false, nil
+}
+
 // cancelWatcher closes the connection when the request context ends, or when
 // the stream attempt misses its first-token deadline, while the transport still
 // owns the socket (write phase and header wait). It is stopped once the body is

@@ -18,10 +18,16 @@ package anthropic
 //	go test ./core/providers/anthropic/ -bench Anthropic -benchmem
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 const benchAnthropicModel = "claude-sonnet-4-5-20250929"
@@ -293,6 +299,88 @@ func BenchmarkToAnthropicChatResponse(b *testing.B) {
 	for b.Loop() {
 		if out := ToAnthropicChatResponse(bifrostResp); out == nil {
 			b.Fatal("nil Anthropic response")
+		}
+	}
+}
+
+func newBenchAnthropicSSEServer(b *testing.B) *httptest.Server {
+	b.Helper()
+	payload := []byte(anthropicMessageStart + anthropicTextDelta + anthropicMessageStop)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = w.Write(payload)
+		flusher.Flush()
+	}))
+	b.Cleanup(srv.Close)
+	return srv
+}
+
+func newBenchAnthropicStreamingClient() *fasthttp.Client {
+	base := &fasthttp.Client{
+		ReadTimeout:         30 * time.Second,
+		WriteTimeout:        30 * time.Second,
+		MaxConnsPerHost:     64,
+		MaxIdleConnDuration: 30 * time.Second,
+		MaxConnWaitTimeout:  30 * time.Second,
+		MaxConnDuration:     300 * time.Second,
+		ConnPoolStrategy:    fasthttp.FIFO,
+	}
+	base = providerUtils.ConfigureDialer(base, true)
+	return providerUtils.BuildStreamingClient(base)
+}
+
+// BenchmarkHandleAnthropicChatCompletionStreaming measures sequential chat SSE
+// streams over a shared streaming client (including pooled connection reuse).
+func BenchmarkHandleAnthropicChatCompletionStreaming(b *testing.B) {
+	srv := newBenchAnthropicSSEServer(b)
+	client := newBenchAnthropicStreamingClient()
+	body := []byte(`{"model":"claude-sonnet-4-5-20250929","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	headers := map[string]string{"Accept": "text/event-stream"}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := HandleAnthropicChatCompletionStreaming(
+			ctx, client, srv.URL, body, headers, nil, 30, nil,
+			false, false, schemas.Anthropic, truncationPassthroughPostHook,
+			nil, nil, truncationTestLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			b.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		for chunk := range stream {
+			if chunk != nil && chunk.BifrostError != nil {
+				b.Fatalf("stream chunk error: %v", chunk.BifrostError)
+			}
+		}
+	}
+}
+
+// BenchmarkHandleAnthropicResponsesStream measures sequential Responses SSE
+// streams over a shared streaming client (including pooled connection reuse).
+func BenchmarkHandleAnthropicResponsesStream(b *testing.B) {
+	srv := newBenchAnthropicSSEServer(b)
+	client := newBenchAnthropicStreamingClient()
+	body := []byte(`{"model":"claude-sonnet-4-5-20250929","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"stream":true}`)
+	headers := map[string]string{"Accept": "text/event-stream"}
+
+	b.ReportAllocs()
+	for b.Loop() {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		stream, bifrostErr := HandleAnthropicResponsesStream(
+			ctx, client, srv.URL, body, headers, nil, 30, nil,
+			false, false, schemas.Anthropic, truncationPassthroughPostHook,
+			nil, nil, truncationTestLogger{}, nil,
+		)
+		if bifrostErr != nil {
+			b.Fatalf("stream setup failed: %v", bifrostErr)
+		}
+		for chunk := range stream {
+			if chunk != nil && chunk.BifrostError != nil {
+				b.Fatalf("stream chunk error: %v", chunk.BifrostError)
+			}
 		}
 	}
 }

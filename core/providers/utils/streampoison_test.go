@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -552,5 +553,291 @@ func TestReleaseAfterBodyEOFDoesNotBlock(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("ReleaseStreamingResponse blocked draining a body already at EOF")
+	}
+}
+
+// TestReleaseStreamingResponse_OpenBodyAfterMarkerIsBoundedAndDiscarded verifies
+// that when an upstream sends "data: [DONE]" and holds the HTTP body open
+// without sending the terminating 0-length chunk, ReleaseStreamingResponse
+// neither blocks indefinitely nor pools the half-open socket, and honors context
+// cancellation while draining.
+func TestReleaseStreamingResponse_OpenBodyAfterMarkerIsBoundedAndDiscarded(t *testing.T) {
+	openAfterDone := false
+	releaseServer := make(chan struct{})
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		holdOpen := openAfterDone
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		_, _ = fmt.Fprint(w, "data: {\"i\":0}\n\ndata: [DONE]\n\n")
+		flusher.Flush()
+		if holdOpen {
+			select {
+			case <-releaseServer:
+			case <-r.Context().Done():
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(releaseServer) })
+
+	t.Run("bounded_by_drain_deadline", func(t *testing.T) {
+		mu.Lock()
+		openAfterDone = true
+		mu.Unlock()
+
+		client, counter := newTestStreamingClient(4)
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		start := time.Now()
+		frames, err := runSSEStream(ctx, client, srv.URL)
+		elapsed := time.Since(start)
+		if err != nil {
+			t.Fatalf("runSSEStream failed: %v", err)
+		}
+		if frames != 1 {
+			t.Fatalf("frames = %d, want 1", frames)
+		}
+		if elapsed > 2*time.Second {
+			t.Fatalf("ReleaseStreamingResponse took %v on open post-[DONE] body; expected bounded drain", elapsed)
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d, want 0 (unterminated post-[DONE] socket must be discarded)", got)
+		}
+
+		// Subsequent clean stream on the same client must dial fresh and succeed.
+		mu.Lock()
+		openAfterDone = false
+		mu.Unlock()
+		frames, err = runSSEStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), client, srv.URL)
+		if err != nil || frames != 1 {
+			t.Fatalf("follow-up clean stream failed: frames=%d err=%v", frames, err)
+		}
+		if got := counter.open(); got != 1 {
+			t.Fatalf("open connections after clean stream = %d, want 1 (pooled)", got)
+		}
+	})
+
+	t.Run("cancelled_during_drain", func(t *testing.T) {
+		mu.Lock()
+		openAfterDone = true
+		mu.Unlock()
+
+		enteredDrain := make(chan struct{})
+		var drainOnce sync.Once
+		hook := func() {
+			drainOnce.Do(func() { close(enteredDrain) })
+		}
+		testHookStreamDrainStart.Store(&hook)
+		t.Cleanup(func() { testHookStreamDrainStart.Store(nil) })
+
+		client, counter := newTestStreamingClient(4)
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+
+		type streamResult struct {
+			frames int
+			err    error
+		}
+		done := make(chan streamResult, 1)
+		go func() {
+			frames, err := runSSEStream(ctx, client, srv.URL)
+			done <- streamResult{frames: frames, err: err}
+		}()
+
+		select {
+		case <-enteredDrain:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for stream to enter post-[DONE] drain")
+		}
+
+		cancelStart := time.Now()
+		cancel()
+
+		select {
+		case res := <-done:
+			if res.err != nil {
+				t.Fatalf("unexpected error after entering drain: %v", res.err)
+			}
+			if res.frames != 1 {
+				t.Fatalf("frames = %d, want 1", res.frames)
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatal("ReleaseStreamingResponse ignored context cancellation during drain")
+		}
+		if elapsed := time.Since(cancelStart); elapsed >= defaultStreamDrainTimeout {
+			t.Fatalf("cancelled drain took %v after cancel(), expected immediate interruption before %v drain timeout", elapsed, defaultStreamDrainTimeout)
+		}
+		if got := counter.open(); got != 0 {
+			t.Fatalf("open connections = %d, want 0 after cancelled drain", got)
+		}
+	})
+}
+
+type synchronizedGenericBody struct {
+	onRead     func() (int, error)
+	onClose    func(error)
+	closeCount atomic.Int32
+}
+
+func (b *synchronizedGenericBody) Read([]byte) (int, error) {
+	return b.onRead()
+}
+
+func (b *synchronizedGenericBody) CloseWithError(err error) error {
+	b.closeCount.Add(1)
+	if b.onClose != nil {
+		b.onClose(err)
+	}
+	return nil
+}
+
+// TestReleaseStreamingResponse_GenericBodyGuardCallbackSynchronized forces the
+// race between io.Copy returning on a generic (non-*streamBody) reader and an
+// already-dispatched timer/cancel callback, confirming ReleaseStreamingResponse
+// waits for the callback and never double-closes the stream.
+func TestReleaseStreamingResponse_GenericBodyGuardCallbackSynchronized(t *testing.T) {
+	for _, viaTimer := range []bool{false, true} {
+		mode := "cancel_callback"
+		if viaTimer {
+			mode = "timer_callback"
+		}
+		t.Run(mode+"_drain_finishes_before_callback_claims", func(t *testing.T) {
+			testAbort := make(chan struct{})
+			releaseDone := make(chan struct{})
+			t.Cleanup(func() {
+				select {
+				case <-releaseDone:
+				case <-time.After(time.Second):
+				}
+			})
+			t.Cleanup(func() {
+				testHookGenericDrainGuardStart.Store(nil)
+				testHookGenericDrainCompleted.Store(nil)
+			})
+			t.Cleanup(func() { close(testAbort) })
+
+			guardStarted := make(chan struct{})
+			drainCompleted := make(chan struct{})
+			var startedOnce, completedOnce sync.Once
+			var guardObservedCompletion atomic.Bool
+
+			guardHook := func() {
+				startedOnce.Do(func() { close(guardStarted) })
+				select {
+				case <-drainCompleted:
+					guardObservedCompletion.Store(true)
+				case <-testAbort:
+				case <-time.After(2 * time.Second):
+				}
+			}
+			completedHook := func() {
+				completedOnce.Do(func() { close(drainCompleted) })
+			}
+			testHookGenericDrainGuardStart.Store(&guardHook)
+			testHookGenericDrainCompleted.Store(&completedHook)
+
+			inRead := make(chan struct{})
+			var readOnce sync.Once
+			body := &synchronizedGenericBody{
+				onRead: func() (int, error) {
+					readOnce.Do(func() { close(inRead) })
+					select {
+					case <-guardStarted:
+						return 0, io.EOF
+					case <-testAbort:
+						return 0, io.ErrClosedPipe
+					case <-time.After(2 * time.Second):
+						return 0, errors.New("timed out waiting for guard callback to start")
+					}
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if viaTimer {
+				ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 5*time.Millisecond)
+			} else {
+				go func() {
+					select {
+					case <-inRead:
+						cancel()
+					case <-testAbort:
+					case <-time.After(2 * time.Second):
+					}
+				}()
+			}
+
+			resp := fasthttp.AcquireResponse()
+			resp.SetBodyStream(body, -1)
+
+			// When viaTimer is false, cancel() sets ctx.Err()!=nil before
+			// ReleaseStreamingResponse if called too early, so only cancel once Read is active.
+			go func() {
+				defer close(releaseDone)
+				ReleaseStreamingResponse(ctx, resp)
+			}()
+
+			select {
+			case <-releaseDone:
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for ReleaseStreamingResponse to finish")
+			}
+
+			if !guardObservedCompletion.Load() {
+				t.Fatal("guard callback did not observe drain completion CAS before attempting its own CAS")
+			}
+			if got := body.closeCount.Load(); got != 1 {
+				t.Fatalf("closeCount = %d, want 1", got)
+			}
+		})
+
+		t.Run(mode+"_callback_claims_while_close_in_flight", func(t *testing.T) {
+			inRead := make(chan struct{})
+			unblockRead := make(chan struct{})
+			var readOnce, unblockOnce sync.Once
+			var closeFinished atomic.Bool
+
+			body := &synchronizedGenericBody{
+				onRead: func() (int, error) {
+					readOnce.Do(func() { close(inRead) })
+					<-unblockRead
+					return 0, io.EOF
+				},
+				onClose: func(error) {
+					unblockOnce.Do(func() { close(unblockRead) })
+					time.Sleep(20 * time.Millisecond)
+					closeFinished.Store(true)
+				},
+			}
+
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			if viaTimer {
+				ctx.SetValue(schemas.BifrostContextKeyStreamIdleTimeout, 5*time.Millisecond)
+			} else {
+				go func() {
+					<-inRead
+					cancel()
+				}()
+			}
+
+			resp := fasthttp.AcquireResponse()
+			resp.SetBodyStream(body, -1)
+
+			ReleaseStreamingResponse(ctx, resp)
+
+			if !closeFinished.Load() {
+				t.Fatal("ReleaseStreamingResponse returned before in-flight guard CloseWithError finished")
+			}
+			if got := body.closeCount.Load(); got != 1 {
+				t.Fatalf("closeCount = %d, want 1", got)
+			}
+		})
 	}
 }
