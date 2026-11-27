@@ -1595,6 +1595,7 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 				formValues, parseErr := url.ParseQuery(string(body))
 				if parseErr != nil {
 					decodeErr = fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
+					tokenResponse = schemas.OAuth2TokenExchangeResponse{}
 				} else {
 					tokenResponse.AccessToken = formValues.Get("access_token")
 					tokenResponse.RefreshToken = formValues.Get("refresh_token")

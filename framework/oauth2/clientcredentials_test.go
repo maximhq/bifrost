@@ -466,4 +466,14 @@ func TestClientCredentialsAccepts2xxTokenResponses(t *testing.T) {
 	_, err = p.ResolveClientCredentials(context.Background(), upstream.URL+"/mcp", false, cfg)
 	require.ErrorContains(t, err, "the token endpoint refused the client credentials: invalid_client: 100% invalid")
 	assert.Equal(t, 1, calls)
+
+	// A response whose JSON body partially populates access_token before failing
+	// on a malformed expires_in (and also failing form parsing) must clear
+	// tokenResponse instead of returning the partially decoded token.
+	status = http.StatusCreated
+	body = `{"access_token":"partial-token","expires_in":"100% bad"}`
+	calls = 0
+	_, err = p.ResolveClientCredentials(context.Background(), upstream.URL+"/mcp", false, cfg)
+	require.ErrorContains(t, err, "the token response has no access_token")
+	assert.Equal(t, 1, calls)
 }
