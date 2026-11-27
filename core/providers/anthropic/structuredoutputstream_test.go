@@ -221,3 +221,117 @@ func TestStructuredOutputToolStream_EmptyArgumentsBecomeEmptyObject(t *testing.T
 	}
 	t.Fatal("no output_text.delta emitted for an empty structured-output tool call")
 }
+
+// TestStructuredOutputToolStream_VisibleThinkingPrecedingToolUsesContentIndexZero pins
+// that when a thinking block (index 0) precedes the synthetic structured-output tool
+// block (index 1), the four message content events emitted at block stop rebase their
+// content_index to 0 relative to the message output item (#8323).
+func TestStructuredOutputToolStream_VisibleThinkingPrecedingToolUsesContentIndexZero(t *testing.T) {
+	t.Parallel()
+
+	state := AcquireAnthropicResponsesStreamState()
+	defer ReleaseAnthropicResponsesStreamState(state)
+	state.StructuredOutputToolName = structuredOutputToolName
+
+	events := []*AnthropicStreamEvent{
+		{
+			Type: AnthropicStreamEventTypeMessageStart,
+			Message: &AnthropicMessageResponse{
+				ID:    "msg_thinking_so_stream",
+				Model: "claude-opus-4-8",
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockStart,
+			Index: schemas.Ptr(0),
+			ContentBlock: &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeThinking,
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: schemas.Ptr(0),
+			Delta: &AnthropicStreamDelta{
+				Type:     AnthropicStreamDeltaTypeThinking,
+				Thinking: schemas.Ptr("thinking before structured output"),
+			},
+		},
+		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(0)},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockStart,
+			Index: schemas.Ptr(1),
+			ContentBlock: &AnthropicContentBlock{
+				Type: AnthropicContentBlockTypeToolUse,
+				ID:   schemas.Ptr("toolu_bdrk_01ThinkingBeforeSO"),
+				Name: schemas.Ptr(structuredOutputToolName),
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: schemas.Ptr(1),
+			Delta: &AnthropicStreamDelta{
+				Type:        AnthropicStreamDeltaTypeInputJSON,
+				PartialJSON: schemas.Ptr(`{"text":`),
+			},
+		},
+		{
+			Type:  AnthropicStreamEventTypeContentBlockDelta,
+			Index: schemas.Ptr(1),
+			Delta: &AnthropicStreamDelta{
+				Type:        AnthropicStreamDeltaTypeInputJSON,
+				PartialJSON: schemas.Ptr(`"hi"}`),
+			},
+		},
+		{Type: AnthropicStreamEventTypeContentBlockStop, Index: schemas.Ptr(1)},
+		{
+			Type:  AnthropicStreamEventTypeMessageDelta,
+			Delta: &AnthropicStreamDelta{StopReason: schemas.Ptr(AnthropicStopReasonToolUse)},
+		},
+		{Type: AnthropicStreamEventTypeMessageStop},
+	}
+
+	var emitted []*schemas.BifrostResponsesStreamResponse
+	for _, event := range events {
+		responses, bifrostErr, _ := event.ToBifrostResponsesStream(context.Background(), len(emitted), state)
+		if bifrostErr != nil {
+			t.Fatalf("converter returned an error for %s: %v", event.Type, bifrostErr)
+		}
+		emitted = append(emitted, responses...)
+	}
+
+	seen := map[schemas.ResponsesStreamResponseType]bool{
+		schemas.ResponsesStreamResponseTypeContentPartAdded: false,
+		schemas.ResponsesStreamResponseTypeOutputTextDelta:  false,
+		schemas.ResponsesStreamResponseTypeOutputTextDone:   false,
+		schemas.ResponsesStreamResponseTypeContentPartDone:  false,
+	}
+
+	for _, r := range emitted {
+		if r.OutputIndex != nil && *r.OutputIndex == 1 {
+			switch r.Type {
+			case schemas.ResponsesStreamResponseTypeContentPartAdded,
+				schemas.ResponsesStreamResponseTypeOutputTextDelta,
+				schemas.ResponsesStreamResponseTypeOutputTextDone,
+				schemas.ResponsesStreamResponseTypeContentPartDone:
+				seen[r.Type] = true
+				if r.ContentIndex == nil {
+					t.Fatalf("%s output_index=1 has nil ContentIndex", r.Type)
+				}
+				if *r.ContentIndex != 0 {
+					t.Errorf("%s output_index=1 has ContentIndex = %d, want 0", r.Type, *r.ContentIndex)
+				}
+				if r.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta {
+					if r.Delta == nil || *r.Delta != `{"text":"hi"}` {
+						t.Errorf("output_text.delta = %v, want %q", r.Delta, `{"text":"hi"}`)
+					}
+				}
+			}
+		}
+	}
+
+	for eventType, present := range seen {
+		if !present {
+			t.Errorf("output_index=1 is missing %s", eventType)
+		}
+	}
+}
