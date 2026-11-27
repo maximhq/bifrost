@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream"
 	"github.com/bytedance/sonic"
+	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -1498,4 +1499,132 @@ func Test_bedrockPreCallback_ReadsInvokeGuardrailHeaders(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The Bedrock control-plane listings used to fall through to the dashboard catch-all and come back as the
+// UI's index.html with a 200 (#9531). They now match their own routes ahead of the catch-all, next to the
+// /bedrock runtime routes, and nothing else under /bedrock changes owner.
+func TestBedrockControlPlaneRouterRegistersOnlyTheListings(t *testing.T) {
+	r := router.New()
+	const dashboard = 299
+	r.GET("/{filepath:*}", func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(dashboard) })
+	NewBedrockRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+	NewBedrockControlPlaneRouter(nil, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusNoContent) }
+	})
+
+	cases := []struct {
+		method, uri string
+		want        int
+	}{
+		{fasthttp.MethodGet, "/bedrock/inference-profiles?type=SYSTEM_DEFINED&maxResults=2", fasthttp.StatusNoContent},
+		{fasthttp.MethodGet, "/bedrock/inference-profiles/us.anthropic.claude-sonnet-4-6", fasthttp.StatusNoContent},
+		{fasthttp.MethodGet, "/bedrock/foundation-models", fasthttp.StatusNoContent},
+		{fasthttp.MethodGet, "/bedrock/foundation-models/anthropic.claude-3-haiku-20240307-v1:0", fasthttp.StatusNoContent},
+		// An ARN, percent-encoded as AWS SDKs send it or with a raw "/": both reach the passthrough, which
+		// answers with a JSON 400, not the dashboard.
+		{fasthttp.MethodGet, "/bedrock/inference-profiles/arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Aapplication-inference-profile%2Fabc", fasthttp.StatusNoContent},
+		{fasthttp.MethodGet, "/bedrock/foundation-models/arn%3Aaws%3Abedrock%3Aus-east-1%3A%3Afoundation-model%2Fanthropic.claude-v2", fasthttp.StatusNoContent},
+		{fasthttp.MethodGet, "/bedrock/inference-profiles/arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc", fasthttp.StatusNoContent},
+		// Only the listings are claimed: other control-plane paths keep their previous owner.
+		{fasthttp.MethodGet, "/bedrock/custom-models", dashboard},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.uri, func(t *testing.T) {
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod(tc.method)
+			ctx.Request.SetRequestURI(tc.uri)
+			r.Handler(&ctx)
+			require.Equal(t, tc.want, ctx.Response.StatusCode())
+		})
+	}
+}
+
+// The control-plane operations are governed the same way under /bedrock and /bedrock_passthrough: a list
+// reaches core with the prefix stripped and the query kept, names no model, skips model allowlists and
+// carries the filter that trims it to the caller's access; a get addresses its id as the request's model,
+// so model allowlists apply to it.
+func TestBedrockControlPlaneOperationsReachCoreGoverned(t *testing.T) {
+	routers := map[string]func(*bifrost.Bifrost) *PassthroughRouter{
+		"/bedrock": func(c *bifrost.Bifrost) *PassthroughRouter {
+			return NewBedrockControlPlaneRouter(c, &mockHandlerStore{}, nil, &testLogger{})
+		},
+		"/bedrock_passthrough": func(c *bifrost.Bifrost) *PassthroughRouter {
+			return NewBedrockPassthroughRouter(c, &mockHandlerStore{}, nil, &testLogger{})
+		},
+	}
+	cases := []struct {
+		name, path, query, wantModel string
+		list                         bool
+	}{
+		{"ListInferenceProfiles", "/inference-profiles", "type=SYSTEM_DEFINED&maxResults=2", "", true},
+		{"ListFoundationModels", "/foundation-models", "byProvider=Anthropic", "", true},
+		{"GetInferenceProfile", "/inference-profiles/us.anthropic.claude-sonnet-4-6", "", "us.anthropic.claude-sonnet-4-6", false},
+		{"GetFoundationModel", "/foundation-models/anthropic.claude-3-haiku-20240307-v1:0", "", "anthropic.claude-3-haiku-20240307-v1:0", false},
+	}
+	for prefix, newRouter := range routers {
+		for _, tc := range cases {
+			t.Run(prefix+" "+tc.name, func(t *testing.T) {
+				plugin := &codexPassthroughReceipt{}
+				client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+				require.NoError(t, err)
+				defer client.Shutdown()
+				r := router.New()
+				newRouter(client).RegisterRoutes(r)
+
+				uri := prefix + tc.path
+				if tc.query != "" {
+					uri += "?" + tc.query
+				}
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetMethod(fasthttp.MethodGet)
+				ctx.Request.SetRequestURI(uri)
+				r.Handler(&ctx)
+
+				require.Equal(t, 403, ctx.Response.StatusCode())
+				require.NotNil(t, plugin.request)
+				require.Equal(t, schemas.PassthroughRequest, plugin.request.RequestType, "the control plane answers with plain JSON")
+				pt := plugin.request.PassthroughRequest
+				require.Equal(t, schemas.Bedrock, pt.Provider)
+				require.Equal(t, fasthttp.MethodGet, pt.Method)
+				require.Equal(t, tc.path, pt.Path)
+				require.Equal(t, tc.query, pt.RawQuery)
+				require.Equal(t, tc.wantModel, pt.Model)
+				require.Equal(t, tc.list, plugin.skipModelCheck, "only a list skips model allowlists")
+				require.Equal(t, tc.list, plugin.modelListFilter != nil, "only a list is trimmed to the caller's access")
+				require.True(t, plugin.literalModel, "the ids are forwarded as written, so key aliases must not widen the check")
+			})
+		}
+	}
+}
+
+// A list is trimmed to the profiles and foundation models the caller may run; nextToken and every other
+// field come back as AWS sent them.
+func TestBedrockControlPlaneListFilterKeepsAllowedEntries(t *testing.T) {
+	allowed := func(model string) bool {
+		return model == "us.anthropic.claude-sonnet-4-6" || model == "anthropic.claude-3-haiku-20240307-v1:0"
+	}
+
+	profiles := bedrock.ControlPlaneListFilter(fasthttp.MethodGet, "/inference-profiles")
+	require.NotNil(t, profiles)
+	got, err := profiles([]byte(`{"inferenceProfileSummaries":[{"inferenceProfileId":"us.anthropic.claude-sonnet-4-6","inferenceProfileArn":"arn:a"},{"inferenceProfileId":"us.meta.llama3-70b","inferenceProfileArn":"arn:b"}],"nextToken":"t1"}`), allowed)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"inferenceProfileSummaries":[{"inferenceProfileId":"us.anthropic.claude-sonnet-4-6","inferenceProfileArn":"arn:a"}],"nextToken":"t1"}`, string(got))
+
+	models := bedrock.ControlPlaneListFilter(fasthttp.MethodGet, "/foundation-models")
+	require.NotNil(t, models)
+	got, err = models([]byte(`{"modelSummaries":[{"modelId":"amazon.titan-text-express-v1"},{"modelId":"anthropic.claude-3-haiku-20240307-v1:0"}]}`), allowed)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"modelSummaries":[{"modelId":"anthropic.claude-3-haiku-20240307-v1:0"}]}`, string(got))
+
+	// An allowlist may name a profile by its ARN: the entry is kept when either name is allowed.
+	byARN := func(model string) bool {
+		return model == "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc"
+	}
+	got, err = profiles([]byte(`{"inferenceProfileSummaries":[{"inferenceProfileId":"abc","inferenceProfileArn":"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc"},{"inferenceProfileId":"def","inferenceProfileArn":"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/def"}]}`), byARN)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"inferenceProfileSummaries":[{"inferenceProfileId":"abc","inferenceProfileArn":"arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/abc"}]}`, string(got))
+
+	require.Nil(t, bedrock.ControlPlaneListFilter(fasthttp.MethodGet, "/foundation-models/anthropic.claude-v2"), "a get is checked against the allowlist, not trimmed")
+	require.Nil(t, bedrock.ControlPlaneListFilter(fasthttp.MethodPost, "/knowledgebases/KB12345678/retrieve"))
 }

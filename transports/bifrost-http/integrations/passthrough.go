@@ -212,17 +212,70 @@ func NewAzurePassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handler
 
 // NewBedrockPassthroughRouter creates a passthrough router for /bedrock_passthrough. Unlike the
 // other passthrough routers it is not a general proxy: the Bedrock provider forwards only
-// InvokeAgent, knowledge-base Retrieve and ApplyGuardrail, the operations Bifrost has no native
-// route for, and refuses every other path with a 400 before any request is built.
+// InvokeAgent, knowledge-base Retrieve, ApplyGuardrail and the read-only inference-profile and
+// foundation-model operations, the operations Bifrost has no native route for, and refuses every
+// other path with a 400 before any request is built. The control-plane operations are governed the
+// same way as under /bedrock (see withBedrockControlPlaneAccess).
 func NewBedrockPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
-	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, withBedrockControlPlaneAccess(&PassthroughConfig{
 		Provider: schemas.Bedrock,
 		StripPrefix: []string{
 			"/bedrock_passthrough",
 		},
 		// InvokeAgent answers with an event stream; nothing in its path or body says so.
 		StreamingPath: bedrock.IsPassthroughStreamPath,
-	})
+	}))
+}
+
+// NewBedrockControlPlaneRouter serves the read-only Bedrock control-plane operations under the /bedrock
+// integration prefix: ListInferenceProfiles, GetInferenceProfile, ListFoundationModels and
+// GetFoundationModel. AWS SDK clients pointed at /bedrock (Claude Code in Bedrock mode, for one) call
+// them on the same base URL as the runtime APIs to discover models; without these routes the requests
+// fell through to the dashboard catch-all and got the UI's index.html with a 200.
+//
+// The Get routes are catch-alls so an identifier with more than one segment (an ARN whose "/" a client
+// sent unencoded) gets the provider's JSON 400 instead of the dashboard; an ARN sent percent-encoded,
+// as AWS SDKs do, is one routing segment either way and gets the same 400. The Bedrock provider re-checks each request against its own allow-list before signing it
+// with the selected key and sending it to the control-plane host for the key's region.
+//
+// The routes are only mounted under /bedrock. The Bedrock runtime routes are also mounted under
+// /litellm, /langchain, /pydanticai and /cursor (CreateBedrockRouteConfigs), but those prefixes front
+// framework SDKs that call the runtime APIs only, not the AWS control plane.
+func NewBedrockControlPlaneRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *PassthroughRouter {
+	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, withBedrockControlPlaneAccess(&PassthroughConfig{
+		Provider:    schemas.Bedrock,
+		StripPrefix: []string{"/bedrock"},
+		AllowedRoutes: []PassthroughRoute{
+			{Method: fasthttp.MethodGet, Path: "/bedrock/inference-profiles"},
+			{Method: fasthttp.MethodGet, Path: "/bedrock/inference-profiles/{inferenceProfileIdentifier:*}"},
+			{Method: fasthttp.MethodGet, Path: "/bedrock/foundation-models"},
+			{Method: fasthttp.MethodGet, Path: "/bedrock/foundation-models/{modelIdentifier:*}"},
+		},
+		StreamingPath: bedrock.IsPassthroughStreamPath,
+	}))
+}
+
+// withBedrockControlPlaneAccess sets how governance sees the Bedrock control-plane operations, on every
+// router that forwards them:
+//   - a list runs no model, so model allowlists are skipped and the response is trimmed to the profiles
+//     and foundation models the caller's access allows (the account's full list would expose every
+//     application inference profile, with the gateway's account id in its ARNs);
+//   - a get addresses one profile or model by id, which becomes the request's model, so it is checked
+//     against the allowlist like an invocation of it would be;
+//   - neither names a model in a "models/{x}" segment or a body, so the path is not parsed for one;
+//   - the ids are forwarded to AWS as written, never resolved through a key alias, so governance checks
+//     them against the literal access (LiteralModels): an alias of an allowed model does not let a key
+//     describe or list the aliased resource.
+//
+// A list names no model, so each page selects a key on its own. With Bedrock keys in more than one
+// account or region, a nextToken from one page may be presented with a different key on the next.
+func withBedrockControlPlaneAccess(cfg *PassthroughConfig) *PassthroughConfig {
+	cfg.ModelFreePath = bedrock.IsControlPlaneListPath
+	cfg.ModelList = bedrock.ControlPlaneListFilter
+	cfg.ResourceModel = bedrock.ControlPlaneResourceModel
+	cfg.NoPathModel = bedrock.IsControlPlaneListingPath
+	cfg.LiteralModels = true
+	return cfg
 }
 
 // NewSageMakerPassthroughRouter creates a passthrough router for /sagemaker_passthrough. It forwards only
