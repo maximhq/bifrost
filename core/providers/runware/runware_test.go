@@ -60,6 +60,7 @@ func TestRunware(t *testing.T) {
 			MultipleImages:             true,
 			CompleteEnd2End:            true,
 			Reasoning:                  true,
+			ListModels:                 true,
 			ImageGeneration:            true,
 			ImageEdit:                  true,
 			VideoGeneration:            false,

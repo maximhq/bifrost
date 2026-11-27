@@ -1,21 +1,28 @@
 ---
 title: "Runware"
-description: "Runware API conversion guide - text-to-image, image editing, upscaling, background removal, masking, text/image-to-video, 3D generation, and raw task passthrough"
+description: "Runware API conversion guide - OpenAI-compatible chat (LLM), text-to-image, image editing, upscaling, background removal, masking, text/image-to-video, 3D generation, and raw task passthrough"
 icon: "/media/runware-nav.svg"
 ---
 
 ## Overview
 
-Runware exposes a single endpoint (`https://api.runware.ai/v1`) that accepts an **array of tasks**, where a `taskType` field selects the operation. Bifrost wraps each request in this array envelope and maps its unified image and video schemas onto the matching task type. Image tasks return synchronously; video and 3D tasks are submitted asynchronously and polled to completion.
+Runware's task APIs accept an **array of tasks**, where a `taskType` field selects the operation. Bifrost uses this envelope for image, video, 3D, and model-listing operations, wrapping each request and mapping its unified schemas onto the matching task type. Image tasks return synchronously; video and 3D tasks are submitted asynchronously and polled to completion.
 
 Where an operation has no dedicated Bifrost endpoint, a neutral `type` parameter selects it on the closest one - for example `type: "upscale"` on `/v1/images/edits`.
+
+Text inference takes the other path: Runware serves it at an **OpenAI-compatible `/v1/chat/completions`** endpoint, so Bifrost routes it through its shared OpenAI-compatible handlers rather than the task envelope. `/v1/responses` is translated to chat completions because Runware's own Responses route rejects every model.
 
 ### Supported Operations
 
 <Info>Upscaling, background removal, masking/segmentation, ControlNet preprocessing, and vectorize are available in **Bifrost v2.0.0 and above**.</Info>
 
-| Operation | Supported | Endpoint | Task Type |
-|-----------|-----------|----------|-----------|
+| Operation | Supported | Endpoint | Provider request |
+|-----------|-----------|----------|------------------|
+| Chat Completion | ✅ | `/v1/chat/completions` | OpenAI-compatible (not a task) |
+| Chat Completion (stream) | ✅ | `/v1/chat/completions` | OpenAI-compatible (SSE, not a task) |
+| Responses API | ✅ | `/v1/responses` | translated to chat completions |
+| Responses API (stream) | ✅ | `/v1/responses` | translated to chat completions (SSE) |
+| List Models | ✅ | `/v1/models` | `modelSearch` (catalog) + `/v1/models` (pricing) |
 | Image Generation | ✅ | `/v1/images/generations` | `imageInference` |
 | Image Edit (image-to-image, inpainting, outpainting) | ✅ | `/v1/images/edits` | `imageInference` |
 | Image Upscale | ✅ | `/v1/images/edits` | `upscale` |
@@ -38,6 +45,43 @@ Where an operation has no dedicated Bifrost endpoint, a neutral `type` parameter
 <Note>
 Runware returns an exact per-task **cost** when a request sets `includeCost: true`. Bifrost always sets it and surfaces the value as the provider-reported cost, reported under `usage.cost.total_cost`.
 </Note>
+
+---
+
+# Chat Completions (LLM)
+
+Runware's text models are served through an OpenAI-compatible endpoint. Route to them with the `runware/<model>` syntax; list the available ids with `GET /v1/models` on the gateway (backed by Runware's `modelSearch` catalog sweep).
+
+The gateway's listing merges two Runware sources: `modelSearch` supplies the full catalog (every modality), and the OpenAI-compatible `/v1/models` supplies the per-token `pricing` and `context_length` / `max_output_tokens` limits for the text models. Runware's two catalogues name the same model differently — `modelSearch` keys on the AIR (`google:gemini@3.1-pro`), `/v1/models` on a slug (`google-gemini-3-1-pro`) — and the gateway bridges the two, so those fields reach the model entries you see. If `/v1/models` is unavailable, the listing still returns the full catalog, just without pricing and context limits.
+
+## Chat (`POST /v1/chat/completions`)
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `model` | string | ✅ | Runware-hosted model id (from the gateway's `GET /v1/models`) |
+| `messages` | array | ✅ | Standard OpenAI chat messages |
+| `stream` | bool | ❌ | Server-Sent Events streaming |
+| `tools` / `tool_choice` | array / string | ❌ | Tool calling (passed through) |
+| `response_format` | object | ❌ | Structured outputs (JSON schema) |
+
+Standard OpenAI sampling fields (`temperature`, `top_p`, `max_tokens`, `stop`, `presence_penalty`, `frequency_penalty`, `seed`) are forwarded as-is.
+
+### Example
+
+<Tabs>
+<Tab title="Gateway">
+
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "runware/<model-id>",
+    "messages": [{"role": "user", "content": "Hello, Bifrost!"}]
+  }'
+```
+
+</Tab>
+</Tabs>
 
 ---
 

@@ -264,6 +264,34 @@ func ToBifrostListModelsResponse(
 	aliases schemas.KeyAliases,
 	unfiltered bool,
 ) *schemas.BifrostListModelsResponse {
+	return toBifrostListModelsResponse(models, nil, providerKey, allowedModels, blacklistedModels, aliases, unfiltered)
+}
+
+// ToBifrostListModelsResponseWithOffers is ToBifrostListModelsResponse plus the price and context
+// limits from /v1/models. The two Runware catalogues name the same models differently — modelSearch
+// keys on the AIR ("google:gemini@3.1-pro"), /v1/models on a slug ("google-gemini-3-1-pro") — so
+// offers is indexed by the slug that airToModelSlug derives from each AIR.
+func ToBifrostListModelsResponseWithOffers(
+	models []RunwareModel,
+	offers map[string]RunwareModelEnvelope,
+	providerKey schemas.ModelProvider,
+	allowedModels schemas.WhiteList,
+	blacklistedModels schemas.BlackList,
+	aliases schemas.KeyAliases,
+	unfiltered bool,
+) *schemas.BifrostListModelsResponse {
+	return toBifrostListModelsResponse(models, offers, providerKey, allowedModels, blacklistedModels, aliases, unfiltered)
+}
+
+func toBifrostListModelsResponse(
+	models []RunwareModel,
+	offers map[string]RunwareModelEnvelope,
+	providerKey schemas.ModelProvider,
+	allowedModels schemas.WhiteList,
+	blacklistedModels schemas.BlackList,
+	aliases schemas.KeyAliases,
+	unfiltered bool,
+) *schemas.BifrostListModelsResponse {
 	bifrostResponse := &schemas.BifrostListModelsResponse{
 		Data: make([]schemas.Model, 0, len(models)),
 	}
@@ -284,6 +312,7 @@ func ToBifrostListModelsResponse(
 		if model.AIR == "" {
 			continue
 		}
+		offer := offers[airToModelSlug(model.AIR)]
 		for _, result := range pipeline.FilterModel(model.AIR) {
 			bifrostModel := schemas.Model{
 				ID: string(providerKey) + "/" + result.ResolvedID,
@@ -309,6 +338,7 @@ func ToBifrostListModelsResponse(
 			if architecture := runwareModelArchitecture(model); architecture != nil {
 				bifrostModel.Architecture = architecture
 			}
+			applyRunwareOffer(&bifrostModel, offer)
 			if result.AliasValue != "" {
 				bifrostModel.Alias = &result.AliasValue
 			}
@@ -317,6 +347,61 @@ func ToBifrostListModelsResponse(
 	}
 
 	return bifrostResponse
+}
+
+// airToModelSlug maps a Runware AIR to the slug /v1/models uses for the same model:
+// "google:gemini@3.1-pro" -> "google-gemini-3-1-pro". The "@0" version suffix is dropped because
+// /v1/models omits it ("minimax:m2.7@0" -> "minimax-m2-7"). Models absent from /v1/models — the
+// image/video/audio side of the catalog and Runware's internal helpers — simply find no offer.
+func airToModelSlug(air string) string {
+	creator, rest, _ := strings.Cut(air, ":")
+	model, version, _ := strings.Cut(rest, "@")
+	parts := []string{creator, model}
+	if version != "" && version != "0" {
+		parts = append(parts, version)
+	}
+	slug := strings.ToLower(strings.Join(parts, "-"))
+	replacer := strings.NewReplacer("_", "-", ".", "-", " ", "-")
+	return replacer.Replace(slug)
+}
+
+// applyRunwareOffer fills the price, context limits and modalities /v1/models reports. Only fields
+// the datasheet leaves unset are written, since modelcatalog.ApplyModelInfo treats a populated
+// Pricing as authoritative and Runware's live numbers are the more specific source.
+func applyRunwareOffer(model *schemas.Model, offer RunwareModelEnvelope) {
+	if offer.ContextLength != nil && model.ContextLength == nil {
+		model.ContextLength = new(*offer.ContextLength)
+	}
+	if offer.MaxOutputTokens != nil && model.MaxOutputTokens == nil {
+		model.MaxOutputTokens = new(*offer.MaxOutputTokens)
+	}
+	if offer.Pricing != nil && model.Pricing == nil {
+		pricing := &schemas.Pricing{
+			Prompt:         offer.Pricing.Prompt,
+			Completion:     offer.Pricing.Completion,
+			Image:          offer.Pricing.Image,
+			Request:        offer.Pricing.Request,
+			InputCacheRead: offer.Pricing.InputCacheRead,
+		}
+		if *pricing != (schemas.Pricing{}) {
+			model.Pricing = pricing
+		}
+	}
+	// A catalog entry with no io: capability yields no modalities of its own, so the offer is the
+	// only source left for them. The two Runware feeds are updated independently, and a model that
+	// reaches /v1/models before modelSearch publishes its io: tags would otherwise list bare.
+	if len(offer.InputModalities) == 0 && len(offer.OutputModalities) == 0 {
+		return
+	}
+	if model.Architecture == nil {
+		model.Architecture = &schemas.Architecture{}
+	}
+	if model.Architecture.InputModalities == nil {
+		model.Architecture.InputModalities = slices.Clone(offer.InputModalities)
+	}
+	if model.Architecture.OutputModalities == nil {
+		model.Architecture.OutputModalities = slices.Clone(offer.OutputModalities)
+	}
 }
 
 // runwareModelArchitecture derives modality lists from a model's io: capability tags. Returns nil
