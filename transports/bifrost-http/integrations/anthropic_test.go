@@ -569,8 +569,7 @@ func TestCheckAnthropicPassthrough_APIKeyPreservesExtraHeaders(t *testing.T) {
 		reqCtx.Request.Header.Set("x-forwarded-for", "10.30.10.147")
 		reqCtx.Request.Header.Set("x-claude-code-session-id", "sess-1")
 
-		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-		defer cancel()
+		bifrostCtx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 
 		existing := map[string][]string{
 			"user-agent":       {"claude-cli/2.1.0 (external, cli)"},
@@ -610,8 +609,7 @@ func TestCheckAnthropicPassthrough_APIKeyPreservesExtraHeaders(t *testing.T) {
 		reqCtx.Request.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14,raw-beta")
 		reqCtx.Request.Header.Set("anthropic-version", "2023-06-01")
 
-		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-		defer cancel()
+		bifrostCtx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 		existingBetas := make([]string, 1, 4)
 		existingBetas[0] = "explicit-extra-beta"
 		existing := map[string][]string{
@@ -647,8 +645,7 @@ func TestCheckAnthropicPassthrough_APIKeyPreservesExtraHeaders(t *testing.T) {
 		reqCtx.Request.Header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
 		reqCtx.Request.Header.Set("anthropic-version", "2023-06-01")
 
-		bifrostCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-		defer cancel()
+		bifrostCtx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
 
 		req := &anthropic.AnthropicMessageRequest{Model: "claude-opus-5-5", MaxTokens: 1024}
 		require.NoError(t, checkAnthropicPassthrough(reqCtx, bifrostCtx, req))

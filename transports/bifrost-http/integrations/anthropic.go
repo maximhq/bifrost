@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -450,9 +451,7 @@ func checkAnthropicPassthrough(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.Bif
 			if len(passthroughHeaders) > 0 {
 				if existing, ok := bifrostCtx.Value(schemas.BifrostContextKeyExtraHeaders).(map[string][]string); ok && len(existing) > 0 {
 					merged := make(map[string][]string, len(existing)+len(passthroughHeaders))
-					for k, v := range existing {
-						merged[k] = v
-					}
+					maps.Copy(merged, existing)
 					for k, v := range passthroughHeaders {
 						if existingKey, found := findHeaderKeyFold(merged, k); found {
 							// Append raw anthropic-beta values so caller betas are not dropped when
