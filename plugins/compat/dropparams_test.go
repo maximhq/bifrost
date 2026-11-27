@@ -497,3 +497,114 @@ func assertReasoningSummary(t *testing.T, got *string, dropped []string, want st
 		t.Errorf("reasoning.summary reported in dropped=%v, want absent", dropped)
 	}
 }
+
+// TestDropUnsupportedParams_RecordsDroppedParallelToolCallsValue verifies that
+// compat records the dropped ParallelToolCalls boolean on context for both Chat
+// and Responses requests and clears it before a subsequent fallback attempt.
+func TestDropUnsupportedParams_RecordsDroppedParallelToolCallsValue(t *testing.T) {
+	tests := []struct {
+		name      string
+		isChat    bool
+		supported []string
+		parallel  *bool
+		wantSet   bool
+		wantVal   bool
+	}{
+		{
+			name:      "responses drops false",
+			supported: []string{"tools", "tool_choice"},
+			parallel:  schemas.Ptr(false),
+			wantSet:   true,
+			wantVal:   false,
+		},
+		{
+			name:      "responses drops true",
+			supported: []string{"tools", "tool_choice"},
+			parallel:  schemas.Ptr(true),
+			wantSet:   true,
+			wantVal:   true,
+		},
+		{
+			name:      "responses keeps when supported",
+			supported: []string{"tools", "tool_choice", "parallel_tool_calls"},
+			parallel:  schemas.Ptr(true),
+		},
+		{
+			name:      "chat drops false",
+			isChat:    true,
+			supported: []string{"tools", "tool_choice"},
+			parallel:  schemas.Ptr(false),
+			wantSet:   true,
+			wantVal:   false,
+		},
+		{
+			name:      "chat drops true",
+			isChat:    true,
+			supported: []string{"tools", "tool_choice"},
+			parallel:  schemas.Ptr(true),
+			wantSet:   true,
+			wantVal:   true,
+		},
+		{
+			name:      "chat keeps when supported",
+			isChat:    true,
+			supported: []string{"tools", "tool_choice", "parallel_tool_calls"},
+			parallel:  schemas.Ptr(true),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := newTestContext()
+			var req *schemas.BifrostRequest
+			if tt.isChat {
+				req = &schemas.BifrostRequest{
+					RequestType: schemas.ChatCompletionRequest,
+					ChatRequest: &schemas.BifrostChatRequest{
+						Provider: schemas.Anthropic,
+						Model:    "claude-sonnet-5",
+						Params:   &schemas.ChatParameters{ParallelToolCalls: tt.parallel},
+					},
+				}
+			} else {
+				req = newResponsesRequest(schemas.Anthropic, "claude-sonnet-5", &schemas.ResponsesParameters{
+					ParallelToolCalls: tt.parallel,
+				})
+			}
+
+			dropped := dropUnsupportedParams(ctx, req, tt.supported)
+			got, ok := ctx.Value(schemas.BifrostContextKeyCompatDroppedParallelToolCalls).(bool)
+			if ok != tt.wantSet || (tt.wantSet && got != tt.wantVal) {
+				t.Fatalf("ctx[BifrostContextKeyCompatDroppedParallelToolCalls] = (%v, %v), want (%v, %v); dropped=%v", got, ok, tt.wantVal, tt.wantSet, dropped)
+			}
+		})
+	}
+
+	t.Run("PreLLMHook clears previous dropped parallel_tool_calls on fallback", func(t *testing.T) {
+		p := newTestPlugin(t, map[string][]string{
+			"noparallel-model": {"tools", "tool_choice"},
+			"parallel-model":   {"tools", "tool_choice", "parallel_tool_calls"},
+		})
+
+		ctx := newTestContext()
+		req1 := newResponsesRequest(schemas.Anthropic, "noparallel-model", &schemas.ResponsesParameters{
+			ParallelToolCalls: schemas.Ptr(true),
+		})
+		if _, _, err := p.PreLLMHook(ctx, req1); err != nil {
+			t.Fatalf("PreLLMHook (first attempt): %v", err)
+		}
+		if v, ok := ctx.Value(schemas.BifrostContextKeyCompatDroppedParallelToolCalls).(bool); !ok || !v {
+			t.Fatalf("expected dropped parallel_tool_calls=true after first attempt, got (%v, %v)", v, ok)
+		}
+
+		req2 := newResponsesRequest(schemas.Anthropic, "parallel-model", &schemas.ResponsesParameters{
+			ParallelToolCalls: schemas.Ptr(true),
+		})
+		if _, _, err := p.PreLLMHook(ctx, req2); err != nil {
+			t.Fatalf("PreLLMHook (fallback attempt): %v", err)
+		}
+		if v, ok := ctx.Value(schemas.BifrostContextKeyCompatDroppedParallelToolCalls).(bool); ok {
+			t.Fatalf("expected dropped parallel_tool_calls cleared on fallback attempt, got %v", v)
+		}
+	})
+}

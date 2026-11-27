@@ -29,8 +29,11 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -3469,6 +3472,121 @@ func TestAnthropicHeldStreamBlockedAtEndIsInStreamError(t *testing.T) {
 	require.Contains(t, res.body, "blocked by guardrail")
 	require.NotContains(t, res.body, `"text":"Hello"`, "blocked content reached the client")
 	require.Equal(t, 1, res.upstreamHits, "a guardrail block must not re-run the upstream")
+}
+
+type setParallelToolCallsPlugin struct{ value bool }
+
+func (p *setParallelToolCallsPlugin) GetName() string { return "set-parallel-tool-calls" }
+func (p *setParallelToolCallsPlugin) Cleanup() error  { return nil }
+func (p *setParallelToolCallsPlugin) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *setParallelToolCallsPlugin) PreLLMHook(_ *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	if req != nil && req.ResponsesRequest != nil && req.ResponsesRequest.Params != nil {
+		req.ResponsesRequest.Params.ParallelToolCalls = schemas.Ptr(p.value)
+	}
+	return req, nil, nil
+}
+func (p *setParallelToolCallsPlugin) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, bifrostErr, nil
+}
+
+func runAnthropicMessagesDisableParallelToolUseRouteTest(t *testing.T, extraPrePlugins ...schemas.LLMPlugin) []byte {
+	t.Helper()
+	captured := make(chan []byte, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		select {
+		case captured <- body:
+		default:
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprintf(w, "event: message_start\ndata: %s\n\n", heldMessageStart)
+		flusher.Flush()
+		fmt.Fprintf(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		flusher.Flush()
+	}))
+	defer upstream.Close()
+
+	ds, err := datasheet.NewTestStore(map[string]string{"claude-sonnet-5": "claude-sonnet-5"})
+	require.NoError(t, err)
+	t.Cleanup(ds.Close)
+	// Simulate when an external catalog feed lists tools and tool_choice but omits parallel_tool_calls,
+	// causing compat ShouldDropParams to drop ParallelToolCalls: the native Anthropic Messages request
+	// must still restore disable_parallel_tool_use on egress unless an earlier plugin changed ParallelToolCalls.
+	ds.SetSupportedParamsForTest(map[string][]string{"claude-sonnet-5": {"tools", "tool_choice", "max_tokens", "temperature"}})
+	mc, err := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = mc.Cleanup() })
+	compatPlugin, err := compat.Init(compat.Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	require.NoError(t, err)
+
+	plugins := append(append([]schemas.LLMPlugin(nil), extraPrePlugins...), compatPlugin)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account:      passthroughTestAccount{baseURL: upstream.URL},
+		LLMPlugins:   plugins,
+		ModelCatalog: mc,
+		Logger:       bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	r := router.New()
+	identity := func(next fasthttp.RequestHandler) fasthttp.RequestHandler { return next }
+	NewAnthropicRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r, identity)
+
+	body := `{
+		"model": "anthropic/claude-sonnet-5",
+		"max_tokens": 256,
+		"stream": true,
+		"messages": [{"role": "user", "content": "hi"}],
+		"tools": [
+			{"name": "probe_tool", "description": "probe", "input_schema": {"type": "object"}},
+			{"name": "other_tool", "description": "other", "input_schema": {"type": "object"}}
+		],
+		"tool_choice": {"type": "tool", "name": "probe_tool", "disable_parallel_tool_use": true}
+	}`
+
+	var ctx fasthttp.RequestCtx
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI("/anthropic/v1/messages")
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBodyString(body)
+
+	r.Handler(&ctx)
+
+	var capturedBody []byte
+	select {
+	case capturedBody = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream request")
+	}
+
+	t.Logf("response status: %d, body: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	t.Logf("captured upstream body: %s", string(capturedBody))
+	return capturedBody
+}
+
+// TestAnthropicMessagesRoute_ToolChoiceDisableParallelToolUse_Forwarded verifies
+// that POST /anthropic/v1/messages preserves tool_choice.disable_parallel_tool_use
+// in the upstream body even when compat drops parallel_tool_calls.
+func TestAnthropicMessagesRoute_ToolChoiceDisableParallelToolUse_Forwarded(t *testing.T) {
+	capturedBody := runAnthropicMessagesDisableParallelToolUseRouteTest(t)
+	disable := gjson.GetBytes(capturedBody, "tool_choice.disable_parallel_tool_use")
+	require.True(t, disable.Exists(), "disable_parallel_tool_use was dropped: %s", string(capturedBody))
+	require.True(t, disable.Bool(), "disable_parallel_tool_use should be true: %s", string(capturedBody))
+}
+
+// TestAnthropicMessagesRoute_ToolChoiceDisableParallelToolUse_PreCompatPluginOverrideRespected
+// verifies that when a plugin running before compat explicitly sets
+// ParallelToolCalls=true and compat drops it, egress does not restore the
+// caller's original disable_parallel_tool_use: true.
+func TestAnthropicMessagesRoute_ToolChoiceDisableParallelToolUse_PreCompatPluginOverrideRespected(t *testing.T) {
+	capturedBody := runAnthropicMessagesDisableParallelToolUseRouteTest(t, &setParallelToolCallsPlugin{value: true})
+	require.Equal(t, "tool", gjson.GetBytes(capturedBody, "tool_choice.type").String())
+	require.False(t, gjson.GetBytes(capturedBody, "tool_choice.disable_parallel_tool_use").Exists(),
+		"pre-compat plugin ParallelToolCalls=true override must not be reversed: %s", string(capturedBody))
 }
 
 // When the upstream's first events carry no output (an OpenAI-family model, whose startup

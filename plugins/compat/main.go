@@ -132,6 +132,7 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// dropped. Without this clear, an attempt that drops nothing inherits the
 	// previous attempt's list and PostLLMHook reports it as this response's.
 	ctx.ClearValue(schemas.BifrostContextKeyCompatDroppedParams)
+	ctx.ClearValue(schemas.BifrostContextKeyCompatDroppedParallelToolCalls)
 
 	convertTextToChatOverride, convertTextToChatOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertTextToChat).(bool)
 	convertChatToResponsesOverride, convertChatToResponsesOverrideEnabled := ctx.Value(schemas.BifrostContextKeyCompatConvertChatToResponses).(bool)
