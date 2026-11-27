@@ -1280,6 +1280,26 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "openai_rowless": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "openai_pc_auto": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -2126,6 +2146,15 @@
         "reasoning_effort_renames": {
           "none": "off"
         }
+      }
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "mode": "chat",
+      "is_custom": false,
+      "params_patch": {
+        "unsupported_fields": { "reasoning_effort": true }
       }
     }
   ]

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -723,6 +724,40 @@ func TestToOpenAIChatRequest_MistralReasoningEffortFollowsDatasheet(t *testing.T
 			require.Equal(t, tt.effort, *req.Params.Reasoning.Effort)
 		})
 	}
+}
+
+// TestToOpenAIChatRequest_MistralRenameAppliesOnce pins that a chained rename table
+// is walked a single time: the generic pass already renamed the effort before the
+// Mistral compat pass sees it.
+func TestToOpenAIChatRequest_MistralRenameAppliesOnce(t *testing.T) {
+	row := &schemas.ModelCapabilities{
+		ReasoningEffortLevels:  []string{"low", "medium", "high"},
+		ReasoningEffortRenames: map[string]string{"high": "medium", "medium": "low"},
+	}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.Mistral && m == "chain-medium-latest" {
+			return row
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Mistral,
+		Model:    "chain-medium-latest",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")}},
+	}
+
+	out := ToOpenAIChatRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline), req)
+	require.NotNil(t, out)
+	require.NotNil(t, out.Reasoning)
+	require.NotNil(t, out.Reasoning.Effort)
+	require.Equal(t, "medium", *out.Reasoning.Effort, "the rename table must be walked once")
+	require.Equal(t, "high", *req.Params.Reasoning.Effort, "the caller's request must not be written through")
 }
 
 // TestToOpenAIChatRequest_StripsUnsupportedSamplingParams pins that sampling fields
@@ -3868,6 +3903,16 @@ func customProviderContext(base schemas.ModelProvider) *schemas.BifrostContext {
 	return schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, base)
 }
 
+// customProviderStandardBaseContext reproduces what bifrost stamps on a custom
+// provider whose base_provider_type is a standard provider: the base type, and
+// the custom marker FALSE, since neither the wire key nor its base is
+// non-standard.
+func customProviderStandardBaseContext(base schemas.ModelProvider) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContextWithValue(context.Background(), schemas.NoDeadline, schemas.BifrostContextKeyBaseProviderType, base)
+	ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, false)
+	return ctx
+}
+
 // customProviderEarlyReturnContext reproduces the other custom shape: no base
 // type, so bifrost marks BifrostContextKeyIsCustomProvider true.
 func customProviderEarlyReturnContext() *schemas.BifrostContext {
@@ -3982,6 +4027,11 @@ func TestToOpenAIChatRequest_CustomProviderRespectsUnsupportedEffortField(t *tes
 		if p == "commandcode" && m == "budget-only-model" {
 			return &schemas.ModelCapabilities{SupportsReasoningEffort: schemas.Ptr(false)}
 		}
+		// A supported row: effort allowed, no renames or levels of its own, so the
+		// budget estimate stands as computed.
+		if p == "commandcode" && m == "supported-model" {
+			return &schemas.ModelCapabilities{SupportsReasoningEffort: schemas.Ptr(true)}
+		}
 		return nil
 	})
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
@@ -4014,7 +4064,7 @@ func TestToOpenAIChatRequest_CustomProviderRespectsUnsupportedEffortField(t *tes
 	})
 
 	t.Run("a supported row still estimates from the budget", func(t *testing.T) {
-		out := ToOpenAIChatRequest(customProviderEarlyReturnContext(), newReq("deepseek-v4.1-flash", &schemas.ChatReasoning{MaxTokens: schemas.Ptr(20000)}))
+		out := ToOpenAIChatRequest(customProviderEarlyReturnContext(), newReq("supported-model", &schemas.ChatReasoning{MaxTokens: schemas.Ptr(20000)}))
 		require.NotNil(t, out)
 		require.NotNil(t, out.Reasoning)
 		require.NotNil(t, out.Reasoning.Effort, "no restriction, so the estimate is kept")
@@ -4117,6 +4167,87 @@ func TestToOpenAIChatRequest_UnsupportedEffortRowKeepsThinkingDisabled(t *testin
 	}
 }
 
+// TestToOpenAIChatRequest_CustomProviderBaseFamilyKeepsThinkingDisabled pins the
+// same contract for a custom provider on a MiniMax or BytePlus base: its own key
+// never matches the provider switch, so the base family's compat pass has to run
+// on the custom path too.
+// Converter-only: MiniMax/BytePlus are not in SupportedBaseProviders, so production rejects this base; the test drives the converter directly.
+func TestToOpenAIChatRequest_CustomProviderBaseFamilyKeepsThinkingDisabled(t *testing.T) {
+	rows := map[string]*schemas.ModelCapabilities{
+		"flag":  {SupportsReasoningEffort: schemas.Ptr(false)},
+		"field": {UnsupportedFields: map[string]bool{schemas.FieldReasoningEffort: true}},
+	}
+	for _, base := range []schemas.ModelProvider{schemas.MiniMax, schemas.BytePlus} {
+		provider := schemas.ModelProvider("my-" + string(base))
+		for rowName, row := range rows {
+			t.Run(string(base)+"/"+rowName, func(t *testing.T) {
+				schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+					if p == provider && m == "m2-model" {
+						return row
+					}
+					return nil
+				})
+				t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+				newReq := func(effort string) *schemas.BifrostChatRequest {
+					return &schemas.BifrostChatRequest{
+						Provider: provider,
+						Model:    "m2-model",
+						Input: []schemas.ChatMessage{{
+							Role:    schemas.ChatMessageRoleUser,
+							Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+						}},
+						Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(effort)}},
+					}
+				}
+				ctx := customProviderStandardBaseContext(base)
+
+				out := ToOpenAIChatRequest(ctx, newReq("none"))
+				require.NotNil(t, out)
+				require.Equal(t, map[string]interface{}{"type": "disabled"}, out.ExtraParams["thinking"], "effort none must still disable thinking")
+				body, err := sonic.Marshal(out)
+				require.NoError(t, err)
+				require.NotContains(t, string(body), `"reasoning_effort"`, "the row rejects reasoning_effort: %s", body)
+
+				// An active effort is dropped as unsupported but never disables thinking.
+				out = ToOpenAIChatRequest(ctx, newReq("high"))
+				require.NotNil(t, out)
+				_, hasThinking := out.ExtraParams["thinking"]
+				require.False(t, hasThinking, "an active effort must not disable thinking")
+			})
+		}
+	}
+}
+
+// TestToOpenAIChatRequest_CustomProviderBytePlusLadderClampsXHigh pins that the
+// fallback ladder follows the base family's wire rules: Ark tops out at high,
+// so a custom provider on a BytePlus base clamps xhigh like the built-in one.
+// Converter-only: BytePlus is not in SupportedBaseProviders, so production rejects this base; the ladder rule itself is covered by TestDefaultEffortControl_BytePlusCapsAtHigh.
+func TestToOpenAIChatRequest_CustomProviderBytePlusLadderClampsXHigh(t *testing.T) {
+	const provider = schemas.ModelProvider("my-byteplus")
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == provider && m == "effort-model" {
+			return &schemas.ModelCapabilities{SupportsReasoningEffort: schemas.Ptr(true)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	req := &schemas.BifrostChatRequest{
+		Provider: provider,
+		Model:    "effort-model",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("xhigh")}},
+	}
+	out := ToOpenAIChatRequest(customProviderStandardBaseContext(schemas.BytePlus), req)
+	require.NotNil(t, out)
+	require.NotNil(t, out.Reasoning)
+	require.NotNil(t, out.Reasoning.Effort)
+	require.Equal(t, "high", *out.Reasoning.Effort, "Ark rejects xhigh; the BytePlus ladder clamps it")
+}
+
 // TestToOpenAIChatRequest_CustomProviderBudgetEffortFollowsDatasheet pins that
 // an effort estimated from a reasoning token budget is normalized against the
 // row too — the custom early-return path never reaches the generic filter.
@@ -4150,6 +4281,188 @@ func TestToOpenAIChatRequest_CustomProviderBudgetEffortFollowsDatasheet(t *testi
 	require.NotNil(t, out.Reasoning)
 	require.NotNil(t, out.Reasoning.Effort)
 	require.Equal(t, "off", *out.Reasoning.Effort)
+}
+
+// TestToOpenAIChatRequest_CustomProviderInferredNoneFollowsAlwaysReasoning pins
+// that a budget-inferred "none" still respects a model that always reasons.
+func TestToOpenAIChatRequest_CustomProviderInferredNoneFollowsAlwaysReasoning(t *testing.T) {
+	schemas.SetCapabilityResolver(nil)
+	req := &schemas.BifrostChatRequest{
+		Provider: "my-openai",
+		Model:    "gpt-5",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(0)}},
+	}
+	out := ToOpenAIChatRequest(customProviderStandardBaseContext(schemas.OpenAI), req)
+	require.NotNil(t, out)
+	require.NotNil(t, out.Reasoning)
+	require.NotNil(t, out.Reasoning.Effort)
+	require.Equal(t, schemas.ReasoningEffortMinimal, *out.Reasoning.Effort,
+		"an inferred zero budget must still respect an always-reasoning model")
+}
+
+// TestToOpenAIChatRequest_CustomProviderNoRowPassesEffortThrough pins that a
+// custom provider with NO datasheet row anywhere leaves the caller's effort
+// exactly as sent. The custom early-return branch normalized unconditionally, so
+// with no row to answer from the name-based fallback ladder clamped it —
+// minimal -> low and max -> xhigh — where a plain passthrough host takes the
+// value verbatim. Every row-driven case below still normalizes.
+func TestToOpenAIChatRequest_CustomProviderNoRowPassesEffortThrough(t *testing.T) {
+	// No resolver installed at all: no own row, no base row.
+	schemas.SetCapabilityResolver(nil)
+
+	for _, effort := range []string{"minimal", "max", "none", "xhigh"} {
+		t.Run(effort+" is untouched", func(t *testing.T) {
+			effort := effort
+			req := &schemas.BifrostChatRequest{
+				Provider: "passthrough-custom",
+				Model:    "some-upstream-model",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(effort)}},
+			}
+			out := ToOpenAIChatRequest(customProviderEarlyReturnContext(), req)
+			require.NotNil(t, out)
+			require.NotNil(t, out.Reasoning)
+			require.NotNil(t, out.Reasoning.Effort)
+			require.Equal(t, effort, *out.Reasoning.Effort,
+				"no row resolves for this provider/model, so the effort must pass through")
+		})
+	}
+
+	t.Run("a token budget still estimates", func(t *testing.T) {
+		// The chat encoder only carries reasoning.effort, so a budget-only request
+		// must gain the estimate rather than reach the upstream without one.
+		req := &schemas.BifrostChatRequest{
+			Provider: "passthrough-custom",
+			Model:    "some-upstream-model",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(4096)}},
+		}
+		out := ToOpenAIChatRequest(customProviderEarlyReturnContext(), req)
+		require.NotNil(t, out)
+		require.NotNil(t, out.Reasoning)
+		require.NotNil(t, out.Reasoning.Effort)
+		want := providerUtils.GetReasoningEffortFromBudgetTokens(4096, MinReasoningMaxTokens,
+			providerUtils.GetMaxOutputTokensOrDefault(out.Provider, out.Model, DefaultCompletionMaxTokens))
+		require.Equal(t, want, *out.Reasoning.Effort)
+	})
+}
+
+// TestToOpenAIChatRequest_CustomProviderOnStandardBasePassesEffortThrough pins
+// the production shape the early-return marker misses: a custom provider whose
+// base_provider_type is a standard provider is marked NOT custom by bifrost, so
+// its chat requests take the generic filter branch. With no row anywhere the
+// caller's effort must still reach the wire verbatim, while the OpenAI-only
+// compat filters keep stripping their fields.
+func TestToOpenAIChatRequest_CustomProviderOnStandardBasePassesEffortThrough(t *testing.T) {
+	// No resolver installed at all: no own row, no base row.
+	schemas.SetCapabilityResolver(nil)
+
+	ctx := customProviderStandardBaseContext(schemas.OpenAI)
+	for _, effort := range []string{"minimal", "max", "none", "xhigh"} {
+		t.Run(effort+" is untouched", func(t *testing.T) {
+			effort := effort
+			req := &schemas.BifrostChatRequest{
+				Provider: "standard-base-custom",
+				Model:    "some-upstream-model",
+				Input: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+				}},
+				Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr(effort)}},
+			}
+			out := ToOpenAIChatRequest(ctx, req)
+			require.NotNil(t, out)
+			require.NotNil(t, out.Reasoning)
+			require.NotNil(t, out.Reasoning.Effort)
+			require.Equal(t, effort, *out.Reasoning.Effort,
+				"no row resolves for this provider/model, so the effort must pass through")
+		})
+	}
+
+	t.Run("a token budget still estimates", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: "standard-base-custom",
+			Model:    "some-upstream-model",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{MaxTokens: schemas.Ptr(4096)}},
+		}
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		require.NotNil(t, out.Reasoning)
+		require.NotNil(t, out.Reasoning.Effort)
+		want := providerUtils.GetReasoningEffortFromBudgetTokens(4096, MinReasoningMaxTokens,
+			providerUtils.GetMaxOutputTokensOrDefault(out.Provider, out.Model, DefaultCompletionMaxTokens))
+		require.Equal(t, want, *out.Reasoning.Effort)
+	})
+
+	t.Run("the OpenAI-only compat fields are still stripped", func(t *testing.T) {
+		// prediction and store are OpenAI-native, so a row-less custom still drops
+		// them; only the effort normalization is skipped.
+		req := &schemas.BifrostChatRequest{
+			Provider: "standard-base-custom",
+			Model:    "some-upstream-model",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("max")},
+				Prediction: &schemas.ChatPrediction{
+					Type:    "content",
+					Content: "predicted",
+				},
+				PromptCacheKey: schemas.Ptr("cache-key"),
+				Store:          schemas.Ptr(true),
+			},
+		}
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		require.Nil(t, out.Prediction, "a row-less custom still drops prediction")
+		require.Nil(t, out.PromptCacheKey, "a row-less custom still drops prompt_cache_key")
+		require.Nil(t, out.Store, "a row-less custom still drops store")
+		require.NotNil(t, out.Reasoning)
+		require.Equal(t, "max", *out.Reasoning.Effort)
+	})
+
+	t.Run("a base row still normalizes", func(t *testing.T) {
+		// Control: the same shape with a base row resolving normalizes onto the
+		// row's ladder, so the passthrough is gated on the row's absence.
+		schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if p == schemas.OpenAI && m == "some-upstream-model" {
+				return &schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "medium", "high"}}
+			}
+			return nil
+		})
+		t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+		req := &schemas.BifrostChatRequest{
+			Provider: "standard-base-custom",
+			Model:    "some-upstream-model",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("max")}},
+		}
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		require.NotNil(t, out.Reasoning)
+		require.NotNil(t, out.Reasoning.Effort)
+		require.Equal(t, "high", *out.Reasoning.Effort, "a base row clamps max onto the published ladder")
+	})
 }
 
 // TestToOpenAIChatRequest_CustomProviderInheritsBaseProviderRows pins that a
@@ -4215,6 +4528,79 @@ func TestToOpenAIChatRequest_BudgetEstimateReadsResolvedOutputLimit(t *testing.T
 	// which lands on "low" — so the two answers discriminate.
 	require.Equal(t, "medium", *out.Reasoning.Effort,
 		"the budget is scaled against the inherited row's ceiling, not the generic default")
+}
+
+// TestToOpenAIChatRequest_CustomProviderBedrockKeepsBaseServiceTierGate pins
+// that a custom provider fronting Bedrock keeps the base family's identity on
+// the resolved caps. Layering the custom row over the base row while reporting
+// the custom name made serviceTierForModel miss Bedrock entirely, so
+// service_tier: auto|default went out on the wire where the built-in Bedrock
+// path drops it (Bedrock defaults to Standard when the field is omitted).
+func TestToOpenAIChatRequest_CustomProviderBedrockKeepsBaseServiceTierGate(t *testing.T) {
+	// Both rows exist, so the layered path is the one under test rather than the
+	// base-row-only fallback. The base row deliberately publishes no
+	// service_tiers: that is the shape where the custom name leaks the tier, since
+	// the non-Bedrock fallback is permissive and keeps an unlisted tier.
+	customRow := &schemas.ModelCapabilities{SupportsDeveloperRole: schemas.Ptr(false)}
+	bedrockRow := &schemas.ModelCapabilities{MaxOutputTokens: schemas.Ptr(8192)}
+	tieredBedrockRow := &schemas.ModelCapabilities{ServiceTiers: []string{"priority", "flex"}}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		switch {
+		case p == "bedrock-proxy" && m == "anthropic.claude-sonnet-4-5-v1:0":
+			return customRow
+		case p == schemas.Bedrock && m == "anthropic.claude-sonnet-4-5-v1:0":
+			return bedrockRow
+		case p == schemas.Bedrock && m == "anthropic.claude-opus-4-5-v1:0":
+			return tieredBedrockRow
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := customProviderContext(schemas.Bedrock)
+
+	newReq := func(model string, tier schemas.BifrostServiceTier) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: "bedrock-proxy",
+			Model:    model,
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{ServiceTier: schemas.Ptr(tier)},
+		}
+	}
+
+	for _, tier := range []schemas.BifrostServiceTier{schemas.BifrostServiceTierAuto, schemas.BifrostServiceTierDefault} {
+		t.Run(string(tier)+" is dropped like the built-in Bedrock path", func(t *testing.T) {
+			bifrostReq := newReq("anthropic.claude-sonnet-4-5-v1:0", tier)
+			out := ToOpenAIChatRequest(ctx, bifrostReq)
+			require.NotNil(t, out)
+			require.Nil(t, out.ServiceTier, "Bedrock drops service_tier %q", tier)
+			// The caller's parameters are reused across fallbacks.
+			require.NotNil(t, bifrostReq.Params.ServiceTier)
+			require.Equal(t, tier, *bifrostReq.Params.ServiceTier)
+
+			body, err := sonic.Marshal(out)
+			require.NoError(t, err)
+			require.False(t, gjson.GetBytes(body, "service_tier").Exists(),
+				"service_tier must be absent from the wire request: %s", body)
+		})
+	}
+
+	t.Run("a tier the row lists still reaches the wire", func(t *testing.T) {
+		out := ToOpenAIChatRequest(ctx, newReq("anthropic.claude-opus-4-5-v1:0", schemas.BifrostServiceTierPriority))
+		require.NotNil(t, out)
+		require.NotNil(t, out.ServiceTier)
+		require.Equal(t, schemas.BifrostServiceTierPriority, *out.ServiceTier)
+	})
+
+	t.Run("a tier the row omits is dropped for Bedrock", func(t *testing.T) {
+		// Bedrock fails closed on unknown non-standard tiers.
+		out := ToOpenAIChatRequest(ctx, newReq("anthropic.claude-sonnet-4-5-v1:0", schemas.BifrostServiceTierUltrafast))
+		require.NotNil(t, out)
+		require.Nil(t, out.ServiceTier)
+	})
 }
 
 func zeroCostUpstream(t *testing.T) *httptest.Server {
@@ -4293,5 +4679,556 @@ func TestCustomProviderZeroCostReachesTheClient(t *testing.T) {
 			}
 		}
 		assertZeroCostOnWire(t, usage)
+	})
+}
+
+func TestDefaultEffortControl_BytePlusCapsAtHigh(t *testing.T) {
+	const model = "deepseek-v4-flash-260425"
+	control := defaultEffortControl(schemas.BytePlus, model)
+	require.NotContains(t, control.Levels, schemas.ReasoningEffortMax)
+	require.NotContains(t, control.Levels, schemas.ReasoningEffortXHigh)
+	caps := schemas.ResolveModelCaps(schemas.BytePlus, model)
+	require.Equal(t, schemas.ReasoningEffortHigh, caps.ClampReasoningEffort(schemas.ReasoningEffortXHigh, control))
+}
+
+// TestToOpenAIChatRequest_BytePlusKeepsCallerThinkingStringMap pins that a
+// caller-supplied thinking switch is preserved whatever shape it was passed in:
+// the compat pass may only add thinking:disabled when the caller set none.
+func TestToOpenAIChatRequest_BytePlusKeepsCallerThinkingStringMap(t *testing.T) {
+	schemas.SetCapabilityResolver(nil)
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	newReq := func(thinking interface{}, effort string) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.BytePlus,
+			Model:    "kimi-k2-thinking",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning:   &schemas.ChatReasoning{Effort: schemas.Ptr(effort)},
+				ExtraParams: map[string]interface{}{"thinking": thinking},
+			},
+		}
+	}
+
+	out := ToOpenAIChatRequest(ctx, newReq(map[string]string{"type": "enabled"}, schemas.ReasoningEffortNone))
+	require.NotNil(t, out)
+	require.Equal(t, map[string]string{"type": "enabled"}, out.ExtraParams["thinking"],
+		"a caller-supplied thinking switch must survive")
+	require.Nil(t, out.Reasoning, "a disabled effort still drops the effort")
+
+	control := ToOpenAIChatRequest(ctx, newReq(map[string]interface{}{"type": "enabled"}, schemas.ReasoningEffortNone))
+	require.NotNil(t, control)
+	require.Equal(t, map[string]interface{}{"type": "enabled"}, control.ExtraParams["thinking"])
+	require.Nil(t, control.Reasoning)
+
+	out = ToOpenAIChatRequest(ctx, newReq(map[string]string{"type": "disabled"}, "high"))
+	require.NotNil(t, out)
+	require.Nil(t, out.Reasoning, "the map[string]string arm must recognize a disabled switch")
+	require.Equal(t, map[string]string{"type": "disabled"}, out.ExtraParams["thinking"])
+}
+
+// TestToOpenAIChatRequest_BytePlusDropsPassthroughEffortWhenThinkingDisabled pins
+// that a request whose thinking switch is disabled carries no reasoning_effort at
+// all: Ark rejects the effort next to thinking:disabled, so the caller's
+// passthrough copy must go with the typed field. A thinking switch left enabled
+// keeps both.
+func TestToOpenAIChatRequest_BytePlusDropsPassthroughEffortWhenThinkingDisabled(t *testing.T) {
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.BytePlus && m == "effort-model" {
+			return &schemas.ModelCapabilities{SupportsReasoningEffort: schemas.Ptr(true)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	newReq := func(thinking interface{}) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: schemas.BytePlus,
+			Model:    "effort-model",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning: &schemas.ChatReasoning{Effort: schemas.Ptr("high")},
+				ExtraParams: map[string]interface{}{
+					"reasoning_effort": "high",
+					"thinking":         thinking,
+				},
+			},
+		}
+	}
+
+	withEffort := func(effort string, thinking interface{}) *schemas.BifrostChatRequest {
+		req := newReq(thinking)
+		req.Params.Reasoning = &schemas.ChatReasoning{Effort: schemas.Ptr(effort)}
+		return req
+	}
+
+	t.Run("thinking disabled", func(t *testing.T) {
+		out := ToOpenAIChatRequest(ctx, newReq(map[string]interface{}{"type": "disabled"}))
+		require.NotNil(t, out)
+		require.Nil(t, out.Reasoning, "a disabled thinking switch drops the typed effort")
+		require.Equal(t, map[string]interface{}{"type": "disabled"}, out.ExtraParams["thinking"],
+			"the caller's thinking switch must survive")
+		require.NotContains(t, out.ExtraParams, "reasoning_effort",
+			"Ark rejects reasoning_effort next to thinking:disabled")
+	})
+
+	t.Run("thinking enabled with typed none keeps the passthrough", func(t *testing.T) {
+		out := ToOpenAIChatRequest(ctx, withEffort(schemas.ReasoningEffortNone, map[string]interface{}{"type": "enabled"}))
+		require.NotNil(t, out)
+		require.Nil(t, out.Reasoning, "the typed disabled effort is dropped")
+		require.Equal(t, "high", out.ExtraParams["reasoning_effort"],
+			"an enabled thinking switch keeps the passthrough effort")
+		require.Equal(t, map[string]interface{}{"type": "enabled"}, out.ExtraParams["thinking"])
+	})
+
+	t.Run("map with raw type disabled drops the effort", func(t *testing.T) {
+		switchValue := map[string]interface{}{"type": json.RawMessage(`"disabled"`)}
+		out := ToOpenAIChatRequest(ctx, withEffort("high", switchValue))
+		require.NotNil(t, out)
+		require.Nil(t, out.Reasoning, "a raw-encoded disabled switch drops the effort")
+		require.Equal(t, switchValue, out.ExtraParams["thinking"])
+	})
+
+	t.Run("struct switch disabled drops the effort", func(t *testing.T) {
+		switchValue := struct {
+			Type string `json:"type"`
+		}{Type: "disabled"}
+		out := ToOpenAIChatRequest(ctx, withEffort("high", switchValue))
+		require.NotNil(t, out)
+		require.Nil(t, out.Reasoning, "a disabled struct switch drops the effort")
+		require.Equal(t, switchValue, out.ExtraParams["thinking"])
+	})
+
+	t.Run("struct switch enabled keeps the effort", func(t *testing.T) {
+		switchValue := struct {
+			Type string `json:"type"`
+		}{Type: "enabled"}
+		out := ToOpenAIChatRequest(ctx, withEffort("high", switchValue))
+		require.NotNil(t, out)
+		require.NotNil(t, out.Reasoning)
+		require.Equal(t, "high", *out.Reasoning.Effort)
+	})
+
+	t.Run("thinking enabled", func(t *testing.T) {
+		out := ToOpenAIChatRequest(ctx, newReq(map[string]interface{}{"type": "enabled"}))
+		require.NotNil(t, out)
+		require.NotNil(t, out.Reasoning, "an enabled thinking switch keeps the effort")
+		require.Equal(t, "high", *out.Reasoning.Effort)
+		require.Equal(t, "high", out.ExtraParams["reasoning_effort"],
+			"an enabled thinking switch keeps the passthrough effort")
+	})
+}
+
+// TestOmittedEffortReasons_AlwaysReasoningRow pins that an omitted effort counts
+// as reasoning on a row that cannot disable it: the name-based "none" default
+// does not turn reasoning off where the row says it always reasons.
+func TestOmittedEffortReasons_AlwaysReasoningRow(t *testing.T) {
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	alwaysOn := &schemas.ModelCapabilities{
+		SupportsReasoningDisable: schemas.Ptr(false),
+		SupportsReasoning:        schemas.Ptr(true),
+	}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.OpenAI && m == "gpt-5.4-mini" {
+			return alwaysOn
+		}
+		return nil
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	caps := schemas.ResolveModelCapsForRequest(ctx, schemas.OpenAI, "gpt-5.4-mini")
+	require.True(t, omittedEffortReasons(caps, "gpt-5.4-mini"),
+		"a row that cannot disable reasoning still reasons when effort is omitted")
+
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.OpenAI && m == "gpt-5.4-mini" {
+			return &schemas.ModelCapabilities{SupportsReasoningDisable: schemas.Ptr(true)}
+		}
+		return nil
+	})
+	caps = schemas.ResolveModelCapsForRequest(ctx, schemas.OpenAI, "gpt-5.4-mini")
+	require.False(t, omittedEffortReasons(caps, "gpt-5.4-mini"),
+		"a row that can disable reasoning does not reason when effort is omitted")
+}
+
+// TestOmittedEffortReasons_EffortLadderImpliesReasoning pins that a row publishing an
+// effort ladder but leaving supports_reasoning unset still counts as always reasoning,
+// while an explicit false still wins and a rowless model stays false.
+func TestOmittedEffortReasons_EffortLadderImpliesReasoning(t *testing.T) {
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	ladderRow := func(supportsReasoning *bool) *schemas.ModelCapabilities {
+		return &schemas.ModelCapabilities{
+			ReasoningEffortLevels:    []string{"low", "high"},
+			SupportsReasoningDisable: schemas.Ptr(false),
+			SupportsReasoning:        supportsReasoning,
+		}
+	}
+
+	t.Run("a ladder row implies reasoning", func(t *testing.T) {
+		row := ladderRow(nil)
+		schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if p == schemas.OpenAI && m == "ladder-only-model" {
+				return row
+			}
+			return nil
+		})
+		caps := schemas.ResolveModelCapsForRequest(ctx, schemas.OpenAI, "ladder-only-model")
+		require.True(t, omittedEffortReasons(caps, "ladder-only-model"),
+			"a ladder with no supports_reasoning flag still reasons when effort is omitted")
+	})
+
+	t.Run("an explicit false still wins", func(t *testing.T) {
+		row := ladderRow(schemas.Ptr(false))
+		schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if p == schemas.OpenAI && m == "ladder-only-model" {
+				return row
+			}
+			return nil
+		})
+		caps := schemas.ResolveModelCapsForRequest(ctx, schemas.OpenAI, "ladder-only-model")
+		require.False(t, omittedEffortReasons(caps, "ladder-only-model"),
+			"an explicit supports_reasoning false must override the ladder")
+	})
+
+	t.Run("an explicit empty default stays non-reasoning", func(t *testing.T) {
+		row := ladderRow(nil)
+		row.DefaultReasoningEffort = schemas.Ptr("")
+		schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			if p == schemas.OpenAI && m == "ladder-only-model" {
+				return row
+			}
+			return nil
+		})
+		caps := schemas.ResolveModelCapsForRequest(ctx, schemas.OpenAI, "ladder-only-model")
+		require.False(t, omittedEffortReasons(caps, "ladder-only-model"),
+			"an empty default_reasoning_effort means the model never reasons")
+	})
+
+	t.Run("a rowless model stays false", func(t *testing.T) {
+		schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+			return nil
+		})
+		caps := schemas.ResolveModelCapsForRequest(ctx, schemas.OpenAI, "ladder-only-model")
+		require.False(t, omittedEffortReasons(caps, "ladder-only-model"),
+			"with no row nothing asserts the model reasons")
+	})
+}
+
+// TestOmittedEffortReasons_ExplicitFalseBeatsNameDefault pins that a row saying the
+// model does not reason outranks the name-based default effort: an omitted effort
+// must not count as reasoning just because the model name implies one.
+func TestOmittedEffortReasons_ExplicitFalseBeatsNameDefault(t *testing.T) {
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.OpenAI && m == "gpt-5.4-pro" {
+			return &schemas.ModelCapabilities{SupportsReasoning: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	caps := schemas.ResolveModelCapsForRequest(ctx, schemas.OpenAI, "gpt-5.4-pro")
+	require.False(t, omittedEffortReasons(caps, "gpt-5.4-pro"),
+		"an explicit supports_reasoning false outranks the name-based default effort")
+}
+
+// TestSamplingParamUnsupported_ExplicitNonReasoningRow pins the converter-side
+// consequence: a row that says the model does not reason keeps a conditionally
+// unsupported sampling field, so a caller temperature survives conversion.
+func TestSamplingParamUnsupported_ExplicitNonReasoningRow(t *testing.T) {
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	row := &schemas.ModelCapabilities{
+		SupportsReasoning:              schemas.Ptr(false),
+		ConditionallyUnsupportedFields: map[string]string{schemas.FieldTemperature: schemas.ConditionWhenEffortNone},
+	}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.OpenAI && m == "gpt-5.4-pro" {
+			return row
+		}
+		return nil
+	})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	caps := schemas.ResolveModelCapsForRequest(ctx, schemas.OpenAI, "gpt-5.4-pro")
+	require.False(t, samplingParamUnsupported(caps, schemas.FieldTemperature, "gpt-5.4-pro", ""),
+		"a model the row says does not reason keeps temperature when effort is omitted")
+
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.4-pro",
+		Input: []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+		}},
+		Params: &schemas.ChatParameters{
+			Temperature: schemas.Ptr(0.4),
+		},
+	}
+	wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, req, func() (*OpenAIChatRequest, error) {
+		return ToOpenAIChatRequest(ctx, req), nil
+	})
+	require.Nil(t, bifrostErr)
+	require.Equal(t, 0.4, gjson.GetBytes(wireBody, "temperature").Float(),
+		"a caller temperature must survive on a model the row says does not reason: %s", wireBody)
+}
+
+// TestToOpenAIChatRequest_PassthroughDropsRejectedEffort pins that a row
+// rejecting reasoning_effort keeps the field out of the caller-supplied
+// passthrough params too: the merge runs after the typed object is encoded, so
+// an effort left in ExtraParams would reach the upstream anyway.
+func TestToOpenAIChatRequest_PassthroughDropsRejectedEffort(t *testing.T) {
+	row := &schemas.ModelCapabilities{SupportsReasoningEffort: schemas.Ptr(false)}
+	schemas.SetCapabilityResolver(func(p schemas.ModelProvider, m string) *schemas.ModelCapabilities {
+		if p == schemas.OpenAI && m == "gpt-5.1" {
+			return row
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+
+	t.Run("the effort is stripped and the object kept", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-5.1",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning:   &schemas.ChatReasoning{Effort: schemas.Ptr("max")},
+				ExtraParams: map[string]interface{}{"reasoning": map[string]interface{}{"effort": "max", "summary": "auto"}},
+			},
+		}
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		reasoning, ok := out.GetExtraParams()["reasoning"].(map[string]interface{})
+		require.True(t, ok, "the passthrough reasoning object must survive")
+		require.NotContains(t, reasoning, "effort", "a rejected reasoning_effort must not reach the merged body")
+		require.Equal(t, "auto", reasoning["summary"])
+	})
+
+	t.Run("an effort-only object is dropped whole", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-5.1",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning:   &schemas.ChatReasoning{Effort: schemas.Ptr("max")},
+				ExtraParams: map[string]interface{}{"reasoning": map[string]interface{}{"effort": "max"}},
+			},
+		}
+		out := ToOpenAIChatRequest(ctx, req)
+		require.NotNil(t, out)
+		require.NotContains(t, out.GetExtraParams(), "reasoning",
+			"an object left with nothing to say must be dropped whole")
+	})
+
+	t.Run("the flat chat spelling is stripped", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-5.1",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				Reasoning:   &schemas.ChatReasoning{Effort: schemas.Ptr("max")},
+				ExtraParams: map[string]interface{}{"reasoning_effort": "max"},
+			},
+		}
+		wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, req, func() (*OpenAIChatRequest, error) {
+			return ToOpenAIChatRequest(ctx, req), nil
+		})
+		require.Nil(t, bifrostErr)
+		require.False(t, gjson.GetBytes(wireBody, "reasoning_effort").Exists(),
+			"a flat passthrough reasoning_effort must not reach the merged body: %s", wireBody)
+		require.False(t, gjson.GetBytes(wireBody, "reasoning.effort").Exists(),
+			"the typed effort is still gone: %s", wireBody)
+	})
+
+	t.Run("the flat spelling is stripped without typed reasoning", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-5.1",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{"reasoning_effort": "max"},
+			},
+		}
+		wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, req, func() (*OpenAIChatRequest, error) {
+			return ToOpenAIChatRequest(ctx, req), nil
+		})
+		require.Nil(t, bifrostErr)
+		require.False(t, gjson.GetBytes(wireBody, "reasoning_effort").Exists(),
+			"a flat passthrough reasoning_effort must not reach the merged body: %s", wireBody)
+	})
+
+	t.Run("the nested spelling is stripped without typed reasoning", func(t *testing.T) {
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-5.1",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{"reasoning": map[string]interface{}{"effort": "max", "summary": "auto"}},
+			},
+		}
+		wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, req, func() (*OpenAIChatRequest, error) {
+			return ToOpenAIChatRequest(ctx, req), nil
+		})
+		require.Nil(t, bifrostErr)
+		require.False(t, gjson.GetBytes(wireBody, "reasoning.effort").Exists(),
+			"the nested passthrough effort is rejected too: %s", wireBody)
+		require.Equal(t, "auto", gjson.GetBytes(wireBody, "reasoning.summary").String(),
+			"the rest of the passed-through reasoning object must survive: %s", wireBody)
+	})
+
+	t.Run("a struct-valued spelling is stripped without typed reasoning", func(t *testing.T) {
+		type reasoningPassthrough struct {
+			Effort  string `json:"effort,omitempty"`
+			Summary string `json:"summary,omitempty"`
+		}
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-5.1",
+			Input: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hello")},
+			}},
+			Params: &schemas.ChatParameters{
+				ExtraParams: map[string]interface{}{
+					"reasoning": reasoningPassthrough{Effort: "max", Summary: "auto"},
+				},
+			},
+		}
+		wireBody, bifrostErr := providerUtils.CheckContextAndGetRequestBody(ctx, req, func() (*OpenAIChatRequest, error) {
+			return ToOpenAIChatRequest(ctx, req), nil
+		})
+		require.Nil(t, bifrostErr)
+		require.False(t, gjson.GetBytes(wireBody, "reasoning.effort").Exists(),
+			"a struct-valued passthrough effort must not reach the merged body: %s", wireBody)
+		require.Equal(t, "auto", gjson.GetBytes(wireBody, "reasoning.summary").String(),
+			"the rest of the passed-through reasoning object must survive: %s", wireBody)
+	})
+}
+
+// TestWithoutReasoningEffort_RawMessage pins that a passthrough value carried as
+// json.RawMessage is stripped too, not only the map shapes, and that the raw
+// bytes survive so an unrelated value is never rounded by a decode.
+func TestWithoutReasoningEffort_RawMessage(t *testing.T) {
+	t.Run("the effort is stripped and the object kept", func(t *testing.T) {
+		extra := map[string]interface{}{"reasoning": json.RawMessage(`{"effort":"max","summary":"auto"}`)}
+		got := withoutReasoningEffort(extra)
+		raw, ok := got["reasoning"].(json.RawMessage)
+		require.True(t, ok, "the reasoning object must stay raw")
+		require.NotContains(t, string(raw), "\"effort\"")
+		require.Contains(t, string(raw), "\"summary\":\"auto\"")
+	})
+
+	t.Run("an effort-only object is dropped whole", func(t *testing.T) {
+		extra := map[string]interface{}{"reasoning": json.RawMessage(`{"effort":"max"}`)}
+		require.NotContains(t, withoutReasoningEffort(extra), "reasoning")
+	})
+
+	t.Run("every duplicate effort key is stripped", func(t *testing.T) {
+		extra := map[string]interface{}{"reasoning": json.RawMessage(`{"effort":"high","effort":"low","summary":"auto"}`)}
+		got := withoutReasoningEffort(extra)
+		raw, ok := got["reasoning"].(json.RawMessage)
+		require.True(t, ok, "the reasoning object must stay raw")
+		var decoded map[string]interface{}
+		require.NoError(t, json.Unmarshal(raw, &decoded))
+		require.NotContains(t, decoded, "effort", "a duplicate effort key must not survive: %s", raw)
+		require.Equal(t, "auto", decoded["summary"])
+	})
+
+	t.Run("a formatted effort-only object is dropped whole", func(t *testing.T) {
+		extra := map[string]interface{}{"reasoning": json.RawMessage(`{ "effort": "max" }`)}
+		require.NotContains(t, withoutReasoningEffort(extra), "reasoning")
+	})
+
+	t.Run("invalid JSON is returned unchanged", func(t *testing.T) {
+		extra := map[string]interface{}{"reasoning": json.RawMessage(`{`)}
+		got := withoutReasoningEffort(extra)
+		require.Equal(t, extra, got)
+		require.Equal(t, reflect.ValueOf(extra).UnsafePointer(), reflect.ValueOf(got).UnsafePointer(),
+			"an undecodable value must leave the map untouched")
+	})
+
+	t.Run("the flat chat spelling is stripped too", func(t *testing.T) {
+		extra := map[string]interface{}{
+			"reasoning":        json.RawMessage(`{"effort":"max","summary":"auto"}`),
+			"reasoning_effort": "max",
+		}
+		got := withoutReasoningEffort(extra)
+		require.NotContains(t, got, "reasoning_effort", "a flat reasoning_effort must be stripped")
+		raw, ok := got["reasoning"].(json.RawMessage)
+		require.True(t, ok, "the reasoning object must stay raw")
+		require.NotContains(t, string(raw), "\"effort\"")
+		require.Contains(t, string(raw), "\"summary\":\"auto\"")
+	})
+
+	t.Run("unrelated raw values keep their exact bytes", func(t *testing.T) {
+		extra := map[string]interface{}{
+			"reasoning": json.RawMessage(`{"effort":"max","vendor_id":9007199254740993,"summary":"auto"}`),
+		}
+		got := withoutReasoningEffort(extra)
+		raw, ok := got["reasoning"].(json.RawMessage)
+		require.True(t, ok, "the nested value must stay raw")
+		require.NotContains(t, string(raw), "\"effort\"")
+		require.Contains(t, string(raw), "\"summary\":\"auto\"")
+		require.Contains(t, string(raw), "9007199254740993", "an integer beyond 2^53 must not be rounded")
+	})
+}
+
+// TestWithoutReasoningEffort_StructValue pins that a passthrough reasoning value
+// carried as a Go value (not one of the three recognized shapes) is stripped too:
+// the value is marshaled to JSON bytes and edited the same way, leaving every
+// other field as the caller wrote it.
+func TestWithoutReasoningEffort_StructValue(t *testing.T) {
+	type reasoningPassthrough struct {
+		Effort  string `json:"effort,omitempty"`
+		Summary string `json:"summary,omitempty"`
+	}
+
+	t.Run("the effort is stripped and the object kept", func(t *testing.T) {
+		extra := map[string]interface{}{"reasoning": reasoningPassthrough{Effort: "max", Summary: "auto"}}
+		got := withoutReasoningEffort(extra)
+		raw, ok := got["reasoning"].(json.RawMessage)
+		require.True(t, ok, "a struct-valued reasoning must be re-emitted as JSON bytes")
+		require.NotContains(t, string(raw), "\"effort\"")
+		require.Contains(t, string(raw), "\"summary\":\"auto\"")
+	})
+
+	t.Run("an object with no effort is returned unchanged", func(t *testing.T) {
+		reasoning := reasoningPassthrough{Summary: "auto"}
+		extra := map[string]interface{}{"reasoning": reasoning}
+		got := withoutReasoningEffort(extra)
+		require.Equal(t, reasoning, got["reasoning"], "a value carrying no effort must stay untouched")
+		require.Equal(t, reflect.ValueOf(extra).UnsafePointer(), reflect.ValueOf(got).UnsafePointer(),
+			"nothing to strip must leave the map untouched")
+	})
+
+	t.Run("a non-object value is left alone", func(t *testing.T) {
+		extra := map[string]interface{}{"reasoning": "max"}
+		got := withoutReasoningEffort(extra)
+		require.Equal(t, "max", got["reasoning"])
 	})
 }

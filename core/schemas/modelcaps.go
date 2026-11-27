@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,15 +15,24 @@ import (
 // loaded, cached and invalidated belongs next to the data.
 var capabilityResolver atomic.Pointer[func(ModelProvider, string) *ModelCapabilities]
 
+// capabilityResolverGen counts resolver installs: a resolution started before a
+// swap is not stored, and the swap drops the resolution memo.
+var capabilityResolverGen atomic.Uint64
+
 // SetCapabilityResolver installs the lookup backing CapabilitiesFor. Passing nil
 // clears it, after which every capability check falls back to the hardcoded
-// per-provider helpers.
+// per-provider helpers. A new resolver invalidates the resolution memo, and a
+// resolution started before the swap is not stored.
 func SetCapabilityResolver(fn func(provider ModelProvider, model string) *ModelCapabilities) {
 	if fn == nil {
 		capabilityResolver.Store(nil)
-		return
+	} else {
+		capabilityResolver.Store(&fn)
 	}
-	capabilityResolver.Store(&fn)
+	capabilityResolverGen.Add(1)
+	layeredRequestMu.Lock()
+	clear(layeredRequestMemos)
+	layeredRequestMu.Unlock()
 }
 
 // CapabilitiesFor returns the capability record for a (provider, model) pair, or
@@ -33,11 +43,21 @@ func CapabilitiesFor(provider ModelProvider, model string) *ModelCapabilities {
 	if model == "" {
 		return nil
 	}
+	return capabilitiesForRaw(provider, normalizeCapabilityModel(provider, model))
+}
+
+// capabilitiesForRaw consults the resolver without stripping a provider prefix:
+// ResolveModelCapsForRequest looks up the name as sent so a custom provider
+// named like a model namespace keeps its namespaced own row reachable.
+func capabilitiesForRaw(provider ModelProvider, model string) *ModelCapabilities {
+	if model == "" {
+		return nil
+	}
 	resolve := capabilityResolver.Load()
 	if resolve == nil {
 		return nil
 	}
-	return (*resolve)(provider, normalizeCapabilityModel(provider, model))
+	return (*resolve)(provider, model)
 }
 
 // normalizeCapabilityModel drops a provider prefix that just repeats the
@@ -82,6 +102,61 @@ func ResolveModelCaps(provider ModelProvider, model string) ModelCaps {
 	}
 }
 
+// stripRoutingPrefix drops one leading prefix that names either the base family
+// or the wire provider, the two spellings a routing prefix takes. A prefix that
+// names neither is a model namespace ("meta-llama/Llama-3.1-8B") and survives.
+func stripRoutingPrefix(base, wire ModelProvider, name string) string {
+	if p, bare := ParseModelString(name, ""); bare != "" && (p == base || p == wire) {
+		return bare
+	}
+	return name
+}
+
+// resolveBaseRecordAsSent reads the base family's row under the model name as the
+// caller sent it, then under each spelling left by stripping one routing prefix.
+// Resolving by normalizing first loses a row the base sheet keys by the fully
+// prefixed name. usedFallback reports that a stripped spelling answered.
+func resolveBaseRecordAsSent(base, wire ModelProvider, model string) (ModelCaps, bool) {
+	if record := capabilitiesForRaw(base, model); record != nil {
+		return ModelCaps{provider: base, model: normalizeCapabilityModel(base, model), record: record}, false
+	}
+	// The prefix named a provider rather than a model namespace, so the base row
+	// is keyed by a stripped name. Repeated routing prefixes are stripped one at
+	// a time, and the first spelling that answers wins.
+	for name := model; ; {
+		stripped := stripRoutingPrefix(base, wire, name)
+		if stripped == name {
+			return ModelCaps{provider: base, model: normalizeCapabilityModel(base, model)}, false
+		}
+		name = stripped
+		if record := capabilitiesForRaw(base, name); record != nil {
+			return ModelCaps{provider: base, model: normalizeCapabilityModel(base, model), record: record}, true
+		}
+	}
+}
+
+// ownCapabilityRecord resolves the provider's own row under the name as sent
+// first, then under its provider-stripped forms. A leading prefix naming the
+// base family is a routing prefix too, so the own row is reachable when the
+// model carries it. It returns the name that answered and whether that name is
+// the one the request carried.
+func ownCapabilityRecord(provider, base ModelProvider, model string) (record *ModelCapabilities, lookup string, sent bool) {
+	lookup = model
+	for {
+		if record := capabilitiesForRaw(provider, lookup); record != nil {
+			return record, lookup, lookup == model
+		}
+		stripped := normalizeCapabilityModel(provider, lookup)
+		if stripped == lookup {
+			stripped = stripRoutingPrefix(base, provider, lookup)
+		}
+		if stripped == lookup {
+			return nil, lookup, false
+		}
+		lookup = stripped
+	}
+}
+
 // ResolveModelCapsForRequest resolves the capability record for a request.
 // A standard provider resolves exactly as ResolveModelCaps. A custom provider
 // layers the row keyed by its own name over the base provider's row: its own
@@ -91,28 +166,134 @@ func ResolveModelCaps(provider ModelProvider, model string) ModelCaps {
 // the patch alone — so returning it whole would drop the base family's limits,
 // field restrictions and support flags. The layered record is cached per pair
 // of source records, so the per-request cost is a map read.
+//
+// A prefix naming the wire provider is a routing prefix for the own row, but
+// the same word can be a model namespace the base family's sheet keys a row by
+// ("meta-llama/Llama-3.1-8B"), so the base row is read under the name as sent
+// first, then under each spelling left by stripping one routing prefix at a
+// time, and the first one that answers wins.
+//
+// The resolution is memoized per (provider, base, model) once BOTH source rows
+// resolve under the preferred spelling: a steady-state custom-provider request
+// pays ONE catalog lookup to validate the memo instead of the two a cold
+// resolution needs. The memo is validated against the own record, which the
+// catalog replaces wholesale on every apply — a sheet sync or a datasheet
+// override change — so a hit can never outlive the rows it was built from. A
+// resolution that finds either row missing is not memoized and keeps both
+// lookups, because a nil is ambiguous: the row may not exist, or its load may
+// have failed and be retried on the next request. A row found only through a
+// stripped fallback, on either side, is not memoized either: that hit may hide
+// a failed load of the preferred spelling, so both lookups are kept.
+//
+// The returned caps carry the BASE provider identity, so provider-family gates
+// (service tier) see the base family rather than the custom name.
 func ResolveModelCapsForRequest(ctx *BifrostContext, provider ModelProvider, model string) ModelCaps {
-	caps := ResolveModelCaps(provider, model)
 	base := ResolveBaseProvider(ctx, provider)
 	if base == "" || base == provider {
+		return ResolveModelCaps(provider, model)
+	}
+	gen := capabilityResolverGen.Load()
+	// Keyed as the caller sent it: two spellings that resolve differently on
+	// the base side must not share one entry.
+	key := layeredRequestKey{provider: provider, base: base, model: model}
+	if caps, ok := key.hit(); ok {
 		return caps
 	}
-	// caps.model is already normalized against the wire provider; the raw
-	// model could keep the wire prefix and miss the base row.
-	baseCaps := ResolveModelCaps(base, caps.model)
+
+	ownRecord, _, ownSent := ownCapabilityRecord(provider, base, model)
+	caps := ModelCaps{provider: provider, model: normalizeCapabilityModel(provider, model), record: ownRecord}
+	baseCaps, usedFallback := resolveBaseRecordAsSent(base, provider, model)
+	// The answer always carries the base identity.
+	layered := baseCaps
 	switch {
 	case caps.record == nil:
-		return baseCaps
+		layered.record = baseCaps.record
 	case baseCaps.record == nil:
-		return caps
+		layered.record = caps.record
+	default:
+		layered.record = layeredCapabilities(caps.record, baseCaps.record)
 	}
-	caps.record = layeredCapabilities(caps.record, baseCaps.record)
-	return caps
+	// A fallback-hit row on either side may hide a transient load failure of the
+	// preferred spelling, so such an answer stays uncached and the next request
+	// retries the preferred names.
+	if !usedFallback && ownSent {
+		key.store(layered, caps.record, baseCaps.record, gen)
+	}
+	return layered
+}
+
+// layeredRequestKey identifies one custom-provider resolution: the wire
+// provider, its base family and the model as the caller sent it.
+type layeredRequestKey struct {
+	provider ModelProvider
+	base     ModelProvider
+	model    string
+}
+
+// layeredRequestEntry is one memoized resolution. The own record it was built
+// from is kept as the validation pointer, so a hit can tell whether the answer
+// still describes what the catalog serves. Only entries whose own row resolved
+// under the name the request carried are stored, which makes the key's own model
+// the validation lookup. Every apply re-mints every record, so matching the own
+// pointer also proves the base record is unchanged.
+type layeredRequestEntry struct {
+	caps ModelCaps
+	own  *ModelCapabilities
+}
+
+// maxLayeredRequestCaps bounds the resolution memo: a deployment's custom
+// provider × model working set is small, and each apply mints new source
+// pointers, so the map is cleared when it fills rather than growing forever.
+const maxLayeredRequestCaps = 1024
+
+var (
+	layeredRequestMu    sync.RWMutex
+	layeredRequestMemos = make(map[layeredRequestKey]layeredRequestEntry)
+)
+
+// hit returns the memoized resolution for the key when the catalog still serves
+// the own record it was built from, paying one capability lookup instead of the
+// two a cold resolution needs. Every apply re-mints every record, so a matching
+// own pointer means the base record is unchanged too; a mismatch (or a removed
+// row) falls through to the full path.
+func (k layeredRequestKey) hit() (ModelCaps, bool) {
+	layeredRequestMu.RLock()
+	entry, ok := layeredRequestMemos[k]
+	layeredRequestMu.RUnlock()
+	if !ok {
+		return ModelCaps{}, false
+	}
+	if capabilitiesForRaw(k.provider, k.model) == entry.own {
+		return entry.caps, true
+	}
+	return ModelCaps{}, false
+}
+
+// store memoizes a resolution against the source rows it was built from.
+func (k layeredRequestKey) store(caps ModelCaps, own, base *ModelCapabilities, gen uint64) {
+	// A missing row on either side is never memoized: nil cannot be told apart
+	// from a failed load, which the catalog retries on the next request, and a
+	// row appearing while the other stays absent would otherwise match the memo
+	// and serve an answer that predates it.
+	if own == nil || base == nil {
+		return
+	}
+	layeredRequestMu.Lock()
+	defer layeredRequestMu.Unlock()
+	// Checked under the lock: SetCapabilityResolver bumps the generation before
+	// taking it, so a store that wins the lock after the bump sees it here.
+	if capabilityResolverGen.Load() != gen {
+		return
+	}
+	if len(layeredRequestMemos) >= maxLayeredRequestCaps {
+		clear(layeredRequestMemos)
+	}
+	layeredRequestMemos[k] = layeredRequestEntry{caps: caps, own: own}
 }
 
 // layeredCapsKey identifies a layered record by its two source records. The
-// catalog replaces records wholesale on every sheet apply, so a pointer pair
-// never describes stale data.
+// catalog replaces records wholesale on every apply, so a pointer pair never
+// describes stale data.
 type layeredCapsKey struct{ own, base *ModelCapabilities }
 
 // maxLayeredCaps bounds the layered-record cache: a deployment's custom
@@ -149,20 +330,61 @@ func layeredCapabilities(own, base *ModelCapabilities) *ModelCapabilities {
 	return merged
 }
 
-// overlayCapabilities copies base and replaces every field own sets. Fields
-// are taken whole — a map or slice from own replaces base's rather than
-// merging into it — so a row's ladder or rename table is never a blend of two
-// sources.
+// overlayCapabilities copies base and replaces every field own sets. The two
+// field-restriction maps merge by key, so a row that restricts one field keeps
+// the base family's other restrictions; every other map and slice is taken
+// whole, so a row's ladder or rename table is never a blend of two sources.
 func overlayCapabilities(own, base *ModelCapabilities) *ModelCapabilities {
 	merged := *base
 	src := reflect.ValueOf(own).Elem()
 	dst := reflect.ValueOf(&merged).Elem()
 	for i := 0; i < src.NumField(); i++ {
+		switch src.Type().Field(i).Name {
+		case "UnsupportedFields", "ConditionallyUnsupportedFields":
+			continue // merged by key below
+		}
 		if f := src.Field(i); !f.IsZero() && dst.Field(i).CanSet() {
 			dst.Field(i).Set(f)
 		}
 	}
+	merged.UnsupportedFields = overlayFieldMap(base.UnsupportedFields, own.UnsupportedFields)
+	merged.ConditionallyUnsupportedFields = overlayFieldMap(base.ConditionallyUnsupportedFields, own.ConditionallyUnsupportedFields)
+	// A rename the row's own ladder does not list would send an effort it never
+	// publishes; the disabled spelling stays, it is not a reasoning rung.
+	if len(own.ReasoningEffortLevels) > 0 && own.ReasoningEffortRenames == nil && len(merged.ReasoningEffortRenames) > 0 {
+		kept := make(map[string]string, len(merged.ReasoningEffortRenames))
+		for from, to := range merged.ReasoningEffortRenames {
+			if from == ReasoningEffortNone || slices.Contains(own.ReasoningEffortLevels, to) {
+				kept[from] = to
+			}
+		}
+		if len(kept) == 0 {
+			// Non-nil empty: NormalizeReasoningEffort must not fall through to the
+			// name-based fallback renames.
+			merged.ReasoningEffortRenames = map[string]string{}
+		} else {
+			merged.ReasoningEffortRenames = kept
+		}
+	}
+	// A row that publishes a ladder asserts the effort surface, so an inherited
+	// explicit false must not contradict it; a flag the row sets itself still wins.
+	if len(own.ReasoningEffortLevels) > 0 && own.SupportsReasoningEffort == nil {
+		merged.SupportsReasoningEffort = Ptr(true)
+	}
 	return &merged
+}
+
+// overlayFieldMap lays own's entries over base's by key. The result is a copy,
+// so the shared base map is never modified, and an entry own sets — including
+// an explicit false — wins.
+func overlayFieldMap[V any](base, own map[string]V) map[string]V {
+	if len(own) == 0 {
+		return base
+	}
+	merged := make(map[string]V, len(base)+len(own))
+	maps.Copy(merged, base)
+	maps.Copy(merged, own)
+	return merged
 }
 
 // Provider returns the provider the capabilities were resolved for.

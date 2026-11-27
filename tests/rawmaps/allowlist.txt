@@ -62,6 +62,8 @@ lockedmap	core/schemas	Trace.Attributes	inflight: one trace being built
 lockedmap	core/schemas	Trace.RequestHeaders	inflight: one trace being built
 pkgmap	core/schemas	knownProviders	core: OSS core cannot import livestore
 pkgsyncmap	core/schemas	regexEntryCache	core: OSS core cannot import livestore
+pkgmap	core/schemas	layeredRequestMemos	core: OSS core cannot import livestore
+pkgmap	core/schemas	layeredCaps	core: OSS core cannot import livestore
 pkgsyncmap	core/streamusage	counters	core: OSS core cannot import livestore
 lockedmap	core/toolsearch	Session.loaded	core: OSS core cannot import livestore
 pkgmap	framework/configstore/tables	validModelConfigScopes	registry: static scope list; written only by the scope registration at boot

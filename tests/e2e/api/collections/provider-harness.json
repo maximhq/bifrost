@@ -352430,7 +352430,7 @@
     }
 ,
     {
-      "name": "379. Custom provider reasoning effort renames reach the wire (#10261) (custom effort renames)",
+      "name": "394. Custom provider reasoning effort renames reach the wire (#10261) (custom effort renames)",
       "description": "PR #10261: capability lookups in the chat and Responses converters resolve the request's own provider first, so a custom provider's datasheet row (reasoning_effort_renames, reasoning_effort_levels, default_reasoning_effort) applies to its requests again. The openai_effnone provider in tests/integrations/python/config.json points at real OpenAI like the folder-92 customs, and its config.json datasheet_overrides row (is_custom, mode chat - a custom entry requires a pricing mode, and params patches apply to every route of the model) renames reasoning effort \"none\" to \"off\" over the levels off|low|medium|high. The renamed value \"off\" is not one OpenAI accepts: both custom cases expect the effort-validation contract - HTTP 400 with the Invalid value: 'off' signature - proving the renamed bytes left the gateway, while extra_fields.raw_request (x-bf-send-back-raw-request) pins the exact serialized effort on each route. The control sends the same effort \"none\" to the bare openai provider and asserts it stays \"none\" with a 200, pinning that the rename is scoped to the custom provider's own row. The budget case sends reasoning.max_tokens 3500 with no output cap: the custom row sets only levels and renames, so the estimate must read max_output_tokens from the inherited openai/gpt-5.4-mini row (low) - a sparse custom row returned whole falls back to 4096 and estimates high. Pre-fix, the custom row was never consulted: both custom cases return 200 with reasoning_effort \"none\" and fail loudly. No cleanup needed: the provider and its override row are registered at boot from config.json and inert unless a case names them.",
       "item": [
         {
@@ -352651,6 +352651,368 @@
                 "v1",
                 "chat",
                 "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "393. Standard OpenAI provider with a rejecting row strips reasoning_effort (#10261) (openai effort strip)",
+      "description": "PR #10261: a datasheet row that sets unsupported_fields.reasoning_effort strips the caller's reasoning effort on every OpenAI-compatible route, including the built-in openai provider. The second datasheet_overrides entry in tests/integrations/python/config.json (provider openai, model gpt-4o-mini, is_custom false) marks reasoning_effort unsupported for that model, so wording the strip as a custom-provider rule would leave the effort on the wire. gpt-4o-mini rejects reasoning_effort upstream with a 400 unsupported-parameter error, so the 200 on the chat and Responses cases is itself the proof the key never left the gateway; extra_fields.raw_request (x-bf-send-back-raw-request) pins the exact serialized body - no reasoning_effort key on chat, and reasoning either dropped whole or emptied of its effort on Responses. The control sends reasoning_effort none to openai/gpt-5.4-mini, which has no rejecting row: the field must still reach the wire as none, pinning that the strip is scoped to the row rather than applied to the provider at large. Pre-fix the chat case fails loudly: without the row the effort reaches gpt-4o-mini and the provider answers 400 naming unsupported_parameter reasoning_effort. The Responses case pins the same no-effort invariant on that route, where gpt-4o-mini also has reasoning dropped whole as a non-reasoning model, so it fails loudly if an effort ever reappears on the wire body rather than proving the row alone. No cleanup needed: the override row is registered at boot from config.json and inert unless a case names its model.",
+      "item": [
+        {
+          "name": "openai/gpt-4o-mini chat reasoning_effort high is stripped by the rejecting row - #10261",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('the request succeeds (200; auth failures, rate limits and any 5xx fail loudly), so reasoning_effort never reached a model that rejects it', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('the rejecting row strips reasoning_effort from the chat wire body', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr, 'wire body: ' + JSON.stringify(rr)).to.not.have.property('reasoning_effort');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say ok.\" }\n  ],\n  \"reasoning_effort\": \"high\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-4o-mini responses reasoning.effort high is stripped by the rejecting row - #10261",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('the request succeeds (200; auth failures, rate limits and any 5xx fail loudly), so reasoning.effort never reached a model that rejects it', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('the rejecting row leaves no effort on the Responses wire body', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var reasoning = rr.reasoning;",
+                  "  if (reasoning === undefined || reasoning === null) { return; }",
+                  "  pm.expect(reasoning, 'wire body: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  pm.expect(reasoning, 'wire body: ' + JSON.stringify(rr)).to.not.have.property('effort');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_output_tokens\": 48,\n  \"input\": \"Say ok.\",\n  \"reasoning\": { \"effort\": \"high\" }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.4-mini chat reasoning_effort none stays none (control) - #10261",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('a model with no rejecting row accepts effort none (200; auth failures, rate limits and any 5xx fail loudly)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "pm.test('reasoning_effort stays none: the strip is scoped to the rejecting row, not the provider', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning_effort, 'wire body: ' + JSON.stringify(rr)).to.eql('none');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-5.4-mini\",\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say ok.\" }\n  ],\n  \"reasoning_effort\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "395. Rowless OpenAI-based custom provider keeps reasoning_effort (#10261) (openai rowless effort)",
+      "description": "PR #10261: a custom provider that resolves no capability row on either side must pass the caller's effort through untouched. openai_rowless in tests/integrations/python/config.json is an OpenAI-based custom provider with no datasheet_overrides entry; its model gpt-4o-rowless is absent from the built-in OpenAI datasheet too, so neither the own row nor the base row answers. The chat case sends reasoning_effort max and the Responses case sends reasoning.effort max; the name-based fallback ladder would clamp max to xhigh, so extra_fields.raw_request (x-bf-send-back-raw-request) pins that the wire still carries max. OpenAI rejects the unknown model with a 404 model_not_found, whose error body still carries raw_request, so both cases pin that status and error name and assert the serialized effort. Pre-fix, the generic filter normalized max to xhigh and these cases fail loudly. No cleanup needed: the provider is registered at boot from config.json and inert unless a case names it.",
+      "item": [
+        {
+          "name": "[EXPECT-404] openai_rowless/gpt-4o-rowless chat reasoning_effort max passes through untouched - #10261",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('the unknown model reaches OpenAI and is rejected (404 model_not_found; auth failures, rate limits and any 5xx fail loudly)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "  pm.expect(txt, 'expected OpenAI model_not_found: ' + txt.slice(0, 400)).to.include('gpt-4o-rowless');",
+                  "});",
+                  "",
+                  "pm.test('reasoning_effort stays max: with no row anywhere there is nothing to normalize against', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(rr.reasoning_effort, 'wire body: ' + JSON.stringify(rr)).to.eql('max');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_rowless/gpt-4o-rowless\",\n  \"max_tokens\": 48,\n  \"messages\": [\n    { \"role\": \"user\", \"content\": \"Say ok.\" }\n  ],\n  \"reasoning_effort\": \"max\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai_rowless/gpt-4o-rowless responses reasoning.effort max passes through untouched - #10261",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('the unknown model reaches OpenAI and is rejected (404 model_not_found; auth failures, rate limits and any 5xx fail loudly)', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.eql(404);",
+                  "  pm.expect(txt, 'expected OpenAI model_not_found: ' + txt.slice(0, 400)).to.include('gpt-4o-rowless');",
+                  "});",
+                  "",
+                  "pm.test('reasoning.effort stays max: with no row anywhere there is nothing to normalize against', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var reasoning = rr.reasoning;",
+                  "  pm.expect(reasoning, 'wire body: ' + JSON.stringify(rr)).to.be.an('object');",
+                  "  pm.expect(reasoning.effort, 'wire body: ' + JSON.stringify(rr)).to.eql('max');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_rowless/gpt-4o-rowless\",\n  \"max_output_tokens\": 48,\n  \"input\": \"Say ok.\",\n  \"reasoning\": { \"effort\": \"max\" }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "396. Custom bedrock provider drops auto service_tier on the OpenAI responses surface (#10261) (custom bedrock service tier)",
+      "description": "PR #10261: a custom provider now carries its BASE identity into the converters, so the Bedrock service-tier gate sees the base family rather than the custom name. bedrock_openai_ep is a custom provider with base_provider_type bedrock and a key-level use_openai_endpoints opt-in, so /v1/responses on us.openai.gpt-5.6-terra is served from bedrock-runtime's OpenAI surface rather than Converse. Bedrock defaults to Standard when service_tier is omitted and its non-standard tiers are model-specific, so that gate drops auto/default. Without the base identity the resolved provider is the custom name, the gate does not fire, and service_tier \"auto\" reaches the wire. The response id pins the surface (resp_* is the OpenAI one, not Converse's AWS request id) and extra_fields.raw_request pins that the serialized body carries no service_tier at all.",
+      "item": [
+        {
+          "name": "bedrock_openai_ep/us.openai.gpt-5.6-terra /v1/responses drops service_tier auto on the OpenAI surface - custom bedrock service tier",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('the request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "var rr = (j.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "",
+                  "pm.test('the request is served from the OpenAI responses surface', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body.slice(0, 400)).to.be.below(400);",
+                  "  pm.expect(String(j.id || ''), 'not on the OpenAI surface: ' + j.id).to.match(/^resp_/);",
+                  "});",
+                  "",
+                  "pm.test('the Bedrock gate omits service_tier auto from the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing or unparseable - x-bf-send-back-raw-request not honored: ' + body.slice(0, 300)).to.be.an('object');",
+                  "  pm.expect(Object.prototype.hasOwnProperty.call(rr, 'service_tier'), 'service_tier reached the wire: ' + JSON.stringify(rr)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_openai_ep/us.openai.gpt-5.6-terra\",\"max_output_tokens\":64,\"input\":\"Say OK\",\"service_tier\":\"auto\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
               ]
             }
           }

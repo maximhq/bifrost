@@ -1640,7 +1640,32 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 	}
 	// Ark's Responses decoder rejects reasoning.summary as an unknown field, even when it is null,
 	// and Summary has no omitempty, so the key is removed from the encoded body instead.
-	return providerUtils.DeleteJSONField(data, "reasoning.summary")
+	if data, err = providerUtils.DeleteJSONField(data, "reasoning.summary"); err != nil {
+		return nil, err
+	}
+	// Effort and summary were all this object had, so what is left is `{}`; an
+	// unknown-to-Ark reasoning object carrying nothing is not worth sending. Any
+	// other field (context, mode, generate_summary) keeps the object alive.
+	if !resp.omitReasoningEffort {
+		return data, nil
+	}
+	return deleteEmptiedJSONObject(data, "reasoning")
+}
+
+// deleteEmptiedJSONObject removes path when the object it holds has no members
+// left, comparing the compacted form so whitespace never reads as content. A
+// path that is missing, is not an object, or still holds a member is returned
+// unchanged.
+func deleteEmptiedJSONObject(data []byte, path string) ([]byte, error) {
+	obj := gjson.GetBytes(data, path)
+	if !obj.IsObject() {
+		return data, nil
+	}
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, []byte(obj.Raw)); err != nil || compacted.String() != "{}" {
+		return data, nil
+	}
+	return providerUtils.DeleteJSONField(data, path)
 }
 
 // IsStreamingRequested implements the StreamingRequest interface

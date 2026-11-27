@@ -1117,13 +1117,21 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// Clone the Reasoning pointer to avoid mutating the original params
 			reasoningCopy := *req.ResponsesParameters.Reasoning
 			req.ResponsesParameters.Reasoning = &reasoningCopy
+			explicitEffort := req.ResponsesParameters.Reasoning.Effort != nil
 			// A row that rejects reasoning_effort never gains an estimate from a
 			// token budget; an explicit effort is normalized then dropped below.
 			rejectsEffort := reasoningEffortUnsupported(caps)
+			// With no row anywhere the caller's own effort stays verbatim: passing it
+			// through normalization would clamp it onto the name-based ladder. A token
+			// budget still becomes an effort estimate, which needs no row.
+			rowless := rowlessCustomProvider(ctx, bifrostReq.Provider, caps)
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
+				if !rowless {
+					effort = normalizeReasoningEffort(req.Provider, caps, effort)
+				}
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(effort)
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil && !rejectsEffort {
@@ -1131,9 +1139,12 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				maxTokens := *req.ResponsesParameters.Reasoning.MaxTokens
 				// The resolved row already answers for this request, including a row
 				// inherited from the base provider; re-resolving here would miss it.
-				maxOutputTokens := caps.MaxOutputTokens(utils.GetMaxOutputTokensOrDefault(req.Provider, capModel, DefaultCompletionMaxTokens))
+				// The catalog fallback is lazy: a resolved or caller limit skips it.
+				maxOutputTokens := caps.MaxOutputTokens(0)
 				if req.ResponsesParameters.MaxOutputTokens != nil {
 					maxOutputTokens = *req.ResponsesParameters.MaxOutputTokens
+				} else if maxOutputTokens == 0 {
+					maxOutputTokens = utils.GetMaxOutputTokensOrDefault(req.Provider, capModel, DefaultCompletionMaxTokens)
 				}
 				effort := utils.GetReasoningEffortFromBudgetTokens(maxTokens, MinReasoningMaxTokens, maxOutputTokens)
 				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
@@ -1142,8 +1153,8 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			}
 			// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
 			if e := req.ResponsesParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
-				!caps.CanDisableReasoning(defaultCanDisableReasoning(capModel)) {
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(req.Provider, capModel)))
+				(!rowless || !explicitEffort) && !caps.CanDisableReasoning(defaultCanDisableReasoning(capModel)) {
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControlFor(req.Provider, caps.Provider(), capModel)))
 			}
 
 			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.
@@ -1306,6 +1317,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 
 	if bifrostReq.Params != nil {
 		req.ExtraParams = bifrostReq.Params.ExtraParams
+	}
+	// A row that rejects reasoning_effort must keep the field out of the
+	// passthrough merge too, whatever shape the caller supplied.
+	if reasoningEffortUnsupported(caps) {
+		req.ExtraParams = withoutReasoningEffort(req.ExtraParams)
 	}
 
 	if ctx != nil && ctx.Value(schemas.BifrostContextKeyDisableStore) == true {
