@@ -188,9 +188,7 @@ func TestDirect(t *testing.T) {
 	t.Run("1.7_cache_by_provider_default_true", func(t *testing.T) {
 		t.Parallel()
 		lc := newLogCtx("direct", "1.7_cache_by_provider_default_true")
-		if os.Getenv("SC_CHAT_MODEL_ANTHROPIC") == "" {
-			t.Skip("anthropic model not configured (SC_CHAT_MODEL_ANTHROPIC unset)")
-		}
+		requireProvider(t, lc, "anthropic")
 		key := "phase1-k7"
 		body := "Give one tip for staying focused while reading."
 
@@ -207,9 +205,7 @@ func TestDirect(t *testing.T) {
 	t.Run("1.8_cache_by_provider_false", func(t *testing.T) {
 		// Serial: this case mutates plugin config (cache_by_* = false).
 		lc := newLogCtx("direct", "1.8_cache_by_provider_false")
-		if os.Getenv("SC_CHAT_MODEL_ANTHROPIC") == "" {
-			t.Skip("anthropic model not configured (SC_CHAT_MODEL_ANTHROPIC unset)")
-		}
+		requireProvider(t, lc, "anthropic")
 
 		cfgBlob := directOnlyConfig(ttlDirect, defaultKeyDirect)
 		cfgBlob["cache_by_provider"] = false
