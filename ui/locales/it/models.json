@@ -1377,7 +1377,22 @@
 		"leavesGoverningOwnerUnassigned": "Configurala qui sotto, altrimenti rifiuterà le richieste una volta riassegnata.",
 		"ownerProfileNoticeUnnamed": "Governata dal profilo di accesso di questo {{owner}}. I relativi budget, limiti di frequenza e provider si applicano a questa chiave.",
 		"managedByProfileToggleHint": "Questa chiave virtuale è gestita da un profilo di accesso. Abilitala o disabilitala dal profilo.",
-		"noUpdatePermission": "Non hai il permesso di aggiornare le chiavi virtuali."
+		"noUpdatePermission": "Non hai il permesso di aggiornare le chiavi virtuali.",
+		"copyNameAria": "Copia il nome di {{name}}",
+		"nameCopied": "Nome della chiave copiato",
+		"secretKey": {
+			"title": "Questa è una chiave segreta",
+			"warning": "Chiunque abbia questa chiave può inviare richieste addebitate al suo budget.",
+			"shareName": "Per indicare questa chiave, condividi il suo nome:",
+			"confirmCopy": "Copia chiave",
+			"confirmReveal": "Mostra chiave",
+			"cancel": "Annulla",
+			"copyAria": "Copia chiave segreta",
+			"revealAria": "Mostra chiave segreta",
+			"hideAria": "Nascondi chiave segreta",
+			"auditFailedReveal": "Impossibile mostrare la chiave. Riprova.",
+			"auditFailedCopy": "Impossibile copiare la chiave. Riprova."
+		}
 	},
 	"modelLimits": {
 		"title": "Budget e limiti",

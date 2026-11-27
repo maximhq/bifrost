@@ -1377,7 +1377,22 @@
 		"leavesGoverningOwnerUnassigned": "Configure-a abaixo ou ela recusará solicitações quando ficar sem atribuição.",
 		"ownerProfileNoticeUnnamed": "Governada pelo perfil de acesso deste {{owner}}. Os orçamentos, limites de taxa e provedores do perfil se aplicam a esta chave.",
 		"managedByProfileToggleHint": "Esta chave virtual é gerenciada por um perfil de acesso. Ative ou desative-a pelo perfil.",
-		"noUpdatePermission": "Você não tem permissão para atualizar chaves virtuais."
+		"noUpdatePermission": "Você não tem permissão para atualizar chaves virtuais.",
+		"copyNameAria": "Copiar o nome de {{name}}",
+		"nameCopied": "Nome da chave copiado",
+		"secretKey": {
+			"title": "Esta é uma chave secreta",
+			"warning": "Qualquer pessoa com esta chave pode enviar solicitações que contam para o orçamento dela.",
+			"shareName": "Para indicar esta chave, compartilhe o nome dela:",
+			"confirmCopy": "Copiar chave",
+			"confirmReveal": "Mostrar chave",
+			"cancel": "Cancelar",
+			"copyAria": "Copiar chave secreta",
+			"revealAria": "Mostrar chave secreta",
+			"hideAria": "Ocultar chave secreta",
+			"auditFailedReveal": "Não foi possível exibir a chave. Tente novamente.",
+			"auditFailedCopy": "Não foi possível copiar a chave. Tente novamente."
+		}
 	},
 	"modelLimits": {
 		"title": "Orçamentos e limites",

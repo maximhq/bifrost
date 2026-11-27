@@ -1377,7 +1377,22 @@
 		"leavesGoverningOwnerUnassigned": "Konfiguriere ihn unten, sonst weist er Anfragen ab, sobald er nicht mehr zugewiesen ist.",
 		"ownerProfileNoticeUnnamed": "Wird durch das Zugriffsprofil von {{owner}} verwaltet. Dessen Budgets, Ratenlimits und Anbieter gelten für diesen Schlüssel.",
 		"managedByProfileToggleHint": "Dieser virtuelle Schlüssel wird von einem Zugriffsprofil verwaltet. Aktivieren oder deaktivieren Sie ihn im Profil.",
-		"noUpdatePermission": "Sie haben keine Berechtigung, virtuelle Schlüssel zu aktualisieren."
+		"noUpdatePermission": "Sie haben keine Berechtigung, virtuelle Schlüssel zu aktualisieren.",
+		"copyNameAria": "Namen von {{name}} kopieren",
+		"nameCopied": "Schlüsselname kopiert",
+		"secretKey": {
+			"title": "Dies ist ein geheimer Schlüssel",
+			"warning": "Wer diesen Schlüssel hat, kann Anfragen auf sein Budget senden.",
+			"shareName": "Um auf diesen Schlüssel zu verweisen, teilen Sie seinen Namen:",
+			"confirmCopy": "Schlüssel kopieren",
+			"confirmReveal": "Schlüssel anzeigen",
+			"cancel": "Abbrechen",
+			"copyAria": "Geheimen Schlüssel kopieren",
+			"revealAria": "Geheimen Schlüssel anzeigen",
+			"hideAria": "Geheimen Schlüssel ausblenden",
+			"auditFailedReveal": "Der Schlüssel konnte nicht angezeigt werden. Versuchen Sie es erneut.",
+			"auditFailedCopy": "Der Schlüssel konnte nicht kopiert werden. Versuchen Sie es erneut."
+		}
 	},
 	"modelLimits": {
 		"title": "Budgets und Limits",

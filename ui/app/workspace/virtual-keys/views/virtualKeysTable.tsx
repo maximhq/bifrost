@@ -77,6 +77,7 @@ import { toast } from "sonner";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
 import { sharedBudgetNote, summarizeProfileBudgets } from "../hooks/useVirtualKeyUsage.utils";
 import { ProfileBudgetSummary } from "./profileBudgetSummary";
+import { compactIconButtonClass, SecretKeyActionButton } from "./secretKeyActionButton";
 import VirtualKeyDetailSheet from "./virtualKeyDetailsSheet";
 import { VirtualKeysEmptyState } from "./virtualKeysEmptyState";
 import VirtualKeySheet from "./virtualKeySheet";
@@ -748,19 +749,23 @@ export default function VirtualKeysTable({
 		}
 	};
 
-	// Enterprise records reveals and copies in the audit log; a no-op in OSS builds.
+	// Enterprise records reveals and copies in the audit log and resolves false when that fails; always true in OSS.
 	const reportVkAccess = useVirtualKeyAccessAudit();
 
-	const toggleKeyVisibility = (vkId: string) => {
-		const newRevealed = new Set(revealedKeys);
-		if (newRevealed.has(vkId)) {
-			newRevealed.delete(vkId);
-		} else {
-			newRevealed.add(vkId);
-			// Only the reveal edge is a disclosure; re-hiding is not.
-			reportVkAccess(vkId, "reveal");
+	const hideKey = (vkId: string) => {
+		setRevealedKeys((prev) => {
+			const next = new Set(prev);
+			next.delete(vkId);
+			return next;
+		});
+	};
+
+	const revealKey = async (vkId: string) => {
+		if (!(await reportVkAccess(vkId, "reveal"))) {
+			toast.error(t("virtualKeys.secretKey.auditFailedReveal"));
+			return;
 		}
-		setRevealedKeys(newRevealed);
+		setRevealedKeys((prev) => new Set(prev).add(vkId));
 	};
 
 	const maskKey = (key: string, revealed: boolean) => {
@@ -769,6 +774,28 @@ export default function VirtualKeysTable({
 	};
 
 	const { copy: copyToClipboard } = useCopyToClipboard();
+	const { copy: copyName } = useCopyToClipboard({ successMessage: t("virtualKeys.nameCopied") });
+
+	// The clipboard write starts inside the click with a pending value, so Safari keeps the user gesture while the audit call runs.
+	const copyKey = (vk: VirtualKey) => {
+		const audited = reportVkAccess(vk.id, "copy");
+		const fallback = async () => {
+			if (await audited) copyToClipboard(vk.value);
+			else toast.error(t("virtualKeys.secretKey.auditFailedCopy"));
+		};
+		if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+			void fallback();
+			return;
+		}
+		const blob = audited.then((ok) => {
+			if (!ok) throw new Error("audit not recorded");
+			return new Blob([vk.value], { type: "text/plain" });
+		});
+		navigator.clipboard
+			.write([new ClipboardItem({ "text/plain": blob })])
+			.then(() => toast.success(tc("copyToClipboard.success")))
+			.catch(() => void fallback());
+	};
 
 	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter || userFilter || metadataFilterKey;
 
@@ -1195,7 +1222,21 @@ export default function VirtualKeysTable({
 												/>
 											</TableCell>
 											<TableCell className="max-w-[200px]">
-												<div className="truncate font-medium">{vk.name}</div>
+												<div className="flex items-center gap-1">
+													<div className="truncate font-medium">{vk.name}</div>
+													<button
+														type="button"
+														className={compactIconButtonClass}
+														onClick={(e) => {
+															e.stopPropagation();
+															copyName(vk.name);
+														}}
+														aria-label={t("virtualKeys.copyNameAria", { name: vk.name })}
+														data-testid={`vk-copy-name-btn-${vk.name}`}
+													>
+														<Copy className="size-3.5" />
+													</button>
+												</div>
 											</TableCell>
 											<TableCell>
 												<VKAssignedToCell vk={vk} />
@@ -1205,27 +1246,37 @@ export default function VirtualKeysTable({
 													<code className="cursor-default py-1 font-mono text-sm" data-testid="vk-key-value">
 														{maskKey(vk.value, isRevealed)}
 													</code>
-													<div className="flex items-center">
-														<Button
-															variant="ghost"
-															size="sm"
-															onClick={() => toggleKeyVisibility(vk.id)}
-															data-testid={`vk-visibility-btn-${vk.name}`}
+													<div className="flex items-center gap-0.5">
+														{isRevealed ? (
+															<button
+																type="button"
+																className={compactIconButtonClass}
+																onClick={() => hideKey(vk.id)}
+																aria-label={t("virtualKeys.secretKey.hideAria")}
+																data-testid={`vk-visibility-btn-${vk.name}`}
+															>
+																<EyeOff className="size-3.5" />
+															</button>
+														) : (
+															<SecretKeyActionButton
+																action="reveal"
+																vkName={vk.name}
+																onCopyName={() => copyName(vk.name)}
+																onConfirm={() => void revealKey(vk.id)}
+																testId={`vk-visibility-btn-${vk.name}`}
+															>
+																<Eye className="size-3.5" />
+															</SecretKeyActionButton>
+														)}
+														<SecretKeyActionButton
+															action="copy"
+															vkName={vk.name}
+															onCopyName={() => copyName(vk.name)}
+															onConfirm={() => copyKey(vk)}
+															testId={`vk-copy-btn-${vk.name}`}
 														>
-															{isRevealed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-														</Button>
-														<Button
-															variant="ghost"
-															size="sm"
-															onClick={() => {
-																// Not awaited: the clipboard write must not wait on the beacon.
-																reportVkAccess(vk.id, "copy");
-																copyToClipboard(vk.value);
-															}}
-															data-testid={`vk-copy-btn-${vk.name}`}
-														>
-															<Copy className="h-4 w-4" />
-														</Button>
+															<Copy className="size-3.5" />
+														</SecretKeyActionButton>
 													</div>
 												</div>
 											</TableCell>

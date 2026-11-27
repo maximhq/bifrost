@@ -1377,7 +1377,22 @@
 		"leavesGoverningOwnerUnassigned": "请在下方配置，否则取消分配后密钥将拒绝请求。",
 		"ownerProfileNoticeUnnamed": "由此{{owner}}的访问配置文件进行治理。其预算、速率限制和供应商设置适用于此密钥。",
 		"managedByProfileToggleHint": "此虚拟密钥由访问配置文件管理。请在配置文件中启用或停用。",
-		"noUpdatePermission": "您没有更新虚拟密钥的权限。"
+		"noUpdatePermission": "您没有更新虚拟密钥的权限。",
+		"copyNameAria": "复制 {{name}} 的名称",
+		"nameCopied": "已复制密钥名称",
+		"secretKey": {
+			"title": "这是一个秘密密钥",
+			"warning": "任何拥有此密钥的人都可以发送计入其预算的请求。",
+			"shareName": "如需指代此密钥，请分享其名称：",
+			"confirmCopy": "复制密钥",
+			"confirmReveal": "显示密钥",
+			"cancel": "取消",
+			"copyAria": "复制秘密密钥",
+			"revealAria": "显示秘密密钥",
+			"hideAria": "隐藏秘密密钥",
+			"auditFailedReveal": "无法显示密钥。请重试。",
+			"auditFailedCopy": "无法复制密钥。请重试。"
+		}
 	},
 	"modelLimits": {
 		"title": "预算与限额",

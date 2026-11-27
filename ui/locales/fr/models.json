@@ -1377,7 +1377,22 @@
 		"relayAccess": "Accès aux relais",
 		"noRelaysGranted": "Aucun relais autorisé",
 		"managedByProfileToggleHint": "Cette clé virtuelle est gérée par un profil d'accès. Activez-la ou désactivez-la depuis le profil.",
-		"noUpdatePermission": "Vous n'avez pas l'autorisation de modifier les clés virtuelles."
+		"noUpdatePermission": "Vous n'avez pas l'autorisation de modifier les clés virtuelles.",
+		"copyNameAria": "Copier le nom de {{name}}",
+		"nameCopied": "Nom de la clé copié",
+		"secretKey": {
+			"title": "Ceci est une clé secrète",
+			"warning": "Toute personne disposant de cette clé peut envoyer des requêtes imputées à son budget.",
+			"shareName": "Pour désigner cette clé, partagez son nom :",
+			"confirmCopy": "Copier la clé",
+			"confirmReveal": "Afficher la clé",
+			"cancel": "Annuler",
+			"copyAria": "Copier la clé secrète",
+			"revealAria": "Afficher la clé secrète",
+			"hideAria": "Masquer la clé secrète",
+			"auditFailedReveal": "Impossible d'afficher la clé. Réessayez.",
+			"auditFailedCopy": "Impossible de copier la clé. Réessayez."
+		}
 	},
 	"modelLimits": {
 		"title": "Budgets et limites",

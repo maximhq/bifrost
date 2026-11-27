@@ -1377,7 +1377,22 @@
 		},
 		"ownerProfileNoticeUnnamed": "由此 {{owner}} 的存取設定檔管理。其預算、速率限制和供應商設定會套用至此金鑰。",
 		"managedByProfileToggleHint": "此虛擬金鑰由存取設定檔管理。請在設定檔中啟用或停用。",
-		"noUpdatePermission": "您沒有更新虛擬金鑰的權限。"
+		"noUpdatePermission": "您沒有更新虛擬金鑰的權限。",
+		"copyNameAria": "複製 {{name}} 的名稱",
+		"nameCopied": "已複製金鑰名稱",
+		"secretKey": {
+			"title": "這是秘密金鑰",
+			"warning": "任何持有此金鑰的人都可以傳送計入其預算的請求。",
+			"shareName": "如需指稱此金鑰，請分享其名稱：",
+			"confirmCopy": "複製金鑰",
+			"confirmReveal": "顯示金鑰",
+			"cancel": "取消",
+			"copyAria": "複製秘密金鑰",
+			"revealAria": "顯示秘密金鑰",
+			"hideAria": "隱藏秘密金鑰",
+			"auditFailedReveal": "無法顯示金鑰。請再試一次。",
+			"auditFailedCopy": "無法複製金鑰。請再試一次。"
+		}
 	},
 	"modelLimits": {
 		"title": "預算與限額",

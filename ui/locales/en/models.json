@@ -1377,7 +1377,22 @@
 		},
 		"ownerProfileNoticeUnnamed": "Governed by the access profile of this {{owner}}. Its budgets, rate limits and providers apply to this key.",
 		"managedByProfileToggleHint": "This virtual key is managed by an access profile. Enable or disable it from the profile.",
-		"noUpdatePermission": "You don't have permission to update virtual keys."
+		"noUpdatePermission": "You don't have permission to update virtual keys.",
+		"copyNameAria": "Copy name of {{name}}",
+		"nameCopied": "Key name copied",
+		"secretKey": {
+			"title": "This is a secret key",
+			"warning": "Anyone with this key can send requests against its budget.",
+			"shareName": "To refer to this key, share its name:",
+			"confirmCopy": "Copy key",
+			"confirmReveal": "Reveal key",
+			"cancel": "Cancel",
+			"copyAria": "Copy secret key",
+			"revealAria": "Reveal secret key",
+			"hideAria": "Hide secret key",
+			"auditFailedReveal": "Couldn't reveal the key. Try again.",
+			"auditFailedCopy": "Couldn't copy the key. Try again."
+		}
 	},
 	"modelLimits": {
 		"title": "Budgets & Limits",
