@@ -123,7 +123,11 @@ func TestSemanticCache_RedisNativeExpiry(t *testing.T) {
 		require.NoError(t, err)
 		require.True(t, flush)
 		require.NoError(t, plugin.processAccumulatedStream(ctx, id))
-		require.Zero(t, inspect.Exists(ctx, namespace+":"+id).Val(), "flush must use the original deadline, not restart TTL")
+		// A restarted TTL would keep the key for a minute; allow for Redis's clock
+		// trailing this host's by a few milliseconds at the deadline second.
+		require.Eventually(t, func() bool {
+			return inspect.Exists(ctx, namespace+":"+id).Val() == 0
+		}, time.Second, 10*time.Millisecond, "flush must use the original deadline, not restart TTL")
 	})
 }
 
