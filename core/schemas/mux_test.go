@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -3374,5 +3375,56 @@ func TestToBifrostResponsesStreamResponse_NoArgToolCallIsClosed(t *testing.T) {
 		if item == nil || item.ResponsesToolMessage == nil || item.Arguments == nil || *item.Arguments != args {
 			t.Fatalf("output_item.done for index %d: want arguments %q, got %+v", idx, args, item)
 		}
+	}
+}
+
+// BenchmarkToBifrostResponsesStreamResponse runs one whole chat stream through the
+// Chat-to-Responses stream converter per op (acquire state, every chunk, release):
+// a text-only stream, which never touches the tool-call close path, and streams
+// with several tool calls, each closed before the next one is added.
+func BenchmarkToBifrostResponsesStreamResponse(b *testing.B) {
+	stop := string(BifrostFinishReasonStop)
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+
+	textStream := func(chunks int) []*BifrostChatResponse {
+		var out []*BifrostChatResponse
+		for i := 0; i < chunks; i++ {
+			text := "some streamed text "
+			out = append(out, toolStreamChunk(&ChatStreamResponseChoiceDelta{Content: &text}, nil))
+		}
+		return append(out, toolStreamChunk(&ChatStreamResponseChoiceDelta{}, &stop))
+	}
+	toolStream := func(calls, argChunks int) []*BifrostChatResponse {
+		var out []*BifrostChatResponse
+		for c := 0; c < calls; c++ {
+			out = append(out, toolStreamChunk(toolCallDelta(uint16(c), fmt.Sprintf("call_%d", c), "bash", `{"command":"`), nil))
+			for a := 0; a < argChunks; a++ {
+				out = append(out, toolStreamChunk(toolCallDelta(uint16(c), "", "", "echo hello world; "), nil))
+			}
+			out = append(out, toolStreamChunk(toolCallDelta(uint16(c), "", "", `"}`), nil))
+		}
+		return append(out, toolStreamChunk(&ChatStreamResponseChoiceDelta{}, &toolCallsFinish))
+	}
+
+	cases := []struct {
+		name   string
+		chunks []*BifrostChatResponse
+	}{
+		{"text_only_64_chunks", textStream(64)},
+		{"1_tool_16_arg_chunks", toolStream(1, 16)},
+		{"8_tools_16_arg_chunks", toolStream(8, 16)},
+		{"64_tools_16_arg_chunks", toolStream(64, 16)},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				state := AcquireChatToResponsesStreamState()
+				for _, chunk := range tc.chunks {
+					_ = chunk.ToBifrostResponsesStreamResponse(state)
+				}
+				ReleaseChatToResponsesStreamState(state)
+			}
+		})
 	}
 }
